@@ -339,8 +339,9 @@ def invite_mount(mount: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize('method', ['CancelInvite', 'RecoverInvite'])
-@pytest.mark.parametrize('case', ['complete', 'absent', 'minter', 'ipc', 'lost_reply', 'journal_busy', 'late', 'connector_uid', 'lock_exit'])
-def test_invite_mount_current_operation_and_audit(invite_mount: Any, method: str, case: str) -> None:
+@pytest.mark.parametrize('case', ['complete', 'absent', 'minter', 'ipc', 'lost_reply', 'journal_busy', 'late', 'audit_late', 'connector_uid', 'lock_exit'])
+def test_invite_mount_current_operation_and_audit(invite_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                                method: str, case: str) -> None:
     v = invite_mount
     v.message.get_member = lambda: method
     initial = v.record()
@@ -371,6 +372,14 @@ def test_invite_mount_current_operation_and_audit(invite_mount: Any, method: str
             v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: args[1]
             return result
         v.reader.recover_invite.side_effect = late
+    elif case == 'audit_late':
+        original = v.helper.audit.outcome
+        def audit_late(*args: Any) -> None:
+            assert v.helper.inflight is not None
+            original(*args)  # Real B16 append/fsync settles before its budget is consumed.
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline + 1
+        v.helper.audit.outcome = audit_late
     try:
         v.admit()
     finally:
@@ -381,23 +390,41 @@ def test_invite_mount_current_operation_and_audit(invite_mount: Any, method: str
     if case == 'absent': expected = dict(outcome='complete', invite='none', cleanup='not_needed')
     if case == 'minter': expected = dict(outcome='partial_cleanup', invite='cancelled', cleanup='uncertain')
     if case in ('journal_busy', 'connector_uid'): expected = dict(outcome='refused', invite='unknown', cleanup='unknown')
-    if case in ('ipc', 'lost_reply', 'late', 'lock_exit'): expected = dict(outcome='uncertain', invite='uncertain', cleanup='uncertain')
+    if case in ('ipc', 'lost_reply', 'late', 'audit_late', 'lock_exit'): expected = dict(outcome='uncertain', invite='uncertain', cleanup='uncertain')
     assert v.helper.lifecycle_result == expected
     assert v.helper.inflight is None and len(v.original.calls) == 1, 'no new mint'
-    assert bool(v.events) == (case in ('complete', 'minter', 'late', 'lock_exit'))
-    if case in ('complete', 'late', 'lock_exit'):
+    assert bool(v.events) == (case in ('complete', 'minter', 'late', 'audit_late', 'lock_exit'))
+    if case in ('complete', 'late', 'audit_late', 'lock_exit'):
         assert v.record() == initial | {'outcome': 'recovered'}
     elif case != 'absent':
         assert v.record() == initial | {'outcome': 'issued' if case in ('journal_busy', 'connector_uid') else 'uncertain'}
-    if case in ('complete', 'minter', 'lost_reply', 'late', 'lock_exit'):
+    if case in ('complete', 'minter', 'lost_reply', 'late', 'audit_late', 'lock_exit'):
         assert v.trust.load().invite_record is None
     else:
         assert v.trust.load().invite_record is not None
     rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
-    assert len(rows) == 2 and rows[0]['stage'] == 'intent'
+    assert len(rows) == (3 if case == 'audit_late' else 2) and rows[0]['stage'] == 'intent'
     assert rows[0]['event'] == ('invite_cancelled' if method == 'CancelInvite' else 'invite_recovered')
-    assert rows[-1]['outcome'] == ('uncertain' if case in ('ipc', 'lost_reply', 'late', 'lock_exit') else
+    assert rows[-1]['outcome'] == ('uncertain' if case in ('ipc', 'lost_reply', 'late', 'audit_late', 'lock_exit') else
                                    'refused' if case in ('journal_busy', 'connector_uid') else 'succeeded')
+    if case == 'audit_late':
+        assert [row['stage'] for row in rows] == ['intent', 'outcome', 'uncertain']
+        assert rows[1]['outcome'] == 'succeeded'  # Preserve the settled B16 record.
+        v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
+        observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+        v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+        v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+        monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw: SimpleNamespace(start=lambda: target(*args)))
+        monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+        v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+        reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+        v.message.new_method_reply = lambda: reply
+        v.helper.connection.send_message = Mock()
+        v.helper._status_v2(v.message, ':1.42')
+        body = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
+        status = json.loads(body)
+        assert status['invite']['state'] == status['cleanup']['state'] == 'uncertain'
+        assert status['invite']['age_seconds'] == status['cleanup']['age_seconds'] == 0
     call = v.helper.authority.call.call_args.args[1].unpack()
     assert call[0][1]['name'].unpack() == ':1.42'
     assert call[1] == 'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method]

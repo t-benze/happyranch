@@ -596,6 +596,7 @@ class RemoteAccessHelper:
                     # outcome, while its B11 cleanup axis stays uncertain.
                     self.audit.outcome(intent, _home_audit.Outcome.REFUSED if result['outcome'] == 'refused'
                                        else _home_audit.Outcome.SUCCEEDED)
+                operation.budget.remaining()  # B16 settlement consumes the original budget too.
         except Exception:
             result = ({'outcome': 'uncertain', 'invite': 'uncertain', 'cleanup': 'uncertain'} if dispatched
                       else {'outcome': 'refused', 'invite': 'unknown', 'cleanup': 'unknown'})

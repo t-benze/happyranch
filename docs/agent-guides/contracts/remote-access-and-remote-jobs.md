@@ -3451,7 +3451,12 @@ minter, dependency, bus policy or sandbox change is introduced.
 B16 writes invite_cancelled/invite_recovered intent before child effects. A
 settled complete or partial_cleanup uses I3a's succeeded outcome mapping;
 refused uses refused and lost/late replies use the existing uncertain record.
-B11 result tuples pass through unchanged: acknowledged invalidation followed by
+B9's original deadline is rechecked after B16 settlement, before the terminal
+result and StatusV2 observations are published. If the audit append returns
+after that deadline, the helper reports uncertain on all three result axes and
+records uncertainty without rewriting the settled audit outcome; it publishes
+no fresh successful invite/cleanup observation. The slot is released as before.
+Timely B11 result tuples pass through unchanged: acknowledged invalidation followed by
 recover != True remains partial_cleanup/cancelled/uncertain. No audit vocabulary
 or journal meaning changes. StatusV2 projects only existing invite/cleanup
 observations, pinned to the authenticated UID and activation G/O; B15 applies
