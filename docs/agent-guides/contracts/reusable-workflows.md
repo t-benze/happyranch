@@ -8,6 +8,12 @@ node briefs. Public @2 admission remains unavailable and Coding stays Disabled.
 Before native launch reservation, `recheck_launch_assignment` checks the saved
 selection against current executor/options. Drift calls the existing S4a writer
 to persist Held/`assignee_unavailable`, without a session or replacement task.
+Prelaunch, briefs and acceptance validate the active visit's exact assignment
+principal/generation against current role authority. Other nodes sharing that
+role cannot override this occurrence. Recovery assignments and selections apply
+only to explicitly selected replacement visits; a fresh graph occurrence uses
+the original pinned generation-1 node assignment. Complete history validation
+rejects a graph successor carrying a recovery generation.
 
 A callback commits only its native result. Generic acceptance waits for original
 positive terminal and outer closure, current assignment authority and exact

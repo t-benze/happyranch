@@ -1394,8 +1394,10 @@ class SequentialDispatcher:
                 terminal_outcome=('failed' if decision.edge.action == 'fail' else 'completed') if resulting == 'finished' else None)
             if decision.activation:
                 target = decision.activation
-                assignments = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=? AND node_id=?', (run_id, target.node))
-                assignment = max(assignments, key=lambda row: row['generation'])
+                assignments = _engine_rows(conn, 'workflow_seq_assignments', budget,
+                    'run_id=? AND node_id=? AND generation=1', (run_id, target.node))
+                _check(len(assignments) == 1)
+                assignment = assignments[0]
                 value = _json(assignment['snapshot_bytes'], 49152)
                 new_visit = _identity('visit', run_id, str(target.ordinal))
                 new_task = 'TASK-SEQ-' + new_visit

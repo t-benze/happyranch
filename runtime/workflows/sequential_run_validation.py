@@ -821,6 +821,8 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 successor = next((row for row in visits if row['ordinal'] == activation.ordinal), None)
                 _require(successor is not None and successor['node_id'] == activation.node
                     and successor['predecessor_event_id'] == event['id']
+                    and successor['assignment_id'] == _identity('assignment', run['id'], activation.node, '1')
+                    and successor['assignment_generation'] == 1
                     and generic_selection(successor, budget) == activation.inputs, 'generic_successor_conflict')
                 current.update(state='running', progress='executing' if successor['session_id'] else 'queued',
                     active_visit_id=successor['id'], visit_count=decision.after.visits)

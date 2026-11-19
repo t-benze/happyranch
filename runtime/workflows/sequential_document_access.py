@@ -189,26 +189,27 @@ def generic_binding_context(conn: sqlite3.Connection, run: dict, visit: dict, co
     from runtime.workflows.sequential_history import _decode, _hashed
     start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_generic_start, budget)
     resolved = _decode(_hashed(run['assignment_snapshot_bytes'], run['assignment_snapshot_digest']), budget)
-    rows = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=?', (run['id'],))
-    latest = {}
-    for row in rows:
-        budget.step()
-        previous = latest.get(row['node_id'])
-        if previous is None or previous['generation'] < row['generation']:
-            latest[row['node_id']] = row
+    rows = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=? AND id=?',
+                        (run['id'], visit['assignment_id']))
+    _require(len(rows) == 1, 'sequential_output_access_unavailable')
+    assignment = rows[0]
+    node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+    _require((assignment['node_id'], assignment['principal'], assignment['generation']) ==
+        (node.id, visit['principal'], visit['assignment_generation']), 'sequential_output_access_unavailable')
+    value = _decode(_hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']), budget)
+    _require((value['node'], value['role'], value['principal']) == (node.id, node.role, visit['principal']),
+             'sequential_output_access_unavailable')
     principals = {item['role']: item['principal'] for item in resolved['roles']}
-    for node in compiled.definition.nodes:
-        principals[node.role] = latest[node.id]['principal']
+    principals[node.role] = assignment['principal']
     command = start.model_copy(update={'role_overrides': tuple(
         BindingClaim(role=role, principal=principal)
         for role, principal in principals.items())})
     budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
     current = generic_assignment_authority(capture, org_slug=run['org_slug'])
     bound = _roles(compiled, command, (), current, resolved['team'])
-    node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
     _require(next(item['principal'] for item in bound if item['role'] == node.role) == visit['principal'],
              'sequential_output_access_unavailable')
-    return start, latest
+    return start, {node.id: assignment}
 
 
 def authorize_generic_input(*, compiled: Any, node: Any, ref: Any, output: dict, stored_recipients: dict,
