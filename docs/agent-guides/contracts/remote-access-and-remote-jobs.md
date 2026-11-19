@@ -2088,16 +2088,21 @@ binding is covered in the slice 2b-2 section below.
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
-ApprovePending, RejectPending and RevokeSelected. Only the last three request
-fresh interactive polkit authorization. B8's `helper_owner.py` now derives the
-release owner from the bus credential UID, passwd and validated protected release
-record when present; the optional trusted constructor UID remains a compatibility
+ApprovePending, RejectPending and RevokeSelected, plus I5a's seven public
+lifecycle/invite methods: Enable, ReplaceFailed, Disable, IssueInvite, CancelInvite,
+RecoverInvite and RetryPolicyRenewal. The three device mutations and all seven
+lifecycle/invite methods request fresh interactive polkit authorization; admission
+is unchanged. Linux CLI consumers follow in I5b and bridge consumers in I5c.
+RefreshHomeAddress remains absent and B13-deferred. B8's `helper_owner.py` now
+derives the release owner from the bus credential UID, passwd and validated
+protected release record when present; the optional trusted constructor UID remains a compatibility
 pin. The root-only `serve()` connects Gio to the fixed system-bus socket
 (`/run/dbus/system_bus_socket`), ignoring address environment overrides. B8 packages
 the bus/polkit definitions and root Type=dbus unit; package install registers the
-service without running Enable. I3a privately mounts Enable/ReplaceFailed/Disable
-through B9 and the fixed bundled-Python child; public dispatch and introspection
-still refuse all three until I5. Run the fixed
+service without running Enable. I3a mounts Enable/ReplaceFailed/Disable
+through B9 and the fixed bundled-Python child; I5a exposes all seven lifecycle/invite
+methods in public dispatch and introspection. Linux CLI and bridge consumer wiring
+follows in I5b/I5c. RefreshHomeAddress has no helper method and is deferred to B13. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2112,8 +2117,10 @@ cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 Custom-server URL/key intake methods do not exist and are not planned; outside-home access
 uses a fixed build-configured server (see [Outside-home access (fixed operator server)](../../specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
-IssueInvite and all install/lifecycle methods are absent, so invite issuance's
-one-per-minute rate limit and policy-renewal installation belong to later slices.
+I5a exposes the seven lifecycle/invite methods through the public helper with
+unchanged admission, including issuance's one-per-minute rate limit and bounded
+policy-renewal installation. Linux CLI consumers are I5b and bridge consumers are
+I5c; RefreshHomeAddress remains absent and B13-deferred.
 
 `helper_control.OperationAPI` defines status, approve_pending, reject_pending,
 and revoke_device plus the shared trust mutation lock. The new root-only Unix
@@ -2975,9 +2982,9 @@ only to the unchanged terminal-marker path; no existing txn is resumed.
 the unchanged Ruling 12/12a recovery with the same production owners; no effect
 is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
-I3a privately mounts this backend through the fixed bundled-Python helper child,
-with B8/B9 fresh authorization and protected G/O capture. Public Enable stays
-unreachable until I5. Under the same held lock, private Enable sends only matching
+I3a mounts this backend through the fixed bundled-Python helper child,
+with B8/B9 fresh authorization and protected G/O capture. I5a exposes public Enable;
+Linux CLI/bridge wiring follows in I5b/I5c. Under the same held lock, Enable sends only matching
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
@@ -3145,8 +3152,9 @@ residue retired. Failed revoke ALWAYS produces `partial_cleanup`, naming retaine
 un-revoked trust/sidecar state. A changed generation permits at most one fresh
 read/retry within the original 300-second budget. CA staging and B7/B11/minter
 evidence follow the I3c custody/proof/audit rules above; any remainder is incomplete.
-I3a's private helper worker mounts this composition and records the closed outcome
-and safe residue components; public methods remain absent until I5.
+I3a's helper worker mounts this composition and records the closed outcome
+and safe residue components; I5a exposes the public methods, with Linux CLI/bridge
+consumers left to I5b/I5c.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3300,12 +3308,14 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
-The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
-RevokeSelected. I3a also ships the stdlib-only `helper_lifecycle.py` sibling and
-private lifecycle mount; I3b adds the stdlib-only `helper_invite.py` pipe adapter
-and private CancelInvite/RecoverInvite mounting; I4a adds private zero-input
-IssueInvite with the exact issue-invite auth_admin/no-keep action. I4b-2 adds
-private RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-keep
+The packaged entry exposes Status/StatusV2/NextDevice/ApprovePending/RejectPending/
+RevokeSelected plus I5a's seven public lifecycle/invite methods, with unchanged
+admission. Linux CLI consumers are I5b and bridge consumers are I5c;
+RefreshHomeAddress remains absent and B13-deferred. I3a supplies the stdlib-only
+`helper_lifecycle.py` sibling and lifecycle mount; I3b adds the stdlib-only
+`helper_invite.py` pipe adapter and CancelInvite/RecoverInvite mounting; I4a adds
+zero-input IssueInvite with the exact issue-invite auth_admin/no-keep action.
+I4b-2 adds RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-keep
 action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
@@ -3345,9 +3355,11 @@ supplied timeout; these primitives do not preempt blocking code. Auth transport
 uncertainty retains the slot until terminal reply/cancellation acknowledgement.
 The six outcomes reuse B15's `status_v2.SetupPhase`, excluding UNKNOWN/STALE.
 The native 120-second auth and approximately 122-second transport are unchanged.
-No lifecycle method is exported. I3a's private mount uses the real native polkit
-CheckAuthorization callback with the captured unique bus sender and exact action;
-its terminal/cancellation rules retain the same slot through the entire worker.
+I5a exports all seven lifecycle/invite methods on the public helper, retaining
+I3a's native polkit CheckAuthorization callback with the captured unique bus sender
+and exact action. Linux CLI consumers are I5b and bridge consumers are I5c;
+RefreshHomeAddress remains absent and B13-deferred. Admission is unchanged;
+the terminal/cancellation rules retain the same slot through the entire worker.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains
@@ -3361,8 +3373,9 @@ and the final blocking revalidation read, both invite expiry and remaining
 budget must still validate immediately before its sole reply (I4a below).
 The child revalidates protected activation G/O and release UID before each effect;
 B6 rechecks operation inside its existing lock. Native uncertainty seals the slot
-until terminal reply/cancellation acknowledgement. No public call can select this
-private mount before I5.
+until terminal reply/cancellation acknowledgement. I5a public calls select this
+existing mount with unchanged admission; Linux CLI consumers are I5b and bridge
+consumers are I5c. RefreshHomeAddress remains absent and B13-deferred.
 I1 supplies `helper.generations` (`helper_generation.HomeGenerationReader`) as the
 concrete protected reader. Track A's additive `HomeActivationStore.current()` reads
 and pins the current receipt without an expected generation, preserving all existing
@@ -3505,10 +3518,12 @@ rate limit. Recovery mints nothing; only a later separately authorized
 IssueInvite creates fresh authority. Returned results contain no operation IDs
 or invitation/key material.
 
-I3b privately mounts the two zero-input methods behind the closed public gate.
-They share I3a's native fresh CheckAuthorization capture, B8 binding and single
-helper mutation slot through worker settlement. The original monotonic deadline
-is passed unchanged to the fixed child and B11; auth consumes that same 120-second
+I3b mounts the two zero-input methods; I5a exposes them with the other five
+lifecycle/invite methods on the public helper with unchanged admission. Linux CLI
+consumers are I5b and bridge consumers are I5c; RefreshHomeAddress remains absent
+and B13-deferred. They share I3a's native fresh CheckAuthorization capture, B8
+binding and single helper mutation slot through worker settlement. The original
+monotonic deadline is passed unchanged to the fixed child and B11; auth consumes that same 120-second
 budget. `helper_invite_backend.HelperInviteBackend` derives B1 config and public
 CA from the current protected activation binding, checks their digests/custody,
 and obtains the connector generation from existing B10 status. A safely absent
@@ -3535,9 +3550,9 @@ recover != True remains partial_cleanup/cancelled/uncertain. No audit vocabulary
 or journal meaning changes. StatusV2 projects only existing invite/cleanup
 observations, pinned to the authenticated UID and activation G/O; B15 applies
 their monotonic age/staleness. Missing observations after restart or binding
-drift remain unknown. Public METHODS, introspection and dispatch still exclude
-both methods until I5. I4a privately mounts IssueInvite as specified below;
-B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
+drift remain unknown. I5a includes both methods in public METHODS, introspection
+and dispatch; Linux CLI wiring follows in I5b, with only the existing bridge
+commands wired in I5c. I4a mounts IssueInvite as specified below; B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
 
 I4a mounted issuance transport (manager T1–T4):
@@ -3578,7 +3593,8 @@ I4a mounted issuance transport (manager T1–T4):
   text or stderr. Child stderr remains DEVNULL. Error mapping uses categories,
   never frame representations. StatusV2 retains only existing invite phase and
   nonsecret expiry fields; connector receives only digest/deadline via B10.
-  Public METHODS/introspection/dispatch still exclude IssueInvite until I5.
+  I5a exposes IssueInvite in public METHODS/introspection/dispatch; Linux CLI/bridge
+  consumers are wired in I5b/I5c.
 
 **B12 — Bounded recorded-node cleanup.**
 At approval record control-plane StableID → Headscale node ID using B2-style
@@ -3730,7 +3746,8 @@ Only the timer receives its manager-owned Install link; receipt membership and
 B5 remain unchanged. Ready admission does not require this timer link: policy
 expiry remains the gate. `_unit_wants_names` and the B17 replacement veto remain
 unchanged; Turn off must remove the timer link before replacement. Unit files remain dpkg
-payload after Turn off. Public methods and the public gate remain closed until I5.
+payload after Turn off. I5a opens the helper public lifecycle/invite gate;
+Linux CLI/bridge consumers follow in I5b/I5c.
 
 **B18 dependency:** a package upgrade with a different shipped route artifact
 makes renewal refuse until B18 repair/upgrade rewraps it. I4b-1 adds no upgrade
@@ -3838,7 +3855,9 @@ the policy/provision journal keeps P1's recovery semantics.
 If expiry or the original B9 deadline lapses during the final blocking read,
 the succeeded outcome and consumed issuer journal remain; append uncertain
 before the sole uncertain error, without delivering invite text.
-No extra public method is exported.
+B16 adds no audit-specific public method. I5a exposes the seven lifecycle/invite
+methods with unchanged admission; Linux CLI consumers are I5b and bridge consumers
+are I5c. RefreshHomeAddress remains absent and B13-deferred.
 The closed event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
@@ -3889,9 +3908,10 @@ the fresh-auth ReplaceFailed owner, which supplies an explicit expected
 release UID and exact observed generation. The installer captures the complete fixed
 inventory, binds the derived validated release owner, then publishes/fsyncs the new
 `replacement-intent@2` at `install-transaction.json` before handing off to the existing
-per-intent recovery owner. The private helper captures that inventory/journal
-generation before authentication and revalidates it before dispatch; no public
-helper or operator CLI selects this capability until I5.
+per-intent recovery owner. The helper captures that inventory/journal
+generation before authentication and revalidates it before dispatch. I5a exposes
+public ReplaceFailed; Linux operator CLI selection follows in I5b. I5c wires only
+the existing bridge commands.
 An existing exact v1 journal already has its first intent: the entry validates its
 expected generation/release UID and resumes that journal without converting it.
 This entry independently revalidates every remaining original/quarantined config's

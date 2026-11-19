@@ -265,9 +265,10 @@ def venue(tmp_path: Any, request: Any, monkeypatch: Any) -> Any:
 @pytest.mark.parametrize('method,interface,body,fd,category', [
     ('ApprovePending', INTERFACE, GLib.Variant('(s)', ('secret-option',)), False, 'invalid-request'),
     ('ApprovePending', INTERFACE, None, True, 'invalid-request'),
+    *[(method, INTERFACE, GLib.Variant('(s)', ('extra',)), False, 'invalid-request') for method in
+      ('Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite', 'RetryPolicyRenewal')],
     *[(method, INTERFACE, None, False, 'unknown-method') for method in
-      ('EnableOwnServer', 'IssueOwnServerInvite', 'Enable', 'Disable', 'ReplaceFailed',
-       'RefreshHomeAddress', 'IssueInvite', 'RetryPolicyRenewal', 'Bogus')],
+      ('EnableOwnServer', 'IssueOwnServerInvite', 'RefreshHomeAddress', 'Bogus')],
     ('ApprovePending', 'untrusted.Override', None, False, 'unknown-method'),
     ('ApprovePending', INTERFACE, GLib.Variant('(a{ss})', ({'env': 'SECRET'},)), False, 'invalid-request'),
 ])

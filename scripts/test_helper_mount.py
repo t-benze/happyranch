@@ -1,4 +1,4 @@
-"""I3a/I3b private mounts with test-side native transport seams, no host bus."""
+"""Public helper mounts with test-side native transport seams, no host bus."""
 from __future__ import annotations
 
 import importlib.util
@@ -10,6 +10,7 @@ import threading
 import time
 import ssl
 import hashlib
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -30,6 +31,92 @@ class Variant:
 
     def unpack(self) -> Any:
         return self.value
+
+
+PUBLIC_LIFECYCLE = {
+    'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
+    'RetryPolicyRenewal': 'retry-policy-renewal', 'IssueInvite': 'issue-invite',
+    'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite',
+}
+
+
+@pytest.mark.parametrize('method,action', PUBLIC_LIFECYCLE.items())
+def test_public_lifecycle_introspection_and_fresh_auth(mount: Any, method: str, action: str) -> None:
+    v = mount
+    methods = {node.attrib['name']: node for node in ET.fromstring(v.h.INTROSPECTION).findall('.//method')}
+    assert method in v.h.METHODS and method in methods
+    assert [arg.attrib for arg in methods[method]] == [{'name': 'result', 'type': 's', 'direction': 'out'}]
+    policy = ET.parse(Path(__file__).resolve().parents[1] /
+                      'packaging/linux/polkit/ai.happyranch.remote-access.policy')
+    defaults = policy.find('.//action[@id="ai.happyranch.remote-access.' + action + '"]/defaults')
+    assert {node.tag: node.text for node in defaults} == {
+        'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin'}
+    v.message.get_member = lambda: method
+    ids = []
+    for _ in range(2):
+        v.helper._dispatch(v.message)
+        capture = v.helper.inflight
+        assert capture is not None and capture.method == method and capture.uid == 1000
+        assert capture.deadline == 220  # Auth never exceeds its original 120 seconds.
+        call = v.helper.authority.call.call_args
+        assert call.args[0] == 'CheckAuthorization'
+        subject, actual, details, flags, cancellation = call.args[1].unpack()
+        assert subject[0] == 'system-bus-name' and subject[1]['name'].unpack() == ':1.42'
+        assert actual == 'ai.happyranch.remote-access.' + action and flags == 1
+        assert details and cancellation
+        ids.append(cancellation)
+        v.helper._authorized(v.helper.authority, Variant('', ((False, False, {}),)), capture)
+        assert v.helper.inflight is None
+    assert ids[0] != ids[1] and v.helper.authority.call.call_count == 2
+    assert not v.effects and not v.reader.effect.called and not v.helper.audit.path.exists()
+    assert not v.helper._reply.called and v.helper._error.call_count == 2
+
+
+@pytest.mark.parametrize('method', PUBLIC_LIFECYCLE)
+@pytest.mark.parametrize('case,category', [
+    ('input', 'invalid-request'), ('fd', 'invalid-request'), ('interface', 'unknown-method'),
+    ('unknown', 'unknown-method'), ('sender', 'invalid-request'),
+    ('uid', 'wrong-uid'), ('owner', 'owner_mismatch'), ('busy', 'busy'), ('arrival', 'busy'),
+    ('denied', 'denied'), ('cancelled', 'denied'), ('timeout', 'expired'),
+])
+def test_public_lifecycle_refusal_has_no_effect_or_audit(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str, category: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    sentinel = object() if case == 'busy' else None
+    v.helper.inflight = sentinel
+    if case == 'input': v.message.get_signature = lambda: 's'
+    if case == 'fd': v.message.get_unix_fd_list = lambda: SimpleNamespace(get_length=lambda: 1)
+    if case == 'interface': v.message.get_interface = lambda: 'untrusted.Interface'
+    if case == 'unknown': v.message.get_member = lambda: 'RefreshHomeAddress'
+    if case == 'sender': v.message.get_sender = lambda: 'caller.selected'
+    if case == 'uid':
+        # Native credential lookup succeeds, but the B8 release-owner pin differs.
+        v.helper.connection.call_sync.return_value = Variant('', (1001,))
+        monkeypatch.setattr(v.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+        v.helper.release_uid = 1000
+    if case == 'owner':
+        def refuse_owner(uid: int) -> None:
+            raise v.h.OwnerRefused('owner_mismatch')
+        monkeypatch.setattr(v.h, 'bootstrap_owner', refuse_owner)
+    v.helper._dispatch(v.message, busy_on_arrival=case == 'arrival')
+    if case in ('denied', 'cancelled', 'timeout'):
+        capture = v.helper.inflight
+        assert capture is not None and v.helper.authority.call.call_count == 1
+        if case == 'timeout':
+            v.helper.clock = lambda: capture.deadline
+            v.helper._expired()
+            assert v.helper.inflight is capture  # Cancellation still owns the slot.
+            assert v.helper.authority.call.call_args.args[0] == 'CancelCheckAuthorization'
+            v.helper._authorized(v.helper.authority, Variant('', ((True, False, {}),)), capture)
+        else:
+            # Polkit marks a dismissed challenge as not authorized, challengeable.
+            v.helper._authorized(v.helper.authority, Variant('', ((False, case == 'cancelled', {}),)), capture)
+    else:
+        assert not v.helper.authority.call.called
+    v.helper._error.assert_called_once_with(v.message, category)
+    assert v.helper.inflight is sentinel and not v.helper._reply.called
+    assert not v.effects and not v.reader.effect.called and not v.helper.audit.path.exists()
 
 
 @pytest.fixture
@@ -85,7 +172,7 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     message = SimpleNamespace(get_member=lambda: 'Disable', get_sender=lambda: ':1.42',
         get_unix_fd_list=lambda: None, get_interface=lambda: h.INTERFACE, get_signature=lambda: '')
     def admit() -> None:
-        helper._start_lifecycle(message)
+        helper._dispatch(message)
         capture = helper.inflight
         helper._authorized(helper.authority, Variant('', ((True, False, {}),)), capture)
     return SimpleNamespace(h=h, helper=helper, reader=reader, effects=effects, admit=admit, message=message)
@@ -157,7 +244,7 @@ def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: py
 
 @pytest.mark.parametrize('method,step,outcome,setup', [('Enable', 'enable', 'ready', 'ready'),
     ('Enable', 'enable', 'prepared', 'in_progress'), ('ReplaceFailed', 'replace', 'off', 'off')])
-def test_lifecycle_private_mount_fresh_auth_and_audit(
+def test_lifecycle_public_mount_fresh_auth_and_audit(
         mount: Any, method: str, step: str, outcome: str, setup: str) -> None:
     v = mount
     v.message.get_member = lambda: method
@@ -166,9 +253,6 @@ def test_lifecycle_private_mount_fresh_auth_and_audit(
         assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['event'] == 'activation'
         return {'outcome': outcome, 'residue': []}
     v.reader.effect.side_effect = effect
-    v.helper._dispatch(v.message)
-    v.helper._error.assert_called_once_with(v.message, 'unknown-method')
-    assert not v.helper.authority.call.called and not v.reader.effect.called
     for _ in range(2):
         v.admit()
         assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
@@ -178,8 +262,7 @@ def test_lifecycle_private_mount_fresh_auth_and_audit(
     assert v.helper.authority.call.call_count == 2
     assert v.helper.authority.call.call_args.args[1].unpack()[1] == (
         'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method])
-    assert all(name not in v.h.METHODS and name not in v.h.INTROSPECTION
-               for name in ('Enable', 'ReplaceFailed', 'Disable'))
+    assert not v.helper._error.called
 
 
 def test_auth_loss_retains_slot_until_terminal_ack(mount: Any) -> None:
@@ -196,14 +279,9 @@ def test_auth_loss_retains_slot_until_terminal_ack(mount: Any) -> None:
 
 
 @pytest.mark.parametrize('case', ['complete', 'refused', 'lost', 'audit_late', 'validation_late', 'denied', 'uid'])
-def test_retry_policy_private_auth_slot_audit_deadline(mount: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+def test_retry_policy_public_auth_slot_audit_deadline(mount: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     v = mount
     v.message.get_member = lambda: 'RetryPolicyRenewal'
-    v.helper._dispatch(v.message)
-    v.helper._error.assert_called_once_with(v.message, 'unknown-method')
-    v.helper._error.reset_mock()
-    assert 'RetryPolicyRenewal' not in v.h.METHODS and 'RetryPolicyRenewal' not in v.h.INTROSPECTION
-
     def renew(expected: str, deadline: float, commit: Any) -> dict:
         assert expected == 'protected-generation-and-operation' and deadline == 220
         assert v.helper.inflight and json.loads(v.helper.audit.path.read_text().splitlines()[-1])['event'] == 'policy_renew'
@@ -214,7 +292,7 @@ def test_retry_policy_private_auth_slot_audit_deadline(mount: Any, monkeypatch: 
             raise OSError('synthetic lost child reply')
         return {'outcome': 'refused' if case == 'refused' else 'complete'}
     v.reader.retry_policy = Mock(side_effect=renew)
-    v.helper._start_lifecycle(v.message)
+    v.helper._dispatch(v.message)
     capture = v.helper.inflight
     subject, action, _, flags, _ = v.helper.authority.call.call_args.args[1].unpack()
     assert subject[1]['name'].unpack() == ':1.42'
@@ -735,9 +813,7 @@ def test_invite_mount_current_operation_and_audit(invite_mount: Any, monkeypatch
     assert call[0][1]['name'].unpack() == ':1.42'
     assert call[1] == 'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method]
     assert call[3] == 1 and call[4]
-    assert method not in v.h.METHODS and method not in v.h.INTROSPECTION
-    v.helper._dispatch(v.message)
-    v.helper._error.assert_called_with(v.message, 'unknown-method')
+    assert method in v.h.METHODS
 
 
 @pytest.mark.parametrize('method', ['CancelInvite', 'RecoverInvite'])
@@ -997,9 +1073,7 @@ def test_issue_invite_single_reply_and_secrecy(issue_mount: Any, monkeypatch: py
     assert frame['invite'] not in repr(v.helper.lifecycle_result) + repr(v.helper.invite_observation)
     assert frame['invite'] not in v.journal.read_text() + v.helper.audit.path.read_text() + caplog.text
     assert frame['invite'] not in ''.join(capsys.readouterr())
-    assert 'IssueInvite' not in v.h.METHODS and 'IssueInvite' not in v.h.INTROSPECTION
-    v.helper._dispatch(v.message)
-    v.helper._error.assert_called_with(v.message, 'unknown-method')
+    assert 'IssueInvite' in v.h.METHODS
     call = v.helper.authority.call.call_args.args[1].unpack()
     assert call[0][1]['name'].unpack() == ':1.42'
     assert call[1] == 'ai.happyranch.remote-access.issue-invite' and call[3] == 1
@@ -1186,8 +1260,9 @@ def test_issue_invite_real_child_frame_is_bounded_and_validated(issue_mount: Any
     if case == 'alphabet': frame['invite'] = 'hrinvite2:AA='
     if case == 'too_long': frame['invite'] += 'A'
     if case == 'bool_expiry': frame['expires_at'] = True
-    if case == 'expired': frame['expires_at'] = int(time.time())
-    if case == 'future_expiry': frame['expires_at'] = int(time.time()) + 301
+    # Keep invalid expiry fixtures well clear of child/validation clock boundaries.
+    if case == 'expired': frame['expires_at'] = int(time.time()) - 3600
+    if case == 'future_expiry': frame['expires_at'] = int(time.time()) + 3600
     raw = json.dumps(frame, separators=(',', ':')) + '\n'
     if case in ('frame_at_limit', 'frame_limit'):
         limit = 6144 if case == 'frame_at_limit' else 6145
