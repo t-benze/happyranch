@@ -47,6 +47,7 @@ class ClientModel:
         self.health_finish = None
         self.confirmation = 0
         self.confirmation_document = None
+        self.confirming_target, self.host_prompt_document = False, None
         self.load_succeeded = False
         self.workers = set()
         self.worker_lock = threading.Lock()
@@ -114,6 +115,8 @@ class ClientModel:
         self.observation = "known"
         self.active_ref, self.save_intent = None, False
         self.saved_access = "notSaved"
+        # Reserve across paste, worker decoding and the later target response.
+        self.confirming_target = True
         self.changed("validating")
         def pasted(text: str | None) -> None:
             if not self.valid(token):
@@ -138,6 +141,7 @@ class ClientModel:
     def consent(self, token: int, invite: object, consent: bool, save: bool = False) -> None:
         if not self.valid(token):
             return
+        self.confirming_target = False
         if not consent:
             self.stop()
             return
@@ -384,6 +388,10 @@ class ClientModel:
             self.changed("connected")
 
     def confirm_stop(self, finish: object, document: object = None) -> None:
+        # Native runtime controls bypass Requests, including its mutation slot.
+        if self.host_prompt_document is not None:
+            finish(None, "busy", "none")
+            return
         token = self.token
         self.confirmation_document = self.document if document is None else document
         self.confirmation += 1
@@ -413,6 +421,7 @@ class ClientModel:
         self.stop(failed=code)
 
     def stop(self, finish: object = None, failed: str | None = None) -> None:
+        self.confirming_target = False
         if self.saving:
             if self.save_stop is None:
                 self.token += 1

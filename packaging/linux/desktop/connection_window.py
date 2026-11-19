@@ -467,7 +467,8 @@ class ConnectionWindow:
             elif command in ("client.acceptInvite", "client.retry"):
                 if model.cleanup == "incomplete":
                     finish(None, "outcomeUnknown", "unknown")
-                elif self.client.prompt or model.storage_busy or model.session or model.stage not in ("idle", "failed"):
+                elif (self.client.prompt or model.host_prompt_document is not None or model.storage_busy
+                      or model.session or model.stage not in ("idle", "failed")):
                     finish(None, "busy")
                 else:
                     model.accept(self.client_document)
@@ -562,15 +563,21 @@ class ConnectionWindow:
             else:
                 finish(None, "busy")
             return
-        if method in _contract.HOST_MUTATIONS and self.client.prompt:
+        mutation = method in _contract.HOST_MUTATIONS
+        model = self.client.model
+        if mutation and (self.client.prompt or model.confirming_target or model.host_prompt_document is not None):
             finish(None, "busy")
             return
         self.busy = True
+        if mutation:
+            model.host_prompt_document = self.client_document
         waiters = [] if method == "Status" else None
         self.host_status_waiters = waiters
 
         def complete(*outcome: object) -> None:
             self.busy = False
+            if model.host_prompt_document is self.client_document:
+                model.host_prompt_document = None
             self.host_status_waiters = None
             finish(*outcome)
             if waiters is not None:
@@ -579,7 +586,6 @@ class ConnectionWindow:
                 waiters.clear()
 
         generation = self.generation
-        mutation = method in _contract.HOST_MUTATIONS
         acknowledged = False
 
         def current() -> bool:
@@ -673,6 +679,8 @@ class ConnectionWindow:
     def detach(self) -> None:
         self.active = False
         self.generation += 1
+        if self.client.model.host_prompt_document is self.client_document:
+            self.client.model.host_prompt_document = None
         if self.host_status_waiters is not None:
             self.host_status_waiters.clear()
             self.host_status_waiters = None

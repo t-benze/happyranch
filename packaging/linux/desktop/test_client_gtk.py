@@ -10,12 +10,14 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gio, GLib, Gtk
 
+import client_ui as client_owner
 from client_ui import ClientUI
 from connection_window import ConnectionWindow
 from test_client_model import Session
@@ -339,6 +341,121 @@ class GTKTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual((result["effect"], result["host"]["observation"]), ("confirmed", "unavailable"))
             bus.status_error = None
+
+            def prompt_conflict(command):
+                calls = list(bus.calls)
+                start(command)
+                self.pump(lambda: bool(bus.held) or evaluate("return window.hostError!==null;"))
+                self.assertEqual(evaluate("return window.hostError;"),
+                                 dict(code="busy", effect="none", recovery="refresh"),
+                                 "pending Client confirmation must refuse Host authorization before dispatch")
+                self.assertEqual(bus.calls, calls)
+
+            # Cancelling the initial paste must release the same reservation.
+            self.assertIsNone(outcome("client.acceptInvite")[1])
+            self.ui.prompt.response(Gtk.ResponseType.CANCEL)
+            self.pump(lambda: self.ui.model.stage == "idle")
+            self.assertIsNone(outcome("host.approveDevice")[1])
+            for ending in ("cancel", "failure", "detach"):
+                entered, release = threading.Event(), threading.Event()
+                invite = SimpleNamespace(home_id="synthetic-home", control_plane_id="synthetic-control",
+                    home_endpoint="synthetic.home:443", ca_der=b"synthetic-DER", expires_at=time.time() + 120)
+                def decode(_text):
+                    entered.set()
+                    if not release.wait(10):
+                        raise AssertionError("held decoder was not released")
+                    if ending == "failure":
+                        raise client_owner._model._native.ClientError("invalidInvite")
+                    return invite
+                bus.calls.clear()
+                bus.hold = True
+                try:
+                    with patch.object(client_owner._model._native, "decode_invite", decode):
+                        self.assertIsNone(outcome("client.acceptInvite")[1])
+                        entry = next(w for w in self.ui.prompt.get_content_area().get_children()
+                                     if isinstance(w, Gtk.Entry))
+                        entry.set_text("synthetic-invite")
+                        self.ui.prompt.response(Gtk.ResponseType.OK)
+                        self.pump(entered.is_set)
+                        self.pump(lambda: not window.requests.mutating)
+                        self.assertIsNone(self.ui.prompt)
+                        self.assertEqual(self.ui.model.stage, "validating")
+                        for command in ("host.approveDevice", "host.rejectDevice", "host.revokeDevice"):
+                            prompt_conflict(command)
+                        self.assertFalse(window.busy)
+                        if ending == "detach":
+                            # A replacement can authorize immediately; the old
+                            # worker must never open its late confirmation.
+                            old_window = window
+                            window.detach()
+                            window = ConnectionWindow(self.app, None, prefix, self.ui.tr, self.ui)
+                            self.addCleanup(window.close)
+                            self.pump(lambda: window.hello_seen)
+                            bus = HostBus()
+                            window.connection = bus
+                            bus.hold = True
+                            start("host.approveDevice")
+                            self.pump(lambda: len(bus.held) == 1)
+                            old_window.close()
+                            stopped = []
+                            self.ui.model.confirm_stop(lambda *args: stopped.append(args))
+                            self.assertEqual(stopped, [(None, "busy", "none")])
+                            self.assertIsNone(self.ui.prompt)
+                        release.set()
+                        if ending == "detach":
+                            self.pump(lambda: not self.ui.model.workers)
+                            drained = []
+                            GLib.idle_add(lambda: (drained.append(True), False)[1])
+                            self.pump(lambda: bool(drained))
+                            self.assertIsNone(self.ui.prompt)
+                            self.assertEqual(self.ui.model.stage, "idle")
+                            bus.hold = False
+                            bus.held.pop()()
+                            self.pump(lambda: evaluate("return window.hostReply!==null;"))
+                            self.assertEqual([c[3] for c in bus.calls], ["ApprovePending", "Status"])
+                        else:
+                            self.pump(lambda: self.ui.prompt is not None)
+                            self.assertFalse(window.busy)
+                            if ending == "cancel":
+                                self.assertEqual(self.ui.prompt.get_title(), "Confirm computer")
+                                prompt_conflict("host.approveDevice")
+                                self.ui.prompt.response(Gtk.ResponseType.CANCEL)
+                                self.pump(lambda: self.ui.model.stage == "idle")
+                            else:
+                                self.assertEqual(self.ui.model.stage, "failed")
+                                self.assertIn("Invite is invalid", self.ui.prompt.get_property("text"))
+                                self.ui.prompt.response(Gtk.ResponseType.CLOSE)
+                finally:
+                    release.set()
+                bus.hold = False
+                bus.calls.clear()
+                self.assertIsNone(outcome("host.rejectDevice")[1])
+                self.assertEqual([c[3] for c in bus.calls], ["RejectPending", "Status"])
+
+            # Host-first: web mutations and native runtime stop controls cannot
+            # open a Client confirmation while interactive authorization waits.
+            bus.calls.clear()
+            bus.hold = True
+            start("host.approveDevice")
+            self.pump(lambda: len(bus.held) == 1)
+            self.assertEqual(outcome("client.acceptInvite")[1]["code"], "busy")
+            self.ui.model.changed("joining")
+            self.assertEqual(outcome("client.cancelAttempt")[1]["code"], "busy")
+            self.assertEqual(self.ui.model.stage, "joining")
+            self.ui.model.changed("idle")
+            stopped = []
+            self.ui.model.confirm_stop(lambda *args: stopped.append(args))
+            self.assertEqual(stopped, [(None, "busy", "none")])
+            self.assertIsNone(self.ui.prompt)
+            self.assertFalse(self.ui.model.hold)
+            bus.hold = False
+            bus.held.pop()()
+            self.pump(lambda: not window.busy)
+            self.ui.model.confirm_stop(lambda *args: stopped.append(args))
+            self.assertIsNotNone(self.ui.prompt)
+            self.ui.prompt.response(Gtk.ResponseType.CANCEL)
+            self.assertEqual(len(stopped), 2)
+
             evaluate("window.hostEvents=[];window.stopHost=happyranchConnection.on('host.stateChanged',v=>hostEvents.push(JSON.parse(v)));return null;")
             self.pump(lambda: evaluate("return window.hostEvents.length>0;"))
             first = evaluate("return window.hostEvents.at(-1);")

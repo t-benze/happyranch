@@ -369,7 +369,10 @@ The packaged connection bridge also wires Linux Host Status, NextDevice,
 ApprovePending, RejectPending and RevokeSelected on one private system-bus
 connection. All calls have zero inputs; the three mutations use genuine polkit
 authorization with a 122-second transport timeout. A mutation acknowledgement
-is followed by Status; device lists are never predicted. Host event subscribers
+is followed by Status; device lists are never predicted.
+Host mutations return `busy` while Client paste/target confirmation is pending,
+including asynchronous invite decoding. Client confirmations also return `busy`
+during Host authorization; conflicting prompts are never queued. Host event subscribers
 receive full nonsecret observations with a three-second visible-window poll;
 unsubscribe and document teardown stop delivery. Fingerprints stay native;
 bounded comparison metadata follows the closed v1 projection. A lost mutation
