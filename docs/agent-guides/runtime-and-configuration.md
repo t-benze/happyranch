@@ -109,6 +109,21 @@ The post-terminal journal writer records ended producers without clearing unknow
 See [the lifecycle contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 This source change grants no restart, deploy or historical-row repair.
 
+## Memory compaction defaults
+
+Org `org/config.yaml` uses `memory_compaction.enabled: true` and
+`auto_trigger_entry_count: 150` when those keys or the section are absent.
+Unchanged defaults are `salience_floor: 10`, `stale_days: 45`,
+`superseded_grace_days: 7` and `max_evictions_per_run: 25`. Explicit
+`enabled: false` disables manual apply and automatic sweeps; explicit threshold
+zero disables automatic sweeps alone. Dry-run remains available. Ordinary adds
+and dream reflections trigger at/above the file threshold, including evicted
+files, in worker threads. Updates and inherited Instill imports bypass it.
+Each persisted eviction uses the existing `memory_lifecycle_changed` audit with
+`source: compaction` and the manual payload shape. Optional sweep/audit failures
+warn without aborting the add or suppressing `memory_added`. This does not enable
+dreaming or change live org configuration. See the [memory retirement spec](../specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md#memory-compaction-and-retirement-thr-366-pr-b).
+
 ## Graceful daemon stop (THR-357 Fix 3)
 
 On TERM, Uvicorn bounds its pre-lifespan connection/task drain to 5 seconds.

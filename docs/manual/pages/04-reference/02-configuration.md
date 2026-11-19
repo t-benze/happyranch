@@ -107,6 +107,29 @@ happyranch dreams list   --org <slug> [--agent <name>] [--limit 20] [--json]
 happyranch dreams show   --org <slug> DREAM-NNN [--json]
 ```
 
+## Memory compaction
+
+Per-org `org/config.yaml` defaults (also used when the section is absent):
+
+```yaml
+memory_compaction:
+  enabled: true
+  salience_floor: 10
+  stale_days: 45
+  superseded_grace_days: 7
+  max_evictions_per_run: 25
+  auto_trigger_entry_count: 150
+```
+
+Explicit `enabled: false` disables manual apply and automatic compaction;
+`auto_trigger_entry_count: 0` disables automatic triggering alone. Dry-run remains
+available. Ordinary memory adds and dream reflections trigger a best-effort sweep
+at/above the file threshold (including evicted files); updates and inherited
+imports do not. Each eviction is reversible, preserves the note and records the
+same `memory_lifecycle_changed` audit as manual compaction, with
+`source: compaction`. A sweep or audit failure warns without failing the add or
+suppressing its `memory_added` audit. This setting does not enable dreaming.
+
 ## Working hours
 
 Working hours wake selected agents on a configured cadence so they perform their standing duties without the founder dispatching each one. A wake is a **trigger, not the work**: on each wake the agent reads its own `## Routine Tasks` checklist (below) and self-dispatches one normal root task per routine.
