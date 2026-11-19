@@ -1,6 +1,6 @@
-"""Inert B10 adapter for the serving connector's ONE pinned pairing owner.
+"""B10 adapter for the serving connector's ONE pinned pairing owner.
 
-Serial integration supplies this capability from supervisor._HelperOperations;
+Supervisor._HelperOperations supplies this capability over its serving manager;
 this module constructs no manager/store/listener and performs no root minting.
 The caller holds that owner's mutation_lock across control ready/commit. Each
 manager method independently checks CAS and the original authorization deadline

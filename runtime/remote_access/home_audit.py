@@ -1,6 +1,6 @@
 """B16 retained audit; callers must await intent persistence before effects.
 
-The helper brackets existing device effects; lifecycle effects remain deferred.
+The helper brackets device effects and its private lifecycle effect boundaries.
 Identifiers are local audit correlation labels, never node identities, keys, digests, paths, or arbitrary diagnostics.
 An I/O failure may follow a partial append/fsync: it never proves no effect.
 """
