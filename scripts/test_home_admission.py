@@ -168,6 +168,16 @@ def test_prepared_inventory_and_unreceipted_crash(live_venue, monkeypatch):
     assert (io.inventory().state, io.inventory().detail) == ("owned", "prepared")
     v.path(ACTIVATION_PATH).unlink()
     assert io.inventory().state == "manual-install-conflict"
+    # The fragment itself must cause drift, independent of other unknown files.
+    for path in ("/etc/happyranch/control-ca.pem", "/etc/happyranch/invite-issuer.json",
+                 "/etc/happyranch/headscale/config.yaml", "/etc/happyranch/headscale/derp.yaml",
+                 "/etc/happyranch/headscale/policy.hujson"):
+        v.path(path).unlink()
+    v.path("/etc/happyranch/headscale").rmdir()
+    v.path("/etc/happyranch/empty-ca-directory").rmdir()
+    text = installer.managed_units("source", connector_config=json.loads(v.path(CONFIG_MEMBERS[0]).read_bytes()))[UNITS[1]]
+    put(v.path("/etc/systemd/system/" + UNITS[1]), text.encode(), 0o644)
+    assert io.inventory().state == "manual-install-conflict"
     assert not mutating(v)
 
 

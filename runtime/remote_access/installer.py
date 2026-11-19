@@ -416,6 +416,13 @@ class ManagedInstaller:
                     self._inventory_files("etc/happyranch/headscale", {
                         name: (self._headscale_owner, 0o600, False)
                         for name in (*headscale.CONFIG_FILES, *headscale.LEAF_FILES, "policy.hujson")})
+                else:
+                    # No B1 binding grants an exception to inert Headscale policy.
+                    # In particular, a lone home fragment remains crash drift.
+                    try:
+                        self._headscale_inventory()
+                    except headscale.HeadscaleServiceError:
+                        raise InstallerError(str(self.root / _UNIT_DIR / headscale.UNIT)) from None
             config_metadata = {name: (config_owner, (0o600, 0o640, 0o644), False)
                                for name in _QUARANTINE_CONFIGS}
             if quarantine_phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
