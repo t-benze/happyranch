@@ -785,7 +785,7 @@ async def stop_job(
     task_id: str | None = None, session_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
-    """200 acknowledges a real attributed Stop signal request, never exit."""
+    """Request owned Stop, or terminalize a positively proven dead retained job."""
     record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(404, detail={'code': 'unknown_job', 'job_id': job_id})
@@ -793,8 +793,13 @@ async def stop_job(
         raise HTTPException(409, detail={'code': 'not_running', 'status': record.status.value})
     _enforce_session_or_bearer(record, has_bearer=has_bearer,
         task_id=task_id, session_id=session_id, org=org)
-    r = _stop_disposition(org, job_id)
     stopped_by = 'founder' if has_bearer else 'agent'
+    try:
+        r = _stop_disposition(org, job_id)
+    except HTTPException as exc:
+        if not isinstance(exc.detail, dict) or exc.detail.get('code') != 'job_liveness_unknown':
+            raise
+        return await _stop_dead_retained_job(org, record, stopped_by, refusal=exc)
     from runtime.daemon.jobs_runner import _signal_registered_job
     try:
         issued = _signal_registered_job(r, f'{stopped_by}_stop')
@@ -818,6 +823,61 @@ async def stop_job(
         raise HTTPException(503, detail=dict(code='job_stop_unavailable', job_id=job_id,
             request_issued=True, unavailable_code='request_audit_failed')) from exc
     return {'ok': True, 'id': job_id}
+
+
+async def _stop_dead_retained_job(org: OrgDep, record: JobRecord, actor: str, *, refusal: HTTPException) -> dict:
+    from runtime.daemon.job_death import prove_job_dead
+    from runtime.daemon.jobs_runner import _RUNNER_TASKS, _require_job_attachment
+    from runtime.runtime import daemon_home
+
+    db, slug, root, home = org.db, org.slug, org.root, daemon_home()
+    store = getattr(db, '_task_pause_store', None)
+    if store is None or (db, record.id) in _RUNNER_TASKS:
+        raise refusal
+    identity = await asyncio.to_thread(prove_job_dead, home, root, record.id)
+    if identity is None:
+        raise refusal
+    # The existing root/DB terminal writer serializes against finalizers and
+    # Pause. Unknown producer/journal/hold evidence is deliberately untouched.
+    with store.writer(record.task_id):
+        _require_job_attachment(db, slug)
+        if org.db is not db or org.slug != slug or org.root != root:
+            raise refusal
+        try:
+            _stop_disposition(org, record.id)
+        except HTTPException as current:
+            if not isinstance(current.detail, dict) or current.detail.get('code') != 'job_liveness_unknown':
+                raise
+        else:
+            raise refusal  # A newly registered owner keeps its existing path.
+        if (db, record.id) in _RUNNER_TASKS or db.get_job(record.id) != record:
+            raise refusal
+        # Final bounded synchronous proof is immediately adjacent to the CAS;
+        # no await or saved success can cross the write boundary.
+        if prove_job_dead(home, root, record.id) != identity:
+            raise refusal
+        if not db._transition_job_to_terminal_uncommitted(record.id, status=JobStatus.FAILED,
+                exit_code=None, finished_at=_now_iso(), duration_ms=None,
+                stdout_head=record.stdout_head, stderr_head=record.stderr_head,
+                reason='orphaned_process_dead'):
+            raise refusal  # A racing winner owns all terminal side effects.
+        db.insert_audit_log_uncommitted(record.task_id, actor, 'job_run_failed',
+            dict(script_request_id=record.id, exit_code=None, duration_ms=None,
+                 reason='orphaned_process_dead'))
+    logging.getLogger(__name__).warning(
+        'Job %s failed: orphaned_process_dead; exit_code unknown; no signal issued', record.id)
+    try:
+        await org.event_bus.publish(job_topic(record.id), dict(kind='terminal', status='failed',
+            exit_code=None, duration_ms=None, reason='orphaned_process_dead'))
+    except Exception:
+        logging.getLogger(__name__).exception('Committed job terminal hint unavailable')
+    try:
+        _require_job_attachment(db, slug)
+        if org.db is db:
+            fire_resume_check_for_job(org, record.id)
+    except Exception:
+        logging.getLogger(__name__).exception('Committed job waiter notification unavailable')
+    return {'ok': True, 'id': record.id}
 
 
 @dual_router.post("/jobs/{job_id}/wait")

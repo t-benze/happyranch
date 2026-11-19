@@ -5,7 +5,8 @@ Run: uv run --frozen python -B -m unittest scripts.test_job_guardian -v
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
+from collections.abc import AsyncIterator
 import fcntl
 import json
 import os
@@ -400,6 +401,286 @@ with patch('os.open', side_effect=admission_open), patch('os.fsync', side_effect
                         self.assertEqual((row.status.value, row.reason), ('failed', 'spawn_failed'))
                         self.assertEqual(audits[0]['action'], 'job_run_failed')
                         self.assertEqual(json.loads(audits[0]['payload'])['reason'], 'spawn_failed')
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'Linux retained-job death proof')
+class RetainedJobStopTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        import ctypes
+        from runtime.daemon import jobs_runner
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(jobs_runner, '_JOBS_SHUTTING_DOWN', False))
+        self.stack.enter_context(patch.object(jobs_runner, '_ORCH_RESOLVER', None))
+        self.stack.enter_context(patch.object(jobs_runner, '_RESUME_MAIN_LOOP', None))
+        for name in ('_INFLIGHT', '_RUNNER_TASKS', '_KILL_REASON_OVERRIDE'):
+            self.stack.enter_context(patch.dict(getattr(jobs_runner, name), clear=True))
+        self.scratch = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix='retained-stop-')))
+        self.reaped: set[int] = set()
+        # Adopt/reap only this test's orphaned children, so zombies cannot make
+        # a positive process-group absence assertion pass accidentally.
+        libc = ctypes.CDLL(None, use_errno=True)
+        old = ctypes.c_int()
+        self.assertEqual(libc.prctl(37, ctypes.byref(old), 0, 0, 0), 0)
+        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)
+        self.addCleanup(lambda: libc.prctl(36, old.value, 0, 0, 0))
+
+    async def wait_file(self, path: Path) -> None:
+        async def wait() -> None:
+            while not path.exists():
+                await asyncio.sleep(.01)
+        await asyncio.wait_for(wait(), 10)
+
+    async def reap_pid(self, pid: int) -> None:
+        if pid in self.reaped:
+            return
+        async def wait() -> None:
+            while True:
+                try:
+                    if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                        return
+                except ChildProcessError:
+                    if not Path(f'/proc/{pid}').exists():
+                        return
+                await asyncio.sleep(.01)
+        await asyncio.wait_for(wait(), 5)
+        self.reaped.add(pid)
+
+    @asynccontextmanager
+    async def retained(self, *, member: bool = False, separate_group: bool = False) -> AsyncIterator[tuple[object, object, dict, Path]]:
+        from runtime.config import Settings
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.runtime import RuntimeDir
+        import httpx
+        root = self.scratch / str(time.monotonic_ns())
+        ready = root.with_suffix('.ready')
+        script = f"""import json,os,signal,time
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: Path({str(ready) + '.signalled'!r}).touch())
+child = os.fork() if {member!r} else 0
+if {member!r} and not child and {separate_group!r}: os.setpgid(0, 0)
+if not {member!r} or child:
+    Path({str(ready)!r}).write_text(json.dumps(dict(pid=os.getpid(), member=child)))
+while True: time.sleep(.1)
+"""
+        harness = r"""import asyncio,sys
+from pathlib import Path
+from scripts.test_agent_retirement import fixture
+from runtime.daemon.routes.jobs import _run_job_core
+from runtime.models import BlockKind,JobRecord,TaskRecord,TaskStatus
+async def main():
+    async with fixture(Path(sys.argv[1])) as (org, client):
+        org.db.insert_task(TaskRecord(id='TASK-901', brief='Synthetic retained job waiter',
+            assigned_agent='worker', team='retiring', status=TaskStatus.IN_PROGRESS,
+            current_session_id='sess-synthetic-retained'))
+        org.db.insert_job(JobRecord(id='JOB-901', task_id='TASK-901', agent_name='worker',
+            title='Synthetic retained job', rationale='Focused restart regression', script_text=sys.argv[2], interpreter='python3',
+            persistent=True, created_at='2026-11-19T00:00:00+00:00'))
+        await _run_job_core(org, job_id='JOB-901', cwd_override=None, timeout_override=None)
+        org.db.update_task('TASK-901', block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids='["JOB-901"]')
+        await asyncio.Event().wait()
+asyncio.run(main())
+"""
+        log = self.stack.enter_context((self.scratch / (root.name + '.log')).open('w+'))
+        daemon = subprocess.Popen([sys.executable, '-B', '-c', harness, str(root), script],
+            cwd=ROOT, stdout=log, stderr=log)
+        pids = None
+        state = None
+        try:
+            try:
+                await self.wait_file(ready)
+            except TimeoutError:
+                log.flush()
+                log.seek(0)
+                self.fail('synthetic launcher failed: ' + log.read())
+            pids = json.loads(ready.read_text())
+            daemon.kill()  # Actual supervising process/registration loss.
+            self.assertEqual(daemon.wait(timeout=5), -signal.SIGKILL)
+            with patch.dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(root / 'home')):
+                state = DaemonState.from_runtime(RuntimeDir(root / 'runtime'), Settings())
+                org = state.orgs['alpha']
+                self.assertEqual(org.db.recover_orphaned_running_jobs(now_iso='2026-11-19T01:00:00Z'), ['JOB-901'])
+                org.orchestrator._queue = state.queue
+                org.orchestrator._main_loop = asyncio.get_running_loop()
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(state)),
+                        base_url='http://synthetic.test', headers={'Authorization': 'Bearer synthetic-founder-token'}) as client:
+                    shown = await client.get('/api/v1/orgs/alpha/jobs/JOB-901')
+                    self.assertEqual(shown.json()['liveness'], 'job_liveness_unknown', shown.text)
+                    yield org, client, pids, ready
+        finally:
+            if daemon.poll() is None:
+                daemon.kill()
+                daemon.wait(timeout=5)
+            if pids is not None:
+                for pid in (pids['pid'], pids['member']):
+                    if not pid or pid in self.reaped:
+                        continue
+                    # waitpid proves this exact child is still ours before any
+                    # cleanup signal; never target a reaped/reused numeric ID.
+                    try:
+                        if os.waitpid(pid, os.WNOHANG)[0] == 0:
+                            os.kill(pid, signal.SIGKILL)
+                            await self.reap_pid(pid)
+                    except ChildProcessError:
+                        pass
+            if state is not None:
+                await state.close_all()
+
+    async def stop(self, org: object, client: object, *, accepted: bool) -> object:
+        before = org.db.get_job('JOB-901').model_dump()
+        journals = [tuple(r) for r in org.db.execute('SELECT * FROM task_pause_controls').fetchall()]
+        with patch('os.killpg', wraps=os.killpg) as group_signal, patch('os.kill', wraps=os.kill) as pid_signal:
+            result = await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop')
+            group_signal.assert_not_called()
+            pid_signal.assert_not_called()
+        row = org.db.get_job('JOB-901')
+        print(json.dumps(dict(route='POST /api/v1/orgs/alpha/jobs/JOB-901/stop', http=result.status_code,
+            response=result.json(), job_status=row.status.value, reason=row.reason, exit_code=row.exit_code,
+            owner_queue_size=org.orchestrator._queue._queue.qsize(), signalled=False), sort_keys=True))
+        self.assertEqual([tuple(r) for r in org.db.execute('SELECT * FROM task_pause_controls').fetchall()], journals)
+        if accepted:
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual((row.status.value, row.reason, row.exit_code), ('failed', 'orphaned_process_dead', None))
+            self.assertIsNotNone(row.finished_at)
+            queue = org.orchestrator._queue._queue
+            self.assertEqual(queue.qsize(), 1, 'existing terminal path did not wake owner')
+            audits = org.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='job_run_failed'").fetchall()
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(tuple(audits[0][:2]), ('TASK-901', 'founder'))
+            self.assertEqual(json.loads(audits[0]['payload']), dict(script_request_id='JOB-901',
+                exit_code=None, duration_ms=None, reason='orphaned_process_dead'))
+            again = await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop')
+            self.assertEqual(again.status_code, 409)
+            self.assertEqual(again.json()['detail']['code'], 'not_running')
+            self.assertEqual(queue.qsize(), 1)
+        else:
+            self.assertEqual(result.status_code, 409, result.text)
+            self.assertEqual(result.json()['detail']['code'], 'job_liveness_unknown')
+            self.assertEqual(row.model_dump(), before)
+            self.assertEqual(org.orchestrator._queue._queue.qsize(), 0)
+            self.assertFalse(org.db.execute("SELECT 1 FROM audit_log WHERE action='job_run_failed'").fetchall())
+        return result
+
+    async def test_dead_group_stop_terminalizes_and_wakes_owner(self) -> None:
+        async with self.retained() as (org, client, pids, _ready):
+            os.killpg(pids['pid'], signal.SIGKILL)
+            await self.reap_pid(pids['pid'])
+            await self.stop(org, client, accepted=True)
+
+    async def test_alive_group_stop_refuses_without_signalling(self) -> None:
+        async with self.retained() as (org, client, pids, ready):
+            await self.stop(org, client, accepted=False)
+            self.assertTrue(Path(f"/proc/{pids['pid']}").exists())
+            self.assertFalse(Path(str(ready) + '.signalled').exists())
+
+    async def test_dead_leader_surviving_member_refuses(self) -> None:
+        for separate_group in (False, True):
+            with self.subTest(separate_group=separate_group):
+                async with self.retained(member=True, separate_group=separate_group) as (org, client, pids, _ready):
+                    if separate_group:
+                        async def changed_group() -> None:
+                            while os.getpgid(pids['member']) != pids['member']:
+                                await asyncio.sleep(.01)
+                        await asyncio.wait_for(changed_group(), 2)
+                    os.kill(pids['pid'], signal.SIGKILL)
+                    await self.reap_pid(pids['pid'])
+                    self.assertTrue(Path(f"/proc/{pids['member']}").exists())
+                    await self.stop(org, client, accepted=False)
+                    # A member that moved groups still belongs to the old SID.
+                    if separate_group:
+                        os.kill(pids['member'], signal.SIGKILL)
+                        await self.reap_pid(pids['member'])
+
+    async def test_missing_invalid_identity_and_unavailable_fence_refuse(self) -> None:
+        async with self.retained() as (org, client, pids, _ready):
+            os.killpg(pids['pid'], signal.SIGKILL)
+            await self.reap_pid(pids['pid'])
+            path = org.root / 'jobs/JOB-901.err.process.json'
+            original = path.read_bytes()
+            path.unlink()  # Identity sidecar only; never a fence or hold.
+            await self.stop(org, client, accepted=False)
+            for changed in ({'job_id': 'JOB-902'}, {'start_ticks': None}, {'pid': True},
+                            {'boot_id': 'invalid'}, {'started_at': 'invalid'}):
+                with self.subTest(identity=changed):
+                    path.write_text(json.dumps(json.loads(original) | changed))
+                    await self.stop(org, client, accepted=False)
+            path.write_bytes(original)
+            with patch('runtime.daemon.job_death.sys.platform', 'darwin'):
+                await self.stop(org, client, accepted=False)
+            with patch('runtime.daemon.job_death.Path.iterdir', side_effect=OSError('synthetic census I/O')):
+                await self.stop(org, client, accepted=False)
+            with patch('runtime.daemon.job_death.Path.iterdir', side_effect=lambda *_:
+                       iter(Path('/proc') / f'entry-{i}' for i in range(65537))):
+                await self.stop(org, client, accepted=False)
+            with patch('runtime.daemon.job_fence_observation._read', side_effect=PermissionError('synthetic proc denial')):
+                await self.stop(org, client, accepted=False)
+
+    async def test_reused_pid_needs_empty_group_and_observed_fence(self) -> None:
+        from runtime.daemon.job_guardian import process_identity
+        async with self.retained() as (org, client, pids, _ready):
+            os.killpg(pids['pid'], signal.SIGKILL)
+            await self.reap_pid(pids['pid'])
+            # Real unrelated process with a different PGID/SID, synthetic old
+            # start pin: deterministic PID-reuse evidence without forcing reuse.
+            unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+            try:
+                identity = process_identity(unrelated.pid)
+                identity.update(job_id='JOB-901', pgid=unrelated.pid, sid=unrelated.pid,
+                                start_ticks=identity['start_ticks'] - 1)
+                path = org.root / 'jobs/JOB-901.err.process.json'
+                path.write_text(json.dumps(identity))
+                with patch('runtime.daemon.job_fence_observation._read', side_effect=OSError('synthetic unavailable')):
+                    await self.stop(org, client, accepted=False)
+                await self.stop(org, client, accepted=True)
+                self.assertIsNone(unrelated.poll(), 'reused unrelated PID was signalled')
+            finally:
+                unrelated.kill()
+                unrelated.wait(timeout=5)
+
+    async def test_final_proof_recheck_and_audit_rollback(self) -> None:
+        from runtime.daemon.job_death import prove_job_dead
+        async with self.retained() as (org, client, pids, _ready):
+            os.killpg(pids['pid'], signal.SIGKILL)
+            await self.reap_pid(pids['pid'])
+            path = org.root / 'jobs/JOB-901.err.process.json'
+            original = path.read_bytes()
+            calls = 0
+
+            def change_identity(*args: object) -> dict | None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    identity = json.loads(original)
+                    identity['start_ticks'] += 1
+                    path.write_text(json.dumps(identity))
+                return prove_job_dead(*args)
+
+            with patch('runtime.daemon.job_death.prove_job_dead', side_effect=change_identity):
+                await self.stop(org, client, accepted=False)
+            self.assertEqual(calls, 2, 'final proof was not recollected')
+            path.write_bytes(original)
+            before = org.db.get_job('JOB-901').model_dump()
+            with patch.object(org.db, 'insert_audit_log_uncommitted', side_effect=OSError('synthetic audit failure')):
+                with self.assertRaisesRegex(OSError, 'synthetic audit failure'):
+                    await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop')
+            self.assertEqual(org.db.get_job('JOB-901').model_dump(), before)
+            self.assertEqual(org.orchestrator._queue._queue.qsize(), 0)
+            await self.stop(org, client, accepted=True)
+
+    async def test_prior_boot_and_concurrent_stop_single_terminal(self) -> None:
+        import uuid
+        async with self.retained() as (org, client, pids, _ready):
+            os.killpg(pids['pid'], signal.SIGKILL)
+            await self.reap_pid(pids['pid'])
+            path = org.root / 'jobs/JOB-901.err.process.json'
+            path.write_text(json.dumps(json.loads(path.read_text()) | {'boot_id': str(uuid.uuid4())}))
+            responses = await asyncio.gather(*(client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop') for _ in range(2)))
+            self.assertEqual(sorted(r.status_code for r in responses), [200, 409])
+            self.assertEqual(org.db.get_job('JOB-901').reason, 'orphaned_process_dead')
+            self.assertEqual(org.orchestrator._queue._queue.qsize(), 1)
+            self.assertEqual(len(org.db.execute("SELECT 1 FROM audit_log WHERE action='job_run_failed'").fetchall()), 1)
 
 
 if __name__ == '__main__':
