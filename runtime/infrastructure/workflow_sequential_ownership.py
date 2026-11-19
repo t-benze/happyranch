@@ -33,11 +33,29 @@ CREATE TABLE workflow_task_ownership (
 """
 
 
-def sequential_binding_view_ddl(layout: str, *, coding_extension: bool) -> str:
+# Schema2 adds a distinct source wait-set format; @1 source marks keep run IDs.
+SEQUENTIAL_V2_OWNERSHIP_DDL = SEQUENTIAL_OWNERSHIP_DDL.replace(
+    'version IN (1,2)', 'version IN (1,2,3)').replace(
+    "(version=2 AND kind IN ('seq_source_waiting','seq_carrier','seq_visit'))",
+    "(version=2 AND kind IN ('seq_source_waiting','seq_carrier','seq_visit')) OR "
+    "(version=3 AND kind='seq_source_wait_set')")
+
+
+def sequential_ownership_ddl(version: int) -> str:
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError('workflow_seq_schema_version_unsupported')
+    return SEQUENTIAL_OWNERSHIP_DDL if version == 1 else SEQUENTIAL_V2_OWNERSHIP_DDL
+
+
+def sequential_binding_view_ddl(layout: str, *, coding_extension: bool, schema_version: int = 1) -> str:
     """Keep every original relation literal, then append three new relations."""
     original = binding_view_ddl(layout, coding_extension=coding_extension)
+    sequential_ownership_ddl(schema_version)
+    source = ("SELECT source_task_id,'seq_source_waiting',id,id FROM workflow_seq_runs" if schema_version == 1 else
+              "SELECT source_task_id,'seq_source_waiting',id,id FROM workflow_seq_runs WHERE engine_version=1"
+              " UNION ALL SELECT source_task_id,'seq_source_wait_set',id,id FROM workflow_seq_source_wait_sets")
     return original.removesuffix(';') + " UNION ALL " + " UNION ALL ".join((
-        "SELECT source_task_id,'seq_source_waiting',id,id FROM workflow_seq_runs",
+        source,
         "SELECT carrier_task_id,'seq_carrier',id,id FROM workflow_seq_runs",
         "SELECT task_id,'seq_visit',id,run_id FROM workflow_seq_visits",
     )) + ';'
@@ -202,6 +220,7 @@ def read_sequential_owner(conn: sqlite3.Connection, *, task_id: str,
         raise ValueError('workflow_seq_ownership_missing')
     if mark[1] == 1:
         return selected_owner(conn, task_id, org_slug)
-    if mark[1] != 2 or mark[2] not in SEQUENTIAL_KINDS:
+    if not ((mark[1] == 2 and mark[2] in SEQUENTIAL_KINDS)
+            or (mark[1] == 3 and mark[2] == 'seq_source_wait_set')):
         raise ValueError('workflow_seq_ownership_unsupported')
     return _selected_sequential_owner(conn, task_id, org_slug)

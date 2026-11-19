@@ -513,6 +513,50 @@ progression, negative compiler coverage, real-task returns and M1/V3 acceptance
 remain NOT RUN/open. Lint/static results are source evidence only. Independent
 full review and scoped QA precede manager guarded merge.
 
+
+## S2a schema2 reference (inert)
+
+THR-336 / TASK-17139 adds a separately selected schema2 reference. The existing
+installer accepts `--schema-version 2`; omission still selects schema1 for
+compatibility. A2 fresh-org and A4 automatic setup retain their original schema1
+behavior until S2b. This source change grants no live installation, migration,
+restart, @2 admission, controls or inbox processing.
+
+Schema2 removes singleton source-task/result uniqueness for engine version2 and
+retains start identity by org, permanent actor, source task and operation key.
+Partial indexes preserve engine version1's original singleton/start constraints.
+Run/visit/output/event engine versions are explicit. @1 epoch, content returns
+and verified-check bytes keep their original meaning; @2 uses separate assignment
+snapshot/generation, held cursor, terminal outcome, progress, recovery/node counters
+and generic-check fields. One selected visit per run is unique; an active pointer
+must reference that run's selected visit through a deferred composite FK.
+
+Append-only assignment generations, controls, source wait sets/memberships,
+addressed inbox events, durable session delivery snapshots and result-bound
+consumption receipts have versioned references, indexes and immutability triggers.
+Inbox acceptance is indexed by `(initiator_task_id, notification_id)`; receipt
+membership references the actual delivered task/session tuple. Source wait sets
+use ownership version3 `seq_source_wait_set`; original ownership version2
+`seq_source_waiting` still identifies one @1 run. These references grant no
+execution authority. S3–S5 own semantic writers/readers; S2a complete readers
+visibly refuse populated @2 runtime history rather than applying @1 semantics.
+
+An absent sequential family installs schema2 directly when explicitly selected.
+An installed schema1 upgrades only with zero runs **and zero history** (visits,
+outputs, evidence, events and outbox), after the existing verified backup and
+complete source checks. Any active or finished @1 history returns
+`workflow_seq_nonempty_upgrade_refused` unchanged. Upgrade rebuilds only the
+marker, runs, visits, outputs, events, outbox and ownership companion; definitions,
+settings, original-save operations, evidence, all other SQL and typed cells/rowids
+are preserved exactly. Fresh and upgraded targets match one independent complete
+reference. Full FK checks, original physical install checks, rollback/uncertainty
+handling and all existing allowances remain. There is no downgrade or restore.
+
+The original schema1 constants/readers remain available and unchanged in meaning.
+No generic `Database` workflow hook or limit increase is introduced. The supported
+private proof selector is `scripts/test-workflow-schema-load.sh --schema2=all`;
+[local verification](../../operations/local-ci.md) lists the named cases and limits.
+
 ## U2a storage and standalone reader boundary
 
 TASK-14536 under replacement root TASK-14531 originally added the records and

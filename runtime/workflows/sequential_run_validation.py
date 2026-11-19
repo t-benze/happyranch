@@ -9,9 +9,9 @@ import sqlite3
 from collections.abc import Iterator
 
 from runtime.infrastructure.workflow_schema import _candidate_reserve, _execute_ddl, _schema_snapshot, _structure_cells
-from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL
+from runtime.infrastructure.workflow_sequential_schema import sequential_ddl
 from runtime.infrastructure.workflow_sequential_ownership import (
-    SEQUENTIAL_OWNERSHIP_DDL, read_sequential_owner, sequential_binding_view_ddl,
+    sequential_ownership_ddl, read_sequential_owner, sequential_binding_view_ddl,
 )
 from runtime.workflows.coding_authority_history import _Budget, _bounded_rows
 from runtime.workflows.sequential_contracts import Counters, Limits, NextEdge, OutputRef, TerminalEdge
@@ -90,12 +90,13 @@ def _selected_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> dict[str,
                 'E' if 'workflow_draft_adapter_versions' in names else 'F')
     if document == 'I' and coding:
         document = 'J'
+    schema_version = 2 if any(row[0] == 'workflow_seq_source_wait_sets' for row in actual[1]) else 1
     expected = sqlite3.connect(':memory:')
     try:
         with _sql_budget(expected, budget):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
-            expected.execute(SEQUENTIAL_OWNERSHIP_DDL)
-            expected.execute(sequential_binding_view_ddl(document, coding_extension=coding))
+            _execute_ddl(expected, sequential_ddl(schema_version))
+            expected.execute(sequential_ownership_ddl(schema_version))
+            expected.execute(sequential_binding_view_ddl(document, coding_extension=coding, schema_version=schema_version))
             reference = _selected_structure(expected, budget)[0]
             budget.work(sum(len(part) for part in actual) + sum(len(part) for part in reference))
             _require(actual == reference, 'selected_layout_mismatch')
@@ -257,11 +258,12 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
         data = {'workflow_seq_runs': _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))}
         _require(len(data['workflow_seq_runs']) == 1, 'run_missing')
         run = data['workflow_seq_runs'][0]
+        _require(run.get('engine_version', 1) == 1, 'schema2_runtime_history_unavailable')
         _require(run['org_slug'] == org_slug, 'run_pin_invalid')
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
         for table, where, args, omit in (
-            ('workflow_seq_schema_versions', 'version=?', (1,), ()),
+            ('workflow_seq_schema_versions', 'version=?', (2 if 'workflow_seq_source_wait_sets' in metadata else 1,), ()),
             ('workflow_seq_visits', 'run_id=?', (run_id,), ('result_bytes', 'verified_checks_bytes')),
             ('workflow_seq_events', 'run_id=?', (run_id,), ()),
             ('workflow_seq_outbox', 'event_id=?', (run['last_event_id'],), ()),
@@ -271,7 +273,8 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
             'id IN (' + ','.join('?' for _ in evidence_ids) + ')', evidence_ids) if evidence_ids else [])
         _require({row['id'] for row in data['workflow_seq_evidence']} == set(evidence_ids), 'evidence_missing')
         _types(data, budget)
-        _require(data['workflow_seq_schema_versions'] == [{'version': 1}], 'schema_marker_invalid')
+        schema_version = 2 if 'workflow_seq_source_wait_sets' in metadata else 1
+        _require(data['workflow_seq_schema_versions'] == [{'version': schema_version}], 'schema_marker_invalid')
         _require(len(data['workflow_seq_visits']) == len(data['workflow_seq_events']) == len(data['workflow_seq_outbox']) == 1,
                  'admission_closure_invalid')
         visit, event = data['workflow_seq_visits'][0], data['workflow_seq_events'][0]
@@ -425,6 +428,7 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
         runs = _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))
         _require(len(runs) == 1 and runs[0]['org_slug'] == org_slug, 'run_missing')
         run = runs[0]
+        _require(run.get('engine_version', 1) == 1, 'schema2_runtime_history_unavailable')
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
         start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_start, budget)
