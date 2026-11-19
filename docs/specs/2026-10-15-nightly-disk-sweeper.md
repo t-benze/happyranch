@@ -469,6 +469,18 @@ in force.
 
 ## Phase1: task temporary roots
 
+Founder THR307 seq388/389 adds producer-side compensation before session start.
+An ordinary native task attempt tracks its exclusive scratch-root mkdir and pins
+that directory's identity. If preparation or launch exits before the existing
+session admission commits, it may remove only that same root with a no-follow,
+descriptor-relative `rmdir`. Pre-existing roots, replaced roots, symlinks at any
+literal ancestor/leaf, and nonempty roots stay retained. Cleanup errors are logged
+and cannot change the original launch outcome. After admission (including a
+subsequent launch failure), the root stays retained. Sibling manifests/locks and
+all native reservation/Pause uncertainty remain. No workspace evidence is added
+and neither the sweeper's ownership validation nor `_CLASSIFICATION` changes;
+surviving unknown roots still keep `unknown_missing_or_conflicting_workspace_evidence`.
+
 Only `<workspace>/.happyranch/task-tmp/TASK-*` is discoverable. The current
 `task_scratch.prepare_task_scratch` producer creates disposable roots and sibling
 `.happyranch/task-scratch-manifests/<task>.json` plus `.lock` as **durable recovery

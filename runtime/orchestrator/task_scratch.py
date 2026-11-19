@@ -1,13 +1,15 @@
-"""Runtime-owned, non-destructive per-task temporary containment.
+"""Runtime-owned per-task temporary containment.
 
-This module creates scratch and records observations.  It deliberately has no
-cleanup API: manifests are evidence, never deletion authority (TASK-6501).
+Manifests are evidence, never deletion authority (TASK-6501). Only a root
+created by the current unstarted task attempt may be removed, empty-only.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import stat
 import tempfile
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ _PRODUCER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ENV_KEYS = ("TMPDIR", "TMP", "TEMP", "HAPPYRANCH_TASK_TMP_ROOT", "HAPPYRANCH_TASK_SCRATCH_MANIFEST")
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PRODUCERS = 128
+logger = logging.getLogger(__name__)
 MANIFEST_VERSION = 1
 _MANIFEST_KEYS = {
     "version", "task_id", "required_root", "observed_root",
@@ -44,6 +47,77 @@ class TaskScratch:
     root: Path
     manifest_path: Path
     inherited_temp: tuple[tuple[str, str | None], ...]
+
+
+def _open_directory_nofollow(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@dataclass
+class ScratchRootCreation:
+    """Attempt-local creation proof, independent of durable owner evidence."""
+
+    root: Path | None = None
+    identity: tuple[int, int] | None = None
+    _root_fd: int | None = None
+
+    def mkdir(self, root: Path) -> None:
+        self.root = root
+        fd = _open_directory_nofollow(root.parent)
+        try:
+            try:
+                os.mkdir(root.name, mode=0o700, dir_fd=fd)
+            except FileExistsError:
+                return  # An existing root is never ours.
+            self._root_fd = os.open(root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=fd)
+            observed = os.fstat(self._root_fd)
+            # Pin the created inode until cleanup; removal/replacement cannot
+            # recycle it into an unrelated directory with the same identity.
+            self.identity = observed.st_dev, observed.st_ino
+        finally:
+            os.close(fd)
+
+    def discard_if_unstarted(self, *, session_started: bool) -> None:
+        """Best effort, no-follow rmdir; never replace the launch outcome."""
+        result = "kept_not_created"
+        try:
+            if session_started:
+                result = "kept_session_started"
+            elif self.root is not None and self.identity is not None:
+                # Open every literal ancestor without following a symlink.
+                fd = _open_directory_nofollow(self.root.parent)
+                try:
+                    observed = os.stat(self.root.name, dir_fd=fd, follow_symlinks=False)
+                    if (stat.S_ISDIR(observed.st_mode)
+                            and (observed.st_dev, observed.st_ino) == self.identity):
+                        # rmdir itself arbitrates emptiness and rejects symlinks.
+                        os.rmdir(self.root.name, dir_fd=fd)
+                        result = "removed_empty"
+                    else:
+                        result = "kept_changed"
+                finally:
+                    os.close(fd)
+        except Exception as exc:
+            result = f"kept_cleanup_error:{type(exc).__name__}:{getattr(exc, 'errno', None)}"
+        finally:
+            if self._root_fd is not None:
+                try:
+                    os.close(self._root_fd)
+                except OSError:
+                    result += ":close_failed"
+                self._root_fd = None
+        logger.info("task scratch pre-session cleanup root=%s result=%s", self.root, result)
 
 
 _ACTIVE: ContextVar[TaskScratch | None] = ContextVar("task_scratch", default=None)
@@ -136,6 +210,7 @@ def validate_task_scratch_manifest(
 
 def prepare_task_scratch(
     *, workspace: Path, task_id: str, producer_kind: str, producer_id: str,
+    creation: ScratchRootCreation | None = None,
 ) -> TaskScratch:
     """Create the canonical root and atomically append a bounded observation."""
     task_id = _validate_component(task_id, _TASK_ID, "task_id")
@@ -153,6 +228,8 @@ def prepare_task_scratch(
         for path in (owned, scratch_parent, manifest_parent):
             _mkdir_owned(path)
         root = scratch_parent / task_id
+        if creation is not None:
+            creation.mkdir(root)
         _mkdir_owned(root, parent=scratch_parent)
         manifest_path = manifest_parent / f"{task_id}.json"
         contract = TaskScratch(

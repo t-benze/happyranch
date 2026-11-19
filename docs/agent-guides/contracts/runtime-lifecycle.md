@@ -472,6 +472,18 @@ lint/static analysis cannot establish behavioral acceptance.
 
 ### Bounded ordinary native launch refusals (THR-315)
 
+THR-307 seq388/389: before the existing session admission commits, scratch
+preparation/launch exits compensate only an empty root exclusively created by
+that attempt. Creation pins the directory inode; cleanup rechecks its identity
+through literal no-follow ancestors and uses only descriptor-relative `rmdir`.
+Pre-existing, replaced, symlinked or nonempty roots remain, and cleanup failure
+is logged without replacing the original refusal/failure. Committed sessions
+retain their scratch even if launch then fails. Manifests/locks and retained
+preparation/reservation uncertainty remain untouched. This local finally tail
+precedes existing outer refusal accounting; no opaque-failure call, audit shape,
+reserved SID or refusal-budget behavior changes. It creates no sweeper ownership
+evidence and changes no sweeper classification.
+
 Actual non-hold refusals before durable preparation allow at most THREE consecutive
 attempts for the same logical task continuation. Existing audit rows
 `task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
