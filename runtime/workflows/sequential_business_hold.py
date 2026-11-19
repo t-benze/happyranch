@@ -198,3 +198,153 @@ def validate_business_holds(conn: sqlite3.Connection, *, rows: list[dict], run: 
     budget.reserve(16384)
     _require(raw == _bytes(expected), 'business_hold_payload_conflict')
     return value
+
+
+def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, budget: _ReadBudget) -> dict:
+    """Original native terminal AND positive outer proof, or pristine no-launch.
+
+    This observation never manufactures a callback or settles native ownership.
+    """
+    native = _native_rows(conn, 'tasks', ('assigned_agent', 'current_session_id', 'status',
+        'completed_at', 'executor_pid'), (('text',), ('text', 'null'), ('text',),
+        ('text', 'null'), ('integer', 'null')), visit['task_id'], budget)
+    _require(len(native) == 1 and native[0][:2] == (visit['principal'], visit['session_id']), 'hold_native_conflict')
+    if visit['session_id'] is None:
+        _require(visit['state'] in ('queued', 'held', 'cancelled')
+                 and native[0][2] in ('pending', 'cancelled') and native[0][3:] == (None, None), 'hold_unsettled')
+        _require(conn.execute('SELECT 1 FROM task_results WHERE task_id=? LIMIT 1', (visit['task_id'],)).fetchone() is None,
+                 'hold_native_conflict')
+        return dict(kind='never_launched', result_id=None)
+    terminal, terminal_digest = _proof(conn, run['id'], visit['id'], 'terminal', budget)
+    outer, outer_digest = _proof(conn, run['id'], visit['id'], 'outer', budget)
+    common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'])
+    _require(terminal.keys() == {'format', 'invocation_id', 'task_id', 'principal', 'session_id',
+        'classification', 'request', 'handle_digest', 'receipt', 'callback'}
+        and terminal['format'] == 'workflow-sequential-terminal@1'
+        and type(terminal['invocation_id']) is str and bool(terminal['invocation_id'])
+        and all(terminal[key] == value for key, value in common.items())
+        and type(terminal['handle_digest']) is str and len(terminal['handle_digest']) == 64
+        and all(char in '0123456789abcdef' for char in terminal['handle_digest'])
+        and type(terminal['request']) is dict
+        and terminal['request'].keys() == {'org', 'logical_id', 'agent_id', 'retry_attempt'}
+        and terminal['request']['org'] == run['org_slug']
+        and terminal['request']['agent_id'] == visit['principal']
+        and type(terminal['request']['logical_id']) is str and bool(terminal['request']['logical_id'])
+        and type(terminal['request']['retry_attempt']) is int and terminal['request']['retry_attempt'] == 0,
+        'hold_terminal_invalid')
+    receipt = terminal['receipt']
+    _require(type(receipt) is dict and receipt.keys() == {'backend', 'terminal_reason', 'cleanup_status', 'quiescent', 'survivors'}
+        and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+        and receipt['cleanup_status'] in ('clean', 'term', 'kill')
+        and receipt['quiescent'] is True and receipt['survivors'] == [], 'hold_unsettled')
+    _require(outer == dict(format='workflow-sequential-outer@1', invocation_id=terminal['invocation_id'],
+        **common, callback=terminal['callback'], positive=True, tracker_clear=True, native_phase='result_processing',
+        close_removed=True, release_removed=True, release_owner=terminal['invocation_id'], execution_unknown=False)
+        and outer.get('positive') is True and outer.get('tracker_clear') is True
+        and outer.get('close_removed') is True and outer.get('release_removed') is True
+        and outer.get('execution_unknown') is False
+        and native[0][2] in ('completed', 'failed', 'cancelled') and bool(native[0][3]), 'hold_unsettled')
+    callback = terminal['callback']
+    if callback is None:
+        _require(conn.execute('SELECT 1 FROM task_results WHERE task_id=? AND session_id=? LIMIT 1',
+            (visit['task_id'], visit['session_id'])).fetchone() is None, 'hold_callback_conflict')
+    else:
+        _require(type(callback) is dict and callback.keys() == {'task_id', 'principal', 'session_id', 'result_id', 'status', 'carrier_digest'}
+            and all(callback[key] == value for key, value in common.items()), 'hold_callback_conflict')
+        from runtime.workflows.sequential_history import _result
+        _result(conn, callback['result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
+        size = conn.execute('SELECT typeof(output_summary),length(CAST(output_summary AS BLOB)) FROM task_results WHERE id=?',
+                            (callback['result_id'],)).fetchone()
+        _require(size is not None and size[0] == 'text' and 0 < size[1], 'hold_callback_bounds')
+        status = conn.execute('SELECT status FROM task_results WHERE id=?', (callback['result_id'],)).fetchone()[0]
+        _require(status == callback['status'], 'hold_callback_conflict')
+        # Oversize rejection needs only native identity and byte length. Never
+        # acquire/hash an unbounded summary merely to reject it.
+        if size[1] <= 1414488:
+            budget.reserve(8 * size[1] + 512)
+            summary = conn.execute('SELECT output_summary FROM task_results WHERE id=?', (callback['result_id'],)).fetchone()[0]
+            _require(hashlib.sha256(summary.encode('utf8')).hexdigest() == callback['carrier_digest'], 'hold_callback_conflict')
+    return dict(kind='settled', terminal_digest=terminal_digest, outer_digest=outer_digest,
+                result_id=None if callback is None else callback['result_id'])
+
+
+def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, compiled: object,
+                       budget: _ReadBudget, unavailable: bool = False) -> tuple[str, dict]:
+    from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
+    proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+    if unavailable:
+        _require(proof['kind'] == 'never_launched', 'hold_unavailable_conflict')
+        return 'assignee_unavailable', proof
+    _require(proof['kind'] == 'settled', 'hold_cause_unavailable')
+    if proof['result_id'] is None:
+        terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
+        reason = terminal['receipt']['terminal_reason']
+        _require(reason in ('timeout', 'failed', 'error', 'cancelled'), 'hold_cause_unavailable')
+        return ('task_timed_out_without_result' if reason == 'timeout' else 'task_failed_without_result'), proof
+    size = conn.execute('SELECT length(CAST(output_summary AS BLOB)) FROM task_results WHERE id=?', (proof['result_id'],)).fetchone()[0]
+    if size > 1414488:
+        return 'result_too_large', proof
+    result = conn.execute('SELECT output_summary FROM task_results WHERE id=?', (proof['result_id'],)).fetchone()[0]
+    node = next(item for item in compiled.definition.nodes if item.id == visit['node_id'])
+    try:
+        callback = parse_generic_callback(result.encode('utf8'), contract=node.output_contract.type)
+    except SequentialContractError as exc:
+        return ('result_too_large' if str(exc) in ('encoded_bounds', 'generic_output_bounds', 'callback_metadata_bounds')
+                else 'result_bad_shape'), proof
+    edge = dict(node.outcomes).get(callback.outcome)
+    if edge is None:
+        return 'unknown_outcome', proof
+    if getattr(edge, 'consume_counter', None) is not None:
+        from runtime.workflows.sequential_contracts import GenericLimits
+        from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
+        limits = generic_limits(compiled, GenericLimits.model_validate_json(run['original_limits_bytes']),
+                                parse_generic_start(run['start_bytes']).lower_limits)
+        count = conn.execute('SELECT revisions FROM workflow_seq_node_counters WHERE run_id=? AND node_id=?',
+                             (run['id'], edge.node)).fetchone()
+        if (0 if count is None else count[0]) >= dict(limits.node_revisions)[edge.node]:
+            return 'revision_limit_exhausted', proof
+    _require(False, 'hold_cause_unavailable')
+
+
+def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str, run_id: str,
+                              visit_id: str, expected_cas: int, compiled: object,
+                              authority: object, capture: object, unavailable: bool = False) -> str:
+    """Persist Held without a synthetic result or successor. Consumer is unmounted."""
+    from runtime.workflows.authority import generic_assignment_authority
+    from runtime.workflows.sequential_assignments import recheck_launch_assignment, selection_agent
+    from runtime.workflows.sequential_control import _append_event, _move
+    from runtime.workflows.sequential_engine import _engine_context, _engine_rows
+    from runtime.workflows.sequential_history import _sql_budget
+    budget = _ReadBudget()
+    with _sql_budget(conn, budget):
+        run = _engine_context(conn, db, org_slug=org_slug, run_id=run_id, compiled=compiled,
+            authority=authority, capture=capture, budget=budget)
+        _require(run['engine_version'] == 2 and run['state'] == 'running'
+            and run['progress'] != 'cancelling' and run['cas'] == expected_cas
+            and run['active_visit_id'] == visit_id, 'hold_cas_conflict')
+        visit = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))[0]
+        _require(visit['selected'] == 1, 'hold_visit_conflict')
+        if unavailable:
+            assignment = _engine_rows(conn, 'workflow_seq_assignments', budget, 'id=?', (visit['assignment_id'],))[0]
+            value = _decode(assignment['snapshot_bytes'], budget)
+            current = generic_assignment_authority(capture, org_slug=org_slug)
+            target = next((item for item in current['agents'] if item['name'] == visit['principal']), None)
+            node = next(item for item in compiled.definition.nodes if item.id == visit['node_id'])
+            requirement = dict(compiled.definition.roles)[node.role]
+            team = next((item for item in current['teams'] if target is not None and item['name'] == target['team']), None)
+            eligible = target is not None and team is not None and target['team'] == _decode(run['assignment_snapshot_bytes'], budget)['team']
+            eligible = eligible and (target['role'] == 'manager' and team['manager'] == dict(kind='agent', principal=target['name'])
+                if requirement.eligibility == 'registered-team-manager'
+                else target['role'] == 'worker' and target['name'] in team['workers'])
+            _require(not eligible or target['status'] != 'active' or not target['executor']
+                or recheck_launch_assignment(value, selection_agent(target)) is not None, 'assignee_available')
+        cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled,
+                                         budget=budget, unavailable=unavailable)
+        event_id = _append_event(conn, run, kind='held', operation_key='hold-' + visit_id,
+            payload=dict(visit_id=visit_id, node=visit['node_id'], cause=cause, closure=proof), budget=budget,
+            resulting_state='held',
+            source_visit=visit_id, source_result=proof['result_id'])
+        conn.execute("UPDATE workflow_seq_visits SET state='held',selected=0 WHERE id=? AND selected=1", (visit_id,))
+        _move(conn, run, event_id, state='held', progress=None, active_visit_id=None,
+              held_node_id=visit['node_id'], held_event_id=event_id)
+        return event_id

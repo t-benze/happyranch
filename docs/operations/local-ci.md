@@ -1,5 +1,24 @@
 # Local CI
 
+## Focused S4a hold/control source
+
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4a=all`
+(also Python 3.14; `--s4a=CASE` selects one named case) exercises the inactive
+@2 writers against private org/native rows. It observes Held cursors, no-result
+and rejected callbacks, nullable controls, immutable replay, counters and CAS
+effects. Named storage-boundary cases exercise Running 4094 to Held 4095,
+launched cancel fence 4095 plus positive-closure finish 4096, Held 4095 recovery
+refusals and immediate cancel, and refusal of a replacement yielding Running
+4095. These use private persisted-cursor boundary fixtures and actual SQL
+writers; they do not claim a complete 4094-event native history. A separately
+constructed invalid Running history proves the defensive two-slot refusal.
+The accepted-result reducer case observes Held/exhausted without successor
+allocation at the storage boundary; S4b still owns its persistence/mount.
+It starts no provider and performs no live cancellation. Native
+containment and mounting remain separate acceptance; source checks do not prove
+them. Required keepers and boundary-lint follow the task brief. Full schema/all,
+retired units, skipped integration and Product E2E are outside this focused run.
+
 ## Focused pre-session task scratch cleanup (THR-307 seq388/389)
 
 `uv run --frozen pytest scripts/test_task_scratch_launch.py -v --tb=short`

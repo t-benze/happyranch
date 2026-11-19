@@ -368,13 +368,42 @@ def _validate_generic_state(compiled: GenericCompiledDefinition, state: GenericR
         _refuse(item.run_id == state.run_id and item.definition_digest == state.definition_digest, 'foreign_replay_receipt')
 
 
+class GenericStorageCapacityError(SequentialContractError):
+    """Closed no-effect refusal with storage positions, never provider data."""
+
+    cause = 'storage_capacity'
+
+    def __init__(self, event_count: int, post_append_limit: int, required_slots: int) -> None:
+        self.event_count = event_count
+        self.post_append_limit = post_append_limit
+        self.required_slots = required_slots
+        self.remaining = dict(storage=4096 - event_count, running=max(0, 4094 - event_count),
+                              held=max(0, 4095 - event_count))
+        super().__init__(self.cause)
+
+
+def require_generic_event_capacity(event_count: int, *, resulting_state: str, cancel: bool = False) -> None:
+    """Reserve two slots for outstanding Running work and one for Held work.
+
+    A launched cancel uses one slot now and reserves its positive-closure finish.
+    Its refusal is defensive for histories already outside the Running invariant.
+    """
+    ceiling = (4095 if resulting_state == 'running' else 4096) if cancel else {
+        'running': 4094, 'held': 4095, 'finished': 4096}[resulting_state]
+    if event_count + 1 > ceiling:
+        raise GenericStorageCapacityError(event_count, ceiling,
+                                          2 if cancel and resulting_state == 'running' else 1)
+
+
 def reduce_generic_result(compiled: GenericCompiledDefinition, state: GenericRunState,
-                          result: GenericAuthenticatedResult) -> GenericDecision:
+                          result: GenericAuthenticatedResult, *, storage_event_count: int | None = None) -> GenericDecision:
     """Pure @2 routing over generic bytes and finite node counters; no I/O.
 
     Invalid content refuses before hashing; a later acceptance writer owns its
     persisted hold. This function neither fabricates native proof nor recovers a
     stopped task. A declared hold/unknown outcome creates no output or successor.
+    A persisted @2 acceptance caller supplies storage_event_count independently
+    of result counters; the pure S1 ABI may omit it when no storage exists.
     """
     _validate_generic_state(compiled, state)
     envelope = result.envelope
@@ -451,7 +480,9 @@ def reduce_generic_result(compiled: GenericCompiledDefinition, state: GenericRun
                         slots = _return_invalidations(nodes, forward, edge.node)
                         invalidated = tuple(ref for ref in selections if ref.slot in slots)
                         selections = tuple(ref for ref in selections if ref.slot not in slots)
-                    if (before.visits >= limits.max_visits or after.events >= limits.max_events
+                    if storage_event_count is not None and storage_event_count + 1 > 4094:
+                        edge, reason = hold, 'exhausted'
+                    elif (before.visits >= limits.max_visits or after.events >= limits.max_events
                             or target.attempts >= nodes[edge.node].limits.attempts
                             or (revision and target.revisions >= dict(limits.node_revisions)[edge.node])):
                         edge, reason = hold, 'limit_exhausted'
@@ -477,7 +508,39 @@ def reduce_generic_result(compiled: GenericCompiledDefinition, state: GenericRun
                     terminal = dict(compiled.definition.terminal_conditions)[edge.condition]
                     if not any(ref.slot == terminal.output for ref in selections):
                         edge, reason = hold, 'terminal_evidence_unavailable'
+    if storage_event_count is not None:
+        require_generic_event_capacity(storage_event_count,
+            resulting_state='running' if activation is not None else 'held' if isinstance(edge, GenericHoldEdge) else 'finished')
     return GenericDecision(run_id=state.run_id, definition_digest=state.definition_digest,
         source=visit, source_result=result.result_id, result_digest=digest, outcome=envelope.outcome,
         before=before, after=after, edge=edge, reason=reason, activation=activation,
         selections=selections, invalidated=invalidated, findings=findings)
+
+
+def reduce_generic_control(compiled: GenericCompiledDefinition, command: object, *, run: dict,
+                           counters: GenericCounters, limits: GenericLimits) -> str:
+    """Fresh control rules. Immutable replay is authenticated first by the writer.
+
+    counters.events counts results only; persisted sequence capacity is separate.
+    """
+    _refuse(run['state'] != 'finished', 'run_finished')
+    _refuse(run['progress'] != 'cancelling', 'control_in_progress')
+    if run['state'] == 'running':
+        _refuse(command.expected_held_event_id is None, 'held_event_conflict')
+        _refuse(command.action == 'cancel', 'run_not_held')
+    else:
+        _refuse(run['state'] == 'held' and command.expected_held_event_id == run['held_event_id']
+                and command.expected_held_event_id is not None, 'held_event_conflict')
+    _refuse(command.expected_cas == run['cas'], 'control_cas_conflict')
+    if command.action == 'cancel':
+        return 'cancel'
+    node = next(item for item in compiled.definition.nodes if item.id == run['held_node_id'])
+    count = dict(counters.nodes)[node.id]
+    ceiling = dict(limits.node_revisions)[node.id]
+    _refuse(run.get('hold_cause') != 'revision_limit_exhausted'
+            and counters.events < limits.max_events and counters.visits < limits.max_visits
+            and counters.recoveries < limits.max_recoveries and count.attempts < node.limits.attempts
+            and count.recoveries < node.limits.recoveries
+            and (count.revisions < ceiling or ceiling == 0 and count.revisions == 0), 'exhausted')
+    require_generic_event_capacity(run['event_count'], resulting_state='running')
+    return 'replace'

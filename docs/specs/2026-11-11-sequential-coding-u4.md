@@ -1,5 +1,10 @@
 # Sequential Coding U4: task-owned repository resolution
 
+S4a introduces separate inactive generic @2 holds/controls; it does not change
+the @1 business-hold/repository or cancellation implementations described here.
+Native mounting, initiator wake delivery and public admission remain separate.
+Coding stays Disabled. See the S4a section of reusable-workflows.md.
+
 Current subject-binding transport: [U4c](2026-11-12-sequential-coding-u4c.md)
 supersedes historical unavailable/unmounted repository-adapter statements below.
 All other historical checkpoints retain their scope.

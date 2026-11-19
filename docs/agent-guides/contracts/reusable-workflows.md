@@ -1,5 +1,58 @@
 # Reusable workflow contracts
 
+## S4a: Held and controls @2 (inactive consumer)
+
+The closed `workflow-sequential-control@2` command requires run ID, stable
+operation key, expected CAS and a required nullable held-event ID. Fresh
+retry/rebrief/reassign require the current Held event; Running cancellation
+requires null. Finished refuses fresh controls, and cancelling permits only
+the original cancellation replay. Replay authenticates the original INTEGER
+result/task/principal/session and exact command bytes before current-state
+preconditions, returning original receipt bytes and IDs after later transitions.
+
+Original `max_events` is the accepted-result transition allowance, including a
+terminal result. Successor allocation adds no event. Admission, no-result or
+rejected-result holds, recovery controls and cancellation completion are
+persisted metadata and do not consume that allowance. Persisted `event_count`
+and sequence retain their distinct storage meaning and cap of 4096. Every
+non-cancel append whose resulting state is Running with an outstanding visit
+(queued or launched) requires post-append `event_count <= 4094`. Every non-cancel
+append whose resulting state is Held requires post-append `event_count <= 4095`.
+Violation raises the closed `storage_capacity` refusal with the current
+`event_count`, `post_append_limit`, `required_slots` and `remaining` counts
+(`storage`, `running`, `held`); no event, task, counter, CAS or control row changes.
+
+Launched Running cancellation (never-held or resumed) persists its fence at
+most at 4095, retains the outstanding visit while original native/outer closure
+is unknown, and records `cancellation_finished` only after positive closure, at
+most at 4096. Those two slots are always available under the invariant. Held or
+pristine queued cancellation finishes immediately in one slot, including Held
+at 4095. The launched-cancel two-slot refusal is defensive for invalid histories
+already outside the invariant, never an additional refusal for valid writers.
+Retry/rebrief/reassign from Held refuse without effect if their resulting
+Running count would exceed 4094; no-result/rejection holds from valid Running
+always fit through 4095. Replacement requires at least one remaining original
+result event as well as visit/attempt/recovery/revision capacity. Nothing resets
+or replenishes an allowance; max_events=1 definitions remain valid.
+
+S4b's @2 acceptance writer must pass the original persisted count as
+`storage_event_count` to `reduce_generic_result`, independent of result counters.
+When accepting a result would leave Running above 4094, the reducer returns
+Held with cause `exhausted`, no activation and no successor-counter spend. The
+acceptance writer must persist that single Held result event rather than
+allocate a successor, and honor the Held ceiling of 4095 in the same transaction.
+Pure S1 calls without storage may omit the count; omission is not a persisted
+acceptance contract. This S4a change does not mount or edit S4b's producer.
+
+The inactive writers require the caller's current-authority transaction and
+original positive terminal/outer proof for launched visits. Uncertain closure
+retains the outstanding visit. No-result holds create no synthetic result,
+output or successor. Running cancel fences progression and only positive
+closure permits its completion. Native cancellation delivery belongs to S6b;
+native producers/dispatch mounting belong to S4b, and initiator wakes/inbox to
+S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
+Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
+
 ## S3: resolved assignments @2 (inert)
 
 `sequential_assignments.py` resolves each role in this order: explicit run
@@ -30,8 +83,8 @@ The private admission state is deliberately limited to an owned queued entry
 and inert carrier. It leaves the ordinary source unchanged: S5 owns source wait
 membership/continuation. Internal settings@2 storage permits partial org role
 defaults; it creates no public settings-save or start surface. Complete and
-selected history readers accept only this S3 admission state for @2 and refuse
-later lifecycle/control/inbox data. Historical @1 readers retain their original
+selected history readers additionally authenticate the inactive S4a holds and
+controls described above; inbox data remains unavailable. Historical @1 readers retain their original
 semantics, including when stored under schema2.
 
 `recheck_launch_assignment` is a pure, **unmounted** current-executor/options

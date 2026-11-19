@@ -539,3 +539,37 @@ class GenericCounters(Closed):
     events: Annotated[StrictInt, Field(ge=0, le=4096)]
     recoveries: AttemptCount
     nodes: Annotated[tuple[tuple[Name, GenericNodeCounters], ...], BeforeValidator(_pairs), Field(min_length=1, max_length=32)]
+
+
+class GenericControl(Closed):
+    """Inactive @2 command; current native actor identity comes from its consumer."""
+
+    format: Literal['workflow-sequential-control@2']
+    run_id: Token
+    operation_key: Token
+    expected_cas: Annotated[StrictInt, Field(ge=0)]
+    expected_held_event_id: Token | None
+    action: Literal['retry', 'rebrief', 'reassign', 'cancel']
+    reason: Annotated[str, StringConstraints(min_length=1, max_length=16384)]
+    supplement: Annotated[str, StringConstraints(min_length=1, max_length=16384)] | None = None
+    target_agent_id: Token | None = None
+    model: Text | None = None
+    reasoning_effort: Text | None = None
+
+    @model_validator(mode='after')
+    def action_fields(self) -> Self:
+        _text(self.reason, 16384)
+        if self.supplement is not None:
+            _text(self.supplement, 16384)
+        fields = self.model_fields_set
+        if self.action == 'cancel' and fields & {'supplement', 'target_agent_id', 'model', 'reasoning_effort'}:
+            raise ValueError('cancel has no replacement fields')
+        if self.action == 'rebrief' and self.supplement is None:
+            raise ValueError('rebrief requires supplement')
+        if self.action != 'reassign' and 'target_agent_id' in fields:
+            raise ValueError('only reassign selects a principal')
+        if self.action == 'reassign' and self.target_agent_id is None:
+            raise ValueError('reassign requires principal')
+        if self.action == 'retry' and 'supplement' in fields:
+            raise ValueError('retry preserves supplement')
+        return self
