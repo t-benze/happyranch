@@ -343,3 +343,105 @@ class Protocol:
                     hostCleanup="notApplicable", localCleanup="notApplicable",
                     networkCleanup="unknown" if method == "RevokeSelected" else "notApplicable",
                     inviteState="unknown", expiresAt=None, host=snapshot, client=None)
+
+
+def request_host(self: object, method: str, complete: object, current: object, observe: object,
+                 *, allow_reconnect: bool = True) -> None:
+    """Fixed helper transaction shared by the window and standalone CLI owner.
+
+    The caller owns lifetime/admission; this owner owns the dedicated bus,
+    closed projection, acknowledgement and loss semantics. Never retry mutations.
+    """
+    if method not in HOST_METHODS.values():
+        complete(None, "unavailable")
+        return
+    mutation = method in HOST_MUTATIONS
+    acknowledged = False
+
+    def failed(error: Exception, dispatched: bool) -> None:
+        if not current():
+            return
+        remote = self.Gio.DBusError.get_remote_error(error) if isinstance(error, self.GLib.Error) else None
+        absent = remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
+                            "org.freedesktop.DBus.Error.NameHasNoOwner")
+        snapshot = self.protocol.host_unavailable("off" if absent else "unknown")
+        observe(snapshot)
+        if acknowledged:
+            complete(self.protocol.host_action(method, snapshot))
+        elif not mutation and absent and method == "Status":
+            complete(snapshot)
+        else:
+            closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
+                      "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
+                      "org.freedesktop.DBus.Error.AuthFailed": "permissionDenied",
+                      "ai.happyranch.RemoteAccess1.Error.wrong_uid": "permissionDenied",
+                      "ai.happyranch.RemoteAccess1.Error.changed": "stateChanged",
+                      "ai.happyranch.RemoteAccess1.Error.expired": "expired",
+                      "ai.happyranch.RemoteAccess1.Error.busy": "busy",
+                      "ai.happyranch.RemoteAccess1.Error.invalid_request": "invalidRequest",
+                      "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
+            code = closed.get(remote)
+            if code:
+                complete(None, code)
+            elif mutation and dispatched and not absent:
+                complete(None, "outcomeUnknown", "unknown")
+            else:
+                complete(None, "unavailable")
+
+    def replied(connection: object, result: object, called: str) -> None:
+        nonlocal acknowledged
+        if not current():
+            return
+        try:
+            raw, = connection.call_finish(result).unpack()
+            if called in HOST_MUTATIONS:
+                if parse_json(raw, 32768) != "ok":
+                    raise ValueError("invalid helper acknowledgement")
+                acknowledged = True
+                # Keep the slot until Status completes; never predict state
+                # from an acknowledgement, selected label or fingerprint.
+                call("Status")
+                return
+            snapshot = self.protocol.host(raw)
+            observe(snapshot)
+            complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+        except Exception as error:
+            failed(error, True)
+
+    def call(called: str) -> None:
+        try:
+            self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
+                "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),
+                self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if called in HOST_MUTATIONS
+                else self.Gio.DBusCallFlags.NONE,
+                122000 if called in HOST_MUTATIONS else 3000,
+                self.cancellable, replied, called)
+        except Exception as error:
+            failed(error, False)
+
+    def connected(_source: object, result: object, _data: object) -> None:
+        try:
+            connection = self.Gio.DBusConnection.new_for_address_finish(result)
+            connection.set_exit_on_close(False)
+            if not current():
+                connection.close(None, None, None)
+                return
+            self.connection = connection
+            call(method)
+        except Exception as error:
+            failed(error, False)
+
+    try:
+        if self.connection is not None and not self.connection.is_closed():
+            call(method)
+        elif self.connection is not None and not allow_reconnect:
+            # A CLI selection belongs to its initial bus, even if Gio closes it
+            # after the caller's admission check. Never dispatch on a new bus.
+            complete(None, "unavailable")
+        else:
+            self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
+                self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+                self.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None, self.cancellable, connected, None)
+    except Exception as error:
+        failed(error, False)

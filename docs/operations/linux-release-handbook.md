@@ -384,6 +384,48 @@ failed-install replacement, address refresh and policy renewal. The existing
 native RemoteAccessPanel remains until slice 6; source wiring is not native
 helper/polkit or end-to-end acceptance.
 
+### Linux host CLI fallback (slice 5a)
+
+The payload ships `share/happyranch/desktop/connection_cli.py` beside
+`connection_contract.py` and the existing schema. The wheel supplies the new
+`cli.commands.connection` registration; its fixed entry uses `/usr/bin/python3 -I`
+for system Gio/GTK, independently of WebKit and daemon availability. No new
+runtime dependency is required. This is source delivery; real-helper/polkit,
+minimum-target and full lifecycle acceptance remain pending.
+
+```sh
+happyranch connection status
+happyranch connection host --help
+happyranch connection host status
+happyranch connection host devices
+happyranch connection host next-device
+happyranch connection host approve-device
+happyranch connection host reject-device
+happyranch connection host revoke-device
+```
+
+Status reports closed nonsecret observations; the top-level status reports only
+platform/role availability. Every invocation owns one dedicated system-bus
+connection and shares the window's fixed zero-input methods, closed validation,
+3-second reads and 122-second mutation deadline. Mutations require a reachable
+desktop and fresh interactive polkit authorization. No desktop returns
+`unavailable`, effect `none`, recovery `nativePermission`, before bus access.
+Revoke also requires a terminal: inspect the helper-selected snapshot, type
+`next`, `revoke` or `cancel` (default Cancel). Selection is bounded to 32 choices
+and 120 seconds; Status, NextDevice and RevokeSelected stay in that process on
+that same connection. A separate next-device command does not save selection.
+No device ID or configuration arguments are accepted. Fingerprints, invite bytes
+and backend diagnostics are never printed. A lost mutation reply is unknown,
+with no retry; confirmed host denial never promises network cleanup.
+
+Exit 0: completed read/action or cancelled selection with effect `none` (read
+observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
+invalid command/arguments. Enable/turn-off/create-invite return unavailable
+without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
+and `retry-policy-renewal` also return closed unavailable without dispatch.
+Client CLI is not registered; Mac host
+is deferred/unavailable. There is no connector, DIY, installer or admin fallback.
+
 The packaged connection window now exposes session-only client status, invite,
 cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
 own invite paste, exact Host consent and comparison phrases; worker threads own
@@ -411,7 +453,8 @@ because helper scratch removal cannot be confirmed.
 /usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
 /usr/bin/python3 -B packaging/linux/desktop/test_client_model.py -v
 /usr/bin/python3 -B packaging/linux/desktop/test_client_store.py CustodyTests -v
-/usr/bin/python3 -B packaging/linux/desktop/test_connection.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection_cli.py -v
 # GTK/WebKit smoke when the existing desktop session is available:
 PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
 # Shipping connector parser/forwarder compatibility (existing project Python dependencies):

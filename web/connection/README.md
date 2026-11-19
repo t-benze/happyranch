@@ -25,6 +25,11 @@ The exact spec §2 CSP is embedded in HTML and must also be enforced natively.
 `base: './'`, disabled module-preload support and `assetsInlineLimit: 0` avoid
 absolute daemon paths, a preload network shim and embedded asset data.
 
+When the bridge is unavailable, en/zh-CN copy points to the existing
+`happyranch connection status` and `happyranch connection host --help` commands.
+Only Linux host device actions are implemented in slice 5a; mutations need a
+desktop system prompt. Client CLI is unavailable and Mac host is deferred.
+
 ## Import audit
 
 `index.html` → `src/main.ts` → `bridge.ts`, `client.ts`, `host.ts`, `protocol.ts`, `strings.ts`, CSS.

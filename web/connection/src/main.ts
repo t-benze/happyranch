@@ -121,7 +121,7 @@ function showUnsupported(): void {
   localized.length = 0; container.replaceChildren();
   const heading = element('h1', 'unsupportedTitle');
   const label = element('label', 'language'); label.htmlFor = 'language';
-  const code = element('code'); code.textContent = 'happyranch connection';
+  const code = element('code'); code.textContent = 'happyranch connection status · happyranch connection host --help';
   container.append(label, language, heading, element('p', 'unsupported'), element('p', 'futureCli'), code);
   translate(); container.hidden = false;
 }
