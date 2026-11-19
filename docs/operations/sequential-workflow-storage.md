@@ -1,5 +1,28 @@
 # Sequential workflow storage — operator draft
 
+## Backup directory permissions and diagnostics
+
+The automatic backup directory defaults to
+`~/.happyranch/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/`.
+Every component created below the daemon home (`backups`, `workflow-sequential`,
+the runtime key, org and attempt directory) must be a real directory, owned by
+the daemon user, with mode **0700**. Existing wrong-mode directories are refused,
+not chmodded or repaired; symlinks and wrong owners/types also remain refused.
+
+The installer logs the exact failed path, check and underlying exception.
+Creation failures identify `mkdir` or parent `fsync`, the literal target and parent,
+and available metadata for both. Failed no-follow opens retain observed mode, UID
+and type; unavailable observations are explicit. Private namespace expectations
+are `0700`, daemon UID and directory; ordinary ancestors have no private-mode or
+owner expectation. Diagnostic metadata never grants retry or repair authority.
+The private helper's filesystem diagnostics reach daemon stderr (captured in
+`daemon.log` by the standard launcher). An early guard covers helper imports and
+execution: an escaping failure logs only its exception type, never exception
+values or a traceback. Logs contain filesystem metadata or that sanitized cause,
+not settings, credentials or database contents. Public setup status/result reason
+codes and shapes remain unchanged; consult the log for the specific cause behind
+a coarse refusal.
+
 ## Explicit schema2 reference target (S2a)
 
 The explicit offline command below may select `--schema-version 2` to install a
