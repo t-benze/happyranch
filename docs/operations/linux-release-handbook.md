@@ -386,9 +386,19 @@ unsubscribe and document teardown stop delivery. Fingerprints stay native;
 bounded comparison metadata follows the closed v1 projection. A lost mutation
 reply has unknown effect, permission denial has no effect, and missing helper
 service reports not set up/unavailable with an unreadable device list. Revoke
-confirms host denial separately from unknown network cleanup. Enable, Turn off
-and Create invite remain unavailable pending TASK-16779/slice 2b, together with
-failed-install replacement, address refresh and policy renewal. The existing
+confirms host denial separately from unknown network cleanup. I5c adds only
+Enable, Turn off and Create invite, with zero inputs and 482/302/122-second
+transport deadlines. Enable/Disable acceptance leaves effect/host denial/host
+and network cleanup unknown, while the persistent bus and later Status drive
+the card. IssueInvite shares the CLI frame validator and shows a native GTK
+sheet: selectable complete text, Linux approval explanation, local absolute
+expiry/m:ss countdown, explicit Copy and Close. The web gets issuance/expiry
+metadata only. Expiry/close drops native text and best-effort clears only our
+unchanged clipboard content; Close does not cancel, and clipboard history/other
+apps may retain a copy. Missing/closed desktop refuses before dispatch with
+unavailable/nativePermission. Failed-install replacement, invite cancellation/
+recovery and policy renewal remain CLI-only; address refresh is B13-deferred.
+These are source capabilities; I6 native/live acceptance remains NOT RUN. The existing
 native RemoteAccessPanel remains until slice 6; source wiring is not native
 helper/polkit or end-to-end acceptance.
 
@@ -422,7 +432,7 @@ happyranch connection host retry-policy-renewal
 Status reports closed nonsecret observations; the top-level status reports only
 platform/role availability. Every invocation owns one dedicated system-bus
 connection and the shared fixed zero-input transport and closed validation.
-Reads allow 3 seconds and device mutations 122 seconds. I5b's CLI-only lifecycle
+Reads allow 3 seconds and device mutations 122 seconds. I5b's lifecycle
 calls allow 482 seconds for Enable/ReplaceFailed, 302 for Disable and 122 for
 invite/policy methods, covering the original helper budgets plus 2 seconds.
 Mutations require a reachable

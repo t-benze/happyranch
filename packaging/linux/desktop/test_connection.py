@@ -93,7 +93,8 @@ class ConnectionBoundaryTests(unittest.TestCase):
         hello = self.protocol.hello()
         self.assertEqual(hello["roles"], ["host", "client"])
         self.assertEqual([c["command"] for c in hello["capabilities"] if c["availability"] == "available"],
-                         ["host.status", "host.approveDevice", "host.rejectDevice", "host.nextDevice",
+                         ["host.status", "host.enable", "host.turnOff", "host.createInvite",
+                          "host.approveDevice", "host.rejectDevice", "host.nextDevice",
                           "host.revokeDevice", "client.status", "client.acceptInvite", "client.savedComputers",
                           "client.connectSaved", "client.removeSaved", "client.disconnect",
                           "client.cancelAttempt", "client.retry", "client.retrySave", "client.health"])
@@ -132,7 +133,10 @@ class ConnectionBoundaryTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.protocol.host(json.dumps({**raw, **change}))
         for command in ("host.enable", "host.turnOff", "host.createInvite"):
-            self.assertIn({"command": command, "availability": "unavailable"}, hello["capabilities"])
+            self.assertIn({"command": command, "availability": "available"}, hello["capabilities"])
+            self.protocol.request(self.request(command), origin=ORIGIN, main_frame=True)
+            with self.assertRaises(ValueError):
+                self.protocol.request(self.request(command, {"invite": "synthetic"}), origin=ORIGIN, main_frame=True)
         raw["devices"][0]["label"] = "\u202ebidi"
         with self.assertRaises(ValueError):
             self.protocol.host(json.dumps(raw))

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import importlib.util
 import json
 import mimetypes
+import math
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Callable
 
 # The desktop is launched with system Python -I. Resolve this installed sibling
@@ -28,7 +31,7 @@ PAGE = r"""(() => {
   'use strict';
   if (window !== top || location.href !== 'happyranch-shell://connection/index.html'
       || location.origin !== 'happyranch-shell://connection') return;
-  const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
+  const fail = (code, effect = 'none') => JSON.stringify({code, effect, recovery:'refresh'});
   const pending = new Map(), listeners = new Map();
   let sequence = 0, active = true;
   const size = text => typeof text === 'string' && new TextEncoder().encode(text).length;
@@ -78,7 +81,7 @@ PAGE = r"""(() => {
   };
   addEventListener('pagehide', () => {
     active = false; listeners.clear();
-    pending.forEach(item => item.reject(fail('documentChanged'))); pending.clear();
+    pending.forEach(item => item.reject(fail('documentChanged', 'unknown'))); pending.clear();
   }, {once:true});
   Object.defineProperty(window, 'happyranchConnection', {value:Object.freeze({call,on})});
 })();"""
@@ -123,7 +126,7 @@ RELAY = r"""(() => {
     let reply;
     try { reply = await native.postMessage(raw); }
     catch { reply = JSON.stringify({protocol:'happyranch.connection',version:1,
-      requestId:item.id,ok:false,error:{code:'unavailable',effect:'none',recovery:'refresh'}}); }
+      requestId:item.id,ok:false,error:{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'}}); }
     if (typeof reply === 'string' && new TextEncoder().encode(reply).length <= 32768)
       window.postMessage({channel:'hr-connection-reply',id:item.id,raw:reply}, location.origin);
   });
@@ -141,6 +144,103 @@ FRAME_PROBE = r"""() => {
       && typeof window.webkit?.messageHandlers?.connection?.postMessage === 'function'
       && window.frames.length === 0;
 }"""
+
+
+class InviteSheet:
+    """Native-memory-only invite display; never connected to web serialization."""
+
+    def __init__(self, owner: object, text: str, expires_at: int, deadline: float) -> None:
+        self.owner, self.text, self.expires_at = owner, text, expires_at
+        self.closed, self.copied, self.source = False, False, None
+        Gtk, tr = owner.Gtk, owner.tr
+        self.dialog = Gtk.Dialog(title=tr("Invite a device", "邀请设备"),
+                                 transient_for=owner.window, modal=True, destroy_with_parent=True)
+        self.dialog.set_default_size(480, 240)
+        content = self.dialog.get_content_area()
+        content.set_spacing(12)
+        content.set_border_width(16)
+        self.label = Gtk.Label(label=text)
+        self.label.set_selectable(True)
+        self.label.set_line_wrap(True)
+        self.label.set_max_width_chars(64)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(96)
+        scroll.add(self.label)
+        content.pack_start(scroll, True, True, 0)
+        explanation = Gtk.Label(label=tr(
+            "The Linux owner will also need to approve the device. Closing does not cancel this invite. "
+            "Clipboard history and other apps may retain copied text.",
+            "Linux 机主还需要批准此设备。关闭不会取消此邀请。剪贴板历史及其他应用可能保留复制的文本。"))
+        explanation.set_line_wrap(True)
+        explanation.set_max_width_chars(64)
+        content.pack_start(explanation, False, False, 0)
+        self.expiry = Gtk.Label()
+        content.pack_start(self.expiry, False, False, 0)
+        self.copy = self.dialog.add_button(tr("Copy", "复制"), Gtk.ResponseType.APPLY)
+        self.dialog.add_button(tr("Close", "关闭"), Gtk.ResponseType.CLOSE)
+        self.dialog.set_default_response(Gtk.ResponseType.CLOSE)
+        self.dialog.connect("response", self.response)
+        self.dialog.connect("destroy", lambda *_args: self.close())
+        self.clipboard = Gtk.Clipboard.get_default(owner.window.get_display())
+        # Construction can itself take time. Recheck immediately before showing
+        # any bytes, in addition to the shared terminal-frame validator.
+        self.tick()
+        if time.monotonic() >= deadline or time.time() >= expires_at:
+            self.close()
+            raise ValueError("late native invite")
+        self.dialog.show_all()
+        self.source = owner.GLib.timeout_add(250, self.tick)
+
+    def clear_text(self) -> None:
+        try:
+            if self.copied and self.text and self.clipboard.wait_for_text() == self.text:
+                self.clipboard.clear()
+        except Exception:
+            pass  # Best effort; never expose clipboard or backend error text.
+        self.copied = False
+        self.text = ""
+        self.label.set_text("")
+        self.copy.set_sensitive(False)
+
+    def tick(self) -> bool:
+        if self.closed:
+            return False
+        remaining = max(0, math.ceil(self.expires_at - time.time()))
+        if not remaining:
+            if self.source is not None:
+                self.owner.GLib.source_remove(self.source)
+            self.source = None
+            self.clear_text()
+            self.expiry.set_text(self.owner.tr("Invite expired", "邀请已过期"))
+            return False
+        absolute = datetime.fromtimestamp(self.expires_at).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        self.expiry.set_text(self.owner.tr("Expires at {time} ({left} remaining)",
+                                          "到期时间：{time}（剩余 {left}）").format(
+            time=absolute, left=f"{remaining // 60}:{remaining % 60:02d}"))
+        return True
+
+    def response(self, _dialog: object, response: int) -> None:
+        if response == self.owner.Gtk.ResponseType.APPLY:
+            if self.tick() and self.text:
+                try:
+                    self.clipboard.set_text(self.text, -1)
+                    self.copied = True
+                except Exception:
+                    pass
+        else:
+            self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self.source is not None:
+            self.owner.GLib.source_remove(self.source)
+            self.source = None
+        self.clear_text()
+        if self.owner.invite_sheet is self:
+            self.owner.invite_sheet = None
+        self.dialog.destroy()
 
 
 class ConnectionWindow:
@@ -164,6 +264,7 @@ class ConnectionWindow:
         self.host_subscribed, self.host_event_pending, self.host_sequence = False, False, 0
         self.host_timer, self.host_snapshot = None, None
         self.host_status_waiters = None
+        self.invite_sheet = None
         self.window = Gtk.ApplicationWindow(application=app, title=tr("Connection", "连接"))
         if parent is not None:
             self.window.set_transient_for(parent)
@@ -415,7 +516,8 @@ class ConnectionWindow:
             reply.return_error_message('{"code":"invalidRequest","effect":"none","recovery":"refresh"}')
             return True
 
-        def finish(result: dict | None = None, code: str | None = None, effect: str = "none") -> None:
+        def finish(result: dict | None = None, code: str | None = None, effect: str = "none",
+                   recovery: str | None = None) -> None:
             if not self.active or self.closed or self.generation != generation or self.view.get_uri() != ENTRY:
                 return
             envelope = {"protocol": "happyranch.connection", "version": 1,
@@ -423,8 +525,8 @@ class ConnectionWindow:
             try:
                 if code:
                     error = {"code": code, "effect": effect,
-                             "recovery": "nativeRecovery" if effect == "unknown" else
-                             "nativePermission" if code == "permissionDenied" else "refresh"}
+                             "recovery": recovery or ("nativeRecovery" if effect == "unknown" else
+                             "nativePermission" if code == "permissionDenied" else "refresh")}
                     self.protocol.validate(error, self.protocol.schema["$defs"]["error"])
                     envelope["error"] = error
                 else:
@@ -564,6 +666,9 @@ class ConnectionWindow:
                 finish(None, "busy")
             return
         mutation = method in _contract.HOST_MUTATIONS
+        if mutation and not self.host_desktop_available():
+            finish(None, "unavailable", "none", "nativePermission")
+            return
         model = self.client.model
         if mutation and (self.client.prompt or model.confirming_target or model.host_prompt_document is not None):
             finish(None, "busy")
@@ -591,11 +696,23 @@ class ConnectionWindow:
             return (self.active and not self.closed and self.generation == generation
                     and self.view.get_uri() == ENTRY)
 
-        _contract.request_host(self, method, complete, current, self.observe_host)
+        _contract.request_host(self, method, complete, current, self.observe_host,
+                               display_invite=self.show_invite)
+
+    def host_desktop_available(self) -> bool:
+        display = self.window.get_display()
+        return display is not None and not display.is_closed()
+
+    def show_invite(self, text: str, expires_at: int, deadline: float) -> None:
+        if self.invite_sheet is not None:
+            self.invite_sheet.close()
+        self.invite_sheet = InviteSheet(self, text, expires_at, deadline)
 
     def detach(self) -> None:
         self.active = False
         self.generation += 1
+        if self.invite_sheet is not None:
+            self.invite_sheet.close()
         if self.client.model.host_prompt_document is self.client_document:
             self.client.model.host_prompt_document = None
         if self.host_status_waiters is not None:

@@ -134,6 +134,20 @@ or cleanup from admission. Private worker outcomes/residue are not a terminal
 receipt. Lost/late/malformed results remain unknown; no polling or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
 
+I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
+in the Linux packaged window, using the same validator and fixed zero-input
+Enable/Disable/IssueInvite methods with 482/302/122-second transport deadlines.
+Enable/Disable acceptance leaves effect, host denial and host/network cleanup
+unknown; the persistent dedicated bus and later Status observations own state.
+IssueInvite returns only closed nonsecret issuance/expiry metadata. The complete
+invite stays in a native GTK sheet with explicit Copy, local absolute expiry and
+m:ss countdown; expiry/close drops the text and best-effort clears only our
+unchanged clipboard content. Closing does not cancel the invite; the Linux owner
+still approves the device. Missing desktop refuses before dispatch. Loss, late
+reply or cancellation never authorizes replay. Replacement, invite cancellation/
+recovery and policy renewal remain CLI-only; refresh remains B13-deferred and
+Mac host closed. Source delivery is not I6 native/live acceptance (NOT RUN).
+
 The remaining engineering details are recorded in the contract's
 [Home-network engineering settlements B1–B18](../agent-guides/contracts/remote-access-and-remote-jobs.md#home-network-engineering-settlements-b1-b18-thr-327-seq577);
 these settlements preserve the approved behavior and UX and do not claim activation delivery.
@@ -155,7 +169,7 @@ composition below; I5a exposes Enable, ReplaceFailed, Disable, IssueInvite,
 CancelInvite, RecoverInvite and RetryPolicyRenewal on the public helper.
 Linux CLI consumers are delivered in I5b; I5c wires only the existing bridge
 enable/turnOff/createInvite commands. RefreshHomeAddress has no helper method
-and remains deferred to B13. I5b switches only CLI consumers; the bridge stays unchanged.
+and remains deferred to B13. I5b switches CLI consumers; I5c adds exactly those three existing v1 bridge mappings.
 
 I3a wires the serving supervisor's optional B10 reserve/invalidate/revoke-all
 capability to the existing InviteControl and its one current pinned pairing
@@ -169,7 +183,7 @@ refused or uncertain settlement. Admission returns before the worker; the single
 slot remains held through all effects under the original 480/300-second budget.
 The already-designed three action definitions retain auth_admin/no-keep defaults.
 I5a includes all three in public dispatch/introspection; Linux CLI consumers are delivered in I5b; bridge
-consumers follow in I5c.
+consumers are delivered in I5c, with native/live acceptance still pending.
 
 I3b privately mounts CancelInvite and RecoverInvite through that same helper
 capture/auth/worker slot and fixed bundled child, with their exact auth_admin,
@@ -226,7 +240,7 @@ AND B6 success AND no residue (I3a R4/R7b, I3c C3/C5).
 All ownership and quiescence gates remain required.
 Ready Enable remains inspect-only, and fresh-auth activation recovery remains
 verify/publication-only without renewal or timer replay. I5a opens the helper
-public gate; Linux CLI consumers are delivered in I5b and bridge consumers follow in I5c. B18 artifact-changing
+public gate; Linux CLI consumers are delivered in I5b and bridge consumers are delivered in I5c (source only; I6 pending). B18 artifact-changing
 upgrade repair remains separate.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable

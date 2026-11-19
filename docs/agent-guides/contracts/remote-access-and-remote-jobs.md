@@ -2118,7 +2118,7 @@ ApprovePending, RejectPending and RevokeSelected, plus I5a's seven public
 lifecycle/invite methods: Enable, ReplaceFailed, Disable, IssueInvite, CancelInvite,
 RecoverInvite and RetryPolicyRenewal. The three device mutations and all seven
 lifecycle/invite methods request fresh interactive polkit authorization; admission
-is unchanged. Linux CLI consumers are delivered in I5b; bridge consumers follow in I5c.
+is unchanged. Linux CLI consumers are delivered in I5b; bridge Enable/Disable/IssueInvite consumers are delivered in I5c (source only; I6 pending).
 RefreshHomeAddress remains absent and B13-deferred. B8's `helper_owner.py` now
 derives the release owner from the bus credential UID, passwd and validated
 protected release record when present; the optional trusted constructor UID remains a compatibility
@@ -3010,7 +3010,7 @@ is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
 I3a mounts this backend through the fixed bundled-Python helper child,
 with B8/B9 fresh authorization and protected G/O capture. I5a exposes public Enable;
-Linux CLI wiring is delivered in I5b; bridge wiring follows in I5c. Under the same held lock, Enable sends only matching
+Linux CLI wiring is delivered in I5b; bridge wiring for Enable/Disable/IssueInvite is delivered in I5c (source only; I6 pending). Under the same held lock, Enable sends only matching
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
@@ -3180,7 +3180,7 @@ read/retry within the original 300-second budget. CA staging and B7/B11/minter
 evidence follow the I3c custody/proof/audit rules above; any remainder is incomplete.
 I3a's helper worker mounts this composition and records the closed outcome
 and safe residue components; I5a exposes the public methods, with Linux CLI
-consumers delivered in I5b and bridge consumers following in I5c.
+consumers delivered in I5b and bridge Enable/Disable/IssueInvite consumers delivered in I5c (source only; I6 pending).
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3402,6 +3402,33 @@ B6 rechecks operation inside its existing lock. Native uncertainty seals the slo
 until terminal reply/cancellation acknowledgement. I5a public calls select this
 existing mount with unchanged admission; Linux CLI consumers are I5b and bridge
 consumers are I5c. RefreshHomeAddress remains absent and B13-deferred.
+
+**I5c Linux window consumer (source delivery; I6 native/live NOT RUN):** only
+`host.enable`, `host.turnOff` and `host.createInvite` join the existing v1 mapping
+and capability sets. They share `request_host` and its I4a/I5b terminal-frame
+validator on the existing dedicated system bus, zero inputs, fresh interactive
+authorization and original 482/302/122-second native transport budgets. Accepted
+Enable/Disable replies project unknown effect, host denial and host/network
+cleanup, with no fabricated snapshot or completion. The window retains its bus
+caller; subsequent Status/host.stateChanged observations drive presentation.
+Post-dispatch loss/timeout/cancellation/late reply stays unknown with one dispatch
+and no automatic retry. Polkit denial means permissionDenied and no effect.
+Client paste/confirmation reservations and mutation/Status busy rules remain.
+IssueInvite gives the web only closed issuance outcome and authoritative expiry,
+never invite bytes. Immediately before display the native GTK sheet rechecks
+expiry and the original deadline. It shows the complete selectable text, explains
+that Linux-owner approval is also required, shows absolute local expiry and an
+m:ss countdown, and provides explicit Copy and Close. Expiry drops the text and
+disables Copy; expiry/close best-effort clears the clipboard only while it still
+holds our copied text. Close does not cancel the invite, and other apps/clipboard
+history can retain a copy. No desktop means unavailable/nativePermission before
+dispatch. ReplaceFailed/CancelInvite/RecoverInvite/RetryPolicyRenewal remain
+CLI-only, RefreshHomeAddress remains B13-deferred, Mac host remains closed,
+and StatusV2 consumption remains deferred (the window still reads Status v1).
+No schema, helper, polkit, run-as, sandbox, IPC, daemon route, dependency or
+packaging-list change is part of I5c. Source and synthetic/native-widget evidence
+do not establish genuine helper/polkit, packaged or cross-device acceptance.
+
 I1 supplies `helper.generations` (`helper_generation.HomeGenerationReader`) as the
 concrete protected reader. Track A's additive `HomeActivationStore.current()` reads
 and pins the current receipt without an expected generation, preserving all existing
@@ -3773,7 +3800,7 @@ B5 remain unchanged. Ready admission does not require this timer link: policy
 expiry remains the gate. `_unit_wants_names` and the B17 replacement veto remain
 unchanged; Turn off must remove the timer link before replacement. Unit files remain dpkg
 payload after Turn off. I5a opens the helper public lifecycle/invite gate;
-Linux CLI consumers are delivered in I5b; bridge consumers follow in I5c.
+Linux CLI consumers are delivered in I5b; bridge Enable/Disable/IssueInvite consumers are delivered in I5c (source only; I6 pending).
 
 **B18 dependency:** a package upgrade with a different shipped route artifact
 makes renewal refuse until B18 repair/upgrade rewraps it. I4b-1 adds no upgrade

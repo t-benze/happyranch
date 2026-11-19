@@ -92,7 +92,8 @@ class Host:
 
         contract.request_host(self, method, finish, lambda: True, lambda _snapshot: None,
                               allow_reconnect=False, cli_lifecycle=True,
-                              display_invite=self.terminal.say if self.terminal is not None else None)
+                              display_invite=(lambda invite, _expiry, _deadline: self.terminal.say(invite))
+                              if self.terminal is not None else None)
         if not outcome:
             loop.run()
         result, code, effect = outcome[0]
