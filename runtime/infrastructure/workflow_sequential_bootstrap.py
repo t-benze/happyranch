@@ -616,8 +616,6 @@ class BootstrapStartup:
         predecessor = None
         discovery = self.discoveries.get(self.runtime_root/'orgs'/slug)
         upgrade = discovery is not None and any(selected.upgrade for selected in discovery.selections)
-        if upgrade:
-            state = 'installed_unverified'
         if _names(parent, 64, time.monotonic()+1):
             from runtime.daemon.workflow_setup_status import _attempt_record
             prior = _attempt_record(self.home, self.runtime_root, key, slug, time.monotonic()+1,
@@ -625,6 +623,9 @@ class BootstrapStartup:
             if prior['phase'] != 'registered' or prior['target_version'] != 1:
                 return
             predecessor = dict(attempt_id=prior['attempt_id'], digest=prior['record_digest'])
+        if state == 'not_installed' and (upgrade or predecessor is not None):
+            # Schema1 changes only the label of a positively proven no-effect
+            # hold. It cannot clear original source/worker close uncertainty.
             state = 'installed_unverified'
         value = dict(format='workflow-setup-hold@2' if upgrade or predecessor else 'workflow-setup-hold@1', runtime_key=key, org_slug=slug,
                      reason=reason, state=state, attempt_time=datetime.now(timezone.utc).isoformat())

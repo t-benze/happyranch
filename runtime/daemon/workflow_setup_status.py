@@ -125,7 +125,7 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
             if (set(value) != {'format', 'runtime_key', 'org_slug', 'reason', 'state', 'attempt_time'} | (set() if old_hold else {'predecessor'})
                     or value['format'] not in ('workflow-setup-hold@1', 'workflow-setup-hold@2')
                     or (value['runtime_key'], value['org_slug']) != (key, slug)
-                    or value['state'] not in (('unknown', 'not_installed') if old_hold else ('installed_unverified',))
+                    or value['state'] not in (('unknown', 'not_installed') if old_hold else ('unknown', 'installed_unverified'))
                     or value['reason'] not in ('writer_exclusion_unproven', 'startup_upgrade_budget_unavailable',
                         'history_check_failed', 'integrity_check_failed', 'backup_verification_failed',
                         'registration_failed', 'install_incomplete', 'default_load_budget_exceeded', 'commit_uncertain')

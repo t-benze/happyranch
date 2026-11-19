@@ -26,9 +26,12 @@ in `predecessor`; both backup/phase chains remain intact. Only that one linked
 1→2 transition is selectable, never a timestamp-selected retry. Schema1-only
 registered evidence projects `installed_unverified` for the current target.
 A pre-intent schema1 refusal uses `workflow-setup-hold@2`, linked to the original
-registered attempt when present; a positively proven unchanged writer refusal
-uses terminal `not_upgraded`, also `installed_unverified`. Unknown/unfinished
-attempts stay unknown and are never replayed. Legacy absent-storage holds keep
+registered attempt when present. Only positively proven no-effect holds report
+`installed_unverified`; uncertain original closure persists and serves `unknown`,
+with or without that predecessor, and later selection refuses fallback.
+A positively proven unchanged writer refusal uses terminal `not_upgraded`,
+also `installed_unverified`. Unknown/unfinished attempts stay unknown and are
+never replayed. Legacy absent-storage holds keep
 their original meaning. All startup evidence traversals retain native custody.
 
 Backup directories remain 0700 and backup files 0600. Full integrity, exact
@@ -40,8 +43,9 @@ Coding remains Disabled by default and public @2 admission stays closed.
 Focused private proof uses
 `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --automatic-schema2=CASE`
 with `absent_schema2`, `installed_empty`, `installed_history`,
-`qualification_failure`, `next_load`, or `startup_budget`; Python3.12 uses the
-same command with `WORKFLOW_SCHEMA_PYTHON=3.12`.
+`qualification_failure`, `next_load`, `startup_budget`, `unknown_close_registered`,
+or `unknown_close_unregistered`; Python3.12 uses the same command with
+`WORKFLOW_SCHEMA_PYTHON=3.12`.
 `bash scripts/test-daemon-startup-timing.sh --startup_budget` selects the same
 three-org production-shaped first/next load case. The existing SQL observer
 records actual A/B/C/L and logical charges, full FK checks and zero physical

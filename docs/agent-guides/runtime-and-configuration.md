@@ -30,8 +30,10 @@ definition/settings/original-save SQL, cells and rowids preserved. Any @1 histor
 refuses visibly and retains its original reader. New version-2 phase records
 link the one original registered schema1 attempt ID/final-record digest; neither
 old records nor backups are rewritten. Schema1-only registered evidence projects
-`installed_unverified` for schema2. Pre-intent schema1 holds and positively
-unchanged `not_upgraded` refusals retain that state; unknown effects stay unknown.
+`installed_unverified` for schema2. Only positively proven no-effect schema1 holds
+and unchanged `not_upgraded` refusals retain that state. Uncertain original close
+persists and serves `unknown` in version-2 holds, with or without an original
+registered journal; later startup selection refuses fallback.
 Backup directory parents must be 0700 and files 0600. Already-schema2 automatic
 setup writes zero on the next load, including setup audits and registration.
 The distinct positively fresh POST `/orgs` A2 initializer and historical offline

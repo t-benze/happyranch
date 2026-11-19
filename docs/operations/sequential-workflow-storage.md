@@ -35,8 +35,11 @@ original reader. There is no history conversion, automatic downgrade or restore.
 Current-target status is `installed_unverified` for schema1-only registered
 evidence or a positively unchanged `not_upgraded` refusal. A pre-intent refusal
 retains its reason in `workflow-setup-hold@2`, linked to the original journal
-when present. Failed/unknown attempts remain latched. Verified schema2 takes
-ordinary SH selection/full reads on later loads, with zero installation,
+when present. Only positively proven no-effect holds report `installed_unverified`;
+uncertain original closure persists and serves `unknown` with or without that
+journal, and later selection refuses fallback. Failed/unknown attempts remain
+latched. Verified schema2 takes ordinary SH selection/full reads on later loads,
+with zero installation,
 backup, setup-audit or definition-registration writes. Backup directories must
 be 0700 (including existing parents) and backup files 0600.
 

@@ -53,8 +53,10 @@ preservation. The original schema1 backup/journal stays intact and the single
 schema2 attempt links its original final-record digest. Any @1 history refuses
 upgrade visibly while preserving its original reader. Subsequent schema2 loads
 do no install/backup/setup-audit/registration writes. Schema1-only evidence and
-proven unchanged upgrade refusals report `installed_unverified` for schema2;
-unknown effects remain unknown. See the [storage runbook](sequential-workflow-storage.md#automatic-schema2-target-s2b).
+proven unchanged upgrade refusals report `installed_unverified` for schema2.
+Unknown original closure persists and serves `unknown` in version-2 holds even
+with an original registered schema1 journal; later startup refuses fallback.
+See the [storage runbook](sequential-workflow-storage.md#automatic-schema2-target-s2b).
 
 This storage change neither admits @2 nor changes saved Coding settings, roles
 or Allow. The separate fresh-org A2 initializer and offline default remain

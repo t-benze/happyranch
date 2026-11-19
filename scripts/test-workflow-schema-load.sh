@@ -63,7 +63,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
 
 automatic_schema2_case = None
 AUTOMATIC_SCHEMA2_CASES = ('absent_schema2', 'installed_empty', 'installed_history',
-    'qualification_failure', 'next_load', 'startup_budget')
+    'qualification_failure', 'next_load', 'startup_budget',
+    'unknown_close_registered', 'unknown_close_unregistered')
 if len(sys.argv) == 2 and sys.argv[1].startswith('--automatic-schema2='):
     automatic_schema2_case = sys.argv[1].split('=', 1)[1]
     assert automatic_schema2_case in ('all', *AUTOMATIC_SCHEMA2_CASES)
@@ -3770,8 +3771,9 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
         return {file: file.read_bytes() for file in attempt.iterdir()}
 
     scenarios = [(case, prior) for case in AUTOMATIC_SCHEMA2_CASES
-                 for prior in ((True, False) if case in ('installed_empty', 'installed_history', 'qualification_failure') else (True,))]
+                 for prior in ((True, False) if case in ('installed_empty', 'installed_history', 'qualification_failure') else (case != 'unknown_close_unregistered',))]
     for case, with_prior in scenarios:
+        unknown_close = case in ('unknown_close_registered', 'unknown_close_unregistered')
         if automatic_schema2_case not in (None, 'all', case):
             continue
         with tempfile.TemporaryDirectory(prefix='s2b-automatic-') as scratch, ExitStack() as stack:
@@ -3825,7 +3827,7 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
                             finally:
                                 org.db._conn.set_authorizer(None)
                             org.db._conn.commit()
-                        elif case == 'installed_history':
+                        elif case == 'installed_history' or unknown_close:
                             populate_returned(org.db)
                         elif case == 'startup_budget':
                             # Production-shaped retained native payload/ownership:
@@ -3840,13 +3842,21 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
             original = {slug: automatic_inventory(root/'happyranch.db') for slug, root in roots}
             original_bytes = {slug: (root/'happyranch.db').read_bytes() for slug, root in roots}
             runner = home/'qualification-fault.py'
-            if case == 'qualification_failure':
-                # Same existing test-side private-helper technique as A4-M.
-                # Refuse the actual default target reader, inside owning writer
-                # transaction before durable pre_commit/parent permit/COMMIT.
-                runner.write_text("import sys\nfrom runtime.infrastructure import workflow_sequential_bootstrap as b\n"
-                    "def refuse(self, conn):\n    assert conn.in_transaction\n    raise b.BootstrapEvidenceError('workflow_setup_history_synthetic_target')\n"
-                    "b.BootstrapInstall._default_target = refuse\nraise SystemExit(b.bootstrap_helper_main(sys.argv[1:]))\n")
+            if case == 'qualification_failure' or unknown_close:
+                # Existing test-side private-helper technique; no production seam.
+                if unknown_close:
+                    # Refuse real @1 history before attempt allocation, then
+                    # lose positive original source-close proof as in F1.
+                    runner.write_text("import sys\nfrom runtime.infrastructure import workflow_sequential_bootstrap as b\n"
+                        "original_close = b.BootstrapSource.close\ndef unknown_close(self):\n"
+                        "    original_close(self)\n    raise OSError('synthetic source native close uncertainty')\n"
+                        "b.BootstrapSource.close = unknown_close\nraise SystemExit(b.bootstrap_helper_main(sys.argv[1:]))\n")
+                else:
+                    # Refuse the actual default target reader inside the writer
+                    # transaction before durable pre_commit/parent permit/COMMIT.
+                    runner.write_text("import sys\nfrom runtime.infrastructure import workflow_sequential_bootstrap as b\n"
+                        "def refuse(self, conn):\n    assert conn.in_transaction\n    raise b.BootstrapEvidenceError('workflow_setup_history_synthetic_target')\n"
+                        "b.BootstrapInstall._default_target = refuse\nraise SystemExit(b.bootstrap_helper_main(sys.argv[1:]))\n")
                 import asyncio
                 actual_spawn = asyncio.create_subprocess_exec
                 async def fault_spawn(*args, **kwargs):
@@ -3860,6 +3870,46 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
             for discovery in setup.discoveries.values():
                 discovery.close()
             setup.require_closed()
+            if unknown_close:
+                slug, root = roots[0]
+                worker = setup.workers[0]
+                assert worker.result['state'] == 'unknown' and not worker.closed and worker.reaped, worker.result
+                assert worker.result['attempt_id'] is None and not worker.permit_sent, worker.result
+                assert worker.result['reason'] == 'history_check_failed', worker.result
+                assert setup.hold_states[slug] == 'unknown', f'F1 {case}: lost original close uncertainty'
+                key = hashlib.sha256(str(runtime).encode()).hexdigest()
+                hold = json.loads((home/'backups/workflow-sequential'/key/slug/'hold.json').read_text())
+                assert (hold['format'], hold['state']) == ('workflow-setup-hold@2', 'unknown'), f'F1 {case}: durable unknown hold became fallbackable: {hold}'
+                assert (hold['predecessor'] is not None) == with_prior
+                status = read_setup_status(home, runtime, slug)
+                assert (status.state, status.reason) == ('unknown', 'history_check_failed'), f'F1 {case}: served unknown hold lost its state/cause: {status}'
+                assert automatic_inventory(root/'happyranch.db') == original[slug]
+                assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
+                assert all(file.read_bytes() == raw for file, raw in retained_evidence.items())
+                latched = {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()}
+                # A later startup has positively closed discovery and no worker.
+                # It must still refuse the durable unknown before ordinary SH.
+                next_setup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                next_setup.run(tuple(roots), Settings())
+                for discovery in next_setup.discoveries.values():
+                    discovery.close()
+                next_setup.require_closed()
+                assert not next_setup.workers and next_setup.hold_states.get(slug) == 'unknown', f'F1 {case}: later startup permitted fallback'
+                discovery = next_setup.discoveries[root]
+                assert discovery.failed and discovery.result is None, f'F1 {case}: selector accepted unknown as held'
+                assert str(discovery.primary) == 'workflow_setup_attempt_latched', discovery.primary
+                try:
+                    next_setup.take_shared(root)
+                except bootstrap.BootstrapEvidenceError as exc:
+                    assert str(exc) == 'workflow_setup_discovery_transfer_refused', exc
+                else:
+                    raise AssertionError(f'F1 {case}: uncertain original attached under fresh SH')
+                assert {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()} == latched
+                assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
+                status = read_setup_status(home, runtime, slug)
+                assert (status.state, status.reason) == ('unknown', 'history_check_failed'), status
+                print('PASS S2b F1', case, 'durable=unknown status=unknown later_fallback=refused', 'prior_schema1_journal='+str(with_prior), flush=True)
+                continue
             for slug, root in roots:
                 path = root/'happyranch.db'
                 after = automatic_inventory(path)
