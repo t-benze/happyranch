@@ -152,6 +152,10 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   Pasture `.eyebrow`, 11px / 600, 0.07em tracking, 1.5 line height; pair it
   with `uppercase` and `text-text-muted` (ink-3). `--text-display` (30px)
   stays for the Home greeting only.
+  Newsreader (`font-display`) is for h1/h2 and display numbers only: row and
+  entry titles are Hanken 600 (Knowledge entries: `text-body font-semibold`)
+  and small section/rail labels use the `.eyebrow` recipe above, not a serif
+  (THR-376 r2 K2/K4).
 - `PageTitle` (`patterns/PageTitle.tsx`, THR-376 PR6) is the title block of
   every top-level page (each Sidebar destination's list/index page): an
   optional `eyebrow` (`text-eyebrow uppercase text-text-muted`), exactly one
@@ -222,7 +226,12 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   filters, day pickers), keep independent `aria-pressed` toggle buttons.
   Adopted on Tasks (group by), Threads (All/Open/Done), Artifacts (type
   filter), Audit (time window), Health (window), Home top-token threads
-  (window) and Skills / Custom skills (current/removed).
+  (window), Skills / Custom skills (current/removed) and Todos (status
+  filter). A small fixed set of sibling sub-views of one page also uses it
+  (THR-376 r2 A12): Work Hours (Overview/Wakes) and Workflows
+  (Definitions/Setup/Runs); the caller derives `value` from the URL and
+  navigates in `onValueChange`, ignoring a re-pick of the active option.
+  The underline `SubTabBar` has no feature callers left (stories only).
 - Page-local CSS does not live in `tokens.css`. The Tasks list's `.tasks-*`
   layout rules are in `src/features/tasks/tasks.css`, imported by
   `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
@@ -246,6 +255,11 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   permanently removed neutral) render this way; the former `StatusPill` and
   `SkillStatusBadge` are deleted. Words and i18n keys are unchanged; the
   Skills pill moved from mono to the body font.
+  Jobs outcome pills (`running` / `exit N` / `failed`) and the Home
+  recent-activity verdict pill render through the same tone form (THR-376 r2
+  A10), so every tag is 11px / 600 (`.tag`); a tag that must stay a button
+  (the Knowledge pending-candidates chip) uses the same `text-overline
+  font-semibold` size with its own colours.
   Every `StatusBadge` stays on one line (`whitespace-nowrap`, THR-376 r2
   PR-P0d); a lifecycle `qualifier` truncates with an ellipsis inside the
   badge's `max-w-full` and carries its full text in the `title` attribute.

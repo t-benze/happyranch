@@ -47,6 +47,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "seqwf.breadcrumb": "面包屑导航",
   "seqwf.tab.definitions": "定义",
   "seqwf.tab.runs": "运行",
+  "seqwf.tabsAria": "工作流视图",
   "seqwf.readOnly": "仅供查看。智能体从各自的任务中发起工作流运行。此页面不提供启动、重试、重新分配、合并或配置控件。",
   "seqwf.loading": "正在加载工作流信息…",
   "seqwf.error": "无法加载工作流信息。",
@@ -2036,6 +2037,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'todos.filter.all': '全部',
   'todos.filter.allAgents': '全部智能体',
   'todos.filter.agentLabel': '按智能体筛选',
+  'todos.filter.statusLabel': '按状态筛选',
   'todos.group.active': '进行中',
   'todos.group.paused': '已暂停',
   'todos.group.needsAttention': '需要关注',
@@ -2183,6 +2185,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'workHours.header.description':
     '配置智能体何时唤醒以及派发什么 — 组织 → 团队 → 智能体，逐项配置。',
   'workHours.header.wakeHistory': '查看唤醒历史',
+  'workHours.tabs.aria': '工时视图',
   'workHours.tabs.overview': '概览',
   'workHours.tabs.wakes': '唤醒',
   'workHours.statusBar.label': '工时',

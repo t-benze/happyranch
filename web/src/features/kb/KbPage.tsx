@@ -160,7 +160,7 @@ function GroupedFolderRail({
       {/* TYPE — the "All entries" total row plus one row per existing `type`,
           folded into a single design-matching section (was Library + Folders). */}
       <section>
-        <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
+        <h3 className="text-eyebrow text-text-muted mb-1.5 px-2.5 uppercase">
           {t('kb.railTypeSection')}
         </h3>
         <button
@@ -213,7 +213,7 @@ function GroupedFolderRail({
           narrows the feed client-side; selecting it again clears the filter. */}
       {tags.length > 0 && (
         <section>
-          <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
+          <h3 className="text-eyebrow text-text-muted mb-1.5 px-2.5 uppercase">
             {t('kb.railTagsSection')}
           </h3>
           <div className="flex flex-wrap gap-1.5 px-2.5">
@@ -567,7 +567,7 @@ export function KbPage(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => setCandidatesView(true)}
-                  className="text-xs font-medium text-attention-text bg-attention-soft px-2.5 py-1 rounded-full hover:underline transition-colors"
+                  className="text-overline font-semibold text-attention-text bg-attention-soft px-2.5 py-0.5 rounded-full whitespace-nowrap hover:underline transition-colors"
                 >
                   {t('kb.pendingCandidatesTag', { count: candidatePendingCount, number: formatCountFor(locale, candidatePendingCount) })}
                 </button>

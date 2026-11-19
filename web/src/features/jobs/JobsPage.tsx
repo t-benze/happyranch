@@ -25,7 +25,8 @@ import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
-import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { toneFor } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
 import { Avatar } from '@/design-system/primitives/Avatar';
 import { useTranslation } from '@/hooks/i18n';
@@ -107,7 +108,7 @@ function StatusGroupHeader({ status, count }: { status: JobStatus; count: number
 function NeedsReviewPill(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <span className="text-mono-sm text-status-open bg-tier-green-tint inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-medium tracking-wide uppercase">
+    <span className="text-mono-sm text-status-open bg-tier-green-tint inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-semibold tracking-wide uppercase">
       {t('jobs.list.needsReview')}
     </span>
   );
@@ -123,23 +124,14 @@ function NeedsReviewPill(): JSX.Element {
  */
 function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
   const { t } = useTranslation();
-  const pill = 'text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium';
+  // THR-376 r2 A10: outcome pills are the shared StatusBadge (.tag 11/600).
   switch (job.status) {
     case 'running':
-      return (
-        <span className={`${pill} text-feedback-info bg-info-soft gap-1.5`}>
-          <span aria-hidden="true" className="bg-feedback-info h-1.5 w-1.5 rounded-full" />
-          running
-        </span>
-      );
+      return <StatusBadge tone="info" dot label="running" />;
     case 'completed':
-      return <span className={`${pill} ${toneClass(`exit ${job.exit_code ?? 0}`)}`}>exit {job.exit_code ?? 0}</span>;
+      return <StatusBadge tone={toneFor(`exit ${job.exit_code ?? 0}`)} label={`exit ${job.exit_code ?? 0}`} />;
     case 'failed':
-      return (
-        <span className={`${pill} ${TONE_CLASS.danger}`}>
-          {job.exit_code != null ? `exit ${job.exit_code}` : 'failed'}
-        </span>
-      );
+      return <StatusBadge tone="danger" label={job.exit_code != null ? `exit ${job.exit_code}` : 'failed'} />;
     case 'rejected':
       return <span className="text-mono-sm text-text-muted">rejected</span>;
     default:
