@@ -1302,6 +1302,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'dashboard.escalation.cancel': '取消',
   'dashboard.escalation.continuing': '正在继续…',
   'dashboard.escalation.continue': '继续并解决',
+  'dashboard.escalation.sendHint': '发送',
   'dashboard.topTokens.title': 'Token 消耗最多的会话 · {window}',
   'dashboard.topTokens.windowGroup': '时间窗口',
   'dashboard.topTokens.window.24h': '24 小时',
