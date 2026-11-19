@@ -205,6 +205,7 @@ class ManagedInstaller:
 
     def _inventory_files(
         self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int | tuple[int, ...], bool | None]],
+        *, directories: set[str] | None = None,
     ) -> dict[str, bytes]:
         """Bounded, shallow inventory of one fixed directory; no unknown reads."""
         files: dict[str, bytes] = {}
@@ -213,6 +214,10 @@ class ManagedInstaller:
                 with os.scandir(parent) as entries:
                     for index, entry in enumerate(entries):
                         path = str(self.root / relative / entry.name)
+                        if index < 64 and entry.name in (directories or set()):
+                            with self._directory(relative + "/" + entry.name):
+                                pass
+                            continue
                         if index >= 64 or entry.name not in allowed:
                             raise InstallerError(path if index < 64 else str(self.root / relative))
                         owner, mode, socket = allowed[entry.name]
@@ -245,10 +250,11 @@ class ManagedInstaller:
 
     def _inventory_units(
         self, connector: dict, *, removing_units: set[str] | None = None,
+        observed_units: dict[str, str] | None = None,
     ) -> tuple[set[str], dict[str, dict[str, str]]]:
         if connector and not isinstance(connector.get("managed"), dict):
             raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
-        expected = managed_units(self.layout, connector_config=connector)
+        expected = observed_units or managed_units(self.layout, connector_config=connector)
         present: set[str] = set()
         properties: dict[str, dict[str, str]] = {}
         for name, text in expected.items():
@@ -338,6 +344,7 @@ class ManagedInstaller:
 
     def _inventory(self, *, prepared_transaction: bytes | None = None,
                    pending: tuple[str, bytes] | None = None) -> InstallInventory:
+        preparing = self._headscale_preparing
         location = str(self.root / "etc/happyranch")
         paths: list[str] = []
         try:
@@ -381,12 +388,42 @@ class ManagedInstaller:
                 except FileNotFoundError:
                     continue
                 raise InstallerError(str(self.root / relative))
+            home = None
+            if prepared_transaction is None:
+                activation_present = False
+                try:
+                    with self._directory(headscale.INSTALLER_STATE) as parent:
+                        for name in ("home-activation.json", ".home-activation.json.pending"):
+                            try:
+                                os.stat(name, dir_fd=parent, follow_symlinks=False)
+                                activation_present = True
+                            except FileNotFoundError:
+                                pass
+                except FileNotFoundError:
+                    pass
+                try:
+                    with self._directory("etc/happyranch") as parent:
+                        sidecar = self._json(self._read_file(parent, "sidecar.json"))
+                except FileNotFoundError:
+                    if activation_present:
+                        raise InstallerError(location) from None
+                    sidecar = {}
+                if "home_binding" in sidecar or activation_present:
+                    from runtime.remote_access.home_admission import HomeProfileAdmission
+                    home = HomeProfileAdmission(self).require(ordinary=False)
+                    # Fixed Headscale custody map; readers only, never prepare.
+                    self._headscale_preparing = True
+                    self._inventory_files("etc/happyranch/headscale", {
+                        name: (self._headscale_owner, 0o600, False)
+                        for name in (*headscale.CONFIG_FILES, *headscale.LEAF_FILES, "policy.hujson")})
             config_metadata = {name: (config_owner, (0o600, 0o640, 0o644), False)
                                for name in _QUARANTINE_CONFIGS}
             if quarantine_phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
                 config_metadata = self._quarantine_metadata(quarantine_phase)
             files = self._inventory_files("etc/happyranch", {
                 **config_metadata,
+                **({"control-ca.pem": (config_owner, 0o640, False),
+                    "invite-issuer.json": (self.root_owner, 0o600, False)} if home else {}),
                 "release-daemon.json": (self.root_owner, 0o644, False),
                 "provision.json": (self.root_owner, 0o600, False),
                 "daemon.token": (service, 0o600, False),
@@ -395,7 +432,10 @@ class ManagedInstaller:
                    if prepared_transaction is not None else {}),
                 **({".install-transaction.json.pending": (self.root_owner, 0o600, False)}
                    if pending is not None and pending[0] == "install-transaction.json" else {}),
-            })
+            }, directories={"headscale", "empty-ca-directory"} if home else None)
+            if home is not None:
+                files.pop("control-ca.pem", None)
+                files.pop("invite-issuer.json", None)
             if pending is not None and files.pop("." + pending[0] + ".pending", None) != pending[1]:
                 raise InstallerError(str(self.root / "etc/happyranch" / ("." + pending[0] + ".pending")))
             paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
@@ -416,6 +456,8 @@ class ManagedInstaller:
             connector = self._json(files["connector.json"]) if "connector.json" in files else {}
             provenance = files.get("provision.json")
             modern = False
+            if home is not None and any(files.get(name) != data for name, data in home.files.items()):
+                raise InstallerError(location)
             required = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
             if provenance is not None:
                 # Recorded provisioning retains its exact mode contract. Only
@@ -439,7 +481,8 @@ class ManagedInstaller:
                                for value in digests.values())):
                     raise InstallerError(location)
                 for name, digest in digests.items():
-                    if name in files and hashlib.sha256(files[name]).hexdigest() != digest:
+                    if (name in files and not (home is not None and name in {"connector.json", "sidecar.json"})
+                            and hashlib.sha256(files[name]).hexdigest() != digest):
                         raise InstallerError(str(self.root / "etc/happyranch" / name))
             elif files:
                 # Interrupted publication may precede the next config or record.
@@ -462,7 +505,8 @@ class ManagedInstaller:
                 paths.extend(str(self.root / relative / name) for name in state)
             for relative, entries in (
                 ("run/happyranch-connector", {name: (service, 0o600, True) for name in ("ingress.sock", "control.sock")}),
-                ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False)}),
+                ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False),
+                    **({"observe.sock": (service, 0o600, True)} if home else {})}),
                 ("run/happyranch-release-verifier", {"control.sock": (
                     None if service is None else (self.root_owner[0], service[1]), 0o660, True)}),
             ):
@@ -485,8 +529,14 @@ class ManagedInstaller:
             # config/argv/control binding is reconstructed or executed.
             if (phase in _CONFIG_REMOVAL_PHASES or unit_removal) and "connector.json" not in files and modern:
                 connector = {"managed": {"profile": "linux-managed-identity-v1"}}
-            units, properties = self._inventory_units(connector, removing_units=removing_units)
+            units, properties = self._inventory_units(connector, removing_units=removing_units,
+                observed_units=HomeProfileAdmission(self).observed_units(home) if home else None)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
+            if home is not None:
+                if len(units) != len(UNITS):
+                    raise InstallerError(location)
+                return InstallInventory("owned-activated" if home.receipt.phase == "ready" else "owned",
+                                        home.receipt.phase, tuple(sorted(paths)))
             complete = required <= files.keys()
             failed = any(props["ActiveState"] == "failed" for props in properties.values())
             if phase in _REPLACEMENT_PHASES:
@@ -510,6 +560,8 @@ class ManagedInstaller:
             if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
                 location = str(exc)
             return InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,))
+        finally:
+            self._headscale_preparing = preparing
 
     def replacement_inventory(self) -> ReplacementInventory:
         """Inspect a journal only for replacement candidate selection.
@@ -2445,6 +2497,12 @@ class ManagedInstaller:
             sidecar = self._json(files["sidecar.json"])
             profile = cfg.managed.profile if cfg is not None else sidecar.get("Profile")
             if profile == "linux-managed-identity-v1":
+                if not staged and "home_binding" in sidecar:
+                    from runtime.remote_access.home_admission import HomeProfileAdmission
+                    admitted = HomeProfileAdmission(self).require()
+                    if any(admitted.files.get(name) != data for name, data in files.items()):
+                        raise ValueError
+                    return
                 # An inert staged bundle, not a runnable home transport. In
                 # particular, never publish a URL without its protected CA.
                 if (sidecar.keys() != {"Profile", "StateDir", "RoleIdentity", "DERPPolicy",
@@ -2923,6 +2981,12 @@ class ManagedInstaller:
 
     def _check_provisioning(self) -> None:
         try:
+            with self._directory("etc/happyranch") as parent:
+                sidecar = self._json(self._read_file(parent, "sidecar.json"))
+            if "home_binding" in sidecar:
+                from runtime.remote_access.home_admission import HomeProfileAdmission
+                HomeProfileAdmission(self).require()
+                return
             release = self._check_release_record()
             with self._directory("etc/happyranch") as parent:
                 record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
@@ -2991,7 +3055,7 @@ class ManagedInstaller:
         except FileNotFoundError:
             pass
 
-    def _refuse_staged_identity(self) -> None:
+    def _refuse_staged_identity(self) -> object | None:
         for name in ("connector.json", "sidecar.json"):
             try:
                 with self._directory("etc/happyranch") as parent:
@@ -3004,12 +3068,15 @@ class ManagedInstaller:
             managed = raw.get("managed")
             profile = managed.get("profile") if isinstance(managed, dict) else None
             if profile == "linux-managed-identity-v1" or raw.get("Profile") == "linux-managed-identity-v1":
-                # No modern install is selectable until the complete protected
-                # home binding ships. Never interpret a supplied URL as enough.
-                raise InstallerError("home control binding not provisioned; requires slice 3b-2")
+                from runtime.remote_access.home_admission import HomeProfileAdmission
+                try:
+                    return HomeProfileAdmission(self).require()
+                except InstallerError:
+                    raise InstallerError("home control binding not provisioned; requires slice 3b-2") from None
 
     def _write_units(self) -> None:
-        self._refuse_staged_identity()
+        if self._refuse_staged_identity() is not None:
+            raise InstallerError("home unit publication requires the activation owner")
         with self._directory(_UNIT_DIR, create=True) as parent:
             for name, text in self.units.items():
                 try:
@@ -3123,7 +3190,19 @@ class ManagedInstaller:
 
     def install(self, *, enrollment_key_file: Path | None = None) -> dict[str, str]:
         """Start then verify READY/drift; always discard staged enrollment input."""
-        self._refuse_staged_identity()
+        home = self._refuse_staged_identity()
+        if home is not None:
+            if enrollment_key_file is not None or self._check_enrollment():
+                raise InstallerError("ready home restart requires no enrollment input")
+            if self.inventory().state != "owned-activated":
+                raise InstallerError("home inventory drift")
+            self._refuse_staged_identity()
+            self.manager.enable(UNITS[3])
+            self._refuse_staged_identity()
+            self.manager.enable(UNITS[2])
+            self._refuse_staged_identity()
+            self.manager.start(UNITS[2], timeout=250.0)
+            return self.check_drift()
         if enrollment_key_file is None:
             raise InstallerError("install requires --enrollment-key-file; obtain a fresh single-use Headscale key")
         data = bytearray()
@@ -3180,12 +3259,16 @@ class ManagedInstaller:
         digests: dict[str, str] = {}
         try:
             self._refuse_install_transaction()
-            self._refuse_staged_identity()
+            home = self._refuse_staged_identity()
             if self._has_provisioning():
                 with self._directory("etc/happyranch") as parent:
                     record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
                 self.layout = record.get("layout")
-                self.units = managed_units(self.layout)
+                if home is not None:
+                    from runtime.remote_access.home_admission import HomeProfileAdmission
+                    self.units = HomeProfileAdmission(self).observed_units(home)
+                else:
+                    self.units = managed_units(self.layout)
             self._check_deb_payload()
             self._check_release_record()
             if self.layout == "deb" or self._has_provisioning():
@@ -3213,7 +3296,8 @@ class ManagedInstaller:
 
     def uninstall(self, *, purge: bool = False) -> dict[str, str]:
         """Wait for services before unit removal. Only purge removes service state."""
-        self._refuse_staged_identity()
+        if self._refuse_staged_identity() is not None:
+            raise InstallerError("home control binding not provisioned; requires slice 3b-2")
         headscale_result = (self.cleanup_headscale() if self.layout == "deb"
                             else {"state": "absent", "account": "absent"})
         try:

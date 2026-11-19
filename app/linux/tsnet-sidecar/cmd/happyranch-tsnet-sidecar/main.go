@@ -61,6 +61,10 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
 		return 2
 	}
+	if err := admitHomeForeground(*path, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
+		return 2
+	}
 	svc := sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second})
 	if runtime.GOOS == "darwin" {
 		return serveLaunchd(ctx, svc, *readiness, *watchdog, cfg.ConnectorAddr)
