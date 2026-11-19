@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from runtime.daemon.job_fence_observation import observe_job_fences
-from runtime.daemon.job_guardian import helper_argv, read_record, timeout_observed, write_record
+from runtime.daemon.job_guardian import helper_argv, launch_observed, read_record, timeout_observed, write_record
 from runtime.daemon.jobs_runner import run_job
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.org_access_fence import OrgAccessFence, org_access_key
@@ -330,27 +330,50 @@ while True: time.sleep(.1)
         from scripts.test_agent_retirement import fixture
         # Faults exist only in the real helper's child interpreter. Production
         # argv, launch, output pumps, terminal CAS and audit writer still run.
-        wrapper = """import errno,os,runpy,subprocess,sys
+        wrapper = """import errno,os,runpy,stat,subprocess,sys
 from unittest.mock import patch
 fault = sys.argv.pop(1)
 helper = sys.argv.pop(1)
 original = os.open
+original_fsync = os.fsync
+launch_fd = parent_fd = None
 def admission_open(path, *args, **kwargs):
+    global launch_fd, parent_fd
     if str(path).endswith('.' + fault + '.json'):
         raise OSError(errno.ENOSPC, 'synthetic guardian ' + fault)
-    return original(path, *args, **kwargs)
-with patch('os.open', side_effect=admission_open):
+    if launch_fd is not None and args[0] & os.O_DIRECTORY:
+        if fault == 'launch_dir_open':
+            raise OSError(errno.EIO, 'synthetic guardian ' + fault)
+        parent_fd = original(path, *args, **kwargs)
+        return parent_fd
+    fd = original(path, *args, **kwargs)
+    if str(path).endswith('.launch.json'):
+        launch_fd = fd
+    return fd
+def admission_fsync(fd):
+    if (fault == 'launch_file_fsync' and fd == launch_fd
+            and stat.S_ISREG(os.fstat(fd).st_mode)) or (fault == 'launch_dir_fsync' and fd == parent_fd):
+        raise OSError(errno.EIO, 'synthetic guardian ' + fault)
+    return original_fsync(fd)
+with patch('os.open', side_effect=admission_open), patch('os.fsync', side_effect=admission_fsync):
     if fault == 'popen':
         with patch('subprocess.Popen', side_effect=OSError(errno.EAGAIN, 'synthetic guardian popen')):
             runpy.run_path(helper, run_name='__main__')
     else:
         runpy.run_path(helper, run_name='__main__')
 """
-        for fault in ('timeout', 'process', 'popen', None):
+        publication_faults = ('launch_file_fsync', 'launch_dir_open', 'launch_dir_fsync')
+        for fault in ('timeout', 'process', 'popen', *publication_faults, None):
             with self.subTest(fault=fault):
                 async with fixture(self.scratch / str(fault)) as (org, _client):
                     sentinel = self.scratch / (str(fault) + '.ran')
                     script = f'from pathlib import Path\nPath({str(sentinel)!r}).touch()\nraise SystemExit(1)\n'
+                    if fault in publication_faults:
+                        # Keep the real script alive until helper admission
+                        # fails, without relying on process scheduling order.
+                        script = ('import time\nfrom pathlib import Path\n'
+                                  f'while not Path({str(sentinel) + ".release"!r}).exists(): time.sleep(.01)\n'
+                                  + script)
                     with ExitStack() as stack:
                         if fault is not None:
                             stack.enter_context(patch('runtime.daemon.jobs_runner.helper_argv', return_value=[
@@ -360,13 +383,18 @@ with patch('os.open', side_effect=admission_open):
                     row = org.db.get_job('JOB-1')
                     audits = org.db.execute("SELECT action,payload FROM audit_log WHERE action IN "
                         "('job_run_failed','job_run_completed') ORDER BY id").fetchall()
+                    print(json.dumps(dict(fault=fault, status=row.status.value, reason=row.reason,
+                        exit_code=row.exit_code, launch_record=launch_observed(row.stderr_path),
+                        script_completed=sentinel.exists(), audit_actions=[a['action'] for a in audits])))
                     self.assertEqual(len(audits), 1)
                     if fault is None:
                         self.assertEqual((row.status.value, row.reason, row.exit_code), ('completed', None, 1))
                         self.assertTrue(sentinel.exists())
                         self.assertEqual(audits[0]['action'], 'job_run_completed')
                     else:
-                        self.assertFalse(sentinel.exists(), 'fault did not precede the script')
+                        if fault in publication_faults:
+                            self.assertTrue(launch_observed(row.stderr_path), 'fault did not follow JSON flush')
+                        self.assertFalse(sentinel.exists(), 'script completed despite helper admission failure')
                         self.assertIn('synthetic guardian ' + fault, row.stderr_head)
                         self.assertIn('synthetic guardian ' + fault, Path(row.stderr_path).read_text())
                         self.assertEqual((row.status.value, row.reason), ('failed', 'spawn_failed'))

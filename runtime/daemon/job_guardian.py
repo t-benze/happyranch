@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--stderr-path', type=Path, required=True)
     parser.add_argument('--job-id', required=True)
     parser.add_argument('--fence-fd', type=int)
+    parser.add_argument('--admission-fd', type=int)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.seconds <= 0 or not args.command or os.getpgrp() != os.getpid():
@@ -154,6 +155,16 @@ def main(argv: list[str] | None = None) -> int:
             os.close(args.fence_fd)  # Child keeps the SAME open-file description.
         write_record(Path(str(args.stderr_path) + '.launch.json'),
                      dict(format='job-guardian-launch@1', status='started', job_id=args.job_id))
+        if args.admission_fd is not None:
+            # This helper-only pipe is not passed to the script. A readable
+            # record alone cannot confirm publication: flush may precede EIO.
+            try:
+                if os.write(args.admission_fd, b'1') != 1:
+                    raise OSError('job_guardian_admission_short_write')
+            except BrokenPipeError:
+                pass  # Parent loss must not cancel the independent budget.
+            finally:
+                os.close(args.admission_fd)
         launched = True
         end_grace = None
         while True:
@@ -187,8 +198,9 @@ def main(argv: list[str] | None = None) -> int:
     except BaseException as exc:
         if not launched:
             # This diagnostic precedes self/group kill if Popen succeeded but
-            # confirmation failed. Absence of confirmation also covers ENOSPC
-            # at the very first sidecar open, when no marker can be written.
+            # confirmation failed. No pipe acknowledgement is sent even if
+            # a readable started record survives a failed sync/publication.
+            # This also covers ENOSPC before any sidecar can be written.
             try:
                 os.write(2, ('job_guardian: spawn_failed: ' + str(exc)[:2048] + '\n').encode())
             except OSError:

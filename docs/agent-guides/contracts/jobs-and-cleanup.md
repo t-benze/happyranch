@@ -79,9 +79,13 @@ send a duplicate group TERM: the daemon owns escalation, including its existing
 30-second shutdown grace. The independent budget remains active after that
 request and after parent loss; if it expires first, its timeout policy applies.
 The reserved `jobs/JOB-NNN.err.launch.json` channel confirms a successful inner
-launch with `format=job-guardian-launch@1`, `status=started`. Missing or invalid
-confirmation is `failed/spawn_failed`, including timeout-sidecar reservation,
-identity publication or inner launch failure. The helper emits the error on
+launch with `format=job-guardian-launch@1`, `status=started`. The runner also
+requires a byte on a private helper-only admission pipe, sent only after the
+record's file fsync and parent-directory open/fsync succeed. The script does
+not inherit that pipe. A readable record without that acknowledgement is
+`failed/spawn_failed`, including failures after JSON flush. Missing or invalid
+confirmation also covers timeout-sidecar reservation, identity publication or
+inner launch failure. The helper emits the error on
 stderr before exiting. A helper exit code alone never proves script completion;
 confirmed script nonzero exits retain `completed` and their actual exit code.
 Unbounded jobs retain direct launch and their existing lifetime behavior.

@@ -637,7 +637,8 @@ async def run_job(
     SIGTERM then whole-group SIGKILL after five seconds. Its durable timeout
     marker and the daemon's fallback wait report the same ``"timeout"`` reason.
     External Stop/shutdown retains the daemon's escalation grace. Missing
-    guardian launch confirmation is ``spawn_failed``, never script completion.
+    guardian launch record or post-publication pipe acknowledgement is
+    ``spawn_failed``, never script completion.
 
     `max_output_bytes=None` means unbounded per stream. Positive int means
     either stream exceeding the threshold triggers an immediate SIGKILL of
@@ -655,6 +656,8 @@ async def run_job(
 
     started = datetime.now(timezone.utc)
     scratch_token = None
+    admission_read = None
+    admission_write = None
     from runtime.orchestrator.producer_move import producer_preparation_effects
     if task_id is not None and workspace_root is not None:
         with producer_preparation_effects(move_owner):
@@ -692,8 +695,12 @@ async def run_job(
             inherited = (registration.org_fence_fd,)
         command = [binary, '-']
         if max_runtime_seconds is not None:
+            admission_fd, admission_write = os.pipe()
+            admission_read = os.fdopen(admission_fd, 'rb', buffering=0)
+            os.set_blocking(admission_fd, False)
             command = [*helper_argv(), '--seconds', str(max_runtime_seconds),
                        '--stderr-path', stderr_path, '--job-id', job_id or 'anonymous',
+                       '--admission-fd', str(admission_write),
                        *(['--fence-fd', str(inherited[0])] if inherited else []),
                        *command]
         if registration is not None:
@@ -706,9 +713,15 @@ async def run_job(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
-            pass_fds=inherited,
+            pass_fds=(*inherited, admission_write) if admission_write is not None else inherited,
         )
+    except BaseException:
+        if admission_read is not None:
+            admission_read.close()
+        raise
     finally:
+        if admission_write is not None:
+            os.close(admission_write)
         if scratch_token is not None:
             reset_task_scratch(scratch_token)
     if registration is not None:
@@ -819,7 +832,8 @@ async def run_job(
         elif cap_event.is_set():
             status = "failed"
             reason = "output_cap"
-        elif max_runtime_seconds is not None and not launch_observed(stderr_path):
+        elif max_runtime_seconds is not None and (
+                admission_read.read(1) != b'1' or not launch_observed(stderr_path)):
             status, reason = 'failed', 'spawn_failed'
         else:
             status = "completed"
@@ -854,6 +868,8 @@ async def run_job(
         status = "failed"
         exit_code = proc.returncode
     finally:
+        if admission_read is not None:
+            admission_read.close()
         # A pump owns its awaited publication, including buffered output after
         # child exit. Error/cancel/timeout must not leave that work detached.
         # Cancellation during reconciliation propagates without retirement;

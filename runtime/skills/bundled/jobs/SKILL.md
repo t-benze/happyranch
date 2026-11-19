@@ -237,8 +237,11 @@ spawning daemon dies. The original job group receives TERM at expiry and KILL
 after five seconds; a durable `.err.timeout.json` sidecar records `timeout`.
 External Stop/shutdown uses the daemon's escalation and existing 30-second
 shutdown grace; the guardian sends no duplicate TERM and keeps its independent
-deadline active, including after parent loss. Missing/invalid reserved
-`.err.launch.json` confirmation means `failed/spawn_failed`, with the helper
+deadline active, including after parent loss. The reserved `.err.launch.json`
+record also requires a private helper-only pipe acknowledgement, sent after
+file fsync and parent-directory open/fsync succeed. The script does not inherit
+the pipe. A readable record after failed publication, or missing/invalid
+confirmation, means `failed/spawn_failed`, with the helper
 error in stderr, rather than a natural script result. Confirmed script nonzero
 exits still mean `completed` with the actual exit code.
 Unbounded jobs retain direct launch. Restart still retains unproven running

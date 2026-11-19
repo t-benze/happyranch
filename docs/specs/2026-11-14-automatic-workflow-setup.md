@@ -403,8 +403,11 @@ The original native JOB owner is **`runtime/daemon/jobs_runner.py`**: `create_su
 Bounded-job guardians leave external Stop/shutdown escalation to the daemon,
 without duplicate TERM or a shorter shutdown grace. Their independent runtime
 deadline still applies after an external TERM or parent loss. A reserved launch
-confirmation sidecar distinguishes successful inner launch from helper admission
-failure: missing/invalid confirmation persists `failed/spawn_failed` with the
+confirmation sidecar and a private helper-only pipe acknowledgement distinguish
+successful inner launch from helper admission failure. The helper sends the
+acknowledgement only after file fsync and parent-directory open/fsync succeed;
+the script does not inherit the pipe. A readable sidecar after a failed
+publication, or missing/invalid confirmation, persists `failed/spawn_failed` with the
 helper error in stderr; confirmed script nonzero exits remain `completed`.
 See [the jobs contract](../agent-guides/contracts/jobs-and-cleanup.md#independent-runtime-budgets-and-retained-job-diagnostics-1699).
 
