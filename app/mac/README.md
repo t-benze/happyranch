@@ -92,13 +92,18 @@ ref remains. Native custody/discovery is uncapped, partial valid discovery and
 ordinary startup reconnect are unchanged. A stale/unresolvable ref refuses
 `stateChanged` with effect none. Read/subscribe cannot refresh protected discovery.
 
-The per-document ledger retains 64 mutation IDs/outcomes without eviction,
-refuses same-ID/different-body, and admits one ordinary mutation and one native
-app-owned prompt without a queue. Its separate attempt-cancellation record is
-exempt from ordinary saturation/busy but never from confirmation; repeated
-Cancel shares that record through storage and stopping. After settled Keep or
-sheet expiry, a new request ID admits a fresh default-Keep confirmation for the
-same attempt; exact-ID replies retain their original outcomes. Retry
+The per-document ledger retains up to 64 mutation IDs/outcomes, including
+archived cancellation replays, without eviction. It refuses same-ID/different-body
+and admits one ordinary mutation and one native app-owned prompt without a queue.
+The current attempt-cancellation record has a separate slot, exempt from ordinary
+saturation/busy but never from confirmation; repeated Cancel shares that record
+through storage and stopping. After settled Keep or sheet expiry, a new request
+ID admits a fresh default-Keep confirmation for the same attempt only if archiving
+the previous cancellation fits within the shared 64-entry bound. At saturation,
+ordinary mutations and new cancellation IDs requiring archival refuse with
+`busy`/`effect:none`/`recovery:refresh`; retained exact IDs still replay and body
+conflicts still refuse. No entry is evicted. Closing the Connection window or
+using the existing native app Disconnect remains available outside the journal. Retry
 save invokes the existing non-replacement save path and awaits write/readback;
 it does not delete or replace access after an identity/consent failure. Genuine
 Keychain consent remains native. A 130-second transport deadline reports

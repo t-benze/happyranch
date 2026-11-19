@@ -145,29 +145,66 @@ struct ConnectionContractTests {
         #expect(ledger.count == 1 && ledger.mutationID == nil)
     }
 
-    @Test("64 retained IDs never evict; attempt cancellation has its own repeat-safe record")
+    @Test("64 retained mutations and archived cancellations never evict; current Cancel has a separate slot")
     func ledgerBoundsAndCancellation() throws {
-        var ledger = ConnectionMutationLedger()
-        for number in 0..<64 {
-            let item = try ConnectionRequest(request("client.retrySave", id: "m\(number)"))
-            guard case .start = ledger.begin(item) else { Issue.record("early saturation"); return }
-            ledger.finish(item.id, outcome: .failure(.init(.saveFailed, effect: .unknown, recovery: .explicitRetry)))
+        for ordinaryCount in [64, 62, 0] {
+            var ledger = ConnectionMutationLedger()
+            for number in 0..<ordinaryCount {
+                let item = try ConnectionRequest(request("client.retrySave", id: "m\(number)"))
+                guard case .start = ledger.begin(item) else { Issue.record("early saturation"); return }
+                if ordinaryCount == 62 && number == 61 {
+                    // Keep a saving attempt pending while cancellation intents settle.
+                    ledger.markDispatched(item.id)
+                } else {
+                    ledger.finish(item.id, outcome: .failure(.init(.saveFailed, effect: .unknown, recovery: .explicitRetry)))
+                }
+            }
+            let attempt = UUID()
+            var cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+            guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("First Cancel blocked by saturation"); return }
+            #expect(ledger.count == ordinaryCount)
+            if ordinaryCount == 64 {
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
+                #expect(ledger.reservePrompt(for: cancel.id))
+                #expect(!ledger.reservePrompt(for: cancel.id))
+                ledger.markDispatched(cancel.id)
+                ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
+                let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
+                #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
+                #expect(try error(ledger.begin(cancel, cancelling: UUID()))?["code"] == .string("outcomeUnknown"))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: cancel.id))))?["code"] == .string("invalidRequest"))
+                #expect(ledger.count == 64)
+                continue
+            }
+            let kept = ConnectionOutcome.result(["effect": "none"])
+            var archived: [ConnectionRequest] = []
+            for number in ordinaryCount..<64 {
+                ledger.finish(cancel.id, outcome: kept)
+                archived.append(cancel)
+                cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel-\(number)"))
+                guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel after Keep refused below capacity"); return }
+                #expect(ledger.count == number + 1)
+            }
+            ledger.finish(cancel.id, outcome: kept)
+            #expect(ledger.count == 64)
+            let full: [String: ConnectionJSON] = ["code": .string("busy"), "effect": .string("none"), "recovery": .string("refresh")]
+            let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "overflow-cancel"))
+            #expect(try error(ledger.begin(repeated, cancelling: attempt)) == full)
+            #expect(try error(ledger.begin(repeated, cancelling: UUID())) == full)
+            #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow")))) == full)
+            for retained in archived + [cancel] {
+                guard case .replay(let outcome) = ledger.begin(retained, cancelling: attempt) else { Issue.record("retained Cancel did not replay"); return }
+                #expect(outcome.reply(id: retained.id) == kept.reply(id: retained.id))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: retained.id))))?["code"] == .string("invalidRequest"))
+            }
+            for number in 0..<ordinaryCount {
+                let code = ordinaryCount == 62 && number == 61 ? "outcomeUnknown" : "saveFailed"
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m\(number)"))))?["code"] == .string(code))
+            }
+            if ordinaryCount == 62 { #expect(ledger.mutationID == "m61") }
+            #expect(ledger.count == 64)
         }
-        #expect(ledger.count == 64)
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
-        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
-        let attempt = UUID()
-        guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel blocked by saturation"); return }
-        #expect(ledger.reservePrompt(for: cancel.id))
-        #expect(!ledger.reservePrompt(for: cancel.id))
-        ledger.markDispatched(cancel.id)
-        ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
-        let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
-        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
-        #expect(try error(ledger.begin(cancel, cancelling: UUID()))?["code"] == .string("outcomeUnknown"))
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "cancel"))))?["code"] == .string("invalidRequest"))
-        #expect(ledger.count == 64)
     }
 
     @Test("Timeout retains the native prompt and original action; Cancel bypasses only the mutation slot")
@@ -208,8 +245,12 @@ struct ConnectionContractTests {
         // consumes a later explicit Cancel for this unchanged attempt.
         let kept = ConnectionOutcome.result(["effect": "none"])
         ledger.finish(cancel.id, outcome: kept)
+        #expect(ledger.count == 1)
         guard case .start = ledger.begin(repeated, cancelling: attempt) else { Issue.record("Cancel after Keep refused"); return }
         #expect(ledger.reservePrompt(for: repeated.id))
+        #expect(ledger.count == 2)
+        guard case .replay(let archived) = ledger.begin(cancel, cancelling: attempt) else { Issue.record("archived Cancel did not replay"); return }
+        #expect(archived.reply(id: cancel.id) == kept.reply(id: cancel.id))
         #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
         #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: cancel.id))))?["code"] == .string("invalidRequest"))
         let later = try ConnectionRequest(request("client.cancelAttempt", id: "after-expiry"))
@@ -217,6 +258,7 @@ struct ConnectionContractTests {
         ledger.finish(repeated.id, outcome: kept)
         guard case .start = ledger.begin(later, cancelling: attempt) else { Issue.record("Cancel after expiry refused"); return }
         #expect(ledger.reservePrompt(for: later.id))
+        #expect(ledger.count == 3)
         #expect(ledger.recorded(repeated)?.reply(id: repeated.id) == kept.reply(id: repeated.id))
         #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
         ledger.releasePrompt(later.id); ledger.markDispatched(later.id)

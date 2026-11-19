@@ -190,7 +190,7 @@ struct ConnectionMutationLedger {
     private(set) var mutationID: String?
     private(set) var promptID: String?
     private(set) var originatingAction: String?
-    var count: Int { entries.count }
+    var count: Int { entries.count + cancellationReplays.count }
 
     func recorded(_ request: ConnectionRequest) -> ConnectionOutcome? {
         if let previous = entries[request.id] ?? cancellationReplays[request.id]
@@ -214,14 +214,15 @@ struct ConnectionMutationLedger {
                       result["effect"] as? String == "none" else { return .replay(cancellation.entry.current) }
             }
             if let cancellation {
-                // Preserve exact-ID replies even after a new intent is admitted.
+                guard count < 64 else { return .replay(.failure(.init(.busy))) }
+                // Archived replies share the non-evicting journal bound.
                 cancellationReplays[cancellation.entry.request.id] = cancellation.entry
             }
             cancellation = (attempt, Entry(request: request))
-            return .start // separate record; exhaustion and mutation busy cannot hide Cancel
+            return .start // current cancellation has its own slot, even at journal capacity
         }
         guard request.isMutation else { return .replay(.failure(.init(.invalidRequest))) }
-        guard mutationID == nil, promptID == nil, entries.count < 64 else { return .replay(.failure(.init(.busy))) }
+        guard mutationID == nil, promptID == nil, count < 64 else { return .replay(.failure(.init(.busy))) }
         entries[request.id] = Entry(request: request)
         mutationID = request.id; originatingAction = request.command
         return .start
