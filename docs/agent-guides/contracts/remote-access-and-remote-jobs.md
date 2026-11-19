@@ -851,7 +851,7 @@ The v1 provision record carries real fixed-file SHA-256 digests and the existing
 no transaction file and grants no transaction consumption/recovery operation.
 
 The inert staged modern profile still refuses install/uninstall (including
-purge), check-drift and unit publication before any unit write, backup
+purge), check-drift and ordinary unit publication before any unit write, backup
 creation/restoration or service call with `home control binding not provisioned; requires slice 3b-2`, leaving
 inventory unchanged. Alternate supervisor install/uninstall/start/stop/restart/
 enable/disable/upgrade/rollback/run entries refuse that inert bundle. E2a below
@@ -864,10 +864,14 @@ remains unavailable even with a supplied URL. Render-only
 profile, adding exactly `RuntimeDirectoryMode=0700` to the connector. Sidecar and
 other unit bytes remain unchanged, including `home_transport=False`.
 Legacy/omitted-profile configs and installed units retain main's exact bytes.
-The CLI still requires all original operator config inputs, and the fixed helper
-does not select generation. Installed modern-unit proof moves to 3b-2 with the
-complete protected home binding; lifecycle/recovery/rotation and helper/package
-H2 wiring remain 3b-1c/3b-1d. No Go/provider-admission/renderer change is included.
+The CLI still requires all original operator config inputs. I5d-1 supplies the
+installer-owned `publish_home_units()` prerequisite for clean-install Enable;
+public helper composition remains I5d-2. This separate inert step verifies the
+complete protected staged generation and publishes the five existing identity
+renderer fragments under the activation-directory lock. It never enables or
+starts them. `install()`, `_write_units()` and staged-identity admission remain
+unchanged. Installed public Enable/READY acceptance remains I6, not established
+by these temporary-root checks. No Go/provider-admission/renderer change is included.
 
 The first 3b-1c sub-part exposes only Python `inventory()` and
 `stop_and_confirm()` prerequisites on `ManagedInstaller`; no CLI/helper/package
@@ -3074,6 +3078,33 @@ using literal no-follow parents/readers and revalidating sampled metadata.
 E2a now wires this gate into protected ordinary admission and phase-aware
 inventory. E2b adds first publication only through Prepare and the intent-bound
 managed_services owner; ordinary installation does not publish a first home unit.
+I5d-1's `ManagedInstaller.publish_home_units()` fills the clean-install fragment
+publication prerequisite without a public/CLI caller. Under the existing
+activation-directory flock it re-verifies protected modern provenance, all five
+original config/token digests, release binding and same-FD token source. Missing
+fragments require a complete current staged-inert bundle. It writes exactly
+`managed_units(layout, connector_config=<protected connector.json>)`, with
+literal pinned no-follow parents, exclusive `O_EXCL|O_NOFOLLOW` files,
+root:root 0644 and file/parent fsync. Exact prefixes survive interruption and
+are reused on retry, including before systemd has loaded them. A complete
+exact set is reused without writes; the retained home sidecar variant is also
+accepted only on this reuse path, by the same renderer accepted by
+`HomeActivationOwner._managed_fragments`. Its preserved original sidecar bytes
+are checked against provenance; this neither admits nor republishes live config.
+All candidate load roots are scanned before effects with shared 65536-entry /
+32-depth bounds. Differing files, aliases, override copies, even empty exact,
+dash-prefix or type-wide drop-in directories, and pending residue refuse.
+Daemon-reload uses the existing manager; the loaded FragmentPath, DropInPaths,
+NeedDaemonReload and LoadState must match `_managed_fragments`, with exact Names
+also excluding aliases. No enable/start occurs and the closed provision writer
+map is unchanged. This sampled inventory retains the cooperative-root/systemd
+writer assumption; it is not a racing-writer fence.
+
+Turn off stops, disables and proves quiescence of these five managed fragments,
+then retains their root:root 0644 renderer-exact, nonsecret files. A later
+publication reuses them without writes. B17 removes them on replacement. B5,
+B6 and B17 inventory/deletion maps remain closed and unchanged (I5d prerequisite
+ruling Addendum A); retaining fragments grants no active service or admission.
 Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
@@ -3311,7 +3342,22 @@ SystemdService=`happyranch-remote-access-helper.service`, Type=dbus, with
 -/opt/happyranch
 ```
 
-`-` permits absence. `/etc` permits shadow-utils' lock/temp/rename for passwd,
+`-` permits absence but supplies a writable bind mount only if the directory
+existed when that helper process started. Clean `provision()` and
+`prepare_headscale()` therefore leave connector/sidecar state, log and runtime
+directories and Headscale state/runtime custody absent. Systemd creates them
+at first unit start using the existing StateDirectory/RuntimeDirectory/
+LogsDirectory declarations and modes. Present directories still undergo the
+same exact custody checks, and preflight still inspects them for residue.
+Pre-start Headscale policy/config/TLS handoff writes are under `/etc`, with
+root CA/issuer custody under packaged `/var/lib/happyranch-remote-access`;
+none requires writing inside the absent service-owned state/runtime dirs.
+Root-only `/etc` and packaged installer-state creation retain their existing
+rules. A temporary-root test enumerates actual write-open/mkdir events and
+created paths for provision → prepare_headscale → publish_home_units, comparing
+them to the shipped B8 list; optional entries count only when present before
+the sequence. This is source/temporary-root evidence, not a live sandbox proof.
+`/etc` permits shadow-utils' lock/temp/rename for passwd,
 group, shadow and gshadow, and includes the existing happyranch, credstore and
 systemd paths. System accounts skip lastlog/faillog, so `/var/log` stays
 read-only; `/usr`, `/boot`, `/opt/happyranch-desktop` and everything else stay
