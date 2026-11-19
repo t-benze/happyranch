@@ -586,95 +586,12 @@ class ConnectionWindow:
                 waiters.clear()
 
         generation = self.generation
-        acknowledged = False
 
         def current() -> bool:
             return (self.active and not self.closed and self.generation == generation
                     and self.view.get_uri() == ENTRY)
 
-        def failed(error: Exception, dispatched: bool) -> None:
-            if not current():
-                return
-            remote = self.Gio.DBusError.get_remote_error(error) if isinstance(error, self.GLib.Error) else None
-            absent = remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
-                                "org.freedesktop.DBus.Error.NameHasNoOwner")
-            snapshot = self.protocol.host_unavailable("off" if absent else "unknown")
-            self.observe_host(snapshot)
-            if acknowledged:
-                complete(self.protocol.host_action(method, snapshot))
-            elif not mutation and absent and method == "Status":
-                complete(snapshot)
-            else:
-                closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
-                          "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
-                          "org.freedesktop.DBus.Error.AuthFailed": "permissionDenied",
-                          "ai.happyranch.RemoteAccess1.Error.wrong_uid": "permissionDenied",
-                          "ai.happyranch.RemoteAccess1.Error.changed": "stateChanged",
-                          "ai.happyranch.RemoteAccess1.Error.expired": "expired",
-                          "ai.happyranch.RemoteAccess1.Error.busy": "busy",
-                          "ai.happyranch.RemoteAccess1.Error.invalid_request": "invalidRequest",
-                          "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
-                code = closed.get(remote)
-                if code:
-                    complete(None, code)
-                elif mutation and dispatched and not absent:
-                    complete(None, "outcomeUnknown", "unknown")
-                else:
-                    complete(None, "unavailable")
-
-        def replied(connection: object, result: object, called: str) -> None:
-            nonlocal acknowledged
-            if not current():
-                return
-            try:
-                raw, = connection.call_finish(result).unpack()
-                if called in _contract.HOST_MUTATIONS:
-                    if _contract.parse_json(raw, 32768) != "ok":
-                        raise ValueError("invalid helper acknowledgement")
-                    acknowledged = True
-                    # Keep the slot until Status completes; never predict state
-                    # from an acknowledgement, selected label or fingerprint.
-                    call("Status")
-                    return
-                snapshot = self.protocol.host(raw)
-                self.observe_host(snapshot)
-                complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
-            except Exception as error:
-                failed(error, True)
-
-        def call(called: str) -> None:
-            try:
-                self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
-                    "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),
-                    self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if called in _contract.HOST_MUTATIONS
-                    else self.Gio.DBusCallFlags.NONE,
-                    122000 if called in _contract.HOST_MUTATIONS else 3000,
-                    self.cancellable, replied, called)
-            except Exception as error:
-                failed(error, False)
-
-        def connected(_source: object, result: object, _data: object) -> None:
-            try:
-                connection = self.Gio.DBusConnection.new_for_address_finish(result)
-                connection.set_exit_on_close(False)
-                if not current():
-                    connection.close(None, None, None)
-                    return
-                self.connection = connection
-                call(method)
-            except Exception as error:
-                failed(error, False)
-
-        try:
-            if self.connection is not None and not self.connection.is_closed():
-                call(method)
-            else:
-                self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
-                    self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
-                    self.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
-                    None, self.cancellable, connected, None)
-        except Exception as error:
-            failed(error, False)
+        _contract.request_host(self, method, complete, current, self.observe_host)
 
     def detach(self) -> None:
         self.active = False
@@ -712,8 +629,8 @@ class ConnectionWindow:
             self.window.remove(child)
         label = self.Gtk.Label(label=self.tr(
             "Connection controls are unavailable in this build or web engine. "
-            "The connection command-line fallback is not available yet.",
-            "此版本或网页引擎暂不支持连接控制。连接命令行替代功能尚未提供。"))
+            "Linux host fallback: happyranch connection host --help. Client CLI is unavailable; Mac host is deferred.",
+            "此版本或网页引擎暂不支持连接控制。Linux 主机替代命令：happyranch connection host --help。客户端命令行尚未提供；Mac 主机暂缓支持。"))
         label.set_line_wrap(True)
         label.set_margin_start(24)
         label.set_margin_end(24)

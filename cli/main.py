@@ -30,6 +30,7 @@ from cli.client.client import (  # noqa: F401  (cli.main.OpcClient must stay the
 from cli.commands import (
     agents,
     artifacts,
+    connection,
     doctor,
     dreams,
     executor_binaries,
@@ -166,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     runtime.register(sub)
+    connection.register(sub)
     tasks.register(sub)
     teams.register(sub)
     agents.register(sub)

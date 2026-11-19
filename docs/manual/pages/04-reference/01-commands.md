@@ -51,6 +51,24 @@ The files under `org/` are the source of truth for that organization. You can ha
 | `happyranch orgs init <slug> [--from <example-tree>]` | Materialize a new org |
 | `happyranch orgs unload <slug>` | Detach an org from the daemon (does not delete files) |
 
+## Local connection fallback
+
+`happyranch connection status` reports nonsecret platform/role availability
+without daemon access. `happyranch connection host --help` lists the Linux host
+fallback: `status`, `devices`, `next-device`, `approve-device`, `reject-device`,
+`revoke-device`. It uses the same fixed native helper as the desktop app, with
+zero D-Bus inputs. Mutations require a desktop and fresh system authorization;
+headless attempts return `unavailable` / `none` / `nativePermission` without mutation.
+Revoke selects interactively on the same bus inside one invocation (32 choices,
+120 seconds); there is no `--device-id` or cross-command cursor. Output is closed
+nonsecret JSON; post-dispatch loss is unknown and never retried automatically.
+Exit 0 means completed read/action or cancelled selection, 1 a closed error, and
+2 invalid syntax. An unavailable read observation stays explicit.
+
+`host enable`, `turn-off` and `create-invite` return unavailable without dispatch.
+Recovery and Client CLI are not registered yet; Mac host is deferred/unavailable.
+See the [Linux release handbook](../../../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
+
 ## Per-org
 
 | Command | Description |

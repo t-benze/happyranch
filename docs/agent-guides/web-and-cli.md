@@ -3,7 +3,9 @@
 The separate, daemon-independent native connection shell is built with
 `cd web && npm run build:connection`; see [its boundary/import audit](../../web/connection/README.md).
 It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.
-Native loading/packaging and lifecycle/CLI delivery remain later slices.
+Native loading is packaged separately. Slice 5a adds the Linux host fallback:
+`happyranch connection status` and `connection host --help`; Client CLI and
+full lifecycle/recovery parity remain pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
