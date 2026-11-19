@@ -1,4 +1,4 @@
-"""Bounded stdlib pipe transport for the fixed helper's private B11 worker.
+"""Bounded stdlib pipe transport for the fixed helper's private B10/B11 workers.
 
 The existing ready/commit exchange carries the live-caller hook to the Gio
 parent. It creates no listener and adds no connector IPC verb or authority.
@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import subprocess
 import sys
 import time
 from typing import Callable
 
-METHODS = {'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite'}
+METHODS = {'IssueInvite': 'issue-invite', 'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite'}
 OUTCOMES = frozenset({'complete', 'refused', 'uncertain', 'partial_cleanup'})
 
 
@@ -26,9 +27,9 @@ def _pairs(items: list[tuple[str, object]]) -> dict:
     return result
 
 
-def read_frame(fd: int, deadline: float) -> dict:
+def read_frame(fd: int, deadline: float, *, limit: int = 4096) -> dict:
     data = bytearray()
-    while len(data) <= 4096:
+    while len(data) <= limit:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
             raise TimeoutError('expired')
@@ -36,6 +37,10 @@ def read_frame(fd: int, deadline: float) -> dict:
         if not value:
             raise ValueError('unavailable')
         data.extend(value)
+        # Keep the existing default's byte boundary; new secret frames have
+        # an exact limit, including the newline, even with JSON whitespace.
+        if limit != 4096 and len(data) > limit:
+            raise ValueError('unavailable')
         if value == b'\n':
             result = json.loads(data, object_pairs_hook=_pairs)
             if type(result) is not dict or time.monotonic() >= deadline:
@@ -45,7 +50,7 @@ def read_frame(fd: int, deadline: float) -> dict:
 
 
 def confirm(deadline: float) -> None:
-    """Child-side callback; no journal lock may span this ready/commit wait."""
+    """Child live hook: B11 releases its journal; issuance retains B10 lock order."""
     if time.monotonic() >= deadline:
         raise TimeoutError('expired')
     print('{"result":"ready"}', flush=True)
@@ -62,8 +67,13 @@ def effect(command: tuple[str, ...], request: dict,
     try:
         process.stdin.write(json.dumps(request).encode() + b'\n')
         process.stdin.flush()
-        for _ in range(16):  # B11's finite revalidation boundaries, never a retry.
-            value = read_frame(process.stdout.fileno(), deadline)
+        # Issuance may expire the minter's existing <=128 usable keys, with
+        # before/after live checks for each. B11 keeps its original bound.
+        frames = 272 if request.get('method') == 'IssueInvite' else 16
+        for _ in range(frames):  # Finite boundaries on the SAME deadline, never a retry.
+            value = (read_frame(process.stdout.fileno(), deadline, limit=6144)
+                     if request.get('method') == 'IssueInvite' else
+                     read_frame(process.stdout.fileno(), deadline))
             if value == {'result': 'ready'}:
                 before_commit()
                 if time.monotonic() >= deadline:
@@ -85,3 +95,15 @@ def effect(command: tuple[str, ...], request: dict,
         process.stdout.close()
         if not process.stdin.closed:
             process.stdin.close()
+
+
+def validate_issued(value: dict) -> None:
+    """Closed secret-bearing reply, validated only in memory; no diagnostics."""
+    now = time.time()
+    if (type(value) is not dict or set(value) != {'result', 'invite', 'expires_at'}
+            or value['result'] != 'complete' or type(value['invite']) is not str
+            or len(value['invite']) > 5500
+            or re.fullmatch(r'hrinvite2:[A-Za-z0-9_-]+', value['invite']) is None
+            or type(value['expires_at']) is not int
+            or not now < value['expires_at'] <= now + 300):
+        raise ValueError('unavailable')

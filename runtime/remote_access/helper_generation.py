@@ -61,10 +61,10 @@ LIFECYCLE_COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
 
 
 class HomeLifecycleClient:
-    """Fixed child transport; only protected snapshots cross the system-Python seam."""
+    """Fixed child transport; IssueInvite alone carries a private terminal secret."""
 
     def __init__(self, method: str, uid: int) -> None:
-        if method not in ('Enable', 'ReplaceFailed', 'Disable', 'CancelInvite', 'RecoverInvite') or type(uid) is not int or uid < 1000:
+        if method not in ('Enable', 'ReplaceFailed', 'Disable', 'IssueInvite', 'CancelInvite', 'RecoverInvite') or type(uid) is not int or uid < 1000:
             raise GenerationUnavailable()
         self.method, self.uid = method, uid
 
@@ -107,3 +107,13 @@ class HomeLifecycleClient:
             import happyranch_fixed_helper_invite as helper_invite
         return helper_invite.effect(LIFECYCLE_COMMAND, dict(method=self.method, uid=self.uid,
             step='recover', expected=expected, deadline=deadline), before_commit)
+
+    def issue_invite(self, expected: str, deadline: float, before_commit: Callable[[], None]) -> dict:
+        if self.method != 'IssueInvite' or not time.monotonic() < deadline <= time.monotonic() + 120:
+            raise GenerationUnavailable()
+        if __package__:
+            from . import helper_invite
+        else:
+            import happyranch_fixed_helper_invite as helper_invite
+        return helper_invite.effect(LIFECYCLE_COMMAND, dict(method=self.method, uid=self.uid,
+            step='issue', expected=expected, deadline=deadline), before_commit)

@@ -112,7 +112,7 @@ is unchanged; outside-home key delivery remains an open founder/security gate (�
 | `RefreshHomeAddress()` / `refresh-home-address` | Re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
 | `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
-| `IssueInvite()` / `issue-invite` | Home mode: locally mint one-use join key and pairing secret after fresh auth; invalidate old invite, deliver once. |
+| `IssueInvite()` / `issue-invite` | Mounted privately in I4a; public gate closed until I5. Fresh auth mints one-use join key and pairing secret, invalidates old invite, and delivers once in the sole terminal `(s)` JSON reply after B16 settlement within the original 120 seconds; no prior accepted reply. |
 | `CancelInvite()` / `cancel-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
 | `RecoverInvite()` / `recover-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
@@ -165,8 +165,30 @@ effects. B11 tuples pass through unchanged: partial_cleanup/cancelled/uncertain
 means invalidation was acknowledged but key cleanup was not proved. Lost or late
 replies stay uncertain. StatusV2 uses only the existing invite/cleanup fields,
 bound to the authenticated UID and activation G/O and aged by B15; restart or
-binding drift leaves them unknown. IssueInvite and all public lifecycle dispatch
-remain gated for the later slices.
+binding drift leaves them unknown. All public lifecycle dispatch remains gated
+until I5.
+
+I4a privately mounts zero-input IssueInvite with the exact fresh issue-invite
+polkit action (auth_admin, never _keep), B8 UID/owner and protected config/CA/
+generation capture, the same helper slot and existing issuer/minter/serving B10
+owner. It preserves one attempted issue per minute and invalidates the old
+ceremony before mint. Connector unavailable refuses before mint; lost reserve
+replies leave the existing journal uncertain for B11. Only IssueInvite waits
+for the worker and B16 settlement before its single reply; the original
+120-second deadline includes capture/auth and is checked again after audit.
+The slot remains held through reply; other lifecycle calls keep accepted first.
+Terminal success, both child frame and compact D-Bus `(s)` JSON, is exactly
+`{"result":"complete","invite":"<text>","expires_at":<int>}` with the exact
+IssuedInvite text/Unix expiry. Child ready/commit frames stay unchanged; only
+this child exchange uses read_frame(limit=6144), with default4096 unchanged
+elsewhere. Parent refuses duplicate/extra/missing keys, invalid single
+hrinvite2: prefix/base64url alphabet, >5500 text bytes and noninteger/Boolean
+or out-of-range expiry (must be in (now, now+300]). Oversize is never truncated.
+Lost/late/malformed/expired post-dispatch results and lost delivery are uncertain;
+no second reply, fetch, polling or alternate delivery channel exists. Text is
+absent from StatusV2, B16, issuer journal, logs/errors and stderr (DEVNULL);
+StatusV2 carries only existing phase/deadline, and B10 only digest/deadline.
+The pinned wire-size/TTL limits remain unchanged; B14 remains I4b.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable
 denies and stream closure) → stop/disable recognized connector/sidecar/verifier
@@ -304,9 +326,11 @@ sequenceDiagram
     participant I as Local Headscale
     participant M as Mac client
     L->>H: IssueInvite() + fresh admin authentication
+    H->>C: Check availability; reserve undeliverable digest to invalidate old invite
     H->>I: Local mint, never remote admin key
     H->>C: Persist invite digest (private root-peer IPC)
-    H-->>L: One copyable invite (one delivery)
+    H->>H: Persist B16 outcome; recheck original 120 s deadline
+    H-->>L: Sole terminal reply: complete + invite + expires_at (no prior accepted)
     L-->>M: User transfers invite
     M->>I: Join Headscale with one-use pre-auth key
     M->>C: POST /pair/invite (secret); sidecar attaches WhoIs identity

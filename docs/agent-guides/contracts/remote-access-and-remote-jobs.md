@@ -3303,7 +3303,8 @@ or path crosses the boundary. These five bootstrap refusal codes are closed.
 The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected. I3a also ships the stdlib-only `helper_lifecycle.py` sibling and
 private lifecycle mount; I3b adds the stdlib-only `helper_invite.py` pipe adapter
-and private CancelInvite/RecoverInvite mounting. Its fixed existing bundled-Python `-I -m
+and private CancelInvite/RecoverInvite mounting; I4a adds private zero-input
+IssueInvite with the exact issue-invite auth_admin/no-keep action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
 It captures protected activation G/O (including absence), initial Enable config
@@ -3345,7 +3346,7 @@ The native 120-second auth and approximately 122-second transport are unchanged.
 No lifecycle method is exported. I3a's private mount uses the real native polkit
 CheckAuthorization callback with the captured unique bus sender and exact action;
 its terminal/cancellation rules retain the same slot through the entire worker.
-It replies accepted before effects and keeps the original 480/300-second budget
+Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 The child revalidates protected activation G/O and release UID before each effect;
 B6 rechecks operation inside its existing lock. Native uncertainty seals the slot
@@ -3419,8 +3420,20 @@ its current serving pinned pairing manager. It resolves that owner per call,
 refuses an absent owner and carries the unchanged generation/deadline into the
 manager's anchored transactions. The same manager mutation lock still spans the
 control ready/commit exchange; wire framing, root SO_PEERCRED and CAS checks are
-unchanged. Private helper lifecycle mounting is I3a; root issuer wiring remains serial
-integration work; no public helper method is opened by this capability.
+unchanged. Private helper lifecycle mounting is I3a; I4a privately mounts
+zero-input IssueInvite / ai.happyranch.remote-access.issue-invite, with fresh
+native auth_admin (never _keep), B8 kernel UID/owner binding and the same helper
+mutation slot. Root selects protected current config/CA and connector generation,
+composing only HomeInviteIssuer, the existing local minter and serving-owner B10
+facade. The core's random undeliverable digest reservation invalidates the old
+ceremony before mint, then the actual digest is reserved; each acknowledged
+B10 generation supplies the next CAS. The existing invite-user lock remains
+nonblocking; issuer journal precedes IPC, without a trust-file flock across IPC.
+The original 120-second capture/auth/worker deadline bounds admin RPCs and live
+caller revalidation. One attempted issue per minute and consumed delivery remain
+issuer-owned. Connector unavailability refuses before mint; lost reserve replies
+persist uncertainty in the same issuer journal for B11. No public helper method
+is opened by this capability.
 
 Why no founder: fixed operations on existing root-only private IPC.
 
@@ -3512,9 +3525,43 @@ or journal meaning changes. StatusV2 projects only existing invite/cleanup
 observations, pinned to the authenticated UID and activation G/O; B15 applies
 their monotonic age/staleness. Missing observations after restart or binding
 drift remain unknown. Public METHODS, introspection and dispatch still exclude
-both methods until I5; IssueInvite issuance/B14 remains I4 and evidence retirement
-remains I3c. Focused standalone backend checks:
+both methods until I5. I4a privately mounts IssueInvite as specified below;
+B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
+
+I4a mounted issuance transport (manager T1–T4):
+
+- **T1 timing:** IssueInvite alone sends no pre-worker accepted reply. Its sole
+  authenticated D-Bus reply follows worker return, B16 outcome persistence and
+  the final original 120-second remaining-budget check. The helper slot stays
+  held through that reply attempt; native approximately 122-second transport
+  is unchanged. Enable/ReplaceFailed/Disable/CancelInvite/RecoverInvite keep
+  accepted-before-effects. Refusal before effects uses a closed existing error;
+  lost, late, malformed or expired post-dispatch results use the private
+  IssueInvite `uncertain` error (explicitly admitted by its error sanitizer).
+  Lost reply delivery never licenses a second reply, retry delivery, fetch,
+  polling method or alternate channel. B11 settles retained uncertainty.
+- **T2 D-Bus success:** existing `(s)` compact JSON contains exactly
+  `{"result":"complete","invite":"<text>","expires_at":<int>}`. Text and
+  integer Unix expiry are exactly the issuer's IssuedInvite values.
+- **T3 child frame:** terminal success is the same exact three-key JSON object;
+  nonterminal `{"result":"ready"}` / `{"commit":true}` is unchanged. Failure
+  frames contain only the closed nonsecret result (`refused` or `uncertain`).
+  `helper_invite.read_frame` gains keyword `limit=4096`; existing callers retain
+  their default. Issuance permits at most 272 frames on the same deadline
+  (before/after checks for the existing minter cap of 128 usable keys); B11
+  retains its 16-frame bound. Only the IssueInvite child exchange supplies `limit=6144` for
+  the pinned <=5500-byte invite plus envelope/newline. Oversize refuses, never
+  truncates. Parent rejects duplicate/extra/missing keys, anything except one
+  `hrinvite2:` prefix with `[A-Za-z0-9_-]` remainder, total text length >5500,
+  noninteger (including Boolean) expiry or expiry outside `(now, now+300]`.
+  Validation and the original deadline are checked again after B16 settlement.
+- **T4 secrecy:** text exists only in memory and that one authenticated reply;
+  never in StatusV2, retained B16 audit, issuer journal, logs, exception/error
+  text or stderr. Child stderr remains DEVNULL. Error mapping uses categories,
+  never frame representations. StatusV2 retains only existing invite phase and
+  nonsecret expiry fields; connector receives only digest/deadline via B10.
+  Public METHODS/introspection/dispatch still exclude IssueInvite until I5.
 
 **B12 — Bounded recorded-node cleanup.**
 At approval record control-plane StableID → Headscale node ID using B2-style
@@ -3679,7 +3726,8 @@ step records succeeded, a proven pre-dispatch refusal records refused, and lost
 effect/audit settlement records uncertain. A failed revoke record never suppresses
 the separately audited stop attempt; incomplete residue remains a closed partial
 operation result. I3b also brackets private invite cancel/recover with the existing
-invite events and lifecycle outcome mapping; issuance remains I4. No extra public method is exported.
+invite events and lifecycle outcome mapping; I4a brackets issuance with
+invite_issued intent and succeeded/refused/uncertain settlement before delivery. No extra public method is exported.
 The closed event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
