@@ -3348,6 +3348,9 @@ CheckAuthorization callback with the captured unique bus sender and exact action
 its terminal/cancellation rules retain the same slot through the entire worker.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
+IssueInvite also keeps its original 120-second budget: after B16 settlement
+and the final blocking revalidation read, both invite expiry and remaining
+budget must still validate immediately before its sole reply (I4a below).
 The child revalidates protected activation G/O and release UID before each effect;
 B6 rechecks operation inside its existing lock. Native uncertainty seals the slot
 until terminal reply/cancellation acknowledgement. No public call can select this
@@ -3533,8 +3536,10 @@ I4a mounted issuance transport (manager T1–T4):
 
 - **T1 timing:** IssueInvite alone sends no pre-worker accepted reply. Its sole
   authenticated D-Bus reply follows worker return, B16 outcome persistence and
-  the final original 120-second remaining-budget check. The helper slot stays
-  held through that reply attempt; native approximately 122-second transport
+  the final blocking live-caller/protected-generation read, then invite-expiry
+  validation and the original 120-second remaining-budget check immediately
+  before delivery. The helper slot stays held through that reply attempt;
+  native approximately 122-second transport
   is unchanged. Enable/ReplaceFailed/Disable/CancelInvite/RecoverInvite keep
   accepted-before-effects. Refusal before effects uses a closed existing error;
   lost, late, malformed or expired post-dispatch results use the private
@@ -3555,7 +3560,11 @@ I4a mounted issuance transport (manager T1–T4):
   truncates. Parent rejects duplicate/extra/missing keys, anything except one
   `hrinvite2:` prefix with `[A-Za-z0-9_-]` remainder, total text length >5500,
   noninteger (including Boolean) expiry or expiry outside `(now, now+300]`.
-  Validation and the original deadline are checked again after B16 settlement.
+  Validation and the original deadline are checked again after B16 settlement
+  and the final blocking revalidation read, immediately before the secret reply.
+  If either expires during that read, deliver only uncertain: retain the consumed
+  issuer journal and settled B16 outcome, append B16 uncertainty, and never
+  roll back, re-mint or deliver the invite text.
 - **T4 secrecy:** text exists only in memory and that one authenticated reply;
   never in StatusV2, retained B16 audit, issuer journal, logs, exception/error
   text or stderr. Child stderr remains DEVNULL. Error mapping uses categories,
@@ -3727,7 +3736,11 @@ effect/audit settlement records uncertain. A failed revoke record never suppress
 the separately audited stop attempt; incomplete residue remains a closed partial
 operation result. I3b also brackets private invite cancel/recover with the existing
 invite events and lifecycle outcome mapping; I4a brackets issuance with
-invite_issued intent and succeeded/refused/uncertain settlement before delivery. No extra public method is exported.
+invite_issued intent and succeeded/refused/uncertain settlement before delivery.
+If expiry or the original B9 deadline lapses during the final blocking read,
+the succeeded outcome and consumed issuer journal remain; append uncertain
+before the sole uncertain error, without delivering invite text.
+No extra public method is exported.
 The closed event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,

@@ -779,8 +779,11 @@ def test_issue_invite_admission_refuses_before_effect(issue_mount: Any, monkeypa
 
 
 @pytest.mark.parametrize('case', ['unavailable', 'connector_uid', 'lost_reserve', 'minter_refused', 'minter_uncertain',
-                                  'late', 'audit_late', 'audit_intent', 'generation_drift', 'disconnect', 'reply_loss'])
-def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: str) -> None:
+                                  'late', 'audit_late', 'expiry_final_read', 'deadline_final_read',
+                                  'audit_intent', 'generation_drift', 'disconnect', 'reply_loss'])
+def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: str,
+                                                     monkeypatch: pytest.MonkeyPatch,
+                                                     caplog: Any, capsys: Any) -> None:
     from runtime.remote_access.home_minter import AdminRefused
     v = issue_mount
     if case == 'unavailable': v.control.status.side_effect = OSError('synthetic connector down')
@@ -817,6 +820,42 @@ def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: s
             deadline = v.helper.lifecycle_operation.budget.deadline
             v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline + 1
         v.helper.audit.outcome = audit_late
+    final_read = case in ('expiry_final_read', 'deadline_final_read')
+    settled = {}
+    if final_read:
+        from datetime import datetime, timedelta, timezone
+        if case == 'expiry_final_read':
+            v.admin.created['expiration'] = datetime.now(timezone.utc) + timedelta(seconds=2.5)
+        original = v.reader.issue_invite.side_effect
+        def issue_then_slow_read(*args: Any) -> dict:
+            frame = original(*args)
+            settled.update(frame=frame, journal=v.journal.read_bytes(), reads=0)
+            generation = v.reader.current_generation.side_effect
+            def slow_generation(*values: Any) -> str:
+                settled['reads'] += 1
+                if settled['reads'] == 2:
+                    assert v.helper.inflight is not None
+                    rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+                    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+                    assert rows[1]['outcome'] == 'succeeded'
+                    if case == 'expiry_final_read':
+                        time.sleep(max(0.0, frame['expires_at'] + .03 - time.time()))
+                        assert frame['expires_at'] <= time.time()
+                        assert v.helper.lifecycle_operation.budget.remaining() > 0
+                    else:
+                        deadline = v.helper.lifecycle_operation.budget.deadline
+                        v.helper.lifecycle_operation.budget.clock = lambda: deadline
+                    settled['final_read_completed'] = True
+                return generation(*values)
+            v.reader.current_generation.side_effect = slow_generation
+            return frame
+        v.reader.issue_invite.side_effect = issue_then_slow_read
+        def uncertain_reply(message: Any, category: str) -> None:
+            assert message is v.message and category == 'uncertain' and v.helper.inflight is not None
+            assert v.journal.read_bytes() == settled['journal']
+            rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+            assert [row['stage'] for row in rows] == ['intent', 'outcome', 'uncertain']
+        v.helper._error.side_effect = uncertain_reply
     if case == 'audit_intent': v.helper.audit.intent = Mock(side_effect=OSError('synthetic audit down'))
     if case == 'reply_loss': v.helper._reply.side_effect = OSError('synthetic lost method reply')
     v.admit()
@@ -829,17 +868,44 @@ def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: s
         assert v.helper._error.call_args.args[1] == ('unavailable' if refused else 'uncertain')
     assert v.helper.inflight is None
     creates = [event for event in v.events if event[0] == 'create']
-    assert bool(creates) == (case in ('lost_reserve', 'minter_refused', 'minter_uncertain', 'late', 'audit_late', 'reply_loss'))
+    assert bool(creates) == (final_read or case in ('lost_reserve', 'minter_refused', 'minter_uncertain', 'late', 'audit_late', 'reply_loss'))
     if case in ('unavailable', 'connector_uid', 'audit_intent'): assert not v.journal.exists()
     if case in ('lost_reserve', 'minter_uncertain', 'generation_drift', 'disconnect'):
         assert v.record()['outcome'] == 'uncertain'
-    if case in ('late', 'audit_late', 'reply_loss'):
+    if final_read or case in ('late', 'audit_late', 'reply_loss'):
         assert v.record()['outcome'] == 'issued'  # Consumed; NEVER fetch/re-deliver.
         assert v.helper.lifecycle_result['invite'] == 'uncertain'
-    if case == 'audit_late':
+    if final_read or case == 'audit_late':
         rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
         assert [row['stage'] for row in rows] == ['intent', 'outcome', 'uncertain']
         assert rows[1]['outcome'] == 'succeeded'
+    if final_read:
+        assert settled['reads'] == 2 and settled['final_read_completed']
+        assert v.journal.read_bytes() == settled['journal']
+        if case == 'expiry_final_read':
+            assert settled['frame']['expires_at'] <= time.time()
+            assert v.helper.lifecycle_operation.budget.remaining() > 0
+        assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
+        observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+        v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
+        v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+        v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+        monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw: SimpleNamespace(start=lambda: target(*args)))
+        monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+        v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+        status_reply = SimpleNamespace(set_body=lambda body: setattr(status_reply, 'body', body))
+        v.message.new_method_reply = lambda: status_reply
+        v.helper.connection.send_message = Mock()
+        v.helper._status_v2(v.message, ':1.42')
+        v.helper.connection.send_message.assert_called_once()
+        status_text = status_reply.body.unpack()[0]
+        status = json.loads(status_text)
+        assert status['invite']['state'] == 'uncertain' and status['invite']['deadline_utc_seconds'] is None
+        assert status['cleanup']['state'] == 'uncertain'
+        retained = (status_text + repr(v.helper.lifecycle_result) + repr(v.helper.invite_observation)
+                    + v.journal.read_text() + v.helper.audit.path.read_text()
+                    + repr(v.helper._error.call_args) + caplog.text + ''.join(capsys.readouterr()))
+        assert settled['frame']['invite'] not in retained
 
 
 def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any) -> None:

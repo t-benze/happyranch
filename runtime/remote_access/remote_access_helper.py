@@ -601,8 +601,8 @@ class RemoteAccessHelper:
                 before_commit()
                 self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED)
                 # B16 fsync and reply validation consume the SAME original budget.
-                _helper_invite.validate_issued(frame)
                 before_commit()
+                _helper_invite.validate_issued(frame)  # Final blocking read may outlive the invite.
                 operation.budget.remaining()
                 result = {'outcome': 'complete', 'invite': 'issued', 'cleanup': 'not_needed',
                           'expires_at': frame['expires_at']}
