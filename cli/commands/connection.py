@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import sys
 
-HOST_ACTIONS = ("status", "devices", "next-device", "approve-device", "reject-device", "revoke-device")
-UNAVAILABLE = ("enable", "turn-off", "create-invite", "cancel-invite", "replace-failed",
-               "refresh-home-address", "retry-policy-renewal")
+HOST_ACTIONS = ("status", "devices", "next-device", "approve-device", "reject-device", "revoke-device",
+                "enable", "turn-off", "create-invite", "cancel-invite", "replace-failed",
+                "recover-invite", "retry-policy-renewal")
+UNAVAILABLE = ("refresh-home-address",)
 
 CLIENT_ACTIONS = ("status", "accept-invite", "saved-computers", "connect-saved", "remove-saved",
                   "disconnect", "cancel-attempt", "retry", "retry-save", "health")
@@ -83,7 +84,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     host = roles.add_parser("host", help="Linux host actions; Mac host is deferred",
                            description="Linux host fallback. Mutations require a desktop system prompt. "
                            "Revoke selects interactively in this process. "
-                           "Enable/turn-off/create-invite and lifecycle recovery are unavailable.")
+                           "Create-invite and replace-failed require a controlling terminal.")
     actions = host.add_subparsers(dest="connection_action", required=True)
     for action in HOST_ACTIONS + UNAVAILABLE:
         actions.add_parser(action, help="Unavailable in this slice" if action in UNAVAILABLE else

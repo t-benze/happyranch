@@ -14,12 +14,44 @@ _spec = importlib.util.spec_from_file_location("connection_contract", Path(__fil
 contract = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(contract)
 METHODS = {"status": "Status", "devices": "Status", "next-device": "NextDevice",
-           "approve-device": "ApprovePending", "reject-device": "RejectPending", "revoke-device": "RevokeSelected"}
+           "approve-device": "ApprovePending", "reject-device": "RejectPending", "revoke-device": "RevokeSelected",
+           "enable": "Enable", "turn-off": "Disable", "create-invite": "IssueInvite",
+           "cancel-invite": "CancelInvite", "replace-failed": "ReplaceFailed",
+           "recover-invite": "RecoverInvite", "retry-policy-renewal": "RetryPolicyRenewal"}
+MUTATIONS = contract.HOST_MUTATIONS | contract.CLI_LIFECYCLE_TIMEOUTS.keys()
 
 
 class ClosedError(Exception):
     def __init__(self, code: str = "unavailable", effect: str = "none", recovery: str = "nativeRecovery") -> None:
         self.value = dict(code=code, effect=effect, recovery=recovery)
+
+
+class Terminal:
+    """A terminal sink is admitted before any secret-producing dispatch."""
+
+    def __init__(self) -> None:
+        try:
+            self.stream = os.fdopen(os.open("/dev/tty", os.O_RDWR | os.O_CLOEXEC),
+                                    "w", encoding="utf-8", buffering=1)
+            if not self.stream.isatty():
+                self.stream.close()
+                raise OSError()
+            self.input_fd = self.stream.fileno()
+        except OSError:
+            raise ClosedError(recovery="nativePermission") from None
+
+    def say(self, text: str) -> None:
+        print(text, file=self.stream, flush=True)
+
+    def confirm_replace(self) -> bool:
+        self.say("Replace failed remote access; existing pairings will be lost")
+        print("Continue? [y/N] ", end="", file=self.stream, flush=True)
+        if not select.select([self.input_fd], [], [], 120)[0]:
+            return False
+        return os.read(self.input_fd, 16) in (b"y\n", b"yes\n")
+
+    def close(self) -> None:
+        self.stream.close()
 
 
 def desktop_available() -> bool:
@@ -40,6 +72,8 @@ class Host:
         self.Gio, self.GLib = Gio, GLib
         self.connection = None
         self.mutating = False
+        self.terminal = None
+        self.wait_source = None
         self.cancellable = Gio.Cancellable()
         schema = Path(__file__).with_name("native-connection-bridge.v1.json")
         if not schema.is_file():
@@ -50,14 +84,15 @@ class Host:
         if self.connection is not None and self.connection.is_closed():
             raise ClosedError()  # Never move a process-local selection to a new bus.
         loop, outcome = self.GLib.MainLoop(), []
-        self.mutating = method in contract.HOST_MUTATIONS
+        self.mutating = method in MUTATIONS
 
         def finish(result: dict | None = None, code: str | None = None, effect: str = "none") -> None:
             outcome.append((result, code, effect))
             loop.quit()
 
         contract.request_host(self, method, finish, lambda: True, lambda _snapshot: None,
-                              allow_reconnect=False)
+                              allow_reconnect=False, cli_lifecycle=True,
+                              display_invite=self.terminal.say if self.terminal is not None else None)
         if not outcome:
             loop.run()
         result, code, effect = outcome[0]
@@ -68,6 +103,9 @@ class Host:
         return result
 
     def close(self) -> None:
+        if self.wait_source is not None:
+            self.GLib.source_remove(self.wait_source)
+            self.wait_source = None
         self.cancellable.cancel()
         if self.connection is not None:
             self.connection.close(None, None, None)
@@ -112,11 +150,17 @@ def main() -> int:
     parser.add_argument("action", choices=METHODS)
     args = parser.parse_args()
     method = METHODS[args.action]
-    host = None
+    host = terminal = None
     try:
-        if method in contract.HOST_MUTATIONS and not desktop_available():
+        if method in MUTATIONS and not desktop_available():
             raise ClosedError(recovery="nativePermission")
+        if method in ("IssueInvite", "ReplaceFailed"):
+            terminal = Terminal()
+            if method == "ReplaceFailed" and not terminal.confirm_replace():
+                print(json.dumps(no_change()))
+                return 0
         host = Host()
+        host.terminal = terminal
         result = revoke(host) if method == "RevokeSelected" else host.request(method)
         print(json.dumps(result, ensure_ascii=True))
         return 0
@@ -136,6 +180,11 @@ def main() -> int:
                 host.close()
             except Exception:
                 pass  # Teardown cannot rewrite the already reported effect.
+        if terminal is not None:
+            try:
+                terminal.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

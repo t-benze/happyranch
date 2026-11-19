@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -20,10 +21,22 @@ spec = importlib.util.spec_from_file_location("connection_command", Path(__file_
 command = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(command)
 
+LIFECYCLE = {"enable": ("Enable", 480000), "turn-off": ("Disable", 300000),
+             "create-invite": ("IssueInvite", 120000), "cancel-invite": ("CancelInvite", 120000),
+             "replace-failed": ("ReplaceFailed", 480000), "recover-invite": ("RecoverInvite", 120000),
+             "retry-policy-renewal": ("RetryPolicyRenewal", 120000)}
+INVITE = "hrinvite2:synthetic_invite_canary"
+
 
 class Terminal(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+    def fileno(self) -> int:
+        return 123
+
+    def close(self) -> None:
+        pass  # Retain the synthetic terminal transcript after product teardown.
 
 
 class Bus:
@@ -51,7 +64,10 @@ class Bus:
         if method == "NextDevice":
             current = self.snapshot["selected"]
             self.snapshot["selected"] = self.snapshot["devices"][1 if current == self.snapshot["devices"][0] else 0]
-        raw = self.raw or json.dumps(self.snapshot) if method in ("Status", "NextDevice") else self.ack or '"ok"'
+        reply = (json.dumps(dict(result="complete", invite=INVITE, expires_at=int(time.time()) + 200))
+                 if method == "IssueInvite" else '"accepted"' if method in
+                 {entry[0] for entry in LIFECYCLE.values()} else '"ok"')
+        raw = self.raw or json.dumps(self.snapshot) if method in ("Status", "NextDevice") else self.ack or reply
         error = self.status_error if method == "Status" else self.error
         GLib.idle_add(lambda: (callback(self, (raw, error), data), False)[1])
 
@@ -66,6 +82,7 @@ class ConnectionCLITests(unittest.TestCase):
     def setUp(self) -> None:
         self.bus = Bus()
         self.opens = []
+        self.holds = []
 
         def connect(*args: object) -> None:
             self.bus.closed = False
@@ -77,16 +94,27 @@ class ConnectionCLITests(unittest.TestCase):
             active.start()
             self.addCleanup(active.stop)
 
-    def run_native(self, action: str, choices: str = "revoke\n", desktop: bool = True) -> tuple:
-        out, err = io.StringIO(), Terminal()
+    def run_native(self, action: str, choices: str = "revoke\n", desktop: bool = True,
+                   tty: bool = True) -> tuple:
+        out, err, terminal = io.StringIO(), Terminal() if tty else io.StringIO(), Terminal()
+
+        def hold(interval: int, callback: object) -> int:
+            self.holds.append((interval, self.bus.closed))
+            return GLib.idle_add(callback)  # Advance only the product's budget timer, not the bus reply.
+
         with patch.object(sys, "argv", ["connection_cli.py", action]), \
                 patch.object(native, "desktop_available", return_value=desktop), \
+                patch.object(native.os, "open", side_effect=None if tty else OSError(), return_value=123), \
+                patch.object(native.os, "fdopen", return_value=terminal), \
+                patch.object(native.os, "read", return_value=choices.encode()), \
+                patch.object(GLib, "timeout_add", side_effect=hold), \
                 patch.object(sys, "stdin", Terminal(choices)), \
                 patch.object(native.select, "select", side_effect=lambda readers, *_args: (readers, [], [])), \
                 redirect_stdout(out), redirect_stderr(err):
             code = native.main()
+        self.tty_output = terminal.getvalue()
         text = out.getvalue() + err.getvalue()
-        for secret in ("a" * 24, "b" * 24, "fingerprint", "private-error-canary"):
+        for secret in ("a" * 24, "b" * 24, "fingerprint", "private-error-canary", INVITE):
             self.assertNotIn(secret, text)
         return code, json.loads(out.getvalue()), err.getvalue()
 
@@ -161,6 +189,8 @@ class ConnectionCLITests(unittest.TestCase):
 
     def test_fixed_transport_and_projection(self) -> None:
         for action, method in native.METHODS.items():
+            if action in LIFECYCLE:
+                continue  # Lifecycle has terminal frames/admission, not device acknowledgements.
             with self.subTest(action=action):
                 self.bus.calls.clear()
                 self.opens.clear()
@@ -216,12 +246,151 @@ class ConnectionCLITests(unittest.TestCase):
         with patch.dict(native.os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}), \
                 patch.object(Gtk, "init_check", return_value=(True, [])):
             self.assertFalse(native.desktop_available())
-        for action in ("approve-device", "reject-device", "revoke-device"):
-            with self.subTest(action=action):
-                code, result, _ = self.run_native(action, desktop=False)
-                self.assertEqual((code, result), (1, dict(code="unavailable", effect="none", recovery="nativePermission")))
+        with patch.object(native, "Host", side_effect=RuntimeError("unexpected host construction")) as host:
+            for action in ("approve-device", "reject-device", "revoke-device", *LIFECYCLE):
+                with self.subTest(action=action):
+                    code, result, _ = self.run_native(action, desktop=False)
+                    self.assertEqual((code, result), (1, dict(code="unavailable", effect="none", recovery="nativePermission")))
+            host.assert_not_called()
         self.assertEqual(self.opens, [])
         self.assertEqual(self.bus.calls, [])
+
+    def test_lifecycle_grammar_and_exact_dispatch(self) -> None:
+        parser = argparse.ArgumentParser()
+        command.register(parser.add_subparsers(dest="command"))
+        self.assertEqual(command.UNAVAILABLE, ("refresh-home-address",))
+        for action, (method, budget) in LIFECYCLE.items():
+            with self.subTest(action=action):
+                self.assertEqual(native.METHODS.get(action), method)
+                self.bus.calls.clear()
+                with patch.object(command.sys, "platform", "linux"), \
+                        patch.object(command.os, "execv", side_effect=SystemExit(0)) as execute, \
+                        self.assertRaises(SystemExit):
+                    command.cmd_connection(parser.parse_args(["connection", "host", action]))
+                self.assertEqual(execute.call_args.args,
+                                 ("/usr/bin/python3", ["/usr/bin/python3", "-I", str(command.native_entry()), action]))
+                code, result, _ = self.run_native(action, "yes\n")
+                self.assertEqual([call[3] for call in self.bus.calls], [method])
+                call = self.bus.calls[0]
+                self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
+                                           "ai.happyranch.RemoteAccess1", method, None, "(s)"))
+                self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
+                self.assertGreater(call[7], budget)
+                self.assertEqual((code, result["effect"]), (0, "confirmed") if method == "IssueInvite" else (1, "unknown"))
+                if method != "IssueInvite":
+                    self.assertEqual(result["code"], "outcomeUnknown")  # accepted is not terminal success.
+                    self.assertGreater(self.holds[-1][0], budget)
+                    self.assertFalse(self.holds[-1][1])  # The caller lives through the held budget.
+                host, outcomes = native.Host(), []
+                native.contract.request_host(host, method, lambda *args: outcomes.append(args),
+                                             lambda: True, lambda _snapshot: None)
+                self.assertEqual(outcomes, [(None, "unavailable")])  # No bridge capability expansion.
+                self.assertIsNone(host.connection)
+                host.close()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+            parser.parse_args(["connection", "host", "issue-invite"])
+        self.assertEqual(stopped.exception.code, 2)
+        help_text = parser._subparsers._group_actions[0].choices["connection"]._subparsers._group_actions[0].choices["host"].format_help()
+        self.assertNotIn("lifecycle recovery are unavailable", help_text)
+
+    def test_terminal_admission_and_replace_confirmation(self) -> None:
+        for action in ("create-invite", "replace-failed"):
+            with self.subTest(action=action):
+                code, result, _ = self.run_native(action, "yes\n", tty=False)
+                self.assertEqual((code, result["effect"]), (1, "none"))
+                self.assertEqual((self.opens, self.bus.calls), ([], []))
+            with self.subTest(unverified=action), patch.object(Terminal, "isatty", return_value=False):
+                code, result, _ = self.run_native(action, "yes\n")
+                self.assertEqual((code, result["effect"]), (1, "none"))
+                self.assertEqual((self.opens, self.bus.calls), ([], []))
+        for choice in ("", "\n", "n\n", "Y\n", "yes please\n", "y", "yes", "y\ntrailing"):
+            with self.subTest(choice=choice):
+                code, result, _ = self.run_native("replace-failed", choice)
+                self.assertEqual((code, result["effect"]), (0, "none"))
+                self.assertEqual((self.opens, self.bus.calls), ([], []))
+                self.assertEqual(self.tty_output, "Replace failed remote access; existing pairings will be lost\nContinue? [y/N] ")
+        for choice in ("y\n", "yes\n"):
+            self.bus.calls.clear()
+            code, result, _ = self.run_native("replace-failed", choice)
+            self.assertEqual((code, result["effect"]), (1, "unknown"))
+            self.assertEqual([call[3] for call in self.bus.calls], ["ReplaceFailed"])
+        self.bus.calls.clear()
+        self.assertEqual(self.run_native("turn-off", tty=False)[1]["effect"], "unknown")
+        self.assertEqual([call[3] for call in self.bus.calls], ["Disable"])
+
+    def test_invite_terminal_only_and_closed_projection(self) -> None:
+        code, result, stderr = self.run_native("create-invite")
+        self.assertEqual((code, self.tty_output), (0, INVITE + "\n"))
+        self.assertNotIn(INVITE, stderr)
+        self.assertEqual((result["effect"], result["inviteState"]), ("confirmed", "issued"))
+        self.assertIsInstance(result["expiresAt"], str)
+        self.assertEqual((result["host"], result["client"]), (None, None))
+        native.contract.Protocol(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json").result("host.createInvite", result)
+        self.bus.calls.clear()
+        with patch.object(Terminal, "write", side_effect=OSError("private-error-canary")):
+            self.assertEqual(self.run_native("create-invite")[1]["effect"], "unknown")
+        self.assertEqual([call[3] for call in self.bus.calls], ["IssueInvite"])
+        for clock in ("budget", "expiry"):
+            self.bus.calls.clear()
+            now = int(time.time())
+            self.bus.ack = json.dumps(dict(result="complete", invite=INVITE, expires_at=now + 200))
+            ticking = (patch.object(time, "monotonic", side_effect=[0, 0, 1000]) if clock == "budget" else
+                       patch.object(time, "time", side_effect=[now, now, now + 201]))
+            with self.subTest(before_display=clock), ticking:
+                code, result, _ = self.run_native("create-invite")
+            self.assertEqual((code, result["effect"], self.tty_output), (1, "unknown", ""))
+            self.assertEqual([call[3] for call in self.bus.calls], ["IssueInvite"])
+
+    def test_malformed_invite_never_displays(self) -> None:
+        frame = dict(result="complete", invite=INVITE, expires_at=int(time.time()) + 200)
+        invalid = ["{", json.dumps(frame) + " " * 6144, '"accepted"',
+                   json.dumps(frame).replace('"result": "complete"', '"result":"complete","result":"complete"')]
+        for key, value in (("result", "ready"), ("invite", "hrinvite2:hrinvite2:bad"),
+                           ("invite", "hrinvite2:" + "x" * 5500), ("invite", "hrinvite2:bad\n"),
+                           ("expires_at", True), ("expires_at", time.time() + 200),
+                           ("expires_at", int(time.time()) - 1), ("expires_at", int(time.time()) + 400),
+                           ("extra", "private-error-canary")):
+            invalid.append(json.dumps({**frame, key: value}))
+        invalid.extend(json.dumps({k: v for k, v in frame.items() if k != missing}) for missing in frame)
+        for index, raw in enumerate(invalid):
+            with self.subTest(frame=index):
+                self.bus.ack = raw
+                self.bus.calls.clear()
+                code, result, _ = self.run_native("create-invite")
+                self.assertEqual((code, result.get("code"), result["effect"], self.tty_output),
+                                 (1, "outcomeUnknown", "unknown", ""))
+                self.assertEqual([call[3] for call in self.bus.calls], ["IssueInvite"])
+
+    def test_lifecycle_loss_and_late_reply_never_redispatch(self) -> None:
+        for action in LIFECYCLE:
+            for remote in ("org.freedesktop.DBus.Error.NoReply", "org.freedesktop.DBus.Error.Timeout",
+                           "org.freedesktop.DBus.Error.Cancelled", "ai.happyranch.RemoteAccess1.Error.uncertain"):
+                with self.subTest(action=action, remote=remote):
+                    self.bus.error = remote
+                    self.bus.calls.clear()
+                    code, result, _ = self.run_native(action, "yes\n")
+                    self.assertEqual((code, result.get("code"), result["effect"]), (1, "outcomeUnknown", "unknown"))
+                    self.assertEqual(len(self.bus.calls), 1)
+        self.bus.error = None
+        for action in LIFECYCLE:
+            if action == "create-invite":
+                continue
+            for reply in ('"ok"', '{', json.dumps(dict(outcome="partial_cleanup", residue=["private-error-canary"])),
+                          json.dumps(dict(outcome="uncertain"))):
+                self.bus.calls.clear()
+                self.bus.ack = reply
+                with self.subTest(action=action, terminal_shape=reply[:8]):
+                    code, result, _ = self.run_native(action, "yes\n")
+                    self.assertEqual((code, result.get("code"), result["effect"]), (1, "outcomeUnknown", "unknown"))
+                    self.assertEqual(len(self.bus.calls), 1)
+        self.bus.ack = None
+        for action in LIFECYCLE:
+            self.bus.calls.clear()
+            with self.subTest(late=action), patch.object(time, "monotonic", side_effect=[0, 1000]):
+                code, result, _ = self.run_native(action, "yes\n")
+            self.assertEqual((code, result.get("code"), result["effect"]), (1, "outcomeUnknown", "unknown"))
+            self.assertEqual(len(self.bus.calls), 1)
+            self.assertNotIn(INVITE, self.tty_output)
 
     def test_revoke_selection_cancellation_and_bounds(self) -> None:
         for choices in ("\n", "cancel\n", "", "invalid\n", "next\n" * 33):

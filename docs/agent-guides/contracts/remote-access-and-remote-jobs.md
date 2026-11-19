@@ -2086,13 +2086,39 @@ binding is covered in the slice 2b-2 section below.
 
 ## Fixed Linux helper source (THR-327 slice 3a)
 
+I5b delivers the Linux host CLI's seven zero-input lifecycle mappings:
+`enable` → Enable, `turn-off` → Disable, `create-invite` → IssueInvite,
+`cancel-invite` → CancelInvite, `replace-failed` → ReplaceFailed,
+`recover-invite` → RecoverInvite and `retry-policy-renewal` → RetryPolicyRenewal.
+`issue-invite` remains the polkit action name, with no second CLI alias.
+RefreshHomeAddress remains absent; `refresh-home-address` refuses without dispatch.
+The CLI retains the desktop-available gate and fresh per-call polkit authorization,
+without credential intake/caching or automatic retry. Its transport allows 482/302/122
+seconds for 480/300/120-second helper operations, respectively. The shared transport's
+CLI opt-in leaves GTK method maps, bridge capabilities and the v1 protocol unchanged.
+
+IssueInvite requires `/dev/tty` before bus access, validates I4a's exact terminal
+frame and fresh expiry, and displays the text only there. JSON contains only the
+existing nonsecret action fields (`effect`, `inviteState`, UTC `expiresAt`, etc.).
+Malformed/late/lost frames produce `outcomeUnknown` / effect `unknown` without
+display. ReplaceFailed uses section 7's exact warning and default-No terminal
+confirmation before dispatch. Turn off adds no prompt to its fresh native auth.
+The other six lifecycle replies acknowledge `accepted` before effects finish;
+the CLI keeps its dedicated bus alive through the original operation budget plus
+margin for the helper's live-caller revalidation, then reports the existing
+`outcomeUnknown` / effect `unknown`, exit 1,
+without polling or redispatch. Private worker outcome/partial_cleanup/uncertain
+and named residue are not terminal D-Bus receipts. Admission cannot establish
+host denial or any cleanup; no paths, identities, new result fields or success
+claims are inferred from it. This is CLI source delivery, not live acceptance.
+
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
 ApprovePending, RejectPending and RevokeSelected, plus I5a's seven public
 lifecycle/invite methods: Enable, ReplaceFailed, Disable, IssueInvite, CancelInvite,
 RecoverInvite and RetryPolicyRenewal. The three device mutations and all seven
 lifecycle/invite methods request fresh interactive polkit authorization; admission
-is unchanged. Linux CLI consumers follow in I5b and bridge consumers in I5c.
+is unchanged. Linux CLI consumers are delivered in I5b; bridge consumers follow in I5c.
 RefreshHomeAddress remains absent and B13-deferred. B8's `helper_owner.py` now
 derives the release owner from the bus credential UID, passwd and validated
 protected release record when present; the optional trusted constructor UID remains a compatibility
@@ -2101,8 +2127,8 @@ pin. The root-only `serve()` connects Gio to the fixed system-bus socket
 the bus/polkit definitions and root Type=dbus unit; package install registers the
 service without running Enable. I3a mounts Enable/ReplaceFailed/Disable
 through B9 and the fixed bundled-Python child; I5a exposes all seven lifecycle/invite
-methods in public dispatch and introspection. Linux CLI and bridge consumer wiring
-follows in I5b/I5c. RefreshHomeAddress has no helper method and is deferred to B13. Run the fixed
+methods in public dispatch and introspection. Linux CLI consumer wiring is delivered in I5b; bridge wiring
+follows in I5c. RefreshHomeAddress has no helper method and is deferred to B13. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2984,7 +3010,7 @@ is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
 I3a mounts this backend through the fixed bundled-Python helper child,
 with B8/B9 fresh authorization and protected G/O capture. I5a exposes public Enable;
-Linux CLI/bridge wiring follows in I5b/I5c. Under the same held lock, Enable sends only matching
+Linux CLI wiring is delivered in I5b; bridge wiring follows in I5c. Under the same held lock, Enable sends only matching
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
@@ -3153,8 +3179,8 @@ un-revoked trust/sidecar state. A changed generation permits at most one fresh
 read/retry within the original 300-second budget. CA staging and B7/B11/minter
 evidence follow the I3c custody/proof/audit rules above; any remainder is incomplete.
 I3a's helper worker mounts this composition and records the closed outcome
-and safe residue components; I5a exposes the public methods, with Linux CLI/bridge
-consumers left to I5b/I5c.
+and safe residue components; I5a exposes the public methods, with Linux CLI
+consumers delivered in I5b and bridge consumers following in I5c.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3551,7 +3577,7 @@ or journal meaning changes. StatusV2 projects only existing invite/cleanup
 observations, pinned to the authenticated UID and activation G/O; B15 applies
 their monotonic age/staleness. Missing observations after restart or binding
 drift remain unknown. I5a includes both methods in public METHODS, introspection
-and dispatch; Linux CLI wiring follows in I5b, with only the existing bridge
+and dispatch; Linux CLI wiring is delivered in I5b, with only the existing bridge
 commands wired in I5c. I4a mounts IssueInvite as specified below; B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
 
@@ -3747,7 +3773,7 @@ B5 remain unchanged. Ready admission does not require this timer link: policy
 expiry remains the gate. `_unit_wants_names` and the B17 replacement veto remain
 unchanged; Turn off must remove the timer link before replacement. Unit files remain dpkg
 payload after Turn off. I5a opens the helper public lifecycle/invite gate;
-Linux CLI/bridge consumers follow in I5b/I5c.
+Linux CLI consumers are delivered in I5b; bridge consumers follow in I5c.
 
 **B18 dependency:** a package upgrade with a different shipped route artifact
 makes renewal refuse until B18 repair/upgrade rewraps it. I4b-1 adds no upgrade
@@ -3910,7 +3936,7 @@ inventory, binds the derived validated release owner, then publishes/fsyncs the 
 `replacement-intent@2` at `install-transaction.json` before handing off to the existing
 per-intent recovery owner. The helper captures that inventory/journal
 generation before authentication and revalidates it before dispatch. I5a exposes
-public ReplaceFailed; Linux operator CLI selection follows in I5b. I5c wires only
+public ReplaceFailed; Linux operator CLI selection is delivered in I5b. I5c wires only
 the existing bridge commands.
 An existing exact v1 journal already has its first intent: the entry validates its
 expected generation/release UID and resumes that journal without converting it.

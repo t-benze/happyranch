@@ -56,7 +56,9 @@ The files under `org/` are the source of truth for that organization. You can ha
 `happyranch connection status` reports nonsecret platform/role availability
 without daemon access. `happyranch connection host --help` lists the Linux host
 fallback: `status`, `devices`, `next-device`, `approve-device`, `reject-device`,
-`revoke-device`. It uses the same fixed native helper as the desktop app, with
+`revoke-device`, `enable`, `turn-off`, `create-invite`, `cancel-invite`,
+`replace-failed`, `recover-invite` and `retry-policy-renewal`.
+It uses the same fixed native helper as the desktop app, with
 zero D-Bus inputs. Mutations require a desktop and fresh system authorization;
 headless attempts return `unavailable` / `none` / `nativePermission` without mutation.
 Revoke selects interactively on the same bus inside one invocation (32 choices,
@@ -65,9 +67,21 @@ nonsecret JSON; post-dispatch loss is unknown and never retried automatically.
 Exit 0 means completed read/action or cancelled selection, 1 a closed error, and
 2 invalid syntax. An unavailable read observation stays explicit.
 
-`host enable`, `turn-off` and `create-invite` return unavailable without dispatch.
-`host cancel-invite`, `replace-failed`, `refresh-home-address` and
-`retry-policy-renewal` also return closed unavailable without dispatch.
+`create-invite` delivers a validated invite only to the controlling terminal
+(`/dev/tty`); stdout JSON contains only nonsecret fields.
+Without a terminal, it refuses before dispatch. `replace-failed` requires a
+terminal and shows “Replace failed remote access; existing pairings will be lost”,
+then `Continue? [y/N] `; only `y` or `yes` confirms. EOF or any other answer
+leaves effect `none`. `turn-off` uses fresh system authorization without an
+additional CLI prompt. Lifecycle admission (`accepted`) is not completion:
+`enable`, `turn-off`, `cancel-invite`, `replace-failed`, `recover-invite` and
+`retry-policy-renewal` report `outcomeUnknown` / effect `unknown`, exit 1, because
+the helper acknowledges before effects finish. The invocation keeps its bus alive
+through the original budget plus margin: 482 seconds for Enable/ReplaceFailed,
+302 for Disable and 122 for invite/policy calls, so the helper can revalidate the
+live caller. This proves no denial or cleanup;
+the CLI never polls or retries the mutation. Only `refresh-home-address` remains
+closed unavailable without dispatch (B13).
 Linux `connection client` registers `status`, `accept-invite`, `saved-computers`,
 `connect-saved`, `remove-saved`, `disconnect`, `cancel-attempt`, `retry`, `retry-save`
 and `health`. Hidden terminal invite entry requires explicit target consent;
