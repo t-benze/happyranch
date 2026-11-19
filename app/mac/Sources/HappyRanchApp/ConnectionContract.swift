@@ -395,7 +395,7 @@ final class ConnectionComputerCatalog {
 enum ConnectionClientProjection {
     // Consent-dependent commands are absent until 3b-2b supplies native sheets.
     static let backedCommands = ["client.status", "client.savedComputers", "client.health", "client.retrySave"]
-    static func timestamp(_ date: Date) -> String {
+    nonisolated static func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
@@ -447,7 +447,7 @@ enum ConnectionClientProjection {
                 "expiresAt": model.expiresAt.map(timestamp) as Any? ?? NSNull(),
                 "comparisonPhrase": model.comparisonPhrase.map(displayText) as Any? ?? NSNull()]
     }
-    static func displayText(_ value: String) -> String {
+    nonisolated static func displayText(_ value: String) -> String {
         let scalars = value.unicodeScalars.filter {
             !CharacterSet.controlCharacters.contains($0) && !(0x7f...0x9f).contains($0.value)
                 && !(0x202a...0x202e).contains($0.value) && !(0x2066...0x2069).contains($0.value)
