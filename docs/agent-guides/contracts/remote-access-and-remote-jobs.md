@@ -3700,8 +3700,14 @@ Every ownership gate remains required; a refusal is accumulated as residue.
 Under the same lock, Disable also recovers an existing `policy-renewal@1`
 install journal using P1; refusal retains it and returns `partial_cleanup`
 naming `/etc/happyranch/install-transaction.json`. It never creates a renewal
-when there is no journal. B6 requires successful revoke, all remote and renewal
-quiescence proofs, timer-link absence and journal recovery. `policy.json` and
+when there is no journal. Any renewal residue or stop/quiescence uncertainty
+prevents B6. Failed revoke alone does not: after all remote and renewal
+stop/quiescence proofs, timer-link absence and journal recovery succeed, B6
+still runs, deleting the Headscale DB live members while retaining connector
+trust/sidecar state and evidence requiring revoke success. Disable reports
+`partial_cleanup` naming that un-revoked trust state. Complete requires revoke
+success AND all proofs AND B6 success AND no residue
+(I3a R4/R7b, I3c C3/C5). `policy.json` and
 `provision.json` survive Turn off.
 
 Private zero-input `RetryPolicyRenewal` uses the existing B8/B9 capture and

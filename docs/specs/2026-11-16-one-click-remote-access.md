@@ -196,7 +196,14 @@ Enable validates both renewal units' loaded package identity and protected exact
 renderer bytes before any mutating manager call. Disable accumulates renewal
 residue while still attempting the owned remote and receipt-bound Headscale
 safety stops, including after failed revoke. Refused journal recovery retains
-the journal; any residue prevents B6. All ownership and quiescence gates remain required.
+the journal; any renewal residue or stop/quiescence uncertainty prevents B6.
+Failed revoke alone does not: after all remote and renewal stop/quiescence
+proofs, timer-link absence and journal recovery succeed, B6 still runs, deleting
+the Headscale DB live members while retaining connector trust/sidecar state
+and evidence requiring revoke success. Disable reports `partial_cleanup` naming
+that un-revoked trust state. Complete requires revoke success AND all proofs
+AND B6 success AND no residue (I3a R4/R7b, I3c C3/C5).
+All ownership and quiescence gates remain required.
 Ready Enable remains inspect-only, and fresh-auth activation recovery remains
 verify/publication-only without renewal or timer replay. The public gate stays
 closed until I5; B18 artifact-changing upgrade repair remains separate.
