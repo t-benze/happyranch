@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Iterator
 
 import pytest
 
@@ -594,3 +595,213 @@ def test_wire_bulk_expiry_preserves_committed_cleanup_and_stops_later_write(owne
         with pytest.raises(StreamClosed):
             stream.receive()
     assert streams[2].receive() == b'synthetic-live-frame'
+
+
+@contextmanager
+def serving_control(monkeypatch: Any, *, state_path: Path | None = None
+                    ) -> Iterator[tuple[control.ControlClient, Any, Path]]:
+    from scripts.test_managed_admission import running
+    with running(monkeypatch, helper=True, state_path=state_path) as (path, supervisor):
+        supervisor.state_store.save(supervisor.state_store.load())
+        listener = supervisor._control_listener
+        assert listener is not None
+        original = listener.handler.handle
+        # Emulate only root's unavailable peer UID, as in the existing bound
+        # helper venue. The listener, facade, serving manager and files are real.
+        monkeypatch.setattr(listener.handler, 'handle', lambda connection: original(Peer(connection, [])))
+        yield control.ControlClient(control.CONTROL_SOCKET), supervisor, path
+
+
+@pytest.mark.parametrize('phase', ['invite', 'pending', 'delivery'])
+def test_supervisor_invite_ceremony_uses_serving_owner(monkeypatch: Any, phase: str) -> None:
+    with serving_control(monkeypatch) as (client, supervisor, _):
+        manager = supervisor._provider._pairing
+        assert manager is supervisor._pinned_pairing_manager
+        operations = supervisor._control_listener.handler.operations
+        assert isinstance(operations, control.InviteOperationAPI)
+        _, generation = supervisor.state_store.snapshot()
+        expiry = int(time.time()) + 240
+        committed = client.reserve_invite(generation, DIGEST, expiry, time.monotonic() + 60, lambda: None)
+        state, current = supervisor.state_store.snapshot()
+        assert committed == current
+        assert state.invite_record is not None
+        assert state.invite_record.secret_digest == DIGEST
+        assert state.invite_record.expires_at.timestamp() == expiry
+        pending = None
+        if phase != 'invite':
+            pending = manager.redeem('synthetic-invite-secret', 'node-c', 'protected-control',
+                                     datetime.now(timezone.utc))
+            assert pending is not None
+        if phase == 'delivery':
+            assert manager.approve_pending(pending.generation, ('protected-control', 'node-c'))
+        _, generation = supervisor.state_store.snapshot()
+        committed = client.invalidate_invite(generation, time.monotonic() + 60, lambda: None)
+        state, current = supervisor.state_store.snapshot()
+        assert committed == current
+        assert state.invite_record is state.pending_approval is state.delivery is None
+        assert manager.redeem('synthetic-invite-secret', 'node-c', 'protected-control',
+                              datetime.now(timezone.utc)) is None
+        if pending:
+            assert manager.complete(pending.completion_handle, 'node-c', 'protected-control',
+                                    datetime.now(timezone.utc)) is None
+        if phase == 'delivery':
+            assert all(device.revoked for device in state.devices.values())
+        assert supervisor._pinned_pairing_manager is manager
+        assert supervisor._pairing_manager is None
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_supervisor_invite_requires_serving_owner(monkeypatch: Any, method: str) -> None:
+    with serving_control(monkeypatch) as (_, supervisor, _):
+        operations = supervisor._control_listener.handler.operations
+        _, generation = supervisor.state_store.snapshot()
+        before = Path(supervisor.config.state_path).read_bytes()
+        manager = supervisor._pinned_pairing_manager
+        supervisor._pinned_pairing_manager = None
+        try:
+            with pytest.raises(control.Refused, match='unavailable'):
+                if method == METHODS[0]:
+                    operations.reserve_invite(generation, DIGEST, int(time.time()) + 240,
+                                              deadline=time.monotonic() + 60)
+                else:
+                    getattr(operations, 'invalidate_invite' if method == METHODS[1] else 'revoke_all')(
+                        generation, deadline=time.monotonic() + 60)
+            assert Path(supervisor.config.state_path).read_bytes() == before
+            assert supervisor._pinned_pairing_manager is None
+        finally:
+            supervisor._pinned_pairing_manager = manager
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_supervisor_forwards_deadline_to_transaction(monkeypatch: Any, method: str) -> None:
+    with serving_control(monkeypatch) as (_, supervisor, _):
+        operations = supervisor._control_listener.handler.operations
+        _, generation = supervisor.state_store.snapshot()
+        before = Path(supervisor.config.state_path).read_bytes()
+        with operations.mutation_lock(), pytest.raises(control.Refused, match='expired'):
+            if method == METHODS[0]:
+                operations.reserve_invite(generation, DIGEST, int(time.time()) + 240,
+                                          deadline=time.monotonic() - 1)
+            else:
+                getattr(operations, 'invalidate_invite' if method == METHODS[1] else 'revoke_all')(
+                    generation, deadline=time.monotonic() - 1)
+        assert Path(supervisor.config.state_path).read_bytes() == before
+
+
+@pytest.mark.parametrize('phase', ['invite', 'pending', 'delivery'])
+def test_supervisor_revoke_all_survives_rotation_and_restart(
+        monkeypatch: Any, tmp_path: Path, phase: str) -> None:
+    from scripts.test_managed_admission import call as ingress_call, grant, result, running
+    from runtime.remote_access.streams import StreamClosed
+    state_path = tmp_path / 'state' / 'trust.json'
+    with serving_control(monkeypatch, state_path=state_path) as (client, supervisor, path):
+        manager = supervisor._pinned_pairing_manager
+        grants = [(*grant(supervisor, path, node, 'synthetic-' + node), node)
+                  for node in ('node-a', 'node-b')]
+        streams, closed = [], []
+        class Handle:
+            def __init__(self, device: str) -> None:
+                self.device = device
+            def close(self) -> None:
+                # A second store read takes SH during actual stream closure:
+                # denial is durable and no trust flock spans this callback.
+                from runtime.remote_access.state_store import AtomicFileTrustStateStore
+                observed = AtomicFileTrustStateStore(state_path, supervisor.initial_state()).load()
+                assert observed.devices[self.device].revoked
+                assert observed.invite_record is observed.pending_approval is observed.delivery is None
+                closed.append(self.device)
+        for device, _, node in grants:
+            streams.append(supervisor.registry.open(node, Handle(device), device_id=device,
+                epoch=supervisor.state_store.load().devices[device].authorization_epoch))
+        snapshot = client.status()
+        client.reserve_invite(snapshot.generation, DIGEST, int(time.time()) + 240,
+                              time.monotonic() + 60, lambda: None)
+        pending = None
+        if phase != 'invite':
+            pending = manager.redeem('synthetic-invite-secret', 'node-c', 'protected-control',
+                                     datetime.now(timezone.utc))
+            assert pending is not None
+        if phase == 'delivery':
+            assert manager.approve_pending(pending.generation, ('protected-control', 'node-c'))
+        snapshot = client.status()
+        committed = client.revoke_all(snapshot.generation, time.monotonic() + 60, lambda: None)
+        state, generation = supervisor.state_store.snapshot()
+        assert committed == generation
+        assert state.invite_record is state.pending_approval is state.delivery is None
+        assert all(device.revoked for device in state.devices.values())
+        assert set(closed) == {device for device, _, _ in grants}
+        assert all(stream.closed for stream in streams)
+        for device, credential, node in grants:
+            assert result(ingress_call(path, node, credential=credential))[0] == 403
+            with pytest.raises(StreamClosed):
+                supervisor.registry.open('late-' + node, Handle(device), device_id=device,
+                    epoch=state.devices[device].authorization_epoch)
+        supervisor._rotate_runtime(restart_provider=True)
+        assert supervisor._pinned_pairing_manager is not manager
+        assert supervisor._listener_running()
+        for _, credential, node in grants:
+            assert result(ingress_call(path, node, credential=credential))[0] == 403
+        assert result(ingress_call(path, 'node-c', '/pair/invite', body=b'synthetic-invite-secret'))[0] == 403
+        if pending:
+            assert result(ingress_call(path, 'node-c', '/pair/complete',
+                                      body=pending.completion_handle.encode()))[0] == 403
+        # A new listener/facade after rotation must delegate to the new owner.
+        operations = supervisor._control_listener.handler.operations
+        with operations.mutation_lock():
+            current = supervisor.state_store.snapshot()[1]
+            assert operations.invalidate_invite(current, deadline=time.monotonic() + 60) > current
+    with running(monkeypatch, state_path=state_path) as (path, restarted):
+        assert restarted._pinned_pairing_manager is not manager
+        for _, credential, node in grants:
+            assert result(ingress_call(path, node, credential=credential))[0] == 403
+        assert result(ingress_call(path, 'node-c', '/pair/invite', body=b'synthetic-invite-secret'))[0] == 403
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_supervisor_revoke_all_closes_removed_owner(monkeypatch: Any, fails: bool) -> None:
+    from scripts.test_managed_admission import grant
+    from runtime.remote_access.pairing import PairingManager
+    from runtime.remote_access.state_store import AtomicFileTrustStateStore
+    from runtime.remote_access.streams import StreamClosed, StreamRegistry
+    with serving_control(monkeypatch) as (client, supervisor, path):
+        grants = [(*grant(supervisor, path, node, 'synthetic-' + node), node)
+                  for node in ('node-a', 'node-b')]
+        closed, streams = [], []
+        class Handle:
+            def __init__(self, device: str, node: str) -> None:
+                self.device, self.node = device, node
+            def close(self) -> None:
+                state = supervisor.state_store.load()
+                assert self.device not in state.devices or state.devices[self.device].revoked
+                closed.append(self.device)
+                if fails and self.node == 'node-a':
+                    raise OSError('synthetic close failure')
+            def receive(self) -> bytes:
+                return b'synthetic-live-frame'
+        state = supervisor.state_store.load()
+        for device, _, node in grants:
+            streams.append(supervisor.registry.open(node, Handle(device, node), device_id=device,
+                epoch=state.devices[device].authorization_epoch))
+        external = PairingManager(
+            state_store=AtomicFileTrustStateStore(Path(supervisor.config.state_path), state),
+            identity=state.connector_identity, registry=StreamRegistry())
+        removed, credential, node = grants[0]
+        external.remove_device(removed)
+        assert streams[0].receive() == b'synthetic-live-frame'
+        generation = client.status().generation
+        if fails:
+            with pytest.raises(control.Refused, match='unavailable'):
+                client.revoke_all(generation, time.monotonic() + 60, lambda: None)
+        else:
+            assert client.revoke_all(generation, time.monotonic() + 60, lambda: None) > generation
+        assert set(closed) == {device for device, _, _ in grants}
+        assert all(stream.closed for stream in streams)
+        assert all(device.revoked for device in supervisor.state_store.load().devices.values())
+        for stream in streams:
+            with pytest.raises(StreamClosed):
+                stream.receive()
+        assert not supervisor._pinned_pairing_manager.admit(
+            credential, node, 'protected-control', datetime.now(timezone.utc)).ok
+        with pytest.raises(StreamClosed):
+            supervisor.registry.open('late-removed', Handle(removed, node), device_id=removed,
+                                     epoch=state.devices[removed].authorization_epoch)

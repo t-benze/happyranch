@@ -1,4 +1,4 @@
-"""Inert B9 lifecycle primitives; no dispatcher, storage or effect implementation.
+"""B9 lifecycle capture and budgets shared by the fixed helper and package.
 
 Serial integration must supply protected generation reads, terminal native-auth
 observations and deadline-aware effect executors. Admission returns before any
@@ -11,8 +11,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, ContextManager, Protocol, TypeVar
 
-from .remote_access_helper import AUTH_DEADLINE
-from .status_v2 import SetupPhase
+AUTH_DEADLINE = 120.0
+if __package__:
+    from .status_v2 import SetupPhase
+else:
+    # The system-Python fixed entry has already loaded this stdlib-only sibling.
+    from happyranch_fixed_status_v2 import SetupPhase
 
 LIFECYCLE_SECONDS = 480.0
 DISABLE_SECONDS = 300.0
@@ -117,6 +121,9 @@ class LifecycleCapture:
     uid: int
     owner: object
     generation: object
+    deadline: float = 0.0
+    cancellation_id: str = ''
+    message: object = None
 
     @classmethod
     def take(cls, method: str, sender: str, helper: HelperBindings,
@@ -220,7 +227,8 @@ class LifecycleOperation:
             try:
                 self.budget.remaining()
             except DeadlineExpired:
-                outcome = SetupPhase.UNCERTAIN if self.dispatched else SetupPhase.FAILED
+                if outcome != SetupPhase.PARTIAL_CLEANUP:
+                    outcome = SetupPhase.UNCERTAIN if self.dispatched else SetupPhase.FAILED
             if self.outcome in (SetupPhase.FAILED, SetupPhase.UNCERTAIN):
                 outcome = self.outcome  # Later observations cannot erase lost effect evidence.
             self.outcome = outcome

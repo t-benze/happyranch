@@ -1799,3 +1799,18 @@ def test_b6_no_expectations_keeps_ruling_d(
         fixture.installer.cleanup_headscale()
     assert b6_snapshot(fixture.root) == before
     assert not any(args[0] in {"userdel", "groupdel"} or args[:2] == ["systemctl", "disable"] for args in fixture.calls)
+
+
+@pytest.mark.parametrize('operation', ['b' * 32, 'e' * 32])
+def test_b6_helper_operation_cas_under_receipt_lock(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], operation: str,
+) -> None:
+    b6_setup(fixture, monkeypatch, capsys)
+    before = b6_snapshot(fixture.root)
+    if operation == 'b' * 32:
+        assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, expected_operation_id=operation)['state'] == 'removed'
+    else:
+        with pytest.raises(home.HeadscaleServiceError, match='cleanup-uncertain'):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, expected_operation_id=operation)
+        assert b6_snapshot(fixture.root) == before
+        assert not any(args[0] in {'userdel', 'groupdel'} or args[:2] == ['systemctl', 'disable'] for args in fixture.calls)

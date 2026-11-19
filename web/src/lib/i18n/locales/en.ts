@@ -1365,6 +1365,7 @@ export const en = {
   'dashboard.burn.tokens': 'Tokens',
   'dashboard.updates.title': 'Updates this week',
   'dashboard.updates.empty': 'No updates yet.',
+  'dashboard.updates.kbEntry': 'KB: {title}',
   'dashboard.escalation.stale': 'stale',
   'dashboard.escalation.staleTitle': 'Waiting 24h+',
   'dashboard.escalation.flavor.needsDecision': 'needs-decision',

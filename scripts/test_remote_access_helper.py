@@ -447,8 +447,8 @@ def test_polkit_policy_shape() -> None:
     root = ET.parse(path).getroot()
     actions = root.findall('action')
     assert {a.attrib['id'] for a in actions} == {'ai.happyranch.remote-access.' + suffix for suffix in
-        ('approve-pending', 'reject-pending', 'revoke-selected')}
-    assert len(actions) == 3
+        ('approve-pending', 'reject-pending', 'revoke-selected', 'enable', 'replace-failed', 'disable')}
+    assert len(actions) == 6
     for action in actions:
         assert {element.tag: element.text for element in action.find('defaults')} == {
             'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin'}

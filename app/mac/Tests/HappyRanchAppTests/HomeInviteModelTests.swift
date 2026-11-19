@@ -31,6 +31,8 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     var readFailure: SavedAccessFailure?
     var discoveryFailures: [SavedAccessFailure] = []
     func setDiscoveryFailures(_ failures: [SavedAccessFailure]) { discoveryFailures = failures }
+    var saveFailure: SavedAccessFailure?
+    func setSaveFailure(_ failure: SavedAccessFailure) { saveFailure = failure }
     var saveFails = false
     var deleteFails = false
     private(set) var refreshes = 0
@@ -47,6 +49,7 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     func save(_ credential: SavedDeviceCredential) async throws {
         saves += 1
         await gate.pause("save")
+        if let saveFailure { throw saveFailure }
         if saveFails { throw SavedAccessFailure.saveFailed }
         credentials.removeAll { $0.binding == credential.binding }; credentials.append(credential)
     }
@@ -333,22 +336,46 @@ struct HomeInviteModelTests {
         #expect(model.phase == .failed(.homeUnavailable))
     }
 
-    @Test("Local deletion failure reports what remains and Retry removal erases the record")
-    func removalFailureAndRetry() async throws {
+    @Test("Local removal stops once despite custody failure and retains exact-target Retry",
+          arguments: [nil, .cancelled, .denied, .locked, .identityChanged, .notFound] as [SavedAccessFailure?])
+    func removalFailureAndRetry(readFailure: SavedAccessFailure?) async throws {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
         model.accept(try invite())
-        #expect(await eventually { model.webURL != nil })
-        model.cancel()
-        #expect(await eventually { !model.busy })
-        await store.configure(deleteFails: true)
-        model.removeSavedComputer()
-        #expect(await eventually { model.phase == .keychain(.deletionFailed) && !model.busy })
+        try #require(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL), old = model.lifetime
+        model.webLoaded(url: url, lifetime: old)
+        try #require(await eventually { model.phase == .connected && !model.busy })
+        let target = try #require(model.savedHomes.first)
+        let credential = try #require(try await store.savedHomes().credentials.first)
+        await store.configure(read: readFailure, deleteFails: readFailure == nil)
+        model.removeSavedComputer(expected: target)
+        #expect(await eventually { model.phase == .keychain(readFailure ?? .deletionFailed) && !model.busy })
+        #expect(await session.stops == 1)
+        #expect(model.webURL == nil && model.bridgeActiveComputerID == nil)
+        #expect(model.bridgeRemovalTarget == target)
+        #expect(await store.deletedBindings.isEmpty)
         #expect(!model.removalFailures.isEmpty && !model.savedHomes.isEmpty)
+        model.webLoaded(url: url, lifetime: old)
+        #expect(model.phase == .keychain(readFailure ?? .deletionFailed), "Late load cannot reconnect")
+        let joins = await session.joins
+        model.reconnect()
+        await Task.yield()
+        #expect(await session.joins == joins)
+        model.selectedHomeID = UUID() // Retry must retain the captured target.
+        if let readFailure {
+            model.removeSavedComputer(expected: target)
+            #expect(await eventually { model.phase == .keychain(readFailure) && !model.busy })
+            #expect(await session.stops == 1)
+            #expect(await store.deletedBindings.isEmpty)
+        }
         await store.configure()
-        model.removeSavedComputer()
+        model.removeSavedComputer(expected: target)
         #expect(await eventually { model.phase == .idle && !model.busy })
+        #expect(await session.stops == 1)
+        #expect(await store.deletedBindings == [credential.binding])
+        #expect(model.bridgeRemovalTarget == nil && model.bridgeCanAccept)
         #expect(model.savedHomes.isEmpty && model.removalFailures.isEmpty)
         #expect(try await store.savedHomes().credentials.isEmpty)
     }
@@ -596,6 +623,71 @@ struct HomeInviteModelTests {
         if !cancel { model.cancel(); #expect(await eventually { !model.busy }) }
     }
 
+    @Test("OS Keychain cancellation/denial is a save outcome, never attempt cancellation",
+          arguments: [SavedAccessFailure.cancelled, .denied, .locked, .unavailable])
+    func keychainResultDoesNotCancelAttempt(_ failure: SavedAccessFailure) async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await store.setSaveFailure(failure); await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        let context = model.lifetime
+        #expect(model.phase == .opening && model.saveFailure == failure)
+        #expect(await session.stops == 0)
+        model.webLoaded(url: try #require(model.webURL), lifetime: context)
+        #expect(model.phase == .connected && model.lifetime == context)
+        #expect(ConnectionClientProjection.savedAccess(model) == (failure == .unavailable ? "unknown" : "needsPermission"))
+        model.cancel(); #expect(await eventually { !model.busy })
+        #expect(model.saveFailure == failure)
+    }
+
+    @Test("Saved reconnect rereads the exact bearer before joining")
+    func changedSavedBearerRefusesReconnect() async throws {
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID,
+                                             stableNodeID: "synthetic-stable-node")
+        let id = UUID(), store = HomeStoreFixture(), session = HomeSessionFixture()
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust,
+            deliveredBearer: Data("SYNTHETIC-ORIGINAL".utf8), networkProfileID: id))
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.prepare(reconnectSingle: false)
+        #expect(await eventually { model.discoveryComplete && !model.busy })
+        #expect(await session.joins == 0)
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust,
+            deliveredBearer: Data("SYNTHETIC-CHANGED".utf8), networkProfileID: id))
+        model.reconnect()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .keychain(.identityChanged))
+        #expect(await session.joins == 0)
+        #expect(model.webURL == nil)
+    }
+
+    @Test("Replacement cancellation waits for deletion and retains an incomplete outcome")
+    func replacementCancellationRetainsPartialEffect() async throws {
+        let gate = HomeAwaitGate(), store = HomeStoreFixture(gate: gate), session = HomeSessionFixture()
+        await store.setSaveFailure(.identityChanged); await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL)
+        model.webLoaded(url: url, lifetime: model.lifetime)
+        #expect(await eventually { !model.busy })
+        #expect(model.bridgeCanReplace && !model.bridgeCanRetrySave)
+        await gate.arm("delete")
+        let replacement = Task { await model.bridgeRetrySave(replacing: true) }
+        try #require(await gate.waitFor("delete"))
+        model.cancel()
+        #expect(model.phase == .stopping)
+        #expect(await session.stops == 0)
+        await gate.release()
+        #expect(await replacement.value == .changed)
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && model.saveFailure == .deletionFailed)
+        #expect(await store.saves == 1)
+        #expect(model.webURL == nil)
+        #expect(ConnectionClientProjection.savedAccess(model) == "unknown")
+    }
+
     @Test("Revoked unsaved B cannot erase the selected saved computer A")
     func revocationTargetsActiveCredential() async throws {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
@@ -782,10 +874,11 @@ struct HomeInviteModelTests {
         model.accept(try invite())
         try #require(await eventually { model.webURL != nil })
         let credential = try #require(try await store.savedHomes().credentials.first)
+        let target = try #require(model.savedHomes.first)
         let point = scenario == "stop" ? "stop" : "delete"
         await store.configure(deleteFails: scenario == "delete-failure")
         await gate.arm(point)
-        model.removeSavedComputer()
+        model.removeSavedComputer(expected: target)
         try #require(await gate.waitFor(point))
         let old = model.lifetime
         if replaceDocument { model.documentDidChange() } else { model.cancel() }
@@ -808,7 +901,7 @@ struct HomeInviteModelTests {
             // Retry owns the retained target even if picker selection changes.
             model.selectedHomeID = UUID()
             await store.configure()
-            model.removeSavedComputer()
+            model.removeSavedComputer(expected: target)
             #expect(await eventually { !model.busy })
             #expect(model.phase == .idle && model.removalFailures.isEmpty && model.savedHomes.isEmpty)
             #expect(await store.deletedBindings == [credential.binding])

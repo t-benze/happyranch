@@ -215,6 +215,16 @@ Replaces the current four-card composition. Single `useDashboardSummary()` call.
 - **Recent activity panel** — plain `<ul>` of audit rows; no new pattern
 - **Updates this week panel** — plain `<ul>`; no new pattern
 
+Layout (THR-376 r2 L1/G1): from `lg` the page is a flexible main column
+(Waiting on you, Recent activity — each a shared `Card`) beside a fixed 340px
+right rail with a 22px gap. The rail is **one** shared `List` card with a
+divider `Row` per group — Today (heartbeat, narrative, counters), Org pulse,
+Burn (the whole group is a `RowAction` link to Spend), Top token threads and
+Updates this week — the same one-card pattern Jobs uses. Below `lg` the rail
+stacks under the main column. Recent-activity rows keep fixed leading slots
+(verdict pill, then age) so agent names share one column; the agent name,
+event kind and ID wrap within the remaining column.
+
 ### 4.4 New design-system pattern: `Sparkline`
 
 `design-system/patterns/Sparkline.tsx` — promoted to a pattern from day one because Agents (next PR) needs the same component for the scorecard table.
@@ -244,7 +254,7 @@ Storybook CSF stories now document reusable component variants and examples.
 
 In `features/dashboard/components/`:
 
-- `Heartbeat.tsx` — 24-bar histogram. Props: `{ data: HeartbeatBucket[]; nowIdx: number }`.
+- `Heartbeat.tsx` — 24-bar histogram, one bar per hourly bucket (oldest left, ending at `nowIdx`), 5px bars with a 3px gap (THR-376 r2 G8). All 24 buckets render so the "last 24h" label stays true. Props: `{ data: HeartbeatBucket[]; nowIdx: number }`.
 - `NarrativeParagraph.tsx` — formats `NarrativeCounts` into a single sentence with semantic spans. Pure formatting; no logic.
 - `EscalationInboxRow.tsx` — escalation row with inline reply expander. Props: `{ row: EscalationRow; expanded: boolean; onExpand, onCollapse, onReply, onPromoteToKb }`. State (`reply` text, `promoteToKb` checkbox) lives in the parent page so multiple rows can be in different expansion states without state-sharing bugs.
 - `OrgPulseTable.tsx` — per-team table with sparkline + acceptance + trend. Props: `{ rows: TeamPulse[] }`.
@@ -253,7 +263,8 @@ These stay local because (a) Dashboard is their only consumer in v1 and (b) the 
 
 ### 4.6 Escalation reply flow
 
-> Superseded: keyboard shortcuts removed (THR-372).
+> THR-372 removed the original ⌘↵-only shortcut; THR-376 (PR #1722) restored a
+> platform-aware submit shortcut, described below.
 
 The Design Review §04 Q3 specifies the escalation-as-conversation loop. The
 backend route already exists: `POST /api/v1/orgs/{slug}/tasks/{task_id}/resolve-escalation`
@@ -268,7 +279,9 @@ Implementation:
   `{ decision: 'approve', rationale }`. Reject-with-rationale is handled
   via the existing Tasks page's `ResolveEscalationDialog`.
 - On success, the row animates out (280ms) and `useDashboardSummary` refetches.
-- ⌘↵ submits; Esc collapses. Both handled in the row's local `onKeyDown`.
+- The platform submit shortcut submits — ⌘↵ (Cmd+Enter) on macOS/iOS,
+  Ctrl+↵ (Ctrl+Enter) elsewhere; Esc collapses. Both are handled in the
+  row's local `onKeyDown`.
 
 **Scoped out of v1: "Save reply as KB ruling" affordance.** The prototype
 mocked a checkbox that would chain a `POST /api/v1/orgs/{slug}/kb`
@@ -290,7 +303,7 @@ allowing both Tasks and Dashboard to consume it. Out of scope here.
 | `isError` | `Failed to load dashboard.` in `text-feedback-danger` at the page level | TanStack Query error |
 | Empty attention queue | The existing `EmptyState` pattern with title "All clear" and truthful no-actions copy | `escalations.length === 0` AND `pending_review_jobs.length === 0` |
 | Brand-new org | `EmptyState` with "Start your first brief" CTA linking to the Tasks compose dialog | `org_age_days === 0` AND all counters are zero AND the attention queue is empty |
-| Quiet but established org | Heartbeat + narrative still render (likely flat/zero); "All clear" inbox | `org_age_days > 0` AND `narrative_counts.completed_today + failed_today + escalated_open === 0` |
+| Quiet but established org | Heartbeat + narrative still render (likely flat/zero); "All clear" inbox | `org_age_days > 0` AND `narrative_counts.completed_today + failed_today + escalated_open + kb_added_today === 0` (a KB-only day reports "KB grew by N", THR-376 r2 G9) |
 
 ## 6. Honesty audit — what we display vs what the daemon knows
 

@@ -242,6 +242,16 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
   tokens, because Tailwind builds `text-*` utilities only from `@theme` in
   the root stylesheet.
+- Mono metadata and tag chips (THR-376 r2 PR-K) use JetBrains Mono 11.5px in
+  muted ink: `font-mono text-task-meta text-text-muted`. `text-task-meta` is
+  the shared 11.5px size, not a Tasks-only token. Knowledge entry cards list
+  tags as one inline meta line (`·` separators bound to the preceding tag
+  with a non-breaking space, `wrap-anywhere` so a long unbroken tag wraps
+  inside the card); the Knowledge rail tag chips use the same size and family
+  with `max-w-full`, truncating a long tag with its full text kept in the
+  button's accessible name and `title`. Put `text-task-meta` on a wrapper when
+  the element also sets a text colour, because `cn`/twMerge treats the
+  unknown `text-task-meta` as a colour and drops one of them.
 - `StatusBadge` routes every task/thread status through `semanticTone`
   (`open`/`in_progress` info, `pending`/`escalated` attention, `completed`
   positive, `failed` danger, the rest neutral) in the body font; there is no

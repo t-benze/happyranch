@@ -117,6 +117,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'libexec/remote-access/status_v2.py',
                      'libexec/remote-access/home_audit.py',
                      'libexec/remote-access/helper_generation.py',
+                     'libexec/remote-access/helper_lifecycle.py',
                      'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
                      'libexec/remote-access/happyranch-home-admin',
                      'licenses/headscale-LICENSE',

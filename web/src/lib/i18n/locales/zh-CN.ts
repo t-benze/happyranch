@@ -1293,6 +1293,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'dashboard.burn.tokens': 'Token',
   'dashboard.updates.title': '本周更新',
   'dashboard.updates.empty': '暂无更新。',
+  'dashboard.updates.kbEntry': '知识库：{title}',
   'dashboard.escalation.stale': '已滞留',
   'dashboard.escalation.staleTitle': '已等待 24 小时以上',
   'dashboard.escalation.flavor.needsDecision': '待决策',

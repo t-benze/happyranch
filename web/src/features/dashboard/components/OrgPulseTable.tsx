@@ -27,6 +27,9 @@ const ACCEPTANCE_TEXT: Record<Tier, string> = {
   red: 'text-tier-red',
 };
 
+/** THR-376 r2 G12: the design's 56x16 pulse sparkline. */
+const SPARK_W = 56;
+
 export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
   const { t } = useTranslation();
   if (rows.length === 0) {
@@ -37,6 +40,11 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
       <tbody>
         {rows.map((r) => {
           const tier = tierFor(r.acceptance_pct);
+          // THR-376 r2 D8: a team with no agents has no pulse to show, so its
+          // count, line, acceptance and trend read "—" instead of
+          // "0 agents" / a flat line / 0%.
+          const empty = r.members === 0;
+          const membersLabel = empty ? '—' : t('dashboard.pulse.members', { count: r.members });
           const trendSign =
             r.trend_delta > 0 ? '+' : r.trend_delta < 0 ? '−' : '';
           const trendValue = Math.abs(r.trend_delta);
@@ -47,27 +55,28 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
             >
               <td className="text-text-primary py-2 font-medium wrap-anywhere">
                 {r.team}
-                {/* Narrow lg rail (1024-1279px): the member count stacks under
-                    the team name instead of taking its own column, so the row
-                    fits the card (THR-376 D2). */}
-                <span className="text-text-muted hidden font-mono text-xs font-normal whitespace-nowrap lg:max-xl:block">
-                  {t('dashboard.pulse.members', { count: r.members })}
-                </span>
               </td>
-              <td className="text-text-muted py-2 font-mono text-xs whitespace-nowrap lg:max-xl:hidden">
-                {t('dashboard.pulse.members', { count: r.members })}
+              {/* The rail is a fixed 340px from lg (THR-376 r2 G1), so the
+                  member count keeps its own column at every width; the old
+                  narrow-rail stacking (1024-1279px) is no longer needed (D2). */}
+              <td className="text-text-muted py-2 font-mono text-xs whitespace-nowrap">
+                {membersLabel}
               </td>
               <td className="py-2">
-                <Sparkline data={r.sparkline} variant={tier} />
+                <Sparkline data={empty ? [] : r.sparkline} width={SPARK_W} variant={tier} />
               </td>
               <td
-                className={`${ACCEPTANCE_TEXT[tier]} py-2 text-right font-mono text-xs`}
+                className={`${empty ? 'text-text-muted' : ACCEPTANCE_TEXT[tier]} py-2 text-right font-mono text-xs`}
               >
-                {r.acceptance_pct}%
+                {empty ? '—' : `${r.acceptance_pct}%`}
               </td>
               <td className="text-text-muted py-2 pl-3 text-right font-mono text-xs">
-                {trendSign}
-                {trendValue || '—'}
+                {empty ? '—' : (
+                  <>
+                    {trendSign}
+                    {trendValue || '—'}
+                  </>
+                )}
               </td>
             </tr>
           );

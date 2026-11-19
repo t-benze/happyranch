@@ -17,4 +17,19 @@
     <message>Authenticate to revoke this device</message>
     <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
   </action>
+  <action id="ai.happyranch.remote-access.enable">
+    <description>Enable home remote access</description>
+    <message>Authenticate to enable home remote access</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="ai.happyranch.remote-access.replace-failed">
+    <description>Replace failed remote access and remove pairings</description>
+    <message>Authenticate to replace failed remote access and remove pairings</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="ai.happyranch.remote-access.disable">
+    <description>Turn off home remote access and revoke devices</description>
+    <message>Authenticate to turn off home remote access and revoke devices</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
 </policyconfig>

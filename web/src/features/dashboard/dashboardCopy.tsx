@@ -45,7 +45,13 @@ export function buildNarrative(
 ): ReactNode {
   const { completed_today, failed_today, kb_added_today } = counts;
 
-  if (completed_today === 0 && failed_today === 0 && escalationCount === 0) {
+  // THR-376 r2 G9: a KB-only day is not quiet — it still reports "KB grew by N".
+  if (
+    completed_today === 0 &&
+    failed_today === 0 &&
+    escalationCount === 0 &&
+    kb_added_today === 0
+  ) {
     return translate(locale, 'dashboard.narrative.quiet');
   }
 

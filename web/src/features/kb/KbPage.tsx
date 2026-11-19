@@ -149,7 +149,7 @@ function GroupedFolderRail({
   const countClass = 'ml-auto font-mono text-xs tabular-nums';
   const tagPillClass = (active: boolean) =>
     cn(
-      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs',
+      'inline-flex max-w-full items-center rounded-full border px-2.5 py-1',
       active
         ? 'border-transparent bg-accent-soft text-accent-text font-medium'
         : 'border-border-subtle bg-surface-sunken text-text-muted hover:bg-surface-raised',
@@ -216,7 +216,10 @@ function GroupedFolderRail({
           <h3 className="text-eyebrow text-text-muted mb-1.5 px-2.5 uppercase">
             {t('kb.railTagsSection')}
           </h3>
-          <div className="flex flex-wrap gap-1.5 px-2.5">
+          {/* THR-376 r2 K4: tag chips are mono 11.5 (tags are identifiers); the
+              size sits on the container because cn/twMerge would drop the
+              unknown text-task-meta against the chip's text colour. */}
+          <div className="text-task-meta flex flex-wrap gap-1.5 px-2.5 font-mono">
             {tags.map((t) => {
               const active = selectedTag === t;
               return (
@@ -226,8 +229,11 @@ function GroupedFolderRail({
                   aria-pressed={active}
                   onClick={() => onSelectTag(active ? null : t)}
                   className={tagPillClass(active)}
+                  title={t}
                 >
-                  {t}
+                  {/* QA-2: a long tag truncates inside the rail width; the
+                      button's accessible name and title keep the full tag. */}
+                  <span className="truncate">{t}</span>
                 </button>
               );
             })}

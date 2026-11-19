@@ -547,3 +547,90 @@ def test_backend_prepared_without_txn(venue: Venue, monkeypatch: pytest.MonkeyPa
         ready = h.HomeActivationBackend(io=v.receipts._io).enable(expected_generation=7, authenticated=True)
     assert ready.phase == "ready"
     assert (ready.activation_generation, ready.operation_id) == (7, prepared.operation_id)
+
+
+@pytest.mark.parametrize('case', ['ready', 'failed', 'half-published', 'rollover',
+                                 'unmarked-joined', 'missing-txn', 'mismatched-operation', 'live-key-no-node'])
+def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
+        venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    v = venue
+    lifecycle = h.HelperLifecycleBackend(v.backend._io)
+    expected = lifecycle.capture('Enable', v.prepared.release_uid)
+    with observations(v) as requests:
+        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', expected) == {
+            'outcome': 'ready', 'residue': []}
+        ready = v.receipts.read(expected_generation=7)
+        assert ready.phase == 'ready' and ready.local_node_stable_id == 'self-stable'
+        assert ready.operation_id != '0' * 32 and requests
+        before = list(v.audit)
+        observed = lifecycle.capture('Enable', v.prepared.release_uid)
+        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)['outcome'] == 'ready'
+        assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+        if case == 'ready':
+            v.source.write_bytes(b'synthetic source-token rotation')
+            with pytest.raises(ActivationRefused):
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+            assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+            return
+
+        failed = replace(ready, phase='failed_uncertain')
+        txn = replace(v.transactions.read_optional(), phase='failed_uncertain')
+        put(v.path(ACTIVATION_PATH), failed.to_bytes())
+        put(v.path(TRANSACTION_PATH), txn.to_bytes())
+        if case == 'half-published':
+            publish = HomeActivationStore._publish_record
+            def crash(store: HomeActivationStore, path: str, *args: Any, **kwargs: Any) -> None:
+                if path == ACTIVATION_PATH:
+                    raise Crash()
+                publish(store, path, *args, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(HomeActivationStore, '_publish_record', crash)
+                with pytest.raises(Crash):
+                    v.backend.recover(expected_generation=7, expected_operation_id=ready.operation_id,
+                                      fresh_authenticated=True)
+            assert v.receipts.read(expected_generation=7) == failed
+            txn = v.transactions.read_optional()
+            assert txn.phase == 'joined' and txn.recovery_observation is not None
+        if case == 'rollover':
+            monkeypatch.setattr(v.admin, 'list_pre_auth_keys', lambda **kw: ())
+            v.admin.nodes = ()
+        if case == 'unmarked-joined':
+            put(v.path(TRANSACTION_PATH), replace(txn, phase='joined').to_bytes())
+        if case == 'missing-txn':
+            v.path(TRANSACTION_PATH).unlink()
+        if case == 'mismatched-operation':
+            put(v.path(TRANSACTION_PATH), replace(txn, operation_id='e' * 32).to_bytes())
+        if case == 'live-key-no-node':
+            v.admin.key = replace(v.admin.key, used=False)
+            v.admin.nodes = ()
+
+        effects: list[str] = []
+        def forbidden(*args: Any, **kwargs: Any) -> None:
+            effects.append('replayed')
+            raise AssertionError('mounted recovery must not replay lifecycle effects')
+        monkeypatch.setattr(h.HomeActivationOwner, 'perform', forbidden)
+        monkeypatch.setattr(adapters.home_admin, 'mint_local_node', forbidden)
+        monkeypatch.setattr(adapters.headscale_service, 'preflight_ports', forbidden)
+        records, units = v.records(), unit_config_bytes(v)
+        observed = lifecycle.capture('Enable', v.prepared.release_uid)
+        if case in ('unmarked-joined', 'missing-txn', 'mismatched-operation', 'live-key-no-node'):
+            with pytest.raises(ActivationRefused):
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+            assert v.records() == records
+        else:
+            phase = 'prepared' if case == 'rollover' else 'ready'
+            assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed) == {
+                'outcome': phase, 'residue': []}
+            recovered = v.receipts.read(expected_generation=8 if case == 'rollover' else 7)
+            assert recovered.phase == phase
+            if case == 'rollover':
+                assert recovered.operation_id != ready.operation_id
+                assert recovered.local_node_stable_id is None and recovered.home_endpoint is None
+                assert v.transactions.read_optional() == txn
+            else:
+                assert recovered == ready
+                assert v.transactions.read_optional().phase == 'joined'
+                assert v.transactions.read_optional().recovery_observation is not None
+                if case == 'half-published':
+                    assert v.transactions.read_optional() == txn
+        assert v.audit == before and effects == [] and unit_config_bytes(v) == units
