@@ -447,7 +447,8 @@ class RetainedJobStopTests(unittest.IsolatedAsyncioTestCase):
         self.reaped.add(pid)
 
     @asynccontextmanager
-    async def retained(self, *, member: bool = False, separate_group: bool = False) -> AsyncIterator[tuple[object, object, dict, Path]]:
+    async def retained(self, *, member: bool = False, separate_group: bool = False,
+                       automatic: bool = False) -> AsyncIterator[tuple[object, object, dict, Path]]:
         from runtime.config import Settings
         from runtime.daemon.app import create_app
         from runtime.daemon.state import DaemonState
@@ -474,17 +475,28 @@ async def main():
         org.db.insert_task(TaskRecord(id='TASK-901', brief='Synthetic retained job waiter',
             assigned_agent='worker', team='retiring', status=TaskStatus.IN_PROGRESS,
             current_session_id='sess-synthetic-retained'))
-        org.db.insert_job(JobRecord(id='JOB-901', task_id='TASK-901', agent_name='worker',
-            title='Synthetic retained job', rationale='Focused restart regression', script_text=sys.argv[2], interpreter='python3',
-            persistent=True, created_at='2026-11-19T00:00:00+00:00'))
-        await _run_job_core(org, job_id='JOB-901', cwd_override=None, timeout_override=None)
+        if sys.argv[3] == 'automatic':
+            from unittest.mock import patch
+            org.sessions.set_active('TASK-901', 'worker', 'sess-synthetic-retained', org_slug='alpha')
+            with patch.object(org.db, 'next_job_id', return_value='JOB-901'):
+                result = await client.post('/api/v1/orgs/alpha/jobs/submit', json=dict(
+                    task_id='TASK-901', session_id='sess-synthetic-retained',
+                    title='Synthetic retained job', rationale='Focused restart regression',
+                    script=sys.argv[2], interpreter='python3', persistent=True))
+            assert result.status_code == 201, result.text
+        else:
+            org.db.insert_job(JobRecord(id='JOB-901', task_id='TASK-901', agent_name='worker',
+                title='Synthetic retained job', rationale='Focused restart regression', script_text=sys.argv[2], interpreter='python3',
+                persistent=True, created_at='2026-11-19T00:00:00+00:00'))
+            await _run_job_core(org, job_id='JOB-901', cwd_override=None, timeout_override=None)
         org.db.update_task('TASK-901', block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids='["JOB-901"]')
         await asyncio.Event().wait()
 asyncio.run(main())
 """
         log = self.stack.enter_context((self.scratch / (root.name + '.log')).open('w+'))
-        daemon = subprocess.Popen([sys.executable, '-B', '-c', harness, str(root), script],
+        daemon = subprocess.Popen([sys.executable, '-B', '-c', harness, str(root), script,
+                                   'automatic' if automatic else 'founder'],
             cwd=ROOT, stdout=log, stderr=log)
         pids = None
         state = None
@@ -528,17 +540,23 @@ asyncio.run(main())
             if state is not None:
                 await state.close_all()
 
-    async def stop(self, org: object, client: object, *, accepted: bool) -> object:
+    async def stop(self, org: object, client: object, *, accepted: bool, session: bool = False) -> object:
         before = org.db.get_job('JOB-901').model_dump()
         journals = [tuple(r) for r in org.db.execute('SELECT * FROM task_pause_controls').fetchall()]
+        request = {}
+        if session:
+            org.sessions.set_active('TASK-901', 'worker', 'sess-synthetic-retained', org_slug='alpha')
+            request = dict(headers={'Authorization': ''},
+                           params=dict(task_id='TASK-901', session_id='sess-synthetic-retained'))
         with patch('os.killpg', wraps=os.killpg) as group_signal, patch('os.kill', wraps=os.kill) as pid_signal:
-            result = await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop')
+            result = await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop', **request)
             group_signal.assert_not_called()
             pid_signal.assert_not_called()
         row = org.db.get_job('JOB-901')
         print(json.dumps(dict(route='POST /api/v1/orgs/alpha/jobs/JOB-901/stop', http=result.status_code,
             response=result.json(), job_status=row.status.value, reason=row.reason, exit_code=row.exit_code,
-            owner_queue_size=org.orchestrator._queue._queue.qsize(), signalled=False), sort_keys=True))
+            owner_queue_size=org.orchestrator._queue._queue.qsize(), signalled=False,
+            stop_caller='session' if session else 'founder', run_actor=before['reviewed_by']), sort_keys=True))
         self.assertEqual([tuple(r) for r in org.db.execute('SELECT * FROM task_pause_controls').fetchall()], journals)
         if accepted:
             self.assertEqual(result.status_code, 200, result.text)
@@ -548,7 +566,12 @@ asyncio.run(main())
             self.assertEqual(queue.qsize(), 1, 'existing terminal path did not wake owner')
             audits = org.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='job_run_failed'").fetchall()
             self.assertEqual(len(audits), 1)
-            self.assertEqual(tuple(audits[0][:2]), ('TASK-901', 'founder'))
+            start = org.db.execute("SELECT agent FROM audit_log WHERE task_id='TASK-901' "
+                "AND action IN ('job_auto_started','job_run_started')").fetchall()
+            self.assertEqual(len(start), 1)
+            self.assertEqual(start[0]['agent'], before['reviewed_by'])
+            self.assertEqual(tuple(audits[0][:2]), ('TASK-901', start[0]['agent']),
+                             'terminal audit must preserve original run initiator')
             self.assertEqual(json.loads(audits[0]['payload']), dict(script_request_id='JOB-901',
                 exit_code=None, duration_ms=None, reason='orphaned_process_dead'))
             again = await client.post('/api/v1/orgs/alpha/jobs/JOB-901/stop')
@@ -564,10 +587,19 @@ asyncio.run(main())
         return result
 
     async def test_dead_group_stop_terminalizes_and_wakes_owner(self) -> None:
-        async with self.retained() as (org, client, pids, _ready):
-            os.killpg(pids['pid'], signal.SIGKILL)
-            await self.reap_pid(pids['pid'])
-            await self.stop(org, client, accepted=True)
+        for automatic, session in ((False, False), (True, False), (True, True)):
+            with self.subTest(automatic=automatic, session=session):
+                async with self.retained(automatic=automatic) as (org, client, pids, _ready):
+                    os.killpg(pids['pid'], signal.SIGKILL)
+                    await self.reap_pid(pids['pid'])
+                    self.assertEqual(org.db.get_job('JOB-901').reviewed_by, 'worker' if automatic else 'founder')
+                    await self.stop(org, client, accepted=True, session=session)
+                    if automatic:
+                        # The retained authority reader authenticates the actual
+                        # submit/terminal rows independently of the Stop caller.
+                        job = org.db.execute("SELECT * FROM jobs WHERE id='JOB-901'").fetchone()
+                        self.assertTrue(org.db._retained_v2_job_source_uncommitted(job,
+                            SimpleNamespace(session_id='sess-synthetic-retained', attempts=(object(),))))
 
     async def test_alive_group_stop_refuses_without_signalling(self) -> None:
         async with self.retained() as (org, client, pids, ready):
@@ -644,6 +676,29 @@ asyncio.run(main())
         async with self.retained() as (org, client, pids, _ready):
             os.killpg(pids['pid'], signal.SIGKILL)
             await self.reap_pid(pids['pid'])
+            start = dict(org.db.execute("SELECT * FROM audit_log WHERE action='job_run_started'").fetchone())
+            for actor in (None, 'other', 'worker'):
+                with self.subTest(reviewed_by=actor):
+                    org.db.execute("UPDATE jobs SET reviewed_by=? WHERE id='JOB-901'", (actor,))
+                    org.db._conn.commit()
+                    await self.stop(org, client, accepted=False)
+            org.db.execute("UPDATE jobs SET reviewed_by='founder' WHERE id='JOB-901'")
+            for changed in (dict(agent='worker'), dict(payload='{'), dict(payload='[]'), dict(payload='{}'),
+                            dict(payload=json.dumps(json.loads(start['payload']) | {'reviewer': 'worker'})),
+                            dict(action='job_auto_started'), dict(task_id='TASK-902')):
+                with self.subTest(start_evidence=changed):
+                    org.db.execute("UPDATE audit_log SET agent=?,payload=?,action=?,task_id=? WHERE id=?",
+                        tuple(changed.get(k, start[k]) for k in ('agent', 'payload', 'action', 'task_id')) + (start['id'],))
+                    org.db._conn.commit()
+                    await self.stop(org, client, accepted=False)
+            org.db.execute("UPDATE audit_log SET agent=?,payload=?,action=?,task_id=? WHERE id=?",
+                tuple(start[k] for k in ('agent', 'payload', 'action', 'task_id', 'id')))
+            duplicate = org.db.insert_audit_log_uncommitted('TASK-901', start['agent'], start['action'],
+                json.loads(start['payload']))
+            org.db._conn.commit()
+            await self.stop(org, client, accepted=False)
+            org.db.execute('DELETE FROM audit_log WHERE id=?', (duplicate,))
+            org.db._conn.commit()
             path = org.root / 'jobs/JOB-901.err.process.json'
             original = path.read_bytes()
             calls = 0

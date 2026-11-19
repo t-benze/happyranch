@@ -9,6 +9,7 @@ from runtime.orchestrator.team_move import DeferredTeamMove
 import asyncio
 import hashlib
 import os
+import sqlite3
 import json as _json
 from collections import deque
 from contextlib import contextmanager, nullcontext
@@ -799,7 +800,7 @@ async def stop_job(
     except HTTPException as exc:
         if not isinstance(exc.detail, dict) or exc.detail.get('code') != 'job_liveness_unknown':
             raise
-        return await _stop_dead_retained_job(org, record, stopped_by, refusal=exc)
+        return await _stop_dead_retained_job(org, record, refusal=exc)
     from runtime.daemon.jobs_runner import _signal_registered_job
     try:
         issued = _signal_registered_job(r, f'{stopped_by}_stop')
@@ -825,7 +826,49 @@ async def stop_job(
     return {'ok': True, 'id': job_id}
 
 
-async def _stop_dead_retained_job(org: OrgDep, record: JobRecord, actor: str, *, refusal: HTTPException) -> dict:
+def _retained_job_run_actor(db, record: JobRecord) -> str | None:
+    """Authenticate the fixed run initiator against its original start audit."""
+    actor = record.reviewed_by
+    if actor not in (record.agent_name, 'founder'):
+        return None
+    try:
+        stamps = [datetime.fromisoformat(value) for value in
+                  (record.created_at, record.reviewed_at, record.started_at)]
+        if any(stamp.utcoffset() is None for stamp in stamps) or not stamps[0] <= stamps[1] <= stamps[2]:
+            return None
+        # Task-scoped indexed history; a malformed start or multiple matching
+        # starts is uncertainty, never authority to choose an actor.
+        starts = db.execute("""SELECT agent,action,payload FROM audit_log WHERE task_id=?
+            AND action IN ('job_auto_started','job_run_started')
+            AND CASE WHEN json_valid(payload) AND json_type(payload)='object'
+                AND json_type(payload,'$.script_request_id')='text'
+                THEN json_extract(payload,'$.script_request_id')=? ELSE 1 END
+            LIMIT 2""", (record.task_id, record.id)).fetchall()
+        if len(starts) != 1:
+            return None
+        start = starts[0]
+        expected = dict(script_request_id=record.id, cwd_resolved=record.cwd_resolved,
+                        timeout_seconds=record.max_runtime_seconds, interpreter=record.interpreter.value)
+        if start['action'] == 'job_auto_started':
+            if actor != record.agent_name:
+                return None
+            expected.update(agent=actor, persistent=record.persistent)
+        else:
+            if actor != 'founder':
+                return None
+            expected.update(reviewer=actor)
+        payload = _json.loads(start['payload'])
+        if (start['agent'] == actor and payload == expected
+                and isinstance(payload['cwd_resolved'], str) and payload['cwd_resolved']
+                and (payload['timeout_seconds'] is None or type(payload['timeout_seconds']) is int)
+                and (start['action'] != 'job_auto_started' or type(payload['persistent']) is bool)):
+            return actor
+    except (ValueError, TypeError, sqlite3.Error):
+        pass
+    return None
+
+
+async def _stop_dead_retained_job(org: OrgDep, record: JobRecord, *, refusal: HTTPException) -> dict:
     from runtime.daemon.job_death import prove_job_dead
     from runtime.daemon.jobs_runner import _RUNNER_TASKS, _require_job_attachment
     from runtime.runtime import daemon_home
@@ -851,6 +894,9 @@ async def _stop_dead_retained_job(org: OrgDep, record: JobRecord, actor: str, *,
         else:
             raise refusal  # A newly registered owner keeps its existing path.
         if (db, record.id) in _RUNNER_TASKS or db.get_job(record.id) != record:
+            raise refusal
+        actor = _retained_job_run_actor(db, record)
+        if actor is None:
             raise refusal
         # Final bounded synchronous proof is immediately adjacent to the CAS;
         # no await or saved success can cross the write boundary.

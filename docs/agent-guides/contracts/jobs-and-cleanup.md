@@ -135,10 +135,15 @@ unsupported platforms or surviving members preserve409 `job_liveness_unknown`
 and the running row. This path sends **no signals**. It records `failed` with
 `reason=orphaned_process_dead`, NULL exit code/duration and a genuine finish time,
 never script success. It atomically adds the existing `job_run_failed` audit
-(actual owner task scope, `script_request_id` job ID), then emits the terminal
-hint and invokes the existing all-blocking-jobs-terminal owner wake path after
-commit. A racing terminal winner owns the audit and wake. Unknown producer/Pause
-journals and all holds remain intact; terminal status grants no fence release,
+(actual owner task scope, `script_request_id` job ID). Its actor is the original
+run initiator: `reviewed_by` must agree with exactly one original start audit,
+including its actor, trigger and persisted run fields. Missing, malformed,
+duplicate or inconsistent run evidence preserves409 `job_liveness_unknown`
+without writes or signals. The Stop caller never supplies terminal attribution.
+After commit it emits the terminal hint and invokes the existing
+all-blocking-jobs-terminal owner wake path. A racing terminal winner owns the
+audit and wake. Unknown producer/Pause journals and all holds remain intact;
+terminal status grants no fence release,
 setup retry or cleanup authority. Legacy rows without the sidecar remain refused.
 
 ### Operator stop with the daemon down

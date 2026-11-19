@@ -253,10 +253,12 @@ clearing the row. Missing identity or `/proc` reports unavailable, never free.
 Online `jobs stop` can separately settle a retained job only with valid exact-job
 boot/start identity, a dead or reused leader plus no same-boot PGID/SID members,
 and an available advisory observation with no holder. It rechecks before a
-running-only CAS, audits `failed/orphaned_process_dead` with NULL exit, and uses
-the existing terminal owner-wake path. It sends no signals and changes no fence
-custody, unknown journals or holds. Missing/legacy/invalid evidence, live members,
-unsupported platforms or exhausted/unavailable reads retain `job_liveness_unknown`.
+running-only CAS, validates `reviewed_by` against the original persisted start
+audit, audits `failed/orphaned_process_dead` with NULL exit as that run initiator,
+and uses the existing terminal owner-wake path. It sends no signals and changes
+no fence custody, unknown journals or holds. Missing/legacy/invalid evidence, live members,
+unsupported platforms, missing/inconsistent run attribution or exhausted/unavailable
+reads retain `job_liveness_unknown` without writes or signals.
 See the jobs-and-cleanup contract for exact proof and bounds.
 Offline operator stopping requires separate authority and the boot/start-time
 identity checks in `docs/agent-guides/contracts/jobs-and-cleanup.md`; numeric

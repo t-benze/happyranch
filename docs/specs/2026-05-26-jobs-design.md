@@ -53,11 +53,15 @@ terminal write and postcommit release compare the captured owner. An earlier
 actual timeout/output cap/task/shutdown/Stop cause survives later requests;
 ProcessLookupError removes only that unsuccessful request's provisional cause.
 
-HTTP200 `{ok:true,id}` means a real Stop signal request was issued; CLI says
-“Stop requested”. It never certifies exit. Existing409 `not_running` reports the
+HTTP200 `{ok:true,id}` acknowledges a real Stop signal request, or the
+[positively proven dead retained-job settlement](../agent-guides/contracts/jobs-and-cleanup.md#independent-runtime-budgets-and-retained-job-diagnostics-1699)
+with original run attribution. That settlement records failure/NULL exit without
+signalling. CLI says “Stop requested”; inspect the durable row for the result.
+Existing409 `not_running` reports the
 actual nonrunning status, including pending, and existing session/auth precedence
 is unchanged. Running without a signal target returns409: `job_runner_pending`,
-`job_runner_finalizing`, or `job_liveness_unknown`, each with job_id/status.
+`job_runner_finalizing`, or (without retained death/attribution proof)
+`job_liveness_unknown`, each with job_id/status.
 Non-thread job Stop no longer checks an affected/causal move hold. The existing
 409 `team_move_native_held` response model with job_id/status/operation_id and
 exception translator remain for compatibility; they do not establish a live
