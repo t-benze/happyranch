@@ -87,11 +87,13 @@ export function KbEntryCard({
         <div className="text-text-primary text-body mt-1 font-semibold">{entry.title}</div>
         {snippet && <p className="text-text-muted mt-1.5 text-sm">{snippet}</p>}
         {/* THR-376 r2 K3: tags as one inline mono meta line (was one pill per
-            tag). Display only — tag filtering lives in the rail. */}
+            tag). Display only — tag filtering lives in the rail. Tags are
+            freeform, so a long unbroken tag breaks anywhere instead of
+            overflowing the card (QA-1). */}
         {density === 'comfortable' && entry.tags.length > 0 && (
           <ul
             aria-label={t('kb.railTagsSection')}
-            className="text-text-muted text-task-meta mt-1.5 font-mono"
+            className="text-text-muted text-task-meta mt-1.5 font-mono wrap-anywhere"
           >
             {entry.tags.map((tag, i) => (
               <li key={tag} className="inline">

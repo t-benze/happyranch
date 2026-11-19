@@ -149,7 +149,7 @@ function GroupedFolderRail({
   const countClass = 'ml-auto font-mono text-xs tabular-nums';
   const tagPillClass = (active: boolean) =>
     cn(
-      'inline-flex items-center rounded-full border px-2.5 py-1',
+      'inline-flex max-w-full items-center rounded-full border px-2.5 py-1',
       active
         ? 'border-transparent bg-accent-soft text-accent-text font-medium'
         : 'border-border-subtle bg-surface-sunken text-text-muted hover:bg-surface-raised',
@@ -229,8 +229,11 @@ function GroupedFolderRail({
                   aria-pressed={active}
                   onClick={() => onSelectTag(active ? null : t)}
                   className={tagPillClass(active)}
+                  title={t}
                 >
-                  {t}
+                  {/* QA-2: a long tag truncates inside the rail width; the
+                      button's accessible name and title keep the full tag. */}
+                  <span className="truncate">{t}</span>
                 </button>
               );
             })}
