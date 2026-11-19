@@ -56,6 +56,14 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+assignment_case = None
+ASSIGNMENT_CASES = ('role_override', 'default_precedence', 'independence', 'model_omit',
+                    'model_null', 'invalid_pair', 'executor_drift')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--assignments='):
+    assignment_case = sys.argv[1].split('=', 1)[1]
+    assert assignment_case in ('all', *ASSIGNMENT_CASES)
+    sys.argv[1:] = ['--assignments']
+
 returned_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
@@ -198,7 +206,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--assignments'], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -1892,6 +1900,288 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
     if sys.argv[1:] in (['--bundled-catalog'], ['--start-context'], ['--start-compose']):
         raise SystemExit(0)
 
+
+# S3 exercises inert admission and selection on private disposable orgs.
+if sys.argv[1:] in ([], ['--assignments']):
+    from copy import deepcopy
+    from dataclasses import replace
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.runtime import RuntimeDir
+    from runtime.infrastructure.workflow_schema import initialize_fresh_org_database
+    from runtime.infrastructure.db.tasks import RetryClaim
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.workflows.sequential_assignments import (
+        AssignmentRefusal, assignment_bytes, assignment_digest, resolve_assignments,
+        resolve_node_assignment, recheck_launch_assignment,
+    )
+    from runtime.workflows.sequential_contracts import GenericStepOverride
+    from runtime.workflows.sequential_definition import compile_generic_definition, parse_generic_start
+    from runtime.workflows.sequential_engine import admit_uncommitted
+    from runtime.workflows.sequential_start import prepare_generic_start
+    from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+
+    def s3_definition():
+        roles = dict(developer=dict(kind='agent', executable=True, eligibility='worker', independent_of=[], default_agent='s3_author'),
+            reviewer=dict(kind='agent', executable=True, eligibility='worker', independent_of=['developer'], default_agent='s3_review'),
+            manager=dict(kind='agent', executable=True, eligibility='registered-team-manager', independent_of=[], default_agent='s3_manager'))
+        nodes = []
+        for index, (node, role) in enumerate((('develop', 'developer'), ('review', 'reviewer'), ('final', 'manager'))):
+            nodes.append(dict(id=node, role=role, responsibilities=['Report bounded private assignment evidence'],
+                inputs=[dict(name='request', source='run.request', required=True)],
+                output_contract=dict(slot=node + '_output', type='canonical-json-object@1'),
+                limits=dict(revisions=0, attempts=1, recoveries=0),
+                outcomes=dict(ready=dict(action='next', node=('review', 'final')[index]) if index < 2 else
+                    dict(action='terminal', condition='done'))))
+        return dict(format='workflow-sequential-definition@2', identity='release/synthetic/assignments', version=1,
+            description='Private S3 no-launch proof', required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+            roles=roles, entry_node='develop', nodes=nodes, limits=dict(max_visits=3, max_events=8, max_recoveries=0),
+            terminal_conditions=dict(done=dict(output='final_output')))
+
+    @contextmanager
+    def s3_fixture(*, defaults=None, definition=None):
+        with tempfile.TemporaryDirectory(prefix='s3-assignment-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            root = runtime.orgs_dir / 'scratch'
+            _seed_skeleton(root, from_example=None)
+            (root / 'org/config.yaml').write_text('reviewer_agents: []\n')
+            (root / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: s3_manager\n    workers: [s3_author, s3_alt, s3_review]\n  other:\n    manager: s3_other_manager\n    workers: [s3_other]\n')
+            agents = {}
+            for name in ('s3_manager', 's3_author', 's3_alt', 's3_review', 's3_other_manager', 's3_other'):
+                agents[name] = AgentDef(name=name, team='other' if name.startswith('s3_other') else 'engineering',
+                    role='manager' if name.endswith('manager') else 'worker', executor='codex', model='target-model',
+                    reasoning_effort='high', allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+                    enrolled_at=None, system_prompt='Private no-launch assignment proof')
+                (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(agents[name]))
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                db.close()
+                org = OrgState.load(slug='scratch', root=root, settings=Settings())
+                try:
+                    schema2_routing_fixture(org.db)
+                    coordinator = ProfileCoordinator(daemon_home=home, orgs={'scratch': org})
+                    org._profile_coordinator = org.workflow_authority._profile_coordinator = coordinator
+                    coordinator.reconcile_startup()
+                    db, conn = org.db, org.db._conn
+                    source = TaskRecord(id='s3-source', assigned_agent='s3_manager', team='engineering',
+                        task_type='task', status='in_progress', current_session_id='s3-source-session',
+                        brief='Private source', model_override='initiator-model', reasoning_effort_override='low', override_source='manager')
+                    db.insert_task(source)
+                    result = conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+                        (source.id, source.assigned_agent, source.current_session_id, 'completed', source.created_at.isoformat())).lastrowid
+                    raw = assignment_bytes(definition or s3_definition())
+                    compiled = compile_generic_definition(raw, source_digest=assignment_digest(raw))
+                    pin = compiled.pin
+                    saved = assignment_bytes(dict(format='workflow-sequential-settings-storage@2', definition=pin.model_dump(mode='json'),
+                        bindings=[] if defaults is None else defaults, limits=compiled.definition.limits.model_dump(mode='json', exclude_unset=True), admission='Allowed'))
+                    request = assignment_bytes(dict(format='workflow-sequential-settings-operation-storage@1', operation_key='s3-save',
+                        principal='founder', settings_id='s3-settings', expected_generation=0, snapshot_digest=assignment_digest(saved)))
+                    receipt = assignment_bytes(dict(format='workflow-sequential-settings-receipt-storage@1', operation_id='s3-operation',
+                        settings_id='s3-settings', generation=1, snapshot_digest=assignment_digest(saved)))
+                    conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                        ('s3-definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
+                         pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+                    conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+                        ('s3-settings', 'scratch', 's3-definition', pin.identity, 1, saved, assignment_digest(saved)))
+                    conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+                        ('s3-operation', 'scratch', 'founder', 's3-save', request, assignment_digest(request), 's3-settings', receipt, assignment_digest(receipt)))
+                    conn.commit()
+                    command = dict(format='workflow-sequential-start@2', operation_key='s3-start', definition=pin.model_dump(mode='json'),
+                        settings=dict(generation=1, snapshot_digest=assignment_digest(saved)), request='Private assignment goal', inputs=[],
+                        role_overrides=[], step_overrides=[], lower_limits=compiled.definition.limits.model_dump(mode='json', exclude_unset=True))
+                    setting = dict(conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s3-settings'").fetchone())
+                    claim = RetryClaim.from_task(source, result_row_id=result)
+                    def admit(value):
+                        raw = assignment_bytes(value)
+                        # Task IDs/principal are prospective inputs. The writer
+                        # independently resolves/validates all roles and nodes.
+                        chosen = next((item['principal'] for item in value['role_overrides'] if item['role']=='developer'),
+                            next((item['principal'] for item in (defaults or []) if item['role']=='developer'),
+                                 dict(compiled.definition.roles)['developer'].default_agent))
+                        carrier = TaskRecord(id='s3-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
+                            team=source.team, task_type='subtask', brief='Private inert carrier')
+                        visit = TaskRecord(id='s3-visit-task', parent_task_id=carrier.id, assigned_agent=chosen,
+                            team='other' if chosen == 's3_other' else 'engineering', task_type='subtask', brief='Private inert entry',
+                            model_override=source.model_override, reasoning_effort_override=source.reasoning_effort_override, override_source='manager')
+                        from runtime.orchestrator import task_selection
+                        from runtime.workflows import sequential_assignments
+                        real_selection = task_selection.resolve_task_selection
+                        def observe_selection(agent, model, effort):
+                            assert not conn.in_transaction, 'S3 selection resource read inside SQL ownership'
+                            return real_selection(agent, model, effort)
+                        # Observe the actual owner; never implement its answer.
+                        with patch.object(task_selection, 'resolve_task_selection', observe_selection), patch.object(
+                                sequential_assignments, 'resolve_task_selection', observe_selection):
+                            capture = prepare_generic_start(org, start=raw, source=claim)
+                            assert not conn.in_transaction, 'S3 discovery retained SQL ownership'
+                            with org.workflow_authority.admission_writer(capture.authority) as writer:
+                                ids = admit_uncommitted(writer, db, org_slug='scratch', compiled=compiled, settings_row=setting,
+                                    start=raw, source=claim, carrier_task=carrier, visit_task=visit,
+                                    original_limits=compiled.definition.limits, authority=org.workflow_authority, capture=capture)
+                        return ids
+                    yield SimpleNamespace(org=org, db=db, conn=conn, command=command, compiled=compiled,
+                        agents=agents, admit=admit, source=source, root=root, coordinator=coordinator)
+                finally:
+                    org.close()
+
+    def s3_refuse(fixture, command, cause, key):
+        allocations = []
+        with fixture.db.observe_trace(lambda sql: allocations.append(sql) if sql.startswith('INSERT INTO workflow_seq_runs') or sql.startswith('INSERT INTO tasks ') else None):
+            try:
+                fixture.admit(command)
+            except (ValueError, RuntimeError) as exc:
+                assert isinstance(exc, AssignmentRefusal), ('S3 expected finite preallocation refusal', cause, str(exc))
+                assert (exc.cause, exc.node or exc.role) == (cause, key), (cause, key, str(exc))
+            else:
+                raise AssertionError('S3 accepted invalid assignment: ' + cause)
+        # Authority leases have their own real receipts. Compare business rows
+        # independently, and require no INSERT even if a transaction rolled back.
+        assert not allocations, ('S3 allocated before refusal', allocations)
+        assert fixture.conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+        assert fixture.db.get_task('s3-visit-task') is None and fixture.db.get_task('s3-carrier') is None
+        print('S3 finite refusal', cause, key, 'zero allocation', flush=True)
+
+    def s3_admit(fixture, command, case):
+        try:
+            return fixture.admit(command)
+        except (ValueError, RuntimeError) as exc:
+            raise AssertionError(case + ': valid admission refused: ' + str(exc)) from exc
+
+    def s3_persisted(fixture, ids):
+        conn = fixture.conn
+        run = dict(conn.execute('SELECT * FROM workflow_seq_runs WHERE id=?', (ids.run_id,)).fetchone())
+        raw = run['assignment_snapshot_bytes']
+        assert hashlib.sha256(raw).hexdigest() == run['assignment_snapshot_digest']
+        resolved = json.loads(raw)
+        assert json.dumps(resolved, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf8') == raw
+        assert run['engine_version'] == 2
+        rows = list(conn.execute('SELECT * FROM workflow_seq_assignments WHERE run_id=?', (ids.run_id,)))
+        assert len(rows) == 3
+        for row in rows:
+            assert hashlib.sha256(row['snapshot_bytes']).hexdigest() == row['snapshot_digest']
+            assert json.loads(row['snapshot_bytes']) == next(node for node in resolved['nodes'] if node['node']==row['node_id'])
+        with fixture.db.coherent_read_view() as read:
+            validate_selected_run_uncommitted(read, org_slug='scratch', run_id=ids.run_id, scope='admission')
+        assert ids.run_id in read_sequential_history(conn, expected_org_slug='scratch').run_ids
+        assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
+        return resolved, fixture.db.get_task(ids.visit_task_id)
+
+    for case in ASSIGNMENT_CASES:
+        if assignment_case not in (None, 'all', case):
+            continue
+        if case == 'default_precedence':
+            for explicit, saved, expected, origin in ((True, True, 's3_review', 'run'),
+                                                     (False, True, 's3_alt', 'org'),
+                                                     (False, False, 's3_author', 'bundled')):
+                with s3_fixture(defaults=[dict(role='developer', principal='s3_alt')] if saved else []) as f:
+                    if explicit:
+                        f.command['role_overrides'] = [dict(role='developer', principal='s3_review'), dict(role='reviewer', principal='s3_author')]
+                    resolved, task = s3_persisted(f, s3_admit(f, f.command, case))
+                    assert task.assigned_agent == expected, 'default_precedence: native principal'
+                    assert next(r for r in resolved['roles'] if r['role']=='developer') == dict(role='developer', principal=expected, origin=origin), 'default_precedence: stored origin'
+            definition = s3_definition()
+            definition['roles']['developer']['default_agent'] = None
+            with s3_fixture(definition=definition) as f:
+                s3_refuse(f, f.command, 'missing_assignment', 'developer')
+        else:
+            with s3_fixture() as f:
+                if case == 'role_override':
+                    f.command['role_overrides'] = [dict(role='developer', principal='s3_alt')]
+                    original = deepcopy(f.command)
+                    resolved, task = s3_persisted(f, s3_admit(f, f.command, case))
+                    assert task.assigned_agent == 's3_alt', 'role_override: run choice dropped'
+                    assert next(r for r in resolved['roles'] if r['role']=='developer')['origin'] == 'run'
+                    assert 'reviewer_agents' not in resolved['authority']
+                    assert json.loads(f.org.workflow_authority.capture_admission().ready.snapshot_bytes)['reviewer_agents'] == []
+                    replay = s3_admit(f, original, case)
+                    assert replay.visit_task_id == task.id and f.conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 1
+                elif case == 'independence':
+                    for principal, cause in (('s3_review', 'independence'), ('s3_manager', 'role_ineligible'),
+                                              ('s3_other', 'team_scope'), ('former_name', 'principal_unavailable')):
+                        command = deepcopy(f.command)
+                        command['role_overrides'] = [dict(role='developer', principal=principal)]
+                        s3_refuse(f, command, cause, 'reviewer' if cause=='independence' else 'developer')
+                    for field, items, cause, key in (
+                        ('role_overrides', [dict(role='unknown', principal='s3_author')], 'role_key', 'unknown'),
+                        ('role_overrides', [dict(role='developer', principal='s3_author')]*2, 'role_key', 'developer'),
+                        ('step_overrides', [dict(node='unknown')], 'node_key', 'unknown'),
+                        ('step_overrides', [dict(node='develop')]*2, 'node_key', 'develop'),
+                    ):
+                        command = deepcopy(f.command)
+                        command[field] = items
+                        s3_refuse(f, command, cause, key)
+                elif case == 'model_omit':
+                    resolved, task = s3_persisted(f, s3_admit(f, f.command, case))
+                    node = resolved['nodes'][0]
+                    assert (task.model_override, task.reasoning_effort_override, task.override_source) == (None, None, None), 'model_omit: inherited initiator selection'
+                    assert node['effective'] == dict(model='target-model', reasoning_effort='high') and node['requested'] == {}, 'model_omit: target defaults'
+                    assert f.conn.execute("SELECT count(*) FROM audit_log WHERE task_id=? AND action='task_created'", (task.id,)).fetchone()[0] == 0
+                elif case == 'model_null':
+                    f.command['step_overrides'] = [dict(node='develop', model=None, reasoning_effort='high')]
+                    resolved, task = s3_persisted(f, s3_admit(f, f.command, case))
+                    assert resolved['nodes'][0]['requested'] == dict(model=None, reasoning_effort='high'), 'model_null: explicit null lost'
+                    assert (task.model_override, task.reasoning_effort_override, task.override_source) == (None, 'high', 'manager')
+                    audit = json.loads(f.conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='task_created'", (task.id,)).fetchone()[0])
+                    assert audit == dict(reasoning_effort_override='high', override_source='manager')
+                    prior = resolve_node_assignment(f.agents['s3_author'], node='develop', role='developer',
+                        edit=GenericStepOverride(node='develop', model='prior-model', reasoning_effort='low'))
+                    carry = resolve_node_assignment(f.agents['s3_author'], node='develop', role='developer', previous=prior)
+                    cleared = resolve_node_assignment(f.agents['s3_author'], node='develop', role='developer', previous=prior,
+                        edit=GenericStepOverride(node='develop', model=None))
+                    empty = resolve_node_assignment(f.agents['s3_author'], node='develop', role='developer', previous=prior,
+                        edit=GenericStepOverride(node='develop', model=None, reasoning_effort=None))
+                    assert carry['selection'] == prior['selection'], 'model_null: omitted retry did not carry'
+                    assert cleared['selection'] == dict(model_override=None, reasoning_effort_override='low', override_source='manager'), 'model_null: retry clear lost'
+                    assert empty['selection'] == dict(model_override=None, reasoning_effort_override=None, override_source=None)
+                    for index, node in enumerate((carry, cleared, empty)):
+                        native = TaskRecord(id='s3-retry-selection-' + str(index), assigned_agent='s3_author', team='engineering', brief='Selection resolution only', **node['selection'])
+                        f.db.insert_task(native)
+                        stored = f.db.get_task(native.id)
+                        assert (stored.model_override, stored.reasoning_effort_override, stored.override_source) == (
+                            node['selection']['model_override'], node['selection']['reasoning_effort_override'], node['selection']['override_source'])
+                elif case == 'invalid_pair':
+                    f.command['step_overrides'] = [dict(node='review', model='provider/model', reasoning_effort='unsupported-effort')]
+                    s3_refuse(f, f.command, 'invalid_selection', 'review')
+                elif case == 'executor_drift':
+                    f.command['step_overrides'] = [dict(node='develop', model='chosen-model', reasoning_effort='high')]
+                    resolved, task = s3_persisted(f, s3_admit(f, f.command, case))
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    from runtime.orchestrator import prompt_loader
+                    current = replace(f.agents['s3_author'], executor='opencode', model='provider/model', reasoning_effort=None)
+                    (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(current))
+                    current = prompt_loader.load_agent(OrgPaths(f.root), 's3_author')
+                    refusal = recheck_launch_assignment(resolved['nodes'][0], current)
+                    assert refusal is not None and (refusal.cause, refusal.node) == ('invalid_selection', 'develop'), 'executor_drift: current options not rechecked'
+                    assert recheck_launch_assignment(resolved['nodes'][0], f.agents['s3_author']) is None
+                    compatible = recheck_launch_assignment(resolved['nodes'][0], replace(current, executor='claude'))
+                    assert compatible is not None and compatible.cause == 'executor_drift', 'executor_drift: compatible executor replacement ignored'
+                    option_assignment = resolve_node_assignment(current, node='develop', role='developer',
+                        edit=GenericStepOverride(node='develop', reasoning_effort='high'))
+                    option_drift = recheck_launch_assignment(option_assignment, replace(current, model=None))
+                    assert option_drift is not None and option_drift.cause == 'invalid_selection', 'executor_drift: current default/options ignored'
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes, 'executor_drift: recheck mutated native state'
+                    assert f.db.get_task(task.id).status.value == 'pending', 'unmounted helper claimed Held'
+                    # The same current choice is refused at creation, with no
+                    # task even when all syntax and other nodes remain valid.
+            if case == 'executor_drift':
+                with s3_fixture() as f:
+                    # Resolve the original valid assignment, then change the
+                    # canonical target and republish through real authority.
+                    command = deepcopy(f.command)
+                    command['step_overrides'] = [dict(node='develop', model='chosen-model', reasoning_effort='high')]
+                    original = parse_generic_start(assignment_bytes(command))
+                    resolve_assignments(f.compiled, original, defaults=(),
+                        capture=f.org.workflow_authority.capture_admission(), org_slug='scratch', team='engineering')
+                    current = replace(f.agents['s3_author'], executor='opencode', model='provider/model', reasoning_effort=None)
+                    (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(current))
+                    f.coordinator.synchronize_all_dependencies()
+                    f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
+                    s3_refuse(f, command, 'invalid_selection', 'develop')
+        print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
+    if sys.argv[1:] == ['--assignments']:
+        raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.
 if sys.argv[1:] in ([], ['--bootstrap-startup']):

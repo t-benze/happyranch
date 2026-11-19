@@ -1760,3 +1760,16 @@ the already-bound subject. Browser/bearer, foreign/ended/recovery/thread session
 are unavailable. No new credential, permission, daemon network/effect or live
 setup follows. Original native FINAL callback and all holds/limits remain.
 See docs/specs/2026-11-12-sequential-coding-u4c.md.
+
+
+## Inert Start@2 assignments (THR-336 S3)
+
+The public composer and genuine source decision still use Start@1. Internal
+Start@2 assignment preparation resolves run role choice, org role default,
+bundled role default, then refuses missing assignment. Node model/effort use
+the target's defaults on omission, clear on explicit null, and set on value;
+omitted retry fields carry the prior tuple/source. Native step overrides have
+manager provenance and never inherit the initiator's tuple. This source-only
+preparation grants no public @2 start/control, configuration, launch or provider
+execution authority. The pure executor/options launch recheck is unmounted
+until S4b; durable drift-to-Held belongs to S4a/S4b. Coding remains Disabled.

@@ -40,9 +40,10 @@ from runtime.workflows.coding_authority_history import _Budget, _CALL_ROW_LIMIT,
 from runtime.workflows.sequential_contracts import (
     DEFINITION_LIMIT, RESULT_LIMIT, BindingClaim, Closed, Counters, DefinitionPin,
     Limits, NextEdge, OutputRef, ResultEnvelope, StartCommand, TerminalEdge, _array,
+    GenericDefinitionPin, GenericLimits,
 )
 from runtime.workflows.sequential_definition import (
-    CompiledDefinition, _json, _record as _closed_record, compile_definition, parse_result, parse_start,
+    CompiledDefinition, GenericCompiledDefinition, _json, _record as _closed_record, compile_definition, parse_result, parse_start,
     parse_transition, validate_start,
 )
 from runtime.workflows.sequential_reducer import (
@@ -61,6 +62,33 @@ class StorageSettings(Closed):
     bindings: Annotated[tuple[BindingClaim, ...], BeforeValidator(_array), Field(min_length=1, max_length=16)]
     limits: Limits
     admission: Literal['Disabled', 'Allowed']
+
+
+class GenericStorageSettings(Closed):
+    """Internal @2 org defaults; no public settings/admission surface."""
+
+    format: Literal['workflow-sequential-settings-storage@2']
+    definition: GenericDefinitionPin
+    bindings: Annotated[tuple[BindingClaim, ...], BeforeValidator(_array), Field(max_length=16)]
+    limits: GenericLimits
+    admission: Literal['Disabled', 'Allowed']
+
+
+def _storage_settings(raw: bytes, budget: _ReadBudget) -> StorageSettings | GenericStorageSettings:
+    value = _decode(raw, budget)
+    owner = GenericStorageSettings if value.get('format') == 'workflow-sequential-settings-storage@2' else StorageSettings
+    return owner.model_validate(value)
+
+
+def _settings_bindings(snapshot: StorageSettings | GenericStorageSettings, definition: object) -> None:
+    bindings = {item.role: item.principal for item in snapshot.bindings}
+    roles = dict(definition.definition.roles)
+    _require(len(bindings) == len(snapshot.bindings) and bindings.keys() <= roles.keys(), 'settings_pin_conflict')
+    if isinstance(snapshot, StorageSettings):
+        _require(bindings.keys() == roles.keys(), 'settings_pin_conflict')
+    for role, requirement in roles.items() if isinstance(snapshot, StorageSettings) else ():
+        _require(all(role not in bindings or other not in bindings or bindings[role] != bindings[other]
+                     for other in requirement.independent_of), 'settings_independence_conflict')
 
 
 @dataclass(frozen=True)
@@ -287,7 +315,7 @@ def _parse(raw: bytes, parser: Callable[..., _Parsed], budget: _ReadBudget,
     # a retained row does not buy an unlimited number of decoded copies.
     budget.reserve(48 * len(raw) + 512)
     value = parser(raw, **kwargs)
-    model = value.definition if isinstance(value, CompiledDefinition) else value
+    model = value.definition if isinstance(value, (CompiledDefinition, GenericCompiledDefinition)) else value
     _decoded(model.model_dump(mode='json'), budget)
     return value
 
@@ -394,8 +422,10 @@ def _definitions(data: dict[str, list[dict]], budget: _ReadBudget) -> dict[str, 
     result = {}
     for row in data['workflow_seq_definitions']:
         budget.step()
+        from runtime.workflows.sequential_definition import compile_generic_definition
+        compiler = compile_generic_definition if row['compiler_pin'] == 'workflow-sequential-compiler@2' else compile_definition
         compiled = _parse(_hashed(row['definition_bytes'], row['definition_digest']),
-                          compile_definition, budget, source_digest=row['source_digest'])
+                          compiler, budget, source_digest=row['source_digest'])
         pin = compiled.pin
         _require((row['identity'], row['version'], row['compiler_pin'], row['validator_pin'],
                   row['interpreter_pin'], row['capability_pin']) ==
@@ -413,15 +443,11 @@ def _settings(data: dict[str, list[dict]], definitions: dict[str, CompiledDefini
     for key, row in rows.items():
         budget.step()
         _require(row['org_slug'] == org_slug and row['definition_id'] in definitions, 'settings_owner_invalid')
-        snapshot = StorageSettings.model_validate(_decode(_hashed(row['snapshot_bytes'], row['snapshot_digest']), budget))
+        snapshot = _storage_settings(_hashed(row['snapshot_bytes'], row['snapshot_digest']), budget)
         definition = definitions[row['definition_id']]
-        bindings = {item.role: item.principal for item in snapshot.bindings}
-        _require(snapshot.definition == definition.pin and row['definition_identity'] == definition.pin.identity
-                 and len(bindings) == len(snapshot.bindings)
-                 and bindings.keys() == dict(definition.definition.roles).keys(), 'settings_pin_conflict')
-        for role, requirement in definition.definition.roles:
-            _require(all(bindings[role] != bindings[other] for other in requirement.independent_of),
-                     'settings_independence_conflict')
+        _require(snapshot.definition == definition.pin and row['definition_identity'] == definition.pin.identity,
+                 'settings_pin_conflict')
+        _settings_bindings(snapshot, definition)
         generations.setdefault(row['definition_identity'], []).append(row['generation'])
         snapshots[key] = snapshot
     for values in generations.values():
@@ -834,21 +860,23 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                      'schema_marker_invalid')
             for table in tables:
                 _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
-            # S2a installs references only. Later units own @2 semantic history;
-            # never parse new events/counters/check bytes through the @1 reducer.
+            # S3 accepts only inert @2 first-admission assignments. Later
+            # control/counter/wait/inbox/lifecycle rows still refuse explicitly.
             if layout.schema_version == 2:
-                _require(all(not data[table] for table in tables if table not in SEQUENTIAL_TABLES),
+                _require(all(not data[table] for table in tables
+                             if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments')),
                          'schema2_runtime_history_unavailable')
-                _require(all(row['engine_version'] == 1 for table in
-                             ('workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_outputs', 'workflow_seq_events')
-                             for row in data[table]), 'schema2_runtime_history_unavailable')
+                _require(all(row['engine_version'] == 1 for row in data['workflow_seq_outputs']),
+                         'schema2_runtime_history_unavailable')
             for table in tables:
                 for row in data[table]:
                     budget.step()
                     for name, value in row.items():
                         if name in ('version', 'generation', 'epoch', 'content_returns', 'visit_count',
                                     'event_count', 'cas', 'ordinal', 'sequence', 'selected'):
-                            _require(type(value) is int, 'integer_storage_required')
+                            _require(type(value) is int or (row.get('engine_version') == 2
+                                     and name in ('epoch', 'content_returns') and value is None),
+                                     'integer_storage_required')
                         elif name.endswith('result_id'):
                             _require(value is None or (type(value) is int and value > 0), 'result_identity_invalid')
                         elif name.endswith(('_id', '_principal')) or name in ('id', 'org_slug', 'principal', 'operation_key', 'start_operation_key'):
@@ -885,13 +913,24 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                 run_visits, run_events = by_run_visits.get(run['id'], []), by_run_events.get(run['id'], [])
                 for rows in (run_visits, run_events):
                     budget.work(len(rows) * max(1, len(rows).bit_length()))
-                _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
-                    sorted(run_visits, key=lambda row: row['ordinal']),
-                    sorted(run_events, key=lambda row: row['sequence']), outputs, budget,
-                    observations.get(run['id'], []))
+                if run.get('engine_version', 1) == 2:
+                    from runtime.workflows.sequential_run_validation import _generic_admission_history
+                    _generic_admission_history(conn, org_slug=expected_org_slug, run=run,
+                        compiled=definitions[run['definition_id']], settings=setting, snapshot=snapshots[setting['id']],
+                        data=data, budget=budget)
+                else:
+                    _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
+                        sorted(run_visits, key=lambda row: row['ordinal']),
+                        sorted(run_events, key=lambda row: row['sequence']), outputs, budget,
+                        observations.get(run['id'], []))
+            if layout.schema_version == 2:
+                _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
+                             for row in data['workflow_seq_assignments']), 'assignment_owner_conflict')
             _auxiliary(conn, data, runs, visits, events, budget, definitions)
             if layout.ownership:
-                validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)
+                validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,
+                    runs={key: row for key, row in runs.items() if row.get('engine_version', 1) == 1},
+                    visits={key: row for key, row in visits.items() if row.get('engine_version', 1) == 1})
         # Enroll only fully authenticated new rows; recursive old readers still
         # compare complete combined references and every retained data family.
         with _sql_budget(conn, legacy):

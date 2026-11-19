@@ -962,6 +962,27 @@ on both runtimes; run boundary-lint, guard and base-to-head diff check/stat.
 Full schema-load/local_ci all remain the manager's final-head work. This adds no
 CI trigger, live install, @2 admission, Product E2E, V3 or automatic setup behavior.
 
+S3 assignment proof uses the same private schema-shell venue:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --assignments=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --assignments=all
+```
+
+Individual selectors are `role_override`, `default_precedence`, `independence`,
+`model_omit`, `model_null`, `invalid_pair`, `executor_drift`. Real authority,
+selection and native task owners observe persisted assignment snapshots/digests,
+field presence, native overrides/audits, replay and zero allocation on invalid
+choices. A test-side observer calls the real selection owner outside SQL
+ownership; it never implements the selection answer. Drift checks both creation-time refusal and the pure **unmounted**
+launch recheck without row/task mutation; it does not prove native Held.
+S4a/S4b own that transition. Record four answers per named case and one intended
+pre-fix equality/field-drop mutation failure, byte-exact restoration and restored
+passing result in the PR. Retain affected start/authority/settings/history
+keepers and boundary-lint. Full schema suites and local_ci all remain the
+manager's final-head checks. Provider availability is NOT RUN. @2 public
+admission, Coding Disabled, hooks and independent review/QA are unchanged.
+
 S1 generic ABI uses the existing private shell owner's explicit selector:
 
 ```bash

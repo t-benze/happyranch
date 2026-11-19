@@ -569,3 +569,67 @@ def source_outer_settled(dispatcher: Any, invocation: Any, *, failed: bool, clea
             evidence_ids=(_evidence_id(run_id, None, 'outer'),))
     if prior is None:
         dispatcher.notify_queued(visit['task_id'], org.orchestrator._queue)
+
+
+def _generic_selection(conn: sqlite3.Connection, *, org_slug: str, command: Any,
+                       budget: _ReadBudget) -> tuple[Any, dict, Any]:
+    """Internal S3 @2 pin selection. Public Start@1 adapters never call this."""
+    from runtime.workflows.sequential_definition import generic_limits, validate_generic_start
+    from runtime.workflows.sequential_history import GenericStorageSettings
+    metadata = _selected_layout(conn, budget)
+    _check('workflow_seq_assignments' in metadata, 'sequential_schema2_required')
+    definitions = list(_bounded_rows(conn, 'workflow_seq_definitions', ('id',), (('text',),), budget,
+        where='identity=? AND version=?', args=(command.definition.identity, command.definition.version), maximum=1))
+    settings = list(_bounded_rows(conn, 'workflow_seq_settings', ('id',), (('text',),), budget,
+        where='org_slug=? AND definition_identity=? AND generation=?',
+        args=(org_slug, command.definition.identity, command.settings.generation), maximum=1))
+    _check(len(definitions) == len(settings) == 1)
+    compiled, setting, snapshot = _pins(conn, metadata, org_slug=org_slug,
+        definition_id=definitions[0][0], settings_id=settings[0][0], budget=budget)
+    _check(isinstance(snapshot, GenericStorageSettings) and command.definition == compiled.pin
+           and snapshot.admission == 'Allowed' and command.settings.snapshot_digest == setting['snapshot_digest']
+           and generic_limits(compiled, command.lower_limits) == generic_limits(compiled, snapshot.limits, command.lower_limits)
+           and all(getattr(command.lower_limits, key) <= getattr(snapshot.limits, key)
+                   for key in ('max_visits', 'max_events', 'max_recoveries')),
+           'sequential_admission_pin_conflict')
+    from runtime.workflows.sequential_assignments import validate_assignment_keys
+    validate_assignment_keys(compiled, command)
+    validate_generic_start(command, compiled, original_limits=snapshot.limits)
+    return compiled, setting, snapshot
+
+
+def prepare_generic_start(org: Any, *, start: bytes, source: Any) -> Any:
+    """Inert @2 discovery outside writer/leases; public @1 never calls this.
+
+    Custom selection consults the adapter store, so it must finish before the
+    admission writer. The existing authority/profile capture fences those
+    declarations at the final SQL check. Replay keeps its original snapshot.
+    """
+    from runtime.workflows.sequential_assignments import (
+        AssignmentCapture, assignment_bytes, parse_assignment_start, resolve_assignments,
+    )
+    capture = org.workflow_authority.capture_admission()
+    budget = _ReadBudget()
+    command = _parse(start, parse_assignment_start, budget)
+    budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        rows = _engine_rows(conn, 'workflow_seq_runs', budget,
+            'org_slug=? AND source_principal=? AND source_task_id=? AND start_operation_key=?',
+            (org.slug, source.assigned_agent, source.task_id, command.operation_key))
+        if rows:
+            run = rows[0]
+            _check(run['engine_version'] == 2 and run['start_bytes'] == start
+                   and (run['source_session_id'], run['source_result_id']) ==
+                   (source.current_session_id, source.result_row_id), 'sequential_start_operation_conflict')
+            validate_selected_run_uncommitted(conn, org_slug=org.slug, run_id=run['id'], scope='admission')
+            budget.check()
+            return AssignmentCapture(capture, start, run['assignment_snapshot_bytes'])
+        compiled, _, snapshot = _generic_selection(conn, org_slug=org.slug, command=command, budget=budget)
+    # No SQL snapshot, publication/profile lease or writer spans these resource
+    # reads. The current capture and pin are authenticated again at admission.
+    resolved = resolve_assignments(compiled, command, defaults=snapshot.bindings, capture=capture,
+                                   org_slug=org.slug, team=source.team)
+    raw = assignment_bytes(resolved)
+    budget.reserve(48 * len(raw) + 512)
+    budget.check()
+    return AssignmentCapture(capture, start, raw)
