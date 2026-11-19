@@ -1,7 +1,9 @@
 /**
  * Heartbeat — histogram of orchestration steps per hour. THR-376 r2 G8: the
- * design's 16 bars x 5px with a 3px gap — the 16 most recent hourly buckets,
- * oldest left, ending at the current hour (`nowIdx`).
+ * design's 5px bars with a 3px gap. All 24 hourly buckets render (oldest
+ * left, ending at the current hour `nowIdx`) so the card keeps the full
+ * "last 24h" coverage its label promises; the design's 16-bar count is
+ * deferred pending a time-window product decision.
  *
  * Tier colors come from the response model (ok / warn / bad), not from
  * client-side classification. Zero-step hours render as a flat neutral
@@ -22,7 +24,7 @@ interface HeartbeatProps {
 }
 
 
-const BARS = 16;
+const BARS = 24;
 const BAR_W = 5;
 
 /** The last BARS buckets in time order, ending at the `nowIdx` hour. */
@@ -48,7 +50,7 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
     Math.max(b.steps, b.failed ?? 0);
   const maxSignal = Math.max(...bars.map(heightSignal), 1);
   const H = 36;
-  // 16 bars at 5px + 3px gaps are 125px wide, which fits the 300px rail
+  // 24 bars at 5px + 3px gaps are 189px wide, which fits the 300px rail
   // content at every width (THR-376 D4: no Home card overflow at 1100).
   return (
     <div

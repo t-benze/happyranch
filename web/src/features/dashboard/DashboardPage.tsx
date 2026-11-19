@@ -342,15 +342,19 @@ export function DashboardPage(): JSX.Element {
                   {s.recent_activity.map((r, i) => (
                     <li
                       key={`${r.timestamp}-${i}`}
-                      className="flex flex-wrap items-baseline gap-x-2 gap-y-1"
+                      className="flex items-baseline gap-x-1.5"
                     >
                       {/* THR-376 r2 D6: every row starts with a pill in a
                           fixed-width slot, and the age has a fixed-width slot,
                           so agent names line up. Rows with no verdict (e.g.
                           session_start) get a neutral "—" pill (the dashboard's
-                          "none" mark), not a made-up word. The trailing event
-                          kind / ID wrap to a second line when the main column
-                          is narrow (1100, mobile). */}
+                          "none" mark), not a made-up word. The agent name,
+                          event kind and ID share one flexible column that
+                          wraps within itself, so the agent-name column stays
+                          the same at every width (1100, mobile). The age slot
+                          (60px) fits the widest age ("23 小时前", 58px) and the
+                          6px gaps leave a 390px row room for a full
+                          engineering_manager-length name. */}
                       <span className="flex w-12 shrink-0">
                         {r.verdict ? (
                           <ActivityVerdictPill verdict={r.verdict} />
@@ -358,35 +362,37 @@ export function DashboardPage(): JSX.Element {
                           <StatusBadge tone="neutral" label="—" />
                         )}
                       </span>
-                      <span className="text-text-muted w-16 shrink-0 whitespace-nowrap">
+                      <span className="text-text-muted w-15 shrink-0 whitespace-nowrap">
                         {t('dashboard.ago', {
                           age: formatAge(locale, secondsSince(r.timestamp, now)),
                         })}
                       </span>
-                      <span className="text-text-primary">{r.who}</span>
-                      {/* Raw audit machine value — rendered byte-for-byte. */}
-                      <span className="text-text-muted">{r.event_kind}</span>
-                      {r._thread_dream_id && (
-                        <CrescentMoonBadge
-                          className="h-3 w-3"
-                          label={t('dashboard.dreamBadge')}
-                        />
-                      )}
-                      {r.task_id && (
-                        <span className="ml-auto">
-                          <IdBadge
-                            id={r.task_id}
-                            kind={r.task_id.startsWith('THR-') ? 'thread' : 'task'}
-                            to={
-                              slug
-                                ? r.task_id.startsWith('THR-')
-                                  ? `/orgs/${slug}/threads/${r.task_id}`
-                                  : `/orgs/${slug}/tasks/${r.task_id}`
-                                : undefined
-                            }
+                      <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="text-text-primary wrap-anywhere">{r.who}</span>
+                        {/* Raw audit machine value — rendered byte-for-byte. */}
+                        <span className="text-text-muted">{r.event_kind}</span>
+                        {r._thread_dream_id && (
+                          <CrescentMoonBadge
+                            className="h-3 w-3"
+                            label={t('dashboard.dreamBadge')}
                           />
-                        </span>
-                      )}
+                        )}
+                        {r.task_id && (
+                          <span className="ml-auto">
+                            <IdBadge
+                              id={r.task_id}
+                              kind={r.task_id.startsWith('THR-') ? 'thread' : 'task'}
+                              to={
+                                slug
+                                  ? r.task_id.startsWith('THR-')
+                                    ? `/orgs/${slug}/threads/${r.task_id}`
+                                    : `/orgs/${slug}/tasks/${r.task_id}`
+                                  : undefined
+                              }
+                            />
+                          </span>
+                        )}
+                      </span>
                     </li>
                   ))}
                 </ul>

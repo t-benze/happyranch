@@ -13,21 +13,18 @@ interface OrgPulseTableProps {
   rows: TeamPulseRow[];
 }
 
-type Tier = 'green' | 'yellow';
+type Tier = 'green' | 'yellow' | 'red';
 
-/**
- * THR-376 r2 D7: colour by health, as the a-dashboard design does — the
- * accent (green tier) while a team holds or improves its week-on-week
- * acceptance, attention (yellow tier) when it is trending down. The old
- * absolute thresholds (<80% = red) painted almost every team red.
- */
-function tierFor(trendDelta: number): Tier {
-  return trendDelta < 0 ? 'yellow' : 'green';
+function tierFor(acceptance: number): Tier {
+  if (acceptance >= 90) return 'green';
+  if (acceptance >= 80) return 'yellow';
+  return 'red';
 }
 
 const ACCEPTANCE_TEXT: Record<Tier, string> = {
   green: 'text-tier-green',
   yellow: 'text-tier-yellow',
+  red: 'text-tier-red',
 };
 
 /** THR-376 r2 G12: the design's 56x16 pulse sparkline. */
@@ -42,7 +39,7 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
     <table className="w-full text-sm">
       <tbody>
         {rows.map((r) => {
-          const tier = tierFor(r.trend_delta);
+          const tier = tierFor(r.acceptance_pct);
           // THR-376 r2 D8: a team with no agents has no pulse to show, so its
           // count, line, acceptance and trend read "—" instead of
           // "0 agents" / a flat line / 0%.
