@@ -2646,6 +2646,35 @@ if s4a_case or not sys.argv[1:]:
                         else:
                             raise AssertionError(case + ': writer committed a history beyond the existing complete-read byte budget')
                         assert s4snap(f) == before, case + ': rejected unreadable history changed persisted rows'
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids, case + ': rollback history unreadable'
+                s4apply(f, s4command(f, 'cancel'))
+                fenced = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                assert (fenced['state'], fenced['progress'], fenced['active_visit_id'], fenced['event_count']) == ('running', 'cancelling', visit, 12), case + ': cancellation fence missing'
+                try:
+                    s4finish(f)
+                except (ValueError, RuntimeError) as exc:
+                    raise AssertionError(case + ': cancellation finish after budget refusal must commit: ' + str(exc)) from exc
+                stopped = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                assert (stopped['state'], stopped['progress'], stopped['terminal_outcome'], stopped['active_visit_id'], stopped['event_count']) == ('finished', None, 'cancelled', None, 13), case + ': terminal cancellation missing'
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE selected=1').fetchone()[0] == 0, case + ': outstanding visit after cancellation'
+                try:
+                    history = read_sequential_history(f.conn, expected_org_slug='scratch')
+                except ValueError as exc:
+                    raise AssertionError(case + ': complete terminal cancellation history must remain readable: ' + str(exc)) from exc
+                assert f.ids.run_id in history.run_ids, case + ': terminal history missing'
+                assert (stopped['visit_count'], stopped['recovery_count']) == (6, 5), case + ': cancellation spent visit/recovery allowance'
+                assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='transition'").fetchone()[0] == 0, case + ': cancellation accepted a refused result'
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0, case + ': cancellation produced output'
+                native_task = s4row(f, 'workflow_seq_visits', visit)['task_id']
+                try:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?',
+                        (summary.replace('"unknown"', '"changed"', 1), native_task))
+                    f.conn.commit()
+                    s4refuses(f, lambda: read_sequential_history(f.conn, expected_org_slug='scratch'), 'hold_callback_conflict')
+                finally:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary, native_task))
+                    f.conn.commit()
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids, case + ': restored terminal history unreadable'
             elif case == 'document_retry_history':
                 summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
                     content_base64=base64.b64encode(b'x' * 1048576).decode('ascii'), findings=[])).decode('utf8')

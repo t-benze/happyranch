@@ -303,7 +303,7 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             _outbox(conn, run, event_id, 'visit_queued', new_visit, replacement_task.id)
         elif immediate:
             if visit is not None:
-                generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+                generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
                 conn.execute("UPDATE workflow_seq_visits SET state='cancelled',selected=0 WHERE id=?", (visit['id'],))
                 stamp = datetime.now(timezone.utc).isoformat()
                 conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,updated_at=? WHERE id=? AND status='pending'",
@@ -346,7 +346,7 @@ def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org
         _require(run['engine_version'] == 2 and run['state'] == 'running'
                  and run['progress'] == 'cancelling' and run['cas'] == expected_cas, 'cancellation_conflict')
         visit = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (run['active_visit_id'],))[0]
-        proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+        proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
         event = _append_event(conn, run, kind='cancellation_finished', operation_key='cancel-finished-' + str(expected_cas),
             payload=dict(visit_id=visit['id'], closure=proof), budget=budget, resulting_state='finished', cancel=True)
         conn.execute("UPDATE workflow_seq_visits SET state='cancelled',selected=0 WHERE id=?", (visit['id'],))

@@ -225,7 +225,45 @@ def generic_callback_bytes(conn: sqlite3.Connection, result_id: int,
     return cached
 
 
-def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, budget: _ReadBudget) -> dict:
+def _generic_callback_digest(conn: sqlite3.Connection, result_id: int, budget: _ReadBudget) -> str | None:
+    """Authenticate cancellation bytes without acquiring business content.
+
+    Charge every raw byte and its UTF8 validation copies, but no full-content
+    parser/model reservation. The stream and any reused payload belong only to
+    this snapshot; oversize callbacks retain the existing size-only refusal.
+    """
+    import codecs
+    budget.step()
+    size = conn.execute('SELECT typeof(output_summary),length(CAST(output_summary AS BLOB)) '
+                        'FROM task_results WHERE id=?', (result_id,)).fetchone()
+    _require(size is not None and size[0] == 'text' and type(size[1]) is int
+             and size[1] >= 0, 'hold_callback_bounds')
+    if size[1] > 1414488:
+        return None
+    cached = budget.generic_callbacks.get(result_id)
+    if cached is not None:
+        _require(len(cached[0]) == size[1], 'hold_callback_conflict')
+        return cached[1]
+    # One raw-byte copy plus up to four bytes per decoded Unicode character.
+    # No business content is decoded or retained, and all work shares the
+    # original byte/SQL/traversal/deadline allowances.
+    budget.reserve(5 * size[1] + 512)
+    digest = hashlib.sha256()
+    decoder = codecs.getincrementaldecoder('utf8')()
+    for offset in range(0, size[1], 65536):
+        budget.step()
+        length = min(65536, size[1] - offset)
+        raw = conn.execute('SELECT substr(CAST(output_summary AS BLOB),?,?) FROM task_results WHERE id=?',
+                           (offset + 1, length, result_id)).fetchone()[0]
+        _require(type(raw) is bytes and len(raw) == length, 'hold_callback_conflict')
+        decoder.decode(raw, final=offset + length == size[1])
+        digest.update(raw)
+    budget.check()
+    return digest.hexdigest()
+
+
+def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, budget: _ReadBudget,
+                         cancellation: bool = False) -> dict:
     """Original native terminal AND positive outer proof, or pristine no-launch.
 
     This observation never manufactures a callback or settles native ownership.
@@ -280,9 +318,13 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
         _result(conn, callback['result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
         status = conn.execute('SELECT status FROM task_results WHERE id=?', (callback['result_id'],)).fetchone()[0]
         _require(status == callback['status'], 'hold_callback_conflict')
-        payload = generic_callback_bytes(conn, callback['result_id'], budget)
-        if payload is not None:
-            _require(payload[1] == callback['carrier_digest'], 'hold_callback_conflict')
+        if cancellation:
+            digest = _generic_callback_digest(conn, callback['result_id'], budget)
+        else:
+            payload = generic_callback_bytes(conn, callback['result_id'], budget)
+            digest = None if payload is None else payload[1]
+        if digest is not None:
+            _require(digest == callback['carrier_digest'], 'hold_callback_conflict')
     return dict(kind='settled', terminal_digest=terminal_digest, outer_digest=outer_digest,
                 result_id=None if callback is None else callback['result_id'])
 

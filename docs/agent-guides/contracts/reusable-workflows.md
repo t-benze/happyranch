@@ -54,6 +54,14 @@ and charges each bounded native callback payload once per snapshot, reusing it
 for historical hold/replacement references while rechecking native ownership
 and terminal/outer proofs. Caches are local to one read or writer observation
 and are never reused by later operations.
+Cancellation-only closure instead authenticates a bounded UTF8-validated byte
+stream against the same native callback digest, charging raw bytes and validation
+copies without reserving business-content parsing copies it never creates. A
+callback refused by Held is not accepted or parsed as business content by
+cancellation. After five 1MiB Held/retry cycles and a sixth Held candidate's
+64MiB budget refusal, cancellation finish and the complete terminal history
+remain readable within that unchanged budget. Native identity and original
+terminal/outer authentication remain required.
 Fresh hold/control/cancellation-finish writers run the complete reader on their
 resulting uncommitted state with its unchanged budgets and the operation's
 original deadline; refusal rolls back all business writes. No-result holds create

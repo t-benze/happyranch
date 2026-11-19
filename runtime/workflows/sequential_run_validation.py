@@ -838,7 +838,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 elif event['kind'] == 'cancellation_finished':
                     if current['active_visit_id'] is not None:
                         visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
-                        generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+                        generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
                     current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
                                    held_node_id=None, held_event_id=None, progress=None)
                 else:
@@ -848,7 +848,8 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             else:
                 _require(event['kind'] == 'cancellation_finished' and current['progress'] == 'cancelling', 'control_missing')
                 visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
-                _require(body['closure'] == generic_closed_visit(conn, run=run, visit=visit, budget=budget), 'control_cancel_proof')
+                _require(body['closure'] == generic_closed_visit(conn, run=run, visit=visit, budget=budget,
+                    cancellation=True), 'control_cancel_proof')
                 current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
                                held_node_id=None, held_event_id=None, progress=None)
         else:
