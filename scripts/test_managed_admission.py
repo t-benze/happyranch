@@ -430,7 +430,7 @@ def test_supervisor_reconcile_reports_incomplete_cleanup(monkeypatch):
     transport = ControlledForwarder()
     transport.fail_close = True
     monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: transport)
-    with running(monkeypatch) as (path, supervisor):
+    with running(monkeypatch, helper=True) as (path, supervisor):
         device, credential = grant(supervisor, path)
         _, credential_b = grant(supervisor, path, "node-b", "synthetic-invite-b")
         client = connect(path, "node-a", credential, "sse", "a-sse")
@@ -450,6 +450,35 @@ def test_supervisor_reconcile_reports_incomplete_cleanup(monkeypatch):
                     supervisor._reconcile_revocation()
             epoch = supervisor.state_store.load().revocation_epoch
             provider, registry = supervisor._provider, supervisor.registry
+            # run() now admits only the fixed, custodied home config. Provision
+            # that real foreground boundary in this fixture's private root;
+            # keep the already-serving transport/trust store and its identities.
+            from runtime.remote_access import installer
+            from runtime.remote_access.home_activation import CONTROL_URL
+            io = installer.ManagedInstaller(root=path.parent, root_owner=(os.getuid(), os.getgid()))
+            monkeypatch.setattr(io, "_account", lambda **kw: (os.getuid(), os.getgid()))
+            files = io._generated_configs()
+            raw = json.loads(files["connector.json"])
+            raw.update(tenant_id=supervisor.config.tenant_id, home_id=supervisor.config.home_id,
+                       connector_id=supervisor.config.connector_id)
+            raw["managed"]["control_plane_id"] = supervisor.config.managed.control_plane_id
+            sidecar = json.loads(files["sidecar.json"])
+            sidecar.update(RoleIdentity="home-sidecar-" + raw["home_id"], ControlURL=CONTROL_URL,
+                control_tls={"dial_ip": "192.168.1.2", "ca_sha256": "a" * 64},
+                home_binding={"home_id": raw["home_id"], "connector_id": raw["connector_id"],
+                    "control_plane_id": raw["managed"]["control_plane_id"], "activation_generation": 1})
+            folder = path.parent / "etc/happyranch"
+            folder.mkdir(parents=True)
+            folder.parent.chmod(0o755)
+            folder.chmod(0o755)
+            for name, data in (("connector.json", raw), ("sidecar.json", sidecar)):
+                member = folder / name
+                member.write_text(json.dumps(data))
+                member.chmod(0o640)
+            managed_config = raw.pop("managed")
+            supervisor.config = ConnectorConfig(**raw, managed=managed.ManagedProviderConfig(**managed_config))
+            supervisor._config_path = Path("/etc/happyranch/connector.json")
+            monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
             notifications = []
             supervisor._notify_fn = notifications.append
 

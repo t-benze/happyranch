@@ -1,7 +1,7 @@
 """Fixed no-input Gio service, intended for system Python -I as root.
 
 The installed entry binds each authenticated sender to its validated release
-home before connector reads or authorization. Lifecycle mounting stays private until I5.
+home before connector reads or authorization. Lifecycle calls use the same fixed public gate.
 """
 from __future__ import annotations
 
@@ -56,12 +56,11 @@ OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
 INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
-# Deliberately absent from METHODS/introspection and public dispatch until I5.
 LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
                      'RetryPolicyRenewal': 'retry-policy-renewal',
                      **_helper_invite.METHODS}
 IDLE_SECONDS = 60.0
-METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
+METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS, *LIFECYCLE_ACTIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
     for name in sorted(METHODS)) + '</interface></node>'
@@ -335,6 +334,11 @@ class RemoteAccessHelper:
                 raise Refused('unknown-method')
             if not sender or not sender.startswith(':'):
                 raise Refused('invalid-request')
+            if method in LIFECYCLE_ACTIONS:
+                if busy_on_arrival:
+                    raise Refused('busy')
+                self._start_lifecycle(message)
+                return False
             if method == 'StatusV2':
                 self._status_v2(message, sender)
                 return False
@@ -394,7 +398,7 @@ class RemoteAccessHelper:
         self.last_activity = self.clock()
 
     def _start_lifecycle(self, message: Gio.DBusMessage) -> None:
-        """Private I3a mount. Public dispatch/introspection NEVER selects this entry."""
+        """Capture and authorize a fixed public lifecycle action before effects."""
         method, sender = message.get_member(), message.get_sender()
         fds = message.get_unix_fd_list()
         if (method not in LIFECYCLE_ACTIONS or message.get_interface() != INTERFACE

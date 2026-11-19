@@ -2095,9 +2095,10 @@ record when present; the optional trusted constructor UID remains a compatibilit
 pin. The root-only `serve()` connects Gio to the fixed system-bus socket
 (`/run/dbus/system_bus_socket`), ignoring address environment overrides. B8 packages
 the bus/polkit definitions and root Type=dbus unit; package install registers the
-service without running Enable. I3a privately mounts Enable/ReplaceFailed/Disable
-through B9 and the fixed bundled-Python child; public dispatch and introspection
-still refuse all three until I5. Run the fixed
+service without running Enable. I3a mounts Enable/ReplaceFailed/Disable
+through B9 and the fixed bundled-Python child; I5a exposes all seven lifecycle/invite
+methods in public dispatch and introspection. Linux CLI and bridge consumer wiring
+follows in I5b/I5c. RefreshHomeAddress has no helper method and is deferred to B13. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2975,9 +2976,9 @@ only to the unchanged terminal-marker path; no existing txn is resumed.
 the unchanged Ruling 12/12a recovery with the same production owners; no effect
 is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
-I3a privately mounts this backend through the fixed bundled-Python helper child,
-with B8/B9 fresh authorization and protected G/O capture. Public Enable stays
-unreachable until I5. Under the same held lock, private Enable sends only matching
+I3a mounts this backend through the fixed bundled-Python helper child,
+with B8/B9 fresh authorization and protected G/O capture. I5a exposes public Enable;
+Linux CLI/bridge wiring follows in I5b/I5c. Under the same held lock, Enable sends only matching
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
@@ -3145,8 +3146,9 @@ residue retired. Failed revoke ALWAYS produces `partial_cleanup`, naming retaine
 un-revoked trust/sidecar state. A changed generation permits at most one fresh
 read/retry within the original 300-second budget. CA staging and B7/B11/minter
 evidence follow the I3c custody/proof/audit rules above; any remainder is incomplete.
-I3a's private helper worker mounts this composition and records the closed outcome
-and safe residue components; public methods remain absent until I5.
+I3a's helper worker mounts this composition and records the closed outcome
+and safe residue components; I5a exposes the public methods, with Linux CLI/bridge
+consumers left to I5b/I5c.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3535,9 +3537,9 @@ recover != True remains partial_cleanup/cancelled/uncertain. No audit vocabulary
 or journal meaning changes. StatusV2 projects only existing invite/cleanup
 observations, pinned to the authenticated UID and activation G/O; B15 applies
 their monotonic age/staleness. Missing observations after restart or binding
-drift remain unknown. Public METHODS, introspection and dispatch still exclude
-both methods until I5. I4a privately mounts IssueInvite as specified below;
-B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
+drift remain unknown. I5a includes both methods in public METHODS, introspection
+and dispatch; Linux CLI wiring follows in I5b, with only the existing bridge
+commands wired in I5c. I4a mounts IssueInvite as specified below; B14 remains I4b. Evidence retirement was delivered in I3c. Focused standalone backend checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
 
 I4a mounted issuance transport (manager T1–T4):
@@ -3578,7 +3580,8 @@ I4a mounted issuance transport (manager T1–T4):
   text or stderr. Child stderr remains DEVNULL. Error mapping uses categories,
   never frame representations. StatusV2 retains only existing invite phase and
   nonsecret expiry fields; connector receives only digest/deadline via B10.
-  Public METHODS/introspection/dispatch still exclude IssueInvite until I5.
+  I5a exposes IssueInvite in public METHODS/introspection/dispatch; Linux CLI/bridge
+  consumers are wired in I5b/I5c.
 
 **B12 — Bounded recorded-node cleanup.**
 At approval record control-plane StableID → Headscale node ID using B2-style
@@ -3730,7 +3733,8 @@ Only the timer receives its manager-owned Install link; receipt membership and
 B5 remain unchanged. Ready admission does not require this timer link: policy
 expiry remains the gate. `_unit_wants_names` and the B17 replacement veto remain
 unchanged; Turn off must remove the timer link before replacement. Unit files remain dpkg
-payload after Turn off. Public methods and the public gate remain closed until I5.
+payload after Turn off. I5a opens the helper public lifecycle/invite gate;
+Linux CLI/bridge consumers follow in I5b/I5c.
 
 **B18 dependency:** a package upgrade with a different shipped route artifact
 makes renewal refuse until B18 repair/upgrade rewraps it. I4b-1 adds no upgrade
@@ -3889,9 +3893,10 @@ the fresh-auth ReplaceFailed owner, which supplies an explicit expected
 release UID and exact observed generation. The installer captures the complete fixed
 inventory, binds the derived validated release owner, then publishes/fsyncs the new
 `replacement-intent@2` at `install-transaction.json` before handing off to the existing
-per-intent recovery owner. The private helper captures that inventory/journal
-generation before authentication and revalidates it before dispatch; no public
-helper or operator CLI selects this capability until I5.
+per-intent recovery owner. The helper captures that inventory/journal
+generation before authentication and revalidates it before dispatch. I5a exposes
+public ReplaceFailed; Linux operator CLI selection follows in I5b. I5c wires only
+the existing bridge commands.
 An existing exact v1 journal already has its first intent: the entry validates its
 expected generation/release UID and resumes that journal without converting it.
 This entry independently revalidates every remaining original/quarantined config's

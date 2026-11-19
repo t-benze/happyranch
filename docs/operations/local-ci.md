@@ -3791,12 +3791,12 @@ I3b's retained focused selection is
 Run the full selection through a durable job. Its mounted cases use real
 temporary issuer/trust/audit files, the existing B11 backend, InviteControl and
 HeadscaleRecoveryMinter, with only native transport/admin seams simulated. They
-cover both private actions, absent state, capture/admission and live-caller
+cover both invite actions, absent state, capture/admission and live-caller
 drift, busy/contended locks, exact cleanup-proof result axes, IPC loss and late
-replies, unchanged public gating, existing StatusV2 fields/staleness and the
+replies, public helper admission, existing StatusV2 fields/staleness and the
 fixed child ready/commit callback. This is separate from installed polkit/live
 acceptance and does not restore the retired Python or skipped integration suites.
-Test-side Gio/child transport seams run the shipping private mount, native-auth
+Test-side Gio/child transport seams run the shipping public mount, native-auth
 callback, B9 capture/slot/deadlines and real B16 file writer when no compatible
 Gio+pytest interpreter exists. Protected-store/backend cases use temporary roots;
 fixed service calls are simulated. They cover R1–R4+R7 order, failed revoke still
@@ -3809,9 +3809,12 @@ its existing interpreter is available; no dependencies need be installed.
 B6 operation-CAS coverage lives next to existing custody tests in
 `scripts/test_headscale_custody.py`. Payload additions also require
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`.
-The existing managed-admission reconcile test at line 463 fails on base with
-"home control binding not provisioned; requires slice 3b-2"; preserve it unchanged
-and record it as pre-existing. I5 owns the enabling/provisioning checkpoint.
+I5a exposes all seven existing lifecycle/invite methods through public helper
+dispatch and introspection, preserving the fixed admission/auth/slot/audit gates.
+The managed-admission reconcile fixture now supplies temporary custodied home
+configs and its private control listener so the real foreground admission executes
+before the unchanged incomplete-cleanup assertions. Linux CLI/bridge wiring remains
+I5b/I5c; RefreshHomeAddress has no helper method and is deferred to B13.
 
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.

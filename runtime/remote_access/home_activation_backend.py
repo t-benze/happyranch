@@ -1,6 +1,6 @@
-"""Guarded activation composition, privately mounted by the fixed root helper.
+"""Guarded activation composition, mounted by the fixed root helper.
 
-Public lifecycle calls remain gated until I5. Recovery executes only the
+Public lifecycle calls use the fixed helper admission gate. Recovery executes only the
 existing Ruling 12/12a verify/publication path, never activation effects.
 """
 from __future__ import annotations
