@@ -175,6 +175,8 @@ def build_curation_input(capture: RetiredSource, *, org_slug: str, task_id: str,
         'Only known superseded/stale/evicted/promoted reference_only material, forbidden/excluded content and '
         'unavailable bodies are ineligible; exclusions have dispositions without copied content/items. '
         'Uncertain, conflicting or unverified knowledge remains eligible with its required flags/warnings. '
+        'Any item flagged uncertain, conflict, historical or attribution_unverified must carry at least one '
+        'non-empty warning that states the caveat (for historical: that it describes past state and may no longer hold). '
         'In particular, founder_decision_preference items (cited or attribution_unverified with the exact warning) and '
         'open_work_reference items with owner/status/as_of/next_action/holds qualifications are '
         'Instill-eligible references, never directives or assignments. '

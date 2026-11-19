@@ -2287,7 +2287,12 @@ and `limits` remain string-or-null fields; only lists of strings in these two
 fields are tolerated before strict validation, joined with `; `. Empty lists
 still fail `curation_qualification_missing`; other invalid shapes and lists in
 other scalar fields remain `curation_output_malformed`. All existing semantic
-checks inspect the normalized model. Task, claim/audit and
+checks inspect the normalized model. The curator brief requires any item flagged
+`uncertain`, `conflict`, `historical` or `attribution_unverified` to carry at least
+one non-empty warning stating the caveat; for `historical`, it must state that the
+item describes past state and may no longer hold. This clarifies the existing
+`curation_warning_missing` check without inventing, inserting or defaulting warnings.
+Task, claim/audit and
 operation binding commit together; a rollback may leave an unclaimed file under
 the persisted operation's stable snapshot key for redispatch. Publication still
 validates capture_json/digest and never trusts the attachment as authority. No

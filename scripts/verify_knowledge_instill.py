@@ -142,6 +142,14 @@ def curation_rejected(f: SimpleNamespace, source: RetiredSource, result: dict, k
     print(key + ': durable Failed/' + code + '; prior Ready bytes/selection preserved', flush=True)
 
 
+def curation_warning_prompt() -> None:
+    source, _ = capture()
+    brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
+    require('Any item flagged uncertain, conflict, historical or attribution_unverified must carry at least one '
+            'non-empty warning that states the caveat (for historical: that it describes past state and may no longer hold).'
+            in brief, 'built brief missing flagged-item warning contract')
+
+
 def curation_qualification_lists() -> None:
     source, result = capture()
     item = result['items'][0]
@@ -1142,6 +1150,7 @@ def cli_import_validation() -> None:
 
 
 CASES = {f.__name__: f for f in (
+    curation_warning_prompt,
     curation_qualification_lists, curation_invalid_qualification_lists,
     curation_empty_qualification_lists, curation_other_field_lists,
     curation_dates, curation_founder_eligibility, curation_open_work_eligibility, curation_reference_only,
