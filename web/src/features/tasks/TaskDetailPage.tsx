@@ -1,5 +1,5 @@
 import { childWaitState, resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
-import { finishedJobsQualifier, type BlockedJobEntry } from '@/shared/tasks/finished-jobs';
+import { finishedJobsQualifier, partitionJobsByLifecycle, type BlockedJobEntry } from '@/shared/tasks/finished-jobs';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Task detail — Direction-A Pasture, full-page surface.
@@ -22,6 +22,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import type { Tone } from '@/design-system/patterns/semanticTone';
 import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
@@ -313,7 +314,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const summary = snippet(node.output_summary, 96);
   return (
     <div className={`${ml}`}>
-      <div className="border-border-default flex flex-wrap items-start gap-2 border-l-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
+      <div className="flex flex-wrap items-start gap-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
         <span
           className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
             node.status === 'completed'
@@ -350,6 +351,41 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
       ))}
     </div>
   );
+}
+
+/**
+ * Recall is absent or unusable: distinguish an in-flight request, a failed
+ * request (with Retry) and data that failed selectedRecall's fail-closed check.
+ */
+function RecallFallback({
+  recall,
+  loadingKey,
+  className = '',
+}: {
+  recall: ReturnType<typeof useTaskRecall>;
+  loadingKey: MessageKey;
+  className?: string;
+}): JSX.Element {
+  const { t } = useTranslation();
+  if (recall.isError) {
+    return (
+      <div className={`flex items-center gap-2 ${className}`.trim()} role="alert">
+        <p className="text-text-muted text-xs">{t('tasks.detail.recall.loadError')}</p>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={recall.isFetching}
+          onClick={() => { void recall.refetch(); }}
+        >
+          {t('tasks.detail.recall.retry')}
+        </Button>
+      </div>
+    );
+  }
+  if (recall.data === undefined) {
+    return <p className={`text-text-muted text-xs ${className}`.trim()} role="status">{t(loadingKey)}</p>;
+  }
+  return <p className={`text-text-muted text-xs ${className}`.trim()}>{t('tasks.detail.recall.unavailable')}</p>;
 }
 
 function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element {
@@ -721,6 +757,56 @@ function RailRow({
   );
 }
 
+// Job lifecycle -> the shared Pasture tone vocabulary (same tones StatusBadge
+// uses for pending/completed/failed); unknown statuses stay neutral.
+const JOB_STATUS_TONE: Record<string, Tone> = {
+  pending: 'attention',
+  running: 'info',
+  completed: 'positive',
+  failed: 'danger',
+  rejected: 'neutral',
+};
+
+/**
+ * Rail 'Job' value: live jobs (pending/running/unknown) first, then finished
+ * (completed/failed/rejected), each under a counted label. Empty groups are
+ * omitted. Every entry keeps the job link and shows its status tag.
+ */
+function RailJobGroups({ jobs, slug }: { jobs: JobRecord[]; slug: string | undefined }): JSX.Element {
+  const { t } = useTranslation();
+  const { running, finished } = partitionJobsByLifecycle(jobs);
+  const groups = [
+    { key: 'running', label: t('tasks.rail.jobsRunning', { count: running.length }), items: running },
+    { key: 'finished', label: t('tasks.rail.jobsFinished', { count: finished.length }), items: finished },
+  ].filter((g) => g.items.length > 0);
+  return (
+    <div className="flex flex-col gap-2">
+      {groups.map((g) => (
+        <div key={g.key} data-testid={`rail-jobs-${g.key}`}>
+          <div className="text-text-secondary mb-1 text-xs font-medium">{g.label}</div>
+          <ul className="flex flex-col gap-1">
+            {g.items.map((j) => (
+              <li key={j.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                {slug ? (
+                  <Link
+                    to={`/orgs/${slug}/jobs/${j.id}`}
+                    className="text-accent-default break-all font-mono text-xs hover:underline"
+                  >
+                    {j.id}
+                  </Link>
+                ) : (
+                  <span className="break-all font-mono text-xs">{j.id}</span>
+                )}
+                <StatusBadge tone={JOB_STATUS_TONE[j.status] ?? 'neutral'} label={j.status} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Execution status card — TASK-5522 right-rail summary of observed work
  * activity, rendered from the server-derived `work_status` envelope field
@@ -888,23 +974,7 @@ export function TaskStatusCard({
           )}
           {jobs.length > 0 && (
             <RailRow label={t('tasks.rail.job')} valueClassName="min-w-0">
-              <span className="flex flex-wrap gap-x-2 gap-y-1">
-                {jobs.map((j) =>
-                  slug ? (
-                    <Link
-                      key={j.id}
-                      to={`/orgs/${slug}/jobs/${j.id}`}
-                      className="text-accent-default break-all font-mono text-xs hover:underline"
-                    >
-                      {j.id}
-                    </Link>
-                  ) : (
-                    <span key={j.id} className="break-all font-mono text-xs">
-                      {j.id}
-                    </span>
-                  ),
-                )}
-              </span>
+              <RailJobGroups jobs={jobs} slug={slug} />
             </RailRow>
           )}
           {created && (
@@ -1252,7 +1322,7 @@ export function TaskDetailPage(): JSX.Element {
             )}
 
             {validRecall ? <ExecutionSubtasks recall={validRecall} />
-              : <p className="text-text-muted mt-6 text-xs">{t('tasks.detail.recall.unavailable')}</p>}
+              : <RecallFallback recall={recall} loadingKey="tasks.detail.subtasks.loading" className="mt-6" />}
 
             <section className="mt-6">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
@@ -1261,7 +1331,7 @@ export function TaskDetailPage(): JSX.Element {
               {recallNode ? (
                 <TaskRecallTree node={recallNode} />
               ) : (
-                <p className="text-text-muted text-xs">{t('tasks.detail.recall.unavailable')}</p>
+                <RecallFallback recall={recall} loadingKey="tasks.detail.recall.loading" />
               )}
             </section>
 

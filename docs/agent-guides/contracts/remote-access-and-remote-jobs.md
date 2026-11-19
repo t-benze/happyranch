@@ -850,12 +850,14 @@ The v1 provision record carries real fixed-file SHA-256 digests and the existing
 `provisioned` phase (staging only), with no secrets or paths. Generation creates
 no transaction file and grants no transaction consumption/recovery operation.
 
-Install/uninstall (including purge), check-drift and unit publication refuse the
-modern profile before any unit write, backup creation/restoration or service
-call with `home control binding not provisioned; requires slice 3b-2`, leaving
+The inert staged modern profile still refuses install/uninstall (including
+purge), check-drift and unit publication before any unit write, backup
+creation/restoration or service call with `home control binding not provisioned; requires slice 3b-2`, leaving
 inventory unchanged. Alternate supervisor install/uninstall/start/stop/restart/
-enable/disable/upgrade/rollback/run entries enforce the same refusal. Legacy
-omitted/empty profiles retain upgrade/rollback behavior; read-only service status
+enable/disable/upgrade/rollback/run entries refuse that inert bundle. E2a below
+adds only the protected ready ordinary-lifecycle and fixed-account foreground
+exceptions under Rulings 15/15a; uninstall and other deferred lifecycle still
+refuse home profiles. Legacy omitted/empty profiles retain upgrade/rollback behavior; read-only service status
 and diagnostics remain available. Modern service admission
 remains unavailable even with a supplied URL. Render-only
 `managed_units(connector_config=...)` selects the existing identity renderer
@@ -1111,7 +1113,7 @@ residue remains refusal-only. Racing root writers and actual machine-power-loss
 durability remain unverified. Until journal retirement,
 ordinary inventory/stop/provision/install/uninstall/drift and all ten fixed legacy
 system supervisor lifecycle entries retain their final/pending transaction
-refusals. Modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
+refusals. Inert modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`; E2a below governs already-activated ordinary admission.
 No CLI/helper/D-Bus/package caller is added. Disable/account cleanup, token
 rotation/repair, 3b-1d and 3b-2 remain outside this sub-part. All five unit strings
 in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchanged.
@@ -1309,6 +1311,93 @@ lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusio
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
+### Linux client memory-only session transport (THR-379 slices 3a-T/8a)
+
+The Linux payload builds `bin/happyranch-home-bridge` from the existing
+cross-platform `app/mac/tsnet-bridge` Go module. Its additive
+`--home-session-v1` mode runs as the desktop user, with no sudo, polkit,
+setuid bit or system service. The existing `--home-bridge-v2` profile/recovery
+path and Mac build behavior are unchanged; shared Go sources are used by both builds.
+The native session adapter supplies an in-memory saved-record/resume seam in
+slice 8a. Slice 8b adds native Secret Service custody and GTK saved reconnect;
+transport readiness alone establishes neither custody nor loaded-runtime acceptance.
+
+Legacy launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
+on private stdin: exactly `version` (2), `caDER`, `dialIP`, `homeID`,
+`controlPlaneID`, `fingerprint`, `controlURL`, `hostname`, `joinKey`,
+`socketPath`, `target`. The mode name versions the session interface; the
+trust tuple retains v2. `stateDirectory` and `recovery` are forbidden, as are
+unknown, duplicate, case-aliased, missing/null, malformed and trailing fields.
+The legacy join key must be nonempty. Slice 8a adds closed v3 launch frames
+(up to 128 KiB), with required `saveIntent` and `stableNodeID`, and exactly one
+of `joinKey` or `networkState`. Save-intent sessions import/export complete
+versioned memory state (up to 64 KiB/32 entries) over the private parent pipe.
+Resume validates the saved control-plane/node binding before startup and the
+authenticated live StableNodeID before readiness; mismatch refuses as -22.
+See [spec section 10](../../specs/2026-11-17-web-native-bridge.md#10-ordered-b-delivery-removal-and-effort)
+for the exact tuple and bounds. Existing
+`validateHomeLaunch` and the pinned home-only control/DERP proxy, private
+issuer/roots/resolver, peer-only dial/pin/revalidation, bounded socket relay and
+private `0 <Self-StableID>` readiness line remain the transport boundary.
+Readiness proves membership only, never pairing approval or loaded runtime UI.
+On EOF or a catchable shutdown signal, engine cancellation interrupts private
+output and stops runtime admission. The control transport stays available while
+tsnet drains its workers, then closes before scratch cleanup is reported complete.
+
+The server uses pinned tsnet v1.78.0 with memory-only state: ordinary joins use
+`mem.Store` with `Ephemeral:true`; save-intent sessions use the bounded store
+with `Ephemeral:false` to preserve membership for later same-node resume.
+Join keys and generated machine/node/private keys remain in process memory;
+product bearer and immutable redacted saved records remain in the native adapter.
+No keyring, file-backed state, persistent credential cache, consumed marker or
+substitute credential store is opened by 8a. No secret enters argv/env or an IPC
+file. Founder THR-379 seq60 approved Q3: Linux saved access uses the system
+keyring/Secret Service. The native 8b owner uses GI Secret and only the default
+login collection, schema ai.happyranch.LinuxClient.v1, exact hashed home/control/
+StableNodeID/profile attributes, and verified save/readback/delete. It stores only
+SavedRecord resume material; never invitations, pair secrets, handles or bootstrap
+tokens. Locked/denied custody needs native permission; unavailable/failed saving
+continues session-only with a persistent accessible native warning and static
+Retry save. No plaintext or substitute store. Readable saved computers remain
+visible if a peer item is unreadable. Inventory limits apply only to this schema;
+unrelated login items do not consume capacity. Save/removal isolate malformed peers
+with a provably different binding; unreadable or possibly matching identities
+retain uncertainty. Reconnect rereads native custody and uses
+same-node resume with the loaded-runtime gate; Disconnect retains actually saved
+access. Remove verifies exact local absence and reports partial cleanup honestly,
+without claiming Host revocation or network unenrollment. Cancellation during a
+write/readback invalidates the attempt and waits for that safe point before
+teardown, retaining the observed custody outcome. Runtime failure during Retry
+save also waits for this safe point and cannot restore Connected. Generated Linux
+saved-computer ordinals use the static view's current locale without remounting
+controls or changing opaque refs. Source and disposable-keyring
+tests do not replace packaged/live, cross-device or different-network acceptance.
+The native launcher must provide only its admitted environment, including
+`XDG_RUNTIME_DIR`; it must not inherit credential/debug/trust overrides.
+
+`XDG_RUNTIME_DIR` must be set to a literal absolute, current-user-owned 0700
+directory with no symlink components; unset/unsafe locations refuse without
+falling back to HOME, TMPDIR or a profile. Each session creates its own 0700
+child there. Only tsnet's non-credential `tailscaled.log.conf` and filch log
+spool are allowed scratch, never private state or bearer storage. Log upload
+and upstream diagnostic destinations are disabled. EOF cancels enrollment and
+relays; cancellation, catchable HUP/INT/TERM/QUIT and error paths close the
+engine and remove that session's scratch. SIGKILL, power loss or OS failure
+cannot execute cleanup; any surviving scratch is non-credential, not saved
+access. No restart/replay of the join key occurs.
+
+Headscale's current minter requests **non-ephemeral** keys. Consequently each
+session-only join registers a **persistent node** on Headscale, which goes
+offline after quit; a fresh session/invite creates another node until host
+revocation/cleanup. `Ephemeral:true` controls the client's memory-store
+compatibility and does not override that server-side key policy. This is a
+known limitation, not a dependency for slice 3a and not authority to change
+minting or host cleanup.
+
+Go tests use a synthetic TLS/Noise control plane and actual tsnet memory state,
+with its production logger enabled, to inspect scratch and teardown; they do
+not establish live Headscale, packaged GTK, cross-device or native Mac acceptance.
+
 ### Pure home CA and server leaf core (THR-327 slice 3b-2b)
 
 `app/linux/tsnet-sidecar/homeca` is a Go-stdlib-only generation
@@ -1364,7 +1453,9 @@ prepare-headscale --layout deb` calls `ManagedInstaller.prepare_headscale`.
 It only prepares fixed local custody and an inert unit. It never runs Headscale,
 creates database users, enables/starts/reloads a unit, or changes the staged
 connector bundle. Both exact `home control binding not provisioned; requires
-slice 3b-2` activation refusals and `SidecarUnitSpec.home_transport=False` remain.
+slice 3b-2` refusals remain for inert staging; E2a below admits only the validated
+already-ready ordinary profile and fixed-account foreground serving. E2b below
+supplies uncalled first unit publication/selection; the ordinary installer default home_transport stays false.
 The separate root operator `disable-headscale --layout deb` entry and legacy
 `uninstall --layout deb` call `ManagedInstaller.cleanup_headscale`. They stop and
 disable only the exact owned Headscale unit, then remove the inert custody and
@@ -1432,6 +1523,11 @@ refuses before any preparation effect. Foreign bytes/modes/links/identities stay
 unchanged. Cleanup uses this same admission before stop/disable; A–E identity,
 receipt authority, partial-cleanup uncertainty and explicit retry are unchanged.
 
+For future home activation, [B5 below](#home-network-engineering-settlements-b1-b18-thr-327-seq577)
+keeps the single owned-fragment content exclusion, binds home bytes to the current
+activation receipt, and admits only its one receipted enablement link; without
+that receipt the existing literal-reference/no-link gates apply unchanged.
+
 This is sampled admission in the fixed default roots under a **cooperative
 root-writer** assumption. Executables in `system-generators` directories and
 root writers acting after preparation are outside this inventory; they can
@@ -1480,6 +1576,10 @@ Foreign/unsafe/unknown entries, pending/tampered receipts and differing units
 refuse before any stop/delete. Package payload/notices, installer-state parent,
 root-only CA material, connector/daemon/org data and unrelated Headscale installs
 are preserved. No recursive purge or adoption of an unrelated install.
+
+D remains the pre-activation cleanup scope without a valid current-generation
+`home-activation@1` receipt; [B6 below](#home-network-engineering-settlements-b1-b18-thr-327-seq577)
+defines the additional exact, per-type live-state members only with that receipt.
 
 Before stop/disable, cleanup also inventories `/etc/systemd/system` and
 `/run/systemd/system` recursively with no-follow descriptor reads. Any symlink
@@ -1693,7 +1793,7 @@ custody environment override. The installed binary is outside PATH and
 | Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
 | Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
 | Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
-| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). The 3b-2f-2 prefix now wires LAN selection, port preflight, rendered config/DERP publication, root-only path/digest receipt and owned cleanup. Its remainder now copies **only** the validated staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` and empty-directory publication/cleanup. Running-service renewal/reload coordination stays deferred to authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
+| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). The 3b-2f-2 prefix now wires LAN selection, port preflight, rendered config/DERP publication, root-only path/digest receipt and owned cleanup. Its remainder now copies **only** the validated staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` and empty-directory publication/cleanup. Running-service renewal/reload coordination stays deferred to authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g-1 now provides the inert fixed admin runner and durable minter store/lock below. Activation and helper invocation remain 3b-2g-2. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
@@ -1987,13 +2087,16 @@ binding is covered in the slice 2b-2 section below.
 ## Fixed Linux helper source (THR-327 slice 3a)
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
-`/ai/happyranch/RemoteAccess1` with zero-input Status, NextDevice,
+`/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
 ApprovePending, RejectPending and RevokeSelected. Only the last three request
-fresh interactive polkit authorization. The protected release UID is a mandatory
-trusted constructor value; slice 3b must supply it from its validated root-owned
-release record. The root-only `serve()` connects Gio to the fixed system-bus socket
-(`/run/dbus/system_bus_socket`), ignoring address environment overrides; package activation and
-installation of the source bus/polkit definitions remain pending. Run the fixed
+fresh interactive polkit authorization. B8's `helper_owner.py` now derives the
+release owner from the bus credential UID, passwd and validated protected release
+record when present; the optional trusted constructor UID remains a compatibility
+pin. The root-only `serve()` connects Gio to the fixed system-bus socket
+(`/run/dbus/system_bus_socket`), ignoring address environment overrides. B8 packages
+the bus/polkit definitions and root Type=dbus unit; package install registers the
+service without running Enable. Installer-backed lifecycle activation remains
+deferred to serial integration. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2002,7 +2105,9 @@ outstanding polkit check; uncertain cancellation seals further mutations until
 cancellation is acknowledged or that check's terminal reply arrives. A terminal
 reply releases the dialog slot even if the authorization deadline or pending-request
 expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
-is allowed globally. Per-unique-name cursors disappear on disconnect. Status
+is allowed globally. StatusV2 adds the bounded B15 read projection and B16 audits
+cover the three existing authenticated device effects (details below). Per-unique-name
+cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 Custom-server URL/key intake methods do not exist and are not planned; outside-home access
 uses a fixed build-configured server (see [Outside-home access (fixed operator server)](../../specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
@@ -2118,7 +2223,10 @@ adds no issuance handler, helper operation, UI, service action or live 3c-2 flow
 protected state directory. It has no network, subprocess, Headscale adapter,
 helper/polkit method, installation or URL/key intake. The future helper
 supplies protected `HomeInviteConfig`, a pairing owner bound to the same home,
-and exactly one issuer directory per home. It must authenticate each new issue
+and exactly one issuer directory per home. Linux inert preparation now supplies
+`/var/lib/happyranch-remote-access/home-issuer` (root:root 0700), derived from
+the existing installer state root; no helper account is added. It must
+authenticate each new issue
 and explicit recovery separately under the existing helper contract. This core
 does not confer authentication or mint authority on any caller.
 
@@ -2181,14 +2289,1370 @@ temporary real pairing state and an abrupt child-process exit cover this core;
 real local minting, protected IPC/authentication and installed/native acceptance
 remain in the later serial 3c-2b slice.
 
+### Inert Linux home admin transport (THR-327 slice 3b-2g-1 prefix)
+
+This prefix delivers items 1 and 2: `home_admin.RootHeadscaleAdminOperations`,
+`DurableOperationRecordStore` and the uncalled `RootHomeInviteMinter` composition.
+Its fixed root runner is `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`.
+It reuses pinned `golang.org/x/net/http2` v0.27.0; no new module or credential.
+Only v0.25.1 Create/List/ExpirePreAuthKey over the literal local
+`/run/happyranch-headscale/headscale.sock` are supported. No CLI key operation.
+Root/service-owned literal parents are opened no-follow; service directory is
+0700, socket 0600/single-link with service UID/GID and matching SO_PEERCRED.
+The installed binary and its parents must be root-owned, without group/world
+write; the regular single-link binary is 0755. No endpoint/path/environment
+selector exists. Before reading any secret, runner command startup discards the
+standard logger's output. This suppresses x/net's separate frame logging even
+when inherited `GODEBUG=http2debug=1` or `=2` enabled flags during package init;
+clearing `VerboseLogs` alone cannot suppress those flags. No diagnostic sink is
+re-enabled, and the private binary response writer is separate.
+
+Requests/responses use bounded binary stdin/stdout pipes, never argv/env/logs;
+runner failure is only exit 2 (no RPC sent) or 3 (uncertain), with no diagnostic
+stream. Python drops stderr/native exceptions and raises fixed categories
+outside handlers. Complete unary uncompressed gRPC framing, HTTP 200 and exactly
+one successful grpc-status are required; other server codes remain uncertain.
+All response fields follow R1–R3 below, without JSON/protojson. Datetime projects
+valid nanos to microseconds by truncation, so expiration never extends.
+One original monotonic deadline, capped at five seconds, spans Python custody,
+request encoding, the remaining subprocess/socket/RPC/body budget, complete
+wire/record projection, per-row user/duplicate-ID validation and final success.
+Cooperative checks at bounded byte intervals, between records and after final projection
+raise sanitized uncertainty on expiry; no partial or late success is returned.
+Strict projection checks minimal varints directly without re-encoding each field,
+uses a compiled full-key check and retains a bounded cache of validated timestamp
+bytes only, never keys or records. Required fields, complete validation and
+duplicate-ID/user checks remain unchanged. The annual maximum-rate history
+(527,040 ordinary untagged rows) is exercised under the real five-second deadline;
+host sizing measurements must leave transport margin within that shared budget.
+The runner also checks its original context after the private response write,
+including any preceding durable fence settlement, before returning exit 0.
+Input and each projected record are capped at 4096 bytes, response at 128 MiB,
+inventory at 600,000 rows and tags at 128 per row. A single HTTP/2 ClientConn
+performs one RPC without Transport automatic retries.
+That byte cap fits 600,000 ordinary ~200-byte untagged rows, but unusually large
+history/tags may hit it first: complete-or-fail, never partial recovery. These
+are bounded lifecycle/work assumptions, not hard RSS or OS-I/O deadline proof.
+
+`/var/lib/happyranch-remote-access/home-minter/happyranch-invite` is root:root
+0700, reached using literal descriptor-relative no-follow traversal. A
+nonblocking directory flock spans the whole mint/recover, including cleanup,
+reserve, create and result validation. Cooperating invite writers use this
+composition. Reservations use exclusive 0600 files named by SHA256 of operation
+ID, containing only UTC creation/deadline timestamps; file and parent fsync
+precede success. Existing/partial slots are never overwritten, removed or reused.
+The runner independently serializes each user's RPCs using a protected 0600
+single-link `rpc.lock`. Before Create it writes/fsyncs an exclusive
+`fence.pending`, renames to `fence` and fsyncs the directory. A complete successful
+reply settles/removes that fence durably. Timeout, lost/invalid framing or failure
+leaves the requested expiration fence across invocations/restart. List and new
+Create refuse until that deadline passes; RPC cancellation is no settlement.
+A malformed/unsafe fence or any pending residue refuses indefinitely, preserving
+operator evidence. Expire may run, but cannot prove cleanup without complete List.
+No record/fence auto-cleanup or retention/reset operation is introduced.
+
+HomeInviteConfig reader deferred to 3b-2g-2: home_endpoint is the node's runtime tailnet endpoint, which exists only after activation joins the local node; it will come from a root receipt written at activation.
+The activation endpoint receipt remains undelivered. Items 4 and 5 now supply
+inert issuer-directory custody and the uncalled local-node mint composition.
+`prepare-headscale` publishes `home-issuer/` through the installer's literal
+no-follow, exclusive pending-directory/no-replace/fsync path and records its
+owner and directory identity in root:root 0600
+`home-issuer-publication.json` beside it. An existing exact safe empty directory
+can be receipted; matching complete custody is idempotent. Unsafe metadata,
+foreign contents, pending residue or a mismatched receipt refuses without repair.
+An interrupted pending publication is preserved; a complete safe empty directory
+without a receipt can be accepted by a later prepare. A retained receipt whose
+directory is missing never authorizes prepare to recreate it.
+
+The issuer portion of disable/uninstall removes only the receipted `home-issuer/`
+directory, after validating all contents and acquiring any existing issuer lock.
+Only the core's regular single-link root:root 0600 journal and empty lock are
+admitted; journal shape and canonical bytes must match the core's format, and
+`minting`/`uncertain` refuses regardless of expiry. Unknown/edited/unsafe entries,
+an orphan journal or lock, pending residue and lock contention preserve the
+whole directory with typed secret-free `issuer-cleanup-uncertain`. A removal
+interruption retains a cleanup pending marker and reports
+`issuer-partial-cleanup-uncertain`; retry preserves that residue. This issuer
+cleanup does not remove its parent, `home-ca/`, `home-minter/` or any receipts.
+It performs no mint/recovery or key-revocation operation.
+
+`home_admin.mint_local_node(operation_id, expires_at)` reuses the same root admin
+transport, minter policy and durable reservation store for fixed
+`happyranch-node`, with a separate root:root 0700
+`home-minter/happyranch-node` directory flock. It returns `MintedKey` only in
+memory, enforces at most five minutes, single-use/non-reusable, non-ephemeral and
+no ACL tags, and retains existing/partial reservations without reuse. No installer,
+enable or helper path calls it; activation remains 3b-2g-2.
+This inert admin slice changes no unit bytes, default home_transport flag or
+activation caller. E2a below supersedes its blanket admission deferral for
+validated ready lifecycle and foreground custody only; E2b below supplies an
+uncalled first-activation backend. The admin transport itself performs no
+service or control_tls effect.
+Native root/Headscale/systemd and installed acceptance remain NOT RUN.
+
+### Home-network engineering settlements B1-B18 (THR-327 seq577)
+
+Founder THR-327 seq577 assigns B1–B18 to Engineering. These are implementation
+requirements within the approved home-network design, including the manager's
+2026-11-18 round-2 corrections to B2/B5/B6/B8 and corrected B6 accounts rule.
+They do not claim delivery: the inert prefix, activation refusals and acceptance
+status immediately above remain unchanged. Implementing PRs still require
+independent security review, scoped QA at the exact head, green required lints
+and manager guarded merge.
+
+All points fail closed on unknown, torn, foreign, oversized, linked or mismatched
+state: refuse and retain rather than adopt, repair or delete it, except for the
+exact owned link/socket operations expressly listed below. Connector/sidecar
+remain `happyranch`, Headscale remains `happyranch-headscale`, and the helper
+remains root. No new account, package dependency, hosted infrastructure, CI
+trigger or timer beyond the R2 policy timer is authorized. Existing v1 records
+and journals retain their meanings; no DB schema or `audit_log.task_id` change.
+Never expose raw invites, pre-auth keys, pairing secrets, node private/public
+keys or digest prefixes in status, logs, audit or public output. Numeric limits
+are maxima; smaller implementation limits need sizing evidence.
+
+**B1 — Protected activation/config and endpoint receipt.**
+`/etc/happyranch/invite-issuer.json` is root:root 0600, at most 16 KiB, closed
+`home-invite-config@1`. Its field set is the format, release UID, installation IDs
+(`home_id`, `control_plane_id`, `connector_id`), activation generation, CA DER
+SHA-256, dial IP, canonical control URL and runtime endpoint (`home_endpoint`).
+`/var/lib/happyranch-remote-access/home-activation.json` is root:root 0600 in the
+existing root:root 0700 parent, at most 16 KiB, closed `home-activation@1`.
+It binds the same release UID/IDs, monotonic integer activation generation,
+operation ID, CA fingerprint, dial IP, fixed unit/config member digests, observed
+local-node StableID, canonical runtime endpoint and phase; its ownership
+inventory also enumerates B6 members and the single B5 link. No arbitrary paths
+or extra fields are admitted. Observation fields remain unpopulated before join;
+only B2 supplies them, and `ready` requires them. Phases are
+`prepared → activating → joined → ready`, with terminal `failed_uncertain`.
+Each transition uses an exclusive pending write, fsync and descriptor-relative
+rename under literal no-follow parents (the existing A5 publication discipline),
+never an in-place edit or pending adoption. Only B6 owns deletion; v1 install
+records are neither reused nor extended.
+
+G2-A fixes the exact closed top-level keys of `home-invite-config@1` to
+`format, release_uid, home_id, control_plane_id, connector_id,
+activation_generation, ca_der_sha256, dial_ip, control_url, home_endpoint`;
+`format` is the literal version above. The exact closed top-level keys of
+`home-activation@1` are `format, release_uid, home_id, control_plane_id,
+connector_id, activation_generation, operation_id, ca_der_sha256, dial_ip,
+member_digests, local_node_stable_id, home_endpoint, phase, ownership`.
+`release_uid` uses the existing non-root release UID range, IDs use the v2
+invite identity grammar, `activation_generation` is a nonnegative integer
+(never Boolean), `operation_id` uses the existing 32 lowercase-hex operation
+ID, and `ca_der_sha256` is 64 lowercase hex. `control_url` stores exactly
+`https://control.happyranch.invalid:8443`; endpoints use the existing v2
+ASCII authority validator and dial IP uses its canonical RFC1918 IPv4 predicate.
+Both observation keys are present as JSON null before join; they are populated
+together with a valid StableID and endpoint by observation, and required at
+`ready`. A joined record may await observation. `failed_uncertain` may retain
+an already-observed pair, but a failure from prepared/activating cannot invent
+one. Ordinary phase updates preserve release/installation IDs, generation,
+operation ID, CA and dial IP, and any already-populated observation. Generation
+rollover/recovery remains coordinator-owned; the linear publisher never resets
+a terminal record. B4 defines the separate `home-activation-txn@1` fields and
+per-effect intent publication below.
+
+`member_digests` is a closed object with exactly these six literal keys, each
+a 64 lowercase-hex SHA-256 of the full file bytes, required in **every** phase
+and recorded by the coordinator before prepared publication:
+`/etc/systemd/system/happyranch-headscale.service`,
+`/etc/happyranch/headscale/config.yaml`,
+`/etc/happyranch/headscale/derp.yaml`,
+`/etc/happyranch/headscale/policy.hujson`,
+`/etc/happyranch/control-ca.pem`, and
+`/etc/happyranch/invite-issuer.json`.
+Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
+(`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
+digested; renewable `server.crt` is excluded because trust binds the CA DER
+fingerprint (B13); v1 `connector.json`, `sidecar.json`, `policy.json` retain
+their meanings with B4 live field cross-checks owned by G2-C; B6 live members
+and the B5 link are separate ownership inventory, not digests.
+
+`ownership` has exactly `members` and `links`: `members` is a
+duplicate-free array enumerating exactly the eight literal paths in B6's table
+(the five individual files, two sockets and empty directory), and `links`
+is the single-key object mapping the literal B5 link path to its exact literal
+target. No path selection or deletion authority follows from parsing it.
+The G2-A reader requires an externally expected generation, a ready receipt,
+equal release/installation IDs, CA, dial IP, generation and endpoint, and the
+full config-file digest from that receipt. It pins/revalidates both files and
+literal parents, refuses either pending entry, and never manufactures an
+endpoint. The distinct <=4096-byte issuance journal under
+`/var/lib/happyranch-remote-access/home-issuer/invite-issuer.json` and the
+existing DER-bearing in-memory `HomeInviteConfig` keep their meanings.
+The new receipt publisher/config reader remain uncalled; no mint, unit,
+service, activation admission or readiness proof is added by this slice.
+Why no founder: internal root-only layout, unchanged UX.
+
+**B2 — Authoritative endpoint observation.**
+Root reads the serving sidecar's LocalAPI `Self` result through only
+`/run/happyranch-tsnet-sidecar/observe.sock`. Systemd creates the existing
+`RuntimeDirectory=happyranch-tsnet-sidecar`, owned `happyranch:happyranch`;
+its mode is inherited unchanged (no new `RuntimeDirectoryMode`), and
+`RuntimeDirectoryPreserve=yes` stays. No `/run/happyranch-remote-access` parent
+is created. Only the home-profile sidecar (`home_transport=True`) creates the
+socket, using restrictive umask and fchmod 0600 before listen, owner
+`happyranch:happyranch`. Inert/legacy profiles have no observation socket and
+retain their unit bytes and M1 residue rule. On start, unlink a pre-existing
+entry only if lstat proves a `happyranch`-owned socket with nlink 1; any other
+type/owner refuses startup. Sidecar unlinks on orderly stop; B6 owns residual
+Turn off cleanup. Existing `health.json` handling stays.
+
+Before connecting, root lstats a real parent directory owned by `happyranch`,
+not group/other-writable, and an S_ISSOCK entry owned by `happyranch`, mode 0600,
+nlink 1. SO_PEERCRED must identify that UID and the current MainPID of the exact
+owned sidecar unit. One connection carries one fixed `observe-self@1` request,
+with a 5-second deadline and reply at most 4096 bytes. The reply supplies
+StableID, tailnet addresses, control URL and node-key SHA-256, never a raw key.
+Root cross-checks control URL, home/control-plane ID, installation and activation
+generation, and alone publishes the canonical endpoint into B1. Health, metrics,
+hostname, CLI stdout, environment and JS input never supply endpoint authority.
+
+**Manager Ruling 8 (G2-D1, B2/B4):** joined→ready is a separate explicit,
+unmounted entry, in the same run or a fresh instance, admitted only from txn
+joined with all eight effects done and receipt joined with the same binding,
+generation and operation ID and both observation fields null. It performs only
+B2 observation, the read-only B3 cross-check below and one A5 receipt publication,
+with source-token validation before publication. Observation/admission failure
+publishes nothing and leaves both joined records byte-unchanged. It performs no
+service, create, mint or config effect. Every other pair retains Ruling 7's
+terminal-only forward-run path; this entry itself refuses without mutation.
+The read-only ready verifier requires fresh identical StableID, endpoint and
+bindings; it never publishes, mints or rekeys.
+
+**Manager Ruling 10 (G2-D1, B2):** home Headscale allocates IPv4 only.
+Require exactly one observed address, an IPv4 in `100.64.0.0/10`; accept a host
+address or exactly `/32`, normalized to the address. Zero/multiple addresses,
+any IPv6, any other prefix or out-of-range IPv4 refuses. `home_endpoint` is
+canonical dotted-decimal IPv4 plus `:443`, passing the existing v2 endpoint
+validator. Never select by ordering, hostname or MagicDNS.
+
+**Manager Ruling 11 (G2-D1, B2/B3):** SO_PEERCRED must match the UID and current
+MainPID of the exact owned sidecar unit. This slice uses an injected owner;
+production systemd ownership/admission wiring remains G2-E. The sidecar Config's
+one optional closed `home_binding` member contains exactly `home_id,
+control_plane_id, connector_id, activation_generation`, with the B1 grammars
+and a JSON integer generation (never Boolean/string). Admit it only with
+LinuxIdentityProfile, valid nonnil ControlTLS and exact homeURL; refuse it
+elsewhere. Absence preserves inert/legacy bytes and behavior. Return the values
+loaded at process start in `binding`; root compares them and exact `control_url`
+to the protected receipt and externally expected generation. This detects stale
+config and is not independent node proof. Root calls only the fixed B3 adapter's
+`ListNodes(user="happyranch-node")`, requiring exactly one node with the reply's
+node-key digest and that node's addresses containing the Ruling 10 IPv4. Zero,
+duplicate, digest or address mismatch refuses. A null receipt StableID is
+populated together with the endpoint only in joined→ready; a populated StableID
+must match exactly on every later observation.
+
+The exact request bytes are `observe-self@1\n` followed by client write-half-close;
+extra or pipelined bytes refuse. The closed UTF-8 JSON reply is at most 4096
+bytes, exactly `format, stable_id, tailnet_addresses, control_url,
+node_key_sha256, binding`, with format `observe-self@1`; extra/missing/duplicate
+keys (including binding keys) refuse. LocalAPI Status.Self supplies node identity
+and addresses; current LocalAPI preferences supply control URL. Non-running or
+failed engine observations refuse. Socket custody and the one request/reply share
+a five-second deadline; root carries the remaining budget into ListNodes.
+Production writing of `home_binding` is deferred to G2-E. These components remain
+unmounted, with no runtime/CLI/app/D-Bus caller or production home selection.
+Why no founder: private IPC between existing processes, unchanged user/network UX.
+
+**B3 — Fixed Headscale DB-user/node administration.**
+Extend only the existing root runner/adapter with `ListUsers`, `CreateUser`
+(names only `happyranch-node` and `happyranch-invite`), `ListNodes` filtered to
+those users. `DeleteNode` lands with B12, once its recorded StableID-to-node-ID
+ownership proof exists; it is deferred from G2-B. No generic RPC or secret CLI
+argument. Per call: 5 seconds, at most 64 ListUsers rows, 512
+ListNodes rows, 4 MiB response and 4096 bytes per record/input. Lists must be
+complete; truncation refuses. These new limits do not replace the existing
+600,000-row/128 MiB pre-auth-key inventory limits. After a lost CreateUser reply,
+re-list by exact name and adopt only the exact user with zero nodes and zero
+pre-auth keys outside our fences; otherwise refuse and retain. A foreign extra
+user refuses and is never deleted.
+
+G2-B keeps these operations uncalled. `list-users` takes an empty request;
+`create-user` and `list-nodes` take exactly one fixed user name through stdin,
+never argv. Each ListNodes call requests one of the two users and verifies every
+returned row belongs to that user. Closed tagged v0.25.1 schemas reject unknown
+fields (including pagination), duplicate identities/singular fields and torn
+records. Output projects user ID/name and node ID/user. G2-D1 additively projects
+`node_key_sha256` (SHA-256 of the exact stored Headscale node-key text, 64
+lowercase hex) and `ip_addresses` (at most 16 distinct canonical host addresses,
+no zones or IPv4-mapped IPv6). The private runner output encodes the digest as
+field 3 and repeated addresses as field 5 alongside node ID field 1 and user
+field 7; missing/empty node-key text, invalid or duplicate addresses refuse.
+Raw node/machine/disco/pre-auth keys and other metadata are discarded before
+stdout. The Python adapter independently validates these bounded fields.
+
+CreateUser serializes on the existing per-user `rpc.lock` and honors the existing
+pre-auth-key fence. Before its sole create, it fsyncs an insert-only root:root
+0600 `home-minter/<fixed-user>/user-create` attempt marker containing `1`.
+The marker is retained on every outcome. A missing user with a prior marker or
+an unsafe/torn marker refuses as uncertain, never retries create or repairs it.
+Both successful and lost replies require a complete exact-name re-list and
+zero nodes/keys under the same original deadline; a successful reply must also
+match the re-listed user ID. Existing key fences record no key IDs, so G2-B
+cannot prove a nonempty key inventory belongs to our fences and refuses it.
+A repeat exact user is returned only after the same empty-inventory proof.
+Pre-create refusal uses runner exit 2 / `AdminRefused`; possible create effects
+use exit 3 / `MintUncertain`. Reconciliation retains the existing complete
+pre-auth-key response bounds, rather than replacing them with the B3 limits.
+Why no founder: fixed-name operations on the existing root-only admin transport.
+
+**B4 — Staged/activating/live transaction.**
+Use new `home-activation-txn@1`, separate from failed-replacement v1, with fsynced
+per-effect intents and digest-bound members. Preserve immutable installation
+IDs; validate the same recorded release UID and same-FD token source at start
+and before publication. `activating` admits exactly one local-node join, no
+public invite, readiness or device approval until `ready`. Only this transaction
+may add ControlURL/control_tls from validated `prepared` state; validators admit
+the live field set only alongside matching `home-activation@1`. After a crash,
+resume only a phase whose intent and on-disk members both verify; otherwise
+`failed_uncertain`, requiring Turn off/ReplaceFailed. Never adopt pending files.
+
+G2-C1 fixes `/var/lib/happyranch-remote-access/home-activation-txn.json` as
+root:root 0600, at most 16384 bytes inclusive, in the existing root:root 0700
+parent. Its exact closed keys are `format, release_uid, home_id,
+control_plane_id, connector_id, activation_generation, operation_id,
+ca_der_sha256, dial_ip, phase, effects`. Format is `home-activation-txn@1`;
+all binding fields use the B1 receipt predicates and must equal that receipt.
+Phase is `activating`, `joined` or terminal `failed_uncertain`. `effects` is a
+nonempty ordered prefix of exactly `preflight, headscale_start_verify,
+db_users, local_node_mint, credential_staging, home_config, managed_services,
+joined`. Each entry has exactly `name, state, member_digests`; state is
+`intent` or `done`. Only the last entry may be intent. Each intent is fsynced
+before its effect; done is fsynced only after independent verification.
+`member_digests` is empty except for done `home_config`, where its exact keys
+are `/etc/happyranch/connector.json` and `/etc/happyranch/sidecar.json`, each
+binding the complete nonsecret file bytes with 64 lowercase-hex SHA-256.
+Prepared B1 members remain bound by the receipt and cannot change. Credentials
+remain private transient material, independently custody/consumption-verified
+by the owner, never copied or hashed into either record (B1). Missing, duplicate,
+extra, arbitrary-path or out-of-order entries refuse. Appending the next intent,
+finishing the last intent, and closing all eight done effects as joined are the
+only forward updates. A terminal update preserves the exact effect prefix.
+Publication reuses A5, with no mkdir, in-place edit or pending adoption. A
+nonblocking directory lock spans both records and all effects.
+
+Source validation gates every forward publication (including phase advances or
+token-derived/live material) and service/admin effect. The durable effect boundary
+is this operation ID's first fsynced intent: failure before it returns a closed
+`token_source_invalid` refusal without changing either record or performing an
+effect, allowing a later retry from prepared. Failure at/after it stops all effects
+and publishes terminal `failed_uncertain` in txn and receipt. These nonsecret
+markers carry no token-derived bytes or live ControlURL/control_tls, admit only
+Turn off/ReplaceFailed or the explicit B7 fresh-auth Enable recovery, and are
+exempt from source validation while retaining full A5 discipline (Ruling 6).
+
+**Manager Ruling 7 (G2-C1, B4/B7; completed-pair exception in B2 Ruling 8):**
+Failed terminal publication is durably indistinguishable from a crash. B4's "resume only" is a permission, tightened in
+this slice: a fresh coordinator may start normally only with a prepared receipt
+and no transaction intent. Any existing transaction, in any phase or intent/done
+prefix (including preflight and joined checkpoints), permits no forward effect
+or forward publication. Attempt nonsecret `failed_uncertain` markers in txn-first,
+receipt-second order without requiring source verification. If marker publication
+still fails, refuse and retain the unchanged remaining bytes; every later fresh
+instance repeats this terminal-only path. Already-terminal records stay terminal.
+Same-run forward progression is unchanged. B7 explicit fresh-auth Enable recovery
+is the sole route back to ready for that failed operation; Turn off/ReplaceFailed
+may retire it. G2-C2 owns that recovery and is not implemented in G2-C1.
+
+G2-C1 is an unmounted injected-owner composition ending at `joined`, with null
+observation fields. Start and every forward publication revalidate the recorded
+release UID and existing installer's same-FD source against the provisioned token.
+The coordinator checks receipt/file digests itself; the owner independently checks
+current policy/generation, custody and actual service/user/node/credential state.
+Preflight samples the existing four exclusive port binds after its durable intent,
+before any service/admin effect; an occupied port then terminates the transaction.
+No intent or completed prefix is replayable by a fresh instance under Ruling 7.
+The original run independently verifies each effect before recording done;
+interrupted start/create/mint/staging/config/enroll and lost private mint results
+remain terminal, with no automatic forward recovery.
+The existing `mint_local_node` retains its durable operation fence: no second mint,
+new operation ID or automatic reconciliation. G2-D owns observation/ready; G2-E
+must wire production owners, protected live config admission and service integration.
+Why no founder: internal transaction with unchanged, fail-closed admission.
+
+**Manager Ruling 13 (G2-E1, B4 home_config owner), corrected by 13a below:**
+The B4 home_config effect owns a new deterministic exported renderer, A5 publisher
+and independent verifier. This implements the settled staged-to-live transition;
+it grants no installer admission. Sidecar live bytes add ONLY
+`ControlURL=https://control.happyranch.invalid:8443`, closed slice-1b `control_tls`
+(`dial_ip, ca_sha256`) and Ruling 11's closed `home_binding`, derived from protected
+B1 receipt/config values. Preserve immutable IDs and every other prepared byte.
+Connector fields may change only if already parsed for the home profile; absent
+such a need, connector bytes remain unchanged and digest-bound. An unparsed field
+is a STOP, not permission to extend a parser. Publication uses literal no-follow
+parents, exclusive pending, file/directory fsync and rename, without mkdir or
+pending adoption. Independent verification re-reads live bytes, compares them to
+the renderer output and checks the transaction's done home_config digests.
+The renderer is E2's single source; `_write_provision_file` stays unchanged.
+
+**Manager Ruling 13a (G2-E1, authoritative prepared-byte binding):**
+Ruling 13's original phrase "receipt-bound prepared digests" is corrected:
+B1's six-member digest set excludes connector/sidecar configs, and B4 admits their
+digests only on done home_config. Neither record is extended. The existing
+protected `/etc/happyranch/provision.json` supplies the prepared hashes, read only
+through existing ManagedInstaller custody/validator rules (literal no-follow
+parent, root:root 0600). Require versioned `version==1`, `phase==provisioned`,
+matching layout and the existing closed digest keys; legacy unversioned refuses.
+Read connector/sidecar bytes once as the renderer inputs, hash-check both against
+provenance and apply the existing staged linux-managed-identity-v1 validation
+(six-key inert sidecar). Cross-bind their home/connector IDs, and control-plane ID
+where carried, to B1. The digest-checked release-daemon.json UID must equal B1's
+release UID; B1 generation/operation must equal the coordinator's expected (G,O).
+Any mismatch or absence refuses without publication: pre-intent no effect,
+post-intent Rulings 6/7 failed_uncertain. Re-hash the exact captured input bytes
+immediately before rendering and publish only from those bytes. Done verification
+compares fresh live bytes to renderer output and transaction member digests;
+B7 recovery uses transaction digests, not provision.json. Do not write provenance.
+At the E1 boundary the installer intentionally reported drift/refused the live
+profile; E2a below adds the protected validated-state exception. G+1 with already-live configs likewise refuses without
+effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
+Why no founder: implements settled B4 using an existing protected record with
+stricter cross-checks, without schema, dependency, user, UX or check relaxation.
+
+**G2-E1b delivered boundary (B4/Rulings 13/13a):**
+`home_live_config.py` supplies the unmounted `HomeLiveConfigOwner` required by
+`HomeActivationOwner(config_owner=...)`. Its exported pure
+`render_home_live_configs` is the shared E2 renderer. Connector bytes stay exactly
+unchanged: the existing Python loader already carries the needed identity fields,
+and no additional connector field is needed or invented. Sidecar rendering inserts
+only the three authorized fields before the final object brace, retaining every
+prepared byte, including whitespace. `home_binding` is part of these protected
+root:service-group 0640 sidecar bytes, not a separate file or caller argument.
+
+Assumptions: the future authenticated composition supplies expected G/O and holds
+the coordinator's original lock. A valid protected receipt supplies all live
+values. Existing installer readers/validators establish versioned provenance and
+staged identity custody; the exact connector/sidecar inputs are captured once,
+then re-hashed and their no-follow leaf/parent observations revalidated before
+render/publication. A5 publication uses new exclusive pending inodes, file and
+directory fsync and rename; it creates no directory, adopts no pending entry and
+adds no rollback/retry. Source verification gates each config publication.
+The two renames are separate effects within the one home_config intent: partial
+publication remains Ruling 7 failed_uncertain, never an atomic-pair claim.
+
+The coordinator's existing order independently verifies exact renderer bytes
+before recording done digests. During that same original intent only, the owner
+uses its captured renderer result; after done, verification additionally requires
+both transaction member digests. A fresh/B7 verifier derives prepared bytes by
+removing only the exact authorized insertion, reuses the same staged validator
+and renderer, and binds the complete live bytes through the transaction digests.
+It never uses provision.json as live/recovery authority. No prepared config or
+secret digest is added to B1/B4. The standalone temp-root/fake-native composition
+reaches home_config done; installed acceptance remains unverified.
+
+E1b's original fail-closed boundary reported provisioned-config drift/refused the
+live profile after home_config done. E2a below supplies the validated exception.
+A G+1 rollover with already-live configs refuses the prepared precondition without
+config effects until B6 restoration/Turn off/ReplaceFailed. E1b grants no
+restoration or public Enable path. Installer/supervisor admission, provenance,
+drift, unit publication and home_transport selection remain E2; no CLI, helper,
+D-Bus, app or other production caller is mounted.
+
+**Manager Ruling 14 (G2-E1a, retained local-node key history):**
+The owner verifier validates the complete happyranch-node pre-auth-key inventory:
+an exact tuple of at most `_MAX_INVENTORY_KEYS`, every row through the existing
+minter `_record` validator, with unique IDs. Select the current key only from the
+operation's durable local-node creation window, inclusive of both endpoints;
+exactly one row must have `started_at <= created_at <= expires_at`. It must be
+non-reusable, non-ephemeral and untagged, with expiration exactly equal to the
+window expiry, and, if unused, still unexpired. Every other row must precede the
+window and be used or expired at the verification time. In-window duplicates,
+post-window rows and still-usable unused history refuse. Safety assumption:
+historical keys must also be non-reusable, because used reusable keys can still
+enroll; this is the ruling's permitted stricter history check. History retains
+the existing `_record` rules for ephemeral flags and tags, without new restrictions.
+This admits B7's retained expired-unused/used rows through the next fenced mint
+and credential staging, without changing the minter, recovery or coordinator.
+The owner has no separate retained-node singleton check; node observation remains
+with the existing B2/B3 observer and its live-node contract.
+
+**G2-E1a delivered boundary and stated assumptions:**
+`home_activation_owner.py` supplies unmounted fixed-effect adapters, an independent
+same-FD release-token source verifier and the observer's exact-unit process owner.
+The coordinator retains all intent/lock/mint/recovery ownership; adapters issue
+no retry after a lost native/admin reply. Systemd process observation checks exact
+Id/Names/fragment, no drop-ins/reload, active/running, fixed User/Group, no dynamic
+user and canonical MainPID against exact unit bytes. UID comes from the existing
+account validator for systemd's declared fixed user; B2's SO_PEERCRED independently
+checks the actual UID/PID and re-observes process identity after the exchange.
+Service verification also uses fixed B3 lists, the reservation window, consumed
+credential custody, the RELEASE verifier and B2 node observation. No cached
+successful effect reply establishes verification. Native account/certificate/unit
+readers remain their original owners; certificate checks invoke status only.
+
+The roughly 1500-line E1 limit is handled by the authorized E1a/E1b split. E1a
+REQUIRES an explicitly supplied config owner with no default: its preflight must
+implement 13a prepared binding (or txn-bound live verification after publication),
+and its home_config perform/verify must implement Ruling 13. E1b now supplies
+that explicit dependency as `HomeLiveConfigOwner` above; no default owner or
+public caller is selected. E2b now composes this dependency in its uncalled
+backend and amends managed_services under Ruling 16 below. Authentication and
+expected G/O remain trusted caller preconditions under the activation lock.
+E2a supplies protected ordinary admission; E2b alone supplies the first home unit
+publication effects. No CLI/D-Bus/helper entry or public Enable is mounted.
+Ordinary installation still cannot publish a first home profile.
+
+**Manager Ruling 15 (G2-E2, privilege-separated admission), refined by 15a/16:**
+Ordinary root installer install/start/restart/enable and supervisor per-unit
+start/restart/enable require euid 0 and complete protected admission. Expected G
+comes from live sidecar.json's closed home_binding and must equal both the ready
+home-activation@1 receipt (Ruling 9 reader semantics) and matching txn. Require
+home_config done; live connector/sidecar bytes equal the shared
+render_home_live_configs output from versioned provision.json-bound prepared
+inputs (13a), with SHA-256 equal to the txn member digests; and the B5 single
+fragment/link gate. Unprovisioned, partial, forged, stale/foreign, pending,
+caller-URL-only, failed_uncertain and joined-not-ready refuse. A non-root ordinary
+home lifecycle command has no foreground fallback.
+
+Unprivileged foreground supervisor.run and the Linux sidecar instead require the
+fixed non-root happyranch account and existing config custody: root-owned,
+single-link regular files without group/other write, literal no-follow root-owned
+parents. The closed live profile (ControlURL, control_tls, home_binding under
+11/13) must parse with consistent IDs in both configs. The serving process never
+reads protected receipt/txn/provision records. There is no credential copy, IPC,
+ExecStartPre, extra unit line or permission change. Root alone publishes these
+bytes through the receipt/txn-bound Ruling 13 owner; B2 independently checks the
+serving node before ready and invite issuance still requires a ready receipt.
+Absent enrollment input or the existing consumed/empty-key state serves without
+mint/rekey. Present input uses only the existing enrollment rules, never a new
+mint. Pinned pairing and per-device revocation remain unchanged.
+
+Accepted residual 15(3): systemd restart/boot can re-serve already-published,
+root-custodied, txn-verified bytes after a receipt becomes failed_uncertain. It
+cannot issue invites, retains pinned per-request pairing/revocation, and B15
+reports the condition. Retirement belongs to B6 Turn off/ReplaceFailed; no stop
+is added to failure paths (Ruling 7). This explicit residual is not a ready claim.
+
+**Manager Ruling 15a (phase scope):**
+Ready-only admission applies to ordinary lifecycle outside activation, valid
+restart and the owned-activated classification. Activate/Enable instead retains
+the merged coordinator's admission unchanged: root, authenticated expected G/O,
+prepared receipt with no txn (or Ruling 12's replaceable older failed txn),
+same-FD RELEASE-source checks and operation lock. Effects inside the run require
+activating receipt plus the matching exact effect intent at G/O, durable before
+effect and independently verified before done (6/7), with the first unit
+publication order refined by 16 below. They never use the ordinary lifecycle
+path. After joined, publish_ready retains Ruling 8's preconditions. If ready is
+not reached, started services remain as they are and ordinary lifecycle refuses;
+foreground admission and residual 15(3) govern serving.
+
+Recover retains 12/12a: root, fresh authentication and expected G/O, failed pair
+or exact half-published target; resume verifies/publishes only, while rollover
+publishes prepared(G+1,new O) only. Later activation is a new operation. Recover
+gets no selection/start exception. Non-ready inventory follows Ruling 9: a parsed
+current receipt may own its home fragment/link, and live configs with home_config
+done must match txn digests. Such entries are owned with phase, not drift or
+adoptable. Only ready is owned-activated; reporting grants no lifecycle effect.
+All other drift checks remain. These rulings add no privileged entry, caller,
+OS-user, permission, dependency, Track B/C or customer-visible behavior change.
+
+**Manager Ruling 16 (first inert-to-home unit publication order):**
+The Headscale fragment is a B1 member. Prepare, a step of the backend Enable
+entry (item 5), writes render_headscale_unit(home_transport=True) BEFORE computing
+the six member digests and publishing prepared(G,O). B4's prepared members never
+change afterward. Prepare requires root, authenticated expected G, the existing
+nonblocking activation-directory lock spanning Prepare → run → publish_ready,
+no receipt/txn/pending (first activation only), same-FD RELEASE checks, Headscale
+stopped through the existing observation, and no B5 link. Current fragment bytes
+must be exactly inert or exactly home for an idempotent crash retry. Use existing
+A5 exclusive pending, fsync and no-follow rename; only inert→home replacement is
+allowed. Daemon-reload is then permitted, never enable/start/link. Validate the
+other five members with existing readers, compute all six digests, generate O
+under the existing 32-lowercase-hex predicate and publish prepared through G2-A.
+Backend calls run with that same G/O under the same lock. G+1 after failure comes
+only from Ruling 12 rollover over already-home bytes.
+
+Crash residual 16(1): home fragment with no receipt is not admitted by B5 and is
+drift. Ordinary lifecycle refuses until Enable is retried (exact home bytes
+accepted) or B6 Turn off runs. No other path adopts, repairs or deletes it.
+
+The sidecar unit is not a B1 member. SSL_CERT lines must never be published in
+Prepare, because a systemd restart could change a running v1 sidecar's trust.
+The minimal E1a amendment belongs to item 3: preflight accepts only exact legacy
+or exact home sidecar rendering, still loaded with no drop-ins and
+NeedDaemonReload=no on every check; connector/target remain exact. After fsynced
+managed_services intent and source revalidation, that effect alone publishes
+home sidecar bytes through A5 (replace exact legacy or no-op on exact home),
+daemon-reloads, then performs the existing fixed enable/start. Verification
+before managed_services done and joined/ready requires exact home bytes.
+At/after-intent failure is failed_uncertain with bytes left as they are, no
+restore/stop. Non-ready inventory reports the receipt-bound home sidecar as owned
+with phase, never drift or adoptable. Coordinator code is unchanged: its B1
+pre-intent check sees the prepared home fragment and repeated preflight accepts
+either exact sidecar rendering. Existing prepublished-home E1a fixtures remain;
+legacy-start and Prepare cases are additive in E2b. No check is loosened: the
+replacement has the listed preconditions and the sidecar set contains only two
+exact root-custodied renderings. No new privileged entry/caller/user/permission,
+dependency, Track B/C or customer-visible change is authorized.
+
+**Manager Ruling 17 (G2-E2b backend crash re-entry):**
+Under the held activation-directory flock, Enable classifies the protected current
+pair for the expected G/O before Prepare or forward work. A prepared receipt with
+no txn keeps its existing admission. A matching txn with a nonterminal receipt
+(prepared at preflight intent, activating at any intent/completed prefix, or joined,
+including joined txn plus activating receipt) takes only the coordinator's existing
+Ruling 7 terminal-marker path: binding-checked failed_uncertain, txn first and
+receipt second, exempt from source validation, then refusal. A failed publication
+retains the remaining bytes; later attempts repeat only this terminal path.
+
+Ready or both failed_uncertain refuse unchanged: ordinary admission owns ready,
+and Ruling 12/12a Recover owns failed pairs. Stale/mismatched G/O, unknown/unsafe
+records or pending residue refuse unchanged without adoption. This backend gate
+also refuses a prepared receipt paired with an older failed txn; it narrows the
+earlier backend rollover assumption without changing the coordinator's Ruling 12
+rollover admission or the existing Recover entry. No re-entry can Prepare, replay
+an effect, create O/G, restore/rollback units, start/stop/reload services, mint,
+call admin APIs, probe ports or publish configs.
+
+The backend passes the actual protected receipt to the unchanged coordinator's
+_pending/_fail handling after classifying the pair. _fail independently rereads
+and checks both bindings before terminal publication. No prepared receipt is
+fabricated, no coordinator entry is added, and run/forward logic stays unchanged.
+This remains an inert backend with no production caller or public Enable.
+
+**G2-E2a delivered boundary and assumptions:**
+The roughly 1500-line split places items 1/2/4 here. home_admission.py composes
+existing readers, protected provenance, shared renderer and HomeUnitGate. It
+inverts only the shared exact insertion, authenticates the reconstructed prepared
+bytes against provision.json, then rerenders and checks complete live txn bytes.
+Ready ordinary install is a keyless re-enable/start of already-validated existing
+units, without unit rewriting, key staging or minting. Supervisor start/restart/
+enable requires the fixed on-disk connector config to equal its parsed config;
+foreground run uses the separate fixed-account custody boundary. Legacy inert
+config and unit renderings are unchanged. Existing non-start lifecycle refusals
+remain until their separately owned work lands.
+
+Inventory's protected current receipt supplies phase/G for observation of inert
+prepared configs; installation IDs and release UID are independently bound through
+versioned prepared provenance. Live ordinary admission always takes G from the
+sidecar binding. This observation is never an activation/adoption grant. Fixed
+home CA/invite/config-directory entries and observe.sock are recognized only with
+that binding; unknown config/state/unit/link entries continue to refuse. Before
+managed_services done inventory accepts either exact sidecar rendering; after done
+it requires home. This comparison performs no publication or unit selection.
+
+**G2-E2b delivered boundary and assumptions (items 3/5):**
+`HomeActivationPrepare.prepare(expected_generation, authenticated)` publishes the
+home Headscale fragment, daemon-reloads only, validates the protected prepared
+inputs and six members, and publishes prepared(G,O) through the existing G2-A
+store. It returns (G,O); its exact-home crash retry never touches the sidecar.
+No existing receipt, txn or pending entry is admitted by Prepare. A post-rename
+failure leaves the documented unreceipted home-fragment drift for explicit retry
+or B6; it is never automatically adopted, restored or deleted.
+
+E1a preflight now admits exactly legacy or home sidecar bytes, loaded without
+drop-ins or reload debt. Only managed_services with its durable matching intent
+replaces exact legacy bytes through A5, reloads, then enables/starts the existing
+fixed units. Its done and joined verification require exact home sidecar bytes.
+Failure leaves final/pending bytes in place and the coordinator records
+failed_uncertain under Ruling 7. E2a's existing phase-aware inventory owns the
+receipt-bound home sidecar with phase; no duplicate inventory gate is added.
+
+`HomeActivationBackend.enable` composes Prepare → unchanged coordinator.run →
+publish_ready with E1a/E1b owners and B2 observer. One thread-owned adapter borrows
+the same held activation-directory flock for the coordinator's nested lock
+contexts; other threads and independent descriptors/processes still refuse
+nonblocking. An already-prepared expected G with no txn enters unchanged
+coordinator admission without rerunning Prepare or rewriting B1 members.
+Ruling 17 classifies existing pairs first and routes matching nonterminal pairs
+only to the unchanged terminal-marker path; no existing txn is resumed.
+`recover(expected_generation, expected_operation_id, fresh_authenticated)` uses
+the unchanged Ruling 12/12a recovery with the same production owners; no effect
+is executed by recovery. Authentication/freshness and expected G/O are trusted
+caller-supplied preconditions, never inferred from the records or a Boolean UI.
+The backend has **no production caller**: helper/CLI/D-Bus/app/web mounting remains
+Track B/serial integration. No public Enable, polkit, user, unit default or
+permission change is added. Temp-root/fake-native tests exercise ready and
+recovery with real A5 records and observe.sock; installed/live-host operations
+remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
+sidecar SSL_CERT lines and B5 Headscale lines are selected by these owners.
+
+**B5 — Home-only Headscale boot/stop dependency and inventory gates.**
+Only the home Headscale rendering adds
+`Before=happyranch-tsnet-sidecar.service` and
+`[Install] WantedBy=happyranch-managed.target`. The sidecar gets no Headscale
+reference, After/Requires dependency or other unit delta beyond the two A4
+SSL_CERT Environment lines. Legacy renderings stay byte-identical; hardening,
+MDWE, notify and watchdog stay unchanged. Before orders sidecar stop before
+Headscale; Turn off explicitly stops sidecar → connector → Headscale. No
+Requires/RequiredBy coupling: Headscale outage leaves sidecar retrying and B15
+reports runtime availability.
+
+The literal-reference content exclusion remains only the exact owned
+`/etc/systemd/system/happyranch-headscale.service` fragment. Without a valid
+current-generation activation receipt only its inert rendering is admitted;
+home bytes require SHA-256 equality to the receipt-bound unit digest. No other
+unit/drop-in gains an exclusion. Exactly one new link is admitted:
+`/etc/systemd/system/happyranch-managed.target.wants/happyranch-headscale.service`
+→ exactly `/etc/systemd/system/happyranch-headscale.service`, recorded in that
+valid receipt. Without it the inert no-link rule remains; every other matching
+link still refuses, including manually created links. Cleanup disables this
+one owned link then re-verifies absence. All other foreign-unit/drop-in,
+literal-reference and bounded no-follow inventory checks remain mandatory.
+
+**Manager Ruling 9 (G2-D2, B5):** a valid current-generation receipt means the
+protected receipt parses as closed `home-activation@1` through the existing A5
+no-follow reader, with release UID and all three installation IDs equal to the
+caller-supplied expected values, and `activation_generation` equal to the
+externally expected generation. **Every phase**, including `failed_uncertain`,
+qualifies: member digests and ownership are mandatory in every phase, and
+cleanup must still see the owned link. Pending entries, unsafe files, parse
+failures and other generations grant no exception: only the inert rendering
+and no matching link are admitted. Home bytes must equal the B5 rendering and
+their full SHA-256 must equal
+`member_digests['/etc/systemd/system/happyranch-headscale.service']`. Only the
+literal B5 link/target pair in `ownership.links` qualifies; relative targets,
+other load-root copies, aliases, extra links and manual links without that
+receipt refuse. Inert fragment bytes remain admissible without a receipt.
+
+G2-D2 exposes only unmounted `HomeUnitGate.inspect()` and
+`disable_owned_link(disable)`. The latter inventories before the injected
+synchronous disable operation and freshly inventories with the owned link
+required absent afterwards; a persistent/replaced link or changed receipt
+refuses. Its owner must serialize cooperative root/systemd writers and supply
+an authorized operation that removes **only** this exact link, with lifecycle
+quiescence established separately. There is no systemctl call, service stop or
+receipt deletion in this primitive. Missing links need no disable operation.
+The gate retains the inert scanner's load roots, literal-reference checks,
+65536-entry shared bound, 32-depth bound and 65536-byte foreign-policy bound,
+using literal no-follow parents/readers and revalidating sampled metadata.
+E2a now wires this gate into protected ordinary admission and phase-aware
+inventory. E2b adds first publication only through Prepare and the intent-bound
+managed_services owner; ordinary installation does not publish a first home unit.
+Why no founder: boot persistence for an already-approved service, unchanged UX.
+
+**B6 — Live-state ownership and per-type deletion.**
+Only a valid current-generation `home-activation@1` receipt admits its enumerated
+fixed members plus the Headscale-written allowlist below. Require full
+quiescence: all owned units inactive, no job/process/cgroup, and ruling C's
+bounded UID process snapshot. Every entry uses literal no-follow parent
+traversal; absence is fine, wrong type/owner/mode/link count is retained and
+reported as incomplete cleanup.
+
+| Exact live-state members | Required type/custody and removal |
+| --- | --- |
+| `/var/lib/happyranch-headscale/{db.sqlite,db.sqlite-wal,db.sqlite-shm,noise.key,derp.key}` (five files) | S_ISREG, receipted Headscale UID:GID, 0600, nlink 1; fixed-file unlink only. |
+| `/run/happyranch-headscale/headscale.sock` | S_ISSOCK, receipted Headscale UID:GID, 0600, nlink 1; unlink only, never connect/read. |
+| `/run/happyranch-tsnet-sidecar/observe.sock` | S_ISSOCK, owner `happyranch`, 0600, nlink 1; unlink only, never connect/read. |
+| `/var/lib/happyranch-headscale/acme-unused` | Empty real directory, receipted Headscale UID, 0700; rmdir only. |
+
+Fixed custody directories then follow existing D/custody rules: rmdir only when
+empty. Without that activation receipt D still refuses DB/Noise/socket and
+unreceipted entries, even with an account receipt. Unknown/extra/tampered objects
+remain and report incomplete cleanup; no recursive deletion. Explicitly destroy
+the owned CA private key on Turn off. Preserve uncertain key fences/issuer
+journals until B7/B11 prove no usable key remains, then retire with a retained
+nonsecret audit event.
+
+Accounts follow A–E and spec §7 unchanged. Remove a helper-created, validly
+receipted `happyranch-headscale` user/group only after the owned unit is stopped
+and disabled, no job/process/cgroup, the bounded UID snapshot and fresh identity/
+unshared-group checks; userdel precedes receipted unshared groupdel, the receipt
+retires last, and partial failure remains `partial-cleanup-uncertain`. Preserve
+and visibly report an unowned account under A. Existing `happyranch` handling
+stays unchanged. The two Headscale DB users are not OS users and disappear with
+the owned DB.
+Why no founder: exact ownership/removal under approved Turn off and existing A–E.
+
+I2a implements the **unmounted** installer B6 executor through
+`ManagedInstaller.cleanup_headscale` with all five explicit expected release UID,
+installation IDs and generation arguments. It uses the A5 reader under the
+existing activation-directory lock, B5 disable/absence gate, full owned-unit
+quiescence and C's UID snapshot before deletion and fresh checks before effects.
+Existing no-argument CLI/uninstall calls retain D exactly; the future lifecycle
+caller must close admission, revoke and stop services first. No public Disable,
+Enable or ReplaceFailed is mounted here. I2b now supplies B17's separate unmounted
+first-intent entry described below.
+
+The executor unlinks only validated fixed members (including the separately
+publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
+CA private key without reading it, and removes fixed custody directories only
+when empty. Absence supports a partial-cleanup retry; existing preparation
+publication validation still requires every member. Unknown/unsafe entries
+refuse, with no recursive removal. Activation/publication evidence survives
+earlier partial failures; the account receipt retires last under A–E.
+Key-fence, nonempty issuer and transaction evidence retirement remains
+**DEFERRED**: main has no cleanup proof-plus-audit retirement owner for B7/B11.
+Those objects and the activation/account receipts stay retained and cleanup
+reports `partial-cleanup-uncertain` after known members were removed. No key
+settlement, journal adoption or automatic retry is inferred from quiescence.
+The B6 CA exception is only `home-ca/ca.key`: unlisted root-only staging
+`ca.pem`, `leaf.pem` and `leaf.key` also remain and report incomplete cleanup;
+they are not silently added to the deletion allowlist. Their presence prevents
+receipt/account retirement. The root-only directory is removed only if empty.
+
+**B7 — Local-node mint uncertainty and explicit recovery.**
+Persist one root-generated activation operation ID before `mint_local_node`.
+A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
+new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:
+exactly our fenced used key plus exactly one matching enrolled node observable
+through B2 permits resuming to `ready`; no usable key and no node permits one
+fresh mint under a new generation. Anything else stays uncertain and requires
+Turn off/ReplaceFailed. Valid restart uses empty-key state and never rekeys.
+Why no founder: fail-closed recovery through the existing Enable action.
+
+**Manager Ruling 12 (G2-C2, B7 explicit fresh-auth recovery)** —
+engineering_manager, TASK-17421 step 19. Context: main after G2-D1 #1690
+(`101d1bc5`), with G2-A #1677, G2-B #1673, G2-C1 #1684 and G2-D2 #1687 merged.
+
+1. One explicit unmounted entry, `home_activation_recovery.py`, has no production
+   caller. Fresh authentication is an injected caller precondition; polkit wiring
+   belongs to G2-E/Track B. Require both receipt and txn `failed_uncertain` for
+   externally expected generation G and the same operation O. Other pairs refuse
+   unchanged; a matching nonterminal pair with a txn takes Ruling 7's terminal
+   marker path first and never recovers in that call. Validate release UID and
+   the same-FD source token before any Headscale read and before every publication;
+   source failure refuses without publication under Ruling 6 semantics.
+2. Use only B3 `list_pre_auth_keys` and `list_nodes` for `happyranch-node`, with
+   complete bounded lists. Error, timeout, limit or parse failure retains uncertain
+   state unchanged. Our fenced key has creation time inside O's durable
+   `CreationWindow`, read without mutation from the existing root-custodied,
+   no-follow `operation-<sha256>` reservation. Never rewrite/delete reservations.
+3. RESUME requires exactly one key, inside O's window, used, non-reusable and
+   non-ephemeral; exactly one node; B2 observation passing Ruling 11 against that
+   node; and independent owner verification of all eight effects, without executing
+   any effect. Publish ready(G,O) with the observation pair through a separate
+   recovery-only validator. Ordinary `validate_transition` stays unchanged.
+   The recovered pair must pass the unchanged G2-D1 ready verifier. One additive
+   closed nonsecret txn recovery marker is permitted when necessary. Publish txn
+   first, receipt second, through A5.
+4. FRESH/ROLLOVER requires zero nodes and zero usable keys (unused and unexpired).
+   Generate a new root operation O' (32 lowercase hex) and publish only receipt
+   `prepared(G+1,O')`. No mint, expire or other effect runs in recovery. Retain
+   txn(G) untouched. Coordinator fresh-start admits an existing txn only when
+   it is older than the prepared generation and `failed_uncertain`, replacing it
+   at the first intent. An unused unexpired key keeps uncertainty; callers may
+   retry after the 120-second key expires. Crash repeatability is amended by 12a.
+5. Everything else refuses unchanged with a closed nonsecret reason and stays
+   uncertain for Turn off/ReplaceFailed.
+6. Valid-restart empty-key admission belongs to G2-E production wiring.
+
+**Manager Ruling 12a (G2-C2 crash outcomes; amends Ruling 12(4))** —
+engineering_manager, TASK-17421 step 20. A5 is unchanged: no pending adoption
+and no pending deletion outside B6.
+
+- Pending residue: a crash after exclusive pending inode creation/fsync and
+  before rename leaves old finals unchanged plus the retained pending entry.
+  This is an admitted fail-closed outcome. Every later recovery or coordinator
+  attempt refuses with closed reason `pending_residue`, bytes unchanged, until
+  authorized inspection / Turn off / ReplaceFailed; B6 owns removal. Recovery
+  repeatability applies only without residue. No reconciliation mechanism or
+  A5 writer/reader change is introduced; existing pending tests stay unchanged.
+- Half-published RESUME: after txn-first publication and before receipt-second,
+  admit exactly the txn already at the same (G,O) recovery target with identical
+  observation pair and the still-failed receipt. Repeat the full source-token,
+  B3 lists, reservation-window, B2/Ruling 11 and eight-effect evidence, and only
+  then publish the receipt. Any failed condition refuses unchanged. No other
+  mixed pair is admitted to recovery.
+- ROLLOVER publishes only prepared(G+1,O'); txn(G) stays untouched. Crash outcomes
+  are exactly the old failed pair, retained pending residue, or the new prepared
+  receipt plus the older failed txn.
+
+G2-C2 implements `HomeActivationRecovery.recover` with externally expected G/O,
+a strict fresh-auth precondition and an injected observation owner. It constructs
+B2 with the fixed admin's fresh node list required equal to the recovery
+singleton. All eight effects are verified, prepared/live members are rechecked,
+and both records are compared before publication. No service/admin/config effect
+is executed. Reservation reads retain the existing 0700 directory / 0600 regular
+single-link file custody, bounded canonical two-UTC-timestamp encoding, and
+literal pinned parents; they never create a missing directory.
+
+The additive optional txn key `recovery_observation` is a closed object with
+exactly `local_node_stable_id, home_endpoint`, using B1 observation predicates.
+It is present only on a complete eight-done `joined` recovery target (or retained
+on its subsequent `failed_uncertain` terminal marker). Absence preserves legacy
+format bytes; explicit null, extra fields, partial effects or `activating` with
+this marker refuse. No new phase is introduced. The recovery-only validator
+permits failed→joined with that marker after full verification; ordinary txn
+transitions cannot add/change it or leave a failed state. This makes 12a's half
+pair distinguishable while keeping G2-D1 `verify_ready` unchanged.
+
+Why no founder: fail-closed recovery through the already-settled B7 Enable action;
+no new dependency, UX or production activation authority. Production wiring,
+installed fresh-auth/systemd/Headscale acceptance and valid-restart admission
+remain G2-E; home_transport remains false.
+
+**B8 — Installed helper, bootstrap and fixed write inventory.**
+Package the system D-Bus service for fixed BusName `ai.happyranch.RemoteAccess1`, User=root,
+SystemdService=`happyranch-remote-access-helper.service`, Type=dbus, with
+`NoNewPrivileges=yes`, `ProtectHome=read-only`, `ProtectSystem=strict`,
+`PrivateTmp=yes`, and 60-second idle exit. Its exact `ReadWritePaths=` list is:
+
+```text
+/etc
+/var/lib/happyranch-remote-access
+-/var/lib/happyranch-headscale
+-/var/lib/happyranch-connector
+-/var/lib/happyranch-tsnet-sidecar
+-/run/happyranch-headscale
+-/run/happyranch-connector
+-/run/happyranch-tsnet-sidecar
+-/opt/happyranch
+```
+
+`-` permits absence. `/etc` permits shadow-utils' lock/temp/rename for passwd,
+group, shadow and gshadow, and includes the existing happyranch, credstore and
+systemd paths. System accounts skip lastlog/faillog, so `/var/log` stays
+read-only; `/usr`, `/boot`, `/opt/happyranch-desktop` and everything else stay
+read-only. The kernel sandbox is a coarse backstop: in-code fixed-path,
+exact-name/no-follow checks still bind every effect (exact credstore link,
+owned units and B17-listed legacy shapes only).
+
+The single root helper owns all effects. System Python `-I`/already-required
+Gio handles bus/polkit; the fixed bundled Python `-I` installer and existing
+root-step runner (`useradd`/`userdel`/`groupdel`, `systemctl`) are children in
+that same sandbox. No shell, user imports/settings, second privileged executor,
+transient unit or different user. Before auth, derive clean-host release UID
+from the actual bus credential UID and exactly one matching `pwd.getpwall()`
+row. UID 0 and system UIDs below 1000 refuse `owner_unsupported`; zero rows
+refuse `owner_unknown`, multiple rows refuse `owner_ambiguous`. If the fixed
+root-owned `/etc/happyranch/release-daemon.json` exists, reuse the release
+verifier's trusted-parent, no-follow, single-link and closed-record validation;
+its UID/user must match the sender/passwd row or refuse `owner_mismatch`.
+Its `data_home` wins; otherwise use only passwd-home + `.local/share/happyranch`,
+never XDG/environment/caller input. Validate that single candidate by
+descriptor-relative no-follow traversal: a real directory owned by the UID,
+not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
+`/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
+or path crosses the boundary. These five bootstrap refusal codes are closed.
+The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
+RevokeSelected; installer-backed lifecycle effects remain deferred to serial
+integration. Focused bootstrap/package verification uses
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`; the existing
+standalone `scripts/test_remote_access_helper.py` private-bus command also
+checks refusal before connector reads/auth. These focused checks do not install
+or start the helper. Daemon bearer is never setup authority. Package install only
+registers the service and never runs Enable.
+Why no founder: pins the approved root helper and existing dependencies/effects.
+
+**B9 — Lifecycle capture, transport and operation deadlines.**
+Enable/Disable/ReplaceFailed/RefreshHomeAddress capture sender unique name, UID
+and protected installation generation without requiring a connector. Revalidate
+under the one global mutation slot before every effect; no queued prompts.
+Authentication remains 120 seconds. Lifecycle calls return accepted/refused
+within the existing approximately 122-second native transport; the root
+operation has a total 480-second budget including auth, with remaining time
+passed to every step and no late success. Disable has a 300-second budget;
+status at most 2 seconds. B15 conveys progress/terminal outcomes using
+`ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
+Transport loss after dispatch never means no change.
+Why no founder: supports the approved progress/ready/failure screens unchanged.
+
+B9 implementation: `helper_lifecycle.py` supplies connector-independent capture,
+the existing helper's single mutation-slot adapter, monotonic budgets and closed
+accepted/refused admission before effects. Capture and admission revalidation
+share the original approximately 122-second call deadline. Each injected effect revalidates the
+bus UID, B8 owner binding and opaque protected-generation token under that slot;
+busy calls refuse without queuing. Remaining time includes capture/auth and is
+passed to each step, with expired returns suppressed. Executors must enforce the
+supplied timeout; these primitives do not preempt blocking code. Auth transport
+uncertainty retains the slot until terminal reply/cancellation acknowledgement.
+The six outcomes reuse B15's `status_v2.SetupPhase`, excluding UNKNOWN/STALE.
+The native 120-second auth and approximately 122-second transport are unchanged.
+No lifecycle method is exported and no root lifecycle effect is reachable.
+I1 supplies `helper.generations` (`helper_generation.HomeGenerationReader`) as the
+concrete protected reader. Track A's additive `HomeActivationStore.current()` reads
+and pins the current receipt without an expected generation, preserving all existing
+parent/leaf custody, size, pending-entry and before/after checks. Only a safely absent
+leaf under the valid protected parent returns None; missing/unsafe parents, malformed
+receipts and pending evidence refuse. It performs no publication, recovery or repair.
+The immutable snapshot compares generation, operation ID and release UID; phase is
+display metadata excluded from equality, so own phase progress does not fence the
+next step. A different operation in the same generation does fence B9 effects.
+System Python loads only stdlib package-owned siblings. Its fixed existing bundled
+Python child (`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.home_activation`)
+runs the zero-argument read entry with empty environment, no stdin and the supplied
+remaining timeout. It returns only the closed bounded snapshot, never full receipt,
+node identity or secrets. No installer effect runs; root/sandbox ownership is unchanged.
+I2a supplies only the unmounted installer B6 executor described above. Native
+lifecycle-auth wiring and mounted lifecycle step executors remain DEFERRED to
+I3; I2b supplies only B17's unmounted installer entry. Lifecycle/activation audit
+intents must be placed at those actual future effect
+boundaries; no synthetic lifecycle outcome is recorded by I1. Focused verification
+uses the existing private-bus
+venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.
+
+**B10 — Root-to-connector issuance IPC.**
+Extend existing `control.sock` OperationAPI only with `invite-reserve@1`
+(expected generation, digest, deadline), `invite-invalidate@1`, `revoke-all@1`.
+Bodies remain at most 32768 bytes; connector verifies root SO_PEERCRED and
+expected-generation CAS. Root mints/encodes; only digest/deadline cross, never
+bearer, key or invite text. The serving connector is the sole pairing owner,
+with no second manager/store. Lock order: helper mutation slot → issuer journal
+→ IPC; never hold trust-file flock across IPC. Unavailable connector refuses
+IssueInvite before mint; lost reserve reply records uncertainty for B11.
+
+Wire bodies are closed JSON objects terminated by one newline. All three use
+`method`, `expected_generation` (nonnegative integer) and `deadline` (finite
+monotonic authorization deadline, expired refused, at most 120 seconds ahead).
+`invite-reserve@1` additionally requires `digest` (exactly 64 lowercase hex) and
+`expires_at` (integer Unix UTC seconds, future and at most 300 seconds ahead,
+matching the existing pairing TTL). No other keys or duplicate keys are accepted.
+Under the serving manager mutation lock, the connector checks ownership and
+generation, sends exactly `{"result":"ready"}`, and requires exactly
+`{"commit":true}` after root's live-caller/deadline revalidation hook. It rechecks
+snapshot/time bounds before the actual anchored CAS transaction. The original
+authorization deadline is carried into every mutation and checked again after
+acquiring each exclusive trust transaction, before new effects; reserve also
+rechecks invite expiry there. Success is
+exactly `{"result":"ok","generation":N}`: the committed generation enables the
+next invalidate/revoke CAS without assuming a generation increment. Refusals use
+only the existing `{"error":category}` vocabulary. Lost final replies remain
+uncertain, including when the reserve already committed.
+
+`InviteOperationAPI` is optional and separate from the unchanged slice-2
+`OperationAPI`; an implementation without it refuses these operations as
+`unavailable`. The inert `invite_control.InviteControl` accepts the existing
+serving manager, constructing no owner/store/listener. Revoke-all burns the
+ceremony, then uses existing per-device durable-deny/attributed-stream closure,
+with generation CAS at every transaction. It also fences and acknowledges
+removed owners through the registry's existing removed-device cleanup, outside
+the trust flock. Cleanup failure on any owner does not prevent revoking the rest
+and yields `unavailable`; a racing writer refuses `changed`, preserving any prior
+denies. Expiry refuses `expired` before new writes, while necessary cleanup of
+committed work completes; bulk refusal can follow partial durable effects and
+never claims rollback. Supervisor and issuer wiring remain
+serial integration work.
+
+Why no founder: fixed operations on existing root-only private IPC.
+
+**B11 — Explicit invite cancel/recover.**
+Add zero-input `CancelInvite()` / `ai.happyranch.remote-access.cancel-invite`
+and `RecoverInvite()` / `ai.happyranch.remote-access.recover-invite`, each fresh
+polkit auth with the existing `auth_admin`, never `_keep`, defaults. Root selects
+the protected current operation, never an app-supplied ID. Cancel invalidates
+in connector first, then expires the key; report network cleanup separately.
+Recover proves no usable key remains and consumes the old ceremony. Only a later
+IssueInvite, still limited to one/minute, creates fresh authority.
+Why no founder: names already-approved Cancel and authenticated recovery actions.
+
+B11 backend assumptions and inert boundary (`invite_recovery.py`): the freshly
+authenticated root caller holds the helper mutation slot throughout, supplies
+the protected current connector generation, the remaining original monotonic
+authorization/operation deadline (at most 120 seconds ahead), and the live-caller
+revalidation hook. The functions accept no operation ID. They select the current
+entry using the issuer's existing protected binding/metadata checks and
+nonblocking journal lock. Lock order is helper slot → short journal transaction
+→ IPC: the journal lock is released before IPC and minter calls; no trust flock
+is held across IPC. A durable `uncertain` intent fences new issuance before
+dispatch; final publication reacquires the journal and compares the entire
+selected record. Lock contention, unsafe/pending state or binding drift refuses
+without repair. An absent current entry returns invite `none`, cleanup
+`not_needed`; it does not claim recovery or infer that Headscale has no keys.
+
+Both operations acknowledge B10 connector invalidation before key cleanup.
+Cancel expires keys through the minter's existing cleanup-and-complete-relist
+proof, rather than treating one expire reply as proof. The injected B11 minter
+must implement `recover(operation_id, *, deadline)` with the existing exact-true,
+no-usable-key and settled-late-create semantics, clipping **every** admin step
+to the remaining original deadline. The inert `HeadscaleRecoveryMinter` supplies
+that adapter around the existing Headscale cleanup/relist implementation and
+injected admin transport, clipping each list/expire timeout and refusing create.
+Its caller also holds the existing dedicated invite-user mutation lock within
+the original budget. There is no unbounded legacy fallback or new lock owner.
+Deadline checks bracket journal, IPC, revalidation, minter and final publication;
+a late reply never yields `complete`. OS I/O and dependency time bounds remain
+cooperative, not a hard interruption guarantee.
+
+Results use closed outcomes `complete`, `refused`, `uncertain`,
+`partial_cleanup` and the existing B15 invite/cleanup enums, without changing
+StatusV2 bytes. Acknowledged product invalidation can report invite `cancelled`
+with cleanup `uncertain` independently. Lost replies after dispatch retain
+`uncertain`, never “no change” or rollback. Only acknowledged invalidation plus
+exact-true cleanup permits terminal `recovered` journal publication for either
+action. This preserves the existing issuer/installer journal vocabulary and
+meaning (no usable key remains); Cancel's returned invite phase is separately
+`cancelled`. All other cases preserve uncertainty and the existing `not_before`
+rate limit. Recovery mints nothing; only a later separately authorized
+IssueInvite creates fresh authority. Returned results contain no operation IDs
+or invitation/key material.
+
+Deferred integration: Track B owns zero-input D-Bus methods and fresh polkit
+actions; serial integration supplies the one helper mutation slot, protected
+issuer/config/generation selection, live-caller hook, existing invite-user lock
+and protected admin/store inputs for `HeadscaleRecoveryMinter`, serving supervisor
+`InviteControl` capability and issuer B10 wiring
+(including durable uncertainty after lost reserve replies), and B15 observation
+projection. No helper, supervisor, service, timer, package or public call is wired
+by this backend. Focused standalone checks:
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
+
+**B12 — Bounded recorded-node cleanup.**
+At approval record control-plane StableID → Headscale node ID using B2-style
+authoritative observation. Delete only recorded-owned nodes on revoke,
+rejected/abandoned redemption or Turn off, never hostname or age alone and never
+on a cleanup timer. At most 16 deletions per action, re-observe each before and
+verify after. Report remainder pending until the next explicit action. Immediate
+product denial/stream closure never waits for network cleanup success.
+Why no founder: bounded removal of approved abandoned/removed-node authority.
+
+**B13 — Live address refresh.**
+`RefreshHomeAddress()` uses `home-refresh-txn@1`: close admission → invalidate
+current invite through B10 → same-CA leaf renewal when SAN changes or due →
+publish config/DERP map/control_tls/issuer binding/receipt as one digest-bound
+set under a new generation → restart owned units → fresh B2 observation →
+reopen. Settle any uncertain issuer journal with B11 first; refresh refuses
+while unsettled and never rewrites that journal. Preserve rate-limit state,
+home/control-plane/connector/node identities and consumed marker. Rollback
+never restores an old invite; fixed DNS-SAN/trust rules remain.
+Why no founder: the approved address-change flow and identities are unchanged.
+
+**B14 — Fixed-policy renewal timer.**
+`happyranch-remote-access-policy-renew.service` is root, oneshot, with no
+inputs/environment/URL; its `.timer` has `OnUnitActiveSec=1800s`, `OnBootSec=60s`,
+`Persistent=false`. Under the installation lock it re-stamps only bytes matching
+the current shipped package route artifact, retaining the 3600-second envelope.
+Failure lets existing expiry close access. `RetryPolicyRenewal()` remains the
+fresh-auth retry. Turn off removes these owned units. Mid-upgrade artifact
+digest mismatch refuses until the next tick, never renews changed policy.
+Why no founder: pins the names/cadence of the already R2-approved mechanism.
+
+The inert B14 renderer/decision module is `runtime/remote_access/policy_renew_units.py`;
+`scripts/test_policy_renew_units.py` fixes the exact UTF-8 unit bytes and renewal
+boundaries. The zero-argument renderers have no environment, credentials, URL,
+path or command-argument selectors and perform no installation or activation.
+The root oneshot uses the existing `happyranch` group to preserve root:hr policy
+ownership with empty capability sets. It preserves compatible helper/owned-unit
+hardening, including strict filesystem protection, hidden homes, private tmp/dev,
+kernel/control-group protections and bounded resources. Its only writable
+exceptions are `/etc/happyranch` (atomic policy replacement) and
+`/var/lib/happyranch-remote-access` (installation lock); no network is required.
+The 30-second start timeout bounds a stuck future writer; failure never extends
+the installed expiry. Both units are part of `happyranch-managed.target`; only
+the timer has an Install section, for that target.
+
+**Pinned assumptions for serial integration:** no renewal entry exists yet.
+`RENEW_EXECUTABLE` reserves the fixed absolute
+`/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew`, following
+the packaged helper's `bin/` convention, with no arguments. Packaging this entry
+is deferred. Artifact equality uses the existing `policy.canonical_json`
+SHA-256 convention on the envelope's embedded artifact, excluding envelope
+timestamps/revision and JSON formatting. `renewal_candidate` accepts decoded,
+protected installed/package evidence supplied under the installation lock;
+`None` represents missing/withdrawn evidence. It imports `PolicyEnvelope`,
+`RoutePolicyConsumer` and the canonical serializer; it does not duplicate the
+policy validator. A structurally valid, active, nonempty, identical shipped
+policy with the existing 3600-second envelope yields a deep-copied candidate
+issued at the supplied aware time, with revision incremented by one. All other
+fields stay unchanged. Automatic renewal refuses at or after existing expiry,
+and on backwards time, matching the spec's before-max-age rule; it cannot revive
+expired policy. Missing/withdrawn evidence, invalid policy/state, future
+issuance or artifact mismatch returns no candidate and leaves expiry unchanged.
+The next tick must obtain new evidence; no remembered digest permits renewal.
+
+Deferred to serial integration: installing/enabling these owned units; the
+actual fixed executable that holds the installation lock across protected reads,
+revalidation and atomic publication through the installer (including existing
+provisioning/activation digest bookkeeping); Turn-off removal of both units;
+entry and units in the `.deb`; and fresh-auth `RetryPolicyRenewal()` D-Bus
+wiring/readiness checks. No production caller, executable or helper method is
+added by this slice. Nothing is installed, enabled or reachable.
+
+**B15 — Compatible versioned status.**
+Keep `Status()` v1 byte-compatible. Add zero-input, read-only `StatusV2()`, no
+polkit action: closed JSON at most 16384 bytes, with separate setup phase,
+runtime availability, invite phase/deadline, address state, policy state and
+cleanup state, each supporting unknown/stale and observation age. With connector
+stopped report runtime unavailable, never infer Off. Bridge/CLI consumers switch
+together in the consuming PR; secret/public-output restrictions apply.
+
+The pure model is `runtime/remote_access/status_v2.py`. I1 exports StatusV2 on the
+existing helper interface; bridge/CLI consumers remain deferred. The method retains
+Status's bus UID and B8 owner validation, accepts no arguments/FDs and never prompts
+polkit. It sends the canonical model JSON directly as the D-Bus string (no double
+JSON encoding). The existing destination policy already admits it; no policy changes.
+One read worker runs without the mutation slot or main context; concurrent StatusV2
+calls refuse busy. An independent 1.9-second watchdog reserves response overhead within
+the original 2-second status budget, suppresses late replies and keeps a stalled worker
+sealed until it settles. It never queues new workers or waits on a mutation-held lock.
+The receipt maps prepared/activating/joined to setup in_progress, ready to ready and
+failed_uncertain to uncertain. Missing/unreadable receipt means unknown, never Off;
+a receipt bound to a different UID refuses. A fresh successful connector snapshot
+supplies runtime available only when ready; otherwise unavailable. Unreachable connector
+supplies runtime unavailable independently of setup. Invite/address/policy/cleanup remain
+unknown until their authoritative sources are integrated. Observation ages measure time
+since the reads with a monotonic clock and pass through the existing stale normalization.
+No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
+The frozen `StatusV2` has exactly
+`setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
+has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
+invite additionally has `deadline_utc_seconds`. All vocabularies include
+`unknown` and `stale`, plus only:
+
+- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`;
+- runtime: `available`, `unavailable` (never `off`);
+- invite: `none`, `minting`, `encoding`, `pairing`, `issued`, `pending_approval`,
+  `consumed`, `cancelled`, `recovered`, `expired`, `refused`, `uncertain`;
+- address: `current`, `changed`, `refreshing`, `identity_changed`, `failed`, `uncertain`;
+- policy: `current`, `renewing`, `expired`, `renewal_failed`, `uncertain`;
+- cleanup: `not_needed`, `in_progress`, `complete`, `pending`, `partial_cleanup`,
+  `failed`, `uncertain`.
+
+B15 supplied no freshness threshold: use a conservative fixed **30 seconds**.
+Supplied observation ages are monotonic-clock-derived integer seconds in
+`0..2147483647`; missing observations are `unknown` with null age. Older than
+30 seconds becomes `stale` with the actual bounded age; fresh states have ages
+at most 30, stale ages are greater than 30, and only unknown has null age.
+Out-of-range ages refuse rather than clamp. Connector builder input has closed
+`running`, `stopped`, `unreachable`, `unknown`, `stale` states with the same age
+rules; it is not another wire dimension. Fresh stopped/unreachable overrides
+runtime to unavailable without changing setup. Missing/old connector evidence
+makes runtime unknown/stale; running requires a separate runtime observation,
+using the older dependency age. No observation alone fabricates setup Off.
+
+Invite deadlines are integer Unix UTC seconds in `0..9223372036854775807`,
+required only for `issued`/`pending_approval`, null otherwise. They are the
+supplied effective invite expiry, never a monotonic authorization deadline.
+At or past expiry the pure builder reports `expired` with null deadline;
+unknown/stale observations carry no countdown. This display does not extend
+lifetime, consume authority, recover or perform any effects. Callers still
+validate the existing effective five-minute invite lifetime before supplying it.
+The canonical encoder uses sorted compact UTF-8 JSON and one final newline;
+the inclusive **16384-byte** cap refuses oversize rather than truncating. The
+strict decoder enforces the cap before parsing, exact keys/types/vocabularies,
+no duplicate keys at any depth, bounded integers and no nonfinite numbers.
+Ordinary JSON whitespace and an optional final newline are accepted. No strings
+beyond fixed keys/enums, arrays, labels, IDs, digests, keys, bearers or invite text
+are admitted. This model adds no status mutation, polkit action or v1 change.
+Why no founder: supplies the existing screens without changing user-visible UX.
+
+**B16 — Protected retained audit.**
+`/var/lib/happyranch-remote-access/home-audit.jsonl`, root:root 0600, is
+append-only with closed events: activation phases, invite issued/cancelled/
+recovered/expired, device approved/rejected/revoked, refresh, policy renew/fail,
+Turn off component outcomes and uncertain. Records at most 1024 bytes, file at
+most 1 MiB; rotate once to `.1` at cap, retaining one generation. Record intent
+before effect and uncertainty after lost settlement. Audit survives Turn off
+and replacement and is never automatically removed; no raw secrets or node-key/
+digest-prefix output, no DB or audit-task-ID reinterpretation.
+The stdlib writer is `runtime/remote_access/home_audit.py`. I1 wires the existing
+ApprovePending/RejectPending/RevokeSelected helper effects: after fresh authorization
+and revalidation, persist device_approved/device_rejected/device_revoked intent before
+connector commit, then succeeded on acknowledged completion. Before-commit refusal
+records refused; lost settlement after commit admission records uncertain. If outcome
+persistence fails after an effect, attempt uncertain and return the fixed unavailable
+error; no successful audit acknowledgement is inferred. Intent persistence failure
+prevents the effect. IDs are local random audit correlation labels, never the target
+StableID, record ID, activation operation ID or a digest. Read calls emit no audits.
+I3 lifecycle/invite/Turn off outcomes remain explicitly deferred until those effects
+exist; I1 does not invent them or export additional mutation methods. Its closed
+event spellings are
+`activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
+`invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
+`policy_renew`, `policy_fail`, `turn_off`, `uncertain`. Activation uses the existing
+`prepared`, `activating`, `joined`, `ready`, `failed_uncertain` phases. Turn off
+components are `sidecar`, `connector`, `headscale`, `units`, `live_state`,
+`credentials`, `accounts`; outcomes are `succeeded`, `failed`, `refused`, plus
+Turn off's `absent`, `retained`, `partial_cleanup`. Lost settlement instead uses
+an explicit `uncertain` event/stage/outcome referencing the original intent.
+Records contain only `version=1`, `event`, `stage` (`intent`, `outcome`,
+`uncertain`), `intent_id`, `operation_id`, `timestamp_ns`, nullable `subject_id`,
+`phase`, `component`, `outcome`. IDs are local audit labels, at most 320 ASCII
+bytes each: `intent-`, `op-`, `subject-` respectively, followed by lowercase
+alphanumeric segments of 1–12 characters separated by `-`. Key/token words,
+hex segments of 8+ characters and long unbroken key/base64 strings refuse;
+node identities, digest prefixes, arbitrary labels and diagnostics are not ID
+inputs. The complete JSON line including newline must fit 1024 bytes or refuse
+before I/O. The existing parent must be owned by the expected UID/GID and not
+group/world writable; all literal parents are opened without following links.
+Cooperating appends/rotation lock that directory through file fsync and directory
+fsync before every successful append acknowledgement, including a reopened file
+left by an interrupted create, and after rename. An unsafe existing file or `.1`
+refuses without repair; only cap rotation replaces `.1`, never creating `.2` or
+cleaning other entries.
+The API persists an intent before returning its reference; callers own effect
+ordering and settlement, and a reference confers no authorization/replay proof.
+An I/O failure may follow a partial append and must be treated as uncertain.
+Before a subsequent append to the same file, a non-newline tail is preserved
+byte-for-byte and terminated with one newline in the same write as the next
+record. The separator counts toward the file cap, not the record cap; a torn
+tail alone never triggers rotation. A tail-read failure refuses without writing.
+After an I/O failure the file may contain at most one newline-terminated
+unparseable fragment per failed append; readers skip lines that fail JSON
+parsing. Every successfully acknowledged record is a complete JSON line.
+Why no founder: the approved nonsecret retained audit, with bounded storage.
+
+**B17 — First replacement intent for recognized failed installation.**
+I2b delivers only the **unmounted** `ManagedInstaller.begin_replacement` entry.
+The future fresh-auth `ReplaceFailed()` owner (I3) must supply an explicit expected
+release UID and exact observed generation. The installer captures the complete fixed
+inventory, binds the derived validated release owner, then publishes/fsyncs the new
+`replacement-intent@2` at `install-transaction.json` before handing off to the existing
+per-intent recovery owner. No helper or CLI caller selects this capability.
+An existing exact v1 journal already has its first intent: the entry validates its
+expected generation/release UID and resumes that journal without converting it.
+This entry independently revalidates every remaining original/quarantined config's
+schema and cross-config bindings, including when v1 provenance digests match.
+The admitted historical classes are the existing validated
+`replacement_inventory`/`known-failed-or-partial` shapes: (1) recognized complete
+legacy/manual or modern configs/units with an observed failed owned unit;
+(2) validated incomplete fixed config/unit sets, including interrupted generated
+writer prefixes and partial legacy provenance; (3) exact journal-bearing v1
+replacement phases/intents already recognized by that consumer. This includes
+the founder host's recognized failed manual shape; a merely stopped intact
+manual installation remains migration-required. Legacy unrecorded configs keep
+their safe 0600/0640/0644 admission; recorded provisioning keeps exact 0640.
+All present artifacts, cross-config bindings, provenance/digests, fixed unit
+bytes, owners/modes/no-follow/single-link and loaded-fragment/drop-in checks
+must validate. Existing 64 KiB config/unit and 64-entry shallow-directory bounds
+remain; opaque state gets metadata checks only, never execution or restoration.
+
+Missing digests are recorded as `absent`, never synthesized. The closed canonical
+v2 record has exactly `format`, `version=2`, `layout`, `phase`, `digests`, `release`
+and `inventory`. Its six digest slots use SHA-256 or literal `absent`; the complete
+fixed-key inventory captures no-follow metadata, file digests and exact link targets.
+Opaque state has metadata only. Directory identity/custody is captured without
+mutable directory times. This is not a caller-supplied path manifest.
+Owner selection follows spec §1: a validated root-owned release record, otherwise
+the expected UID's passwd home plus `.local/share/happyranch`; the fixed source token
+passes the existing same-FD UID/custody reader before intent publication or stop.
+The first writer revalidates inventory, owner, pending inode and literal parents
+before no-replace publication. An interrupted first publication without a final
+journal remains a conflict, never unjournaled recovery authority.
+For unit-only remnants whose config directory is absent, creating the fixed journal
+parent additionally requires existing full quiescence; it never stops services before
+the first intent or creates an arbitrary parent. An unproved stop retains those remnants.
+
+New first-admission authority is additive: v1 meanings/recovery stay unchanged,
+and all other paths retain their unjournaled mutation refusal. V2 uses the existing
+quarantine/removal/staging/closure owner, preserving each originally absent config
+and each legacy config's admitted mode. Removed state and unit entries must still
+match their inventoried metadata. A v2-only `replacement-stage-release` intent can
+publish the derived release record when an interrupted writer never reached it;
+its original digest remains `absent` until that fresh publication intent. Successful
+closure produces ordinary modern staged-inert inventory, never activation.
+Recognized source renderings refer only to `/opt/happyranch/venv/bin/python` and
+`/opt/happyranch/bin/happyranch-tsnet-sidecar`; any legacy objects removed there
+must be inventoried and match the listed shape exactly, never a recursive prefix
+purge. Clean/healthy/manual, modern staged-inert/recorded or unknown installations
+are not replacement candidates without the positive failed/partial proof above.
+Preserve the PR1632 exception: validated own-journal pending discard may precede
+a later stop failure; other replacement file changes require proved quiescence.
+Why no founder: implements approved recognized-failure recovery without terminal UX.
+
+**B18 — Explicit token repair and known-version upgrade.**
+No new method: fresh-auth `Enable()` repairs only a positively classified
+`repair_required` live profile; already-ready Enable remains inspect-only.
+Close admission/quiesce → same recorded release UID/home → same-FD token read
+→ transactional exact-file/digest update → loaded-unit/READY revalidation →
+reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
+never repairs; after upgrade classify only a listed known prior profile version
+as repair_required for one Enable with devices retained. Unknown/torn versions
+remain closed with a fixed category, never automatic migration or trust reset.
+Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
+
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
 
 `runtime.remote_access.home_minter.HeadscaleJoinKeyMinter` satisfies the existing
 `JoinKeyMinter` using injected `HeadscaleAdminOperations`, an invite user **NAME**,
 a UTC clock and `OperationRecordStore`. It does no I/O, builds no argv and imports
 no subprocess/socket/gRPC client or environment access. TASK-16780 owns the
-concrete protected local admin-socket transport, root invocation, user/ACL
-creation, helper wiring and any dependency that transport requires. Nothing
+concrete protected local admin-socket transport and root invocation, delivered
+in the inert 3b-2g-1 prefix above by home_admin and the fixed packaged Go runner;
+user/ACL creation and helper activation wiring remain later work. Nothing
 here installs, invokes or proves real Headscale behavior or native acceptance.
 
 Tagged v0.25.1 contracts relied on (verified read-only; not a CLI/JSON adapter):
@@ -2275,7 +3739,16 @@ UNPINNED -> restrictive choice:
   durable operation reservations and the issuer journal across maintenance;
   reconcile any uncertain operation explicitly, never retry its create.
 - Zero UTC offset and complete typed timestamps/Booleans/strings are required;
-  no JSON coercion, missing-field defaults, ACL tags or key-format fallback.
+  no JSON/protojson or string/int coercion, ACL tags or key-format fallback.
+  R1: omitted reusable/ephemeral/used decode as false and omitted acl_tags as
+  empty, exactly following the tagged proto3 implicit-presence schema, not an
+  application default. R2: id/key/user must be present and nonempty and pass
+  minter validation; expiration/created_at must be present with valid seconds
+  (-62135596800 through 253402300799), nanos (0 through 999999999) and UTC.
+  R3: malformed varints/lengths, wrong known-field wire types, truncation,
+  repeated singular fields and unknown field numbers in PreAuthKey or response
+  messages refuse. See [tagged schema](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto)
+  and [protobuf field presence](https://protobuf.dev/programming-guides/field_presence/).
 - Expire all unused invite-user keys, including older operations, rather than
   relying on timestamps to attribute an uncertain creation.
 - Durable insert-only operation reservations prevent a second create for an ID;

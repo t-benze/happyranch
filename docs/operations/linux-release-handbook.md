@@ -16,7 +16,8 @@ Verify with `sha256sum -c happyranch-<version>-linux-<arch>.tar.gz.sha256`.
 The tarball is an intermediate build input; the installable product is the .deb.
 
 To build locally on Linux x86_64 or aarch64, use a clean committed checkout,
-uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip, sha256sum and binutils
+uv, Node 24/npm, Go 1.23.12+, a C compiler and libc development headers (CGO),
+git, GNU tar, gzip, sha256sum and binutils
 (`readelf`). No host Python is required; the builder installs its private pinned CPython 3.12.10
 before running any Python helper, including project metadata reads.
 Network access to the pinned Python/dependency sources is required. Unset
@@ -34,6 +35,10 @@ an exact uv-managed CPython 3.12.10, `uv sync --frozen --no-dev
 --no-default-groups` with binary-only runtime dependencies, then installs the
 HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 `npm ci && npm run build` and the native Go sidecar with `CGO_ENABLED=0`.
+The user-run client helper
+`bin/happyranch-home-bridge` uses `CGO_ENABLED=1`; it needs the C toolchain.
+It runs unprivileged with `--home-session-v1`, without service registration,
+saved credentials or a network-state profile.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
@@ -347,6 +352,12 @@ acceptance remains separate from temp-root verification.
 
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/client_store.py`,
+`share/happyranch/desktop/client_session.py`,
+`share/happyranch/desktop/client_runtime.py`,
+`share/happyranch/desktop/client_model.py`,
+`share/happyranch/desktop/client_ui.py`, the verbatim shared pure codec
+`share/happyranch/desktop/invite_v2.py`,
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
 SVG). The builder copies the existing Mac PNGs and Web SVG without changing them.
@@ -354,11 +365,178 @@ The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
 with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
 payload alone does not install files into `/opt` or `/usr/share`.
 
+The packaged connection bridge also wires Linux Host Status, NextDevice,
+ApprovePending, RejectPending and RevokeSelected on one private system-bus
+connection. All calls have zero inputs; the three mutations use genuine polkit
+authorization with a 122-second transport timeout. A mutation acknowledgement
+is followed by Status; device lists are never predicted.
+Host mutations return `busy` while Client paste/target confirmation is pending,
+including asynchronous invite decoding. Client confirmations also return `busy`
+during Host authorization; conflicting prompts are never queued. Host event subscribers
+receive full nonsecret observations with a three-second visible-window poll;
+unsubscribe and document teardown stop delivery. Fingerprints stay native;
+bounded comparison metadata follows the closed v1 projection. A lost mutation
+reply has unknown effect, permission denial has no effect, and missing helper
+service reports not set up/unavailable with an unreadable device list. Revoke
+confirms host denial separately from unknown network cleanup. Enable, Turn off
+and Create invite remain unavailable pending TASK-16779/slice 2b, together with
+failed-install replacement, address refresh and policy renewal. The existing
+native RemoteAccessPanel remains until slice 6; source wiring is not native
+helper/polkit or end-to-end acceptance.
+
+### Linux host CLI fallback (slice 5a)
+
+The payload ships `share/happyranch/desktop/connection_cli.py` beside
+`connection_contract.py` and the existing schema. The wheel supplies the new
+`cli.commands.connection` registration; its fixed entry uses `/usr/bin/python3 -I`
+for system Gio/GTK, independently of WebKit and daemon availability. No new
+runtime dependency is required. This is source delivery; real-helper/polkit,
+minimum-target and full lifecycle acceptance remain pending.
+
+```sh
+happyranch connection status
+happyranch connection host --help
+happyranch connection host status
+happyranch connection host devices
+happyranch connection host next-device
+happyranch connection host approve-device
+happyranch connection host reject-device
+happyranch connection host revoke-device
+```
+
+Status reports closed nonsecret observations; the top-level status reports only
+platform/role availability. Every invocation owns one dedicated system-bus
+connection and shares the window's fixed zero-input methods, closed validation,
+3-second reads and 122-second mutation deadline. Mutations require a reachable
+desktop and fresh interactive polkit authorization. No desktop returns
+`unavailable`, effect `none`, recovery `nativePermission`, before bus access.
+Revoke also requires a terminal: inspect the helper-selected snapshot, type
+`next`, `revoke` or `cancel` (default Cancel). Selection is bounded to 32 choices
+and 120 seconds; Status, NextDevice and RevokeSelected stay in that process on
+that same connection. A separate next-device command does not save selection.
+No device ID or configuration arguments are accepted. Fingerprints, invite bytes
+and backend diagnostics are never printed. A lost mutation reply is unknown,
+with no retry; confirmed host denial never promises network cleanup.
+
+Exit 0: completed read/action or cancelled selection with effect `none` (read
+observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
+invalid command/arguments. Enable/turn-off/create-invite return unavailable
+without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
+and `retry-policy-renewal` also return closed unavailable without dispatch.
+Linux foreground Client CLI is documented below. Mac host remains deferred/unavailable;
+the [Mac foreground client CLI](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli) is separate. There is no connector, DIY, installer or admin fallback.
+
+### Linux foreground client CLI fallback (slice 5b)
+
+The payload ships `client_cli.py` beside the existing ClientSession, RuntimeProxy,
+ClientModel projection and login-only SecretStore owners. Fixed system Python
+`/usr/bin/python3 -I` needs neither WebKit nor a healthy local daemon. No new IPC,
+control socket, daemon route, service, dependency or credential path is added;
+the existing per-session runtime proxy is unchanged.
+
+```sh
+happyranch connection client --help
+happyranch connection client status
+happyranch connection client accept-invite
+happyranch connection client saved-computers
+happyranch connection client connect-saved
+happyranch connection client remove-saved
+```
+
+Invites are hidden and read only from the controlling terminal, never argv,
+environment, files or piped stdin. Target/comparison phrase stay only on that
+terminal; type `connect` for target consent. Saving requires typing `save`;
+default is session-only. Existing login-only Secret Service custody/readback is
+unchanged. Locked/denied/unavailable/readback failure shows an explicit not-saved,
+session-only warning, with no plaintext fallback. Saved listing uses the app's
+closed generic labels. Connect/remove select at most 32 records, reread the exact
+current binding after consent and require explicit `connect`/`remove` confirmation.
+Remove confirms only local saved-access deletion.
+If interrupted after dispatch, removal settles at the existing storage safe point:
+confirmed absence reports `removed`/confirmed; an unconfirmed outcome reports
+`removalIncomplete`/unknown, including when the bounded wait expires.
+Each input is limited to 120 seconds; empty/invalid selection or timeout cancels
+without mutation. Missing terminal fails closed before launch. No invite/device/
+path/credential flags exist.
+
+C19 address recovery uses the same `client accept-invite` action and web
+`client.acceptInvite`. One exact saved home/control-plane/connector/CA binding
+with changed address metadata opens a native updated-target confirmation; the
+terminal requires `update` and GTK defaults to Cancel. Confirmation precedes
+exact keyring reread and unchanged v3 resume with saved network state/node and
+no join key. Authenticated health validates the live grant before 8b save/readback.
+Identity/profile/bearer remain the same. Failure requires separate fresh consent
+for normal join and Host approval, without overwriting the saved record. Decline
+launches nothing. No Client update proves Host-wide invalidation. Real-network
+C19 acceptance belongs to slice 7 and is **NOT RUN**.
+
+Connections live only in this foreground invocation. Authenticated native health
+yields `runtimeReachable`, never `Connected`: CLI cannot observe the GUI's loaded
+RELEASE UI. Open the loopback URL printed only on the terminal and keep CLI
+running. Ctrl-C/SIGTERM cancels/disconnects this owner with bounded cleanup.
+Unfinished save/readback reaches its existing safe point before teardown;
+unconfirmed cleanup reports `cleanupIncomplete`, effect unknown.
+
+`client status` observes only this fresh invocation (`notOwned`, observation
+unavailable), never another session. Registered `disconnect`, `cancel-attempt`,
+`retry`, `retry-save`, `health` from a separate invocation return closed
+`unavailable/notOwned`, effect none, exit 1. They cannot control GUI/other CLI
+processes. Retry with a fresh accept/connect invocation and consent; no session
+control keys are added. JSON excludes target/phrase/URL, invites, credentials,
+fingerprints, network state and diagnostics. Exit 0 completed/cancelled, 1 closed
+error, 2 grammar. Mac Client CLI is unavailable/deferred pending Mac builds.
+Source tests do not establish packaged/cross-device acceptance.
+
+The packaged connection window now exposes session-only client status, invite,
+cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
+own invite paste, exact Host consent and comparison phrases; worker threads own
+blocking session calls. Only the expected runtime root's successful WebKit load
+reports Connected. A separate ephemeral runtime view has no control bridge and
+keeps a visible native session-only notice after the connection window closes.
+Closing controls cancels an unfinished attempt; closing the runtime asks for
+local disconnect. Cancel never promises Host revocation or membership removal.
+Native save consent enables same-node reconnect through GI Secret. Only the
+default login collection is accepted, with exact home/control/node/profile binding,
+verified readback and local absence after deletion. Locked/denied/unavailable or
+failed saving keeps the session usable with a persistent accessible native warning;
+its Retry save action opens the static controls even after that view closes.
+No plaintext, file or substitute credential store is used. One unreadable saved
+item does not hide readable peers. Remove is local-only and never claims Host
+revocation. Cancel during saving waits for write/readback before teardown, while
+fencing later connection/load callbacks. The runtime proxy answers bootstrap with an unrelated session
+token, strips browser authority headers, and injects the device bearer only
+on the private helper hop. Session stop seals admission and closes owned streams
+before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
+because helper scratch removal cannot be confirmed.
+
+```sh
+# Focused session/runtime behavior; stdlib only, no GTK or installs:
+/usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
+/usr/bin/python3 -B packaging/linux/desktop/test_client_model.py -v
+/usr/bin/python3 -B packaging/linux/desktop/test_client_store.py CustodyTests -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection_cli.py -v
+# GTK/WebKit smoke when the existing desktop session is available:
+PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
+# Shipping connector parser/forwarder compatibility (existing project Python dependencies):
+python -B packaging/linux/desktop/test_client_connector.py -v
+# Focused Go helper tests with the already-cached toolchain/modules:
+(cd app/mac/tsnet-bridge && GOPROXY=off GOTOOLCHAIN=local go test -run '^TestHomeSession' -count=1 .)
+```
+
 The window launcher resolves its payload prefix relative to `bin/`, then runs
 **`/usr/bin/python3 -I`** with system PyGObject, GTK 3.0 and WebKit2 **4.1**.
 The host needs `python3-gi`, `gir1.2-gtk-3.0`, and
-`gir1.2-webkit2-4.1`; they are apt-provided, never installed into the bundled
-CPython. These are package Depends. The window does
+`gir1.2-webkit2-4.1`, plus `gir1.2-secret-1` (libsecret GI 1 and its native
+`libsecret-1-0` dependency); they are apt-provided, never installed into the bundled
+CPython. These are package Depends. Saved access also requires a Secret Service
+provider on the user session D-Bus, with an unlocked default login collection;
+absence degrades to session-only. The app never installs/manages a provider or
+creates/unlocks a collection; the desktop manages Secret Service activation. Qualify real custody using `RealKeyringTests` in
+`test_client_store.py` only under an explicitly disposable `dbus-run-session`
+and gnome-keyring-daemon: set HOME and all XDG homes under task scratch and
+`HAPPYRANCH_DISPOSABLE_KEYRING` to that scratch root (HOME must be its `home`
+child). Never point that test at a user's login keyring. The window does
 not import HappyRanch. Its child uses the existing `bin/happyranch-daemon`,
 which continues to run bundled CPython 3.12.10.
 
@@ -797,6 +975,7 @@ updates/security and universe enabled) and Bookworm (12, with security updates):
 | `python3-gi` | System PyGObject binding | [Jammy](https://packages.ubuntu.com/jammy/python3-gi), [Bookworm](https://packages.debian.org/bookworm/python3-gi) |
 | `gir1.2-gtk-3.0` | GTK3 namespace and transitive shared libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-gtk-3.0), [Bookworm](https://packages.debian.org/bookworm/gir1.2-gtk-3.0) |
 | `gir1.2-webkit2-4.1` | WebKit2 4.1 namespace/engine and transitive libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-webkit2-4.1), [Bookworm](https://packages.debian.org/bookworm/gir1.2-webkit2-4.1) |
+| `gir1.2-secret-1` | Secret Service GI 1 and transitive libsecret runtime; a user-session provider is separately required | Package prerequisite declared for slice 8b; stock distro/package acceptance pending |
 | `git` | Runtime repository/worktree operations | [Jammy](https://packages.ubuntu.com/jammy/git), [Bookworm](https://packages.debian.org/bookworm/git) |
 | `ca-certificates` | HTTPS trust for runtime clients and git | [Jammy](https://packages.ubuntu.com/jammy/ca-certificates), [Bookworm](https://packages.debian.org/bookworm/ca-certificates) |
 | `libc6 (>= 2.35)` | Explicit supported Linux ABI floor (Jammy 2.35, Bookworm 2.36) | [Jammy](https://packages.ubuntu.com/jammy/libc6), [Bookworm](https://packages.debian.org/bookworm/libc6) |
@@ -1000,6 +1179,36 @@ than rewriting third-party files to silence these tags. CLI manual pages are
 not shipped in v1 (`happyranch --help` supplies usage). Any newly introduced
 metadata, mode or missing-dependency error needs correction or a specific
 disposition in release evidence.
+
+
+### Inert home admin prefix (3b-2g-1)
+
+The package now includes root:root 0755
+`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`, beside the
+home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
+module and existing collected notices. Packaging never invokes it. Only the
+fixed protected local socket's Create/List/ExpirePreAuthKey RPCs are admitted;
+secret wire bytes use anonymous pipes and failures use fixed categories.
+Before reading secrets, runner startup discards standard logger output, including
+x/net frame logs enabled at package init by inherited `GODEBUG=http2debug=1/2`.
+The private binary response pipe remains separate. Python carries one original
+monotonic deadline through transport, complete projection, user/duplicate-ID
+validation and final success; expiry raises sanitized uncertainty. Checks are
+cooperative and do not establish hard OS-I/O or scheduling deadlines.
+The uncalled `home_admin.RootHomeInviteMinter` holds a per-invite-user lock over
+mint/recovery; root-only operation reservations and the lost-create deadline
+fence survive helper restart. Preserve every reservation and uncertain/pending
+fence; do not remove them to retry issuance. Complete list/expiry settlement is
+required. No cleanup or live maintenance command is added.
+
+Items 4 and 5 now deliver inert issuer-directory provisioning/owned cleanup
+and the uncalled local-node mint composition. Activation remains absent.
+HomeInviteConfig reader moves to 3b-2g-2 because the runtime tailnet endpoint exists only after node
+activation and will require a root activation receipt. Both activation refusals,
+unit bytes and home_transport=False remain unchanged. No host install, root,
+real Headscale or systemd acceptance is claimed. See the remote-access contract's
+“Inert Linux home admin transport” subsection for custody, wire and budget rules.
+
 
 ## History
 

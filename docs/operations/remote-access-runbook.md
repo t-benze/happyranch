@@ -765,6 +765,36 @@ docker run --rm -v happyranch_headscale-data:/data -v $(pwd):/backup alpine \
 # Back up the .env file as well (contains secrets).
 ```
 
+
+### Inert home admin prefix (3b-2g-1)
+
+The package now includes root:root 0755
+`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`, beside the
+home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
+module and existing collected notices. Packaging never invokes it. Only the
+fixed protected local socket's Create/List/ExpirePreAuthKey RPCs are admitted;
+secret wire bytes use anonymous pipes and failures use fixed categories.
+Before reading secrets, runner startup discards standard logger output, including
+x/net frame logs enabled at package init by inherited `GODEBUG=http2debug=1/2`.
+The private binary response pipe remains separate. Python carries one original
+monotonic deadline through transport, complete projection, user/duplicate-ID
+validation and final success; expiry raises sanitized uncertainty. Checks are
+cooperative and do not establish hard OS-I/O or scheduling deadlines.
+The uncalled `home_admin.RootHomeInviteMinter` holds a per-invite-user lock over
+mint/recovery; root-only operation reservations and the lost-create deadline
+fence survive helper restart. Preserve every reservation and uncertain/pending
+fence; do not remove them to retry issuance. Complete list/expiry settlement is
+required. No cleanup or live maintenance command is added.
+
+Items 4 and 5 now deliver inert issuer-directory provisioning/owned cleanup
+and the uncalled local-node mint composition. Activation remains absent.
+HomeInviteConfig reader moves to 3b-2g-2 because the runtime tailnet endpoint exists only after node
+activation and will require a root activation receipt. Both activation refusals,
+unit bytes and home_transport=False remain unchanged. No host install, root,
+real Headscale or systemd acceptance is claimed. See the remote-access contract's
+“Inert Linux home admin transport” subsection for custody, wire and budget rules.
+
+
 ## History
 
 Citations removed from the body, with the section they supported:

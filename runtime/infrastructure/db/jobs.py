@@ -440,7 +440,7 @@ class JobsMixin:
 
         Restart, elapsed time, missing PID/maps and absent native layout do not
         establish death of a separate process session or its descendants. There
-        is currently no supported positive orphan-proof producer/consumer.
+        is no automatic orphan settlement; explicit Stop may separately prove death.
         ``preserve_uncommitted`` remains the native history/hold protection.
         """
         rows = self._conn.execute("SELECT id FROM jobs WHERE status='running'").fetchall()

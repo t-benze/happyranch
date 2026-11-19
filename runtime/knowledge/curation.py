@@ -175,12 +175,24 @@ def build_curation_input(capture: RetiredSource, *, org_slug: str, task_id: str,
         'Only known superseded/stale/evicted/promoted reference_only material, forbidden/excluded content and '
         'unavailable bodies are ineligible; exclusions have dispositions without copied content/items. '
         'Uncertain, conflicting or unverified knowledge remains eligible with its required flags/warnings. '
+        'Any item flagged uncertain, conflict, historical or attribution_unverified must carry at least one '
+        'non-empty warning that states the caveat (for historical: that it describes past state and may no longer hold). '
         'In particular, founder_decision_preference items (cited or attribution_unverified with the exact warning) and '
         'open_work_reference items with owner/status/as_of/next_action/holds qualifications are '
         'Instill-eligible references, never directives or assignments. '
-        'Procedures need prerequisites and limits (null explicitly unknown); no present execution permission follows. '
+        'Procedures need prerequisites and limits, each a single string or null, never a list '
+        '(null explicitly unknown); no present execution permission follows. '
         'Open work needs owner/status/as_of/next_action/holds (null explicitly unknown), never assignments. '
-        'Founder claims need a literal recorded THR-N seqN (or THR-N#N) ruling citation and its captured reference; absent a citation, '
+        'open_work.as_of and any other date field must use only a valid calendar date YYYY-MM-DD '
+        'or datetime YYYY-MM-DDTHH:MM:SS (hours 00-23) followed by +HH:MM, -HH:MM or Z '
+        '(e.g. 2026-11-18, 2026-11-18T09:00:00+08:00, 2026-11-18T09:00:00-08:00 or 2026-11-18T01:00:00Z), '
+        'or null when unknown; never ordinal/week dates, prose or relative/approximate dates. '
+        'The exact captured authored_at/observed_at requirements above take precedence. '
+        'founder_ruling must be the exact text THR-N seqN or THR-N#N appearing verbatim in '
+        'the cited founder_ruling_reference captured body or JSON-serialized metadata; '
+        'founder_ruling_reference must be one of the item references. '
+        'If no such exact literal citation exists, set founder_ruling and founder_ruling_reference both null; '
+        'for founder_decision_preference items without a cited ruling, '
         f'include exactly this warning: {ATTRIBUTION_UNVERIFIED!r} and flag attribution_unverified. '
         'Even a cited ruling is source-reported, not verified human authorship or current authority. '
         'Identify uncertainty/conflict and its references; do not claim exhaustive conflict detection. '
@@ -256,6 +268,20 @@ def _output_strings(value: object) -> Iterator[str]:
             yield from _output_strings(child)
 
 
+def _normalize_qualifications(parsed: object) -> None:
+    # Curators sometimes emit string lists for these two prose fields. Keep
+    # the schema strict and let all semantic checks inspect the joined text.
+    if not isinstance(parsed, dict) or not isinstance(parsed.get('items'), list):
+        return
+    for item in parsed['items']:
+        if not isinstance(item, dict):
+            continue
+        for key in ('prerequisites', 'limits'):
+            value = item.get(key)
+            if isinstance(value, list) and all(isinstance(part, str) for part in value):
+                item[key] = '; '.join(value)
+
+
 def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult:
     """Validate bytes, completeness, provenance and eligibility without effects.
 
@@ -283,6 +309,7 @@ def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult
             _json(parsed).encode('utf-8')
         except UnicodeError:
             raise CurationError('curation_output_invalid_utf8') from None
+        _normalize_qualifications(parsed)
         result = CurationResult.model_validate(parsed)
     except (ValueError, TypeError, RecursionError, ValidationError) as error:
         if isinstance(error, CurationError):

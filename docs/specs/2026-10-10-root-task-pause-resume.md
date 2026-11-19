@@ -385,7 +385,10 @@ The narrow owner-less exception is specified in
 Initial startup captures prepared-only non-job entries before restore, requires
 the acquired PROVEN daemon LockProof, positive unfinished repository-child death
 proof and clean cooperative Git/worktree checks, then appends a closing receipt
-and removes only that journal entry. SID/session_start/possible_launch remain
+and removes only that journal entry. Normal startup retains `daemon.lock.pid`
+across clean stop so a later transition can positively probe that old PID dead;
+missing/self/alive/ambiguous evidence remains unproven. The signed positive-proof
+rule and preparation predicates are unchanged. SID/session_start/possible_launch remain
 atomic before executor spawn. Unknown history is preserved; possible_launch+,
 jobs, exhausted/ambiguous records and TASK-12738/TASK-12724 remain retained.
 One attempt per record per boot precedes queue/runners/HTTP; dynamic and periodic

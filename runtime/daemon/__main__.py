@@ -35,11 +35,25 @@ if TYPE_CHECKING:
     from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
     from runtime.daemon.preparation_recovery import StartupPreparations
 
+if __name__ == '__main__' and sys.argv[1:2] == ['--job-guardian']:
+    from runtime.daemon.job_guardian import main as job_guardian_main
+    raise SystemExit(job_guardian_main(sys.argv[2:]))
+
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-sequential-bootstrap-helper']:
-    from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
-    raise SystemExit(bootstrap_helper_main(sys.argv[2:]))
+    try:
+        # Config validation can fail during import, before the helper's own
+        # sanitized result boundary. Never print its values or traceback.
+        from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
+        helper_result = bootstrap_helper_main(sys.argv[2:])
+    except BaseException as error:
+        helper_result = 1
+        try:
+            print(f'workflow setup helper failed: exception={type(error).__name__}', file=sys.stderr)
+        except BaseException:
+            pass  # A failed diagnostic sink must not expose the original cause.
+    raise SystemExit(helper_result)
 
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-integrity-helper']:
     from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
@@ -1109,6 +1123,9 @@ class _DiagnosticServer(uvicorn.Server):
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ['--job-guardian']:
+        from runtime.daemon.job_guardian import main as job_guardian_main
+        return job_guardian_main(arguments[1:])
     if arguments[:1] == ['--workflow-integrity-helper']:
         from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
         return integrity_helper_main(arguments[1:])
@@ -1150,7 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         paths.ensure_daemon_home()
 
-        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock, record_daemon_pid
         try:
             lifetime_lock = acquire_daemon_lock(paths.daemon_home())
         except OSError as exc:
@@ -1180,13 +1197,18 @@ def main(argv: list[str] | None = None) -> int:
         state = _build_state(settings, lock_proof=proof)
         app = create_app(state)
 
+        record_daemon_pid(paths.daemon_home())
         sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
         paths.port_file().write_text(str(port))
         paths.pid_file().write_text(str(os.getpid()))
         _install_signal_handlers(state)
 
         logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
-        config = uvicorn.Config(app, log_level="info", lifespan="on")
+        # Bound HTTP/SSE draining before lifespan can send job TERM. Within
+        # the wrappers' 60s, reserve 30s job grace plus finalizers/other drains.
+        config = uvicorn.Config(
+            app, log_level="info", lifespan="on", timeout_graceful_shutdown=5,
+        )
         server = _DiagnosticServer(config, app, startup_origin=startup_origin)
         # Hand the bound socket to uvicorn so we don't race the port number.
         server.run(sockets=[sock])

@@ -3,7 +3,8 @@
  * Props-in/JSX-out; no data fetching.
  */
 import { AlertTriangle } from 'lucide-react';
-import { SubTabBar } from '@/design-system/primitives/SubTabBar';
+import { useNavigate } from 'react-router-dom';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import type { Provenance } from './merge';
@@ -13,7 +14,9 @@ import type { Provenance } from './merge';
  * (read-only wake-execution list, folded in from the retired Schedule surface).
  * The Wakes view is an in-page tab driven by the `?view=wakes` query param —
  * no sibling route, so it never collides with the `work-hours/:agent` detail
- * route. Parents derive `active` from the URL.
+ * route. Parents derive `active` from the URL. Rendered as the shared
+ * accent-soft `SegmentedControl` pill (THR-376 r2 A12); picking an option
+ * navigates, and re-picking the active option is a no-op.
  */
 export function WorkHoursTabs({
   slug,
@@ -23,15 +26,22 @@ export function WorkHoursTabs({
   active: 'overview' | 'wakes';
 }): JSX.Element {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const base = `/orgs/${slug ?? ''}/work-hours`;
   return (
-    <SubTabBar
-      active={active}
-      tabs={[
-        { value: 'overview', label: t('workHours.tabs.overview'), to: base },
-        { value: 'wakes', label: t('workHours.tabs.wakes'), to: `${base}?view=wakes` },
-      ]}
-    />
+    <div className="border-border-subtle border-b px-4 py-2.5">
+      <SegmentedControl
+        aria-label={t('workHours.tabs.aria')}
+        value={active}
+        onValueChange={(next) => {
+          if (next !== active) navigate(next === 'wakes' ? `${base}?view=wakes` : base);
+        }}
+        options={[
+          { value: 'overview', label: t('workHours.tabs.overview') },
+          { value: 'wakes', label: t('workHours.tabs.wakes') },
+        ]}
+      />
+    </div>
   );
 }
 

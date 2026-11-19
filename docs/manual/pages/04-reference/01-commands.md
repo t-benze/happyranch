@@ -51,6 +51,45 @@ The files under `org/` are the source of truth for that organization. You can ha
 | `happyranch orgs init <slug> [--from <example-tree>]` | Materialize a new org |
 | `happyranch orgs unload <slug>` | Detach an org from the daemon (does not delete files) |
 
+## Local connection fallback
+
+`happyranch connection status` reports nonsecret platform/role availability
+without daemon access. `happyranch connection host --help` lists the Linux host
+fallback: `status`, `devices`, `next-device`, `approve-device`, `reject-device`,
+`revoke-device`. It uses the same fixed native helper as the desktop app, with
+zero D-Bus inputs. Mutations require a desktop and fresh system authorization;
+headless attempts return `unavailable` / `none` / `nativePermission` without mutation.
+Revoke selects interactively on the same bus inside one invocation (32 choices,
+120 seconds); there is no `--device-id` or cross-command cursor. Output is closed
+nonsecret JSON; post-dispatch loss is unknown and never retried automatically.
+Exit 0 means completed read/action or cancelled selection, 1 a closed error, and
+2 invalid syntax. An unavailable read observation stays explicit.
+
+`host enable`, `turn-off` and `create-invite` return unavailable without dispatch.
+`host cancel-invite`, `replace-failed`, `refresh-home-address` and
+`retry-policy-renewal` also return closed unavailable without dispatch.
+Linux `connection client` registers `status`, `accept-invite`, `saved-computers`,
+`connect-saved`, `remove-saved`, `disconnect`, `cancel-attempt`, `retry`, `retry-save`
+and `health`. Hidden terminal invite entry requires explicit target consent;
+saved connect/remove use bounded selection, exact binding reread and confirmation.
+On Linux, accept-invite recognizes a unique saved same-home/control-plane/CA/connector
+with changed address metadata. The terminal shows the updated control URL, dial IP
+and endpoint and requires typing `update` (default Cancel). It verifies the saved
+node and live grant without redeeming the invite, then saves/readbacks the updated
+record. Failed validation requires separate fresh consent and normal Host approval;
+declining update launches nothing. No Client result claims Host-wide invite invalidation.
+Real-network C19 acceptance is slice 7 NOT RUN.
+Remove confirms only local saved-access deletion.
+No invite/device/path/credential flags exist. Login-keyring custody and explicit
+session-only warnings apply. Connections live in the foreground; Ctrl-C/SIGTERM
+cancels/disconnects with bounded cleanup and truthful `cleanupIncomplete`.
+Authenticated health yields `runtimeReachable` and a terminal-only loopback URL;
+loaded RELEASE UI is unverified, so CLI never reports Connected. Separate control/
+retry/health actions return `unavailable/notOwned`, effect none, exit 1. Status
+observes only this invocation, not global health. No new IPC or GUI/other-process
+control exists. Mac host and Mac Client CLI are deferred/unavailable.
+See the [Linux release handbook](../../../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
+
 ## Per-org
 
 | Command | Description |

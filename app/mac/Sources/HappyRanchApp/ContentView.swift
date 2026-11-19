@@ -17,7 +17,7 @@ struct WebView: NSViewRepresentable {
         init(_ owner: WebView) { self.owner = owner }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             guard owner.verifiedHome else { decisionHandler(.allow); return }
             guard let target = navigationAction.request.url,
                   target.scheme == owner.url.scheme, target.host == owner.url.host,
@@ -26,7 +26,7 @@ struct WebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
-                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
             guard owner.verifiedHome, navigationResponse.isForMainFrame else { decisionHandler(.allow); return }
             guard let response = navigationResponse.response as? HTTPURLResponse,
                   (200...299).contains(response.statusCode), let target = response.url,
@@ -81,10 +81,11 @@ struct ContentView: View {
         ZStack {
             if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
                 ZStack(alignment: .top) {
-                    let attempt = appDelegate.homeInvite.attemptID
+                    let lifetime = appDelegate.homeInvite.lifetime
                     WebView(url: url, verifiedHome: appDelegate.clientLane == .managed && appDelegate.connectionRole == .client,
-                        onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, attempt: attempt) },
-                        onFailed: { appDelegate.homeInvite.webFailed(url: $0, attempt: attempt) })
+                        onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
+                        onFailed: { appDelegate.homeInvite.webFailed(url: $0, lifetime: lifetime) })
+                        .id(lifetime)
                     if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
                         HomeSessionStatus(model: appDelegate.homeInvite)
                             .environmentObject(appDelegate)

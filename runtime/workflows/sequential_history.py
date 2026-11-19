@@ -27,11 +27,11 @@ from runtime.infrastructure.workflow_schema import (
     _schema_snapshot, _structure_cells,
 )
 from runtime.infrastructure.workflow_sequential_ownership import (
-    SEQUENTIAL_OWNERSHIP_DDL, sequential_binding_view_ddl,
+    SEQUENTIAL_OWNERSHIP_DDL, SEQUENTIAL_V2_OWNERSHIP_DDL, sequential_ownership_ddl, sequential_binding_view_ddl,
     validate_sequential_ownership, validate_sequential_ownership_guards,
 )
 from runtime.infrastructure.workflow_sequential_schema import (
-    CANONICAL_WORKFLOW_SEQUENTIAL_DDL, SEQUENTIAL_TABLES,
+    SEQUENTIAL_TABLES, sequential_ddl, sequential_tables,
 )
 from runtime.infrastructure.workflow_task_ownership import (
     OWNERSHIP_DDL, binding_view_ddl,
@@ -70,6 +70,7 @@ class SequentialLayout:
     owner_indexed: bool
     ownership: int
     sequential: bool
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -336,6 +337,9 @@ def _read_layout(conn: sqlite3.Connection, observed: _ReadBudget,
     # rebuilding both ownership references for an empty companion.
     companion = ' '.join(SEQUENTIAL_OWNERSHIP_DDL.strip().removesuffix(';').split())
     version2 = any(row[1] == 'workflow_task_ownership' and row[3] == companion for row in actual[0])
+    companion2 = ' '.join(SEQUENTIAL_V2_OWNERSHIP_DDL.strip().removesuffix(';').split())
+    schema_version = 2 if 'workflow_seq_source_wait_sets' in names else 1
+    version2 = version2 or any(row[1] == 'workflow_task_ownership' and row[3] == companion2 for row in actual[0])
     versions = ((2,) if version2 and sequential else (1,)) if marked else (0,)
     for ownership in versions:
         reference.step()
@@ -345,10 +349,10 @@ def _read_layout(conn: sqlite3.Connection, observed: _ReadBudget,
             # subsequent metadata and comparison consume reference allowance B.
             with _sql_budget(expected, reference):
                 if sequential:
-                    _execute_ddl(expected, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
+                    _execute_ddl(expected, sequential_ddl(schema_version))
                 if ownership:
-                    expected.execute(SEQUENTIAL_OWNERSHIP_DDL if ownership == 2 else OWNERSHIP_DDL)
-                    expected.execute(sequential_binding_view_ddl(document, coding_extension=coding)
+                    expected.execute(sequential_ownership_ddl(schema_version) if ownership == 2 else OWNERSHIP_DDL)
+                    expected.execute(sequential_binding_view_ddl(document, coding_extension=coding, schema_version=schema_version)
                                      if ownership == 2 else binding_view_ddl(document, coding_extension=coding))
                 expected_structure = _candidate_structure(expected, reference)[0]
                 reference.work(sum(len(part) for part in actual) + sum(len(part) for part in expected_structure))
@@ -357,7 +361,7 @@ def _read_layout(conn: sqlite3.Connection, observed: _ReadBudget,
                     # for row reads in the SAME snapshot; the map consumes C.
                     data.reserve(128 * len(actual[1]))
                     metadata = {table: columns for table, columns, _ in actual[1]}
-                    return SequentialLayout(document, coding, indexed, ownership, sequential), metadata
+                    return SequentialLayout(document, coding, indexed, ownership, sequential, schema_version), metadata
     raise ValueError('workflow_seq_complete_layout_mismatch')
 
 
@@ -824,11 +828,21 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
         with _sql_budget(conn, observed):
             _native_contract(conn, observed)
         with _sql_budget(conn, budget):
-            data = {table: list(_rows(conn, table, metadata[table], budget)) for table in SEQUENTIAL_TABLES}
-            _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(1,)],
+            tables = sequential_tables(layout.schema_version)
+            data = {table: list(_rows(conn, table, metadata[table], budget)) for table in tables}
+            _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(layout.schema_version,)],
                      'schema_marker_invalid')
-            for table in SEQUENTIAL_TABLES:
+            for table in tables:
                 _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
+            # S2a installs references only. Later units own @2 semantic history;
+            # never parse new events/counters/check bytes through the @1 reducer.
+            if layout.schema_version == 2:
+                _require(all(not data[table] for table in tables if table not in SEQUENTIAL_TABLES),
+                         'schema2_runtime_history_unavailable')
+                _require(all(row['engine_version'] == 1 for table in
+                             ('workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_outputs', 'workflow_seq_events')
+                             for row in data[table]), 'schema2_runtime_history_unavailable')
+            for table in tables:
                 for row in data[table]:
                     budget.step()
                     for name, value in row.items():

@@ -271,14 +271,15 @@ def render_verifier_unit(python: tuple[str, ...]) -> str:
     ])
 
 
-def render_headscale_unit() -> str:
-    """Separate system-only inert unit; never changes connector/sidecar bytes.
+def render_headscale_unit(*, home_transport: bool = False) -> str:
+    """Separate system-only unit; the unselected home variant adds B5 ordering.
 
     v0.25.1 serve has no sd_notify. ExecStartPost supplies a bounded local
     startup probe; no watchdog or notify claim is made for this binary.
     """
     lines = [
         "[Unit]", "Description=HappyRanch home Headscale", "After=network.target",
+        *(["Before=happyranch-tsnet-sidecar.service"] if home_transport else []),
         *_START_LIMIT, "", "[Service]", "User=happyranch-headscale", "Group=happyranch-headscale",
         "ExecStart=/opt/happyranch-desktop/libexec/headscale/headscale --config /etc/happyranch/headscale/config.yaml serve",
         "ExecStartPost=/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.headscale_service wait-ready",
@@ -289,5 +290,7 @@ def render_headscale_unit() -> str:
         "ReadWritePaths=/var/lib/happyranch-headscale /run/happyranch-headscale",
         "StandardOutput=null", "StandardError=null", "",
     ]
-    # No Install section: neither preparation nor package install enables it.
+    # Default remains inert; no production caller selects the home variant.
+    if home_transport:
+        lines.extend(["[Install]", f"WantedBy={_MANAGED_TARGET}", ""])
     return "\n".join(lines)

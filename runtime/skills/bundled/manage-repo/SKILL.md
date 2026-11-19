@@ -76,7 +76,15 @@ batch deadline. Detached HEAD or missing/unusable/unreadable upstream refuses
 before pull; refused/unattempted repos stay false and the prompt warns of stale
 source. Every executed pull failure, including dirty/non-FF/partial recursive
 effects, retains native uncertainty; upstream lookup or equal parent summaries
-never certifies no effects. Async thread/dream/wake/Todo paths await a joined
+never certifies no effects. Each identity retains three supervised observations:
+batched refs/object format/commit availability, complete selected config, and
+authoritative origin transport (including legacy remote files). All changed-target
+checkpoints remain. Incomplete batched refs or a HEAD that peels differently use
+the original observations to preserve refusal/type-only admission semantics;
+this exceptional path can cost more calls. An advertised target equal to the admitted HEAD returns the
+settled fetch outcome after full identity and final branch/HEAD confirmation,
+without ancestry, merge or submodule work; original receipt closure still runs.
+Async thread/dream/wake/Todo paths await a joined
 offload inside their actual preparation-effects scope before cancellation and
 settlement; prior unknowns stay sticky. The enclosing runner retains its org
 lifetime through native finish, including failure. Unload refuses active runners

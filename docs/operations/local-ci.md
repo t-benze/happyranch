@@ -1,5 +1,16 @@
 # Local CI
 
+## Focused pre-session task scratch cleanup (THR-307 seq388/389)
+
+`uv run --frozen pytest scripts/test_task_scratch_launch.py -v --tb=short`
+uses the existing synthetic-org venue and real task admission/refusal writers.
+It refuses prelaunch integrity before session start and checks empty-only
+compensation, retained pre-existing/nonempty/replaced/symlink roots and ancestors,
+cleanup errors and unchanged refusal audits. It also covers returned validation
+failure, manifest failure after mkdir, and retained roots/audits after admission.
+No provider or serving daemon runs; retired units, general integration and Product
+E2E remain excluded.
+
 ## Focused A4 carry-forward, no-effect refusal and live owners
 
 `uv run --frozen pytest scripts/test_workflow_bootstrap.py -v --tb=short`
@@ -19,6 +30,18 @@ The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load
 (and `ex`, `backup`, `history_precommit`, `commit_uncertain`, and discovery-close
 selections) retains mounted startup coverage. These are focused scripts, outside
 retired Python units, skipped general integration and scheduled Product E2E.
+
+## Focused repository refresh (THR-381)
+
+`uv run --frozen pytest --import-mode=importlib scripts/test_repo_refresh.py scripts/test_preparation_startup.py -v --tb=short`
+uses standalone synthetic orgs, scratch local Git origins and the owned native
+process-group supervisor. It checks the three-call identity, SHA-1/SHA-256 and
+slash branches, unusable controls, real refresh call/row budgets, equal-target
+early return, final config/branch/HEAD windows and legacy transport changes.
+Each native case runs in a fresh process, preserving loaded/source agreement.
+It starts no serving daemon or executor and is outside retired units, skipped
+general integration and scheduled Product E2E. These Linux observations do not
+establish macOS or systemd backend acceptance.
 
 ## Focused repository preparation startup settlement (THR-357 Fix 2)
 
@@ -52,6 +75,10 @@ uv run --frozen python -B -m unittest scripts.test_daemon_lock scripts.test_job_
 These standalone checks use real flock descriptors and owned subprocesses,
 including SIGKILL release, duplicate main refusal without startup writes, the
 transition PID matrix and the real main/build ordering/error-tail boundary.
+The same matrix covers the retained PID sidecar, including self/reused-alive
+refusal, active-PID precedence and unsafe/ambiguous sidecar evidence. The two
+real-main stream shutdown checks also observe serving-marker removal, retained
+owner PID, positive death proof and exact marker bytes on the next acquisition.
 Only PID read/probe errors are injected; flock is never mocked. Hidden cleanup
 dispatch runs under a competing holder. Existing stop-policy checks accelerate
 clock waits while verifying the 60s TERM and bounded post-KILL refusal. Real
@@ -87,6 +114,18 @@ execution remains a separate macOS native venue. These checks add no required
 CI check or E2E trigger; retired Python units and skipped general integration
 are not run.
 
+The same standalone command includes two isolated real-daemon/curl checks:
+`StopPolicyTests.test_term_with_open_event_stream_reaches_lifespan` holds the
+actual `/threads/events` SSE endpoint across TERM, while
+`StopPolicyTests.test_term_bounds_uncooperative_stream_before_lifespan` adds a
+test-side ASGI stream that never polls disconnect. Both use synthetic orgs,
+an ephemeral loopback port and a temp `HAPPYRANCH_DAEMON_HOME` (also exported as
+`HAPPYRANCH_HOME`), signal only the exact child PID, and require application
+shutdown plus clean exit within 12 seconds. The latter must observe Uvicorn's
+graceful timeout, exercising the 5-second bound even when the frozen Uvicorn
+already closes ordinary SSE on TERM. No production test hook or CI trigger is
+added; these checks do not exercise live runtime data or the full jobs fix.
+
 ## Focused memory compaction and writer salience
 
 ```sh
@@ -99,7 +138,16 @@ They cover writer salience/clamping, creation-age eviction after a metadata edit
 both supersession paths and grace, protections, caps, dry-run and restoration.
 The timestamp table includes YAML datetime/date/integer values, UTC boundaries
 and conservative fallback/retention. Auto-trigger cases assert persisted notes,
-index entries and exact add audits, including when the sweep raises an error.
+index entries and exact add audits, including when the sweep or its audit raises
+an error. They also assert the manual eviction audit shape for automatic valid
+and superseded retirements, persisted-before-audit ordering, off-loop dream
+reflection sweeps, explicit disable/zero behavior, and missing/partial-section
+defaults with the real 150-file threshold. Partial-sweep cases fail a later
+candidate write or the final sweep index after actual evictions and require all
+persisted eviction audits plus the surviving add and its audit. The dream
+cancellation case interrupts the first of two reflections, cancels again at the
+second, and checks the final notes/index, candidate, transcript, status and
+completion audit under the lock, plus the terminal retry response.
 The 300-entry cost check bounds selection to one parse per entry and apply to
 two passes plus fresh candidate reads (the second pass regenerates the index).
 Reference cases cover aliases, body boundaries, self references, retired sources
@@ -252,6 +300,25 @@ blind spot. Test-only subreaper adoption kills/reaps every descendant in finally
 it adds no production containment. The job checks run without daemon lifespan
 or providers; macOS native enumeration needs a separate macOS venue.
 General integration remains SKIPPED under THR-243 seq42.
+
+## Foreground connection CLI boundaries (5b/5c)
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection_cli.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_cli.py -v
+```
+
+These existing standalone native-script venues exercise shared CLI grammar,
+fixed Linux/Mac dispatch, missing bundled owner and deferred Mac host, closed
+outputs and Linux foreground terminal/session behavior with synthetic services.
+The Mac dispatch case uses a temporary bundle layout and intercepts exec; it
+proves the Python boundary, not Darwin execution, Keychain ACL or native signals.
+On authorized macOS, from `app/mac`, `swift test --filter ConnectionCLITests`
+checks foreground ownership/no-custody control verbs, saved projection secrecy,
+selection capacity and cancellation-before-intake. The unsigned Mac build
+workflow compiles only release app sources, not tests. No new required check,
+install or test venue is added; native/live and cross-device qualification
+remain separate. General integration stays SKIPPED under THR-243 seq42.
 
 ## Connector platform lifecycle focused coverage
 
@@ -873,6 +940,27 @@ with validation/reuse counts; authority publication remains fenced in that
 fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
+
+S2a schema2 uses the real offline installer on private checkpointed databases:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --schema2=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --schema2=all
+```
+
+Named selectors: `two_runs_one_result`, `schema1_preserved`, `empty_upgrade`,
+`nonempty_upgrade_refused`, `rollback`, `one_outstanding`. They observe actual
+SQLite constraints, schema1 singleton failure, exact retained SQL/typed rows/rowids,
+fresh/upgraded reference equality, active AND finished history refusal, verified
+backup/offline refusals, idempotent reopen, test-side owned pre-COMMIT fault/rollback,
+selected visit uniqueness/FKs, inbox receipt identities and immutable histories.
+No test-side DDL implementation or production test-only seam is added. Record the
+four answers per named case, attributable absent-selector/prechange RED, credible
+mutation REDs, byte-exact production restoration hashes and restored GREEN.
+Retain the S1/R1 selectors below and existing focused installation/storage selectors
+on both runtimes; run boundary-lint, guard and base-to-head diff check/stat.
+Full schema-load/local_ci all remain the manager's final-head work. This adds no
+CI trigger, live install, @2 admission, Product E2E, V3 or automatic setup behavior.
 
 S1 generic ABI uses the existing private shell owner's explicit selector:
 
@@ -3720,6 +3808,19 @@ honest file-open signals, unsafe/malformed/missing/oversized input refusal,
 reparse idempotency, fail-safe observation and additive legacy upgrades without
 providers, daemon lifespan or live data. This venue is outside retired Python
 units, general integration and Product E2E and adds no required CI check.
+
+## Focused execution-track recall checks
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_recall_tracks -v
+```
+
+These standalone backend unit checks use temporary SQLite databases and the
+production recall payload boundary. They cover fan-out carriers with their own
+session/result, existing no-result carriers, proven delegate-then chains,
+ordinary subtasks, mismatched legs, launch provenance and the 64-row bound.
+This uses the existing standalone unittest venue outside the retired Python
+suite, general integration and Product E2E, and adds no required CI check.
 
 ## History
 

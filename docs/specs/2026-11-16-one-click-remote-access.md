@@ -107,16 +107,36 @@ is unchanged; outside-home key delivery remains an open founder/security gate (�
 | Exact method / polkit action suffix | Effect |
 | --- | --- |
 | `Status()` / none | Bounded redacted phase, readiness, device summaries and selected device; no secrets or mutation. |
+| `StatusV2()` / none | Additive bounded read-only status with separate setup/runtime/invite/address/policy/cleanup observations; Status v1 stays byte-compatible. |
 | `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready is inspect-only. |
 | `RefreshHomeAddress()` / `refresh-home-address` | Re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
 | `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
 | `IssueInvite()` / `issue-invite` | Home mode: locally mint one-use join key and pairing secret after fresh auth; invalidate old invite, deliver once. |
+| `CancelInvite()` / `cancel-invite` | Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
+| `RecoverInvite()` / `recover-invite` | Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
 | `ApprovePending()` / `approve-pending` | Approve the sole redeemed pending identity captured before authentication, then atomically pin and issue its credential. |
 | `RejectPending()` / `reject-pending` | Permanently reject that captured pending identity and consume its invite. |
 | `NextDevice()` / none | Cycle a helper-owned per-bus-caller cursor over the protected device list; select nothing supplied by the caller. |
 | `RevokeSelected()` / `revoke-selected` | Revoke only the selected protected record captured before authentication; close that device's live streams. |
+
+The remaining engineering details are recorded in the contract's
+[Home-network engineering settlements B1–B18](../agent-guides/contracts/remote-access-and-remote-jobs.md#home-network-engineering-settlements-b1-b18-thr-327-seq577);
+these settlements preserve the approved behavior and UX and do not claim activation delivery.
+
+I1 source integration exports only StatusV2 in addition to the existing Status,
+NextDevice and three device-mutation methods. It retains the same bus-owner gate and
+no polkit prompt for reads, returns the canonical B15 bounded JSON within a 2-second
+status budget, and leaves unsupported observation dimensions unknown. Setup comes from
+a read-only protected HomeActivationStore snapshot through the fixed bundled Python
+`-I` child; stopped connector means runtime unavailable, never setup Off. Status v1
+bytes are unchanged. The B16 retained writer now brackets only the three existing
+fresh-auth device effects with durable intent and fixed outcome/uncertainty records.
+The fixed helper source contract already reflects B8/B9's optional compatibility UID
+pin and installed root Type=dbus packaging. Public Enable, installer effects,
+lifecycle authentication and I3 mutation audit outcomes remain deferred and unreachable;
+this source integration does not activate the journey or switch bridge/CLI consumers.
 
 Action IDs are exactly `ai.happyranch.remote-access.<suffix>` for authenticated methods. Defaults:
 `allow_any=no`, `allow_inactive=no`, `allow_active=auth_admin`; never `_keep`, wildcard rules,
@@ -678,13 +698,35 @@ FAILED/partial manual installs under `/etc/happyranch`, `/opt/happyranch` and th
 state paths, `ReplaceFailed()` offers one truthful destructive replacement prompt. Recognize only
 bounded known prior unit/config shapes + safe ownership or valid provisioning provenance; never
 execute old config/argv. Stop target, both services and verifier; prove quiescence before changing
-files. Journal intentions and fsync before each fixed-path rename/removal; retain root-only
+replacement files, except that PR1632's validated own-journal pending discard may precede a later
+stop failure. Journal intentions and fsync before each fixed-path rename/removal; retain root-only
 quarantined old configs briefly for diagnosis, never reuse keys, trust or old control settings.
 Generate fresh IDs/config/enrollment and require re-pairing. Never recursively remove `/opt`, the
 dpkg prefix, foreign files, custom units or unknown drop-ins. Unsafe/unrecognized residue produces
 `manual-install-conflict` with precise non-secret paths; it needs operator recovery, not a terminal
 recipe for the user. Interrupted replacement stays off; next authenticated ReplaceFailed resumes
 only the exact journal generation. Do not roll back revoked credentials into service.
+
+I2b supplies only the unmounted `ManagedInstaller.begin_replacement` first-intent
+entry for B17; public ReplaceFailed/helper/CLI wiring remains I3. It requires the
+expected release UID and exact observed inventory/journal generation, captures
+the full fixed inventory, validates the release owner under §1 and the same-FD
+source token, then durably publishes additive `replacement-intent@2` before stop
+and per-intent recovery. It admits only recognized failed complete installs,
+validated incomplete fixed sets (including generated-writer prefixes/partial
+legacy provenance), or the existing exact v1 recovery journals. Existing v1
+journals resume without conversion. Stopped intact manual, healthy, modern
+staged-inert/recorded and unknown shapes remain non-candidates.
+The closed v2 record retains exact metadata/digests/link targets for the fixed
+inventory, with literal `absent` for missing digests and metadata only for opaque
+state. Safe unrecorded 0600/0640/0644 config modes remain admissible; recorded
+provisioning stays exactly 0640. V2 preserves missing originals through quarantine
+and uses a separate `replacement-stage-release` intent when the interrupted
+writer never published its derived release record. Recovery closes into fresh
+modern staged-inert files without activating services. All existing no-follow,
+single-link, cross-config/provenance, exact-unit/loaded-fragment/drop-in checks,
+64 KiB file and 64-entry directory bounds and PR1632's pending-discard exception
+remain. This source capability grants no live installation or service action.
 
 Disable closes admission/revokes first, confirms connector/sidecar/verifier and owned local
 Headscale stopped, then removes only positively owned units, configs, enrollment sources/links,
@@ -694,6 +736,19 @@ Remove a helper-created service account only when no other installation/files/pr
 otherwise retain the locked nologin account and say so. Keep package/helper, non-secret audit and
 unrelated data; destroy quarantined secrets after successful replacement or disable. Any
 stop/ownership uncertainty aborts removal and reports partial state.
+
+I2a supplies an unmounted receipt-bound B6 installer cleanup executor; existing
+operator CLI/uninstall calls retain their pre-activation scope. It requires
+trusted expected identities/generation and all owned services already quiescent,
+removes only the fixed per-type live-state/receipted members, and explicitly
+destroys the owned CA private key. Public Disable/revocation/stop wiring remains
+deferred. Key fences, nonempty issuer journals and transaction evidence remain
+retained with incomplete cleanup until a B7/B11 proof-and-audit retirement owner
+is delivered. Accounts continue to follow A–E without a new account rule.
+The B6 exception destroys only the root CA signing key: other root-only CA
+staging files are outside its fixed deletion list and remain with incomplete
+cleanup and retained receipts. This executor alone cannot report a completed
+Turn off while that staging or uncertain evidence remains.
 
 Upgrades preserve protected installation IDs/pins and revocations, validate the old version, stop
 admission, migrate under the same trust lock, reload exact system units and verify loaded

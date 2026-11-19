@@ -5,6 +5,19 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+Automatic memory compaction defaults to `enabled: true` and
+`auto_trigger_entry_count: 150`, including when `memory_compaction` is absent.
+The other policy defaults remain 10/45/7/25 (salience floor/stale days/superseded
+grace days/eviction cap). Explicit `enabled: false` disables apply and auto;
+explicit threshold zero disables auto alone. Ordinary adds and dream reflections
+can trigger a worker-thread sweep; inherited Instill writes and updates cannot.
+After persistence, every automatic eviction uses the existing
+`memory_lifecycle_changed` audit under `AGENT-{agent}` with
+`id/from_lifecycle/to_lifecycle/reason/source`, original valid/superseded state
+and `source: compaction`. Sweep/audit failures warn without aborting an add or
+suppressing `memory_added`. These lifecycle rows do not establish observation
+census or collection health. See the [memory retirement spec](../../specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md#memory-compaction-and-retirement-thr-366-pr-b).
+
 - **Observation-only memory census (THR-091).** Real `OrgState` attaches a
   boot-local observer before workers. Actual `_run_agent` entry reserves intent
   independently of starts/impressions/reads; the same structured render freezes

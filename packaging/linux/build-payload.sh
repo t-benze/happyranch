@@ -157,12 +157,20 @@ cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
 (cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+# Session-only client transport runs as the desktop user, with no service or
+# privileged registration. This shared Go module's C ABI requires cgo.
+(cd "$WORK/source/app/mac/tsnet-bridge" && CGO_ENABLED=1 go build -buildvcs=false -mod=readonly -trimpath \
+    -o "$PAYLOAD/bin/happyranch-home-bridge" .)
+chmod 755 "$PAYLOAD/bin/happyranch-home-bridge"
 # Root-only invocation is enforced by this inert command itself. Its fixed
 # libexec path is deliberately outside bin/ and HAPPYRANCH_BUNDLED_BIN.
 mkdir -p "$PAYLOAD/libexec/remote-access"
 (cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/libexec/remote-access/happyranch-home-ca" ./cmd/happyranch-home-ca)
 chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-ca"
+(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
+    -o "$PAYLOAD/libexec/remote-access/happyranch-home-admin" ./cmd/happyranch-home-admin)
+chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-admin"
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
 set -eu
@@ -185,12 +193,28 @@ export HAPPYRANCH_WEB_DIST HAPPYRANCH_BUNDLED_BIN
 exec "$PREFIX/python/bin/python3" -I -m runtime.daemon "$@"
 DAEMON
 chmod 755 "$PAYLOAD/bin/happyranch" "$PAYLOAD/bin/happyranch-daemon"
+# System Python -I loads only these package-owned siblings, never site-packages.
+install -m 755 "$WORK/source/packaging/linux/bin/happyranch-remote-access-helper" \
+    "$PAYLOAD/bin/happyranch-remote-access-helper"
+for helper_source in remote_access_helper helper_owner helper_control release_verifier status_v2 home_audit helper_generation; do
+    install -m 644 "$WORK/source/runtime/remote_access/$helper_source.py" \
+        "$PAYLOAD/libexec/remote-access/$helper_source.py"
+done
 # The window uses apt's system Python/GI, independently of bundled CPython.
 install -m 755 "$WORK/source/packaging/linux/bin/happyranch-app" "$PAYLOAD/bin/happyranch-app"
 mkdir -p "$PAYLOAD/share/happyranch/desktop" "$PAYLOAD/share/applications"
 cp "$WORK/source/packaging/linux/desktop/happyranch_window.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/connection_contract.py" \
+    "$WORK/source/packaging/linux/desktop/connection_cli.py" \
+    "$WORK/source/packaging/linux/desktop/client_cli.py" \
     "$WORK/source/packaging/linux/desktop/connection_window.py" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/packaging/linux/desktop/client_store.py" \
+    "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/packaging/linux/desktop/client_session.py" \
+    "$WORK/source/packaging/linux/desktop/client_runtime.py" \
+    "$WORK/source/packaging/linux/desktop/client_model.py" \
+    "$WORK/source/packaging/linux/desktop/client_ui.py" \
+    "$WORK/source/runtime/remote_access/invite_v2.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/protocol/native-connection-bridge.v1.json" "$PAYLOAD/share/happyranch/desktop/"
 cp -a "$WORK/source/web/dist-connection" "$PAYLOAD/share/happyranch/desktop/connection"
 "$MANAGED_PYTHON" -I - "$WORK/source/packaging/linux/desktop/connection_contract.py" \

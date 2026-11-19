@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from runtime.daemon._disk_sweep_fs import Expired, check, directory, signature
 from runtime.daemon.org_integrity_monitor import latest_report, runtime_key
+from runtime.daemon.job_fence_observation import JobFenceObservation, observe_job_fences
 
 SetupState = Literal['not_installed', 'installed_unverified', 'installed_verified', 'unknown']
 SetupReason = Literal['evidence_unavailable', 'registered', 'not_installed', 'install_incomplete',
@@ -52,6 +53,7 @@ class WorkflowSetupStatus(Closed):
     attempt_time: str | None = None
     backup_path: str | None = None
     integrity_report: IntegrityReport | None = None
+    writer_blockers: JobFenceObservation | None = None
 
 
 def _pairs(items: list[tuple]) -> dict:
@@ -218,7 +220,8 @@ def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: floa
     return {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
 
 
-def read_setup_status(home: Path, runtime_root: Path, slug: str) -> WorkflowSetupStatus:
+def read_setup_status(home: Path, runtime_root: Path, slug: str,
+                      *, job_ids: list[str] | None = None) -> WorkflowSetupStatus:
     deadline = time.monotonic() + 1
     key = runtime_key(runtime_root)
     try:
@@ -227,4 +230,6 @@ def read_setup_status(home: Path, runtime_root: Path, slug: str) -> WorkflowSetu
         attempt = {}
     # Independent acquisition: bad/slow attempt evidence cannot hide daily data.
     daily = latest_report(home, runtime_root, slug)
-    return WorkflowSetupStatus(org_slug=slug, **attempt, integrity_report=daily)
+    blockers = (observe_job_fences(home, runtime_root / 'orgs' / slug, job_ids)
+                if attempt.get('reason') == 'writer_exclusion_unproven' else None)
+    return WorkflowSetupStatus(org_slug=slug, **attempt, integrity_report=daily, writer_blockers=blockers)

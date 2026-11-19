@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
 from runtime.remote_access import invite_v2
+from runtime.remote_access.home_activation import (
+    ACTIVATION_PATH, BINDING_KEYS, CONTROL_URL, INVITE_CONFIG_PATH,
+    HomeActivationError, HomeActivationReceipt, HomeActivationStore,
+    _decode_record, _endpoint, _generation, _validate_binding,
+)
 from runtime.remote_access.pairing import PinnedPairingManager
 
 _OUTCOMES = frozenset(("minting", "issued", "refused", "uncertain", "expired",
@@ -70,6 +75,69 @@ class HomeInviteConfig:
 
     def __repr__(self) -> str:
         return "HomeInviteConfig(<redacted>)"
+
+
+@dataclass(frozen=True, repr=False)
+class HomeInviteConfigRecord:
+    """B1 disk binding; separate from the DER-bearing issuance-core input."""
+
+    release_uid: int
+    home_id: str
+    control_plane_id: str
+    connector_id: str
+    activation_generation: int
+    ca_der_sha256: str
+    dial_ip: str
+    control_url: str
+    home_endpoint: str
+
+    def __post_init__(self) -> None:
+        try:
+            _validate_binding(self)
+            _endpoint(self.home_endpoint)
+            if type(self.control_url) is not str or self.control_url != CONTROL_URL:
+                raise HomeActivationError()
+        except HomeActivationError:
+            raise IssuerError("configuration") from None
+
+    def __repr__(self) -> str:
+        return "HomeInviteConfigRecord(<redacted>)"
+
+    @classmethod
+    def parse(cls, data: bytes) -> HomeInviteConfigRecord:
+        try:
+            record = _decode_record(data, frozenset(("format", *BINDING_KEYS, "control_url", "home_endpoint")),
+                                    "home-invite-config@1")
+        except HomeActivationError:
+            raise IssuerError("configuration") from None
+        record.pop("format")
+        return cls(**record)
+
+
+def read_home_invite_config(*, expected_generation: int, root: Path = Path("/"),
+                            root_owner: tuple[int, int] = (0, 0)) -> HomeInviteConfigRecord:
+    """Read only: require one ready, current-generation, digest-matching B1 pair.
+
+    No CA/key loading, journal access, minter, endpoint discovery or issuer call.
+    The coordinator supplies current generation; matching stale files cannot
+    declare themselves current. Both parents/leaves stay pinned across the read.
+    """
+    try:
+        _generation(expected_generation)
+        store = HomeActivationStore(root=root, root_owner=root_owner)
+        with store._record(INVITE_CONFIG_PATH) as data:
+            config = HomeInviteConfigRecord.parse(data)
+            with store._record(ACTIVATION_PATH) as receipt_data:
+                receipt = HomeActivationReceipt.parse(receipt_data)
+                if (receipt.phase != "ready"
+                        or receipt.activation_generation != expected_generation
+                        or any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS)
+                        or config.home_endpoint != receipt.home_endpoint
+                        or hashlib.sha256(data).hexdigest() != receipt.member_digests[INVITE_CONFIG_PATH]):
+                    raise HomeActivationError("binding")
+        return config
+    except HomeActivationError:
+        raise IssuerError("configuration") from None
 
 
 @dataclass(frozen=True, repr=False)
@@ -213,6 +281,31 @@ class HomeInviteIssuer:
         # No secret exists for this random digest: it cannot be redeemed.
         self._pairing.issue_invite_record(secrets.token_hex(32),
                                          datetime.fromtimestamp(self._now() + 299, timezone.utc))
+
+    @contextmanager
+    def _recovery_record(self) -> Iterator[tuple[int, dict | None]]:
+        """B11-only protected current selection; release before any IPC.
+
+        The helper mutation slot is already held by the caller. Reuse the
+        issuer's custody, binding and nonblocking lock without accepting IDs.
+        """
+        binding = self._binding()
+        with _directory(self._state_dir) as parent:
+            fd = os.open("invite-issuer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         0o600, dir_fd=parent)
+            with os.fdopen(fd, "rb") as lock:
+                _metadata(lock.fileno(), parent, "invite-issuer.lock")
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise IssuerError("busy") from None
+                try:
+                    os.stat("invite-issuer.pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise IssuerError("state")
+                yield parent, self._read(parent, binding)
 
     def _operate(self, operation_id: str | None, recovery: bool) -> IssuedInvite | None:
         binding = self._binding()

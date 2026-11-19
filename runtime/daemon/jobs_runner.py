@@ -21,6 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from runtime.daemon.job_guardian import (
+    GRACE_SECONDS, helper_argv, launch_observed, process_identity, timeout_observed, write_record,
+)
 from runtime.orchestrator.executors import _sanitize_child_env
 from runtime.orchestrator.task_scratch import (
     activate_task_scratch,
@@ -125,6 +128,7 @@ class _JobRegistration:
     output_process: asyncio.subprocess.Process | None = None
     output_error: Exception | None = None
     org_fence_fd: int | None = None
+    process_stderr_path: str = ''
     shutdown_term_at: float | None = None
 
     @property
@@ -330,6 +334,9 @@ def _signal_registered_job(r, reason, sig=signal.SIGTERM):
     proc = r.process
     if proc is None or _INFLIGHT.get(r.key) is not r or proc.returncode is not None:
         return False
+    # A guardian can exhaust before this daemon's next event-loop turn.
+    if r.cause is None and timeout_observed(str(r.process_stderr_path)):
+        r.cause = _JobCause(r, proc, 'timeout', r.attempt)
     # The pump may already have detected its cap before its watcher runs.
     if r.cause is None and r.cap_event is not None and r.cap_event.is_set():
         r.cause = _JobCause(r, proc, 'output_cap', r.attempt)
@@ -625,10 +632,13 @@ async def run_job(
     composition before publishing its durable terminal hint.
     Every named production job requires its actual registration.
 
-    `max_runtime_seconds=None` means unbounded — the runner awaits the
-    subprocess without an ``asyncio.wait_for`` wrapper. Positive int means
-    the subprocess is SIGTERM'd (then SIGKILL'd) on expiry and the result's
-    ``reason`` is set to ``"timeout"``.
+    `max_runtime_seconds=None` keeps the direct, unbounded launch. Positive
+    budgets use an independent guardian, including after daemon loss, with
+    SIGTERM then whole-group SIGKILL after five seconds. Its durable timeout
+    marker and the daemon's fallback wait report the same ``"timeout"`` reason.
+    External Stop/shutdown retains the daemon's escalation grace. Missing
+    guardian launch record or post-publication pipe acknowledgement is
+    ``spawn_failed``, never script completion.
 
     `max_output_bytes=None` means unbounded per stream. Positive int means
     either stream exceeding the threshold triggers an immediate SIGKILL of
@@ -646,6 +656,8 @@ async def run_job(
 
     started = datetime.now(timezone.utc)
     scratch_token = None
+    admission_read = None
+    admission_write = None
     from runtime.orchestrator.producer_move import producer_preparation_effects
     if task_id is not None and workspace_root is not None:
         with producer_preparation_effects(move_owner):
@@ -681,18 +693,35 @@ async def run_job(
             fence.assert_held()
             registration.org_fence_fd = os.dup(fence.fd)
             inherited = (registration.org_fence_fd,)
+        command = [binary, '-']
+        if max_runtime_seconds is not None:
+            admission_fd, admission_write = os.pipe()
+            admission_read = os.fdopen(admission_fd, 'rb', buffering=0)
+            os.set_blocking(admission_fd, False)
+            command = [*helper_argv(), '--seconds', str(max_runtime_seconds),
+                       '--stderr-path', stderr_path, '--job-id', job_id or 'anonymous',
+                       '--admission-fd', str(admission_write),
+                       *(['--fence-fd', str(inherited[0])] if inherited else []),
+                       *command]
+        if registration is not None:
+            registration.process_stderr_path = stderr_path
         proc = await asyncio.create_subprocess_exec(
-            binary,
-            "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
+            *command,
             cwd=cwd,
             env=child_env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
-            pass_fds=inherited,
+            pass_fds=(*inherited, admission_write) if admission_write is not None else inherited,
         )
+    except BaseException:
+        if admission_read is not None:
+            admission_read.close()
+        raise
     finally:
+        if admission_write is not None:
+            os.close(admission_write)
         if scratch_token is not None:
             reset_task_scratch(scratch_token)
     if registration is not None:
@@ -701,6 +730,13 @@ async def run_job(
         registration.original_group_session = (proc.pid, proc.pid)
         _validate_registration(registration, running_task=True)
         _INFLIGHT[registration.key] = registration
+    if max_runtime_seconds is None:
+        # Keep the direct/unbounded launch; only add read-only identity evidence.
+        try:
+            write_record(Path(stderr_path + '.process.json'),
+                         process_identity(proc.pid) | {'job_id': job_id or 'anonymous'})
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning('job process identity unavailable: %s', job_id)
     if move_owner is not None:
         move_owner.on_started()
 
@@ -750,7 +786,8 @@ async def run_job(
     async def _watch_cap() -> None:
         await cap_event.wait()
         if registration is not None and registration.cause is None:
-            registration.cause = _JobCause(registration, proc, "output_cap", registration.attempt)
+            cause = 'timeout' if timeout_observed(stderr_path) else 'output_cap'
+            registration.cause = _JobCause(registration, proc, cause, registration.attempt)
         # Close the stdout/stderr read transports BEFORE SIGKILL. Two reasons:
         # 1. The writer gets SIGPIPE on its next write — stops pumping data
         #    into the pipe between our cap-detection and SIGKILL. Without
@@ -781,16 +818,23 @@ async def run_job(
         if max_runtime_seconds is None:
             await proc.wait()
         else:
-            await asyncio.wait_for(proc.wait(), timeout=max_runtime_seconds)
+            # Guardian owns the original budget independently. This fallback
+            # only bounds failed supervision and uses the SAME timeout reason.
+            await asyncio.wait_for(proc.wait(), timeout=max_runtime_seconds + GRACE_SECONDS + 2)
         # Child exit does not end owned buffered output. Await the actual
         # pumps/publications; a fixed drain deadline would cut off a verbose
         # but legitimate tail. Shutdown/cancellation still reconciles below.
         pump_results = await asyncio.gather(pump_out, pump_err, return_exceptions=True)
         if registration is not None:
             registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
-        if cap_event.is_set():
+        if timeout_observed(stderr_path):
+            status, reason = 'failed', 'timeout'
+        elif cap_event.is_set():
             status = "failed"
             reason = "output_cap"
+        elif max_runtime_seconds is not None and (
+                admission_read.read(1) != b'1' or not launch_observed(stderr_path)):
+            status, reason = 'failed', 'spawn_failed'
         else:
             status = "completed"
         exit_code = proc.returncode
@@ -824,6 +868,8 @@ async def run_job(
         status = "failed"
         exit_code = proc.returncode
     finally:
+        if admission_read is not None:
+            admission_read.close()
         # A pump owns its awaited publication, including buffered output after
         # child exit. Error/cancel/timeout must not leave that work detached.
         # Cancellation during reconciliation propagates without retirement;

@@ -142,6 +142,12 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
     print(f"{scope_label}:         {d['task_id']}")
     print(f"Interpreter:  {d['interpreter']}")
     print(f"Cwd hint:     {d['cwd_hint'] or '(workspace root)'}")
+    if d.get('liveness'):
+        print(f"Liveness:     {d['liveness']}")
+        observation = d.get('fence_observation', {})
+        print(f"Fence:        {observation.get('status', 'unavailable')}: {observation.get('detail', '')}")
+        if observation.get('exhausted_jobs'):
+            print('Guardian:     timeout (durable marker); retained row is unchanged')
     print()
     print(f"Title:        {d['title']}")
     print()

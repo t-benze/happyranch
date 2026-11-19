@@ -27,6 +27,8 @@ MATERIALIZER = "/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca
 EMPTY_CA = "etc/happyranch/empty-ca-directory"
 CONTROL_CA = "etc/happyranch/control-ca.pem"
 PUBLISHED = (*CONFIG_FILES, *LEAF_FILES, "control-ca.pem", PUBLICATION)
+ISSUER = "var/lib/happyranch-remote-access/home-issuer"
+ISSUER_RECEIPT = "home-issuer-publication.json"
 
 EXPECTED_POLICY = b'''{
   "acls": [
@@ -293,6 +295,242 @@ def fixture(tmp_path: Path, monkeypatch) -> Fixture:
     monkeypatch.setattr(home.socket, "socket", lambda *args: KernelDump(value, args))
     monkeypatch.setattr(home, "preflight_ports", value.preflights.append)
     return value
+
+
+def foreign_metadata(monkeypatch, path: Path) -> None:
+    original = os.fstat
+    identity = path.stat().st_dev, path.stat().st_ino
+    def observe(fd):
+        info = original(fd)
+        if (info.st_dev, info.st_ino) != identity: return info
+        value = SimpleNamespace(**{k: getattr(info, k) for k in dir(info) if k.startswith("st_")})
+        value.st_uid += 1
+        return value
+    monkeypatch.setattr(module.os, "fstat", observe)
+
+
+def issuer_journal(path: Path, outcome: str = "issued") -> None:
+    (path / "invite-issuer.lock").touch(mode=0o600)
+    (path / "invite-issuer.json").write_text(json.dumps(dict(
+        operation_id="a" * 32, binding_digest="b" * 64, not_before=123,
+        expires_at=456, outcome=outcome), sort_keys=True, separators=(",", ":")))
+    (path / "invite-issuer.json").chmod(0o600)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_issuer_prepare_receipts_exact_directory(fixture, monkeypatch, capsys, existing) -> None:
+    path = fixture.root / ISSUER
+    if existing:
+        path.parent.mkdir(parents=True, mode=0o700)
+        path.mkdir(mode=0o700)
+        (fixture.root / "var").chmod(0o755)
+        (fixture.root / "var/lib").chmod(0o755)
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 0, output
+    assert path.is_dir(), "prepare must publish the protected issuer directory"
+    info = path.stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
+    receipt = path.parent / ISSUER_RECEIPT
+    assert json.loads(receipt.read_bytes()) == dict(version=1, directory="/" + ISSUER,
+        uid=fixture.uid, gid=fixture.gid, device=info.st_dev, inode=info.st_ino)
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    before = receipt.read_bytes()
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    assert receipt.read_bytes() == before
+    assert not any(call[:2] in (["systemctl", "start"], ["systemctl", "enable"],
+                                ["systemctl", "daemon-reload"]) for call in fixture.calls)
+
+
+@pytest.mark.parametrize("entry", ["symlink", "fifo", "file", "mode", "owner", "parent-link", "pending", "foreign"])
+def test_issuer_prepare_refuses_unsafe_without_repair(fixture, monkeypatch, capsys, entry) -> None:
+    path = fixture.root / ISSUER
+    path.parent.mkdir(parents=True, mode=0o700)
+    (fixture.root / "var").chmod(0o755)
+    (fixture.root / "var/lib").chmod(0o755)
+    if entry == "symlink":
+        target = fixture.root / "foreign-issuer"
+        target.mkdir(mode=0o700)
+        path.symlink_to(target)
+    elif entry == "fifo": os.mkfifo(path, 0o600)
+    elif entry == "file": path.write_bytes(b"foreign")
+    else:
+        path.mkdir(mode=0o755 if entry == "mode" else 0o700)
+        if entry == "owner":
+            foreign_metadata(monkeypatch, path)
+        if entry == "parent-link":
+            target = path.parent.with_name("redirected-state")
+            path.parent.rename(target)
+            path.parent.symlink_to(target)
+        if entry == "pending": (path.parent / ".home-issuer.pending").mkdir(mode=0o700)
+        if entry == "foreign": (path / "foreign").write_bytes(b"keep")
+    mode = path.lstat().st_mode
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "issuer-state-uncertain" in output
+    assert path.lstat().st_mode == mode
+    assert not (path.parent / ISSUER_RECEIPT).exists()
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("name", [".home-issuer.pending", ".home-issuer-publication.json.pending",
+    "home-issuer/invite-issuer.pending", "home-issuer/invite-issuer.cleanup.pending"])
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "hardlink", "fifo"])
+def test_issuer_pending_residue_is_never_repaired(fixture, monkeypatch, capsys, name, kind) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / home.INSTALLER_STATE / name
+    if kind == "directory": path.mkdir(mode=0o700)
+    elif kind == "symlink": path.symlink_to(path.with_name("absent-target"))
+    elif kind == "fifo": os.mkfifo(path, 0o600)
+    elif kind == "hardlink": path.hardlink_to(fixture.receipt())
+    else: path.write_bytes(b"synthetic pending")
+    before = path.lstat()
+    fixture.calls.clear()
+    assert fixture.prepare(monkeypatch, capsys)[0] == 1
+    assert fixture.cleanup(monkeypatch, capsys)[0] == 1
+    assert path.lstat() == before and fixture.calls == []
+
+
+@pytest.mark.parametrize("outcome", [None, "issued", "refused", "expired", "encoding", "pairing", "recovered"])
+def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypatch, capsys, outcome) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    if outcome: issuer_journal(path, outcome)
+    minter = path.parent / "home-minter"
+    minter.mkdir(mode=0o700)
+    (minter / "keep").write_bytes(b"operation fence")
+    receipt = path.parent / ISSUER_RECEIPT
+    before = receipt.read_bytes()
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 0, output
+    assert not path.exists()
+    assert receipt.read_bytes() == before
+    assert (minter / "keep").read_bytes() == b"operation fence"
+    assert (path.parent / "home-ca/ca.key").read_bytes() == b"synthetic CA private key"
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "issuer-state-uncertain" in output
+    assert not path.exists() and fixture.calls == []
+
+
+@pytest.mark.parametrize("tamper", ["minting", "uncertain", "pending", "foreign", "edited", "mode", "owner",
+    "hardlink", "symlink", "fifo", "lock-content", "lock-missing", "journal-missing", "busy", "receipt", "receipt-pending",
+    "receipt-hardlink", "receipt-symlink", "receipt-mode", "receipt-fifo", "receipt-owner", "receipt-missing",
+    "lock-symlink", "lock-hardlink", "lock-mode", "lock-fifo", "lock-owner", "directory-swap",
+    "oversized-not-before", "oversized-expires-at", "negative-oversized-not-before", "negative-oversized-expires-at"])
+@pytest.mark.parametrize("command", ["prepare-headscale", "disable-headscale"])
+def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper, command) -> None:
+    import fcntl
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    issuer_journal(path, tamper if tamper in {"minting", "uncertain"} else "issued")
+    journal = path / "invite-issuer.json"
+    receipt = path.parent / ISSUER_RECEIPT
+    if tamper in {"pending", "foreign"}: (path / ("invite-issuer.pending" if tamper == "pending" else "foreign")).write_bytes(b"keep")
+    if "oversized" in tamper:
+        record = json.loads(journal.read_bytes())
+        field = "not_before" if tamper.endswith("not-before") else "expires_at"
+        record[field] = -(10 ** 400) if tamper.startswith("negative-") else 10 ** 400
+        journal.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")))
+    if tamper == "edited": journal.write_bytes(b'{"outcome":"issued"}')
+    if tamper == "mode": journal.chmod(0o644)
+    if tamper in {"owner", "receipt-owner", "lock-owner"}:
+        foreign_metadata(monkeypatch, journal if tamper == "owner" else receipt if tamper == "receipt-owner"
+                         else path / "invite-issuer.lock")
+    if tamper == "hardlink": (fixture.root / "journal-alias").hardlink_to(journal)
+    if tamper in {"symlink", "fifo"}:
+        journal.unlink()
+        if tamper == "symlink": journal.symlink_to(receipt)
+        else: os.mkfifo(journal, 0o600)
+    if tamper == "lock-content": (path / "invite-issuer.lock").write_bytes(b"foreign")
+    if tamper == "lock-missing": (path / "invite-issuer.lock").unlink()
+    if tamper == "journal-missing": journal.unlink()
+    lock_path = path / "invite-issuer.lock"
+    if tamper == "lock-hardlink": (fixture.root / "lock-alias").hardlink_to(lock_path)
+    if tamper == "lock-mode": lock_path.chmod(0o644)
+    if tamper in {"lock-symlink", "lock-fifo"}:
+        lock_path.unlink()
+        if tamper == "lock-symlink": lock_path.symlink_to(receipt)
+        else: os.mkfifo(lock_path, 0o600)
+    if tamper == "receipt-missing": receipt.unlink()
+    if tamper == "receipt": receipt.write_bytes(b'{}')
+    if tamper == "receipt-pending": (receipt.parent / ("." + receipt.name + ".pending")).write_bytes(b"keep")
+    if tamper == "receipt-hardlink": (fixture.root / "receipt-alias").hardlink_to(receipt)
+    if tamper == "receipt-mode": receipt.chmod(0o644)
+    if tamper in {"receipt-symlink", "receipt-fifo"}:
+        receipt.unlink()
+        if tamper == "receipt-symlink": receipt.symlink_to(journal)
+        else: os.mkfifo(receipt, 0o600)
+    if tamper == "directory-swap":
+        path.rename(path.with_name("kept-issuer"))
+        path.mkdir(mode=0o700)
+        issuer_journal(path)
+    lock = os.open(path / "invite-issuer.lock", os.O_RDONLY) if tamper == "busy" else None
+    if lock is not None: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    def snapshot():
+        return {p.name: (p.lstat().st_ino, p.lstat().st_mode, p.lstat().st_size,
+                         p.lstat().st_mtime_ns, p.lstat().st_ctime_ns) for p in path.iterdir()}
+    before = snapshot()
+    contents = {p.name: p.read_bytes() for p in path.iterdir()} if "oversized" in tamper else None
+    fixture.calls.clear()
+    try:
+        code, output = fixture.cleanup(monkeypatch, capsys, command)
+        category = "issuer-state-uncertain" if command == "prepare-headscale" else "issuer-cleanup-uncertain"
+        assert code == 1 and category in output
+        assert "Traceback" not in output and "OverflowError" not in output
+        assert str(10 ** 400) not in output
+        with pytest.raises(home.HeadscaleServiceError) as caught:
+            if command == "prepare-headscale": fixture.installer.prepare_headscale()
+            else: fixture.installer.cleanup_headscale()
+        assert str(caught.value) == category
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+    finally:
+        if lock is not None: os.close(lock)
+    assert snapshot() == before
+    if contents is not None: assert {p.name: p.read_bytes() for p in path.iterdir()} == contents
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("boundary", ["directory-pending", "directory-published", "receipt-pending", "receipt-published"])
+def test_issuer_publication_crash_and_retry_preserves_residue(fixture, monkeypatch, capsys, boundary) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    path.rmdir()
+    (path.parent / ISSUER_RECEIPT).unlink()
+    original = fixture.installer._rename_provision_entry
+    pid = os.fork()
+    if pid == 0:
+        def crash(parent, source, target, **kwargs):
+            selected = target == ("home-issuer" if boundary.startswith("directory") else ISSUER_RECEIPT)
+            if selected and boundary.endswith("pending"): os._exit(73)
+            original(parent, source, target, **kwargs)
+            if selected: os._exit(73)
+        fixture.installer._rename_provision_entry = crash
+        fixture.installer.prepare_headscale()
+        os._exit(74)
+    assert os.waitpid(pid, 0)[1] == 73 << 8
+    if boundary.endswith("pending"):
+        pending = ".home-issuer.pending" if boundary.startswith("directory") else "." + ISSUER_RECEIPT + ".pending"
+        before = (path.parent / pending).lstat()
+        assert fixture.prepare(monkeypatch, capsys)[0] == 1
+        assert (path.parent / pending).lstat().st_ino == before.st_ino
+    else:
+        assert path.is_dir()
+        assert fixture.prepare(monkeypatch, capsys)[0] == 0
+
+
+def test_issuer_partial_cleanup_preserves_pending_on_retry(fixture, monkeypatch, capsys) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    issuer_journal(path)
+    original = os.unlink
+    def fail(name, **kwargs):
+        if name == "invite-issuer.lock": raise OSError("synthetic removal interruption")
+        return original(name, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "unlink", fail)
+        code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "issuer-partial-cleanup-uncertain" in output
+    assert (path / "invite-issuer.cleanup.pending").exists()
+    assert fixture.cleanup(monkeypatch, capsys)[0] == 1
 
 
 def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) -> None:
@@ -1252,3 +1490,312 @@ def test_interrupted_renewal_removal_is_never_repaired(fixture, monkeypatch, cap
         assert fixture.prepare(monkeypatch, capsys)[0] == 1
     assert fixture.prepare(monkeypatch, capsys)[0] == 1
     assert fixture.cleanup(monkeypatch, capsys)[0] == 1
+
+
+# B6 extends this retained installer venue; no host account/service/socket is used.
+_NATIVE_SOCKET = socket.socket
+_HOME_EXPECTED = dict(expected_release_uid=1000, expected_home_id="home",
+                      expected_control_plane_id="control", expected_connector_id="connector",
+                      expected_generation=7)
+_B6_LIVE = (
+    "var/lib/happyranch-headscale/db.sqlite", "var/lib/happyranch-headscale/db.sqlite-wal",
+    "var/lib/happyranch-headscale/db.sqlite-shm", "var/lib/happyranch-headscale/noise.key",
+    "var/lib/happyranch-headscale/derp.key", "run/happyranch-headscale/headscale.sock",
+    "run/happyranch-tsnet-sidecar/observe.sock", "var/lib/happyranch-headscale/acme-unused",
+)
+
+
+def b6_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *,
+             phase: str = "ready", live: bool = True, staging: bool = False) -> tuple[Path, Path]:
+    from scripts.test_home_activation import receipt_record
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    root = fixture.root
+    if not staging:
+        # Model absence of paths outside B6; the complete materializer case below
+        # proves they are retained rather than silently added to the allowlist.
+        for name in ("ca.pem", "leaf.pem", "leaf.key"):
+            (root / home.HOME_CA / name).unlink()
+    lookup, run = fixture.lookup_user, fixture.run
+    def user(name: str) -> SimpleNamespace:
+        if name == "happyranch":
+            return SimpleNamespace(pw_uid=fixture.uid, pw_gid=fixture.gid,
+                                   pw_shell="/usr/sbin/nologin", pw_dir="/nonexistent")
+        return lookup(name)
+    fixture.installer._lookup_user = user
+    unit = root / "etc/systemd/system" / home.UNIT
+    unit.write_text(systemd_unit.render_headscale_unit(home_transport=True))
+    invite = root / "etc/happyranch/invite-issuer.json"
+    invite.write_bytes(b"synthetic protected invite configuration")
+    invite.chmod(0o600)
+    record = receipt_record(phase)
+    record["ca_der_sha256"] = hashlib.sha256(b"synthetic public CA").hexdigest()
+    record["member_digests"] = {path: hashlib.sha256((root / path.lstrip("/")).read_bytes()).hexdigest()
+                                for path in record["member_digests"]}
+    activation = root / home.INSTALLER_STATE / "home-activation.json"
+    activation.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")))
+    activation.chmod(0o600)
+    runtime = root / "run/happyranch-tsnet-sidecar"
+    runtime.mkdir(mode=0o755)
+    link = root / "etc/systemd/system/happyranch-managed.target.wants" / home.UNIT
+    link.parent.mkdir(mode=0o755)
+    link.symlink_to("/etc/systemd/system/" + home.UNIT)
+    def command(args: list[str], **kwargs: object) -> tuple[int, str]:
+        if args[0] == "systemctl" and args[1] == "disable":
+            assert args[-1] == home.UNIT
+            link.unlink(missing_ok=True)
+        if args[0] == "systemctl" and args[1] == "show" and args[2] != home.UNIT:
+            fixture.calls.append(args)
+            values = dict(LoadState="not-found", FragmentPath="", DropInPaths="", ActiveState="inactive",
+                          SubState="dead", MainPID="0", ControlPID="0", ControlGroup="", Job="")
+            return 0, "\n".join(f"{key}={values[key]}" for key in
+                                (arg.split("=", 1)[1] for arg in args if arg.startswith("--property=")))
+        return run(args, **kwargs)
+    fixture.installer._run = command
+    fixture.installer.manager._run = command
+    if live:
+        for relative in _B6_LIVE:
+            path = root / relative
+            if path.name == "acme-unused":
+                path.mkdir(mode=0o700)
+            elif path.suffix == ".sock":
+                # Relative bind avoids Unix sockaddr's 108-byte path bound.
+                previous = os.open(".", module._DIR_FLAGS)
+                try:
+                    os.chdir(path.parent)
+                    with _NATIVE_SOCKET(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                        sock.bind(path.name)
+                    path.chmod(0o600)
+                finally:
+                    os.fchdir(previous)
+                    os.close(previous)
+            else:
+                path.write_bytes(b"synthetic live state")
+                path.chmod(0o600)
+    fixture.calls.clear()
+    return activation, link
+
+
+def b6_snapshot(root: Path) -> dict[str, tuple[int, ...]]:
+    return {str(path.relative_to(root)): (path.lstat().st_ino, path.lstat().st_mode,
+            path.lstat().st_uid, path.lstat().st_gid, path.lstat().st_nlink, path.lstat().st_size)
+            for path in root.rglob("*")}
+
+
+@pytest.mark.parametrize("phase", ["prepared", "activating", "joined", "ready", "failed_uncertain"])
+@pytest.mark.parametrize("live", [True, False])
+def test_b6_fixed_members_and_every_phase(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], phase: str, live: bool,
+) -> None:
+    activation, link = b6_setup(fixture, monkeypatch, capsys, phase=phase, live=live)
+    ca_key = fixture.root / home.HOME_CA / "ca.key"
+    original = os.open
+    def no_socket_or_ca_read(name: str, flags: int, *args: object, **kwargs: object) -> int:
+        assert name not in {"headscale.sock", "observe.sock", "ca.key"}
+        return original(name, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", no_socket_or_ca_read)
+    result = fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert result == {"state": "removed", "account": "removed", "home_ca": "removed"}
+    assert all(not (fixture.root / path).exists() for path in _B6_LIVE)
+    assert not ca_key.exists() and not activation.exists() and not link.is_symlink()
+    assert not fixture.receipt().exists() and not fixture.present and not fixture.group_present
+    assert [args[0] for args in fixture.calls if args[0] in {"userdel", "groupdel"}] == ["userdel", "groupdel"]
+    assert not any(args[0] == "useradd" or args[:2] == ["systemctl", "stop"] for args in fixture.calls)
+
+
+@pytest.mark.parametrize("bad", ["absent", "generation", "release", "home", "control", "connector",
+                                 "pending", "parse", "mode", "hardlink", "symlink", "parent-symlink", "headscale-unreceipted"])
+def test_b6_invalid_receipt_has_no_effect(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    if bad == "absent": activation.unlink()
+    if bad == "headscale-unreceipted":
+        fixture.receipt().unlink()
+        (fixture.root / home.INSTALLER_STATE / home.PUBLICATION).unlink()
+    if bad in {"generation", "release", "home", "control", "connector"}:
+        record = json.loads(activation.read_bytes())
+        key = {"generation": "activation_generation", "release": "release_uid", "home": "home_id",
+               "control": "control_plane_id", "connector": "connector_id"}[bad]
+        record[key] = 8 if bad == "generation" else 1001 if bad == "release" else "foreign"
+        activation.write_text(json.dumps(record))
+    if bad == "pending": activation.with_name(".home-activation.json.pending").write_bytes(b"synthetic pending")
+    if bad == "parse": activation.write_bytes(b"{}")
+    if bad == "mode": activation.chmod(0o644)
+    if bad == "hardlink": (fixture.root / "held-receipt").hardlink_to(activation)
+    if bad == "symlink":
+        activation.rename(fixture.root / "held-receipt")
+        activation.symlink_to(fixture.root / "held-receipt")
+    if bad == "parent-symlink":
+        activation.parent.rename(fixture.root / "held-parent")
+        activation.parent.symlink_to(fixture.root / "held-parent")
+    before = b6_snapshot(fixture.root)
+    with pytest.raises(home.HeadscaleServiceError, match="^cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert b6_snapshot(fixture.root) == before
+    assert not any(args[0] in {"userdel", "groupdel"} or args[:2] == ["systemctl", "disable"] for args in fixture.calls)
+
+
+@pytest.mark.parametrize("relative", _B6_LIVE)
+@pytest.mark.parametrize("bad", ["type", "owner", "mode", "nlink", "symlink", "parent-symlink"])
+def test_b6_unsafe_live_member_retained(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], relative: str, bad: str,
+) -> None:
+    b6_setup(fixture, monkeypatch, capsys)
+    path = fixture.root / relative
+    if bad == "type":
+        if path.is_dir(): path.rmdir()
+        else: path.unlink()
+        path.write_bytes(b"synthetic wrong type") if relative.endswith((".sock", "acme-unused")) else os.mkfifo(path, 0o600)
+    if bad == "mode": path.chmod(0o755 if path.is_dir() else 0o644)
+    if bad == "symlink":
+        path.rename(fixture.root / "held-member")
+        path.symlink_to(fixture.root / "held-member")
+    if bad == "parent-symlink":
+        path.parent.rename(fixture.root / "held-parent")
+        path.parent.symlink_to(fixture.root / "held-parent")
+    if bad in {"owner", "nlink"}:
+        original = os.stat
+        identity = path.lstat().st_ino
+        def metadata(*args: object, **kwargs: object) -> os.stat_result | SimpleNamespace:
+            info = original(*args, **kwargs)
+            if info.st_ino != identity: return info
+            value = SimpleNamespace(**{key: getattr(info, key) for key in dir(info) if key.startswith("st_")})
+            if bad == "owner": value.st_uid += 1
+            else: value.st_nlink += 1
+            return value
+        monkeypatch.setattr(os, "stat", metadata)
+    before = b6_snapshot(fixture.root)
+    with pytest.raises(home.HeadscaleServiceError, match="^cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert b6_snapshot(fixture.root) == before
+    assert fixture.receipt().exists()
+
+
+@pytest.mark.parametrize("bad", ["acme-child", "extra", "headscale-active", "sidecar-job", "connector-pid",
+                                 "verifier-cgroup", "uid-process", "ps-malformed", "ps-oversize", "ps-error"])
+def test_b6_inventory_and_quiescence_precede_deletion(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    b6_setup(fixture, monkeypatch, capsys)
+    if bad in {"acme-child", "extra"}:
+        path = fixture.root / "var/lib/happyranch-headscale" / ("acme-unused/keep" if bad == "acme-child" else "unknown")
+        path.write_bytes(b"synthetic retained state")
+    if bad == "headscale-active": fixture.unit_busy = True
+    if bad == "uid-process": fixture.busy = True
+    command = fixture.installer._run
+    def native(args: list[str], **kwargs: object) -> tuple[int, str]:
+        if args[0] == "ps":
+            if bad == "ps-error": return 1, "synthetic private diagnostic"
+            if bad == "ps-malformed": return 0, "invalid snapshot"
+            if bad == "ps-oversize": return 0, " " * 65537
+        code, output = command(args, **kwargs)
+        if args[0] == "systemctl" and args[1] == "show":
+            unit = {"sidecar-job": "happyranch-tsnet-sidecar.service",
+                    "connector-pid": "happyranch-connector.service",
+                    "verifier-cgroup": "happyranch-release-verifier.service"}.get(bad)
+            if args[2] == unit:
+                old, new = {"sidecar-job": ("Job=", "Job=5 start"),
+                            "connector-pid": ("MainPID=0", "MainPID=42"),
+                            "verifier-cgroup": ("ControlGroup=", "ControlGroup=/synthetic")}[bad]
+                output = output.replace(old, new)
+        return code, output
+    fixture.installer._run = native
+    fixture.installer.manager._run = native
+    before = b6_snapshot(fixture.root)
+    with pytest.raises(home.HeadscaleServiceError, match="^cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert b6_snapshot(fixture.root) == before
+
+
+@pytest.mark.parametrize("case", ["unowned", "user-absent", "both-absent", "shared", "reuse", "group-failure",
+                                 "unlink-failure", "member-failure", "disable-leftover", "issuer", "fence", "extra-runtime"])
+def test_b6_accounts_partial_and_retained_evidence(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    if case == "unowned": fixture.receipt().unlink()
+    if case in {"user-absent", "both-absent"}: fixture.present = False
+    if case == "both-absent": fixture.group_present = False
+    if case == "shared": fixture.shared = True
+    if case == "reuse": fixture.reused_uid = True
+    if case == "group-failure": fixture.exit_groupdel = 1
+    if case == "issuer": issuer_journal(fixture.root / ISSUER, "uncertain")
+    if case == "fence":
+        fence = fixture.root / home.INSTALLER_STATE / "home-minter"
+        fence.mkdir(mode=0o700)
+        (fence / "operation-synthetic").write_bytes(b"synthetic uncertainty fence")
+    if case == "extra-runtime":
+        (fixture.root / "run/happyranch-tsnet-sidecar/unknown").write_bytes(b"synthetic retained state")
+    if case == "disable-leftover":
+        native = fixture.installer.manager._run
+        def disable(args: list[str], **kwargs: object) -> tuple[int, str]:
+            if args[:2] == ["systemctl", "disable"]: return 0, ""
+            return native(args, **kwargs)
+        fixture.installer.manager._run = disable
+    original = os.unlink
+    def remove(name: str, **kwargs: object) -> None:
+        if case == "unlink-failure" and name == "db.sqlite-wal": raise OSError("synthetic unlink failure")
+        if case == "member-failure" and name == "config.yaml": raise OSError("synthetic member failure")
+        original(name, **kwargs)
+    monkeypatch.setattr(os, "unlink", remove)
+    if case in {"shared", "reuse", "group-failure", "unlink-failure", "member-failure", "disable-leftover", "issuer", "fence", "extra-runtime"}:
+        with pytest.raises(home.HeadscaleServiceError) as error:
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+        assert str(error.value) == ("cleanup-uncertain" if case in {"shared", "reuse"} else "partial-cleanup-uncertain")
+        assert activation.exists() and fixture.receipt().exists()
+        if case == "group-failure": assert not fixture.present and fixture.group_present
+        if case == "issuer": assert (fixture.root / ISSUER / "invite-issuer.json").exists()
+        if case == "fence": assert (fence / "operation-synthetic").exists()
+        if case == "extra-runtime": assert (fixture.root / "run/happyranch-tsnet-sidecar/unknown").exists()
+        if case in {"unlink-failure", "member-failure"}:
+            monkeypatch.setattr(os, "unlink", original)
+            assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED)["state"] == "removed"
+            assert not activation.exists() and not fixture.receipt().exists()
+        return
+    result = fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert result["account"] == ("preserved: not created by HappyRanch" if case == "unowned" else "removed")
+    assert fixture.present == (case == "unowned")
+    assert not activation.exists()
+    if case == "unowned": assert not any(args[0] in {"userdel", "groupdel"} for args in fixture.calls)
+
+
+def test_b6_unlisted_ca_staging_is_retained(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys, staging=True)
+    staging = fixture.root / home.HOME_CA
+    before = {name: (staging / name).read_bytes() for name in ("ca.pem", "leaf.pem", "leaf.key")}
+    with pytest.raises(home.HeadscaleServiceError, match="^partial-cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+    assert {name: (staging / name).read_bytes() for name in before} == before
+    assert not (staging / "ca.key").exists()
+    assert all(not (fixture.root / path).exists() for path in _B6_LIVE)
+    assert activation.exists() and fixture.receipt().exists()
+    assert fixture.present and fixture.group_present
+
+
+@pytest.mark.parametrize("relative", _B6_LIVE)
+def test_b6_no_expectations_keeps_ruling_d(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], relative: str,
+) -> None:
+    activation, link = b6_setup(fixture, monkeypatch, capsys)
+    activation.unlink()
+    link.unlink()
+    (fixture.root / "etc/systemd/system" / home.UNIT).write_text(EXPECTED_UNIT)
+    # One fixed live entry at a time reaches D's existing custody refusal.
+    for other in _B6_LIVE:
+        if other == relative: continue
+        path = fixture.root / other
+        path.rmdir() if path.is_dir() else path.unlink()
+    before = b6_snapshot(fixture.root)
+    if relative.endswith("/observe.sock"):
+        # D never owned this later sidecar socket; only Headscale custody is
+        # cleaned. The new optional API must not widen its no-argument scope.
+        result = fixture.installer.cleanup_headscale()
+        assert result["home_ca"] == "preserved"
+        assert b6_snapshot(fixture.root)[relative] == before[relative]
+        return
+    with pytest.raises(home.HeadscaleServiceError, match="^cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale()
+    assert b6_snapshot(fixture.root) == before
+    assert not any(args[0] in {"userdel", "groupdel"} or args[:2] == ["systemctl", "disable"] for args in fixture.calls)

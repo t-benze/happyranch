@@ -1693,12 +1693,13 @@ class TasksMixin:
     def _recall_track(
         self, task: TaskRecord, children: list[str], *, has_result: bool,
     ) -> dict | None:
-        """THR-358 display-only projection of a fan-out pipeline carrier.
+        """THR-358 display-only projection of a persisted chain carrier.
 
         Read-only: it reads existing rows and never writes, repairs or
-        reinterprets chain state.  A carrier is a ``subtask`` that never ran a
-        session (no ``task_results`` row) and whose earliest child is its first
-        leg (same brief and agent, inserted with the carrier).
+        reinterprets chain state. Existing no-result fan-out carriers retain
+        their projection, including unavailable plans. A carrier's own session
+        or result does not exclude it when a fitting persisted chain plan and
+        its launch provenance prove the created legs.
 
         ``planned_agents`` is the step list (first leg agent, then each
         ``then`` leg agent).  ``plan_source`` names where it was read from, in
@@ -1710,26 +1711,28 @@ class TasksMixin:
         the plan is never guessed.  ``step_index`` is the live chain's 0-based
         leg index, else ``None``.
         """
-        if task.task_type != "subtask" or not children or has_result:
+        if task.task_type != "subtask" or not children:
             return None
         first = self._conn.execute(
             "SELECT brief, assigned_agent FROM tasks WHERE id = ?",
             (children[0],),
         ).fetchone()
-        if (
-            first is None
-            or first["brief"] != task.brief
-            or first["assigned_agent"] != task.assigned_agent
-        ):
+        if first is None:
             return None
+        fanout_shape = (first["brief"] == task.brief
+                        and first["assigned_agent"] == task.assigned_agent)
+        delegate_plan: list[str] | None = None
         planned_agents: list[str] | None = None
         step_index: int | None = None
         plan_source: str | None = None
         if task.active_chain:
             try:
                 chain = json.loads(task.active_chain)
+                if has_result or not fanout_shape:
+                    delegate_plan = self._recall_delegate_chain_plan(task, first, chain)
                 legs = chain.get("legs") or []
-                agents = [task.assigned_agent] + [leg.get("agent") for leg in legs]
+                first_agent = delegate_plan[0] if delegate_plan else task.assigned_agent
+                agents = [first_agent] + [leg.get("agent") for leg in legs]
                 index = chain.get("step_index")
                 if (
                     all(isinstance(a, str) and a for a in agents)
@@ -1740,21 +1743,84 @@ class TasksMixin:
                     plan_source = "active_chain"
             except (TypeError, ValueError, AttributeError):
                 planned_agents, step_index = None, None
+        if not fanout_shape and delegate_plan is None:
+            return None
         if planned_agents is None:
             planned_agents, plan_source = self._recall_track_recorded_plan(task)
         if planned_agents is not None and not self._recall_plan_fits_legs(
             task, children, planned_agents,
         ):
             planned_agents, step_index, plan_source = None, None, None
+        if has_result or not fanout_shape:
+            if planned_agents is None or not (
+                delegate_plan is not None
+                or (fanout_shape and self._recall_fanout_launched(task))
+            ):
+                return None
         return {
             "planned_agents": planned_agents,
             "step_index": step_index,
             "plan_source": plan_source,
         }
 
+    def _recall_fanout_launched(self, task: TaskRecord) -> bool:
+        """A unique bounded fan-out launch names this carrier exactly once."""
+        rows = self._conn.execute(
+            "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'fanout_spawned' "
+            "ORDER BY id DESC LIMIT ?",
+            (task.parent_task_id, self._RECALL_PLAN_AUDIT_LIMIT + 1),
+        ).fetchall()
+        if len(rows) > self._RECALL_PLAN_AUDIT_LIMIT:
+            return False
+        matches = []
+        for row in rows:
+            try:
+                ids = json.loads(row["payload"]).get("children_ids")
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if isinstance(ids, list) and task.id in ids:
+                matches.append(ids)
+        return (len(matches) == 1 and matches[0].count(task.id) == 1
+                and all(isinstance(cid, str) for cid in matches[0]))
+
+    def _recall_delegate_chain_plan(
+        self, task: TaskRecord, first: sqlite3.Row, chain: object,
+    ) -> list[str] | None:
+        """The chain's referenced delegate decision proves its implicit first leg."""
+        if not isinstance(chain, dict) or type(chain.get("step_audit_id")) is not int:
+            return None
+        row = self._conn.execute(
+            "SELECT payload FROM audit_log WHERE id = ? AND task_id = ? "
+            "AND action = 'orchestration_step'",
+            (chain["step_audit_id"], task.id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            decision = json.loads(row["payload"]).get("decision")
+            if not isinstance(decision, dict) or decision.get("action") != "delegate":
+                return None
+            if (decision.get("agent") != first["assigned_agent"]
+                    or (decision.get("prompt") or "") != (first["brief"] or "")):
+                return None
+            then = decision.get("then") or []
+            legs = chain.get("legs") or []
+            if not isinstance(then, list) or not isinstance(legs, list) or len(then) != len(legs):
+                return None
+            if not then and decision.get("expect_verdict") is None:
+                return None
+            for declared, saved in zip(then, legs):
+                if not isinstance(declared, dict) or not isinstance(saved, dict):
+                    return None
+                if any(declared.get(key) != saved.get(key) for key in ("agent", "prompt")):
+                    return None
+            return self._recall_child_plan(decision, decision.get("agent"))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
     # Read bounds for the THR-358 plan recovery (per carrier, by parent id).
     # Each bounded stream reads one sentinel row past its bound; a stream that
-    # reaches the bound is truncated, so uniqueness/agreement cannot be proven
+    # exceeds 64 is truncated, so uniqueness/agreement cannot be proven
     # and the plan is unavailable (never inferred from a partial candidate set).
     _RECALL_PLAN_AUDIT_LIMIT = 64
     _RECALL_PLAN_RESULT_LIMIT = 64
@@ -1794,7 +1860,7 @@ class TasksMixin:
         """Recover an ended carrier's plan from already-persisted rows only.
 
         Bounded lookups keyed by the parent task id.  Any ambiguity, missing
-        provenance, malformed JSON or a stream that reaches its read bound
+        provenance, malformed JSON or a stream that exceeds 64 rows
         (truncated history) returns ``(None, None)``.
         """
         parent_id = task.parent_task_id

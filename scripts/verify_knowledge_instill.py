@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.learnings_store import InvalidLearningEntry, MemoryCompactionResult, MemoryItem, MemoryStore
 from runtime.knowledge.archives import KnowledgeArchiveStore
-from runtime.knowledge.curation import ATTRIBUTION_UNVERIFIED, CurationError, build_curation_input, capture_digest
+from runtime.knowledge.curation import ATTRIBUTION_UNVERIFIED, CurationError, build_curation_input, capture_digest, validate_curation_output
 from runtime.knowledge.imports import ImportError, install_import_schema
 from runtime.knowledge.instill import InstillLifecycle
 from runtime.knowledge.lifecycle_models import ImportOperation, InstillConfirmation
@@ -140,6 +140,81 @@ def curation_rejected(f: SimpleNamespace, source: RetiredSource, result: dict, k
     require({a['archive_id'] for a in f.archives.list_ready()} == {row[0] for row in prior},
             key + ': prior Ready selection changed')
     print(key + ': durable Failed/' + code + '; prior Ready bytes/selection preserved', flush=True)
+
+
+def curation_warning_prompt() -> None:
+    source, _ = capture()
+    brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
+    require('Any item flagged uncertain, conflict, historical or attribution_unverified must carry at least one '
+            'non-empty warning that states the caveat (for historical: that it describes past state and may no longer hold).'
+            in brief, 'built brief missing flagged-item warning contract')
+
+
+def curation_date_citation_prompt() -> None:
+    source, _ = capture()
+    brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
+    for instruction in (
+        'open_work.as_of and any other date field must use only a valid calendar date YYYY-MM-DD '
+        'or datetime YYYY-MM-DDTHH:MM:SS (hours 00-23) followed by +HH:MM, -HH:MM or Z '
+        '(e.g. 2026-11-18, 2026-11-18T09:00:00+08:00, 2026-11-18T09:00:00-08:00 or 2026-11-18T01:00:00Z), '
+        'or null when unknown; never ordinal/week dates, prose or relative/approximate dates. '
+        'The exact captured authored_at/observed_at requirements above take precedence.',
+        'founder_ruling must be the exact text THR-N seqN or THR-N#N appearing verbatim in '
+        'the cited founder_ruling_reference captured body or JSON-serialized metadata; '
+        'founder_ruling_reference must be one of the item references.',
+        'If no such exact literal citation exists, set founder_ruling and founder_ruling_reference both null; '
+        'for founder_decision_preference items without a cited ruling, '
+        f'include exactly this warning: {ATTRIBUTION_UNVERIFIED!r} and flag attribution_unverified.',
+    ):
+        require(instruction in brief, 'built brief missing date/citation contract: ' + instruction)
+
+
+def curation_qualification_lists() -> None:
+    source, result = capture()
+    item = result['items'][0]
+    item.update(category='procedure', prerequisites=['Read capture', 'Verify café 知识'],
+                limits=['Offline only', 'No live mutation'])
+    validated = validate_curation_output(source, json.dumps(result))
+    require(validated.items[0].prerequisites == 'Read capture; Verify café 知识', 'prerequisites not joined exactly')
+    require(validated.items[0].limits == 'Offline only; No live mutation', 'limits not joined exactly')
+    require(validated.items[1].prerequisites is None and validated.items[1].limits is None, 'nulls changed')
+
+
+def curation_invalid_qualification_lists() -> None:
+    for field in ('prerequisites', 'limits'):
+        for value in (['valid', 1], ['valid', None], [['nested']], {'key': 'value'}, 1):
+            source, result = capture()
+            result['items'][0][field] = value
+            try:
+                validate_curation_output(source, json.dumps(result))
+            except CurationError as error:
+                require(error.code == 'curation_output_malformed', field + ': wrong shape error')
+            else:
+                raise AssertionError(field + ': invalid qualification shape accepted')
+
+
+def curation_empty_qualification_lists() -> None:
+    for field in ('prerequisites', 'limits'):
+        source, result = capture()
+        result['items'][0][field] = []
+        try:
+            validate_curation_output(source, json.dumps(result))
+        except CurationError as error:
+            require(error.code == 'curation_qualification_missing', field + ': empty list did not reach qualification check')
+        else:
+            raise AssertionError(field + ': empty qualification accepted')
+
+
+def curation_other_field_lists() -> None:
+    for field in ('title', 'content'):
+        source, result = capture()
+        result['items'][0][field] = ['Unexpected', 'list']
+        try:
+            validate_curation_output(source, json.dumps(result))
+        except CurationError as error:
+            require(error.code == 'curation_output_malformed', field + ': wrong shape error')
+        else:
+            raise AssertionError(field + ': unrelated field normalized')
 
 
 def curation_dates() -> None:
@@ -1094,6 +1169,9 @@ def cli_import_validation() -> None:
 
 
 CASES = {f.__name__: f for f in (
+    curation_warning_prompt, curation_date_citation_prompt,
+    curation_qualification_lists, curation_invalid_qualification_lists,
+    curation_empty_qualification_lists, curation_other_field_lists,
     curation_dates, curation_founder_eligibility, curation_open_work_eligibility, curation_reference_only,
     http_import_surfaces, http_memory_provenance, http_partial_retry, http_refusals, http_busy_all_six, cli_import_validation,
     legacy, happy_repeat_overlap, partial_retry, unwritten_overlap_single, unwritten_overlap_mixed, completed_receipt_recovery,

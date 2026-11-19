@@ -173,7 +173,7 @@ export const mockTasksApi: TasksApi = {
   useTasksListStreams: (filters) => staticTaskListStreams(ROOT_FIXTURES, filters),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
-  useTaskRecall: () => ok(RECALL_TREE),
+  useTaskRecall: () => ({ ...ok(RECALL_TREE), isFetching: false, refetch: async () => undefined }),
   useTaskTailSSE: () => { /* no-op */ },
   useCancelTask: () => noopMutation(),
   useSubmitTask: () => noopMutation(),

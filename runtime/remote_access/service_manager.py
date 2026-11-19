@@ -82,7 +82,18 @@ def service_manager(*, system: bool = False) -> ServiceManager:
     raise ServiceManagerError(f"connector service management is unsupported on {sys.platform}")
 
 
-def _default_run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:
+def _default_run(argv: list[str], timeout: float = 10.0, *,
+                 input_bytes: bytes | None = None) -> tuple[int, str | bytes]:
+    # Secret-bearing root runners use isolated binary pipes. Never merge/echo
+    # stderr, argv or TimeoutExpired output (which can retain complete streams).
+    if input_bytes is not None:
+        result = (-1, b'')
+        try:
+            proc = subprocess.run(argv, input=input_bytes, capture_output=True, timeout=timeout)
+            result = (proc.returncode, proc.stdout)
+        except BaseException:
+            pass
+        return result
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")

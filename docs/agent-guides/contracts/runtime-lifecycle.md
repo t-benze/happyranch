@@ -282,13 +282,27 @@ lock-era operation. **Assumption:** pre-lock binaries are not subsequently run
 against this home; a downgrade/replacement or manual marker edit invalidates
 that inference and needs operator reconciliation. Without the exact marker,
 this is a transition boot: proof additionally requires a strictly positive,
-distinct old `daemon.pid` and `os.kill(pid, 0)` raising `ProcessLookupError`.
+distinct old PID and `os.kill(pid, 0)` raising `ProcessLookupError`.
+Use `daemon.pid` when present; only its genuine absence permits reading the
+retained `daemon.lock.pid` sidecar with the same strict PID reader. An invalid,
+unreadable or dangling-symlink `daemon.pid` never falls back to the sidecar.
 Missing, malformed, unreadable, aliased, own, alive or ambiguous/permission-error
 PID evidence means NOT PROVEN. Normal serving may continue, but later cleanup
 must release nothing using that proof. An unproven transition never publishes
 the marker, so its uncertainty cannot disappear next boot. Consequently a fresh
-empty home, or repeated clean boots without a retained dead PID, can remain
-unproven. Only a proven transition publishes the marker under the held lock.
+empty home's first boot remains unproven. Only a proven transition publishes
+the marker under the held lock.
+
+Normal lock-owning main atomically records its own PID in owner-only
+`daemon.lock.pid` before listener/PID publication; offline maintenance does not
+write it. Clean signal shutdown and shell stop still remove `daemon.pid` and
+`daemon.port`, leaving the sidecar for the next boot's positive death probe.
+The sidecar is evidence only, never a lock-era marker or a stopped claim. A
+reused PID that is alive, the new process's own PID, or an ambiguous probe remains
+NOT PROVEN and cannot publish the marker. No timestamp or process-name guess
+overrides those refusals. The signed THR-357 design note
+`engineering_manager-2026-11-16-startup-cleanup-design-note.md` keeps its original
+positive-death/lock-exclusion rule; this retention fixes evidence loss only.
 
 The shell preserves stale `daemon.pid` until lock-owning Python startup observes
 it; only that owner discards the stale port. Shell and legacy migration stop
@@ -458,6 +472,18 @@ lint/static analysis cannot establish behavioral acceptance.
 
 ### Bounded ordinary native launch refusals (THR-315)
 
+THR-307 seq388/389: before the existing session admission commits, scratch
+preparation/launch exits compensate only an empty root exclusively created by
+that attempt. Creation pins the directory inode; cleanup rechecks its identity
+through literal no-follow ancestors and uses only descriptor-relative `rmdir`.
+Pre-existing, replaced, symlinked or nonempty roots remain, and cleanup failure
+is logged without replacing the original refusal/failure. Committed sessions
+retain their scratch even if launch then fails. Manifests/locks and retained
+preparation/reservation uncertainty remain untouched. This local finally tail
+precedes existing outer refusal accounting; no opaque-failure call, audit shape,
+reserved SID or refusal-budget behavior changes. It creates no sweeper ownership
+evidence and changes no sweeper classification.
+
 Actual non-hold refusals before durable preparation allow at most THREE consecutive
 attempts for the same logical task continuation. Existing audit rows
 `task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
@@ -575,6 +601,17 @@ not universal config safety or a hard bound on Git's own parsing memory. Root
 config equality does not snapshot nested repos, hook/filter/include file content,
 external state, environment or backend files; cooperative ABA/final-window limits
 remain. Credential mechanisms remain unchanged; cooperative refresh exclusion is specified below.
+Each identity uses three supervised Git calls: one bounded `rev-parse` stream
+for storage object format, HEAD/commit availability and exact branch/upstream,
+the unchanged selected config capture, and authoritative
+`remote get-url --all origin`. Legacy `.git/remotes/origin` transport remains
+supported and compared independently of config. All changed-target identity
+checkpoints remain: admission, after fetch, before merge, after merge and after
+optional submodule update; the final exact branch/HEAD probes remain too.
+An incomplete batched ref result or HEAD that peels to a different commit repeats
+the original observations and their error types, without using a valid prefix
+as authority. This exceptional path preserves the original type-only HEAD check
+and can cost more calls; an unavailable supervised observation still refuses.
 Unsupported config, missing/detached/unborn/unreadable/no-upstream or absent exact
 source stays false/stale before mutation, with a fixed safe reason and no newly
 latched failed_cleanup solely for that refusal. Existing uncertainty stays sticky.
@@ -591,8 +628,15 @@ tracking contents supply no U provenance. Merge uses literal full U with explici
 `--ff-only`, retaining inherited merge settings and pull.autostash true/false
 precedence; absent pull override uses rebase.autostash when resolved rebase is
 on, otherwise inherits merge behavior. Git owns stash/apply/conflicts.
+If U equals the admitted HEAD L, the refresh instead confirms the complete
+identity once more, then the exact branch/HEAD and original deadline/cancellation,
+and returns the settled fetch success through the ordinary preparation closure.
+There is no ancestry, merge, submodule update or post-merge work on this path.
+The final identity covers changes during advertisement/target validation; the
+branch/HEAD probes cover those fields changing during that identity's later
+config/transport reads. The usual last-window/ABA limitations remain.
 After successful merge, effective submodule.recurse requires one supervised
-`submodule update --recursive --checkout`, also for equal/local-ahead no-ops.
+`submodule update --recursive --checkout`, also for local-ahead merge no-ops.
 No init/force/remote/rebase workaround or completion after failed merge.
 True requires all required children and final exact original-branch/HEAD oracle
 AFTER completion: behind ends U; equal stays L=U; local-ahead preserves EXACT L;
@@ -1092,7 +1136,7 @@ independent complete references include it; historical preimages stay unchanged.
 Strict older readers may refuse; compatible-reader rollback preserves index/history.
 
 - **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock, runs generation-aware/DB-aware publication with that lock released, then clears the reservation on success, refusal, or failure. A concurrent bounded producer loses to either the reservation or an actual pending item. Dequeue atomically ends pending suppression so a later legitimate transition can wake the task again; unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
-- **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown first closes runner/attachment and task-queue producer admission, then fences job-terminal resume hooks and sends TERM before the first await and producer-runner drain. A Process already awaiting spawn is signalled on binding. The existing `TaskQueue.stop()` consumer/native drain stays after the runner/reaper drains. The final job phase waits out the remainder of 30 seconds from actual TERM, sends KILL and awaits finalizers before diagnostics drain and DB close. Daemon stop wrappers allow 60 seconds before KILL. This is THR-357 Fix 3 mitigation only; crash recovery and the rest of #1276 remain on hold. Startup job wiring resets the process-local resume fence. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation and Pause admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
+- **Graceful daemon shutdown preserves blocked-on-job recovery.** Uvicorn first bounds its open-HTTP/request-task drain to 5 seconds, then cancels remaining requests (including SSE) and enters lifespan teardown. The unchanged 60-second wrapper budget therefore reserves 30 seconds for job grace, up to 5 seconds for finalizers, and 20 seconds for other drains/overhead; this is not an overall hard cleanup deadline and does not waive native quiescence or DB-close barriers. Lifespan teardown first closes runner/attachment and task-queue producer admission, then fences job-terminal resume hooks and sends TERM before the first await and producer-runner drain. A Process already awaiting spawn is signalled on binding. The existing `TaskQueue.stop()` consumer/native drain stays after the runner/reaper drains. The final job phase waits out the remainder of 30 seconds from actual TERM, sends KILL and awaits finalizers before diagnostics drain and DB close. Daemon stop wrappers allow 60 seconds before KILL. This is THR-357 Fix 3 mitigation only; crash recovery and the rest of #1276 remain on hold. Startup job wiring resets the process-local resume fence. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation and Pause admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
 
 
 ## Sequential ownership startup/recovery hold (THR336 U3a)

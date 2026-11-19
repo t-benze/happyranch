@@ -1,4 +1,4 @@
-"""Focused Fix 3 shutdown checks; synthetic orgs, no server or providers."""
+"""Focused shutdown checks; synthetic orgs, isolated servers, no providers."""
 from __future__ import annotations
 
 import asyncio
@@ -250,6 +250,120 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StopPolicyTests(unittest.TestCase):
+    def test_term_with_open_event_stream_reaches_lifespan(self) -> None:
+        self.observe_stream_shutdown(uncooperative=False)
+
+    def test_term_bounds_uncooperative_stream_before_lifespan(self) -> None:
+        self.observe_stream_shutdown(uncooperative=True)
+
+    def observe_stream_shutdown(self, *, uncooperative: bool) -> None:
+        with tempfile.TemporaryDirectory(prefix="happyranch-stream-shutdown-") as temp:
+            scratch = Path(temp) / "fixture"
+
+            async def seed() -> None:
+                async with fixture(scratch):
+                    pass
+
+            asyncio.run(seed())
+            home = scratch / "home"
+            runtime = scratch / "runtime"
+            (home / "runtimes.yaml").write_text(
+                f"active: {runtime}\nregistered:\n- {runtime}\n")
+            env = {**os.environ, "HAPPYRANCH_HOME": str(home),
+                   "HAPPYRANCH_DAEMON_HOME": str(home), "HAPPYRANCH_DAEMON_PORT": "0"}
+            log_path, headers = home / "exercise.log", home / "stream.headers"
+            command = [sys.executable, "-B", "-m", "runtime.daemon"]
+            if uncooperative:
+                # Exercise the real main/config/lifespan with an ASGI response
+                # that never polls receive(), so HTTP disconnect cannot end it.
+                command = [sys.executable, "-B", "-c", """
+import asyncio
+from unittest.mock import patch
+import runtime.daemon.__main__ as entry
+create_app = entry.create_app
+class StalledStream:
+    def __init__(self, app):
+        self.app = app
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and scope['path'] == '/synthetic/stream':
+            await send({'type': 'http.response.start', 'status': 200,
+                        'headers': [(b'content-type', b'text/event-stream')]})
+            await send({'type': 'http.response.body', 'body': b'data: open\\n\\n', 'more_body': True})
+            await asyncio.Event().wait()
+        else:
+            await self.app(scope, receive, send)
+def app_with_stream(state):
+    app = create_app(state)
+    app.add_middleware(StalledStream)
+    return app
+with patch.object(entry, 'create_app', app_with_stream):
+    raise SystemExit(entry.main([]))
+"""]
+            with log_path.open("w") as log:
+                daemon = subprocess.Popen(command,
+                    cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+                stream = None
+                try:
+                    deadline = time.monotonic() + 15
+                    while not (home / "daemon.port").exists() and time.monotonic() < deadline:
+                        self.assertIsNone(daemon.poll(), log_path.read_text())
+                        time.sleep(0.05)
+                    self.assertTrue((home / "daemon.port").exists(), log_path.read_text())
+                    port = (home / "daemon.port").read_text().strip()
+                    route = "/synthetic/stream" if uncooperative else "/api/v1/orgs/alpha/threads/events"
+                    url = f"http://127.0.0.1:{port}{route}"
+                    command = ["curl", "--no-buffer", "--silent", "--show-error",
+                        "--retry", "5", "--retry-connrefused", "--retry-delay", "1",
+                        "--dump-header", str(headers),
+                        "--header", "Authorization: Bearer synthetic-founder-token", url]
+                    stream = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
+                    while time.monotonic() < deadline:
+                        if headers.exists() and "text/event-stream" in headers.read_text().lower():
+                            break
+                        self.assertIsNone(stream.poll(), log_path.read_text())
+                        time.sleep(0.05)
+                    self.assertIn("200 OK", headers.read_text())
+                    self.assertIn("text/event-stream", headers.read_text().lower())
+                    time.sleep(0.5)  # Observe a settled stream, not just response headers.
+                    self.assertIsNone(stream.poll(), "curl must still hold the SSE connection")
+                    started = time.monotonic()
+                    daemon.send_signal(signal.SIGTERM)
+                    try:
+                        code = daemon.wait(timeout=12)
+                    except subprocess.TimeoutExpired:
+                        self.fail("TERM did not reach lifespan within 12s:\n" + log_path.read_text())
+                    elapsed = time.monotonic() - started
+                    self.assertEqual(code, 0, log_path.read_text())
+                    self.assertIn("Application shutdown complete", log_path.read_text())
+                    if uncooperative:
+                        self.assertIn("timeout graceful shutdown exceeded", log_path.read_text())
+                    self.assertFalse((home / "daemon.pid").exists())
+                    self.assertFalse((home / "daemon.port").exists())
+                    self.assertTrue((home / "daemon.lock.pid").exists(), "clean stop lost previous PID evidence")
+                    self.assertEqual((home / "daemon.lock.pid").read_text().strip(), str(daemon.pid))
+                    from runtime.daemon.lifetime_lock import acquire_daemon_lock
+                    held = acquire_daemon_lock(home)
+                    try:
+                        self.assertTrue(held.proof.proven)
+                        self.assertEqual(held.proof.reason, "previous_pid_confirmed_dead")
+                        self.assertEqual((home / "daemon.lock").read_bytes(), b"happyranch-daemon-lock@1\n")
+                    finally:
+                        os.close(held.fd)
+                    curl_code = stream.wait(timeout=3)
+                    self.assertIn(curl_code, (0, 18), log_path.read_text())
+                    print(f"temp HAPPYRANCH_HOME={home}; daemon_pid={daemon.pid}", flush=True)
+                    print(f"curl --no-buffer {url}: HTTP200 text/event-stream, open before TERM", flush=True)
+                    print(f"TERM -> Application shutdown complete and exit={code}: {elapsed:.3f}s; curl_exit={curl_code}", flush=True)
+                    for line in log_path.read_text().splitlines():
+                        if any(marker in line for marker in ("Shutting down", "Waiting for connections",
+                                "graceful shutdown exceeded", "Waiting for application shutdown",
+                                "Application shutdown complete")):
+                            print(line, flush=True)
+                finally:
+                    self.reap(daemon)
+                    if stream is not None:
+                        self.reap(stream)
+
     def lock_holder(self, home: Path) -> subprocess.Popen:
         child = subprocess.Popen([sys.executable, "-B", "-c", """
 import fcntl, pathlib, sys, time

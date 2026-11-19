@@ -109,7 +109,16 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(payload):
             parser.error('payload symlink escapes its prefix')
     for required in ('bin/happyranch', 'bin/happyranch-daemon', 'bin/happyranch-app',
+                     'bin/happyranch-remote-access-helper',
+                     'libexec/remote-access/remote_access_helper.py',
+                     'libexec/remote-access/helper_owner.py',
+                     'libexec/remote-access/helper_control.py',
+                     'libexec/remote-access/release_verifier.py',
+                     'libexec/remote-access/status_v2.py',
+                     'libexec/remote-access/home_audit.py',
+                     'libexec/remote-access/helper_generation.py',
                      'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
+                     'libexec/remote-access/happyranch-home-admin',
                      'licenses/headscale-LICENSE',
                      'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
                      'licenses/headscale/go-runtime/LICENSE',
@@ -129,9 +138,10 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     except (OSError, ValueError, UnicodeError):
         parser.error('invalid connection resource manifest or assets')
 
-    materializer = payload / 'libexec/remote-access/happyranch-home-ca'
-    if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
-        parser.error('unsafe home CA materializer payload')
+    for name in ('happyranch-home-ca', 'happyranch-home-admin'):
+        materializer = payload / 'libexec/remote-access' / name
+        if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
+            parser.error('unsafe home runner payload')
 
     # Inspect foreign-architecture payloads without executing them. Reject old
     # unsafe tarballs; build-payload repairs and tests the native interpreter.
@@ -161,6 +171,21 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     unit.parent.mkdir(parents=True)
     shutil.copyfile(packaging / 'systemd/happyranch-daemon.service', unit)
     unit.chmod(0o644)
+    # Register activation/policy only. No maintainer script starts a service.
+    for source, destination in (
+        ('dbus/ai.happyranch.RemoteAccess1.conf', 'usr/share/dbus-1/system.d/ai.happyranch.RemoteAccess1.conf'),
+        ('dbus/ai.happyranch.RemoteAccess1.service', 'usr/share/dbus-1/system-services/ai.happyranch.RemoteAccess1.service'),
+        ('polkit/ai.happyranch.remote-access.policy', 'usr/share/polkit-1/actions/ai.happyranch.remote-access.policy'),
+        ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
+    ):
+        destination = stage / destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(packaging / source, destination)
+        destination.chmod(0o644)
+    # The contract deliberately has no '-' on this required writable directory.
+    # Package its empty root-owned mountpoint so clean-host activation can start.
+    helper_state = stage / 'var/lib/happyranch-remote-access'
+    helper_state.mkdir(parents=True)
     applications = stage / 'usr/share/applications'
     applications.mkdir(parents=True)
     template = (prefix / 'share/applications/happyranch.desktop.in').read_text()
@@ -208,7 +233,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         'Section: devel\nPriority: optional\n'
         'Homepage: https://github.com/t-benze/happyranch\n'
         f'Installed-Size: {installed_size}\n'
-        'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, '
+        'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, gir1.2-secret-1, '
         'git, ca-certificates, libc6 (>= 2.35), libgcc-s1\n'
         'Description: desktop and command-line workspace\n'
         ' Native GTK and WebKit window for the local HappyRanch web interface,\n'
@@ -219,6 +244,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     for path in stage.rglob('*'):
         if not path.is_symlink():
             path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+    helper_state.chmod(0o700)
     files = sorted(path for path in stage.rglob('*')
                    if path.is_file() and not path.is_symlink() and not path.is_relative_to(control))
     (control / 'md5sums').write_text(''.join(

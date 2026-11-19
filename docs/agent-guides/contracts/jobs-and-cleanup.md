@@ -34,10 +34,12 @@ limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](../../specs/2026-05-26-jobs-design.md).
 
 
-Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
-requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Stop200 acknowledges an owned Stop signal request, or the proven-dead retained
+job settlement described below. CLI says “Stop requested”; inspect show/wait for
+the actual row/reason/nullable exit and output.
 Running without a signal target returns409 `job_runner_pending`,
-`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+`job_runner_finalizing` or, unless retained-job death is proven,
+`job_liveness_unknown`. Unavailable attribution/history
 returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
 holds; the `team_move_native_held` response model and exception translator remain
 compatibility surfaces. Actual owned Stop remains possible under active root Pause.
@@ -59,6 +61,125 @@ is unavailable. No automatic reconnect/polling addition; reopen/reload separatel
 Stop success/error settlement refreshes actual detail/list; locale changes issue
 no requests. A terminal hint alone never verifies [done]. Source publication is separate
 from deployment or historical recovery.
+
+### Independent runtime budgets and retained-job diagnostics (#1699)
+
+A bounded job starts a small guardian as its original session/group leader.
+The script child stays in that group and inherits the same org-fence descriptor
+as before. The guardian closes its extra fence copy after spawning; it never
+unlocks the fence. It survives daemon loss, writes and fsyncs
+`jobs/JOB-NNN.err.timeout.json` with `reason=timeout` at its monotonic budget,
+sends group TERM, then group KILL after five seconds if members remain. It
+continues supervising background group members after the script leader exits.
+The guardian pins the group identity until exit. Normal daemon supervision reads
+the same marker, preserves an established first cause and commits one terminal
+result; its wait timeout is a fallback after budget plus TERM grace. Storage is
+reserved before script launch; marker-write failure still kills the group and
+attempts a stderr diagnostic. No parent-death signal or EOF release is added.
+External Stop/shutdown TERM does not start the guardian's five-second timer or
+send a duplicate group TERM: the daemon owns escalation, including its existing
+30-second shutdown grace. The independent budget remains active after that
+request and after parent loss; if it expires first, its timeout policy applies.
+The reserved `jobs/JOB-NNN.err.launch.json` channel confirms a successful inner
+launch with `format=job-guardian-launch@1`, `status=started`. The runner also
+requires a byte on a private helper-only admission pipe, sent only after the
+record's file fsync and parent-directory open/fsync succeed. The script does
+not inherit that pipe. A readable record without that acknowledgement is
+`failed/spawn_failed`, including failures after JSON flush. Missing or invalid
+confirmation also covers timeout-sidecar reservation, identity publication or
+inner launch failure. The helper emits the error on
+stderr before exiting. A helper exit code alone never proves script completion;
+confirmed script nonzero exits retain `completed` and their actual exit code.
+Unbounded jobs retain direct launch and their existing lifetime behavior.
+Escaping the original session/group with setsid/daemonization remains outside
+the existing containment guarantee.
+
+New launches record PID/PGID, session, timestamp and Linux boot ID/start ticks in
+`jobs/JOB-NNN.err.process.json`, without a schema change. On boot, retained
+running jobs are still `job_liveness_unknown`. Startup logs, `jobs show` and the
+job-detail route expose advisory `fence_observation`; the setup status's
+`writer_blockers` names matching job IDs, holder PIDs/PGIDs and age in the
+`writer_exclusion_unproven` detail. Linux observation matches fence device/inode
+in `/proc/locks` and the recorded groups' actual FD lock records. The latter
+remains useful after the acquiring daemon dies and the global list omits its
+inherited flock. Missing legacy identity, unsupported platforms, I/O or bounded
+observation exhaustion report `unavailable`. Limits are 1 second, 1024 jobs,
+65536 process entries, 4096 candidate FDs and bounded individual reads. Empty or
+unavailable observations never certify exclusion or process-tree quiescence.
+The workflow status route gets job IDs through the existing fenced attachment
+and bounded database reader. Without that attachment, observation is unavailable;
+the diagnostic opens no database and acquires no new fence.
+A timeout marker is visible even while the retained DB row remains running;
+these readers never change rows, kill, adopt, clear holds or release descriptors.
+
+
+For a retained running job with no live registration, the existing online
+`happyranch jobs stop JOB-NNN` can settle **already-dead** processes on Linux.
+It requires a readable valid identity sidecar for that exact job, including
+positive integer PID/PGID/SID/start ticks, the original session-leader equality,
+an aware timestamp and a valid boot UUID. A different current boot proves the
+recorded processes dead. On the same boot, the leader must be absent or have
+different start ticks (parse stat after its final `)`), **and** a complete bounded
+`/proc` scan must find no process with either the recorded PGID or SID. Zombies
+also refuse until reaped. A reused PID alone never suffices. The existing advisory
+fence observation must additionally be `observed` with no matching holder;
+`unavailable` refuses, even with independent process-death evidence. Prior-boot
+records cannot hold current-boot descriptors; a reused leader outside the original
+group/session no longer hides an otherwise available advisory observation.
+
+The proof runs once before admission and again immediately before the existing
+running-only CAS in the root/DB terminal transaction. Each pass allows two seconds,
+65536 proc entries and 16 MiB of stat/boot reads; the existing fence observation
+keeps its own smaller bounds. Read errors, exhaustion, missing/invalid identity,
+unsupported platforms or surviving members preserve409 `job_liveness_unknown`
+and the running row. This path sends **no signals**. It records `failed` with
+`reason=orphaned_process_dead`, NULL exit code/duration and a genuine finish time,
+never script success. It atomically adds the existing `job_run_failed` audit
+(actual owner task scope, `script_request_id` job ID). Its actor is the original
+run initiator: `reviewed_by` must agree with exactly one original start audit,
+including its actor, trigger and persisted run fields. Missing, malformed,
+duplicate or inconsistent run evidence preserves409 `job_liveness_unknown`
+without writes or signals. The Stop caller never supplies terminal attribution.
+After commit it emits the terminal hint and invokes the existing
+all-blocking-jobs-terminal owner wake path. A racing terminal winner owns the
+audit and wake. Unknown producer/Pause journals and all holds remain intact;
+terminal status grants no fence release,
+setup retry or cleanup authority. Legacy rows without the sidecar remain refused.
+
+### Operator stop with the daemon down
+
+There is no offline settlement CLI. Once the daemon is online, use the existing
+Stop path above to settle a positively proven dead retained job; live or unproven
+retained jobs remain refused without signalling. Legacy jobs lack the required
+identity and remain refused. An operator with separate stop authority can use
+the following manual Linux procedure while the daemon is down:
+
+1. Read the exact job's `.err.process.json`; compare its `boot_id` with
+   `/proc/sys/kernel/random/boot_id` and its PID's `/proc/PID/stat` field 22
+   (`start_ticks`), field 5 (`pgid`) and field 6 (`sid`). Parse after the final
+   `)` because the command name can contain spaces. All must match the record;
+   never signal based on a PID, age or job row alone. Missing/changed identity
+   requires separately authorized investigation, including for legacy jobs.
+2. Use `lsof -p PID` and `/proc/PID/fdinfo/*` for recorded group members to
+   confirm the exact org fence's device/inode. Recheck the original group
+   leader's boot/start identity immediately before signalling. Send
+   `kill -TERM -- -PGID` to that verified original group and allow five seconds.
+3. If processes remain, repeat the original leader identity check before
+   `kill -KILL -- -PGID`. A missing/reused leader does not authorize signalling
+   a numeric group; stop and reconcile that uncertainty separately. Never
+   unlink the fence, use `flock -u` on inherited custody or edit job/hold rows.
+4. Observe actual group exit and fence descriptors afterward. A signal return,
+   missing PID or global `/proc/locks` absence is not release proof. Independent
+   original-owner cleanup and workflow setup latch rules still apply; this
+   procedure grants no install, retry, historical cleanup or live restart authority.
+
+Focused standalone checks (not the retired Python suite):
+`uv run --frozen python -B -m unittest scripts.test_job_guardian -v`.
+They include the private-runtime parent-SIGKILL demonstration, real inherited
+flock/lsof and EX probe, durable marker, whole-group timeout and retained-boot
+job/setup status output, retained Stop terminal/wake, live/member/identity/fence
+refusals and concurrent terminalization. Native frozen/Darwin execution remains
+separate evidence.
 
 **Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
 
@@ -564,7 +685,7 @@ spec](../../specs/2026-11-11-darwin-cleanup-process-use.md).
 
 **Forward-only root-terminal worktree reconciliation (THR-259 seq476 adopting474).** Each original newly committed structural root in `completed`, `failed`, `cancelled` or `superseded`, including NULL-parent workflow tasks, reconciles only its parent ancestry after existing history/teardown and outside owner locks. Recorded child `worktree-deferred:` evidence becomes advisory at this root pass without rewriting results/history. Child hooks retain their one-task/five-second deferral policy; manual/daily retain age/ordinal/peer/history/host-job/cache authority. The shared bundled safety owner proves fresh exact-HEAD preservation with live owning-branch precedence, recursive no-follow boundaries, unchanged same-user scanner and action-time registration/ownership/protected identities. Dirty/local-only/open/active/held/successor-used/unknown paths retain; terminality is not quiescence. Existing append-only audit start INTEGER id plus root id/created_at identify a pass; mutable timestamps, replay and missing finish never create a retry. One owner batch shares 10s work including 0.5s DB/50ms lock admissions,1s report,1s owned-group reap;16 events/256 nodes/depth64/page64/16 attempts/5s clipped candidates/200000 entries/1MiB capture/256KiB receipts. The 12s ordinary-I/O target cannot interrupt SQLite/fsync/kernel I/O. Incomplete membership/protection starts zero removal and names exact frontier/remainder; possible post-action or report anomaly halts. Success requires absence, unregistration, branch preservation and protected identities. No force, cache-only action, task-tmp action, new schedule/queue/retry, schema/auth/permission change, historical sweep or deployment follows. See [the full contract](../../agent-guides/orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
-**Temporary-filesystem containment and inode advisory (THR-200/TASK-6501).** The workspace-cleanup advisory adds fail-open `statvfs` inode used/free/total/percent/threshold fields and a full-CI preflight. These observations are non-authoritative: they never grant cleanup authority, enumerate candidates, or cause the scheduler to inspect, move, quarantine, restore, unlink, or recursively delete `/tmp` content. Every runtime-launched task-agent and job subprocess now receives `TMPDIR`/`TMP`/`TEMP` rooted at the canonical mode-0700 `<workspace>/.happyranch/task-tmp/<task_id>`; runtime-owned, bounded, atomic v1 observations live separately at `.happyranch/task-scratch-manifests/<task_id>.json` and distinguish regenerable scratch roots from durable/recovery manifest evidence. Scratch preparation and its manifest reader retain the existing uppercase task-ID grammar and also accept exactly `TASK-SEQ-` followed by 64 lowercase hex digits. The separate report-only coverage/discovery and cleanup name filters are unchanged by this native-launch repair; accepting scratch does not establish reporting completeness or cleanup eligibility for sequential IDs. Containment-variable or sidecar changes between preparation and launch fail closed; unrelated inherited environment is preserved. Manifests are report-only evidence and never deletion authority: automatic teardown, periodic eligibility expansion, backlog cleanup, and manifest-driven removal are not implemented. Executor language/package caches remain below `.happyranch/cache`, registered scratch worktrees remain below `.happyranch/scratch/worktrees`, and small daemon callback payload contracts are unchanged.
+**Temporary-filesystem containment and inode advisory (THR-200/TASK-6501).** The workspace-cleanup advisory adds fail-open `statvfs` inode used/free/total/percent/threshold fields and a full-CI preflight. These observations are non-authoritative: they never grant cleanup authority, enumerate candidates, or cause the scheduler to inspect, move, quarantine, restore, unlink, or recursively delete `/tmp` content. Every runtime-launched task-agent and job subprocess now receives `TMPDIR`/`TMP`/`TEMP` rooted at the canonical mode-0700 `<workspace>/.happyranch/task-tmp/<task_id>`; runtime-owned, bounded, atomic v1 observations live separately at `.happyranch/task-scratch-manifests/<task_id>.json` and distinguish regenerable scratch roots from durable/recovery manifest evidence. Scratch preparation and its manifest reader retain the existing uppercase task-ID grammar and also accept exactly `TASK-SEQ-` followed by 64 lowercase hex digits. The separate report-only coverage/discovery and cleanup name filters are unchanged by this native-launch repair; accepting scratch does not establish reporting completeness or cleanup eligibility for sequential IDs. Containment-variable or sidecar changes between preparation and launch fail closed; unrelated inherited environment is preserved. Manifests are report-only evidence and never deletion authority: post-session automatic teardown, periodic eligibility expansion, backlog cleanup, and manifest-driven removal are not implemented. THR307 seq388/389 permits only attempt-local empty-root compensation before task session admission commits; see [native launch refusals](runtime-lifecycle.md#bounded-ordinary-native-launch-refusals-thr-315). This preserves sibling manifests/locks, native uncertainty and all sweeper ownership/classification rules. Executor language/package caches remain below `.happyranch/cache`, registered scratch worktrees remain below `.happyranch/scratch/worktrees`, and small daemon callback payload contracts are unchanged.
 
 **Cleanup activity performance (issue1019 / THR-295).** The supported schema
 path adds three nonunique indexes after legacy columns exist: tasks(assigned_agent,

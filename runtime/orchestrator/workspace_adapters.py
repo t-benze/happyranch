@@ -3003,15 +3003,37 @@ def _repo_refresh_identity(
         return _repo_refresh_observe(repo_dir, arguments, deadline=deadline,
                                      cancel_requested=cancel_requested).stdout
 
-    branch_ref = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]))
+    # rev-parse processes options in order: emit OIDs before switching to full
+    # symbolic names. --revs-only can exit 0 with a partial stream for an invalid
+    # revision, so require all six lines; never authorize from a valid prefix.
+    # HEAD must itself be a commit (not a tag that merely peels to one). The
+    # upstream commit is availability-only, just as before, not U provenance.
+    controls = observe(["rev-parse", "--revs-only", "--show-object-format", "HEAD",
+                        "HEAD^{commit}", "@{upstream}^{commit}",
+                        "--symbolic-full-name", "HEAD", "@{upstream}"]).splitlines(keepends=True)
+    batched = len(controls) == 6 and controls[1] == controls[2]
+    if batched:
+        object_format, head, commit, upstream_commit, branch_ref, upstream = map(_repo_refresh_line, controls)
+        _repo_refresh_oid(commit, object_format)
+        _repo_refresh_oid(upstream_commit, object_format)
+    else:
+        # A noncommit/malformed HEAD can make ^{commit} stop early or peel a
+        # tag. Repeat the ORIGINAL observations, including their error types:
+        # cat-file's type-only commit check is not a commit-content validator.
+        # This exceptional slow path uses no prefix as authority, no lazy fetch
+        # and no new mutation; an unavailable/failed supervised call still raises.
+        branch_ref = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]))
+        if not branch_ref.startswith("refs/heads/"):
+            raise ValueError("unsupported_refresh_configuration")
+        object_format = _repo_refresh_line(observe(["rev-parse", "--show-object-format"]))
+        head = _repo_refresh_oid(_repo_refresh_line(observe(
+            ["rev-parse", "--verify", "--quiet", "HEAD"])), object_format)
+        if observe(["cat-file", "-t", head]) != b"commit\n":
+            raise ValueError("repository_refresh_commit_unavailable")
     if not branch_ref.startswith("refs/heads/"):
         raise ValueError("unsupported_refresh_configuration")
     branch = branch_ref[len("refs/heads/"):]
-    object_format = _repo_refresh_line(observe(["rev-parse", "--show-object-format"]))
-    head = _repo_refresh_oid(_repo_refresh_line(observe(
-        ["rev-parse", "--verify", "--quiet", "HEAD"])), object_format)
-    if observe(["cat-file", "-t", head]) != b"commit\n":
-        raise ValueError("repository_refresh_commit_unavailable")
+    head = _repo_refresh_oid(head, object_format)
     # Git selects BEFORE bounded capture. Keep complete ordered scope/origin/raw
     # values for equality; unrelated branches/custom bloat cannot consume the cap.
     # One observation includes all applicable scopes/includes; no value regexp.
@@ -3024,12 +3046,14 @@ def _repo_refresh_identity(
     ):
         if _repo_refresh_config_values(config, key, branch=branch) != [expected]:
             raise subprocess.SubprocessError("unsupported_refresh_configuration")
-    upstream = _repo_refresh_line(observe(
-        ["rev-parse", "--symbolic-full-name", "--verify", "@{upstream}"]))
+    if not batched:
+        upstream = _repo_refresh_line(observe(
+            ["rev-parse", "--symbolic-full-name", "--verify", "@{upstream}"]))
     if upstream != f"refs/remotes/origin/{branch}":
         raise ValueError("unsupported_refresh_configuration")
-    _repo_refresh_oid(_repo_refresh_line(observe(
-        ["rev-parse", "--verify", "--quiet", "@{upstream}^{commit}"])), object_format)
+    if not batched:
+        _repo_refresh_oid(_repo_refresh_line(observe(
+            ["rev-parse", "--verify", "--quiet", "@{upstream}^{commit}"])), object_format)
     transport = observe(["remote", "get-url", "--all", "origin"])
     if not transport.strip():
         raise ValueError("repository_refresh_transport_unavailable")
@@ -3188,6 +3212,25 @@ def _repo_refresh_pull(
             evidence.probe = "target_type"
         if observe(["cat-file", "-t", target]).stdout != b"commit\n":
             raise subprocess.SubprocessError("repository_refresh_commit_unavailable")
+        if target == identity.head:
+            # No merge/submodule effects need post-effect checkpoints here.
+            # Keep a final full identity across advertisement/target validation,
+            # then branch/HEAD across that identity's config/transport tail.
+            # This covers the same observable windows as the old equal-target
+            # path; cooperative last-window/ABA limits remain unchanged.
+            if evidence is not None:
+                evidence.probe = "identity_after_fetch"
+            if _repo_refresh_identity(repo_dir, deadline=deadline, cancel_requested=cancel_requested) != identity:
+                raise subprocess.SubprocessError("repository_refresh_changed")
+            if evidence is not None:
+                evidence.probe = "final_branch"
+            final_branch = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]).stdout)
+            if evidence is not None:
+                evidence.probe = "final_head"
+            final_head = _repo_refresh_line(observe(["rev-parse", "--verify", "--quiet", "HEAD"]).stdout)
+            if not active() or final_branch != identity.branch_ref or final_head != identity.head:
+                raise subprocess.SubprocessError("repository_refresh_final_state_unavailable")
+            return result
         if evidence is not None:
             evidence.probe = "ancestry_forward"
         behind = observe(["merge-base", "--is-ancestor", identity.head, target], (0, 1)).returncode == 0

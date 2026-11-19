@@ -781,13 +781,16 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    These commands describe the interface; live curation/config changes still
    require the task's authority. Promoted notes remain locked.
 
-   Org `memory_compaction` defaults: `enabled: false`, `salience_floor: 10`,
+   Org `memory_compaction` defaults: `enabled: true`, `salience_floor: 10`,
    `stale_days: 45`, `superseded_grace_days: 7`, `max_evictions_per_run: 25`,
-   `auto_trigger_entry_count: 0`. Dry-run is always available; `--apply` requires
+   `auto_trigger_entry_count: 150`. Dry-run is always available; `--apply` requires
    enablement. A positive auto-trigger count plus enablement runs compaction
-   inline after ordinary adds at/above that many files (including evicted
-   files); zero disables the trigger, and updates do not trigger it. Inherited
-   imports bypass it. Sweep errors after the note write log a warning without
+   after ordinary adds and dream reflections at/above that many files (including
+   evicted files), off the event loop. Explicit `enabled: false` disables apply
+   and auto; zero disables the trigger, and updates do not trigger it. Inherited
+   imports bypass it. Each automatic eviction uses the existing
+   `memory_lifecycle_changed` audit with `source: compaction`, after persistence.
+   Sweep or audit errors after the note write log a warning without
    aborting the add or preventing its `memory_added` audit. There is no scheduled sweep.
    Staleness uses local creation `authored_at`, preserved by updates (legacy
    missing/unusable stamps fall back to `updated_at`; neither usable retains the
@@ -1223,6 +1226,15 @@ inspect/apply, deployment/restart, cleanup or historical journal reset. Finish
 only the actual current task/SID report-completion as this skill's final action.
 
 ## Native launch-refusal outcomes
+
+THR307 seq388/389 adds runtime-only pre-session scratch compensation: a task
+attempt may remove only its own newly created, identity-matching empty root
+before session admission commits, using no-follow `rmdir`. Existing/nonempty/
+replaced/symlinked roots remain; cleanup errors are logged without changing the
+refusal. After admission the root remains even if launch fails. Manifests/locks,
+reserved SID, audit shapes, three-attempt budget and all unknown preparation/
+reservation evidence remain unchanged. This grants agents no manual cleanup
+authority and changes no nightly sweeper ownership/classification rule.
 
 Optional pull diagnostic labels describe advisory wording only; absent labels or historical exit128 remain unknown and grant no cleanup or retry authority.
 

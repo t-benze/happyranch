@@ -170,6 +170,10 @@ func validateHomeLaunch(cfg homeLaunch) (*x509.CertPool, error) {
 func helperMain() {
 	// Suppress upstream diagnostics at their destination; never interpolate errors.
 	log.SetOutput(io.Discard)
+	if len(os.Args) == 2 && os.Args[1] == "--home-session-v1" {
+		homeSessionMain(os.Stdin, os.Stdout)
+		return
+	}
 	if len(os.Args) != 2 || os.Args[1] != "--home-bridge-v2" {
 		os.Exit(2)
 	}

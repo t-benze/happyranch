@@ -109,7 +109,30 @@ The post-terminal journal writer records ended producers without clearing unknow
 See [the lifecycle contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 This source change grants no restart, deploy or historical-row repair.
 
+## Memory compaction defaults
+
+Org `org/config.yaml` uses `memory_compaction.enabled: true` and
+`auto_trigger_entry_count: 150` when those keys or the section are absent.
+Unchanged defaults are `salience_floor: 10`, `stale_days: 45`,
+`superseded_grace_days: 7` and `max_evictions_per_run: 25`. Explicit
+`enabled: false` disables manual apply and automatic sweeps; explicit threshold
+zero disables automatic sweeps alone. Dry-run remains available. Ordinary adds
+and dream reflections trigger at/above the file threshold, including evicted
+files, in worker threads. Updates and inherited Instill imports bypass it.
+Each persisted eviction uses the existing `memory_lifecycle_changed` audit with
+`source: compaction` and the manual payload shape. Optional sweep/audit failures
+warn without aborting the add or suppressing `memory_added`. This does not enable
+dreaming or change live org configuration. See the [memory retirement spec](../specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md#memory-compaction-and-retirement-thr-366-pr-b).
+
 ## Graceful daemon stop (THR-357 Fix 3)
+
+On TERM, Uvicorn bounds its pre-lifespan connection/task drain to 5 seconds.
+It then cancels requests still open (including SSE/streaming) and enters
+lifespan teardown. This leaves 55 seconds of the existing 60-second wrapper
+window: 30 seconds for job grace, up to 5 seconds for job finalizers, and
+20 seconds for other existing drains and overhead. This allocation is not a
+hard deadline for all cleanup; an incomplete native drain still retains its
+barriers and cannot claim successful shutdown.
 
 Teardown closes runner/attachment and queue producer admission synchronously,
 then fences job-terminal resumes and sends job TERM before its first await and
@@ -2978,7 +3001,12 @@ checkout's uv/Python and a no-follow nonblocking flock probe. Missing/stale PID
 alone is insufficient: held or ambiguous locks return nonzero with the lock path
 and readable PID and retain markers. An absent/free regular lock permits stopped
 homes. Applying legacy migration has the same requirement; dry-run is a preview
-only. Never remove `daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
+only. Clean stop removes the serving PID/port markers, while normal lock-owning
+startup's atomically written `daemon.lock.pid` survives. When `daemon.pid` is
+genuinely absent, the next transition boot must positively observe that retained
+PID dead before it can publish the lock-era marker. Missing, self, reused-alive
+or ambiguous PID evidence remains unproven. Never remove `daemon.lock`. See
+[the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
 the start of the launch command and passed to the child. The daemon logs

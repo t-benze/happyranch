@@ -15,6 +15,107 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-379 slice 5c: foreground Mac client CLI
+
+Use the CLI shipped inside the same app bundle (adjust the app location):
+
+```sh
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection status
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client --help
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client accept-invite
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client saved-computers
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client connect-saved
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client remove-saved
+```
+
+The frozen CLI execs the fixed sibling `Contents/MacOS/HappyRanch` with
+`--connection-client <action>`. This foreground branch runs before SwiftUI or
+AppDelegate startup and directly reuses ManagedHomeInviteSession and
+LoginKeychainDeviceStore, including the existing helper, private profile lock,
+normal unlock/consent UI and exact-executable ACL. No additional signing is
+required. Source-only Python reports unavailable instead of searching for an app;
+the packaged native binary also accepts the fixed internal grammar directly.
+Mac host commands remain unavailable/deferred.
+
+A controlling terminal is required before invite/selection work. Paste is hidden,
+limited to 5500 UTF-8 bytes and 120 seconds. The terminal displays the exact target;
+type `connect` to consent and optionally `save` to save access in login Keychain.
+The comparison phrase stays on the terminal for comparison with Linux Host.
+No invite arguments, environment/file/stdin intake, clipboard read or secret
+export exists. Saved connect/remove enumerates at most 32 choices, waits at most
+120 seconds per input, defaults to Cancel and rereads the exact binding, trust,
+profile and bearer after explicit target confirmation. Local removal uses the
+existing native profile deletion, then exact Keychain delete/absence verification;
+it never claims Host revocation. Denied, locked or changed executable identity is
+reported through the existing closed storage outcomes, with no ACL repair or
+plaintext fallback. Failed/declined saving has an explicit session-only warning.
+
+Connections belong only to this invocation. `status` reports `notOwned` with an
+unavailable observation. Separate `disconnect`, `cancel-attempt`, `retry`,
+`retry-save` and `health` verbs return closed `unavailable/notOwned`, effect none.
+Ctrl-C/SIGTERM in the owning invocation cancels/disconnects, preserves observed
+save/deletion settlement and performs independently bounded session teardown.
+Unconfirmed cleanup is `cleanupIncomplete`/unknown. Retry uses a new invocation
+and fresh consent. Authenticated runtime health/open is `runtimeReachable`, never
+Connected or a claim that the RELEASE page loaded. The loopback URL is shown only
+on the terminal and lasts only while the process lives. JSON stdout contains
+closed states/effects and generic saved-computer labels/opaque refs; no target,
+invite, phrase, URL, bearer, fingerprint or diagnostics. Exit 0 means completed
+read/action or cancellation, 1 a closed error, 2 invalid grammar without argument
+echo. No GUI/other CLI session control or new IPC/service is provided.
+
+Focused native tests: from `app/mac`, `swift test --filter ConnectionCLITests`.
+They are NOT RUN on the Linux maker host. The existing unsigned
+`build-mac-app.yml` builds release app sources only and does not compile or run
+Swift tests. Native terminal/signal behavior, Keychain consent/unsigned reopen,
+helper integration and home/different-network acceptance remain NOT RUN.
+
+### THR-379 slice 3b-2a: static Mac client bridge contract
+
+The separate packaged Connection view asynchronously dispatches `bridge.hello`,
+`client.status`, `client.savedComputers`, `client.health` and ordinary
+`client.retrySave`. Hello advertises only those backed client capabilities;
+Mac host commands are unavailable. Status, saved-computer lists, health and
+subscriptions read existing native memory only: they never start discovery,
+Keychain prompts, retries or a connection. Health observes the existing native
+cadence, becomes stale after ten seconds, and never grants Connected. The
+originating mutation remains native while health/recovery is observed.
+
+Projections are hand-written. Saved-computer refs are opaque and bound to this
+view's current native records; generic numbered labels (English/Chinese) expose
+no endpoint, binding, home ID or fingerprint. **32 is a bridge-projection bound
+only.** At most 32 known valid computers returns every computer in deterministic
+native-ID order. Above 32, both `ClientSnapshot.computers` and
+`savedComputers.computers` are null and hello limits `computers`; the known active
+ref remains. Native custody/discovery is uncapped, partial valid discovery and
+ordinary startup reconnect are unchanged. A stale/unresolvable ref refuses
+`stateChanged` with effect none. Read/subscribe cannot refresh protected discovery.
+
+The per-document ledger retains 64 mutation IDs/outcomes without eviction,
+refuses same-ID/different-body, and admits one ordinary mutation and one native
+prompt without a queue. It also has a separate attempt-cancellation record for
+3b-2b, exempt from ordinary saturation/busy but never from confirmation. Retry
+save invokes the existing non-replacement save path and awaits write/readback;
+it does not delete or replace access after an identity/consent failure. Genuine
+Keychain consent remains native. A 130-second transport deadline reports
+unknown effect and keeps the mutation/prompt slot until native settlement.
+Document loss fences bridge-owned work, retains observed storage outcomes and
+discards stale delivery. Reads do not acquire ownership of existing sessions.
+
+`client.stateChanged` starts with a full snapshot and coalesces native model
+changes into increasing per-view sequences. The internal on/unsubscribe relay
+starts/stops one native observation stream. Events use structured arguments to
+`callAsyncJavaScript` in the admitted main frame/named world, with fresh native
+generation and document checks; runtime content receives no bridge.
+
+`client.acceptInvite`, `client.connectSaved`, `client.removeSaved`,
+`client.disconnect`, **`client.cancelAttempt`** and reconnecting `client.retry`
+remain unadvertised and unavailable (effect none) until 3b-2b supplies native
+paste/target/default-Cancel sheets. That PR also owns persistent native
+save-warning → static Retry save routing and the complete RELEASE UI load gate
+on every entry. Existing native screens remain. Swift/native GUI/Keychain
+execution is not established by this source delivery or an unsigned build.
+
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
 First launch offers **Run HappyRanch on this Mac** and **Connect to another
@@ -31,13 +132,25 @@ URL/key intake does not exist and is not planned; outside-home access uses a fix
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
 QR transfer remains deferred.
 
-`HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
-fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
-peer-only bridge for every ceremony, health and product request. Native/helper
+`HomeInviteModel` owns attempt IDs, native document generations, the actual
+invite-expiry countdown and cancel fencing. Native load callbacks capture both
+identities, including on saved reconnect. A native confirmation hold defers
+Connected until dismissal and a still-current authorized load; direct Cancel in
+the native attempt form needs no second confirmation. The static contract layer
+above reuses these seams; web-initiated confirmations remain in 3b-2b. `ManagedHomeInviteSession`
+uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
-pairing material and handle; late results cannot reconnect. A failed join,
-including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
+pairing material and handle; late results cannot reconnect. The explicit Saving
+phase covers Keychain write/readback. Cancel fences progression immediately and
+shows Stopping until that storage step settles, retaining its observed saved
+access or save failure before local teardown; it cannot advance to Opening or
+Connected. Failed or unknown teardown remains visible.
+The native release-UI load observation is retained if it arrives during Retry
+saving; Connected still waits for saving and any native confirmation to settle.
+The ten-second navigation deadline remains effective while Retry saving waits.
+A failed join, including a helper TLS-close failure, reaches a closed failure
+with Retry (#1563).
 A spent join key is never retried. A retained same-trust unfinished membership,
 or a saved computer, reopens with an empty key. An interrupted first enrollment
 is checked explicitly without a key; if that check refuses, a fresh invite may
@@ -70,7 +183,11 @@ storage. Revocation observed through the closed connector code closes access
 and runs local removal for the exact active credential/profile, including a
 newly delivered credential whose save failed. Picker selection never chooses an
 automatic deletion target. Failed removal retains that exact target for Retry;
-new connection attempts wait for removal. Local removal never claims host revocation.
+new connection attempts wait for removal. Interrupting removal keeps a visible
+Removal incomplete warning and Retry removal for that captured target. If the
+dispatched deletion confirms erasure before cancellation settles, the current
+cancellation owner reconciles that result without reconnecting. Local removal
+never claims host revocation.
 
 **Pairing wire reconciled against merged Linux** (`origin/main` at
 `19c952c05502c1b091f8dc66e8acdd2f9a7de838`, PRs #1574/#1578): POST

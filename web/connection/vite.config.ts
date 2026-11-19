@@ -9,7 +9,8 @@ const outDir = path.resolve(root, '../dist-connection');
 const tokenFile = path.resolve(root, '../src/design-system/tokens/tokens.css');
 // Import only literal semantic values from the shared pure token authority.
 const tokenNames = ['surface-canvas', 'surface-raised', 'text-primary', 'text-secondary',
-  'border-default', 'border-strong', 'accent-text', 'accent-default'];
+  'border-default', 'border-strong', 'accent-text', 'accent-default', 'surface-sunken', 'text-inverse',
+  'accent-soft', 'attention-soft', 'attention-text', 'info-soft', 'info', 'danger-soft', 'danger'];
 export default defineConfig({
   root, base: './', publicDir: false,
   plugins: [{

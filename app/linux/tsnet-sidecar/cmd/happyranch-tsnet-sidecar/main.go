@@ -61,6 +61,10 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
 		return 2
 	}
+	if err := admitHomeForeground(*path, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
+		return 2
+	}
 	svc := sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second})
 	if runtime.GOOS == "darwin" {
 		return serveLaunchd(ctx, svc, *readiness, *watchdog, cfg.ConnectorAddr)
@@ -84,6 +88,25 @@ func (p *configProfile) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// A value wrapper sees explicit null and repeated optional binding members.
+type configBinding struct {
+	value *sidecar.HomeBinding
+	seen  bool
+}
+
+func (b *configBinding) UnmarshalJSON(data []byte) error {
+	if b.seen {
+		return sidecar.ErrConfiguration
+	}
+	b.seen = true
+	var value sidecar.HomeBinding
+	if err := json.Unmarshal(data, &value); err != nil {
+		return sidecar.ErrConfiguration
+	}
+	b.value = &value
+	return nil
+}
+
 func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 	// Nonblocking/no-follow admission prevents a replaced FIFO or symlink from
 	// turning a config read into an unbounded wait or an aliased state read.
@@ -100,7 +123,8 @@ func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 	var cfg sidecar.Config
 	input := struct {
 		*sidecar.Config
-		Profile configProfile
+		Profile     configProfile
+		HomeBinding configBinding `json:"home_binding"`
 	}{Config: &cfg}
 	decoder := json.NewDecoder(io.LimitReader(f, (1<<20)+1))
 	decoder.DisallowUnknownFields()
@@ -111,6 +135,7 @@ func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 		return cfg, sidecar.ErrConfiguration
 	}
 	cfg.Profile = string(input.Profile)
+	cfg.HomeBinding = input.HomeBinding.value
 	if credentialFile != "" {
 		cfg.CredentialFile = credentialFile
 	}

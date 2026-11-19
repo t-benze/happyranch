@@ -1,0 +1,11 @@
+#!/usr/bin/python3 -I
+"""Package-owned, zero-option root helper entry; no bundled/user imports."""
+from __future__ import annotations
+
+import runpy
+import sys
+
+if len(sys.argv) != 1:
+    raise SystemExit('invalid-request')
+runpy.run_path('/opt/happyranch-desktop/libexec/remote-access/remote_access_helper.py',
+               run_name='__main__')

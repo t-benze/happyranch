@@ -1,8 +1,7 @@
 """Fixed no-input Gio service, intended for system Python -I as root.
 
-The protected release UID is a mandatory constructor value supplied by the
-root-owned package launcher, never a bus argument or environment/config value.
-Package activation and reading the release record belong to slice 3b.
+The installed entry binds each authenticated sender to its validated release
+home before connector reads or authorization. Lifecycle effects remain absent.
 """
 from __future__ import annotations
 
@@ -14,11 +13,15 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from gi.repository import Gio, GLib
+
+if TYPE_CHECKING:
+    from .helper_lifecycle import LifecycleCapture
 
 # The existing remote_access package initializer imports the connector stack.
 # Load ONLY this root-owned sibling, also when invoked by system Python -I.
@@ -31,13 +34,30 @@ CONTROL_SOCKET, MUTATIONS = _control.CONTROL_SOCKET, _control.MUTATIONS
 ControlClient, Device, Refused, Snapshot = (_control.ControlClient, _control.Device,
                                          _control.Refused, _control.Snapshot)
 
+_OWNER_SPEC = importlib.util.spec_from_file_location(
+    'happyranch_fixed_helper_owner', Path(__file__).with_name('helper_owner.py'))
+_owner = importlib.util.module_from_spec(_OWNER_SPEC)
+sys.modules[_OWNER_SPEC.name] = _owner
+_OWNER_SPEC.loader.exec_module(_owner)
+bootstrap_owner, OwnerRefused, Owner = _owner.bootstrap_owner, _owner.OwnerRefused, _owner.Owner
+
+# Stdlib-only package siblings; the receipt owner runs only in bundled Python -I.
+for _name in ('status_v2', 'home_audit', 'helper_generation'):
+    _spec = importlib.util.spec_from_file_location(
+        'happyranch_fixed_' + _name, Path(__file__).with_name(_name + '.py'))
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = _module
+    _spec.loader.exec_module(_module)
+    globals()['_' + _name] = _module
+
 SYSTEM_BUS_ADDRESS = 'unix:path=/run/dbus/system_bus_socket'
 BUS_NAME = 'ai.happyranch.RemoteAccess1'
 OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
 INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = 120.0
-METHODS = frozenset({'Status', 'NextDevice', *MUTATIONS})
+IDLE_SECONDS = 60.0
+METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
     for name in sorted(METHODS)) + '</interface></node>'
@@ -49,6 +69,7 @@ class Capture:
     method: str
     sender: str
     uid: int
+    owner: Owner
     snapshot: Snapshot
     record: Device
     deadline: float
@@ -57,17 +78,23 @@ class Capture:
 
 
 class RemoteAccessHelper:
-    def __init__(self, connection: Gio.DBusConnection, release_uid: int,
+    def __init__(self, connection: Gio.DBusConnection, release_uid: int | None = None,
                  control_path: str = CONTROL_SOCKET, clock: Callable[[], float] = time.monotonic,
                  deadline: float = AUTH_DEADLINE) -> None:
-        if type(release_uid) is not int or release_uid <= 0 or not 0 < deadline <= AUTH_DEADLINE:
+        if ((release_uid is not None and (type(release_uid) is not int or release_uid <= 0))
+                or not 0 < deadline <= AUTH_DEADLINE):
             raise Refused('unavailable')
         self.connection, self.release_uid = connection, release_uid
         self.control = ControlClient(control_path)
         self.clock, self.deadline = clock, deadline
+        self.last_activity = self.clock()
         self.lock = threading.RLock()
         self.cursors: dict[str, str] = {}
-        self.inflight: Capture | None = None
+        self.inflight: Capture | LifecycleCapture | None = None
+        self.generations = _helper_generation.HomeGenerationReader()
+        self.audit = _home_audit.HomeAudit()
+        self.status_worker: object | None = None
+        self.status_lock = threading.Lock()
         self.timer = 0
         self.cancelled = False
         self.authorization_terminal = False
@@ -87,8 +114,44 @@ class RemoteAccessHelper:
             self.close()
             raise Refused('unavailable')
 
+    def try_claim(self, capture: LifecycleCapture) -> bool:
+        """Inert lifecycle adapter to the existing global slot; never queues."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            if self.inflight is not None:
+                return False
+            self.inflight = capture
+            self.last_activity = self.clock()
+            return True
+        finally:
+            self.lock.release()
+
+    @contextmanager
+    def effect_guard(self, capture: LifecycleCapture) -> Iterator[None]:
+        if not self.lock.acquire(blocking=False):
+            raise Refused('busy')
+        try:
+            if self.inflight is not capture:
+                raise Refused('changed')
+            yield
+        finally:
+            self.lock.release()
+
+    def release(self, capture: LifecycleCapture) -> None:
+        with self.lock:
+            if self.inflight is capture:
+                self.inflight = None
+                self.last_activity = self.clock()
+
+    def _idle(self, loop: GLib.MainLoop) -> bool:
+        if (self.inflight is None and self.status_worker is None
+                and self.clock() - self.last_activity >= IDLE_SECONDS):
+            loop.quit()
+        return True  # serve removes the source even on the idle-exit path
+
     def close(self) -> None:
-        if self.inflight is not None:
+        if isinstance(self.inflight, Capture):
             self._cancel('unavailable')
         self.connection.remove_filter(self.filter_id)
         self.connection.signal_unsubscribe(self.subscription)
@@ -99,11 +162,15 @@ class RemoteAccessHelper:
                 incoming: bool, data: object) -> Gio.DBusMessage | None:
         if (incoming and message.get_message_type() == Gio.DBusMessageType.METHOD_CALL
                 and message.get_path() == OBJECT_PATH):
-            # Gio filters run on its message thread; all work goes to the main context.
+            # Gio filters run on its message thread. Mutations use the main context;
+            # StatusV2 starts its bounded read worker directly below.
             # Preserve refusal at arrival even if main-context dispatch is busy
             # finishing the first operation. Never queue a second surprise dialog.
             busy = self.inflight is not None
-            GLib.idle_add(self._dispatch, message, busy)
+            if message.get_member() == 'StatusV2':
+                self._dispatch(message, busy)  # Read-only worker never waits on the main context.
+            else:
+                GLib.idle_add(self._dispatch, message, busy)
             return None
         return message
 
@@ -113,10 +180,86 @@ class RemoteAccessHelper:
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
     def _error(self, message: Gio.DBusMessage, category: str) -> None:
-        category = Refused(category).category
+        category = category if category in _owner.FAILURES else Refused(category).category
         LOG.info('remote-access-helper %s', category)
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
+
+    def _status_v2(self, message: Gio.DBusMessage, sender: str) -> None:
+        # One worker, no queue, no helper mutation lock. Slow filesystem/control
+        # reads cannot hold the main context beyond the 2s response deadline.
+        token = object()
+        with self.status_lock:
+            if self.status_worker is not None:
+                raise Refused('busy')
+            self.status_worker = token
+        deadline = time.monotonic() + 2.0
+        replied = False
+        reply_lock = threading.Lock()
+
+        def finish(raw: bytes | None, category: str | None = None) -> bool:
+            nonlocal replied
+            with reply_lock:
+                if not replied:
+                    replied = True
+                    if raw is None or time.monotonic() >= deadline:
+                        self._error(message, category or 'expired')
+                    else:
+                        reply = message.new_method_reply()
+                        reply.set_body(GLib.Variant('(s)', (raw.decode('utf-8'),)))
+                        self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
+            return False
+
+        def settled(raw: bytes | None, category: str | None) -> None:
+            timer.cancel()
+            try:
+                finish(raw, category)
+            finally:
+                with self.status_lock:
+                    if self.status_worker is token:
+                        self.status_worker = None
+
+        def observe() -> None:
+            raw, category = None, None
+            try:
+                uid = self._uid(sender)
+                self._binding(uid)  # Same B8 custody gate as Status v1; no polkit.
+                setup = None
+                try:
+                    observed = self.generations.current_generation(min(.75, deadline - time.monotonic()))
+                except _helper_generation.GenerationUnavailable:
+                    observed = None
+                observed_at = time.monotonic()
+                if observed is not None:
+                    if observed.release_uid != uid:
+                        raise Refused('changed')
+                    phase = ('ready' if observed.phase == 'ready' else
+                             'uncertain' if observed.phase == 'failed_uncertain' else 'in_progress')
+                    setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
+                try:
+                    snapshot = self._snapshot(uid)
+                except Refused as error:
+                    if error.category != 'unavailable':
+                        raise
+                    connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.UNREACHABLE, 0)
+                    runtime = None
+                else:
+                    connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.RUNNING, 0)
+                    runtime = _status_v2.RuntimeObservation(
+                        _status_v2.RuntimeAvailability.AVAILABLE if snapshot.ready else
+                        _status_v2.RuntimeAvailability.UNAVAILABLE, 0)
+                if setup is not None:
+                    setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
+                raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
+                    setup=setup, connector=connector, runtime=runtime))
+            except Exception as error:
+                category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
+            settled(raw, category)
+
+        timer = threading.Timer(1.9, finish, (None, 'expired'))
+        timer.daemon = True
+        timer.start()
+        threading.Thread(target=observe, daemon=True).start()
 
     def _uid(self, sender: str) -> int:
         try:
@@ -127,9 +270,15 @@ class RemoteAccessHelper:
         except Exception:
             raise Refused('disconnected') from None
 
-    def _snapshot(self) -> Snapshot:
+    def _binding(self, uid: int) -> Owner:
+        owner = bootstrap_owner(uid)
+        if self.release_uid is not None and owner.uid != self.release_uid:
+            raise Refused('wrong-uid')
+        return owner
+
+    def _snapshot(self, uid: int) -> Snapshot:
         snapshot = self.control.status()
-        if not snapshot.owned or snapshot.release_uid != self.release_uid:
+        if not snapshot.owned or snapshot.release_uid != uid:
             raise Refused('changed')
         return snapshot
 
@@ -143,6 +292,7 @@ class RemoteAccessHelper:
         return target
 
     def _dispatch(self, message: Gio.DBusMessage, busy_on_arrival: bool = False) -> bool:
+        self.last_activity = self.clock()
         try:
             fds = message.get_unix_fd_list()
             if message.get_signature() or (fds is not None and fds.get_length()):
@@ -152,13 +302,18 @@ class RemoteAccessHelper:
                 raise Refused('unknown-method')
             if not sender or not sender.startswith(':'):
                 raise Refused('invalid-request')
+            if method == 'StatusV2':
+                self._status_v2(message, sender)
+                return False
+            # Refuse before taking a lock held by an effect or doing bus/file I/O.
+            if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
+                raise Refused('busy')
             with self.lock:
                 uid = self._uid(sender)
-                if uid != self.release_uid:
-                    raise Refused('wrong-uid')
+                owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = self._snapshot()
+                snapshot = self._snapshot(uid)
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
@@ -176,7 +331,7 @@ class RemoteAccessHelper:
                         'selected': selected.public() if selected else None})
                     return False
                 record = self._target(method, sender, snapshot)
-                capture = Capture(method, sender, uid, snapshot, record, self.clock() + self.deadline,
+                capture = Capture(method, sender, uid, owner, snapshot, record, self.clock() + self.deadline,
                                   uuid.uuid4().hex, message)
                 self.inflight, self.cancelled = capture, False
                 self.authorization_terminal = False
@@ -192,10 +347,10 @@ class RemoteAccessHelper:
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 int(self.deadline * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
-            if self.inflight is not None and self.inflight.message == message:
+            if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                self._error(message, error.category if isinstance(error, Refused) else 'unavailable')
+                self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
         return False
 
     def _clear(self) -> None:
@@ -203,6 +358,7 @@ class RemoteAccessHelper:
             GLib.source_remove(self.timer)
         self.timer, self.inflight = 0, None
         self.authorization_terminal = False
+        self.last_activity = self.clock()
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture) -> None:
         terminal = False
@@ -232,23 +388,49 @@ class RemoteAccessHelper:
                     return
                 if not granted:
                     raise Refused('denied')
-                if self._uid(capture.sender) != capture.uid or capture.uid != self.release_uid:
+                if self._uid(capture.sender) != capture.uid:
                     raise Refused('wrong-uid')
-                current = self._snapshot()
+                if self._binding(capture.uid) != capture.owner:
+                    raise Refused('changed')
+                current = self._snapshot(capture.uid)
                 if current != capture.snapshot or self._target(capture.method, capture.sender, current) != capture.record:
                     raise Refused('changed')
                 if self.clock() >= capture.deadline:
                     self._cancel('expired')
                     return
-                # Connector revalidates the SAME snapshot/record under its trust mutation lock.
-                self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
-                                    lambda: self._before_commit(capture))
+                # B16 covers only the three already-existing device effects.
+                # I3 must add lifecycle/invite intents at their actual effect boundaries.
+                event = {'ApprovePending': _home_audit.Event.DEVICE_APPROVED,
+                         'RejectPending': _home_audit.Event.DEVICE_REJECTED,
+                         'RevokeSelected': _home_audit.Event.DEVICE_REVOKED}[capture.method]
+                # Local random correlation, never a node ID or digest prefix.
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                intent = self.audit.intent(event, intent_id='intent-' + label, operation_id='op-' + label)
+                dispatched = False
+                def before_commit() -> None:
+                    nonlocal dispatched
+                    self._before_commit(capture)
+                    dispatched = True  # commit may be sent; loss can no longer prove refusal.
+                try:
+                    self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
+                                        before_commit)
+                except Exception:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                    raise
+                try:
+                    self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED)
+                except Exception:
+                    self.audit.uncertain(intent)
+                    raise
                 self._reply(capture.message, 'ok')
             except Exception as error:
                 if isinstance(error, Refused) and error.category == 'expired':
                     self._cancel('expired')
                     return
-                self._error(capture.message, error.category if isinstance(error, Refused) else 'unavailable')
+                self._error(capture.message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
             self._clear()
 
     def _before_commit(self, capture: Capture) -> None:
@@ -256,8 +438,10 @@ class RemoteAccessHelper:
         if (self.clock() >= capture.deadline
                 or (capture.method != 'RevokeSelected' and capture.record.expires_at <= time.time())):
             raise Refused('expired')
-        if self._uid(capture.sender) != capture.uid or capture.uid != self.release_uid:
+        if self._uid(capture.sender) != capture.uid:
             raise Refused('wrong-uid')
+        if self._binding(capture.uid) != capture.owner:
+            raise Refused('changed')
         if self.inflight is not capture or self.cancelled:
             raise Refused('changed')
         if self.clock() >= capture.deadline:
@@ -271,7 +455,7 @@ class RemoteAccessHelper:
     def _cancel(self, category: str) -> None:
         with self.lock:
             capture = self.inflight
-            if capture is None or self.cancelled:
+            if not isinstance(capture, Capture) or self.cancelled:
                 return
             self.cancelled = True
             self._error(capture.message, category)
@@ -297,18 +481,28 @@ class RemoteAccessHelper:
         if name.startswith(':') and old and not new:
             with self.lock:
                 self.cursors.pop(name, None)
-                if self.inflight is not None and self.inflight.sender == name:
+                if isinstance(self.inflight, Capture) and self.inflight.sender == name:
                     self._cancel('disconnected')
 
 
-def serve(release_uid: int) -> None:
-    """Fixed production bootstrap; only the protected launcher supplies the UID."""
+def serve() -> None:
+    """Fixed production bootstrap; caller credentials select the owner per call."""
     if os.geteuid() != 0:
         raise Refused('wrong-uid')
     connection = Gio.DBusConnection.new_for_address_sync(SYSTEM_BUS_ADDRESS,
         Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
-    helper = RemoteAccessHelper(connection, release_uid)
+    helper = RemoteAccessHelper(connection)
+    loop = GLib.MainLoop()
+    timer = GLib.timeout_add_seconds(1, helper._idle, loop)
     try:
-        GLib.MainLoop().run()
+        loop.run()
     finally:
+        GLib.source_remove(timer)
         helper.close()
+        connection.close_sync(None)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 1:
+        raise SystemExit('invalid-request')
+    serve()

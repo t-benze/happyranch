@@ -529,7 +529,7 @@ function TrackGroup({
       <div
         id={stepsId}
         hidden={!open}
-        className="border-border-default mb-2.5 ml-1.5 border-l-2 pl-2.5 sm:ml-3 sm:pl-4"
+        className="mb-2.5 ml-1.5 pl-2.5 sm:ml-3 sm:pl-4"
       >
         {steps.map((s, i) => (
           <StepRow key={s.node?.task_id ?? `planned-${i}`} step={s} index={i} endedAt={header.endedAt} />

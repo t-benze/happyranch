@@ -16,6 +16,75 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
        "font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; "
        "base-uri 'none'; form-action 'none'")
 MAX_ASSET = 16 * 1024 * 1024
+CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt",
+                   "client.disconnect", "client.retry", "client.health", "client.savedComputers",
+                   "client.connectSaved", "client.retrySave", "client.removeSaved"}
+
+HOST_METHODS = {"host.status": "Status", "host.nextDevice": "NextDevice",
+                "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
+                "host.revokeDevice": "RevokeSelected"}
+HOST_MUTATIONS = frozenset({"ApprovePending", "RejectPending", "RevokeSelected"})
+
+
+class Requests:
+    """Per-document bounded outcomes; cancellation has its own attempt record."""
+    def __init__(self) -> None:
+        self.mutations = {}
+        self.cancel = None
+        self.reads = 0
+        self.mutating = False
+
+    def admit(self, request: dict, attempt: int, finish: object) -> object:
+        command, key = request["command"], request["requestId"]
+        read = command in ("bridge.hello", "host.status", "client.status", "client.health", "client.savedComputers")
+        body = json.dumps(request, sort_keys=True)
+        record = self.mutations.get(key)
+        if record is None and self.cancel and self.cancel["key"] == key:
+            record = self.cancel
+        if record:
+            if record["body"] != body:
+                finish(None, "invalidRequest")
+            elif record["outcome"] is not None:
+                finish(*record["outcome"])
+            elif len(record["waiters"]) < 8:
+                record["waiters"].append(finish)
+            else:
+                finish(None, "busy")
+            return None
+        if read:
+            if self.reads >= 8:
+                finish(None, "busy")
+                return None
+            self.reads += 1
+            def done(*args: object) -> None:
+                self.reads -= 1
+                finish(*args)
+            return done
+        cancel = command == "client.cancelAttempt"
+        if cancel and self.cancel and self.cancel["attempt"] == attempt:
+            outcome = self.cancel["outcome"]
+            finish(*(outcome if outcome is not None else (None, "busy")))
+            return None
+        if not cancel and (self.mutating or len(self.mutations) >= 64):
+            finish(None, "busy")
+            return None
+        record = dict(key=key, body=body, attempt=attempt, outcome=None, waiters=[])
+        if cancel:
+            self.cancel = record
+        else:
+            self.mutations[key] = record
+            self.mutating = True
+        def done(*args: object) -> None:
+            if record["outcome"] is not None:
+                return
+            record["outcome"] = args
+            if not cancel:
+                self.mutating = False
+            finish(*args)
+            for waiter in record["waiters"]:
+                waiter(*args)
+            record["waiters"].clear()
+        return done
 
 
 def parse_json(raw: str, limit: int) -> Any:
@@ -225,10 +294,10 @@ class Protocol:
         return self.result("bridge.hello", {
             "version": 1, "platform": "linux", "roles": ["host", "client"],
             "capabilities": [{"command": name, "availability": (
-                "available" if name == "host.status" else "unavailable")}
+                "available" if name in CLIENT_COMMANDS | HOST_METHODS.keys() else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
             "observationLimits": {"host": ["inviteState", "expiresAt"],
-                                  "client": list(self.schema["$defs"]["client"]["properties"])}})
+                                  "client": ["route", "comparisonPhrase"]}})
 
     def host(self, raw: str) -> dict:
         value = parse_json(raw, 32768)
@@ -242,17 +311,17 @@ class Protocol:
             if item is None:
                 return None
             if (type(item) is not dict or set(item) != {"label", "fingerprint", "comparison_phrase"}
-                    or any(type(v) is not str or len(v.encode("utf-8")) > 4096 for v in item.values())
+                    or any(type(v) is not str or len(v) > 576 for v in item.values())
                     or re.fullmatch("[0-9a-f]{24}", item["fingerprint"]) is None):
                 raise ValueError("invalid helper device")
             # Helper text is HTML-escaped. Decode into bounded plain text only.
             import html
-            label = html.unescape(item["label"])
-            encoded_label = label.encode("utf-8")
-            if len(encoded_label) > 256:
-                label = encoded_label[:253].decode("utf-8", errors="ignore") + "…"
-            return {"label": label,
-                    "comparisonPhrase": html.unescape(item["comparison_phrase"]) or None}
+            def plain(text: str) -> str:
+                decoded = html.unescape(text)
+                encoded = decoded.encode("utf-8")
+                return decoded if len(encoded) <= 256 else encoded[:253].decode("utf-8", errors="ignore") + "…"
+            return {"label": plain(item["label"]),
+                    "comparisonPhrase": plain(item["comparison_phrase"]) or None}
 
         devices = [device(item) for item in value["devices"]]
         if None in devices or value["selected"] is not None and value["selected"] not in value["devices"]:
@@ -261,3 +330,118 @@ class Protocol:
             "setup": value["phase"], "runtime": "available" if value["ready"] else "offline",
             "observation": "known", "devices": devices, "pending": device(value["pending"]),
             "selected": device(value["selected"]), "inviteState": "unknown", "expiresAt": None})
+
+    def host_unavailable(self, setup: str = "unknown") -> dict:
+        return self.result("host.status", dict(setup=setup, runtime="unknown", observation="unavailable",
+            devices=None, pending=None, selected=None, inviteState="unknown", expiresAt=None))
+
+    def host_action(self, method: str, snapshot: dict) -> dict:
+        # An acknowledged helper commit establishes only its documented effect.
+        # It supplies no host-service or network-membership cleanup receipt.
+        return dict(effect="confirmed", hostDenial="confirmed" if method in
+                    ("RejectPending", "RevokeSelected") else "notApplicable",
+                    hostCleanup="notApplicable", localCleanup="notApplicable",
+                    networkCleanup="unknown" if method == "RevokeSelected" else "notApplicable",
+                    inviteState="unknown", expiresAt=None, host=snapshot, client=None)
+
+
+def request_host(self: object, method: str, complete: object, current: object, observe: object,
+                 *, allow_reconnect: bool = True) -> None:
+    """Fixed helper transaction shared by the window and standalone CLI owner.
+
+    The caller owns lifetime/admission; this owner owns the dedicated bus,
+    closed projection, acknowledgement and loss semantics. Never retry mutations.
+    """
+    if method not in HOST_METHODS.values():
+        complete(None, "unavailable")
+        return
+    mutation = method in HOST_MUTATIONS
+    acknowledged = False
+
+    def failed(error: Exception, dispatched: bool) -> None:
+        if not current():
+            return
+        remote = self.Gio.DBusError.get_remote_error(error) if isinstance(error, self.GLib.Error) else None
+        absent = remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
+                            "org.freedesktop.DBus.Error.NameHasNoOwner")
+        snapshot = self.protocol.host_unavailable("off" if absent else "unknown")
+        observe(snapshot)
+        if acknowledged:
+            complete(self.protocol.host_action(method, snapshot))
+        elif not mutation and absent and method == "Status":
+            complete(snapshot)
+        else:
+            closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
+                      "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
+                      "org.freedesktop.DBus.Error.AuthFailed": "permissionDenied",
+                      "ai.happyranch.RemoteAccess1.Error.wrong_uid": "permissionDenied",
+                      "ai.happyranch.RemoteAccess1.Error.changed": "stateChanged",
+                      "ai.happyranch.RemoteAccess1.Error.expired": "expired",
+                      "ai.happyranch.RemoteAccess1.Error.busy": "busy",
+                      "ai.happyranch.RemoteAccess1.Error.invalid_request": "invalidRequest",
+                      "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
+            code = closed.get(remote)
+            if code:
+                complete(None, code)
+            elif mutation and dispatched and not absent:
+                complete(None, "outcomeUnknown", "unknown")
+            else:
+                complete(None, "unavailable")
+
+    def replied(connection: object, result: object, called: str) -> None:
+        nonlocal acknowledged
+        if not current():
+            return
+        try:
+            raw, = connection.call_finish(result).unpack()
+            if called in HOST_MUTATIONS:
+                if parse_json(raw, 32768) != "ok":
+                    raise ValueError("invalid helper acknowledgement")
+                acknowledged = True
+                # Keep the slot until Status completes; never predict state
+                # from an acknowledgement, selected label or fingerprint.
+                call("Status")
+                return
+            snapshot = self.protocol.host(raw)
+            observe(snapshot)
+            complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+        except Exception as error:
+            failed(error, True)
+
+    def call(called: str) -> None:
+        try:
+            self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
+                "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),
+                self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if called in HOST_MUTATIONS
+                else self.Gio.DBusCallFlags.NONE,
+                122000 if called in HOST_MUTATIONS else 3000,
+                self.cancellable, replied, called)
+        except Exception as error:
+            failed(error, False)
+
+    def connected(_source: object, result: object, _data: object) -> None:
+        try:
+            connection = self.Gio.DBusConnection.new_for_address_finish(result)
+            connection.set_exit_on_close(False)
+            if not current():
+                connection.close(None, None, None)
+                return
+            self.connection = connection
+            call(method)
+        except Exception as error:
+            failed(error, False)
+
+    try:
+        if self.connection is not None and not self.connection.is_closed():
+            call(method)
+        elif self.connection is not None and not allow_reconnect:
+            # A CLI selection belongs to its initial bus, even if Gio closes it
+            # after the caller's admission check. Never dispatch on a new bus.
+            complete(None, "unavailable")
+        else:
+            self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
+                self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+                self.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None, self.cancellable, connected, None)
+    except Exception as error:
+        failed(error, False)
