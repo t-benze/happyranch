@@ -151,7 +151,7 @@ class HelperLifecycleBackend:
         self.store = HomeActivationStore(root=io.root, root_owner=io.root_owner)
 
     def capture(self, method: str, uid: int) -> str:
-        if method in ('CancelInvite', 'RecoverInvite'):
+        if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             return HelperInviteBackend(self.io).capture(uid)
         receipt = self.store.current()
@@ -300,7 +300,7 @@ def helper_main() -> int:
             return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
         manager = SystemdServiceManager(system=True, run=run)
         io = ManagedInstaller(layout='deb', manager=manager, run=run)
-        if request['method'] in ('CancelInvite', 'RecoverInvite'):
+        if request['method'] in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
             from runtime.remote_access.helper_invite import confirm
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             result = HelperInviteBackend(io).dispatch(**request, deadline=deadline,

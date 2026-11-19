@@ -186,7 +186,9 @@ class RemoteAccessHelper:
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
     def _error(self, message: Gio.DBusMessage, category: str) -> None:
-        category = category if category in _owner.FAILURES else Refused(category).category
+        category = (category if category in _owner.FAILURES or
+                    (category == 'uncertain' and message.get_member() == 'IssueInvite')
+                    else Refused(category).category)
         LOG.info('remote-access-helper %s', category)
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
@@ -280,7 +282,8 @@ class RemoteAccessHelper:
         age = min(_status_v2.MAX_AGE_SECONDS, max(0, int(time.monotonic() - at)))
         invite = _status_v2.InvitePhase(result['invite'])
         cleanup = _status_v2.CleanupState(result['cleanup'])
-        return (_status_v2.InviteObservation(invite, None if invite.value == 'unknown' else age),
+        return (_status_v2.InviteObservation(invite, None if invite.value == 'unknown' else age,
+                    result.get('expires_at')),
                 _status_v2.CleanupObservation(cleanup, None if cleanup.value == 'unknown' else age))
 
     def _uid(self, sender: str) -> int:
@@ -413,7 +416,8 @@ class RemoteAccessHelper:
                     'Replace failed remote access; existing pairings will be lost',
                     'Disable': 'Turn off home remote access and revoke all devices',
                     'CancelInvite': 'Cancel the current home remote access invite',
-                    'RecoverInvite': 'Recover the current home remote access invite'}[method]
+                    'RecoverInvite': 'Recover the current home remote access invite',
+                    'IssueInvite': 'Issue a home remote access invite'}[method]
             self.authority.call('CheckAuthorization', GLib.Variant('((sa{sv})sa{ss}us)', (
                 ('system-bus-name', {'name': GLib.Variant('s', sender)}),
                 ACTION_PREFIX + LIFECYCLE_ACTIONS[method], {'polkit.message': verb},
@@ -447,13 +451,17 @@ class RemoteAccessHelper:
                 if self.timer:
                     GLib.source_remove(self.timer)
                 self.timer = 0  # Auth has settled; original operation budget continues.
-                self._reply(capture.message, 'accepted')
+                if capture.method != 'IssueInvite':
+                    self._reply(capture.message, 'accepted')
                 threading.Thread(target=self._run_lifecycle, args=(operation,), daemon=True).start()
             except Exception as error:
                 self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
 
     def _run_lifecycle(self, operation: object) -> None:
+        if operation.capture.method == 'IssueInvite':
+            self._run_issue_invite(operation)
+            return
         if operation.capture.method in _helper_invite.METHODS:
             self._run_invite(operation)
             return
@@ -562,6 +570,65 @@ class RemoteAccessHelper:
             except Exception:
                 # Unsettled worker keeps the slot sealed; no synthetic completion.
                 self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+
+    def _run_issue_invite(self, operation: object) -> None:
+        """One authenticated terminal reply; secret never enters helper state."""
+        capture = operation.capture
+        intent, dispatched, reply_attempted = None, False, False
+        result = {'outcome': 'refused', 'invite': 'unknown', 'cleanup': 'unknown'}
+        category = 'unavailable'
+        try:
+            with self.effect_guard(capture):
+                operation._revalidate()
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                intent = self.audit.intent(_home_audit.Event.INVITE_ISSUED,
+                    intent_id='intent-' + label, operation_id='op-' + label)
+
+                def before_commit() -> None:
+                    if self.cancelled or self.inflight is not capture:
+                        raise Refused('disconnected')
+                    operation._revalidate()
+
+                before_commit()
+                dispatched = True  # Child transport loss cannot prove no mint.
+                frame = operation.generations.issue_invite(capture.generation,
+                    operation.budget.deadline, before_commit)
+                operation.budget.remaining()
+                if frame == {'result': 'refused'}:
+                    dispatched = False  # Child positively proved refusal.
+                    raise Refused('unavailable')
+                _helper_invite.validate_issued(frame)
+                before_commit()
+                self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED)
+                # B16 fsync and reply validation consume the SAME original budget.
+                before_commit()
+                _helper_invite.validate_issued(frame)  # Final blocking read may outlive the invite.
+                operation.budget.remaining()
+                result = {'outcome': 'complete', 'invite': 'issued', 'cleanup': 'not_needed',
+                          'expires_at': frame['expires_at']}
+                reply_attempted = True
+                self._reply(capture.message, frame)
+        except Exception as error:
+            result = ({'outcome': 'uncertain', 'invite': 'uncertain', 'cleanup': 'uncertain'} if dispatched
+                      else {'outcome': 'refused', 'invite': 'unknown', 'cleanup': 'unknown'})
+            category = 'uncertain' if dispatched else (error.category if isinstance(error, Refused) else 'unavailable')
+            if intent is not None:
+                try:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                        operation.budget.remaining()
+                except Exception:
+                    if dispatched:
+                        category = 'uncertain'
+            if not reply_attempted:
+                reply_attempted = True  # A failed/lost send never authorizes another reply.
+                self._error(capture.message, category)
+        finally:
+            self.lifecycle_result = result
+            self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
+            self.release(capture)  # Held through the sole terminal reply attempt.
 
     def _run_invite(self, operation: object) -> None:
         capture = operation.capture

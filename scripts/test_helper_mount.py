@@ -644,3 +644,369 @@ def test_invite_protected_capture(store: Any, change: str) -> None:
         assert child.capture(1000) != initial
     else:
         assert child.capture(1000) == initial
+
+
+@pytest.fixture
+def issue_mount(mount: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Real issuer/minter/journal/serving pairing; only native/admin transport is isolated."""
+    from datetime import datetime, timezone
+    from runtime.remote_access import helper_invite_backend as b
+    from runtime.remote_access.invite_control import InviteControl
+    from scripts.test_invite_issuer import setup as issuer_setup
+    from scripts.test_home_minter import setup as minter_setup
+    v = mount
+    issuer, _, manager, trust, clock = issuer_setup(tmp_path)
+    locked, admin, records, admin_clock, events = minter_setup()
+    clock.now = admin_clock.now = datetime.now(timezone.utc)
+    destination = tmp_path / b.HOME_ISSUER
+    destination.parent.mkdir(parents=True)
+    issuer._state_dir.rename(destination)
+    issuer._state_dir = destination
+    held = []
+    @contextmanager
+    def lock() -> Any:
+        held.append(True)
+        try:
+            yield locked
+        finally:
+            held.pop()
+    monkeypatch.setattr(b.home_admin, '_locked', lock)
+    token = dict(uid=1000, generation=7, operation='b' * 32, configuration='c' * 64, ca='d' * 64)
+    child = b.HelperInviteBackend(SimpleNamespace(root=tmp_path, root_owner=(os.getuid(), os.getgid())))
+    monkeypatch.setattr(child, '_config', lambda uid: (token, issuer._config))
+    control = SimpleNamespace(status=Mock(side_effect=lambda: SimpleNamespace(
+        owned=True, release_uid=1000, generation=trust.snapshot()[1])))
+    serving = InviteControl(manager)
+    def reserve(generation: int, digest: str, expires: int, deadline: float, commit: Any) -> int:
+        assert held and v.helper.inflight and not v.helper._reply.called
+        assert len(digest) == 64 and deadline == v.helper.lifecycle_operation.budget.deadline
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        commit()
+        return serving.reserve_invite(generation, digest, expires, deadline=deadline)
+    control.reserve_invite = Mock(side_effect=reserve)
+    monkeypatch.setattr(b, 'ControlClient', lambda: control)
+    v.helper.clock = time.monotonic
+    v.message.get_member = lambda: 'IssueInvite'
+    v.reader.current_generation.side_effect = lambda _: child.capture(1000)
+    def issue(expected: str, deadline: float, commit: Any) -> dict:
+        assert not v.helper._reply.called, 'IssueInvite must not send accepted'
+        assert deadline == v.helper.lifecycle_operation.budget.deadline
+        assert 0 < deadline - time.monotonic() <= 120
+        return child.dispatch('IssueInvite', 1000, 'issue', expected,
+                              deadline=deadline, before_commit=commit)
+    v.reader.issue_invite = Mock(side_effect=issue)
+    v.issuer, v.manager, v.trust, v.control = issuer, manager, trust, control
+    v.admin, v.events, v.records, v.child, v.token = admin, events, records, child, token
+    v.journal = destination / 'invite-issuer.json'
+    v.record = lambda: json.loads(v.journal.read_bytes())
+    return v
+
+
+def test_issue_invite_single_reply_and_secrecy(issue_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                              caplog: Any, capsys: Any) -> None:
+    from runtime.remote_access.invite_v2 import decode
+    v = issue_mount
+    original = v.helper._reply
+    def reply(message: Any, frame: dict) -> None:
+        assert v.helper.inflight and v.record()['outcome'] == 'issued'
+        rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+        assert [row['stage'] for row in rows] == ['intent', 'outcome']
+        assert rows[-1]['outcome'] == 'succeeded'
+    original.side_effect = reply
+    v.admit()
+    original.assert_called_once()
+    frame = original.call_args.args[1]
+    assert set(frame) == {'result', 'invite', 'expires_at'} and frame['result'] == 'complete'
+    decoded = decode(frame['invite'], now=int(time.time()))
+    assert decoded.expires_at == frame['expires_at']
+    assert v.helper.inflight is None and len(v.admin.keys) == 1
+    assert v.control.reserve_invite.call_count == 2
+    assert v.trust.load().invite_record.secret_digest == hashlib.sha256(decoded.pair_secret.encode()).hexdigest()
+    observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000)
+    invite, _ = v.helper._invite_status(1000, observed)
+    assert invite.state.value == 'issued' and invite.deadline_utc_seconds == frame['expires_at']
+    v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
+    observed.phase = 'ready'
+    v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+    v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw: SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    status_reply = SimpleNamespace(set_body=lambda body: setattr(status_reply, 'body', body))
+    v.message.new_method_reply = lambda: status_reply
+    v.helper.connection.send_message = Mock()
+    v.helper._status_v2(v.message, ':1.42')
+    status_text = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
+    assert frame['invite'] not in status_text
+    status = json.loads(status_text)
+    assert status['invite']['state'] == 'issued' and status['invite']['deadline_utc_seconds'] == frame['expires_at']
+    assert frame['invite'] not in repr(v.helper.lifecycle_result) + repr(v.helper.invite_observation)
+    assert frame['invite'] not in v.journal.read_text() + v.helper.audit.path.read_text() + caplog.text
+    assert frame['invite'] not in ''.join(capsys.readouterr())
+    assert 'IssueInvite' not in v.h.METHODS and 'IssueInvite' not in v.h.INTROSPECTION
+    v.helper._dispatch(v.message)
+    v.helper._error.assert_called_with(v.message, 'unknown-method')
+    call = v.helper.authority.call.call_args.args[1].unpack()
+    assert call[0][1]['name'].unpack() == ':1.42'
+    assert call[1] == 'ai.happyranch.remote-access.issue-invite' and call[3] == 1
+
+
+@pytest.mark.parametrize('change', ['uid', 'owner', 'denied', 'deadline', 'generation', 'busy', 'input', 'fd', 'sender', 'capture_uid'])
+def test_issue_invite_admission_refuses_before_effect(issue_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                                     change: str) -> None:
+    v = issue_mount
+    if change in ('busy', 'input', 'fd', 'sender', 'capture_uid'):
+        if change == 'busy': v.helper.inflight = object()
+        if change == 'input': v.message.get_signature = lambda: 's'
+        if change == 'fd': v.message.get_unix_fd_list = lambda: SimpleNamespace(get_length=lambda: 1)
+        if change == 'sender': v.message.get_sender = lambda: 'caller-selected'
+        if change == 'capture_uid':
+            v.helper.connection.call_sync.side_effect = [Variant('', (1000,)), Variant('', (1001,))]
+        with pytest.raises((v.h.Refused, v.h._helper_lifecycle.LifecycleRefused)):
+            v.helper._start_lifecycle(v.message)
+        assert not v.helper.authority.call.called
+    else:
+        v.helper._start_lifecycle(v.message)
+        capture = v.helper.inflight
+        if change == 'uid': v.helper.connection.call_sync.return_value = Variant('', (1001,))
+        if change == 'owner': monkeypatch.setattr(v.h, 'bootstrap_owner', lambda _: object())
+        if change == 'generation': v.token['operation'] = 'e' * 32
+        if change == 'deadline': v.helper.clock = lambda: capture.deadline
+        v.helper._authorized(v.helper.authority, Variant('', ((change != 'denied', False, {}),)), capture)
+        assert v.helper._error.called and not v.helper._reply.called and v.helper.inflight is None
+    assert not v.journal.exists() and not v.events and not v.reader.issue_invite.called
+    assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('case', ['unavailable', 'connector_uid', 'lost_reserve', 'minter_refused', 'minter_uncertain',
+                                  'late', 'audit_late', 'expiry_final_read', 'deadline_final_read',
+                                  'audit_intent', 'generation_drift', 'disconnect', 'reply_loss'])
+def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: str,
+                                                     monkeypatch: pytest.MonkeyPatch,
+                                                     caplog: Any, capsys: Any) -> None:
+    from runtime.remote_access.home_minter import AdminRefused
+    v = issue_mount
+    if case == 'unavailable': v.control.status.side_effect = OSError('synthetic connector down')
+    if case == 'connector_uid':
+        v.control.status.side_effect = lambda: SimpleNamespace(owned=True, release_uid=1001, generation=0)
+    if case in ('minter_refused', 'minter_uncertain'):
+        v.admin.create_error = AdminRefused() if case == 'minter_refused' else TimeoutError('synthetic key loss')
+    if case == 'lost_reserve':
+        original = v.control.reserve_invite.side_effect
+        def reserve(*args: Any) -> int:
+            result = original(*args)
+            if v.control.reserve_invite.call_count == 2:
+                raise OSError('synthetic lost reserve reply')
+            return result
+        v.control.reserve_invite.side_effect = reserve
+    if case in ('generation_drift', 'disconnect'):
+        original = v.control.reserve_invite.side_effect
+        def drift(*args: Any) -> int:
+            if case == 'generation_drift': v.token['operation'] = 'e' * 32
+            else: v.helper._cancel('disconnected')
+            return original(*args)
+        v.control.reserve_invite.side_effect = drift
+    if case == 'late':
+        original = v.reader.issue_invite.side_effect
+        def late(*args: Any) -> dict:
+            frame = original(*args)
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: args[1]
+            return frame
+        v.reader.issue_invite.side_effect = late
+    if case == 'audit_late':
+        original = v.helper.audit.outcome
+        def audit_late(*args: Any) -> None:
+            original(*args)
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline + 1
+        v.helper.audit.outcome = audit_late
+    final_read = case in ('expiry_final_read', 'deadline_final_read')
+    settled = {}
+    if final_read:
+        from datetime import datetime, timedelta, timezone
+        if case == 'expiry_final_read':
+            v.admin.created['expiration'] = datetime.now(timezone.utc) + timedelta(seconds=2.5)
+        original = v.reader.issue_invite.side_effect
+        def issue_then_slow_read(*args: Any) -> dict:
+            frame = original(*args)
+            settled.update(frame=frame, journal=v.journal.read_bytes(), reads=0)
+            generation = v.reader.current_generation.side_effect
+            def slow_generation(*values: Any) -> str:
+                settled['reads'] += 1
+                if settled['reads'] == 2:
+                    assert v.helper.inflight is not None
+                    rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+                    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+                    assert rows[1]['outcome'] == 'succeeded'
+                    if case == 'expiry_final_read':
+                        time.sleep(max(0.0, frame['expires_at'] + .03 - time.time()))
+                        assert frame['expires_at'] <= time.time()
+                        assert v.helper.lifecycle_operation.budget.remaining() > 0
+                    else:
+                        deadline = v.helper.lifecycle_operation.budget.deadline
+                        v.helper.lifecycle_operation.budget.clock = lambda: deadline
+                    settled['final_read_completed'] = True
+                return generation(*values)
+            v.reader.current_generation.side_effect = slow_generation
+            return frame
+        v.reader.issue_invite.side_effect = issue_then_slow_read
+        def uncertain_reply(message: Any, category: str) -> None:
+            assert message is v.message and category == 'uncertain' and v.helper.inflight is not None
+            assert v.journal.read_bytes() == settled['journal']
+            rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+            assert [row['stage'] for row in rows] == ['intent', 'outcome', 'uncertain']
+        v.helper._error.side_effect = uncertain_reply
+    if case == 'audit_intent': v.helper.audit.intent = Mock(side_effect=OSError('synthetic audit down'))
+    if case == 'reply_loss': v.helper._reply.side_effect = OSError('synthetic lost method reply')
+    v.admit()
+    refused = case in ('unavailable', 'connector_uid', 'minter_refused', 'audit_intent')
+    assert v.helper.lifecycle_result['outcome'] == ('refused' if refused else 'uncertain')
+    if case == 'reply_loss':
+        assert v.helper._reply.call_count == 1 and not v.helper._error.called
+    else:
+        assert not v.helper._reply.called and v.helper._error.call_count == 1
+        assert v.helper._error.call_args.args[1] == ('unavailable' if refused else 'uncertain')
+    assert v.helper.inflight is None
+    creates = [event for event in v.events if event[0] == 'create']
+    assert bool(creates) == (final_read or case in ('lost_reserve', 'minter_refused', 'minter_uncertain', 'late', 'audit_late', 'reply_loss'))
+    if case in ('unavailable', 'connector_uid', 'audit_intent'): assert not v.journal.exists()
+    if case in ('lost_reserve', 'minter_uncertain', 'generation_drift', 'disconnect'):
+        assert v.record()['outcome'] == 'uncertain'
+    if final_read or case in ('late', 'audit_late', 'reply_loss'):
+        assert v.record()['outcome'] == 'issued'  # Consumed; NEVER fetch/re-deliver.
+        assert v.helper.lifecycle_result['invite'] == 'uncertain'
+    if final_read or case == 'audit_late':
+        rows = list(map(json.loads, v.helper.audit.path.read_text().splitlines()))
+        assert [row['stage'] for row in rows] == ['intent', 'outcome', 'uncertain']
+        assert rows[1]['outcome'] == 'succeeded'
+    if final_read:
+        assert settled['reads'] == 2 and settled['final_read_completed']
+        assert v.journal.read_bytes() == settled['journal']
+        if case == 'expiry_final_read':
+            assert settled['frame']['expires_at'] <= time.time()
+            assert v.helper.lifecycle_operation.budget.remaining() > 0
+        assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
+        observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+        v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
+        v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+        v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+        monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw: SimpleNamespace(start=lambda: target(*args)))
+        monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+        v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+        status_reply = SimpleNamespace(set_body=lambda body: setattr(status_reply, 'body', body))
+        v.message.new_method_reply = lambda: status_reply
+        v.helper.connection.send_message = Mock()
+        v.helper._status_v2(v.message, ':1.42')
+        v.helper.connection.send_message.assert_called_once()
+        status_text = status_reply.body.unpack()[0]
+        status = json.loads(status_text)
+        assert status['invite']['state'] == 'uncertain' and status['invite']['deadline_utc_seconds'] is None
+        assert status['cleanup']['state'] == 'uncertain'
+        retained = (status_text + repr(v.helper.lifecycle_result) + repr(v.helper.invite_observation)
+                    + v.journal.read_text() + v.helper.audit.path.read_text()
+                    + repr(v.helper._error.call_args) + caplog.text + ''.join(capsys.readouterr()))
+        assert settled['frame']['invite'] not in retained
+
+
+def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any) -> None:
+    v = issue_mount
+    v.admit()
+    assert v.helper._reply.call_count == 1
+    initial = v.journal.read_bytes()
+    v.helper._reply.reset_mock()
+    v.admit()
+    assert v.helper.lifecycle_result['outcome'] == 'refused' and not v.helper._reply.called
+    assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
+    assert v.journal.read_bytes() == initial and v.helper.inflight is None
+
+
+@pytest.mark.parametrize('case', ['valid_large', 'repeat_ready', 'oversize', 'frame_at_limit', 'frame_limit', 'malformed', 'duplicate', 'extra', 'prefix', 'alphabet',
+                                  'too_long', 'bool_expiry', 'expired', 'future_expiry'])
+def test_issue_invite_real_child_frame_is_bounded_and_validated(issue_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                                               case: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    v = issue_mount
+    frame = dict(result='complete', invite='hrinvite2:' + 'A' * 5490, expires_at=int(time.time()) + 240)
+    if case == 'extra': frame['unexpected'] = True
+    if case == 'prefix': frame['invite'] = 'hrinvite2:hrinvite2:AA'
+    if case == 'alphabet': frame['invite'] = 'hrinvite2:AA='
+    if case == 'too_long': frame['invite'] += 'A'
+    if case == 'bool_expiry': frame['expires_at'] = True
+    if case == 'expired': frame['expires_at'] = int(time.time())
+    if case == 'future_expiry': frame['expires_at'] = int(time.time()) + 301
+    raw = json.dumps(frame, separators=(',', ':')) + '\n'
+    if case in ('frame_at_limit', 'frame_limit'):
+        limit = 6144 if case == 'frame_at_limit' else 6145
+        raw = raw[:-1] + ' ' * (limit - len(raw)) + '\n'
+    if case == 'duplicate': raw = raw.replace('"result":', '"result":"complete","result":')
+    if case == 'malformed': raw = '{synthetic malformed}\n'
+    if case == 'oversize': raw = json.dumps({'result': 'complete', 'invite': 'A' * 6200}) + '\n'
+    source = Path(__file__).resolve().parents[1] / 'runtime/remote_access/helper_invite.py'
+    confirmations = 270 if case == 'repeat_ready' else 1
+    script = ('import sys,json,runpy; h=runpy.run_path(sys.argv[1]); '
+              'r=json.loads(sys.stdin.buffer.readline()); '
+              f'[h["confirm"](r["deadline"]) for _ in range({confirmations})]; '
+              'sys.stdout.write(sys.argv[2]); sys.stdout.flush()')
+    monkeypatch.setattr(generation, 'LIFECYCLE_COMMAND', (sys.executable, '-I', '-c', script, str(source), raw))
+    client = generation.HomeLifecycleClient('IssueInvite', 1000)
+    v.reader.issue_invite.side_effect = client.issue_invite
+    v.admit()
+    if case in ('valid_large', 'repeat_ready', 'frame_at_limit'):
+        v.helper._reply.assert_called_once_with(v.message, frame)
+    else:
+        assert not v.helper._reply.called
+        v.helper._error.assert_called_once_with(v.message, 'uncertain')
+        assert v.helper.lifecycle_result['outcome'] == 'uncertain'
+    assert v.helper.inflight is None
+
+
+@pytest.mark.parametrize('method', ['CancelInvite', 'RecoverInvite'])
+def test_invite_default_frame_cap_unchanged(method: str) -> None:
+    from runtime.remote_access import helper_invite
+    raw = json.dumps({'result': 'A' * 4200}) + '\n'
+    script = 'import sys,json; json.loads(sys.stdin.buffer.readline()); sys.stdout.write(sys.argv[1]); sys.stdout.flush()'
+    with pytest.raises(ValueError, match='unavailable'):
+        helper_invite.effect((sys.executable, '-I', '-c', script, raw),
+                            dict(method=method, deadline=time.monotonic() + 2), lambda: None)
+    for size, accepted in ((4097, True), (4098, False)):
+        data = b'{"x":"' + b'A' * (size - 9) + b'"}\n'
+        assert len(data) == size
+        for options in ({}, {'limit': 4096}):
+            read, write = os.pipe()
+            try:
+                os.write(write, data)
+                os.close(write)
+                if accepted:
+                    assert helper_invite.read_frame(read, time.monotonic() + 2, **options) == {'x': 'A' * (size - 9)}
+                else:
+                    with pytest.raises(ValueError, match='unavailable'):
+                        helper_invite.read_frame(read, time.monotonic() + 2, **options)
+            finally:
+                os.close(read)
+
+
+@pytest.mark.parametrize('method', ['Enable', 'ReplaceFailed', 'Disable', 'CancelInvite', 'RecoverInvite'])
+def test_other_lifecycle_methods_keep_accepted_first(mount: Any, method: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    seen = []
+    def run(operation: Any) -> None:
+        v.helper._reply.assert_called_once_with(v.message, 'accepted')
+        assert v.helper.inflight is operation.capture
+        seen.append(method)
+        v.helper.release(operation.capture)
+    v.helper._run_lifecycle = run
+    v.admit()
+    assert seen == [method] and v.helper.inflight is None
+
+
+def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplog: Any) -> None:
+    v = issue_mount
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    v.message.new_method_error_literal = Mock(return_value=object())
+    v.helper.connection.send_message = Mock()
+    v.h.RemoteAccessHelper._error(v.helper, v.message, 'uncertain')
+    v.message.new_method_error_literal.assert_called_once_with(v.h.INTERFACE + '.Error.uncertain', 'uncertain')
+    v.h.RemoteAccessHelper._error(v.helper, v.message, 'hrinvite2:SYNTHETIC_PRIVATE_VALUE')
+    v.message.new_method_error_literal.assert_called_with(v.h.INTERFACE + '.Error.unavailable', 'unavailable')
+    assert 'hrinvite2:' not in caplog.text
