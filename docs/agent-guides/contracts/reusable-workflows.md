@@ -1,5 +1,45 @@
 # Reusable workflow contracts
 
+## S3: resolved assignments @2 (inert)
+
+`sequential_assignments.py` resolves each role in this order: explicit run
+choice, saved org role default, bundled default, then `missing_assignment`.
+Unknown/duplicate role or node keys, unavailable permanent principals, wrong
+role/manager registration, foreign team membership and declared independence
+conflicts refuse before graph/task allocation, naming the offending key and a
+finite cause. The @2 assignment authority projection contains current org,
+agent/team/executor ownership; ordinary-chain `reviewer_agents` is not a role
+requirement. Original authority captures, Start@1 equality/replay bytes and
+ordinary-chain reviewer safety remain unchanged.
+
+The internal @2 branch of `admit_uncommitted` validates the original
+settings/definition pin and every node's current executor selection before any
+allocation. It persists a separate canonical resolved snapshot/digest in S2's
+run columns and append-only node-assignment rows. Snapshots retain role origins,
+per-field request presence (including explicit null), selection origins,
+target executor identity and the effective pair observed at admission. These
+observations do not freeze agent defaults or prove what a provider executed.
+Native step rows use existing override columns and conditional `task_created`
+audits with manager provenance. Omission uses target defaults; explicit null
+clears; values set; an omitted retry carries its prior tuple/source, while an
+explicit edit replaces/clears its field. No initiator model is inherited.
+
+The private admission state is deliberately limited to an owned queued entry
+and inert carrier. It leaves the ordinary source unchanged: S5 owns source wait
+membership/continuation. Internal settings@2 storage permits partial org role
+defaults; it creates no public settings-save or start surface. Complete and
+selected history readers accept only this S3 admission state for @2 and refuse
+later lifecycle/control/inbox data. Historical @1 readers retain their original
+semantics, including when stored under schema2.
+
+`recheck_launch_assignment` is a pure, **unmounted** current-executor/options
+recheck using the real `task_selection` owner. It returns a finite refusal and
+never substitutes a model, mutates a task/row, launches, or writes Held.
+Mounting it into native prelaunch belongs to **S4b**; durable no-result Held and
+drift-to-Held behavior belong to **S4a/S4b**. Calling the helper is not proof of
+that native transition. @2 remains publicly unadmitted and Coding stays
+Disabled. Provider availability is NOT RUN without an authorized native run.
+
 ## R1b1: own-task sequential start discovery
 
 `GET /api/v1/orgs/{slug}/workflows/sequential/start-context?session_id=SID`
@@ -234,7 +274,7 @@ Start@2 contains exactly `format`, `operation_key`, full `definition`/`settings`
 pins, `request`, `inputs`, `role_overrides`, `step_overrides`, `lower_limits`.
 Role overrides are partial `{role,principal}` claims; step overrides name a node
 and optional nullable `model`/`reasoning_effort`. Field presence is retained for
-later S3 resolution: omission and explicit null differ. Pure validation checks
+the inert S3 resolver: omission and explicit null differ. Pure validation checks
 keys/pins/required inputs/limits; it neither resolves defaults nor checks current
 agent/executor eligibility. The original Start@1 parser refuses @2.
 
@@ -538,8 +578,9 @@ Inbox acceptance is indexed by `(initiator_task_id, notification_id)`; receipt
 membership references the actual delivered task/session tuple. Source wait sets
 use ownership version3 `seq_source_wait_set`; original ownership version2
 `seq_source_waiting` still identifies one @1 run. These references grant no
-execution authority. S3–S5 own semantic writers/readers; S2a complete readers
-visibly refuse populated @2 runtime history rather than applying @1 semantics.
+execution authority. S2a originally refused all populated @2 runtime history. S3 now accepts only
+its inert first-admission assignments, as described above; later units own the
+remaining semantic writers/readers. @1 semantics never interpret @2 rows.
 
 An absent sequential family installs schema2 directly when explicitly selected.
 An installed schema1 upgrades only with zero runs **and zero history** (visits,

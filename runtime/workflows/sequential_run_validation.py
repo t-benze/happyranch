@@ -18,7 +18,7 @@ from runtime.workflows.sequential_contracts import Counters, Limits, NextEdge, O
 from runtime.workflows.sequential_definition import CompiledDefinition, parse_result, parse_start, parse_transition, validate_start
 from runtime.workflows.sequential_reducer import ActiveVisit, AuthenticatedResult, RunState, reduce_result
 from runtime.workflows.sequential_history import (
-    StorageSettings, _ReadBudget, _auxiliary, _bytes, _decode, _definitions,
+    StorageSettings, _storage_settings, _settings_bindings, _ReadBudget, _auxiliary, _bytes, _decode, _definitions,
     _event_payload, _hashed, _native_contract, _native_rows, _parse, _record,
     _require, _result, _selection, _sql_budget,
 )
@@ -129,15 +129,11 @@ def _selected_settings(data: dict[str, list[dict]], definitions: dict[str, Compi
     for key, row in rows.items():
         budget.step()
         _require(row['org_slug'] == org_slug and row['definition_id'] in definitions, 'settings_owner_invalid')
-        snapshot = StorageSettings.model_validate(_decode(_hashed(row['snapshot_bytes'], row['snapshot_digest']), budget))
+        snapshot = _storage_settings(_hashed(row['snapshot_bytes'], row['snapshot_digest']), budget)
         definition = definitions[row['definition_id']]
-        bindings = {item.role: item.principal for item in snapshot.bindings}
-        _require(snapshot.definition == definition.pin and row['definition_identity'] == definition.pin.identity
-                 and len(bindings) == len(snapshot.bindings)
-                 and bindings.keys() == dict(definition.definition.roles).keys(), 'settings_pin_conflict')
-        for role, requirement in definition.definition.roles:
-            _require(all(bindings[role] != bindings[other] for other in requirement.independent_of),
-                     'settings_independence_conflict')
+        _require(snapshot.definition == definition.pin and row['definition_identity'] == definition.pin.identity,
+                 'settings_pin_conflict')
+        _settings_bindings(snapshot, definition)
         snapshots[key] = snapshot
     seen = set()
     for row in data['workflow_seq_settings_operations']:
@@ -258,8 +254,18 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
         data = {'workflow_seq_runs': _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))}
         _require(len(data['workflow_seq_runs']) == 1, 'run_missing')
         run = data['workflow_seq_runs'][0]
-        _require(run.get('engine_version', 1) == 1, 'schema2_runtime_history_unavailable')
         _require(run['org_slug'] == org_slug, 'run_pin_invalid')
+        if run.get('engine_version', 1) == 2:
+            compiled, setting, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
+                definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
+            generic = {table: _read_selected(conn, metadata, table, budget, 'run_id=?', (run_id,))
+                for table in ('workflow_seq_assignments', 'workflow_seq_visits', 'workflow_seq_events',
+                              'workflow_seq_outbox', 'workflow_seq_outputs', 'workflow_seq_evidence')}
+            _require(not evidence_ids, 'generic_lifecycle_unavailable')
+            _generic_admission_history(conn, org_slug=org_slug, run=run, compiled=compiled, settings=setting,
+                snapshot=snapshot, data=generic, budget=budget)
+            budget.check()
+            return budget
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
         for table, where, args, omit in (
@@ -585,3 +591,93 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
                      'ownership_native_conflict')
         budget.check()
     return budget
+
+
+def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: dict,
+                               compiled: object, settings: dict, snapshot: object,
+                               data: dict[str, list[dict]], budget: _ReadBudget) -> None:
+    """Only the inert S3 admission state, not S4 lifecycle or S5 wait sets."""
+    from runtime.infrastructure.workflow_task_ownership import selected_owner
+    from runtime.workflows.sequential_assignments import validate_assignment_snapshot
+    from runtime.workflows.sequential_contracts import GenericLimits
+    from runtime.workflows.sequential_definition import generic_limits, parse_generic_start, validate_generic_start
+    from runtime.workflows.sequential_engine import _identity
+    from runtime.workflows.sequential_history import GenericStorageSettings
+
+    _require(isinstance(snapshot, GenericStorageSettings) and run['engine_version'] == 2,
+             'generic_admission_pin_conflict')
+    start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_generic_start, budget)
+    original = GenericLimits.model_validate(_decode(run['original_limits_bytes'], budget))
+    validate_generic_start(start, compiled, original_limits=original)
+    _require(original == snapshot.limits and start.operation_key == run['start_operation_key']
+             and start.settings.generation == settings['generation']
+             and start.settings.snapshot_digest == settings['snapshot_digest'] and snapshot.admission == 'Allowed'
+             and generic_limits(compiled, start.lower_limits) == generic_limits(compiled, original, start.lower_limits)
+             and all(getattr(start.lower_limits, key) <= getattr(original, key)
+                     for key in ('max_visits', 'max_events', 'max_recoveries')),
+             'generic_admission_pin_conflict')
+    raw = _hashed(run['assignment_snapshot_bytes'], run['assignment_snapshot_digest'])
+    resolved = _decode(raw, budget)
+    _require(_bytes(resolved) == raw, 'assignment_snapshot_canonical')
+    validate_assignment_snapshot(resolved, compiled, start, defaults=snapshot.bindings, org_slug=org_slug)
+    selected = {}
+    for table in ('workflow_seq_visits', 'workflow_seq_events', 'workflow_seq_assignments', 'workflow_seq_outbox'):
+        budget.work(len(data[table]))
+        selected[table] = [row for row in data[table] if row['run_id'] == run['id']]
+    visits, events = selected['workflow_seq_visits'], selected['workflow_seq_events']
+    _require(len(visits) == len(events) == len(selected['workflow_seq_outbox']) == 1
+             and len(selected['workflow_seq_assignments']) == len(resolved['nodes']), 'generic_admission_closure_invalid')
+    visit, event = visits[0], events[0]
+    entry = next(node for node in resolved['nodes'] if node['node'] == compiled.definition.entry_node)
+    assignments = {row['node_id']: row for row in selected['workflow_seq_assignments']}
+    _require(len(assignments) == len(resolved['nodes']), 'assignment_nodes_conflict')
+    for node in resolved['nodes']:
+        stored = assignments.get(node['node'])
+        _require(stored is not None and (stored['id'], stored['generation'], stored['principal'], stored['predecessor_id']) ==
+                 (_identity('assignment', run['id'], node['node'], '1'), 1, node['principal'], None)
+                 and _hashed(stored['snapshot_bytes'], stored['snapshot_digest']) == _bytes(node), 'assignment_row_conflict')
+    _require((visit['engine_version'], visit['node_id'], visit['ordinal'], visit['epoch'], visit['predecessor_event_id'],
+              visit['principal'], visit['session_id'], visit['result_id'], visit['result_bytes'], visit['result_digest'],
+              visit['verified_checks_bytes'], visit['generic_checks_bytes'], visit['state'], visit['selected'],
+              visit['assignment_id'], visit['assignment_generation']) ==
+             (2, entry['node'], 1, None, None, entry['principal'], None, None, None, None, None, None, 'queued', 1,
+              assignments[entry['node']]['id'], 1)
+             and _hashed(visit['input_selection_bytes'], visit['input_selection_digest']) == _bytes(dict(outputs=[])),
+             'generic_entry_visit_invalid')
+    payload = _decode(_hashed(event['event_bytes'], event['event_digest']), budget)
+    _require(payload == dict(format='workflow-sequential-storage-event@2', kind='admitted', run_id=run['id'],
+        sequence=1, operation_key=start.operation_key, prior_digest='0' * 64,
+        assignment_snapshot_digest=run['assignment_snapshot_digest'])
+        and event['event_bytes'] == _bytes(payload)
+        and (event['engine_version'], event['kind'], event['sequence'], event['prior_digest'], event['operation_key'],
+             event['source_visit_id'], event['source_result_id']) == (2, 'admitted', 1, '0' * 64, start.operation_key, None, None),
+        'generic_admitted_event_invalid')
+    _require((run['state'], run['progress'], run['cas'], run['event_count'], run['visit_count'], run['epoch'],
+              run['content_returns'], run['recovery_count'], run['assignment_generation'], run['held_node_id'],
+              run['held_event_id'], run['terminal_outcome'], run['last_event_id'], run['active_visit_id']) ==
+             ('running', 'queued', 0, 1, 1, None, None, 0, 1, None, None, None, event['id'], visit['id']),
+             'generic_admission_state_unavailable')
+    for table in ('workflow_seq_outputs', 'workflow_seq_evidence'):
+        budget.work(len(data[table]))
+        _require(not any(row['run_id'] == run['id'] for row in data[table]), 'generic_lifecycle_unavailable')
+    _result(conn, run['source_result_id'], run['source_task_id'], run['source_principal'], run['source_session_id'], budget)
+    # Source is deliberately still ordinary. S5 supplies plural wait membership;
+    # S3 must not call the @1 source adopter against schema2's @2 binding view.
+    _require(selected_owner(conn, run['source_task_id'], org_slug) == ('legacy', None, None), 'generic_source_conflict')
+    source_rows = _native_rows(conn, 'tasks', ('assigned_agent', 'team'), (('text',), ('text',)), run['source_task_id'], budget)
+    _require(source_rows == [(run['source_principal'], resolved['team'])], 'generic_source_conflict')
+    for task, kind, owner, parent, principal in (
+        (run['carrier_task_id'], 'seq_carrier', run['id'], run['source_task_id'], run['source_principal']),
+        (visit['task_id'], 'seq_visit', visit['id'], run['carrier_task_id'], entry['principal']),
+    ):
+        _require(selected_owner(conn, task, org_slug) == (kind, owner, 'running' if kind == 'seq_carrier' else 'queued'),
+                 'ownership_relation_conflict')
+        native = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'team', 'task_type', 'status',
+            'current_session_id', 'active_chain', 'active_fanout', 'model_override', 'reasoning_effort_override', 'override_source'),
+            (('text',), ('text',), ('text',), ('text',), ('text',), ('null',), ('null',), ('null',),
+             ('text', 'null'), ('text', 'null'), ('text', 'null')), task, budget)
+        expected = entry['selection'] if kind == 'seq_visit' else dict(model_override=None, reasoning_effort_override=None, override_source=None)
+        _require(native == [(parent, principal, resolved['team'], 'subtask', 'pending', None, None, None,
+            expected['model_override'], expected['reasoning_effort_override'], expected['override_source'])], 'generic_native_selection_conflict')
+    _auxiliary(conn, {**selected, 'workflow_seq_evidence': []}, {run['id']: run}, {visit['id']: visit},
+               {event['id']: event}, budget, {run['definition_id']: compiled})

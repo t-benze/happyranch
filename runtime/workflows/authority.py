@@ -1435,3 +1435,43 @@ class WorkflowAuthorityCoordinator:
         if outcome in {"uninitialized_no_authority", "fenced_no_admission", "aborted_unpublished"}:
             return self.publish_current(publisher=publisher)
         return self.verify_admission_ready().generation
+
+
+def validate_generic_assignment_authority(value: dict, *, org_slug: str) -> None:
+    """Closed @2 assignment projection; ordinary-chain reviewers are unrelated."""
+    import re
+    valid = (type(value) is dict and value.keys() == {'format', 'org_slug', 'agents', 'teams'}
+             and value['format'] == 'workflow-sequential-assignment-authority@2'
+             and value['org_slug'] == org_slug and type(value['agents']) is list
+             and type(value['teams']) is list)
+    if not valid:
+        raise WorkflowAuthorityError('assignment_authority_invalid')
+    seen = set()
+    for agent in value['agents']:
+        if (type(agent) is not dict or agent.keys() != {'name', 'team', 'role', 'status', 'executor', 'model', 'reasoning_effort'}
+                or type(agent['name']) is not str or not re.fullmatch(r'[a-z0-9_]{1,64}', agent['name'])
+                or agent['name'] in seen or agent['role'] not in ('worker', 'manager')
+                or agent['status'] not in ('active', 'pending') or type(agent['team']) is not str
+                or type(agent['executor']) is not str
+                or any(agent[key] is not None and type(agent[key]) is not str for key in ('model', 'reasoning_effort'))):
+            raise WorkflowAuthorityError('assignment_authority_invalid')
+        seen.add(agent['name'])
+    # Reuse existing typed manager/membership validation without projecting any
+    # reviewer setting or changing a byte of the legacy authority snapshot.
+    first_team = value['teams'][0]['name'] if value['teams'] else ''
+    validate_authority_snapshot(dict(schema_version=2, teams=value['teams'],
+                                    default_team=first_team, task_default_team=first_team))
+    if len({item['name'] for item in value['teams']}) != len(value['teams']):
+        raise WorkflowAuthorityError('assignment_authority_invalid')
+
+
+def generic_assignment_authority(capture: AuthorityAdmissionCapture, *, org_slug: str) -> dict:
+    """Project an already authenticated capture; it is not an access grant."""
+    snapshot = json.loads(capture.ready.snapshot_bytes)
+    validate_authority_snapshot(snapshot)
+    value = dict(format='workflow-sequential-assignment-authority@2', org_slug=snapshot['org_slug'],
+        agents=[{key: agent.get(key) for key in
+                 ('name', 'team', 'role', 'status', 'executor', 'model', 'reasoning_effort')}
+                for agent in snapshot['agents']], teams=snapshot['teams'])
+    validate_generic_assignment_authority(value, org_slug=org_slug)
+    return value

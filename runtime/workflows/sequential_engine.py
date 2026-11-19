@@ -16,8 +16,8 @@ from runtime.infrastructure.db.tasks import RetryClaim
 from runtime.infrastructure.workflow_task_ownership import adopt_sequential_source_uncommitted, selected_owner
 from runtime.models import TaskRecord, TaskStatus
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityCoordinator, validate_authority_snapshot
-from runtime.workflows.sequential_contracts import Limits, NextEdge, StartCommand, TerminalEdge
-from runtime.workflows.sequential_definition import CompiledDefinition, parse_start, validate_start
+from runtime.workflows.sequential_contracts import GenericLimits, Limits, NextEdge, StartCommand, TerminalEdge
+from runtime.workflows.sequential_definition import CompiledDefinition, GenericCompiledDefinition, parse_start, validate_start
 from runtime.workflows.coding_authority_history import _bounded_rows
 from runtime.workflows.sequential_history import _ReadBudget, _bytes, _native_rows, _parse, _require, _result, _sql_budget
 from runtime.workflows.sequential_run_validation import _pins, _selected_layout, validate_selected_run_uncommitted
@@ -194,6 +194,10 @@ def admit_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: str,
     Exact admission replay returns the original IDs; conflict or later lifecycle
     state refuses. Later-state replay/transition scopes belong to U3c.
     """
+    if isinstance(compiled, GenericCompiledDefinition):
+        return _admit_generic_uncommitted(conn, db, org_slug=org_slug, compiled=compiled,
+            settings_row=settings_row, start=start, source=source, carrier_task=carrier_task,
+            visit_task=visit_task, original_limits=original_limits, authority=authority, capture=capture)
     budget = _ReadBudget()
     command = _parse(start, parse_start, budget)
     _require(conn is db._conn and conn.in_transaction and authority._db is db
@@ -606,3 +610,116 @@ def cancel_fence_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug
                               capture: AuthorityAdmissionCapture) -> TransitionIds:
     return _close_event_uncommitted(conn, db, org_slug=org_slug, run_id=run_id, operation_key=operation_key,
         expected_cas=expected_cas, compiled=compiled, authority=authority, capture=capture, kind='cancelled')
+
+
+
+def _admit_generic_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: str,
+                               compiled: GenericCompiledDefinition, settings_row: dict, start: bytes,
+                               source: RetryClaim, carrier_task: TaskRecord, visit_task: TaskRecord,
+                               original_limits: GenericLimits, authority: WorkflowAuthorityCoordinator,
+                               capture: AuthorityAdmissionCapture) -> AdmissionIds:
+    """Inert S3 first admission. No source wait, publication or native launch.
+
+    S5 owns source membership/continuation. S4 owns later visit/hold/dispatch
+    lifecycle; the limited history reader refuses anything beyond this state.
+    """
+    from runtime.workflows.sequential_assignments import resolve_assignments, assignment_bytes, assignment_digest
+    from runtime.workflows.sequential_assignments import parse_assignment_start
+    from runtime.workflows.sequential_start import _generic_selection
+    budget = _ReadBudget()
+    command = _parse(start, parse_assignment_start, budget)
+    _require(conn is db._conn and conn.in_transaction and authority._db is db
+             and authority._org_slug == org_slug and getattr(db, '_task_ownership_org', None) == org_slug
+             and conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1, 'admission_requires_owned_writer')
+    authority._validate_admission_uncommitted(conn, capture)
+    with _sql_budget(conn, budget):
+        replay = _engine_rows(conn, 'workflow_seq_runs', budget,
+            'org_slug=? AND source_principal=? AND source_task_id=? AND start_operation_key=?',
+            (org_slug, source.assigned_agent, source.task_id, command.operation_key))
+        if replay:
+            run = replay[0]
+            _require(run['engine_version'] == 2 and run['start_bytes'] == start
+                     and (run['source_session_id'], run['source_result_id']) ==
+                     (source.current_session_id, source.result_row_id)
+                     and run['original_limits_bytes'] == _bytes(dict(max_visits=original_limits.max_visits, max_events=original_limits.max_events,
+                max_recoveries=original_limits.max_recoveries, node_revisions=dict(original_limits.node_revisions))), 'start_operation_conflict')
+            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run['id'],))
+            outbox = _engine_rows(conn, 'workflow_seq_outbox', budget, 'run_id=?', (run['id'],))
+            _require(len(visits) == len(outbox) == 1, 'admission_replay_incomplete')
+            ids = AdmissionIds(run['id'], run['carrier_task_id'], visits[0]['id'], visits[0]['task_id'],
+                               run['last_event_id'], outbox[0]['id'])
+            validate_selected_run_uncommitted(conn, org_slug=org_slug, run_id=ids.run_id, scope='admission')
+            return ids
+        stored, setting, snapshot = _generic_selection(conn, org_slug=org_slug, command=command, budget=budget)
+        _require(stored == compiled and setting == settings_row and snapshot.limits == original_limits,
+                 'admission_pin_conflict')
+        # Account for the authority decode/projection before creating copies.
+        budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+        resolved = resolve_assignments(stored, command, defaults=snapshot.bindings, capture=capture,
+                                       org_slug=org_slug, team=source.team)
+        _result(conn, source.result_row_id, source.task_id, source.assigned_agent, source.current_session_id, budget)
+        _require(db._retry_claim_matches(source)
+                 and selected_owner(conn, source.task_id, org_slug) == ('legacy', None, None), 'source_not_legacy')
+        entry = next(item for item in resolved['nodes'] if item['node'] == stored.definition.entry_node)
+        agents = {agent['name']: agent for agent in resolved['authority']['agents']}
+        _require(carrier_task.id != visit_task.id and source.task_id not in (carrier_task.id, visit_task.id)
+                 and carrier_task.parent_task_id == source.task_id and carrier_task.assigned_agent == source.assigned_agent
+                 and carrier_task.team == source.team and visit_task.parent_task_id == carrier_task.id
+                 and visit_task.assigned_agent == entry['principal']
+                 and visit_task.team == agents[entry['principal']]['team'], 'native_task_conflict')
+        for task in (carrier_task, visit_task):
+            _require(task.status == TaskStatus.PENDING and task.current_session_id is None
+                     and task.active_chain is None and task.active_fanout is None and task.block_kind is None
+                     and task.blocked_on_job_ids is None and task.cancelled_at is None and task.completed_at is None
+                     and task.executor_pid is None and task.revisit_of_task_id is None
+                     and task.dispatched_from_thread_id is None and task.zombie_flagged_at is None
+                     and task.task_type == 'subtask', 'native_task_not_pristine')
+            _require(not _native_rows(conn, 'tasks', ('id',), (('text',),), task.id, budget), 'native_identity_conflict')
+        run_id = _identity('run', org_slug, source.assigned_agent, source.task_id, command.operation_key)
+        ids = AdmissionIds(run_id, carrier_task.id, _identity('visit', run_id, '1'), visit_task.id,
+                           _identity('event', run_id, '1'), _identity('outbox', run_id, '1'))
+        raw = assignment_bytes(resolved)
+        budget.reserve(48 * len(raw) + 512)
+        budget.check()
+        conn.execute('PRAGMA defer_foreign_keys=ON')
+        conn.execute("INSERT INTO workflow_seq_runs "
+            "(id,org_slug,definition_id,settings_id,source_task_id,source_principal,source_session_id,source_result_id,"
+            "carrier_task_id,start_operation_key,start_bytes,start_digest,original_limits_bytes,engine_version,"
+            "assignment_snapshot_bytes,assignment_snapshot_digest,assignment_generation,active_visit_id,state,"
+            "epoch,content_returns,progress,visit_count,event_count,cas,last_event_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?,1,?,'running',NULL,NULL,'queued',1,1,0,?)",
+            (ids.run_id, org_slug, setting['definition_id'], setting['id'], source.task_id, source.assigned_agent,
+             source.current_session_id, source.result_row_id, carrier_task.id, command.operation_key,
+             start, assignment_digest(start), _bytes(dict(max_visits=original_limits.max_visits, max_events=original_limits.max_events,
+                max_recoveries=original_limits.max_recoveries, node_revisions=dict(original_limits.node_revisions))), raw, assignment_digest(raw),
+             ids.visit_id, ids.event_id))
+        for assignment in resolved['nodes']:
+            node_raw = assignment_bytes(assignment)
+            conn.execute('INSERT INTO workflow_seq_assignments '
+                '(id,run_id,node_id,generation,principal,snapshot_bytes,snapshot_digest,predecessor_id) '
+                'VALUES (?,?,?,1,?,?,?,NULL)', (_identity('assignment', run_id, assignment['node'], '1'),
+                run_id, assignment['node'], assignment['principal'], node_raw, assignment_digest(node_raw)))
+        selection = _bytes(dict(outputs=[]))
+        conn.execute("INSERT INTO workflow_seq_visits "
+            "(id,run_id,engine_version,node_id,ordinal,epoch,task_id,principal,input_selection_bytes,"
+            "input_selection_digest,state,selected,assignment_id,assignment_generation) "
+            "VALUES (?,?,2,?,1,NULL,?,?,?,?,'queued',1,?,1)",
+            (ids.visit_id, run_id, entry['node'], visit_task.id, entry['principal'], selection,
+             assignment_digest(selection), _identity('assignment', run_id, entry['node'], '1')))
+        db._insert_task_row_uncommitted(carrier_task, ownership=('seq_carrier', run_id))
+        db._insert_task_row_uncommitted(visit_task.model_copy(update=entry['selection']), ownership=('seq_visit', ids.visit_id))
+        event = _bytes(dict(format='workflow-sequential-storage-event@2', kind='admitted', run_id=run_id,
+            sequence=1, operation_key=command.operation_key, prior_digest='0' * 64,
+            assignment_snapshot_digest=assignment_digest(raw)))
+        conn.execute("INSERT INTO workflow_seq_events "
+            "(id,run_id,engine_version,sequence,operation_key,kind,prior_digest,event_bytes,event_digest) "
+            "VALUES (?,?,2,1,?,'admitted',?,?,?)", (ids.event_id, run_id, command.operation_key,
+            '0' * 64, event, assignment_digest(event)))
+        notification = _bytes(dict(format='workflow-sequential-notification-storage@1', notification_id=ids.outbox_id,
+            event_id=ids.event_id, run_id=run_id, visit_id=ids.visit_id, task_id=visit_task.id, kind='visit_queued'))
+        conn.execute("INSERT INTO workflow_seq_outbox "
+            "(id,run_id,event_id,kind,visit_id,task_id,notification_bytes,notification_digest) "
+            "VALUES (?,?,?,'visit_queued',?,?,?,?)", (ids.outbox_id, run_id, ids.event_id, ids.visit_id,
+            visit_task.id, notification, assignment_digest(notification)))
+    validate_selected_run_uncommitted(conn, org_slug=org_slug, run_id=run_id, scope='admission')
+    return ids

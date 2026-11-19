@@ -145,8 +145,16 @@ before executor construction. If executor/options changed, the leg fails with
 parent wake and thread followup ordering without starting an unchosen model.
 Existing task-created selection audits remain conditional on a selected field.
 
-Workflow-owned/sequential coding decisions and non-task launchers are outside
-this contract. No new schema, adapter contract or session_start key is added.
+Ordinary workflow-owned/sequential Coding decision shapes and non-task launchers
+remain outside the public handoff contract. THR-336 S3 separately reuses the
+same selection owners for inert internal Start@2 node assignments: partial run
+model/effort fields retain omission/null/value, omitted retries carry the prior
+tuple/source, and created native step rows use manager provenance and the existing
+conditional audit. Target defaults remain unstored; the initiator tuple is never
+inherited. Its pure launch recheck is unmounted until S4b; durable drift-to-Held
+belongs to S4a/S4b. Source fixtures prove selection refusal, not native launch or
+provider support. See [S3 assignments](../agent-guides/contracts/reusable-workflows.md#s3-resolved-assignments-2-inert).
+No new schema, adapter contract or session_start key is added.
 
 ## Web surfaces (PR3 shipped)
 
