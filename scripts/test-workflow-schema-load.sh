@@ -61,6 +61,7 @@ S4A_CASES = ('empty_summary_hold', 'empty_summary_cancel', 'document_retry_histo
     'exhausted', 'retry_cas', 'rebrief_history', 'reassign_eligible', 'replay_conflict',
     'control_state_action_matrix', 'cancel_never_held', 'cancel_resumed_running', 'stale_hold_event',
     'held_retry_replay_running', 'cancel_replay_finished', 'control_cas_race',
+    'start_replay_held', 'start_replay_retry', 'start_replay_cancel_boundary',
     'v1_hold_unchanged', 'v1_cancel_unchanged', 'capacity_running_cancel', 'capacity_held_cancel',
     'capacity_no_result_hold', 'capacity_running_refusal', 'capacity_cancel_defensive', 'capacity_result_hold')
 s4a_case = None
@@ -2004,16 +2005,16 @@ if sys.argv[1:] in ([], ['--assignments']):
                         role_overrides=[], step_overrides=[], lower_limits=compiled.definition.limits.model_dump(mode='json', exclude_unset=True))
                     setting = dict(conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s3-settings'").fetchone())
                     claim = RetryClaim.from_task(source, result_row_id=result)
-                    def admit(value):
+                    def admit(value, *, task_suffix=''):
                         raw = assignment_bytes(value)
                         # Task IDs/principal are prospective inputs. The writer
                         # independently resolves/validates all roles and nodes.
                         chosen = next((item['principal'] for item in value['role_overrides'] if item['role']=='developer'),
                             next((item['principal'] for item in (defaults or []) if item['role']=='developer'),
                                  dict(compiled.definition.roles)['developer'].default_agent))
-                        carrier = TaskRecord(id='s3-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
+                        carrier = TaskRecord(id='s3-carrier' + task_suffix, parent_task_id=source.id, assigned_agent=source.assigned_agent,
                             team=source.team, task_type='subtask', brief='Private inert carrier')
-                        visit = TaskRecord(id='s3-visit-task', parent_task_id=carrier.id, assigned_agent=chosen,
+                        visit = TaskRecord(id='s3-visit-task' + task_suffix, parent_task_id=carrier.id, assigned_agent=chosen,
                             team='other' if chosen == 's3_other' else 'engineering', task_type='subtask', brief='Private inert entry',
                             model_override=source.model_override, reasoning_effort_override=source.reasoning_effort_override, override_source='manager')
                         from runtime.orchestrator import task_selection
@@ -2703,8 +2704,64 @@ if s4a_case or not sys.argv[1:]:
         assert f.conn.execute("SELECT count(*) FROM workflow_seq_visits WHERE run_id='run'").fetchone()[0] == 1
         print('PASS S4a', case, 'real @1 writer; independently encoded expected bytes; no shared @1 code changed', flush=True)
 
+    def s4startreplay(f, command, *, later):
+        before = s4snap(f)
+        writes = []
+        def observe(sql):
+            words = sql.lower().split()
+            if words and words[0] in ('insert', 'update', 'delete', 'replace') and any(
+                    word.startswith('workflow_seq_') or word in ('tasks', 'task_results', 'workflow_task_ownership')
+                    for word in words[:5]):
+                writes.append(words[0])
+        with f.db.observe_trace(observe):
+            if later:
+                try:
+                    replay = f.admit(command)
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_admission_replay_incomplete', (case, str(exc))
+                else:
+                    raise AssertionError((case, 'later start replay must refuse', f.ids, replay))
+            else:
+                assert f.admit(command) == f.ids, case + ': original admission IDs changed'
+        assert not writes and s4snap(f) == before, (case, 'start replay wrote business/native rows', writes)
+        print('PASS S4a', case, 'later refusal' if later else 'original admission IDs', f.ids, 'zero writes', flush=True)
+
     for case in S4A_CASES:
         if s4a_case not in (None, 'all', case):
+            continue
+        if case.startswith('start_replay_'):
+            with s4fixture(document=True) as f:
+                command = f.command
+                s4startreplay(f, command, later=False)
+                if case == 'start_replay_cancel_boundary':
+                    # Exact reviewer prefix: four full documents, then 300000
+                    # bytes, all finished by the real Held/cancel writers.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                        if index:
+                            command = dict(f.command, operation_key='history-' + str(index))
+                            f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
+                        s4closed(f, f.ids.visit_id, summary=s4document(size), terminal='success')
+                        s4tryhold(f)
+                        s4apply(f, s4command(f, 'cancel'))
+                    command = dict(f.command, operation_key='replayed-start')
+                    f.ids = f.admit(command, task_suffix='-replayed-start')
+                    s4startreplay(f, command, later=False)
+                    s4closed(f, f.ids.visit_id, summary=s4document(1048576), terminal='success')
+                    cancel = s4command(f, 'cancel')
+                    receipt = s4apply(f, cancel)
+                    assert s4apply(f, cancel) == receipt
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['progress'] == 'cancelling'
+                else:
+                    s4held(f)
+                    if case == 'start_replay_retry':
+                        assert json.loads(s4apply(f, s4command(f)))['new_visit_id'] is not None
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                s4startreplay(f, command, later=True)
+                if case == 'start_replay_cancel_boundary':
+                    s4finish(f)
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
+                    s4startreplay(f, command, later=True)
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
             continue
         if case.startswith('capacity_'):
             s4capacity(case)

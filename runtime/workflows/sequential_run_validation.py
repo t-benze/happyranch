@@ -256,6 +256,9 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
         run = data['workflow_seq_runs'][0]
         _require(run['org_slug'] == org_slug, 'run_pin_invalid')
         if run.get('engine_version', 1) == 2:
+            # The complete reader accepts later S4a history; admission replay
+            # must refuse it before returning a later event ID or reserving writes.
+            _require(run['event_count'] == 1, 'admission_replay_incomplete')
             compiled, setting, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
                 definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
             generic = {table: _read_selected(conn, metadata, table, budget, 'run_id=?', (run_id,))

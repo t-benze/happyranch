@@ -9,6 +9,11 @@ requires null. Finished refuses fresh controls, and cancelling permits only
 the original cancellation replay. Replay authenticates the original INTEGER
 result/task/principal/session and exact command bytes before current-state
 preconditions, returning original receipt bytes and IDs after later transitions.
+Start replay remains admission-only: before any later lifecycle event it returns
+the original admission IDs without writes. After any later lifecycle event,
+including Held, retry or a cancellation fence, the identical original start
+refuses with `admission_replay_incomplete`, without writes or a fresh-write
+cancellation reservation. Complete history reads still accept those histories.
 
 Original `max_events` is the accepted-result transition allowance, including a
 terminal result. Successor allocation adds no event. Admission, no-result or
@@ -72,6 +77,16 @@ cancellation stays available. Fence/finish consume the reservation without
 business-content acceptance. A cancelling run keeps its reservation against
 other runs' non-cancel writes. The rule can refuse a hold/retry before the
 ordinary reader itself exhausts; it is not a callback-size or event-cap increase.
+This cancellation-headroom guarantee is preserved across all @2 writers only.
+Unchanged @1 writers on the same org, such as
+`SequentialDispatcher._record_business_hold`, are not budget-aware and can
+consume that headroom against the shared 64MiB complete-read cap. This is a
+pre-existing cross-family limitation: @1 growth can equally exhaust the complete
+reader for all families. Consequently an @2 cancellation fence may commit while
+finish refuses `read_bytes_exhausted`, leaving the run running/cancelling with
+one outstanding visit until budget relief. Family-scoped read budgets or @1
+retirement must resolve this in follow-up work; that resolution is outside S4a.
+The TASK-17807 Round-5 decision specifically overrides R4-F1 on this basis.
 The native digest, INTEGER result/task/principal/SID/status and original positive
 terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
 Fresh admission/hold/control/cancellation-finish writers run the complete reader
