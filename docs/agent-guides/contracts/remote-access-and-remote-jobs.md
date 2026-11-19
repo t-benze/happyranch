@@ -3258,7 +3258,8 @@ not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 or path crosses the boundary. These five bootstrap refusal codes are closed.
 The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected. I3a also ships the stdlib-only `helper_lifecycle.py` sibling and
-private lifecycle mount. Its fixed existing bundled-Python `-I -m
+private lifecycle mount; I3b adds the stdlib-only `helper_invite.py` pipe adapter
+and private CancelInvite/RecoverInvite mounting. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
 It captures protected activation G/O (including absence), initial Enable config
@@ -3300,7 +3301,8 @@ The native 120-second auth and approximately 122-second transport are unchanged.
 No lifecycle method is exported. I3a's private mount uses the real native polkit
 CheckAuthorization callback with the captured unique bus sender and exact action;
 its terminal/cancellation rules retain the same slot through the entire worker.
-It replies accepted before effects and keeps the original 480/300-second budget.
+It replies accepted before effects and keeps the original 480/300-second budget
+(120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 The child revalidates protected activation G/O and release UID before each effect;
 B6 rechecks operation inside its existing lock. Native uncertainty seals the slot
 until terminal reply/cancellation acknowledgement. No public call can select this
@@ -3429,14 +3431,34 @@ rate limit. Recovery mints nothing; only a later separately authorized
 IssueInvite creates fresh authority. Returned results contain no operation IDs
 or invitation/key material.
 
-Deferred integration: Track B owns zero-input D-Bus methods and fresh polkit
-actions; serial integration supplies the one helper mutation slot, protected
-issuer/config/generation selection, live-caller hook, existing invite-user lock
-and protected admin/store inputs for `HeadscaleRecoveryMinter`, serving supervisor
-`InviteControl` capability and issuer B10 wiring
-(including durable uncertainty after lost reserve replies), and B15 observation
-projection. No helper, supervisor, service, timer, package or public call is wired
-by this backend. Focused standalone checks:
+I3b privately mounts the two zero-input methods behind the closed public gate.
+They share I3a's native fresh CheckAuthorization capture, B8 binding and single
+helper mutation slot through worker settlement. The original monotonic deadline
+is passed unchanged to the fixed child and B11; auth consumes that same 120-second
+budget. `helper_invite_backend.HelperInviteBackend` derives B1 config and public
+CA from the current protected activation binding, checks their digests/custody,
+and obtains the connector generation from existing B10 status. A safely absent
+issuer entry needs no connector availability and still returns none/not_needed.
+It composes the existing HomeInviteIssuer with no local pairing manager, the
+existing invite-user directory lock/store/admin transport, and
+HeadscaleRecoveryMinter. All journal transactions release before IPC/minter;
+the user lock remains held within the original budget. Every B11 live-caller
+hook uses the existing ready/commit framing over the fixed child's pipes to
+revalidate the kernel bus UID, B8 owner and protected activation G/O/config/CA
+token in the Gio parent. No new connector IPC verb, listener, owner, store,
+minter, dependency, bus policy or sandbox change is introduced.
+
+B16 writes invite_cancelled/invite_recovered intent before child effects. A
+settled complete or partial_cleanup uses I3a's succeeded outcome mapping;
+refused uses refused and lost/late replies use the existing uncertain record.
+B11 result tuples pass through unchanged: acknowledged invalidation followed by
+recover != True remains partial_cleanup/cancelled/uncertain. No audit vocabulary
+or journal meaning changes. StatusV2 projects only existing invite/cleanup
+observations, pinned to the authenticated UID and activation G/O; B15 applies
+their monotonic age/staleness. Missing observations after restart or binding
+drift remain unknown. Public METHODS, introspection and dispatch still exclude
+both methods until I5; IssueInvite issuance/B14 remains I4 and evidence retirement
+remains I3c. Focused standalone backend checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
 
 **B12 — Bounded recorded-node cleanup.**
@@ -3601,7 +3623,8 @@ Disable revoke/stop/B6 step with turn_off component intents. An acknowledged
 step records succeeded, a proven pre-dispatch refusal records refused, and lost
 effect/audit settlement records uncertain. A failed revoke record never suppresses
 the separately audited stop attempt; incomplete residue remains a closed partial
-operation result. Invite outcomes remain I3b/I4. No extra public method is exported.
+operation result. I3b also brackets private invite cancel/recover with the existing
+invite events and lifecycle outcome mapping; issuance remains I4. No extra public method is exported.
 The closed event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
