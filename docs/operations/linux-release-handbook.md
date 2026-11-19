@@ -452,6 +452,9 @@ session-only warning, with no plaintext fallback. Saved listing uses the app's
 closed generic labels. Connect/remove select at most 32 records, reread the exact
 current binding after consent and require explicit `connect`/`remove` confirmation.
 Remove confirms only local saved-access deletion.
+If interrupted after dispatch, removal settles at the existing storage safe point:
+confirmed absence reports `removed`/confirmed; an unconfirmed outcome reports
+`removalIncomplete`/unknown, including when the bounded wait expires.
 Each input is limited to 120 seconds; empty/invalid selection or timeout cancels
 without mutation. Missing terminal fails closed before launch. No invite/device/
 path/credential flags exist.

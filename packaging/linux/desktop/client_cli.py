@@ -49,7 +49,6 @@ class Terminal:
         print(text, file=self.stream, flush=True)
 
     def read(self, prompt: str, *, hidden: bool = False, limit: int = 32) -> str:
-        self.say(prompt)
         fd = self.stream.fileno()
         before = termios.tcgetattr(fd)
         after = list(before)
@@ -61,6 +60,7 @@ class Terminal:
         data = bytearray()
         try:
             termios.tcsetattr(fd, termios.TCSAFLUSH, after)
+            self.say(prompt)  # publish readiness only after hidden input is safe
             while len(data) <= limit:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
@@ -93,6 +93,7 @@ class Client:
         self.terminal = None
         self.saving = False
         self.saved = "none"
+        self.removal = None
         self.code = None
 
     def work(self, operation: object) -> object:
@@ -197,7 +198,11 @@ class Client:
             if record is None:
                 return dict(state="cancelled", effect="none")
             if action == "remove-saved":
-                self.work(lambda: self.store.delete(record))
+                self.removal = "unknown"
+                def remove() -> None:
+                    self.store.delete(record)  # includes exact-item absence readback
+                    self.removal = "confirmed"
+                self.work(remove)
                 return dict(state="removed", effect="confirmed")
             self.saved = "saved"
             self.session = native.ClientSession(self.prefix)
@@ -211,8 +216,8 @@ class Client:
             signal.pause()
 
     def close(self) -> bool:
-        # Existing store deadline is 15s. Never tear down beneath save/readback.
-        if self.saving and self.worker:
+        # Existing store deadline is 15s. Settle dispatched custody IO separately.
+        if (self.saving or self.removal is not None) and self.worker:
             self.worker.join(16)
             if self.worker.is_alive():
                 self.saved = "unknown"
@@ -273,7 +278,10 @@ def main() -> int:
             clean = client.close()
         except Exception:
             clean = False
-        if not clean:
+        if client.removal is not None:
+            result = dict(state="removed", effect="confirmed") if client.removal == "confirmed" else \
+                dict(code="removalIncomplete", state="unknown", effect="unknown")
+        elif not clean:
             result = dict(code="cleanupIncomplete", state="unknown", effect="unknown")
         if client.session is not None:
             result["savedAccess"] = client.saved

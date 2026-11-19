@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import select
 import signal
 import sys
 import termios
@@ -18,7 +19,7 @@ import unittest
 from unittest.mock import patch
 
 import client_cli as cli
-from test_client_store import FakeSecret, RemoteError, record
+from test_client_store import FakeSecret, Item, RemoteError, record
 from test_connection_cli import command
 
 
@@ -196,6 +197,42 @@ class ClientCLITests(unittest.TestCase):
         self.assertEqual(self.run_cli("remove-saved", ["1", "remove"]), (0, [dict(state="removed", effect="confirmed")]))
         self.assertEqual(self.secret.items, [])
         self.assertEqual(self.run_cli("connect-saved", ["33"])[0], 1)
+        original_delete = Item.delete_sync
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for outcome in ("confirmed", "failed", "pending"):
+                with self.subTest(signal=signum, outcome=outcome):
+                    store.save(record())
+                    entered, release = threading.Event(), threading.Event()
+                    workers = []
+                    def interrupted_delete(item: object, cancel: object) -> bool:
+                        workers.append(threading.current_thread())
+                        entered.set()
+                        os.kill(os.getpid(), signum)
+                        if outcome == "pending":
+                            release.wait(2)
+                        else:
+                            time.sleep(0.05)
+                        removed = original_delete(item, cancel)
+                        if outcome == "failed":
+                            raise RuntimeError("secret diagnostic canary")
+                        return removed
+                    original_join = threading.Thread.join
+                    def bounded_join(worker: object, timeout: float | None = None) -> None:
+                        original_join(worker, 0.01 if outcome == "pending" else timeout)
+                    try:
+                        with patch.object(Item, "delete_sync", interrupted_delete), \
+                                patch.object(threading.Thread, "join", bounded_join):
+                            result = self.run_cli("remove-saved", ["1", "remove"])
+                        self.assertTrue(entered.is_set())
+                        expected = (0, [dict(state="removed", effect="confirmed")]) if outcome == "confirmed" else \
+                            (1, [dict(code="removalIncomplete", state="unknown", effect="unknown")])
+                        self.assertEqual(bool(self.secret.items), outcome == "pending")
+                        self.assertEqual(result, expected)
+                    finally:
+                        release.set()
+                        for worker in workers:
+                            original_join(worker, 2)
+                            self.assertFalse(worker.is_alive())
 
     def test_save_failures_and_incomplete_cleanup_are_truthful(self) -> None:
         for mode, expected in (("locked", "needsPermission"), ("denied", "needsPermission"),
@@ -244,23 +281,69 @@ class TerminalTests(unittest.TestCase):
         terminal.stream = os.fdopen(os.dup(slave), "w", buffering=1)
         before = termios.tcgetattr(slave)
         values = []
+        errors = []
+        release = threading.Event()
+        original_say = terminal.say
+        def paused_prompt(text: str) -> None:
+            original_say(text)
+            if text == "Hidden:":
+                release.wait(2)  # peer pastes at readiness, even if reader is descheduled
+        terminal.say = paused_prompt
         def read() -> None:
-            values.append(terminal.read("Hidden:", hidden=True, limit=64))
+            try:
+                values.append(terminal.read("Hidden:", hidden=True, limit=64))
+            except BaseException as error:
+                errors.append(error)
         worker = threading.Thread(target=read)
         worker.start()
         try:
-            self.assertIn(b"Hidden:", os.read(master, 1024))
-            deadline = time.monotonic() + 2
-            while termios.tcgetattr(slave)[3] & termios.ECHO and time.monotonic() < deadline:
-                time.sleep(0.001)
-            self.assertFalse(termios.tcgetattr(slave)[3] & termios.ECHO)
+            output = os.read(master, 1024)
+            self.assertIn(b"Hidden:", output)
             os.write(master, b"synthetic-hidden\n")
+            deadline = time.monotonic() + 0.1
+            while time.monotonic() < deadline and select.select([master], [], [], max(0, deadline - time.monotonic()))[0]:
+                output += os.read(master, 1024)
+            self.assertNotIn(b"synthetic-hidden", output)
+            self.assertFalse(termios.tcgetattr(slave)[3] & (termios.ECHO | termios.ECHONL))
+            release.set()
             worker.join(2)
             self.assertFalse(worker.is_alive())
             self.assertEqual(values, ["synthetic-hidden"])
+            self.assertEqual(errors, [])
             self.assertEqual(termios.tcgetattr(slave), before)
-            self.assertNotIn(b"synthetic-hidden", os.read(master, 1024))
+            output += os.read(master, 1024)
+            self.assertNotIn(b"synthetic-hidden", output)
+            def cancel(_signum: int, _frame: object) -> None:
+                raise cli.Cancelled()
+            previous = {s: signal.signal(s, cancel) for s in (signal.SIGINT, signal.SIGTERM)}
+            try:
+                for mode in ("eof", "oversized", "prompt-error", signal.SIGINT, signal.SIGTERM):
+                    with self.subTest(exit=mode):
+                        def end_read(text: str) -> None:
+                            original_say(text)
+                            if text != "Hidden:":
+                                return
+                            self.assertFalse(termios.tcgetattr(slave)[3] & (termios.ECHO | termios.ECHONL))
+                            if mode == "prompt-error":
+                                raise OSError("synthetic prompt error")
+                            if isinstance(mode, int):
+                                os.kill(os.getpid(), mode)
+                            else:
+                                os.write(master, b"\x04" if mode == "eof" else b"x" * 65)
+                        expected = OSError if mode == "prompt-error" else \
+                            cli.native.ClientError if mode == "oversized" else cli.Cancelled
+                        with patch.object(terminal, "say", end_read), self.assertRaises(expected):
+                            terminal.read("Hidden:", hidden=True, limit=64)
+                        self.assertEqual(termios.tcgetattr(slave), before)
+            finally:
+                for signum, handler in previous.items():
+                    signal.signal(signum, handler)
         finally:
+            release.set()
+            worker.join(0.1)
+            if worker.is_alive():
+                os.write(master, b"\x04")
+                worker.join(2)
             terminal.close()
             os.close(master)
             os.close(slave)
