@@ -3856,6 +3856,17 @@ before A's closures and continued B delivery. No production clock seam is added.
 Installed package activation and native password dialogs remain NOT RUN.
 Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).
 
+
+THR-327 I4b-1 retained policy-renewal checks (temporary roots, no host services):
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_policy_renew_units.py scripts/test_installer_token_custody.py scripts/test_policy_pickup.py -v --tb=short`.
+These cover protected journal publication/recovery, per-reader refusal, fixed
+entry/renderer bytes, and connector pickup/refusal plus unchanged expiry teardown.
+The neighboring custody, home activation and audit script selections remain
+part of the assigned focused job. Packaging uses
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v` for both architectures.
+No retired Python suite, Product E2E, general integration or live service is run.
+
+
 ## Focused skill-use observation checks
 
 ```sh

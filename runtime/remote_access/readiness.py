@@ -100,7 +100,7 @@ class ConnectorReadiness:
         daemon_port: int | None,
         release_verifier: VerifierClient | None = None,
         credential_provider: DaemonCredentialProvider,
-        policy: RoutePolicyConsumer | None,
+        policy: RoutePolicyConsumer | Callable[[], RoutePolicyConsumer] | None,
         policy_failure_category: str | None = None,
         configured_identity: ConnectorIdentity | None,
         state_store: TrustStateStore | None,
@@ -181,7 +181,7 @@ class ConnectorReadiness:
                 self._policy_failure_category,
                 "route policy malformed or unreadable",
             )
-        policy = self._policy
+        policy = self._policy() if callable(self._policy) else self._policy
         if policy is None:
             return GateResult(False, "policy_missing", "no route policy configured")
         try:

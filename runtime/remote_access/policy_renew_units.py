@@ -1,8 +1,8 @@
 """Inert B14 unit rendering and fixed shipped-policy renewal decisions.
 
-No reader, writer, lock acquisition, installer or executable is wired here.
-The eventual root entry must hold the installation lock while supplying fresh
-protected inputs and atomically publishing a successful candidate.
+The installer owner holds the installation lock while supplying fresh protected
+inputs and atomically publishing a successful candidate. This module keeps the
+unit bytes and pure decisions independent of that owner.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from runtime.remote_access.policy import (
 
 SERVICE_NAME = "happyranch-remote-access-policy-renew.service"
 TIMER_NAME = "happyranch-remote-access-policy-renew.timer"
-# Reserved using the packaged helper's bin convention; entry packaging deferred.
+# Fixed packaged entry using the helper's bin convention.
 RENEW_EXECUTABLE = "/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew"
 POLICY_MAX_AGE_SECONDS = 3600
 
@@ -119,3 +119,18 @@ def renewal_candidate(
         "revision": installed.revision + 1,
         "max_age_seconds": POLICY_MAX_AGE_SECONDS,
     })
+
+
+def fresh_auth_renewal_candidate(
+    installed: PolicyEnvelope | None, shipped_artifact: dict | None, *, now: datetime,
+) -> PolicyEnvelope | None:
+    """Same fixed-action checks, with expiry revival reserved for fresh auth."""
+    if installed is None:
+        return None
+    try:
+        if now.utcoffset() is None or now < installed.issued_at:
+            return None
+        candidate = renewal_candidate(installed, shipped_artifact, now=installed.issued_at)
+        return None if candidate is None else candidate.model_copy(deep=True, update={"issued_at": now})
+    except (TypeError, ValueError, OverflowError):
+        return None

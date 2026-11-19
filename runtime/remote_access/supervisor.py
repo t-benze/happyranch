@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import stat
 import sys
 import threading
 import time
@@ -468,6 +469,7 @@ class ConnectorSupervisor:
         self._config_path = config_path
         self._state_store = state_store
         self._policy = policy
+        self._policy_signature: tuple[int, ...] | None = None
         self._readiness = readiness
         self._injected_provider = provider
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
@@ -573,19 +575,27 @@ class ConnectorSupervisor:
             return FileDaemonCredentialProvider(Path(self.config.daemon_token_path))
         return _MissingCredentialProvider()
 
-    def load_policy(self) -> RoutePolicyConsumer:
-        if self._policy is not None:
+    def load_policy(self, *, refresh: bool = False) -> RoutePolicyConsumer:
+        if self._policy is not None and not refresh:
             return self._policy
         if not self.config.policy_path:
             raise ConnectorConfigError("policy_path is required")
         try:
-            raw = json.loads(
-                Path(self.config.policy_path).read_text(encoding="utf-8")
-            )
-            envelope = PolicyEnvelope.model_validate(raw)
-            self._policy = RoutePolicyConsumer.from_envelope(
-                envelope, now=self._now_fn()
-            )
+            path = Path(self.config.policy_path)
+            before = path.stat(follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise PolicyLoadError()
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                data = stream.read(65537)
+                after = os.fstat(stream.fileno())
+            signature = self._policy_stat_signature(before)
+            if (len(data) > 65536 or any(self._policy_stat_signature(info) != signature
+                    for info in (opened, after, path.stat(follow_symlinks=False)))):
+                raise PolicyLoadError()
+            envelope = PolicyEnvelope.model_validate_json(data)
+            consumer = RoutePolicyConsumer.from_envelope(envelope, now=self._now_fn())
         except PolicyError as exc:
             category = (
                 exc.outcome.audit_category
@@ -595,7 +605,36 @@ class ConnectorSupervisor:
             raise PolicyLoadError(category) from None
         except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
             raise PolicyLoadError() from None
-        return self._policy
+        self._policy_signature = signature
+        if not refresh:
+            self._policy = consumer
+        return consumer
+
+    @staticmethod
+    def _policy_stat_signature(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _pickup_policy(self) -> None:
+        """Called under the lifecycle lock before readiness; refusal keeps cache."""
+        if not self.config.policy_path:
+            return
+        try:
+            signature = self._policy_stat_signature(Path(self.config.policy_path).stat(follow_symlinks=False))
+        except OSError:
+            signature = None
+        if signature == self._policy_signature:
+            return
+        self._policy_signature = signature
+        try:
+            candidate = self.load_policy(refresh=True)
+            candidate.require_current(self._now_fn())
+            cached = self._policy
+            if cached is not None and (candidate.revision <= cached.revision or candidate.issued_at < cached.issued_at):
+                return
+        except (PolicyLoadError, PolicyError):
+            return
+        self._policy = candidate
 
     def build_readiness(self) -> ConnectorReadiness:
         if self._readiness is not None:
@@ -610,7 +649,7 @@ class ConnectorSupervisor:
             daemon_port=self.config.daemon_port,
             release_verifier=VerifierClient() if self.config.uses_release_verifier() else None,
             credential_provider=self.credential_provider(),
-            policy=policy,
+            policy=self.load_policy if policy is not None else None,
             policy_failure_category=policy_failure_category,
             configured_identity=self._configured_identity(),
             state_store=self.state_store,
@@ -672,7 +711,7 @@ class ConnectorSupervisor:
         return make_diy_context_factory(
             identity=identity_,
             pairing=self.pairing_manager(),
-            policy=self.load_policy(),
+            policy=self.load_policy,
             credential_provider=credential_provider,
             forwarder=forwarder,
             registry=self.registry,
@@ -737,7 +776,7 @@ class ConnectorSupervisor:
             ctx_factory = make_pinned_context_factory(
                 identity=self._configured_identity(), pairing=pairing,
                 control_plane_id=self.config.managed.control_plane_id,
-                policy=self.load_policy(), credential_provider=self.credential_provider(),
+                policy=self.load_policy, credential_provider=self.credential_provider(),
                 forwarder=HttpLoopbackForwarder(
                     LoopbackTarget(LOOPBACK_HOST, self.config.daemon_port or 0),
                     verifier=VerifierClient() if self.config.uses_release_verifier() else None,
@@ -1293,6 +1332,7 @@ class ConnectorSupervisor:
             with self._lifecycle_lock:
                 if self._shutdown:
                     break
+                self._pickup_policy()
                 report = self.readiness_report()
                 if notified_ready and (not report.ready or not self._listener_running()):
                     self._report_readiness_loss(

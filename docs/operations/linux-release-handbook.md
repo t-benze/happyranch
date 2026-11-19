@@ -107,6 +107,14 @@ refusal of unlicensed near-miss or escaping replacements.
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
 `build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`,
 `libexec/headscale/headscale` and `libexec/remote-access/happyranch-home-ca`.
+The payload additionally contains the zero-option
+`bin/happyranch-remote-access-policy-renew`, which launches only the fixed bundled
+Python `-I -m runtime.remote_access.policy_renew` with an empty environment.
+The .deb also installs the exact B14 renderer bytes as
+`/usr/lib/systemd/system/happyranch-remote-access-policy-renew.service` and
+`happyranch-remote-access-policy-renew.timer`. Package construction enables or
+starts neither unit; Enable/Disable timer wiring remains I4b-2.
+
 The two POSIX launchers resolve their prefix from their own `bin/` location,
 execute the bundled interpreter with `-I -m`, and default
 `HAPPYRANCH_WEB_DIST` to that prefix's `web/dist` only when unset. Invoke them

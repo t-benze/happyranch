@@ -1,0 +1,15 @@
+#!/usr/bin/python3 -I
+"""Package-owned fixed launcher; no caller arguments or interpreter selectors."""
+from __future__ import annotations
+
+import os
+import sys
+
+if len(sys.argv) != 1:
+    raise SystemExit('invalid-request')
+try:
+    os.execve('/opt/happyranch-desktop/python/bin/python3',
+              ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
+               'runtime.remote_access.policy_renew'), {})
+except OSError:
+    raise SystemExit('renewal-unavailable') from None

@@ -10,6 +10,7 @@ present must match the rendered units; interrupted installs need operator care.
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import errno
 import fcntl
@@ -682,6 +683,7 @@ class ManagedInstaller:
         return snapshot
 
     def _replacement_release(self, transaction: bytes) -> dict:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         if record["version"] == 1:
             return self._check_release_record()
@@ -702,6 +704,7 @@ class ManagedInstaller:
 
     def _replacement_pending(self, parent: int, transaction: bytes) -> bytes | None:
         """Recognize only the normal writer's exact interrupted journal intent."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         name = ".install-transaction.json.pending"
         try:
             data = self._read_file(parent, name, owner=self.root_owner, mode=0o600)
@@ -728,6 +731,7 @@ class ManagedInstaller:
 
     def _discard_replacement_pending(self, transaction: bytes) -> None:
         """Discard validated intent only; the normal writer regenerates/rebinds."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         with self._publication_parent() as (parent, revalidate):
             pending = self._replacement_pending(parent, transaction)
             if pending is None:
@@ -986,6 +990,7 @@ class ManagedInstaller:
         return metadata
 
     def _quarantine_configs(self, transaction: bytes) -> None:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         while record["phase"] != "replacement-quarantined":
             phase = record["phase"]
@@ -1003,6 +1008,7 @@ class ManagedInstaller:
 
     def _remove_replacement_state(self, transaction: bytes) -> None:
         """Consume one bounded removal group; retain the journal until closure."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         units = record["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES)
         configs = record["phase"] in ("replacement-state-removed", *_CONFIG_REMOVAL_PHASES)
@@ -1035,6 +1041,7 @@ class ManagedInstaller:
         An absent current destination may receive a newly generated digest intent;
         a published destination is immutable and must match its recorded digest.
         """
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         staging_files, staging_phases = _replacement_staging(record)
         current = (staging_phases.index(record["phase"]) if record["phase"] in staging_phases
@@ -1111,6 +1118,7 @@ class ManagedInstaller:
         return InstallInventory("known-failed-or-partial", record["phase"], tuple(sorted(paths)))
 
     def _replacement_custody(self, transaction: bytes) -> bytes:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         if self._json(transaction)["version"] == 1:
             return self._staging_custody()
         release = self._replacement_release(transaction)
@@ -1126,6 +1134,7 @@ class ManagedInstaller:
 
     def _staging_data(self, name: str, transaction: bytes) -> bytes:
         """Generate only new settings; never open quarantined or retired configs."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         if name == "release-daemon.json":
             return json.dumps(self._replacement_release(transaction), sort_keys=True).encode()
         if name == "daemon.token":
@@ -1147,6 +1156,7 @@ class ManagedInstaller:
 
     def _stage_replacement(self, transaction: bytes) -> None:
         """Stage the bounded inert prefix; keep every lifecycle guard closed."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         staging_files, staging_phases = _replacement_staging(record)
         self._check_deb_payload()
@@ -1191,6 +1201,7 @@ class ManagedInstaller:
         Old quarantine destruction and final provenance publication already have
         individual fsynced intents. No file is regenerated or policy re-issued.
         """
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         while record["phase"] != "replacement-retire-journal":
             if record["phase"] == "replacement-reload":
@@ -1237,6 +1248,7 @@ class ManagedInstaller:
 
     def _remove_replacement_unit(self, transaction: bytes) -> None:
         """Remove one fixed unit, reserved link or EMPTY owned unit directory."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         phase = self._json(transaction)["phase"]
         entry = next(((relative, kind) for intent, relative, kind in _UNIT_REMOVALS if intent == phase), None)
         if entry is None:
@@ -1291,6 +1303,7 @@ class ManagedInstaller:
                 pass
 
     def _remove_replacement_entry(self, transaction: bytes) -> None:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         phase = self._json(transaction)["phase"]
         relative = dict((*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS, *_STAGING_REMOVALS)).get(phase)
         if relative is None:
@@ -1345,6 +1358,7 @@ class ManagedInstaller:
 
     def _quarantine_config(self, name: str, transaction: bytes) -> None:
         """Tighten and move only a digest-bound fixed source; never overwrite."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         if record["phase"] != _QUARANTINE_PHASES[_QUARANTINE_CONFIGS.index(name)]:
             raise InstallerError("quarantine requires the exact fixed-path intent")
@@ -1393,6 +1407,7 @@ class ManagedInstaller:
 
     def _check_replacement_member(self, relative: str, transaction: bytes) -> None:
         """V2 removes only an original fixed member, with its captured metadata."""
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         record = self._json(transaction)
         if record["version"] == 1:
             return
@@ -1401,6 +1416,7 @@ class ManagedInstaller:
             raise InstallerError("replacement original member changed")
 
     def _check_replacement_transaction(self, parent: int, transaction: bytes) -> None:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
         if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
             raise InstallerError("replacement generation changed before mutation")
         record = self._json(transaction)
@@ -3480,8 +3496,155 @@ class ManagedInstaller:
                 continue
             raise InstallerError("provisioning destination or pending entry exists; inspect partial files before retrying")
 
+    def _policy_renewal_record(self, data: bytes) -> dict:
+        """Closed, bounded roll-forward intent; never a replacement record."""
+        from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
+        from runtime.remote_access.policy_renew_units import renewal_candidate
+
+        try:
+            record = self._json(data)
+            if (not 0 < len(data) <= 65536 or record.keys() != {"format", "files"}
+                    or record["format"] != "policy-renewal@1"
+                    or type(record["files"]) is not dict
+                    or record["files"].keys() != {"policy.json", "provision.json"}
+                    or data != json.dumps(record, sort_keys=True).encode()):
+                raise ValueError
+            files = {}
+            for name, entry in record["files"].items():
+                if (type(entry) is not dict or entry.keys() != {"old_sha256", "new_sha256", "new_base64"}
+                        or any(type(entry[key]) is not str or re.fullmatch("[0-9a-f]{64}", entry[key]) is None
+                               for key in ("old_sha256", "new_sha256"))
+                        or type(entry["new_base64"]) is not str):
+                    raise ValueError
+                new = base64.b64decode(entry["new_base64"], validate=True)
+                if (not 0 < len(new) <= 65536 or base64.b64encode(new).decode() != entry["new_base64"]
+                        or hashlib.sha256(new).hexdigest() != entry["new_sha256"]):
+                    raise ValueError
+                files[name] = {**entry, "new_bytes": new}
+            provision = files["provision.json"]["new_bytes"]
+            self._validate_install_record("provision.json", provision)
+            if self._json(provision)["digests"]["policy.json"] != files["policy.json"]["new_sha256"]:
+                raise ValueError
+            envelope = PolicyEnvelope.model_validate(self._json(files["policy.json"]["new_bytes"]))
+            consumer = RoutePolicyConsumer.from_envelope(envelope)
+            if renewal_candidate(envelope, consumer.artifact, now=envelope.issued_at) is None:
+                raise ValueError
+            return files
+        except Exception:
+            raise InstallerError("invalid policy renewal journal") from None
+
+    def _check_policy_renewal(self, parent: int, transaction: bytes, *, publishing: bool = False) -> dict[str, bytes]:
+        files = self._policy_renewal_record(transaction)
+        if publishing:
+            try:
+                os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise InstallerError("policy renewal journal already exists")
+        elif self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
+            raise InstallerError("policy renewal journal changed")
+        current = {}
+        for name, entry in files.items():
+            owner, mode = ((self.root_owner, 0o600) if name == "provision.json" else
+                           ((self.root_owner[0], self._service_owner[1]), 0o640))
+            current[name] = self._read_file(parent, name, owner=owner, mode=mode)
+            allowed = (entry["old_sha256"],) if publishing else (entry["old_sha256"], entry["new_sha256"])
+            if hashlib.sha256(current[name]).hexdigest() not in allowed:
+                raise InstallerError("policy renewal destination drift")
+        return current
+
+    def _recover_policy_renewal(self, transaction: bytes) -> None:
+        """Same lock/owner: validate BOTH destinations before any roll-forward."""
+        files = self._policy_renewal_record(transaction)
+        with self._publication_parent() as (parent, check):
+            for name in ("install-transaction.json", *files):
+                self._headscale_no_pending(parent, name)
+            self._check_policy_renewal(parent, transaction)
+            check()
+        for name in ("policy.json", "provision.json"):
+            with self._publication_parent() as (parent, check):
+                current = self._check_policy_renewal(parent, transaction)
+                check()
+            if current[name] != files[name]["new_bytes"]:
+                owner, mode = ((self.root_owner, 0o600) if name == "provision.json" else
+                               ((self.root_owner[0], self._service_owner[1]), 0o640))
+                self._write_provision_file(name, files[name]["new_bytes"], owner, mode,
+                                           policy_renewal=transaction)
+        with self._publication_parent() as (parent, check):
+            before = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
+            current = self._check_policy_renewal(parent, transaction)
+            if any(current[name] != files[name]["new_bytes"] for name in files):
+                raise InstallerError("policy renewal incomplete")
+            check()
+            after = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
+            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, field) != getattr(after, field) for field in fields):
+                raise InstallerError("policy renewal journal changed")
+            os.unlink("install-transaction.json", dir_fd=parent)
+            os.fsync(parent)
+
+    def renew_policy(self, *, fresh_auth: bool = False) -> None:
+        """Fixed artifact only. Fresh-auth callers supply authorization separately."""
+        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+
+        if os.geteuid() != 0 or type(fresh_auth) is not bool:
+            raise InstallerError("policy renewal unavailable")
+        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked():
+            self._renew_policy_locked(fresh_auth=fresh_auth)
+
+    def _renew_policy_locked(self, *, fresh_auth: bool) -> None:
+        from runtime.remote_access.policy import PolicyEnvelope
+        from runtime.remote_access.policy_renew_units import fresh_auth_renewal_candidate, renewal_candidate
+
+        self._service_owner = self._account(create=False)
+        if self._service_owner is None:
+            raise InstallerError("policy renewal service account unavailable")
+        with self._publication_parent() as (parent, check):
+            self._headscale_no_pending(parent, "install-transaction.json")
+            try:
+                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+            except FileNotFoundError:
+                transaction = None
+            check()
+        if transaction is not None:
+            self._recover_policy_renewal(transaction)
+            return
+        with self._publication_parent() as (parent, check):
+            for name in ("policy.json", "provision.json"):
+                self._headscale_no_pending(parent, name)
+            old_policy = self._read_file(parent, "policy.json", owner=(self.root_owner[0], self._service_owner[1]), mode=0o640)
+            old_provision = self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600)
+            check()
+        record = self._json(old_provision)
+        self._validate_install_record("provision.json", old_provision)
+        if record.get("digests", {}).get("policy.json") != hashlib.sha256(old_policy).hexdigest():
+            raise InstallerError("policy renewal provision drift")
+        source = Path(__file__).with_name("route_policy.json")
+        with self._input_parent(source) as parent:
+            shipped = self._json(self._read_file(parent, source.name, owner=self.root_owner))
+        installed = self._json(old_policy)
+        candidate = (fresh_auth_renewal_candidate if fresh_auth else renewal_candidate)(
+            PolicyEnvelope.model_validate(installed), shipped, now=datetime.now(timezone.utc))
+        if candidate is None:
+            raise InstallerError("policy renewal refused")
+        installed.update(issued_at=candidate.issued_at.isoformat(), revision=candidate.revision,
+                         max_age_seconds=candidate.max_age_seconds)
+        policy = json.dumps(installed, sort_keys=True).encode()
+        record["digests"]["policy.json"] = hashlib.sha256(policy).hexdigest()
+        provision = json.dumps(record, sort_keys=True).encode()
+        transaction = json.dumps(dict(format="policy-renewal@1", files={
+            name: dict(old_sha256=hashlib.sha256(old).hexdigest(), new_sha256=hashlib.sha256(new).hexdigest(),
+                       new_base64=base64.b64encode(new).decode())
+            for name, old, new in (("policy.json", old_policy, policy), ("provision.json", old_provision, provision))
+        }), sort_keys=True).encode()
+        self._write_provision_file("install-transaction.json", transaction, self.root_owner, 0o600,
+                                   policy_renewal=transaction)
+        self._recover_policy_renewal(transaction)
+
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int,
-                              *, expected_transaction: bytes | None = None, relative: str = "etc/happyranch") -> None:
+                              *, expected_transaction: bytes | None = None, relative: str = "etc/happyranch",
+                              policy_renewal: bytes | None = None) -> None:
         # Fresh files never overwrite. Only the closed linear replacement
         # transitions can update a final entry, through the same atomic writer.
         metadata = {
@@ -3506,12 +3669,19 @@ class ManagedInstaller:
         if (name not in metadata or metadata[name] != (owner, mode)
                 or owner is None or not 0 < len(data) <= 65536):
             raise InstallerError("invalid provisioning publication")
+        renewal_files = self._policy_renewal_record(policy_renewal) if policy_renewal is not None else None
+        if renewal_files is not None:
+            if (expected_transaction is not None or relative != "etc/happyranch"
+                    or (data != policy_renewal if name == "install-transaction.json" else
+                        name not in renewal_files or data != renewal_files[name]["new_bytes"])):
+                raise InstallerError("invalid policy renewal publication")
         replacement = expected_transaction is not None
-        updating = replacement and name == "install-transaction.json"
+        updating = (replacement and name == "install-transaction.json"
+                    or renewal_files is not None and name in renewal_files)
         rebinding = False
         if replacement:
             self._validate_install_record("install-transaction.json", expected_transaction, replacement=True)
-        if updating:
+        if replacement and updating:
             self._validate_install_record(name, data, replacement=True)
             expected_record = self._json(expected_transaction)
             phases = _replacement_phases(expected_record)
@@ -3534,10 +3704,15 @@ class ManagedInstaller:
                 raise InstallerError("replacement publication requires its exact staging intent")
             if name == "provision.json":
                 self._validate_install_record(name, data)
-        elif name in ("provision.json", "install-transaction.json"):
+        elif renewal_files is None and name in ("provision.json", "install-transaction.json"):
             self._validate_install_record(name, data)
         with self._publication_parent(relative) as (parent, revalidate):
-            if replacement:
+            if renewal_files is not None:
+                self._check_policy_renewal(parent, policy_renewal, publishing=name == "install-transaction.json")
+                if not updating:
+                    self._refuse_provision_entry(parent, name)
+                self._headscale_no_pending(parent, name)
+            elif replacement:
                 if self._json(expected_transaction)["version"] == 2:
                     self._replacement_custody(expected_transaction)
                 if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
@@ -3581,7 +3756,10 @@ class ManagedInstaller:
                          value.st_mode, value.st_nlink, value.st_size) != expected):
                         raise InstallerError("unsafe or changed pending provisioning file")
                 revalidate()
-                if replacement:
+                if renewal_files is not None:
+                    self._check_policy_renewal(parent, policy_renewal, publishing=name == "install-transaction.json")
+                    revalidate()
+                elif replacement:
                     if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != expected_transaction:
                         raise InstallerError("replacement journal changed before rename")
                     self._check_replacement_transaction(parent, expected_transaction)
@@ -3778,6 +3956,7 @@ class ManagedInstaller:
         action selects this generator until the package/H2 slice ships.
         """
         try:
+            self._refuse_install_transaction()
             generated = connector_config is None and sidecar_config is None and policy_file is None
             if not generated and any(path is None for path in (connector_config, sidecar_config, policy_file)):
                 raise InstallerError("provide all three config inputs or omit all three for staged generation")
@@ -4152,6 +4331,7 @@ class ManagedInstaller:
 
     def uninstall(self, *, purge: bool = False) -> dict[str, str]:
         """Wait for services before unit removal. Only purge removes service state."""
+        self._refuse_install_transaction()
         if self._refuse_staged_identity() is not None:
             raise InstallerError("home control binding not provisioned; requires slice 3b-2")
         headscale_result = (self.cleanup_headscale() if self.layout == "deb"
