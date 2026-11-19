@@ -486,7 +486,10 @@ class RemoteAccessHelper:
             if capture.method != 'Disable':
                 step = 'enable' if capture.method == 'Enable' else 'replace'
                 result = child(step, None)
-                outcome = lifecycle.SetupPhase(result['outcome'])
+                # B7 rollover publishes prepared, which B15 projects as in_progress.
+                outcome = (lifecycle.SetupPhase.IN_PROGRESS
+                           if capture.method == 'Enable' and result['outcome'] == 'prepared'
+                           else lifecycle.SetupPhase(result['outcome']))
                 residue = result['residue']
             else:
                 revoked = False

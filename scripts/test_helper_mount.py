@@ -146,8 +146,10 @@ def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: py
     assert v.helper._error.called and not v.helper._reply.called
 
 
-@pytest.mark.parametrize('method,step,outcome', [('Enable', 'enable', 'ready'), ('ReplaceFailed', 'replace', 'off')])
-def test_lifecycle_private_mount_fresh_auth_and_audit(mount: Any, method: str, step: str, outcome: str) -> None:
+@pytest.mark.parametrize('method,step,outcome,setup', [('Enable', 'enable', 'ready', 'ready'),
+    ('Enable', 'enable', 'prepared', 'in_progress'), ('ReplaceFailed', 'replace', 'off', 'off')])
+def test_lifecycle_private_mount_fresh_auth_and_audit(
+        mount: Any, method: str, step: str, outcome: str, setup: str) -> None:
     v = mount
     v.message.get_member = lambda: method
     def effect(actual: str, expected: str, remaining: float) -> dict:
@@ -160,7 +162,10 @@ def test_lifecycle_private_mount_fresh_auth_and_audit(mount: Any, method: str, s
     assert not v.helper.authority.call.called and not v.reader.effect.called
     for _ in range(2):
         v.admit()
-        assert v.helper.lifecycle_result == {'outcome': outcome, 'residue': []}
+        assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
+        assert v.helper.inflight is None
+    assert [row['outcome'] for row in map(json.loads, v.helper.audit.path.read_text().splitlines())
+            if row['stage'] == 'outcome'] == ['succeeded', 'succeeded']
     assert v.helper.authority.call.call_count == 2
     assert v.helper.authority.call.call_args.args[1].unpack()[1] == (
         'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method])

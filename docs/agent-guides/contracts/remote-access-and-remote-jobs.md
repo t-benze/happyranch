@@ -2966,7 +2966,12 @@ is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
 I3a privately mounts this backend through the fixed bundled-Python helper child,
 with B8/B9 fresh authorization and protected G/O capture. Public Enable stays
-unreachable until I5. No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
+unreachable until I5. Under the same held lock, private Enable sends only matching
+failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
+txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
+remain unchanged. The child reports the returned phase, including rollover's
+`prepared` (projected as B15 setup `in_progress`); ready remains inspect-only.
+No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
 recovery with real A5 records and observe.sock; installed/live-host operations
 remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
 sidecar SSL_CERT lines and B5 Headscale lines are selected by these owners.
@@ -3131,9 +3136,9 @@ Why no founder: fail-closed recovery through the existing Enable action.
 engineering_manager, TASK-17421 step 19. Context: main after G2-D1 #1690
 (`101d1bc5`), with G2-A #1677, G2-B #1673, G2-C1 #1684 and G2-D2 #1687 merged.
 
-1. One explicit unmounted entry, `home_activation_recovery.py`, has no production
-   caller. Fresh authentication is an injected caller precondition; polkit wiring
-   belongs to G2-E/Track B. Require both receipt and txn `failed_uncertain` for
+1. G2-C2 introduced the explicit entry `home_activation_recovery.py`; I3a now
+   privately mounts it through Enable with B8/B9 fresh authorization and captured
+   G/O. Require both receipt and txn `failed_uncertain` for
    externally expected generation G and the same operation O. Other pairs refuse
    unchanged; a matching nonterminal pair with a txn takes Ruling 7's terminal
    marker path first and never recovers in that call. Validate release UID and

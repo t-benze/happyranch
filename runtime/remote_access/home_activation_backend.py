@@ -214,9 +214,18 @@ class HelperLifecycleBackend:
                     coordinator, _, _ = backend._compose(current)
                     if coordinator._owner.verify('joined', current) is not True:
                         raise ActivationRefused()
+                elif current is not None and current.phase == 'failed_uncertain':
+                    transaction = backend._transactions.read_optional()
+                    if (transaction is None or not transaction.matches(current)
+                            or not (transaction.phase == 'failed_uncertain'
+                                    or (transaction.phase == 'joined'
+                                        and transaction.recovery_observation is not None))):
+                        raise ActivationRefused()
+                    current = backend.recover(expected_generation=snapshot['generation'],
+                        expected_operation_id=snapshot['activation']['operation'], fresh_authenticated=True)
                 else:
-                    backend.enable(expected_generation=snapshot['generation'], authenticated=True)
-                return {'outcome': 'ready', 'residue': []}
+                    current = backend.enable(expected_generation=snapshot['generation'], authenticated=True)
+                return {'outcome': current.phase, 'residue': []}
             if method == 'ReplaceFailed' and step == 'replace':
                 self.io.begin_replacement(expected_release_uid=uid,
                                           expected_generation=snapshot['replacement'])
