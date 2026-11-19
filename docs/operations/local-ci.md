@@ -3765,6 +3765,16 @@ systemd, system bus or installed polkit acceptance is exercised.
 
 I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
+I3b's retained focused selection is
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py scripts/test_invite_recovery.py scripts/test_invite_control.py scripts/test_home_audit.py -q --tb=short`.
+Run the full selection through a durable job. Its mounted cases use real
+temporary issuer/trust/audit files, the existing B11 backend, InviteControl and
+HeadscaleRecoveryMinter, with only native transport/admin seams simulated. They
+cover both private actions, absent state, capture/admission and live-caller
+drift, busy/contended locks, exact cleanup-proof result axes, IPC loss and late
+replies, unchanged public gating, existing StatusV2 fields/staleness and the
+fixed child ready/commit callback. This is separate from installed polkit/live
+acceptance and does not restore the retired Python or skipped integration suites.
 Test-side Gio/child transport seams run the shipping private mount, native-auth
 callback, B9 capture/slot/deadlines and real B16 file writer when no compatible
 Gio+pytest interpreter exists. Protected-store/backend cases use temporary roots;

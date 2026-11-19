@@ -151,6 +151,9 @@ class HelperLifecycleBackend:
         self.store = HomeActivationStore(root=io.root, root_owner=io.root_owner)
 
     def capture(self, method: str, uid: int) -> str:
+        if method in ('CancelInvite', 'RecoverInvite'):
+            from runtime.remote_access.helper_invite_backend import HelperInviteBackend
+            return HelperInviteBackend(self.io).capture(uid)
         receipt = self.store.current()
         activation = None
         generation = None
@@ -271,7 +274,7 @@ def helper_main() -> int:
     try:
         if len(sys.argv) != 1 or os.geteuid() != 0:
             raise ActivationRefused()
-        raw = sys.stdin.buffer.read(4097)
+        raw = sys.stdin.buffer.readline(4097)
         if len(raw) > 4096:
             raise ActivationRefused()
         request = json.loads(raw)
@@ -289,7 +292,13 @@ def helper_main() -> int:
             return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
         manager = SystemdServiceManager(system=True, run=run)
         io = ManagedInstaller(layout='deb', manager=manager, run=run)
-        result = HelperLifecycleBackend(io).dispatch(**request)
+        if request['method'] in ('CancelInvite', 'RecoverInvite'):
+            from runtime.remote_access.helper_invite import confirm
+            from runtime.remote_access.helper_invite_backend import HelperInviteBackend
+            result = HelperInviteBackend(io).dispatch(**request, deadline=deadline,
+                                                      before_commit=lambda: confirm(deadline))
+        else:
+            result = HelperLifecycleBackend(io).dispatch(**request)
         if time.monotonic() >= deadline:
             raise ActivationRefused()
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))

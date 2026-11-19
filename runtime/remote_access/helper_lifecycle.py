@@ -22,7 +22,7 @@ LIFECYCLE_SECONDS = 480.0
 DISABLE_SECONDS = 300.0
 STATUS_SECONDS = 2.0
 CALL_SECONDS = AUTH_DEADLINE + 2.0  # Existing native transport; never an operation wait.
-METHODS = frozenset({'Enable', 'Disable', 'ReplaceFailed', 'RefreshHomeAddress'})
+METHODS = frozenset({'Enable', 'Disable', 'ReplaceFailed', 'RefreshHomeAddress', 'CancelInvite', 'RecoverInvite'})
 OUTCOMES = frozenset({SetupPhase.READY, SetupPhase.OFF, SetupPhase.IN_PROGRESS,
                       SetupPhase.FAILED, SetupPhase.UNCERTAIN, SetupPhase.PARTIAL_CLEANUP})
 T = TypeVar('T')
@@ -90,7 +90,9 @@ class OperationBudget:
     def lifecycle(cls, method: str, clock: Callable[[], float]) -> OperationBudget:
         if method not in METHODS:
             raise LifecycleRefused()
-        return cls(DISABLE_SECONDS if method == 'Disable' else LIFECYCLE_SECONDS, clock)
+        seconds = (AUTH_DEADLINE if method in ('CancelInvite', 'RecoverInvite') else
+                   DISABLE_SECONDS if method == 'Disable' else LIFECYCLE_SECONDS)
+        return cls(seconds, clock)
 
     @classmethod
     def status(cls, clock: Callable[[], float] = time.monotonic) -> OperationBudget:

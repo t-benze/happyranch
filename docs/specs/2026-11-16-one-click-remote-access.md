@@ -113,8 +113,8 @@ is unchanged; outside-home key delivery remains an open founder/security gate (�
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
 | `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
 | `IssueInvite()` / `issue-invite` | Home mode: locally mint one-use join key and pairing secret after fresh auth; invalidate old invite, deliver once. |
-| `CancelInvite()` / `cancel-invite` | Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
-| `RecoverInvite()` / `recover-invite` | Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
+| `CancelInvite()` / `cancel-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
+| `RecoverInvite()` / `recover-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
 | `ApprovePending()` / `approve-pending` | Approve the sole redeemed pending identity captured before authentication, then atomically pin and issue its credential. |
 | `RejectPending()` / `reject-pending` | Permanently reject that captured pending identity and consume its invite. |
@@ -150,6 +150,23 @@ refused or uncertain settlement. Admission returns before the worker; the single
 slot remains held through all effects under the original 480/300-second budget.
 The already-designed three action definitions retain auth_admin/no-keep defaults.
 Public dispatch/introspection still excludes all three methods until I5.
+
+I3b privately mounts CancelInvite and RecoverInvite through that same helper
+capture/auth/worker slot and fixed bundled child, with their exact auth_admin,
+no-keep actions. Their original 120-second monotonic budget includes capture,
+authentication, journal, B10 invalidation and key cleanup. The child uses the
+existing ready/commit framing on its pipes to call the Gio parent's live UID,
+B8 owner and protected generation/operation revalidation hook; no new connector
+verb, listener, pairing owner, store or minter is introduced. It derives the
+issuer/config/CA and connector generation from protected current state, selects
+the current journal entry without any app ID, and holds the existing invite-user
+lock. Journal transactions end before IPC and minter calls. B16 intents precede
+effects. B11 tuples pass through unchanged: partial_cleanup/cancelled/uncertain
+means invalidation was acknowledged but key cleanup was not proved. Lost or late
+replies stay uncertain. StatusV2 uses only the existing invite/cleanup fields,
+bound to the authenticated UID and activation G/O and aged by B15; restart or
+binding drift leaves them unknown. IssueInvite and all public lifecycle dispatch
+remain gated for the later slices.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable
 denies and stream closure) → stop/disable recognized connector/sidecar/verifier

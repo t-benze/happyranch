@@ -42,7 +42,7 @@ _OWNER_SPEC.loader.exec_module(_owner)
 bootstrap_owner, OwnerRefused, Owner = _owner.bootstrap_owner, _owner.OwnerRefused, _owner.Owner
 
 # Stdlib-only package siblings; the receipt owner runs only in bundled Python -I.
-for _name in ('status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle'):
+for _name in ('status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle', 'helper_invite'):
     _spec = importlib.util.spec_from_file_location(
         'happyranch_fixed_' + _name, Path(__file__).with_name(_name + '.py'))
     _module = importlib.util.module_from_spec(_spec)
@@ -57,7 +57,8 @@ INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
 # Deliberately absent from METHODS/introspection and public dispatch until I5.
-LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable'}
+LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
+                     **_helper_invite.METHODS}
 IDLE_SECONDS = 60.0
 METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
@@ -97,6 +98,7 @@ class RemoteAccessHelper:
         self.audit = _home_audit.HomeAudit()
         self.lifecycle_operation: object | None = None
         self.lifecycle_result: dict | None = None
+        self.invite_observation: tuple | None = None
         self.status_worker: object | None = None
         self.status_lock = threading.Lock()
         self.timer = 0
@@ -254,8 +256,9 @@ class RemoteAccessHelper:
                         _status_v2.RuntimeAvailability.UNAVAILABLE, 0)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
+                invite, cleanup = self._invite_status(uid, observed)
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
-                    setup=setup, connector=connector, runtime=runtime))
+                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup))
             except Exception as error:
                 category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
             settled(raw, category)
@@ -264,6 +267,21 @@ class RemoteAccessHelper:
         timer.daemon = True
         timer.start()
         threading.Thread(target=observe, daemon=True).start()
+
+    def _invite_status(self, uid: int, observed: object) -> tuple:
+        observation = getattr(self, 'invite_observation', None)
+        if observation is None or observed is None or observation[0] != uid:
+            return None, None
+        expected = json.loads(observation[1])
+        if (expected['generation'], expected['operation'], uid) != (
+                observed.generation, observed.operation, observed.release_uid):
+            return None, None
+        result, at = observation[2:]
+        age = min(_status_v2.MAX_AGE_SECONDS, max(0, int(time.monotonic() - at)))
+        invite = _status_v2.InvitePhase(result['invite'])
+        cleanup = _status_v2.CleanupState(result['cleanup'])
+        return (_status_v2.InviteObservation(invite, None if invite.value == 'unknown' else age),
+                _status_v2.CleanupObservation(cleanup, None if cleanup.value == 'unknown' else age))
 
     def _uid(self, sender: str) -> int:
         try:
@@ -378,6 +396,8 @@ class RemoteAccessHelper:
         uid = self._uid(sender)
         client = _helper_generation.HomeLifecycleClient(method, uid)
         capture = _helper_lifecycle.LifecycleCapture.take(method, sender, self, client, admission)
+        if capture.uid != uid:
+            raise Refused('wrong-uid')
         capture = replace(capture, deadline=min(admission.deadline, self.clock() + AUTH_DEADLINE),
                           cancellation_id=uuid.uuid4().hex, message=message)
         if not self.try_claim(capture):
@@ -391,7 +411,9 @@ class RemoteAccessHelper:
             self.timer = GLib.timeout_add(max(1, int(remaining * 1000)), self._expired)
             verb = {'Enable': 'Enable home remote access', 'ReplaceFailed':
                     'Replace failed remote access; existing pairings will be lost',
-                    'Disable': 'Turn off home remote access and revoke all devices'}[method]
+                    'Disable': 'Turn off home remote access and revoke all devices',
+                    'CancelInvite': 'Cancel the current home remote access invite',
+                    'RecoverInvite': 'Recover the current home remote access invite'}[method]
             self.authority.call('CheckAuthorization', GLib.Variant('((sa{sv})sa{ss}us)', (
                 ('system-bus-name', {'name': GLib.Variant('s', sender)}),
                 ACTION_PREFIX + LIFECYCLE_ACTIONS[method], {'polkit.message': verb},
@@ -432,6 +454,9 @@ class RemoteAccessHelper:
                 self._clear()
 
     def _run_lifecycle(self, operation: object) -> None:
+        if operation.capture.method in _helper_invite.METHODS:
+            self._run_invite(operation)
+            return
         lifecycle = _helper_lifecycle
         capture, client = operation.capture, operation.generations
         residue: list[str] = []
@@ -536,6 +561,57 @@ class RemoteAccessHelper:
             except Exception:
                 # Unsettled worker keeps the slot sealed; no synthetic completion.
                 self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+
+    def _run_invite(self, operation: object) -> None:
+        capture = operation.capture
+        result = {'outcome': 'refused', 'invite': 'unknown', 'cleanup': 'unknown'}
+        intent, dispatched = None, False
+        try:
+            with self.effect_guard(capture):
+                operation._revalidate()
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                event = (_home_audit.Event.INVITE_CANCELLED if capture.method == 'CancelInvite'
+                         else _home_audit.Event.INVITE_RECOVERED)
+                intent = self.audit.intent(event, intent_id='intent-' + label, operation_id='op-' + label)
+
+                def before_commit() -> None:
+                    if self.cancelled or self.inflight is not capture:
+                        raise Refused('disconnected')
+                    operation._revalidate()
+
+                before_commit()
+                dispatched = True
+                result = operation.generations.recover_invite(capture.generation,
+                    operation.budget.deadline, before_commit)
+                operation.budget.remaining()  # Late success never crosses the helper boundary.
+                if (type(result) is not dict or set(result) != {'outcome', 'invite', 'cleanup'}
+                        or result['outcome'] not in _helper_invite.OUTCOMES):
+                    raise Refused('unavailable')
+                _status_v2.InvitePhase(result['invite'])
+                _status_v2.CleanupState(result['cleanup'])
+                if result['outcome'] == 'uncertain':
+                    self.audit.uncertain(intent)
+                else:
+                    # Same I3a mapping: a settled partial cleanup is an observed
+                    # outcome, while its B11 cleanup axis stays uncertain.
+                    self.audit.outcome(intent, _home_audit.Outcome.REFUSED if result['outcome'] == 'refused'
+                                       else _home_audit.Outcome.SUCCEEDED)
+                operation.budget.remaining()  # B16 settlement consumes the original budget too.
+        except Exception:
+            result = ({'outcome': 'uncertain', 'invite': 'uncertain', 'cleanup': 'uncertain'} if dispatched
+                      else {'outcome': 'refused', 'invite': 'unknown', 'cleanup': 'unknown'})
+            if intent is not None:
+                try:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                except Exception:
+                    pass  # An unavailable audit never becomes successful settlement.
+        finally:
+            self.lifecycle_result = result
+            self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
+            self.release(capture)
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture | LifecycleCapture) -> None:
         terminal = False

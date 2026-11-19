@@ -32,4 +32,14 @@
     <message>Authenticate to turn off home remote access and revoke devices</message>
     <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
   </action>
+  <action id="ai.happyranch.remote-access.cancel-invite">
+    <description>Cancel the current home remote access invite</description>
+    <message>Authenticate to cancel the current invite</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="ai.happyranch.remote-access.recover-invite">
+    <description>Recover the current home remote access invite</description>
+    <message>Authenticate to recover the current invite</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
 </policyconfig>
