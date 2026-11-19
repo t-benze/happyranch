@@ -939,9 +939,11 @@ the daemon user, with mode **0700**. Existing wrong-mode directories are refused
 not chmodded or repaired; symlinks and wrong owners/types also remain refused.
 
 The installer logs the exact failed path, check and underlying exception.
-Mode failures include actual and expected `0700`; owner failures include actual
-and expected UID; no-follow open failures identify symlink, wrong type or missing
-paths when observable. Diagnostic metadata never grants retry or repair authority.
+Creation failures identify `mkdir` or parent `fsync`, the literal target and parent,
+and available metadata for both. Failed no-follow opens retain observed mode, UID
+and type; unavailable observations are explicit. Private namespace expectations
+are `0700`, daemon UID and directory; ordinary ancestors have no private-mode or
+owner expectation. Diagnostic metadata never grants retry or repair authority.
 The private helper inherits daemon stderr (captured in `daemon.log` by the
 standard launcher). Logs contain filesystem metadata, not settings, credentials
 or database contents. Public setup status/result reason codes and shapes remain

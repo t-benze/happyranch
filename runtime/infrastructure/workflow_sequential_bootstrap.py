@@ -75,12 +75,24 @@ def _path_failure(path: Path, check: str, error: BaseException, detail: str = ''
         pass
 
 
-def _open_directory(path: Path, *, name: str | None = None, parent: int | None = None) -> int:
+def _directory_metadata(info: os.stat_result | None, *, private: bool, prefix: str = '') -> str:
+    mode = f'{stat.S_IMODE(info.st_mode):04o}' if info is not None else 'unavailable'
+    uid = str(info.st_uid) if info is not None else 'unavailable'
+    kind = f'{stat.S_IFMT(info.st_mode):#o}' if info is not None else 'unavailable'
+    return (f'{prefix}actual={mode}' + (f' {prefix}expected=0700' if private else '')
+            + f' {prefix}actual_uid={uid}' + (f' {prefix}expected_uid={os.getuid()}' if private else '')
+            + f' {prefix}actual_type={kind} {prefix}expected=directory (no symlinks)')
+
+
+def _open_directory(path: Path, *, name: str | None = None, parent: int | None = None,
+                    private: bool = False) -> int:
     try:
         return os.open(path if name is None else name,
                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
     except OSError as exc:
         check = 'missing' if isinstance(exc, FileNotFoundError) else 'open'
+        info = None
+        observation = ''
         # Diagnostic observation only, after the original no-follow open refused.
         # A race or failed stat never replaces that original exception or retries.
         if check != 'missing':
@@ -90,13 +102,50 @@ def _open_directory(path: Path, *, name: str | None = None, parent: int | None =
                     check = 'symlink'
                 elif not stat.S_ISDIR(info.st_mode):
                     check = 'type'
-            except OSError:
-                pass
-        _path_failure(path, check, exc, 'expected=directory (no symlinks)')
+            except OSError as observed_error:
+                observation = f' observation_exception={observed_error!r}'
+        _path_failure(path, check, exc, _directory_metadata(info, private=private) + observation)
         raise
 
 
-def _directory(path: Path, custody: list[dict], *, deadline: float | None = None) -> dict:
+def _make_private_directory(path: Path, parent: int, *, existing: bool = False,
+                            private_parent: bool = True) -> None:
+    """Same single mkdir/fsync; observations only after the original failure."""
+    operation = 'mkdir'
+    try:
+        try:
+            os.mkdir(path.name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            if existing:
+                return
+            raise
+        operation = 'fsync'
+        os.fsync(parent)
+    except OSError as exc:
+        # Diagnostics never acquire, close, repair or retry an original handle.
+        try:
+            target_info = parent_info = None
+            observation = ''
+            try:
+                target_info = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            except OSError as observed_error:
+                observation += f' observation_exception={observed_error!r}'
+            try:
+                parent_info = os.fstat(parent)
+            except OSError as observed_error:
+                observation += f' parent_observation_exception={observed_error!r}'
+            detail = (f'parent={str(path.parent)!r} '
+                      + _directory_metadata(target_info, private=True) + ' '
+                      + _directory_metadata(parent_info, private=private_parent, prefix='parent_')
+                      + observation)
+            _path_failure(path, operation, exc, detail)
+        except Exception:
+            pass
+        raise
+
+
+def _directory(path: Path, custody: list[dict], *, deadline: float | None = None,
+               private_root: Path | None = None) -> dict:
     """Literal absolute traversal, including all existing ancestors."""
     if not path.is_absolute() or str(path) != os.path.normpath(path) or '..' in path.parts:
         error = BootstrapEvidenceError('workflow_setup_path_invalid')
@@ -109,7 +158,8 @@ def _directory(path: Path, custody: list[dict], *, deadline: float | None = None
         if deadline is not None and time.monotonic() >= deadline:
             raise BootstrapEvidenceError('workflow_setup_deadline')
         current = current / name
-        child = dict(fd=_open_directory(current, name=name, parent=record['fd']),
+        child = dict(fd=_open_directory(current, name=name, parent=record['fd'],
+                         private=private_root is not None and current.is_relative_to(private_root)),
                      attempted=False, closed=False)
         # Own the new descriptor BEFORE the preceding fallible close. On any
         # error the caller still owns both originals and attempts no blind retry.
@@ -205,7 +255,7 @@ class BootstrapAttempt:
         if self._parent is not None:
             # Original descriptors stay pinned; replacement/aliasing the path
             # cannot redirect a later publication into a different namespace.
-            observed = _directory(self.root, self._descriptors)
+            observed = _directory(self.root, self._descriptors, private_root=self.home / 'backups')
             try:
                 current, original = os.fstat(observed['fd']), os.fstat(self._parent)
                 if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
@@ -227,22 +277,17 @@ class BootstrapAttempt:
             path = self.home
             for name in ('backups', 'workflow-sequential', self.runtime_key, self.slug):
                 self._check(reserve=True)
-                try:
-                    os.mkdir(name, 0o700, dir_fd=parent)
-                except FileExistsError:
-                    pass
-                else:
-                    os.fsync(parent)
                 path = path / name
-                parent = self._own(_open_directory(path, name=name, parent=parent))
+                _make_private_directory(path, parent, existing=True, private_parent=path.parent != self.home)
+                parent = self._own(_open_directory(path, name=name, parent=parent, private=True))
                 _private_directory(parent, path)
             # Complete bounded discovery, never a selected prefix. No observed
             # old/failed/unknown attempt is automatic retry authority.
             if _names(parent, 64, min(self.deadline, time.monotonic()+1)):
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')
-            os.mkdir(self.attempt_id, 0o700, dir_fd=parent)
-            os.fsync(parent)
-            self._parent = self._own(_open_directory(self.root, name=self.attempt_id, parent=parent))
+            _make_private_directory(self.root, parent)
+            self._parent = self._own(_open_directory(self.root, name=self.attempt_id, parent=parent,
+                                                    private=True))
             _private_directory(self._parent, self.root)
             self.publish('intent')
         except BaseException:
@@ -415,7 +460,8 @@ class BootstrapSelection:
         """Keep evidence originals in this selection's shutdown custody."""
         record = None
         try:
-            record = _directory(path, self.descriptors, deadline=deadline)
+            record = _directory(path, self.descriptors, deadline=deadline,
+                                private_root=self.home / 'backups')
             yield record['fd']
         finally:
             # Latch a traversal close failure before any further cleanup can
@@ -448,7 +494,7 @@ class BootstrapSelection:
         key = hashlib.sha256(str(runtime_root).encode('utf8')).hexdigest()
         namespace = self.home / 'backups/workflow-sequential' / key / self.fence.root.name
         try:
-            parent = _directory(namespace, self.descriptors)
+            parent = _directory(namespace, self.descriptors, private_root=self.home / 'backups')
         except FileNotFoundError:
             return None
         try:
@@ -620,14 +666,10 @@ class BootstrapStartup:
         path = self.home
         key = hashlib.sha256(str(self.runtime_root).encode('utf8')).hexdigest()
         for name in ('backups', 'workflow-sequential', key, slug):
-            try:
-                os.mkdir(name, 0o700, dir_fd=parent)
-            except FileExistsError:
-                pass
-            else:
-                os.fsync(parent)
             path = path / name
-            child = dict(fd=_open_directory(path, name=name, parent=parent), attempted=False, closed=False)
+            _make_private_directory(path, parent, existing=True, private_parent=path.parent != self.home)
+            child = dict(fd=_open_directory(path, name=name, parent=parent, private=True),
+                         attempted=False, closed=False)
             self.hold_descriptors.append(child)
             parent = child['fd']
             _private_directory(parent, path)
