@@ -35,10 +35,19 @@ final class HomeInviteModel: ObservableObject {
         let document: UUID
     }
 
-    struct SavedHome: Identifiable {
+    struct SavedHome: Identifiable, Equatable {
         let id: UUID
         let trust: SavedHomeTrust
+        let binding: SavedDeviceBinding
     }
+
+    struct AccessObservation {
+        enum Access: String { case allowed, accessDenied, revokedConfirmed, unknown }
+        let access: Access
+        let observedAt: Date
+        let lifetime: Lifetime
+    }
+    enum SaveSettlement: Equatable { case saved, refused, changed, failed(SavedAccessFailure) }
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var target: SavedHomeTrust?
@@ -49,6 +58,8 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var saveFailure: SavedAccessFailure?
     @Published private(set) var removalFailures: [String] = []
     @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
+    @Published private(set) var discoveryComplete = false
+    @Published private(set) var accessObservation: AccessObservation?
     @Published var selectedHomeID: UUID?
     private(set) var attemptID = UUID()
     @Published private(set) var documentGeneration = UUID()
@@ -84,6 +95,25 @@ final class HomeInviteModel: ObservableObject {
     }
 
     var busy: Bool { phase.busy || operation != nil }
+    // Nonsecret observations only; no read or discovery is initiated here.
+    var bridgeActiveComputerID: UUID? { activeCredential?.networkProfileID }
+    var bridgeHasUnsavedAccess: Bool { unsaved != nil }
+    var bridgeHasConfirmation: Bool { confirmation != nil }
+    var bridgeCanRetrySave: Bool { !busy && unsaved != nil && !needsReplacementConsent && saveFailure != .identityChanged }
+
+    /// Reuse the existing save path and await its observed write/readback. This
+    /// never invokes the explicit replacement/delete path or guesses completion
+    /// from Task scheduling. Caller owns the one-prompt slot through settlement.
+    func bridgeRetrySave() async -> SaveSettlement {
+        guard bridgeCanRetrySave else { return .refused }
+        let token = lifetime
+        retrySave()
+        guard let operation else { return .refused }
+        await operation.value
+        guard lifetime == token else { return .changed }
+        if let saveFailure { return .failed(saveFailure) }
+        return unsaved == nil ? .saved : .failed(.saveFailed)
+    }
     var retryGuidance: String {
         if saveFailure != nil, unsaved == nil { return "Saving was not confirmed. Retry checks saved access again; a new invite may be needed." }
         if saveFailure != nil { return "Retry saving while this session is open. If the app quits before saving, create a new invite on Linux." }
@@ -112,7 +142,8 @@ final class HomeInviteModel: ObservableObject {
                     discovered[id] = credential
                 }
                 records = discovered
-                savedHomes = records.map { SavedHome(id: $0.key, trust: $0.value.trust) }.sorted { $0.id.uuidString < $1.id.uuidString }
+                discoveryComplete = true
+                savedHomes = records.map { SavedHome(id: $0.key, trust: $0.value.trust, binding: $0.value.binding) }.sorted { $0.id.uuidString < $1.id.uuidString }
                 selectedHomeID = savedHomes.first?.id
                 phase = .idle
                 operation = nil
@@ -339,7 +370,7 @@ final class HomeInviteModel: ObservableObject {
         guard let id = credential.networkProfileID else { return }
         records[id] = credential
         savedHomes.removeAll { $0.id == id }
-        savedHomes.append(SavedHome(id: id, trust: credential.trust))
+        savedHomes.append(SavedHome(id: id, trust: credential.trust, binding: credential.binding))
         selectedHomeID = id; saveFailure = nil; unsaved = nil
         needsReplacementConsent = false
     }
@@ -389,6 +420,7 @@ final class HomeInviteModel: ObservableObject {
         phase = .opening
         let url = try await candidate.open(credential)
         try check(token)
+        accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
         webURL = url
         navigationDeadline?.cancel()
         navigationDeadline = Task {
@@ -420,10 +452,14 @@ final class HomeInviteModel: ObservableObject {
                     guard let session else { return }
                     try await session.checkAccess()
                     try check(token)
+                    accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
                 } catch {
                     guard lifetime == token, !Task.isCancelled else { return }
                     let failure = (error as? HomeConnectionFailure) ?? .homeUnavailable
                     cancel(endingAt: .failed(failure))
+                    // Bind the authoritative denial to the settled local owner.
+                    accessObservation = AccessObservation(access: failure == .revoked ? .revokedConfirmed :
+                        (failure == .approvalDenied ? .accessDenied : .unknown), observedAt: Date(), lifetime: lifetime)
                     return
                 }
             }

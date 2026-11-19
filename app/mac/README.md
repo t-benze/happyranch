@@ -15,6 +15,52 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-379 slice 3b-2a: static Mac client bridge contract
+
+The separate packaged Connection view asynchronously dispatches `bridge.hello`,
+`client.status`, `client.savedComputers`, `client.health` and ordinary
+`client.retrySave`. Hello advertises only those backed client capabilities;
+Mac host commands are unavailable. Status, saved-computer lists, health and
+subscriptions read existing native memory only: they never start discovery,
+Keychain prompts, retries or a connection. Health observes the existing native
+cadence, becomes stale after ten seconds, and never grants Connected. The
+originating mutation remains native while health/recovery is observed.
+
+Projections are hand-written. Saved-computer refs are opaque and bound to this
+view's current native records; generic numbered labels (English/Chinese) expose
+no endpoint, binding, home ID or fingerprint. **32 is a bridge-projection bound
+only.** At most 32 known valid computers returns every computer in deterministic
+native-ID order. Above 32, both `ClientSnapshot.computers` and
+`savedComputers.computers` are null and hello limits `computers`; the known active
+ref remains. Native custody/discovery is uncapped, partial valid discovery and
+ordinary startup reconnect are unchanged. A stale/unresolvable ref refuses
+`stateChanged` with effect none. Read/subscribe cannot refresh protected discovery.
+
+The per-document ledger retains 64 mutation IDs/outcomes without eviction,
+refuses same-ID/different-body, and admits one ordinary mutation and one native
+prompt without a queue. It also has a separate attempt-cancellation record for
+3b-2b, exempt from ordinary saturation/busy but never from confirmation. Retry
+save invokes the existing non-replacement save path and awaits write/readback;
+it does not delete or replace access after an identity/consent failure. Genuine
+Keychain consent remains native. A 130-second transport deadline reports
+unknown effect and keeps the mutation/prompt slot until native settlement.
+Document loss fences bridge-owned work, retains observed storage outcomes and
+discards stale delivery. Reads do not acquire ownership of existing sessions.
+
+`client.stateChanged` starts with a full snapshot and coalesces native model
+changes into increasing per-view sequences. The internal on/unsubscribe relay
+starts/stops one native observation stream. Events use structured arguments to
+`callAsyncJavaScript` in the admitted main frame/named world, with fresh native
+generation and document checks; runtime content receives no bridge.
+
+`client.acceptInvite`, `client.connectSaved`, `client.removeSaved`,
+`client.disconnect`, **`client.cancelAttempt`** and reconnecting `client.retry`
+remain unadvertised and unavailable (effect none) until 3b-2b supplies native
+paste/target/default-Cancel sheets. That PR also owns persistent native
+save-warning → static Retry save routing and the complete RELEASE UI load gate
+on every entry. Existing native screens remain. Swift/native GUI/Keychain
+execution is not established by this source delivery or an unsigned build.
+
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
 First launch offers **Run HappyRanch on this Mac** and **Connect to another
@@ -35,8 +81,8 @@ QR transfer remains deferred.
 invite-expiry countdown and cancel fencing. Native load callbacks capture both
 identities, including on saved reconnect. A native confirmation hold defers
 Connected until dismissal and a still-current authorized load; direct Cancel in
-the native attempt form needs no second confirmation. Static bridge dispatch and
-web-initiated confirmations remain a later slice. `ManagedHomeInviteSession`
+the native attempt form needs no second confirmation. The static contract layer
+above reuses these seams; web-initiated confirmations remain in 3b-2b. `ManagedHomeInviteSession`
 uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
