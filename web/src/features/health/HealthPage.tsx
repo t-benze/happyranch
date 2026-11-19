@@ -8,7 +8,8 @@
  * Honesty fence: every value below is a field the routes actually return
  * (see runtime/daemon/routes/metrics.py + metrics_store.py). No invented
  * metric, badge, dollar, or status. Latencies are seconds server-side and
- * are rendered in milliseconds. Pasture tokens only — zero raw hex.
+ * are rendered as humanized durations (ms below 1 s, else seconds; THR-376 r2
+ * H3) with the exact ms kept in a title. Pasture tokens only — zero raw hex.
  */
 import { useMemo, useState, useCallback } from 'react';
 import {
@@ -27,7 +28,8 @@ import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useTranslation } from '@/hooks/i18n';
-import type { MessageKey, MessageParams } from '@/lib/i18n';
+import './health.css';
+import type { Locale, MessageKey, MessageParams } from '@/lib/i18n';
 
 /** Mirrors `useMetrics()` refetchInterval (15_000 ms) in src/hooks/metrics.ts. */
 const METRICS_POLL_SECONDS = 15;
@@ -84,12 +86,37 @@ export function fmtUptime(seconds: number, t: Translate): string {
   return t('health.uptime.seconds', { seconds: sec });
 }
 
-/** Latency seconds → milliseconds label. Null (zero samples) → em dash. */
-export function fmtMs(latencySeconds: number | null | undefined): string {
+/**
+ * Latency seconds → humanized, locale-aware duration (THR-376 r2 H3).
+ * Below 1 s it stays in ms (≥100 ms whole, else one decimal); from 1 s up it
+ * reads in seconds with one decimal, e.g. "72.0 s" instead of "72031 ms".
+ * Null (zero samples) → em dash.
+ */
+export function fmtMs(latencySeconds: number | null | undefined, t: Translate, locale: Locale): string {
   if (latencySeconds == null) return '—';
   const ms = latencySeconds * 1000;
-  if (ms >= 100) return `${Math.round(ms)} ms`;
-  return `${ms.toFixed(1)} ms`;
+  if (ms >= 1000) {
+    const value = new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(ms / 1000);
+    return t('health.duration.seconds', { value });
+  }
+  const digits = ms >= 100 ? 0 : 1;
+  const value = new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(ms);
+  return t('health.duration.ms', { value });
+}
+
+/** Exact milliseconds for the duration cell's title (THR-376 r2 H3). */
+export function fmtExactMs(latencySeconds: number | null | undefined, t: Translate, locale: Locale): string | undefined {
+  if (latencySeconds == null) return undefined;
+  const value = new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(latencySeconds * 1000);
+  return t('health.duration.ms', { value });
+}
+
+/** Split a daemon route label "METHOD /path" (runtime/daemon/metrics.py
+ *  route_template_label) into its method and route (THR-376 r2 H1). A label
+ *  without a leading upper-case method renders as a bare route. */
+function splitRoute(label: string): { method: string | null; path: string } {
+  const m = /^([A-Z]+) (.+)$/.exec(label);
+  return m ? { method: m[1]!, path: m[2]! } : { method: null, path: label };
 }
 
 // The local `fmtInt` (raw toLocaleString) was folded into the canonical
@@ -168,8 +195,10 @@ function StatCard({
 }): JSX.Element {
   return (
     <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
-      <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{label}</p>
-      <p className="font-display text-h2 text-text-primary mt-2 font-medium tabular-nums">{value}</p>
+      {/* THR-376 r2 H2: 11.5px sentence-case label; 27px Newsreader value
+          (.health-stat-value in health.css — no 27px type token exists). */}
+      <p className="text-text-secondary text-task-meta font-medium">{label}</p>
+      <p className="health-stat-value font-display text-text-primary mt-2 font-medium tabular-nums">{value}</p>
       {hint && <p className="text-text-muted text-2xs mt-1">{hint}</p>}
     </div>
   );
@@ -224,7 +253,7 @@ function LoopsCard({
   loops: Record<string, LoopStats> | undefined;
   loading: boolean;
 }): JSX.Element {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const rows: LoopRow[] = useMemo(() => {
     if (!loops) return [];
     return Object.entries(loops)
@@ -234,7 +263,7 @@ function LoopsCard({
 
   return (
     <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
-      <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+      <h2 className="text-text-secondary text-body-sm mb-3 font-semibold">
         {t('health.loops.title')}
       </h2>
       {loading ? (
@@ -249,24 +278,28 @@ function LoopsCard({
         <div className="overflow-x-auto">
           <table className="w-full text-left font-mono text-xs">
             <thead>
-              <tr className="text-text-muted border-border-default border-b">
-                <th className="pr-3 pb-2 font-medium">{t('health.loops.column.loop')}</th>
-                <th className="pr-3 pb-2 text-right font-medium">{t('health.loops.column.interval')}</th>
-                <th className="pr-3 pb-2 text-right font-medium">{t('health.loops.column.lastDuration')}</th>
-                <th className="pb-2 text-right font-medium">{t('health.loops.column.lastTick')}</th>
+              {/* THR-376 r2 H3: 10px uppercase head band on surface-2 (sunken). */}
+              <tr className="bg-surface-sunken text-text-muted border-border-default text-2xs border-b font-sans tracking-wider uppercase">
+                <th className="px-3 py-2 font-semibold">{t('health.loops.column.loop')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.loops.column.interval')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.loops.column.lastDuration')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.loops.column.lastTick')}</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.name} className="border-border-default border-b last:border-0">
-                  <td className="text-text-primary py-2 pr-3">{r.name}</td>
+                  <td className="text-text-primary px-3 py-2">{r.name}</td>
                   <td className="text-text-muted py-2 pr-3 text-right tabular-nums">
                     {t('health.loops.interval', { value: r.interval_seconds })}
                   </td>
-                  <td className="text-text-primary py-2 pr-3 text-right tabular-nums">
-                    {fmtMs(r.last_duration_seconds)}
+                  <td
+                    className="text-text-primary py-2 pr-3 text-right whitespace-nowrap tabular-nums"
+                    title={fmtExactMs(r.last_duration_seconds, t, locale)}
+                  >
+                    {fmtMs(r.last_duration_seconds, t, locale)}
                   </td>
-                  <td className="text-text-muted py-2 text-right tabular-nums">
+                  <td className="text-text-muted py-2 pr-3 text-right tabular-nums">
                     {fmtRelTime(r.last_tick_iso, t)}
                   </td>
                 </tr>
@@ -295,7 +328,7 @@ function HttpCard({
   http: Record<string, HttpRouteStats> | undefined;
   loading: boolean;
 }): JSX.Element {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const rows: HttpRow[] = useMemo(() => {
     if (!http) return [];
     const entries = Object.entries(http).map(
@@ -314,7 +347,7 @@ function HttpCard({
 
   return (
     <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
-      <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+      <h2 className="text-text-secondary text-body-sm mb-3 font-semibold">
         {t('health.http.title')}
       </h2>
       {loading ? (
@@ -329,16 +362,19 @@ function HttpCard({
         <div className="overflow-x-auto">
           <table className="w-full text-left font-mono text-xs">
             <thead>
-              <tr className="text-text-muted border-border-default border-b">
-                <th className="pr-3 pb-2 font-medium">{t('health.http.column.route')}</th>
-                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.count')}</th>
-                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.p50')}</th>
-                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.p95')}</th>
-                <th className="pb-2 text-right font-medium">{t('health.http.column.max')}</th>
+              {/* THR-376 r2 H3: 10px uppercase head band on surface-2 (sunken). */}
+              <tr className="bg-surface-sunken text-text-muted border-border-default text-2xs border-b font-sans tracking-wider uppercase">
+                <th className="px-3 py-2 font-semibold">{t('health.http.column.route')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.http.column.count')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.http.column.p50')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.http.column.p95')}</th>
+                <th className="py-2 pr-3 text-right font-semibold">{t('health.http.column.max')}</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const route = splitRoute(r.route);
+                return (
                 <tr
                   key={r.route}
                   className={cn(
@@ -346,20 +382,34 @@ function HttpCard({
                     r.isAggregate && 'bg-surface-raised/40',
                   )}
                 >
-                  <td className="max-w-64 py-2 pr-3">
-                    <span
-                      className={cn('block truncate', r.isAggregate ? 'text-text-primary font-medium' : 'text-text-primary')}
-                      title={r.route}
-                    >
-                      {r.isAggregate ? t('health.http.allRoutes') : r.route}
-                    </span>
+                  <td className="px-3 py-2">
+                    {r.isAggregate ? (
+                      <span className="text-text-primary font-medium">{t('health.http.allRoutes')}</span>
+                    ) : (
+                      /* THR-376 r2 H1: info-soft method badge + full mono
+                         route that wraps instead of truncating (onto its own line under
+                         the badge when the column is narrow). */
+                      <span className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1">
+                        {route.method && <StatusBadge tone="info" label={route.method} />}
+                        <span className="text-text-primary min-w-16 flex-1 wrap-anywhere" title={r.route}>
+                          {route.path}
+                        </span>
+                      </span>
+                    )}
                   </td>
                   <td className="text-text-muted py-2 pr-3 text-right tabular-nums">{fmtInt(r.count)}</td>
-                  <td className="text-text-primary py-2 pr-3 text-right tabular-nums">{fmtMs(r.p50)}</td>
-                  <td className="text-text-primary py-2 pr-3 text-right tabular-nums">{fmtMs(r.p95)}</td>
-                  <td className="text-text-muted py-2 text-right tabular-nums">{fmtMs(r.max)}</td>
+                  <td className="text-text-primary py-2 pr-3 text-right whitespace-nowrap tabular-nums" title={fmtExactMs(r.p50, t, locale)}>
+                    {fmtMs(r.p50, t, locale)}
+                  </td>
+                  <td className="text-text-primary py-2 pr-3 text-right whitespace-nowrap tabular-nums" title={fmtExactMs(r.p95, t, locale)}>
+                    {fmtMs(r.p95, t, locale)}
+                  </td>
+                  <td className="text-text-muted py-2 pr-3 text-right whitespace-nowrap tabular-nums" title={fmtExactMs(r.max, t, locale)}>
+                    {fmtMs(r.max, t, locale)}
+                  </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </div>
@@ -376,7 +426,7 @@ interface TrendDef {
   key: string;
   label: MessageKey;
   pick: (s: MetricsSnapshot) => number | null;
-  fmt: (v: number) => string;
+  fmt: (v: number, t: Translate, locale: Locale) => string;
   variant: 'default' | 'green' | 'yellow' | 'red';
 }
 
@@ -413,7 +463,7 @@ const TRENDS: TrendDef[] = [
     key: 'p95',
     label: 'health.metric.p95',
     pick: (s) => s.http?.[AGGREGATE_KEY]?.p95 ?? null,
-    fmt: (v) => fmtMs(v),
+    fmt: (v, t, locale) => fmtMs(v, t, locale),
     variant: 'default',
   },
 ];
@@ -440,19 +490,19 @@ function TrendCard({
   def: TrendDef;
   series: number[];
 }): JSX.Element {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const current = series.length > 0 ? series[series.length - 1]! : null;
   const peak = series.length > 0 ? Math.max(...series) : null;
   return (
     <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{t(def.label)}</p>
+        <p className="text-text-secondary text-task-meta font-medium">{t(def.label)}</p>
         <p className="text-text-muted text-2xs tabular-nums">
-          {peak != null ? t('health.trends.peak', { value: def.fmt(peak) }) : ''}
+          {peak != null ? t('health.trends.peak', { value: def.fmt(peak, t, locale) }) : ''}
         </p>
       </div>
       <p className="font-display text-h3 text-text-primary mt-2 font-medium tabular-nums">
-        {current != null ? def.fmt(current) : '—'}
+        {current != null ? def.fmt(current, t, locale) : '—'}
       </p>
       <div className="mt-3">
         {series.length >= 2 ? (
@@ -488,7 +538,7 @@ function HistorySection({
   return (
     <section>
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+        <h2 className="text-text-secondary text-body-sm font-semibold">
           {t('health.trends.title', { window: windowLabel })}
         </h2>
         {!loading && !error && (

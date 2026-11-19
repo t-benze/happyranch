@@ -1937,6 +1937,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'health.metric.queue': '队列深度',
   'health.metric.queueHint': 'run-step 队列',
   'health.metric.p95': 'p95 延迟 · 所有路由',
+  'health.duration.ms': '{value} 毫秒',
+  'health.duration.seconds': '{value} 秒',
   'health.uptime.days': '{days} 天 {hours} 小时',
   'health.uptime.hours': '{hours} 小时 {minutes} 分',
   'health.uptime.minutes': '{minutes} 分 {seconds} 秒',
