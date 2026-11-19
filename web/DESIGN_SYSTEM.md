@@ -156,6 +156,10 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   entry titles are Hanken 600 (Knowledge entries: `text-body font-semibold`)
   and small section/rail labels use the `.eyebrow` recipe above, not a serif
   (THR-376 r2 K2/K4).
+- `InboxRow`'s `thread` layout uses Hanken 14px / 600
+  (`font-sans text-sm font-semibold`); its historical `default` layout stays
+  unchanged. Artifact titles use the same Hanken 14px / 600; artifact folder
+  paths use JetBrains Mono 13.5px / 600 (`font-mono text-nav font-semibold`).
 - `PageTitle` (`patterns/PageTitle.tsx`, THR-376 PR6) is the title block of
   every top-level page (each Sidebar destination's list/index page): an
   optional `eyebrow` (`text-eyebrow uppercase text-text-muted`), exactly one
