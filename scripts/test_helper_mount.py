@@ -268,23 +268,21 @@ def test_disable_policy_journal_recovery_before_stop(renewal_fixture: Any, monke
         disable=lambda name: events.append(('disable', name)))
     def stop() -> None:
         events.append('legacy-stop')
-        assert not (folder / 'install-transaction.json').exists()
+        assert (folder / 'install-transaction.json').exists() is (case != 'valid')
         raise RuntimeError('stop at existing downstream seam')
     monkeypatch.setattr(v.installer, 'stop_and_confirm', stop)
     lifecycle = backend.HelperLifecycleBackend(v.installer)
     expected = lifecycle.capture('Disable', 1000)
+    result = lifecycle.dispatch('Disable', 1000, 'stop', expected)
+    assert result['outcome'] == 'partial_cleanup'
+    assert 'owned remote units: stop unconfirmed' in result['residue']
+    assert events[-1] == 'legacy-stop'
     if case == 'valid':
-        with pytest.raises(RuntimeError, match='downstream seam'):
-            lifecycle.dispatch('Disable', 1000, 'stop', expected)
-        assert events[-1] == 'legacy-stop'
         record = json.loads(journal)
         assert all(hashlib.sha256((folder / name).read_bytes()).hexdigest() == entry['new_sha256']
                    for name, entry in record['files'].items())
     else:
-        result = lifecycle.dispatch('Disable', 1000, 'stop', expected)
-        assert result['outcome'] == 'partial_cleanup'
         assert '/etc/happyranch/install-transaction.json' in result['residue']
-        assert 'legacy-stop' not in events
         assert {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()} == before
 
 
@@ -460,6 +458,59 @@ def test_replacement_binds_inventory_before_auth_and_uses_captured_uid(store: An
     assert not io.begin_replacement.called
 
 
+@pytest.mark.parametrize('revoked', [True, False])
+@pytest.mark.parametrize('case', ['link', 'journal', 'service'])
+def test_disable_real_backend_residue_still_attempts_owned_stops(
+    mount: Any, custody: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any, case: str, revoked: bool,
+) -> None:
+    activation, _ = b6_setup(custody, monkeypatch, capsys, live=False, staging=True)
+    io = custody.installer
+    link = custody.root / 'etc/systemd/system/happyranch-managed.target.wants/happyranch-remote-access-policy-renew.timer'
+    if case == 'link':
+        link.symlink_to('/usr/lib/systemd/system/happyranch-remote-access-policy-renew.timer')
+    journal = custody.root / 'etc/happyranch/install-transaction.json'
+    if case == 'journal':
+        journal.write_bytes(b'{"format":"policy-renewal@1"}')
+        journal.chmod(0o600)
+    original = io.manager._run
+    def run(args, **kwargs):
+        if args[0] == 'systemctl' and args[2:] == ['happyranch-remote-access-policy-renew.timer']:
+            custody.calls.append(args)
+            return 0, ''  # The manager failed to remove the timer link.
+        if args[:2] == ['systemctl', 'show'] and args[2].startswith('happyranch-remote-access-policy-renew.'):
+            custody.calls.append(args)
+            values = dict(LoadState='loaded', FragmentPath=str(custody.root / 'usr/lib/systemd/system' / args[2]),
+                          DropInPaths='', ActiveState='active' if case == 'service' and args[2].endswith('.service') else 'inactive',
+                          SubState='dead', MainPID='0', ControlPID='0', ControlGroup='', Job='')
+            return 0, '\n'.join(f'{key}={values[key]}' for key in
+                (arg.split('=', 1)[1] for arg in args if arg.startswith('--property=')))
+        return original(args, **kwargs)
+    io.manager._run = run
+    io.stop_and_confirm = Mock(wraps=io.stop_and_confirm)
+    io.cleanup_headscale = Mock(wraps=io.cleanup_headscale)
+    lifecycle = backend.HelperLifecycleBackend(io)
+    mount.reader.current_generation.side_effect = lambda _: lifecycle.capture('Disable', 1000)
+    mount.reader.effect.side_effect = lambda step, expected, remaining, **kw: lifecycle.dispatch(
+        'Disable', 1000, step, expected, **kw)
+    if not revoked:
+        mount.helper.control.revoke_all.side_effect = mount.h.Refused('unavailable')
+    mount.admit()
+    io.stop_and_confirm.assert_called_once_with()
+    assert ['systemctl', 'stop', 'happyranch-headscale.service'] in custody.calls
+    assert not io.cleanup_headscale.called and activation.exists()
+    result = mount.helper.lifecycle_result
+    assert result['outcome'] == 'partial_cleanup'
+    if case == 'link':
+        assert link.is_symlink() and '/' + str(link.relative_to(custody.root)) in result['residue']
+    if case == 'journal':
+        assert journal.read_bytes() == b'{"format":"policy-renewal@1"}'
+        assert '/etc/happyranch/install-transaction.json' in result['residue']
+    if case == 'service':
+        assert 'happyranch-remote-access-policy-renew.service: quiescence unconfirmed' in result['residue']
+    if not revoked:
+        assert 'un-revoked connector trust state and persisted sidecar state' in result['residue']
+
+
 @pytest.mark.parametrize('case', ['complete', 'timer', 'service', 'link'])
 def test_stop_includes_headscale_and_disables_only_owned_units(store: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     from runtime.remote_access import home_unit_gate
@@ -499,7 +550,8 @@ def test_stop_includes_headscale_and_disables_only_owned_units(store: Any, monke
         ('stop', 'happyranch-remote-access-policy-renew.service'), ('disable', 'happyranch-remote-access-policy-renew.timer')]
     if case != 'complete':
         assert result['outcome'] == 'partial_cleanup' and result['residue']
-        assert any('policy-renew.' in item for item in result['residue']) and 'stop-owned' not in events
+        assert any('policy-renew.' in item for item in result['residue']) and 'stop-owned' in events
+        assert ('stop', 'happyranch-headscale.service') in events
         return
     assert result == {'outcome': 'in_progress', 'residue': []} and not link.exists() and not link.is_symlink()
     assert events[3:7] == ['stop-owned', 'inspect-custody', ('stop', 'happyranch-headscale.service'), 'confirm-headscale']

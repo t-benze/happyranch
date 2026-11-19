@@ -222,6 +222,19 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                                  DropInPaths="", NeedDaemonReload="no", LoadState="loaded"):
                     raise ActivationRefused()
             check()
+        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, render_service, render_timer
+        with self._io._publication_parent("usr/lib/systemd/system") as (parent, check):
+            for name, render in ((SERVICE_NAME, render_service), (TIMER_NAME, render_timer)):
+                self._io._headscale_no_pending(parent, name)
+                if self._io._read_file(parent, name, owner=self._io.root_owner, mode=0o644) != render().encode():
+                    raise ActivationRefused()
+                expected = dict(FragmentPath=str(self._io.root / "usr/lib/systemd/system" / name),
+                                DropInPaths="", Names=name, NeedDaemonReload="no", LoadState="loaded")
+                if name == TIMER_NAME:
+                    expected["Unit"] = SERVICE_NAME
+                if self._io.manager.show_properties(name, tuple(expected)) != expected:
+                    raise ActivationRefused()
+            check()
         return units
 
     def _key(self, receipt: HomeActivationReceipt) -> PreAuthKey:

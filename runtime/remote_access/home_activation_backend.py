@@ -373,40 +373,49 @@ class HelperLifecycleBackend:
                         self.io._recover_policy_renewal(transaction)
                 except Exception:
                     residue.append('/etc/happyranch/install-transaction.json')
-                if residue:
-                    return {'outcome': 'partial_cleanup', 'residue': residue}
-                self.io.stop_and_confirm()
-                from runtime.remote_access import headscale_service
-                from runtime.remote_access.home_unit_gate import HomeUnitGate
-                receipt = self.store.current()
-                gate = HomeUnitGate(expected_release_uid=uid, expected_home_id=receipt.home_id,
-                    expected_control_plane_id=receipt.control_plane_id, expected_connector_id=receipt.connector_id,
-                    expected_generation=receipt.activation_generation, root=self.io.root, root_owner=self.io.root_owner)
-                gate.inspect()
-                account = self.io._headscale_receipt()
-                self.io._headscale_cleanup_identity(account)
-                if self.io._headscale_owner is None:
-                    raise ActivationRefused()
-                name = headscale_service.UNIT
-                props = self.io.manager.show_properties(name, ('LoadState', 'FragmentPath', 'DropInPaths'))
-                loaded = props.get('LoadState') == 'loaded'
-                if (props.get('LoadState') not in ('loaded', 'not-found') or props.get('DropInPaths') != ''
-                        or props.get('FragmentPath') != (str(self.io.root / 'etc/systemd/system' / name) if loaded else '')):
-                    raise ActivationRefused()
-                if loaded:
-                    self.io.manager.stop(name, timeout=50.0)
-                self.io._headscale_stopped()
-                # B6 owns its receipted Headscale link. Disable the other exact
-                # recognized remote units here, only after native stop proof.
-                for name in (UNITS[2], UNITS[0], UNITS[1], UNITS[3]):
-                    if self.io.inventory().state not in ('owned', 'owned-activated'):
+                # Renewal residue vetoes B6, never the independently owned
+                # remote-unit safety stop (including after failed revocation).
+                try:
+                    self.io.stop_and_confirm()
+                except Exception:
+                    residue.append('owned remote units: stop unconfirmed')
+                try:
+                    from runtime.remote_access import headscale_service
+                    from runtime.remote_access.home_unit_gate import HomeUnitGate
+                    receipt = self.store.current()
+                    gate = HomeUnitGate(expected_release_uid=uid, expected_home_id=receipt.home_id,
+                        expected_control_plane_id=receipt.control_plane_id, expected_connector_id=receipt.connector_id,
+                        expected_generation=receipt.activation_generation, root=self.io.root, root_owner=self.io.root_owner)
+                    gate.inspect()
+                    account = self.io._headscale_receipt()
+                    self.io._headscale_cleanup_identity(account)
+                    if self.io._headscale_owner is None:
                         raise ActivationRefused()
+                    name = headscale_service.UNIT
+                    props = self.io.manager.show_properties(name, ('LoadState', 'FragmentPath', 'DropInPaths'))
+                    loaded = props.get('LoadState') == 'loaded'
+                    if (props.get('LoadState') not in ('loaded', 'not-found') or props.get('DropInPaths') != ''
+                            or props.get('FragmentPath') != (str(self.io.root / 'etc/systemd/system' / name) if loaded else '')):
+                        raise ActivationRefused()
+                    if loaded:
+                        self.io.manager.stop(name, timeout=50.0)
+                    self.io._headscale_stopped()
+                except Exception:
+                    residue.append('happyranch-headscale.service: stop unconfirmed')
+                try:
+                    # B6 owns its receipted Headscale link. Disable the other exact
+                    # recognized remote units here, only after native stop proof.
+                    for name in (UNITS[2], UNITS[0], UNITS[1], UNITS[3]):
+                        if self.io.inventory().state not in ('owned', 'owned-activated'):
+                            raise ActivationRefused()
+                        self.io._confirm_quiescent()
+                        if self.io.manager.show_properties(name, ('LoadState',)).get('LoadState') != 'not-found':
+                            self.io.manager.disable(name)
                     self.io._confirm_quiescent()
-                    if self.io.manager.show_properties(name, ('LoadState',)).get('LoadState') != 'not-found':
-                        self.io.manager.disable(name)
-                self.io._confirm_quiescent()
-                self.io._headscale_stopped()
-                residue = self._policy_quiescence()
+                    self.io._headscale_stopped()
+                except Exception:
+                    residue.append('owned remote units: quiescence unconfirmed')
+                residue.extend(self._policy_quiescence())
                 if residue:
                     return {'outcome': 'partial_cleanup', 'residue': residue}
                 return {'outcome': 'in_progress', 'residue': []}

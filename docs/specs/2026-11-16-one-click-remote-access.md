@@ -192,6 +192,11 @@ The pinned wire-size/TTL limits remain unchanged. B14 I4b-1 delivers the fixed
 renewal transition, executable, inert package units and connector pickup.
 I4b-2 delivers P3/P5 Enable renewal/timer wiring, Disable stop/disable/unlink and
 renewal-journal recovery, private Retry and existing-field policy/timer status.
+Enable validates both renewal units' loaded package identity and protected exact
+renderer bytes before any mutating manager call. Disable accumulates renewal
+residue while still attempting the owned remote and receipt-bound Headscale
+safety stops, including after failed revoke. Refused journal recovery retains
+the journal; any residue prevents B6. All ownership and quiescence gates remain required.
 Ready Enable remains inspect-only, and fresh-auth activation recovery remains
 verify/publication-only without renewal or timer replay. The public gate stays
 closed until I5; B18 artifact-changing upgrade repair remains separate.

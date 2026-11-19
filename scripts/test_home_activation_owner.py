@@ -25,6 +25,7 @@ from runtime.remote_access.home_admin import HeadscaleUser
 from runtime.remote_access.home_minter import CreationWindow, HeadscaleJoinKeyMinter, PreAuthKey
 from runtime.remote_access.home_observer import ObservationRefused, SidecarProcess
 from runtime.remote_access.invite_issuer import MintedKey
+from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, render_service, render_timer
 from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.systemd_unit import render_headscale_unit
 from scripts.test_home_activation_txn import Venue, put
@@ -90,6 +91,9 @@ class Native:
                          SubState="running", User="happyranch-headscale" if name == h._HEADSCALE else "happyranch",
                          Group="happyranch-headscale" if name == h._HEADSCALE else "happyranch",
                          DynamicUser="no", MainPID="321")
+            if name in (SERVICE_NAME, TIMER_NAME):
+                props["FragmentPath"] = str(self.root / "usr/lib/systemd/system" / name)
+                props["Unit"] = SERVICE_NAME
             props.update(self.override)
             requested = [arg.split("=", 1)[1] for arg in args if arg.startswith("--property=")]
             return 0, "\n".join(f"{key}={props[key]}" for key in requested)
@@ -159,6 +163,8 @@ def venue(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, '__file__', str(package / 'installer.py'))
     for name, data in installer.managed_units("source", connector_config=raw).items():
         put(v.path("/etc/systemd/system/" + name), data.encode(), 0o644)
+    for name, renderer in ((SERVICE_NAME, render_service), (TIMER_NAME, render_timer)):
+        put(v.path("/usr/lib/systemd/system/" + name), renderer().encode(), 0o644)
     put(v.path("/etc/systemd/system/" + h._SIDECAR), v.production._sidecar_unit(), 0o644)
     (v.root / "etc/credstore").mkdir(mode=0o700)
     (v.root / "var/lib/happyranch-tsnet-sidecar").mkdir(mode=0o700)
@@ -421,6 +427,67 @@ def test_coordinator_refuses_ambiguous_key_inventory(venue, monkeypatch, case):
     assert v.admin.calls.count("create-key") == 1 and len(v.admin.reservations) == 1
     assert not v.path("/etc/happyranch/enrollment.key").exists()
     assert ("perform", "home_config") not in v.config.calls
+
+
+@pytest.mark.parametrize("unit,case", [(unit, case) for unit in (SERVICE_NAME, TIMER_NAME)
+    for case in ("etc-override", "run-override", "drop-in", "alias", "stale-load", "not-loaded",
+                 "bytes", "mode", "hardlink", "symlink", "owner")]
+    + [(TIMER_NAME, "timer-unit")])
+def test_renewal_unit_refusal_before_manager_mutation(venue, monkeypatch, unit, case):
+    v = venue
+    receipt = intent(v, "credential_staging")
+    v.production.perform("credential_staging", receipt, MintedKey(v.admin.key.key, v.admin.key.expiration))
+    v.native.calls.clear()
+    monkeypatch.setattr(h.HomeObserver, "observe", lambda *a, **kw: None)
+    monkeypatch.setattr(h.VerifierClient, "resolve", lambda self: 12345)
+    v.native.on_start = lambda: consumed(v)
+    fragment = v.path("/usr/lib/systemd/system/" + unit)
+    value = ""
+    if case in ("etc-override", "run-override"):
+        override = v.path("/" + case.split("-")[0] + "/systemd/system/" + unit)
+        put(override, b"[Timer]\nUnit=foreign.service\n", 0o644)
+        for parent in override.parents:
+            if parent.is_relative_to(v.root):
+                parent.chmod(0o755)
+        value = str(override)
+    elif case == "bytes":
+        fragment.write_bytes(fragment.read_bytes() + b"# foreign fragment\n")
+    elif case == "mode":
+        fragment.chmod(0o600)
+    elif case == "hardlink":
+        fragment.with_name("foreign-link").hardlink_to(fragment)
+    elif case == "symlink":
+        saved = fragment.with_name("foreign-fragment")
+        fragment.rename(saved)
+        fragment.symlink_to(saved)
+    elif case == "owner":
+        from scripts.test_headscale_custody import foreign_metadata
+        foreign_metadata(monkeypatch, fragment)
+    original = v.native.run
+    def run(args, **kwargs):
+        code, output = original(args, **kwargs)
+        if args[1:3] == ["show", unit]:
+            changes = {
+                "etc-override": ("FragmentPath", value),
+                "run-override": ("FragmentPath", value),
+                "drop-in": ("DropInPaths", "/etc/systemd/system/foreign.conf"),
+                "alias": ("Names", unit + " foreign.service"),
+                "stale-load": ("NeedDaemonReload", "yes"),
+                "not-loaded": ("LoadState", "not-found"),
+                "timer-unit": ("Unit", "foreign.service"),
+            }
+            if case in changes:
+                key, changed = changes[case]
+                output = "\n".join(key + "=" + changed if line.startswith(key + "=") else line
+                                   for line in output.splitlines())
+        return code, output
+    v.receipts._io.manager = SystemdServiceManager(system=True, run=run)
+    receipt = intent(v, "managed_services")
+    before = v.path('/etc/happyranch/policy.json').read_bytes()
+    with pytest.raises(ActivationRefused):
+        v.production.perform("managed_services", receipt, None)
+    assert all(call[1] == "show" for call in v.native.calls)
+    assert v.path('/etc/happyranch/policy.json').read_bytes() == before
 
 
 def test_managed_services_consumption_and_observation(venue, monkeypatch):

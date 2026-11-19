@@ -3682,15 +3682,27 @@ reacquiring it. The existing preflight current-policy checks are unchanged.
 Ready Enable stays inspect-only. I3a fresh-auth recovery still only verifies and
 publishes (or rolls over to prepared); it never renews policy, links the timer or
 replays any other effect. A later forward Enable runs the existing effect path.
+The existing managed-fragment check also validates both renewal units before
+any mutating manager call: exact `/usr/lib/systemd/system/<unit>` FragmentPath,
+empty DropInPaths, Names containing only that unit, loaded state without a
+pending daemon-reload, and timer Unit equal to the renewal service. Protected
+no-follow reads require root-owned, single-link 0644 package fragments with exact
+renderer bytes. Overrides, aliases, stale loads or fragment drift refuse Enable.
 
 Disable's existing stop step stops the timer and renewal service, disables the
 timer through its manager, and confirms both units' quiescence and the literal
 timer-link absence before B6. It repeats that proof before cleanup. A remaining
 link or unconfirmed unit returns `partial_cleanup` naming it, without B6.
+Renewal residue never short-circuits the existing owned remote-unit safety stop:
+`stop_and_confirm` and the independently receipt-bound Headscale stop are still
+attempted, including after failed revoke or a refused remote inventory proof.
+Every ownership gate remains required; a refusal is accumulated as residue.
 Under the same lock, Disable also recovers an existing `policy-renewal@1`
 install journal using P1; refusal retains it and returns `partial_cleanup`
 naming `/etc/happyranch/install-transaction.json`. It never creates a renewal
-when there is no journal. `policy.json` and `provision.json` survive Turn off.
+when there is no journal. B6 requires successful revoke, all remote and renewal
+quiescence proofs, timer-link absence and journal recovery. `policy.json` and
+`provision.json` survive Turn off.
 
 Private zero-input `RetryPolicyRenewal` uses the existing B8/B9 capture and
 mutation slot, the exact noncached auth_admin action, B16 policy_renew
