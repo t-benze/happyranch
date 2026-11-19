@@ -1,12 +1,15 @@
 /**
  * MessageBubble — single message in a thread transcript. Per DESIGN.md
  * `components.message_bubble`. Five variants:
- *   - `founder`  — accent-soft background, accent-ring border
- *   - `worker`   — neutral raised background
- *   - `manager`  — neutral raised background (same as worker; the speaker
+ *   - `founder`  — borderless turn (THR-376 Tt2: no accent fill/ring)
+ *   - `worker`   — borderless turn (no bordered card)
+ *   - `manager`  — borderless turn (same as worker; the speaker
  *                  identity is rendered via AgentChip)
  *   - `decline`  — red-tinted, prefixed "Declined:"
  *   - `system`   — dashed-border pill, centered, terse
+ *
+ * Turn bodies are capped at a 64ch reading measure (Pasture thread turn).
+ * The caller owns the 30px turn avatar beside the bubble.
  *
  * Pure prop-driven. Markdown rendering is delegated to react-markdown.
  */
@@ -49,6 +52,12 @@ interface MessageBubbleProps {
    * formatter). Defaults to the historical host-locale `toLocaleString()`.
    */
   formatTimestamp?: (iso: string) => string;
+  /**
+   * Optional formatter for the full timestamp exposed as the time element's
+   * `title` (hover) when `formatTimestamp` shows a shortened form. Defaults
+   * to the historical host-locale `toLocaleString()`.
+   */
+  formatTimestampTitle?: (iso: string) => string;
 }
 
 function fmtTs(iso: string): string {
@@ -60,9 +69,9 @@ function fmtTs(iso: string): string {
 }
 
 const VARIANT_CONTAINER: Record<MessageVariant, string> = {
-  founder: 'rounded-lg border border-accent-ring bg-accent-soft p-4',
-  worker: 'rounded-lg border border-border-subtle bg-surface-raised p-4',
-  manager: 'rounded-lg border border-border-subtle bg-surface-raised p-4',
+  founder: '',
+  worker: '',
+  manager: '',
   decline: 'rounded-lg border border-tier-red bg-tier-red-tint p-4',
   // system handled separately
   system: '',
@@ -70,6 +79,7 @@ const VARIANT_CONTAINER: Record<MessageVariant, string> = {
 
 export function MessageBubble(props: MessageBubbleProps): JSX.Element {
   const formatTs = props.formatTimestamp ?? fmtTs;
+  const formatTitle = props.formatTimestampTitle ?? fmtTs;
   if (props.variant === 'system') {
     return (
       <div
@@ -96,7 +106,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
   } = props;
 
   return (
-    <article className={VARIANT_CONTAINER[variant]}>
+    <article className={VARIANT_CONTAINER[variant] || undefined}>
       <header className="text-caption mb-1 flex items-baseline gap-2">
         {speaker && (
           <AgentChip
@@ -106,15 +116,20 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           />
         )}
         <span className="text-text-muted ml-auto font-mono">
-          #{seq} · {formatTs(timestamp)}
+          #{seq} ·{' '}
+          <time dateTime={timestamp} title={formatTitle(timestamp)}>
+            {formatTs(timestamp)}
+          </time>
         </span>
       </header>
       {variant === 'decline' ? (
-        <p className="text-body text-tier-red">
+        <p className="text-body text-tier-red max-w-[64ch]">
           <strong>{props.labels?.declined ?? 'Declined:'}</strong> {declineReason}
         </p>
       ) : (
-        <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
+        <div className="max-w-[64ch]">
+          <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
+        </div>
       )}
       {variant !== 'decline' && attachments && attachments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">

@@ -553,22 +553,25 @@ components:
       # to it; without the @all rule, this signal would almost never fire.
 
   message_bubble:
+    # THR-376 Tt2: founder/worker/manager turns are borderless. The caller
+    # renders the 30px palette avatar beside the turn; times are short,
+    # locale-aware mono strings with the full timestamp in the title.
     base:
-      bg: "{colors.semantic.dark.surface.raised}"
-      border: "1px solid {colors.semantic.dark.border.subtle}"
-      radius: "{layout.radius.lg}"
-      padding: "{layout.spacing.4}"
-      max_width: "{typography.measure.reading}"
+      bg: "transparent"
+      border: "none"
+      radius: "none"
+      padding: "0"
+      max_width: "64ch"    # body text measure
       font: "{typography.scale.body_lg}"
     variants:
-      founder:
-        bg: "{colors.semantic.dark.accent.muted}"
-        border: "1px solid rgba(24, 148, 211, 0.30)"
+      founder: {}
       worker: {}
       manager: {}
       decline:
         bg: "{colors.semantic.dark.tier.red_tint}"
-        border: "1px solid rgba(208, 74, 58, 0.30)"
+        border: "1px solid {colors.semantic.dark.tier.red}"
+        radius: "{layout.radius.lg}"   # --radius-lg 18px
+        padding: "{layout.spacing.4}"
         text: "{colors.semantic.dark.tier.red}"
       system:
         bg: "transparent"
@@ -660,11 +663,11 @@ See the frontmatter for the full palette. The opinion behind it:
   displays.
 - **Three surface tints per mode.** `canvas` < `sunken` < `raised` <
   `overlay`. The InboxList sits on `sunken`. The ThreadDetailPane sits on
-  `canvas`. A focused MessageBubble sits on `raised`. A modal sits on
+  `canvas`. MessageBubble turns are borderless on `canvas`. A modal sits on
   `overlay`. Depth is read by tint difference, not shadow.
 - **One accent, never two.** `signal_500` is the only chromatic blue in
   the system. It marks: the active inbox row, the focused input border,
-  the founder's message bubble, primary button fills, the focus ring, and
+  primary button fills, the focus ring, and
   the daemon-connected dot in the statusbar. If we want a second
   "accent," we have done something wrong.
 - **Tier palette is the green/yellow/red semantic system.** `tier.green
@@ -786,9 +789,12 @@ on intent for the founder-facing inventory:
 - **InboxRow** has a 2px accent-blue left-edge marker when active and a
   6px accent-blue dot prefixing the subject when the last message is
   addressed to the founder (the "needs you" signal).
-- **MessageBubble** has four variants: founder (accent-tinted), agent
-  (raised default), decline (red-tinted), system (pill-shaped, dashed
-  border, centered, caption-sized).
+- **MessageBubble** has four variants: founder and agent turns are
+  borderless (no fill, border, padding or radius; the 30px turn avatar
+  beside the turn carries identity) with the body capped at a 64ch measure
+  and a short locale-aware mono time whose title holds the full timestamp;
+  decline (red-tinted 18px card); system (pill-shaped, dashed border,
+  centered, caption-sized).
 - **Dialog** is 512px wide, never page-wide. The product has dialogs for
   *actions*, not for content; if a screen needs a wider surface, it's a
   page, not a dialog.
@@ -822,8 +828,9 @@ clickable, switcher) and Statusbar (small, mono, ambient). The Statusbar
 copy is the source of truth when the TopBar is offscreen during a long
 audit-log scroll.
 
-**DO** use the accent color exactly four ways: focus ring, primary
-button fill, active inbox row marker, founder message bubble tint.
+**DO** use the accent color exactly three ways: focus ring, primary
+button fill, active inbox row marker (founder message turns are borderless
+and untinted).
 Anything else gets `border.strong` or `text.secondary`.
 
 **DON'T** color an entire row or background by tier. Tier belongs in

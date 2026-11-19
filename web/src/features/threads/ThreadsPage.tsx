@@ -149,6 +149,24 @@ function localeTimestamp(locale: Locale, iso: string): string {
 }
 
 /**
+ * THR-376 Tt3 short message time (explicit locale, host timezone): time only
+ * for today, month/day + time for earlier days, plus the year when it differs.
+ * The full `localeTimestamp` stays available as the hover title.
+ */
+function shortLocaleTimestamp(locale: Locale, iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const time: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(locale, time);
+  return d.toLocaleString(locale, {
+    ...time,
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
+}
+
+/**
  * Derive a display label for the last speaker.
  * Returns { name, role } for AgentChip, or null if the thread has no speaker yet.
  */
@@ -1690,7 +1708,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                       mermaidLoading: t('common.mermaidLoading'),
                       systemEvent: t('threads.page.system.event'),
                     }}
-                    formatTimestamp={(iso) => localeTimestamp(locale, iso)}
+                    formatTimestamp={(iso) => shortLocaleTimestamp(locale, iso)}
+                    formatTimestampTitle={(iso) => localeTimestamp(locale, iso)}
                     onAttachmentDownload={slug && threadId ? (attachment) => {
                       if (attachment.thread_attachment_id) {
                         artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
