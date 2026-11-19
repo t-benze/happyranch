@@ -70,6 +70,15 @@ def timeout_observed(stderr_path: str) -> bool:
         return False
 
 
+def launch_observed(stderr_path: str) -> bool:
+    """Reserved helper channel: script exit codes never confirm launch."""
+    try:
+        value = read_record(Path(stderr_path + '.launch.json'))
+        return value.get('format') == 'job-guardian-launch@1' and value.get('status') == 'started'
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
 def _others_alive(group: int) -> bool:
     """The guardian pins group identity; failed observation retains supervision."""
     if sys.platform == 'linux':
@@ -121,25 +130,31 @@ def main(argv: list[str] | None = None) -> int:
         parser.error('positive budget, command and original group leader required')
     deadline = time.monotonic() + args.seconds
     group = os.getpgrp()
-    stopped = False
 
     def requested(_sig: int, _frame: object) -> None:
-        nonlocal stopped
-        stopped = True
+        # The daemon already signals the group and owns Stop/shutdown grace.
+        # Keep watching the independent budget, including after parent loss.
+        # A handler (rather than SIG_IGN) leaves the child's exec default intact.
+        pass
 
     signal.signal(signal.SIGTERM, requested)
     # Marker storage is reserved before launch. Failure cannot leave an
     # unsupervised script; timeout writing later cannot prevent group kill.
-    marker_fd = os.open(str(args.stderr_path) + '.timeout.json',
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    marker_fd = None
     child = None
+    launched = False
     try:
+        marker_fd = os.open(str(args.stderr_path) + '.timeout.json',
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         identity = process_identity(os.getpid()) | {'job_id': args.job_id}
         write_record(Path(str(args.stderr_path) + '.process.json'), identity)
         inherited = () if args.fence_fd is None else (args.fence_fd,)
         child = subprocess.Popen(args.command, pass_fds=inherited)
         if args.fence_fd is not None:
             os.close(args.fence_fd)  # Child keeps the SAME open-file description.
+        write_record(Path(str(args.stderr_path) + '.launch.json'),
+                     dict(format='job-guardian-launch@1', status='started', job_id=args.job_id))
+        launched = True
         end_grace = None
         while True:
             code = child.poll()
@@ -149,33 +164,41 @@ def main(argv: list[str] | None = None) -> int:
                     os.kill(os.getpid(), -code)
                 return code
             now = time.monotonic()
-            if end_grace is None and (stopped or now >= deadline):
-                if not stopped:
-                    marker = dict(reason='timeout', job_id=args.job_id, pid=group,
-                                  pgid=group, max_runtime_seconds=args.seconds,
-                                  exhausted_at=datetime.now(timezone.utc).isoformat())
+            if end_grace is None and now >= deadline:
+                marker = dict(reason='timeout', job_id=args.job_id, pid=group,
+                              pgid=group, max_runtime_seconds=args.seconds,
+                              exhausted_at=datetime.now(timezone.utc).isoformat())
+                try:
+                    raw = (json.dumps(marker, sort_keys=True) + '\n').encode()
+                    if os.write(marker_fd, raw) != len(raw):
+                        raise OSError('job_guardian_timeout_short_write')
+                    os.fsync(marker_fd)
+                except OSError:
+                    # Fail safe even if the filesystem fails after admission.
                     try:
-                        raw = (json.dumps(marker, sort_keys=True) + '\n').encode()
-                        if os.write(marker_fd, raw) != len(raw):
-                            raise OSError('job_guardian_timeout_short_write')
-                        os.fsync(marker_fd)
+                        os.write(2, b'job_guardian: timeout; exhaustion marker unavailable\n')
                     except OSError:
-                        # Fail safe even if the filesystem fails after admission.
-                        try:
-                            os.write(2, b'job_guardian: timeout; exhaustion marker unavailable\n')
-                        except OSError:
-                            pass
+                        pass
                 end_grace = now + GRACE_SECONDS
                 os.killpg(group, signal.SIGTERM)
             if end_grace is not None and now >= end_grace:
                 os.killpg(group, signal.SIGKILL)  # Includes guardian; no reused PGID.
             time.sleep(.05)
-    except BaseException:
+    except BaseException as exc:
+        if not launched:
+            # This diagnostic precedes self/group kill if Popen succeeded but
+            # confirmation failed. Absence of confirmation also covers ENOSPC
+            # at the very first sidecar open, when no marker can be written.
+            try:
+                os.write(2, ('job_guardian: spawn_failed: ' + str(exc)[:2048] + '\n').encode())
+            except OSError:
+                pass
         if child is not None:
             os.killpg(group, signal.SIGKILL)
         raise
     finally:
-        os.close(marker_fd)
+        if marker_fd is not None:
+            os.close(marker_fd)
 
 
 if __name__ == '__main__':

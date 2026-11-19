@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from runtime.daemon.job_guardian import (
-    GRACE_SECONDS, helper_argv, process_identity, timeout_observed, write_record,
+    GRACE_SECONDS, helper_argv, launch_observed, process_identity, timeout_observed, write_record,
 )
 from runtime.orchestrator.executors import _sanitize_child_env
 from runtime.orchestrator.task_scratch import (
@@ -636,6 +636,8 @@ async def run_job(
     budgets use an independent guardian, including after daemon loss, with
     SIGTERM then whole-group SIGKILL after five seconds. Its durable timeout
     marker and the daemon's fallback wait report the same ``"timeout"`` reason.
+    External Stop/shutdown retains the daemon's escalation grace. Missing
+    guardian launch confirmation is ``spawn_failed``, never script completion.
 
     `max_output_bytes=None` means unbounded per stream. Positive int means
     either stream exceeding the threshold triggers an immediate SIGKILL of
@@ -817,6 +819,8 @@ async def run_job(
         elif cap_event.is_set():
             status = "failed"
             reason = "output_cap"
+        elif max_runtime_seconds is not None and not launch_observed(stderr_path):
+            status, reason = 'failed', 'spawn_failed'
         else:
             status = "completed"
         exit_code = proc.returncode

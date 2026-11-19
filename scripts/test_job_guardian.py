@@ -5,6 +5,7 @@ Run: uv run --frozen python -B -m unittest scripts.test_job_guardian -v
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 import fcntl
 import json
 import os
@@ -24,7 +25,7 @@ from runtime.daemon.job_guardian import helper_argv, read_record, timeout_observ
 from runtime.daemon.jobs_runner import run_job
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.org_access_fence import OrgAccessFence, org_access_key
-from runtime.models import JobRecord, JobStatus
+from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +125,9 @@ time.sleep(60)
         # The script, not the guardian, must own the inherited fence.
         guardian_fd_locks = [p.read_text() for p in Path(f'/proc/{pgid}/fdinfo').iterdir()]
         self.assertFalse(any(f':{inode} ' in text for text in guardian_fd_locks))
+        # An earlier external shutdown request must not cancel the independent
+        # budget when the supervising parent then disappears.
+        os.killpg(pgid, signal.SIGTERM)
         parent.kill()
         self.assertEqual(parent.wait(timeout=2), -signal.SIGKILL)
         self.assertFalse(timeout_observed(str(err)), 'parent loss consumed budget')
@@ -203,6 +207,7 @@ time.sleep(60)
                 break
             time.sleep(.05)
         self.assertFalse(live, f'whole original process group survived budget: {live}')
+        self.assertTrue(timeout_observed(str(err)), 'external TERM disabled the independent timeout marker')
         marker = read_record(Path(str(err) + '.timeout.json'))
         self.assertEqual((marker['reason'], marker['max_runtime_seconds']), ('timeout', 3))
         # A real nonblocking EX attempt is stronger than global lock absence.
@@ -236,6 +241,137 @@ time.sleep(60)
     def test_frozen_helper_uses_hidden_dispatch(self) -> None:
         with patch.object(sys, 'frozen', True, create=True):
             self.assertEqual(helper_argv(), [sys.executable, '--job-guardian'])
+
+
+class GuardianPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from runtime.daemon import jobs_runner
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(jobs_runner, '_JOBS_SHUTTING_DOWN', False))
+        stack.enter_context(patch.object(jobs_runner, '_ORCH_RESOLVER', None))
+        stack.enter_context(patch.object(jobs_runner, '_RESUME_MAIN_LOOP', None))
+        for name in ('_INFLIGHT', '_RUNNER_TASKS', '_KILL_REASON_OVERRIDE'):
+            stack.enter_context(patch.dict(getattr(jobs_runner, name), clear=True))
+        self.scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='guardian-result-')))
+
+    async def launch(self, org: object, job_id: str, script: str, budget: int | None) -> object:
+        from runtime.daemon import jobs_runner
+        from runtime.daemon.routes import jobs
+        task_id = job_id.replace('JOB-', 'TASK-', 1)
+        org.db.insert_task(TaskRecord(id=task_id, brief='Synthetic guardian result',
+            assigned_agent='worker', team='retiring', status=TaskStatus.IN_PROGRESS,
+            current_session_id='sess-synthetic-' + job_id))
+        org.db.insert_job(JobRecord(id=job_id, task_id=task_id, agent_name='worker',
+            title='Synthetic guardian result', rationale='Focused regression', script_text=script,
+            interpreter=JobInterpreter.PYTHON3, max_runtime_seconds=budget,
+            created_at='2026-11-19T00:00:00+00:00'))
+        admitted = await jobs._run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None)
+        self.assertEqual(admitted['status'], 'running', admitted)
+        registration = jobs_runner._RUNNER_TASKS[(org.db, job_id)]
+        self.addAsyncCleanup(self.reap, registration)
+        return registration
+
+    async def reap(self, registration: object) -> None:
+        proc = registration.process
+        if proc is not None and proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+        if not registration.task.done():
+            registration.task.cancel()
+        await asyncio.gather(registration.task, return_exceptions=True)
+
+    async def test_bounded_shutdown_preserves_cleanup_and_single_term(self) -> None:
+        from runtime.daemon import jobs_runner
+        from scripts.test_agent_retirement import fixture
+        async with fixture(self.scratch / 'shutdown') as (org, _client):
+            runs = []
+            for job_id, budget in (('JOB-901', None), ('JOB-902', 60)):
+                prefix = self.scratch / job_id
+                script = f"""import signal,time
+from pathlib import Path
+prefix = {str(prefix)!r}
+cleaning = False
+def stop(sig, frame):
+    global cleaning
+    with open(prefix + '.terms', 'a') as stream: stream.write('TERM\\n')
+    if cleaning: return
+    cleaning = True
+    time.sleep(8)
+    Path(prefix + '.complete').touch()
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+Path(prefix + '.ready').touch()
+while True: time.sleep(.1)
+"""
+                runs.append(await self.launch(org, job_id, script, budget))
+            async def ready() -> None:
+                while not all((self.scratch / (r.job_id + '.ready')).exists() for r in runs):
+                    for r in runs:
+                        if r.task.done():
+                            self.fail(f'job exited before ready: {org.db.get_job(r.job_id)}')
+                    await asyncio.sleep(.02)
+            await asyncio.wait_for(ready(), 5)
+            jobs_runner.begin_job_shutdown()
+            await asyncio.wait_for(asyncio.gather(*(r.task for r in runs)), 14)
+            for r in runs:
+                with self.subTest(job=r.job_id):
+                    row = org.db.get_job(r.job_id)
+                    self.assertEqual((row.status.value, row.reason, row.exit_code),
+                                     ('failed', 'daemon_shutdown', 0))
+                    self.assertEqual((self.scratch / (r.job_id + '.terms')).read_text(), 'TERM\n')
+                    self.assertTrue((self.scratch / (r.job_id + '.complete')).exists())
+                    self.assertFalse(timeout_observed(row.stderr_path))
+
+    async def test_helper_launch_failures_persist_failed_and_script_exits_complete(self) -> None:
+        from scripts.test_agent_retirement import fixture
+        # Faults exist only in the real helper's child interpreter. Production
+        # argv, launch, output pumps, terminal CAS and audit writer still run.
+        wrapper = """import errno,os,runpy,subprocess,sys
+from unittest.mock import patch
+fault = sys.argv.pop(1)
+helper = sys.argv.pop(1)
+original = os.open
+def admission_open(path, *args, **kwargs):
+    if str(path).endswith('.' + fault + '.json'):
+        raise OSError(errno.ENOSPC, 'synthetic guardian ' + fault)
+    return original(path, *args, **kwargs)
+with patch('os.open', side_effect=admission_open):
+    if fault == 'popen':
+        with patch('subprocess.Popen', side_effect=OSError(errno.EAGAIN, 'synthetic guardian popen')):
+            runpy.run_path(helper, run_name='__main__')
+    else:
+        runpy.run_path(helper, run_name='__main__')
+"""
+        for fault in ('timeout', 'process', 'popen', None):
+            with self.subTest(fault=fault):
+                async with fixture(self.scratch / str(fault)) as (org, _client):
+                    sentinel = self.scratch / (str(fault) + '.ran')
+                    script = f'from pathlib import Path\nPath({str(sentinel)!r}).touch()\nraise SystemExit(1)\n'
+                    with ExitStack() as stack:
+                        if fault is not None:
+                            stack.enter_context(patch('runtime.daemon.jobs_runner.helper_argv', return_value=[
+                                sys.executable, '-c', wrapper, fault, str(ROOT / 'runtime/daemon/job_guardian.py')]))
+                        r = await self.launch(org, 'JOB-1', script, 60)
+                        await asyncio.wait_for(asyncio.shield(r.task), 8)
+                    row = org.db.get_job('JOB-1')
+                    audits = org.db.execute("SELECT action,payload FROM audit_log WHERE action IN "
+                        "('job_run_failed','job_run_completed') ORDER BY id").fetchall()
+                    self.assertEqual(len(audits), 1)
+                    if fault is None:
+                        self.assertEqual((row.status.value, row.reason, row.exit_code), ('completed', None, 1))
+                        self.assertTrue(sentinel.exists())
+                        self.assertEqual(audits[0]['action'], 'job_run_completed')
+                    else:
+                        self.assertFalse(sentinel.exists(), 'fault did not precede the script')
+                        self.assertIn('synthetic guardian ' + fault, row.stderr_head)
+                        self.assertIn('synthetic guardian ' + fault, Path(row.stderr_path).read_text())
+                        self.assertEqual((row.status.value, row.reason), ('failed', 'spawn_failed'))
+                        self.assertEqual(audits[0]['action'], 'job_run_failed')
+                        self.assertEqual(json.loads(audits[0]['payload'])['reason'], 'spawn_failed')
 
 
 if __name__ == '__main__':

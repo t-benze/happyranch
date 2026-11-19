@@ -235,6 +235,12 @@ is no permission grant: task termination, stop and daemon shutdown still apply.
 Bounded jobs enforce that budget with an independent guardian even if the
 spawning daemon dies. The original job group receives TERM at expiry and KILL
 after five seconds; a durable `.err.timeout.json` sidecar records `timeout`.
+External Stop/shutdown uses the daemon's escalation and existing 30-second
+shutdown grace; the guardian sends no duplicate TERM and keeps its independent
+deadline active, including after parent loss. Missing/invalid reserved
+`.err.launch.json` confirmation means `failed/spawn_failed`, with the helper
+error in stderr, rather than a natural script result. Confirmed script nonzero
+exits still mean `completed` with the actual exit code.
 Unbounded jobs retain direct launch. Restart still retains unproven running
 rows as `job_liveness_unknown`: `jobs show` reports advisory fence holders with
 job ID, PID/PGID and age, plus observed timeout markers, without adopting or

@@ -74,6 +74,16 @@ the same marker, preserves an established first cause and commits one terminal
 result; its wait timeout is a fallback after budget plus TERM grace. Storage is
 reserved before script launch; marker-write failure still kills the group and
 attempts a stderr diagnostic. No parent-death signal or EOF release is added.
+External Stop/shutdown TERM does not start the guardian's five-second timer or
+send a duplicate group TERM: the daemon owns escalation, including its existing
+30-second shutdown grace. The independent budget remains active after that
+request and after parent loss; if it expires first, its timeout policy applies.
+The reserved `jobs/JOB-NNN.err.launch.json` channel confirms a successful inner
+launch with `format=job-guardian-launch@1`, `status=started`. Missing or invalid
+confirmation is `failed/spawn_failed`, including timeout-sidecar reservation,
+identity publication or inner launch failure. The helper emits the error on
+stderr before exiting. A helper exit code alone never proves script completion;
+confirmed script nonzero exits retain `completed` and their actual exit code.
 Unbounded jobs retain direct launch and their existing lifetime behavior.
 Escaping the original session/group with setsid/daemonization remains outside
 the existing containment guarantee.
