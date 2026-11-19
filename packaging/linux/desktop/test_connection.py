@@ -93,7 +93,8 @@ class ConnectionBoundaryTests(unittest.TestCase):
         hello = self.protocol.hello()
         self.assertEqual(hello["roles"], ["host", "client"])
         self.assertEqual([c["command"] for c in hello["capabilities"] if c["availability"] == "available"],
-                         ["host.status", "client.status", "client.acceptInvite", "client.savedComputers",
+                         ["host.status", "host.approveDevice", "host.rejectDevice", "host.nextDevice",
+                          "host.revokeDevice", "client.status", "client.acceptInvite", "client.savedComputers",
                           "client.connectSaved", "client.removeSaved", "client.disconnect",
                           "client.cancelAttempt", "client.retry", "client.retrySave", "client.health"])
         device = {"label": "Computer &amp; desk", "fingerprint": "a" * 24,
@@ -123,6 +124,15 @@ class ConnectionBoundaryTests(unittest.TestCase):
                 self.assertEqual(snapshot["selected"], projected)
                 self.assertEqual((snapshot["runtime"], snapshot["observation"]), ("offline", "known"))
                 self.assertLessEqual(len(snapshot["selected"]["label"].encode("utf-8")), 256)
+        for change in ({"devices": [None]}, {"selected": {**device, "fingerprint": "b" * 24}},
+                       {"pending": {**device, "label": "x" * 577}},
+                       {"pending": {**device, "comparison_phrase": "x" * 577}},
+                       {"pending": {**device, "fingerprint": "bad"}},
+                       {"pending": {**device, "secret": "synthetic-secret"}}, {"ready": 1}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.protocol.host(json.dumps({**raw, **change}))
+        for command in ("host.enable", "host.turnOff", "host.createInvite"):
+            self.assertIn({"command": command, "availability": "unavailable"}, hello["capabilities"])
         raw["devices"][0]["label"] = "\u202ebidi"
         with self.assertRaises(ValueError):
             self.protocol.host(json.dumps(raw))

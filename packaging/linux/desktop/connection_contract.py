@@ -20,6 +20,11 @@ CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt
                    "client.disconnect", "client.retry", "client.health", "client.savedComputers",
                    "client.connectSaved", "client.retrySave", "client.removeSaved"}
 
+HOST_METHODS = {"host.status": "Status", "host.nextDevice": "NextDevice",
+                "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
+                "host.revokeDevice": "RevokeSelected"}
+HOST_MUTATIONS = frozenset({"ApprovePending", "RejectPending", "RevokeSelected"})
+
 
 class Requests:
     """Per-document bounded outcomes; cancellation has its own attempt record."""
@@ -289,7 +294,7 @@ class Protocol:
         return self.result("bridge.hello", {
             "version": 1, "platform": "linux", "roles": ["host", "client"],
             "capabilities": [{"command": name, "availability": (
-                "available" if name in CLIENT_COMMANDS | {"host.status"} else "unavailable")}
+                "available" if name in CLIENT_COMMANDS | HOST_METHODS.keys() else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
             "observationLimits": {"host": ["inviteState", "expiresAt"],
                                   "client": ["route", "comparisonPhrase"]}})
@@ -306,17 +311,17 @@ class Protocol:
             if item is None:
                 return None
             if (type(item) is not dict or set(item) != {"label", "fingerprint", "comparison_phrase"}
-                    or any(type(v) is not str or len(v.encode("utf-8")) > 4096 for v in item.values())
+                    or any(type(v) is not str or len(v) > 576 for v in item.values())
                     or re.fullmatch("[0-9a-f]{24}", item["fingerprint"]) is None):
                 raise ValueError("invalid helper device")
             # Helper text is HTML-escaped. Decode into bounded plain text only.
             import html
-            label = html.unescape(item["label"])
-            encoded_label = label.encode("utf-8")
-            if len(encoded_label) > 256:
-                label = encoded_label[:253].decode("utf-8", errors="ignore") + "…"
-            return {"label": label,
-                    "comparisonPhrase": html.unescape(item["comparison_phrase"]) or None}
+            def plain(text: str) -> str:
+                decoded = html.unescape(text)
+                encoded = decoded.encode("utf-8")
+                return decoded if len(encoded) <= 256 else encoded[:253].decode("utf-8", errors="ignore") + "…"
+            return {"label": plain(item["label"]),
+                    "comparisonPhrase": plain(item["comparison_phrase"]) or None}
 
         devices = [device(item) for item in value["devices"]]
         if None in devices or value["selected"] is not None and value["selected"] not in value["devices"]:
@@ -325,3 +330,16 @@ class Protocol:
             "setup": value["phase"], "runtime": "available" if value["ready"] else "offline",
             "observation": "known", "devices": devices, "pending": device(value["pending"]),
             "selected": device(value["selected"]), "inviteState": "unknown", "expiresAt": None})
+
+    def host_unavailable(self, setup: str = "unknown") -> dict:
+        return self.result("host.status", dict(setup=setup, runtime="unknown", observation="unavailable",
+            devices=None, pending=None, selected=None, inviteState="unknown", expiresAt=None))
+
+    def host_action(self, method: str, snapshot: dict) -> dict:
+        # An acknowledged helper commit establishes only its documented effect.
+        # It supplies no host-service or network-membership cleanup receipt.
+        return dict(effect="confirmed", hostDenial="confirmed" if method in
+                    ("RejectPending", "RevokeSelected") else "notApplicable",
+                    hostCleanup="notApplicable", localCleanup="notApplicable",
+                    networkCleanup="unknown" if method == "RevokeSelected" else "notApplicable",
+                    inviteState="unknown", expiresAt=None, host=snapshot, client=None)

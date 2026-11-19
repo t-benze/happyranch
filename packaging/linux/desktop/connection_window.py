@@ -35,7 +35,7 @@ PAGE = r"""(() => {
   addEventListener('message', event => {
     if (!active || event.source !== window || event.origin !== location.origin) return;
     const item = event.data;
-    if (item?.channel === 'hr-connection-event' && item.name === 'client.stateChanged'
+    if (item?.channel === 'hr-connection-event' && ['host.stateChanged','client.stateChanged'].includes(item.name)
         && typeof item.raw === 'string' && size(item.raw) <= 32768) {
       const group = listeners.get(item.name);
       if (group) group.forEach(handler => handler(item.raw));
@@ -109,7 +109,7 @@ RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-shell://connection') return;
     const item = event.data;
-    if (item?.channel === 'hr-connection-subscribe' && item.name === 'client.stateChanged'
+    if (item?.channel === 'hr-connection-subscribe' && ['host.stateChanged','client.stateChanged'].includes(item.name)
         && typeof item.enabled === 'boolean') {
       native.postMessage(JSON.stringify({protocol:'happyranch.connection',version:1,
         subscription:item.name,enabled:item.enabled})).catch(() => {});
@@ -161,6 +161,9 @@ class ConnectionWindow:
         self.client_document = object()
         self.requests = _contract.Requests()
         self.subscribed, self.event_pending, self.event_sequence = False, False, 0
+        self.host_subscribed, self.host_event_pending, self.host_sequence = False, False, 0
+        self.host_timer, self.host_snapshot = None, None
+        self.host_status_waiters = None
         self.window = Gtk.ApplicationWindow(application=app, title=tr("Connection", "连接"))
         if parent is not None:
             self.window.set_transient_for(parent)
@@ -389,13 +392,22 @@ class ConnectionWindow:
                 if (set(subscription) != {"protocol", "version", "subscription", "enabled"}
                         or subscription["protocol"] != "happyranch.connection"
                         or type(subscription["version"]) is not int or subscription["version"] != 1
-                        or subscription["subscription"] != "client.stateChanged"
+                        or subscription["subscription"] not in self.protocol.events
                         or type(subscription["enabled"]) is not bool):
                     raise ValueError("subscription")
-                self.subscribed = subscription["enabled"]
-                self.client.listener = self.queue_event if self.subscribed else None
-                if self.subscribed:
-                    self.queue_event()
+                if subscription["subscription"] == "host.stateChanged":
+                    self.host_subscribed = subscription["enabled"]
+                    if self.host_subscribed and self.host_timer is None:
+                        self.host_timer = self.GLib.timeout_add_seconds(3, self.poll_host)
+                        self.poll_host()
+                    elif not self.host_subscribed and self.host_timer is not None:
+                        self.GLib.source_remove(self.host_timer)
+                        self.host_timer = None
+                else:
+                    self.subscribed = subscription["enabled"]
+                    self.client.listener = self.queue_event if self.subscribed else None
+                    if self.subscribed:
+                        self.queue_event()
                 reply.return_value(self.JSC.Value.new_string(value.get_context(), "{}"))
                 return True
             request = self.protocol.request(raw, origin=ORIGIN, main_frame=True)
@@ -411,7 +423,8 @@ class ConnectionWindow:
             try:
                 if code:
                     error = {"code": code, "effect": effect,
-                             "recovery": "nativeRecovery" if effect == "unknown" else "refresh"}
+                             "recovery": "nativeRecovery" if effect == "unknown" else
+                             "nativePermission" if code == "permissionDenied" else "refresh"}
                     self.protocol.validate(error, self.protocol.schema["$defs"]["error"])
                     envelope["error"] = error
                 else:
@@ -432,11 +445,8 @@ class ConnectionWindow:
         if command == "bridge.hello":
             self.hello_seen = True
             finish(self.protocol.hello())
-        elif command == "host.status":
-            if self.busy:
-                finish(None, "busy")
-            else:
-                self.status(finish)
+        elif command in _contract.HOST_METHODS:
+            self.host_request(_contract.HOST_METHODS[command], finish)
         elif command in _contract.CLIENT_COMMANDS:
             model = self.client.model
             if command == "client.status":
@@ -457,7 +467,8 @@ class ConnectionWindow:
             elif command in ("client.acceptInvite", "client.retry"):
                 if model.cleanup == "incomplete":
                     finish(None, "outcomeUnknown", "unknown")
-                elif self.client.prompt or model.storage_busy or model.session or model.stage not in ("idle", "failed"):
+                elif (self.client.prompt or model.host_prompt_document is not None or model.storage_busy
+                      or model.session or model.stage not in ("idle", "failed")):
                     finish(None, "busy")
                 else:
                     model.accept(self.client_document)
@@ -510,51 +521,173 @@ class ConnectionWindow:
             if self.active and self.generation == generation:
                 self.unavailable("event delivery")
 
-    def status(self, finish: Callable) -> None:
-        self.busy = True
+    def poll_host(self) -> bool:
+        if not self.active or self.closed or not self.host_subscribed:
+            return False
+        if not self.busy and self.window.get_visible():
+            self.host_request("Status", lambda *_args: None)
+        return True
 
-        def replied(connection: object, result: object, _data: object) -> None:
+    def observe_host(self, snapshot: dict) -> None:
+        self.host_snapshot = snapshot
+        if self.host_subscribed and not self.host_event_pending:
+            self.host_event_pending = True
+            self.GLib.idle_add(self.send_host_event, self.generation)
+
+    def send_host_event(self, generation: int) -> bool:
+        self.host_event_pending = False
+        if (not self.active or self.closed or not self.host_subscribed
+                or self.generation != generation or self.view.get_uri() != ENTRY):
+            return False
+        self.host_sequence += 1
+        data = dict(version=1, sequence=self.host_sequence, observedAt=_client._model.timestamp(),
+                    snapshot=self.host_snapshot)
+        self.protocol.validate(data, self.protocol.events["host.stateChanged"])
+        raw = json.dumps(data, ensure_ascii=False)
+        if len(raw.encode("utf-8")) > 32768:
+            self.unavailable("event bound")
+            return False
+        arguments = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw)})
+        self.view.call_async_javascript_function(
+            "window.postMessage({channel:'hr-connection-event',name:'host.stateChanged',raw}, location.origin);",
+            -1, arguments, WORLD, ENTRY, self.cancellable, self.event_delivered, generation)
+        return False
+
+    def host_request(self, method: str, finish: Callable) -> None:
+        if self.busy:
+            # Only identical read-only Status operations share the original
+            # deadline. Mutations (including their follow-up read) never queue.
+            if (method == "Status" and self.host_status_waiters is not None
+                    and len(self.host_status_waiters) < 8):
+                self.host_status_waiters.append(finish)
+            else:
+                finish(None, "busy")
+            return
+        mutation = method in _contract.HOST_MUTATIONS
+        model = self.client.model
+        if mutation and (self.client.prompt or model.confirming_target or model.host_prompt_document is not None):
+            finish(None, "busy")
+            return
+        self.busy = True
+        if mutation:
+            model.host_prompt_document = self.client_document
+        waiters = [] if method == "Status" else None
+        self.host_status_waiters = waiters
+
+        def complete(*outcome: object) -> None:
             self.busy = False
+            if model.host_prompt_document is self.client_document:
+                model.host_prompt_document = None
+            self.host_status_waiters = None
+            finish(*outcome)
+            if waiters is not None:
+                for waiter in waiters:
+                    waiter(*outcome)
+                waiters.clear()
+
+        generation = self.generation
+        acknowledged = False
+
+        def current() -> bool:
+            return (self.active and not self.closed and self.generation == generation
+                    and self.view.get_uri() == ENTRY)
+
+        def failed(error: Exception, dispatched: bool) -> None:
+            if not current():
+                return
+            remote = self.Gio.DBusError.get_remote_error(error) if isinstance(error, self.GLib.Error) else None
+            absent = remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
+                                "org.freedesktop.DBus.Error.NameHasNoOwner")
+            snapshot = self.protocol.host_unavailable("off" if absent else "unknown")
+            self.observe_host(snapshot)
+            if acknowledged:
+                complete(self.protocol.host_action(method, snapshot))
+            elif not mutation and absent and method == "Status":
+                complete(snapshot)
+            else:
+                closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
+                          "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
+                          "org.freedesktop.DBus.Error.AuthFailed": "permissionDenied",
+                          "ai.happyranch.RemoteAccess1.Error.wrong_uid": "permissionDenied",
+                          "ai.happyranch.RemoteAccess1.Error.changed": "stateChanged",
+                          "ai.happyranch.RemoteAccess1.Error.expired": "expired",
+                          "ai.happyranch.RemoteAccess1.Error.busy": "busy",
+                          "ai.happyranch.RemoteAccess1.Error.invalid_request": "invalidRequest",
+                          "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
+                code = closed.get(remote)
+                if code:
+                    complete(None, code)
+                elif mutation and dispatched and not absent:
+                    complete(None, "outcomeUnknown", "unknown")
+                else:
+                    complete(None, "unavailable")
+
+        def replied(connection: object, result: object, called: str) -> None:
+            nonlocal acknowledged
+            if not current():
+                return
             try:
                 raw, = connection.call_finish(result).unpack()
-                finish(self.protocol.host(raw))
-            except Exception:
-                finish(None, "unavailable")
+                if called in _contract.HOST_MUTATIONS:
+                    if _contract.parse_json(raw, 32768) != "ok":
+                        raise ValueError("invalid helper acknowledgement")
+                    acknowledged = True
+                    # Keep the slot until Status completes; never predict state
+                    # from an acknowledgement, selected label or fingerprint.
+                    call("Status")
+                    return
+                snapshot = self.protocol.host(raw)
+                self.observe_host(snapshot)
+                complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+            except Exception as error:
+                failed(error, True)
 
-        def call() -> None:
-            self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
-                "ai.happyranch.RemoteAccess1", "Status", None, self.GLib.VariantType.new("(s)"),
-                self.Gio.DBusCallFlags.NONE, 3000, self.cancellable, replied, None)
+        def call(called: str) -> None:
+            try:
+                self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
+                    "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),
+                    self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if called in _contract.HOST_MUTATIONS
+                    else self.Gio.DBusCallFlags.NONE,
+                    122000 if called in _contract.HOST_MUTATIONS else 3000,
+                    self.cancellable, replied, called)
+            except Exception as error:
+                failed(error, False)
 
         def connected(_source: object, result: object, _data: object) -> None:
             try:
                 connection = self.Gio.DBusConnection.new_for_address_finish(result)
                 connection.set_exit_on_close(False)
-                if not self.active or self.closed:
+                if not current():
                     connection.close(None, None, None)
                     return
                 self.connection = connection
-                call()
-            except Exception:
-                self.busy = False
-                finish(None, "unavailable")
+                call(method)
+            except Exception as error:
+                failed(error, False)
 
         try:
             if self.connection is not None and not self.connection.is_closed():
-                call()
+                call(method)
             else:
                 self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
                     self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
                     self.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
                     None, self.cancellable, connected, None)
-        except Exception:
-            self.busy = False
-            finish(None, "unavailable")
+        except Exception as error:
+            failed(error, False)
 
     def detach(self) -> None:
         self.active = False
         self.generation += 1
-        self.subscribed = False
+        if self.client.model.host_prompt_document is self.client_document:
+            self.client.model.host_prompt_document = None
+        if self.host_status_waiters is not None:
+            self.host_status_waiters.clear()
+            self.host_status_waiters = None
+        self.subscribed = self.host_subscribed = False
+        if self.host_timer is not None:
+            self.GLib.source_remove(self.host_timer)
+            self.host_timer = None
         if self.client.listener == self.queue_event:
             self.client.listener = None
         self.client.model.detach(self.client_document)
