@@ -1,5 +1,8 @@
 # Packaged connection shell (slices 1a / 1b-LINUX / 1b-MAC)
 
+See the maintained [bridge command/event inventory](../../docs/specs/connection-bridge-inventory.md) for current platform and CLI coverage.
+Any PR changing the schema command/event list or a platform's command implementation must update that inventory in the same PR.
+
 From `web/`, use existing dependencies only:
 
 ```sh
