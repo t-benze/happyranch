@@ -195,9 +195,12 @@ def admit_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: str,
     state refuses. Later-state replay/transition scopes belong to U3c.
     """
     if isinstance(compiled, GenericCompiledDefinition):
+        from runtime.workflows.sequential_assignments import AssignmentCapture
+        _require(isinstance(capture, AssignmentCapture), 'assignment_capture_required')
         return _admit_generic_uncommitted(conn, db, org_slug=org_slug, compiled=compiled,
             settings_row=settings_row, start=start, source=source, carrier_task=carrier_task,
-            visit_task=visit_task, original_limits=original_limits, authority=authority, capture=capture)
+            visit_task=visit_task, original_limits=original_limits, authority=authority,
+            capture=capture.authority, assignments=capture)
     budget = _ReadBudget()
     command = _parse(start, parse_start, budget)
     _require(conn is db._conn and conn.in_transaction and authority._db is db
@@ -617,17 +620,19 @@ def _admit_generic_uncommitted(conn: sqlite3.Connection, db: Database, *, org_sl
                                compiled: GenericCompiledDefinition, settings_row: dict, start: bytes,
                                source: RetryClaim, carrier_task: TaskRecord, visit_task: TaskRecord,
                                original_limits: GenericLimits, authority: WorkflowAuthorityCoordinator,
-                               capture: AuthorityAdmissionCapture) -> AdmissionIds:
+                               capture: AuthorityAdmissionCapture, assignments: object) -> AdmissionIds:
     """Inert S3 first admission. No source wait, publication or native launch.
 
     S5 owns source membership/continuation. S4 owns later visit/hold/dispatch
     lifecycle; the limited history reader refuses anything beyond this state.
     """
-    from runtime.workflows.sequential_assignments import resolve_assignments, assignment_bytes, assignment_digest
+    from runtime.workflows.sequential_assignments import assignment_digest
     from runtime.workflows.sequential_assignments import parse_assignment_start
+    from runtime.workflows.authority import generic_assignment_authority
     from runtime.workflows.sequential_start import _generic_selection
     budget = _ReadBudget()
     command = _parse(start, parse_assignment_start, budget)
+    _require(assignments.authority == capture and assignments.start_bytes == start, 'assignment_capture_conflict')
     _require(conn is db._conn and conn.in_transaction and authority._db is db
              and authority._org_slug == org_slug and getattr(db, '_task_ownership_org', None) == org_slug
              and conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1, 'admission_requires_owned_writer')
@@ -653,10 +658,17 @@ def _admit_generic_uncommitted(conn: sqlite3.Connection, db: Database, *, org_sl
         stored, setting, snapshot = _generic_selection(conn, org_slug=org_slug, command=command, budget=budget)
         _require(stored == compiled and setting == settings_row and snapshot.limits == original_limits,
                  'admission_pin_conflict')
-        # Account for the authority decode/projection before creating copies.
+        # Discovery (including custom adapter reads) happened outside leases.
+        # Final authority/profile validation above binds the same current inputs.
         budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
-        resolved = resolve_assignments(stored, command, defaults=snapshot.bindings, capture=capture,
-                                       org_slug=org_slug, team=source.team)
+        from runtime.workflows.sequential_history import _decode
+        from runtime.workflows.sequential_assignments import validate_assignment_snapshot
+        raw = assignments.snapshot_bytes
+        budget.reserve(48 * len(raw) + 512)
+        resolved = _decode(raw, budget)
+        _require(resolved['authority'] == generic_assignment_authority(capture, org_slug=org_slug)
+                 and resolved['team'] == source.team, 'assignment_capture_conflict')
+        validate_assignment_snapshot(resolved, stored, command, defaults=snapshot.bindings, org_slug=org_slug)
         _result(conn, source.result_row_id, source.task_id, source.assigned_agent, source.current_session_id, budget)
         _require(db._retry_claim_matches(source)
                  and selected_owner(conn, source.task_id, org_slug) == ('legacy', None, None), 'source_not_legacy')
@@ -678,8 +690,7 @@ def _admit_generic_uncommitted(conn: sqlite3.Connection, db: Database, *, org_sl
         run_id = _identity('run', org_slug, source.assigned_agent, source.task_id, command.operation_key)
         ids = AdmissionIds(run_id, carrier_task.id, _identity('visit', run_id, '1'), visit_task.id,
                            _identity('event', run_id, '1'), _identity('outbox', run_id, '1'))
-        raw = assignment_bytes(resolved)
-        budget.reserve(48 * len(raw) + 512)
+        _require(raw == _bytes(resolved), 'assignment_capture_conflict')
         budget.check()
         conn.execute('PRAGMA defer_foreign_keys=ON')
         conn.execute("INSERT INTO workflow_seq_runs "
@@ -694,7 +705,7 @@ def _admit_generic_uncommitted(conn: sqlite3.Connection, db: Database, *, org_sl
                 max_recoveries=original_limits.max_recoveries, node_revisions=dict(original_limits.node_revisions))), raw, assignment_digest(raw),
              ids.visit_id, ids.event_id))
         for assignment in resolved['nodes']:
-            node_raw = assignment_bytes(assignment)
+            node_raw = _bytes(assignment)
             conn.execute('INSERT INTO workflow_seq_assignments '
                 '(id,run_id,node_id,generation,principal,snapshot_bytes,snapshot_digest,predecessor_id) '
                 'VALUES (?,?,?,1,?,?,?,NULL)', (_identity('assignment', run_id, assignment['node'], '1'),

@@ -596,3 +596,40 @@ def _generic_selection(conn: sqlite3.Connection, *, org_slug: str, command: Any,
     validate_assignment_keys(compiled, command)
     validate_generic_start(command, compiled, original_limits=snapshot.limits)
     return compiled, setting, snapshot
+
+
+def prepare_generic_start(org: Any, *, start: bytes, source: Any) -> Any:
+    """Inert @2 discovery outside writer/leases; public @1 never calls this.
+
+    Custom selection consults the adapter store, so it must finish before the
+    admission writer. The existing authority/profile capture fences those
+    declarations at the final SQL check. Replay keeps its original snapshot.
+    """
+    from runtime.workflows.sequential_assignments import (
+        AssignmentCapture, assignment_bytes, parse_assignment_start, resolve_assignments,
+    )
+    capture = org.workflow_authority.capture_admission()
+    budget = _ReadBudget()
+    command = _parse(start, parse_assignment_start, budget)
+    budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        rows = _engine_rows(conn, 'workflow_seq_runs', budget,
+            'org_slug=? AND source_principal=? AND source_task_id=? AND start_operation_key=?',
+            (org.slug, source.assigned_agent, source.task_id, command.operation_key))
+        if rows:
+            run = rows[0]
+            _check(run['engine_version'] == 2 and run['start_bytes'] == start
+                   and (run['source_session_id'], run['source_result_id']) ==
+                   (source.current_session_id, source.result_row_id), 'sequential_start_operation_conflict')
+            validate_selected_run_uncommitted(conn, org_slug=org.slug, run_id=run['id'], scope='admission')
+            budget.check()
+            return AssignmentCapture(capture, start, run['assignment_snapshot_bytes'])
+        compiled, _, snapshot = _generic_selection(conn, org_slug=org.slug, command=command, budget=budget)
+    # No SQL snapshot, publication/profile lease or writer spans these resource
+    # reads. The current capture and pin are authenticated again at admission.
+    resolved = resolve_assignments(compiled, command, defaults=snapshot.bindings, capture=capture,
+                                   org_slug=org.slug, team=source.team)
+    raw = assignment_bytes(resolved)
+    budget.reserve(48 * len(raw) + 512)
+    budget.check()
+    return AssignmentCapture(capture, start, raw)

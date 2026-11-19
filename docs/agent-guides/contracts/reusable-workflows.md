@@ -12,9 +12,11 @@ agent/team/executor ownership; ordinary-chain `reviewer_agents` is not a role
 requirement. Original authority captures, Start@1 equality/replay bytes and
 ordinary-chain reviewer safety remain unchanged.
 
-The internal @2 branch of `admit_uncommitted` validates the original
-settings/definition pin and every node's current executor selection before any
-allocation. It persists a separate canonical resolved snapshot/digest in S2's
+`prepare_generic_start` validates every node's current executor selection,
+including custom adapter declaration reads, outside SQL ownership and admission
+leases. The internal @2 branch of `admit_uncommitted` consumes that immutable
+assignment capture and rechecks its original settings/definition pin and current
+authority/profile fences before any allocation. It persists a separate canonical resolved snapshot/digest in S2's
 run columns and append-only node-assignment rows. Snapshots retain role origins,
 per-field request presence (including explicit null), selection origins,
 target executor identity and the effective pair observed at admission. These

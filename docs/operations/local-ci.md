@@ -973,7 +973,8 @@ Individual selectors are `role_override`, `default_precedence`, `independence`,
 `model_omit`, `model_null`, `invalid_pair`, `executor_drift`. Real authority,
 selection and native task owners observe persisted assignment snapshots/digests,
 field presence, native overrides/audits, replay and zero allocation on invalid
-choices. Drift checks both creation-time refusal and the pure **unmounted**
+choices. A test-side observer calls the real selection owner outside SQL
+ownership; it never implements the selection answer. Drift checks both creation-time refusal and the pure **unmounted**
 launch recheck without row/task mutation; it does not prove native Held.
 S4a/S4b own that transition. Record four answers per named case and one intended
 pre-fix equality/field-drop mutation failure, byte-exact restoration and restored

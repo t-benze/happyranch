@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from runtime.orchestrator.agent_def import AgentDef
@@ -13,6 +14,15 @@ from runtime.orchestrator.task_selection import (
 from runtime.workflows.authority import AuthorityAdmissionCapture, generic_assignment_authority
 from runtime.workflows.sequential_contracts import GenericStartCommand, GenericStepOverride
 from runtime.workflows.sequential_definition import GenericCompiledDefinition
+
+
+@dataclass(frozen=True)
+class AssignmentCapture:
+    """@2 discovery, including adapter option reads, before admission leases."""
+
+    authority: AuthorityAdmissionCapture
+    start_bytes: bytes
+    snapshot_bytes: bytes
 
 
 class AssignmentRefusal(ValueError):

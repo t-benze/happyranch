@@ -1918,6 +1918,7 @@ if sys.argv[1:] in ([], ['--assignments']):
     from runtime.workflows.sequential_contracts import GenericStepOverride
     from runtime.workflows.sequential_definition import compile_generic_definition, parse_generic_start
     from runtime.workflows.sequential_engine import admit_uncommitted
+    from runtime.workflows.sequential_start import prepare_generic_start
     from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
 
     def s3_definition():
@@ -2004,11 +2005,21 @@ if sys.argv[1:] in ([], ['--assignments']):
                         visit = TaskRecord(id='s3-visit-task', parent_task_id=carrier.id, assigned_agent=chosen,
                             team='other' if chosen == 's3_other' else 'engineering', task_type='subtask', brief='Private inert entry',
                             model_override=source.model_override, reasoning_effort_override=source.reasoning_effort_override, override_source='manager')
-                        capture = org.workflow_authority.capture_admission()
-                        with org.workflow_authority.admission_writer(capture) as writer:
-                            ids = admit_uncommitted(writer, db, org_slug='scratch', compiled=compiled, settings_row=setting,
-                                start=raw, source=claim, carrier_task=carrier, visit_task=visit,
-                                original_limits=compiled.definition.limits, authority=org.workflow_authority, capture=capture)
+                        from runtime.orchestrator import task_selection
+                        from runtime.workflows import sequential_assignments
+                        real_selection = task_selection.resolve_task_selection
+                        def observe_selection(agent, model, effort):
+                            assert not conn.in_transaction, 'S3 selection resource read inside SQL ownership'
+                            return real_selection(agent, model, effort)
+                        # Observe the actual owner; never implement its answer.
+                        with patch.object(task_selection, 'resolve_task_selection', observe_selection), patch.object(
+                                sequential_assignments, 'resolve_task_selection', observe_selection):
+                            capture = prepare_generic_start(org, start=raw, source=claim)
+                            assert not conn.in_transaction, 'S3 discovery retained SQL ownership'
+                            with org.workflow_authority.admission_writer(capture.authority) as writer:
+                                ids = admit_uncommitted(writer, db, org_slug='scratch', compiled=compiled, settings_row=setting,
+                                    start=raw, source=claim, carrier_task=carrier, visit_task=visit,
+                                    original_limits=compiled.definition.limits, authority=org.workflow_authority, capture=capture)
                         return ids
                     yield SimpleNamespace(org=org, db=db, conn=conn, command=command, compiled=compiled,
                         agents=agents, admit=admit, source=source, root=root, coordinator=coordinator)
