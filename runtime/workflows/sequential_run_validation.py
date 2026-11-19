@@ -954,7 +954,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             'generic_native_selection_conflict')
     _require(all(any(visit['id'] == row['visit_id'] and visit['result_id'] is not None for visit in visits)
         for row in selected['workflow_seq_outputs']), 'generic_output_conflict')
-    _generic_native_history(conn, run, visits, selected['workflow_seq_evidence'], budget, closed_visits)
+    _generic_native_history(conn, run, visits, selected['workflow_seq_evidence'], budget, closed_visits, resolved)
     _auxiliary(conn, selected, {run['id']: run}, {visit['id']: visit for visit in visits},
                {event['id']: event for event in events}, budget, {run['definition_id']: compiled})
 
@@ -997,7 +997,7 @@ def generic_result_state(conn: sqlite3.Connection, run: dict, visit: dict, compi
 
 
 def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[dict],
-                            evidence: list[dict], budget: _ReadBudget, closed_visits: set[str]) -> None:
+                            evidence: list[dict], budget: _ReadBudget, closed_visits: set[str], resolved: dict) -> None:
     """Bound native sessions and original proof prefixes, including before outer."""
     from runtime.infrastructure.workflow_task_ownership import selected_owner
     from runtime.workflows.sequential_business_hold import _proof, generic_closed_visit
@@ -1006,7 +1006,7 @@ def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[di
     _require(selected_owner(conn, run['carrier_task_id'], run['org_slug']) == ('seq_carrier', run['id'], run['state']),
              'ownership_relation_conflict')
     source = _native_rows(conn, 'tasks', ('assigned_agent', 'team'), (('text',), ('text',)), run['source_task_id'], budget)
-    resolved = _decode(_hashed(run['assignment_snapshot_bytes'], run['assignment_snapshot_digest']), budget)
+    # The caller authenticated this assignment snapshot in the same read.
     _require(source == [(run['source_principal'], resolved['team'])], 'generic_source_conflict')
     carrier = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'team', 'task_type', 'status',
         'current_session_id'), (('text',), ('text',), ('text',), ('text',), ('text',), ('null',)), run['carrier_task_id'], budget)

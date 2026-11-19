@@ -745,6 +745,12 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
         _require(row['run_id'] in runs and (row['visit_id'] is None or
                  (row['visit_id'] in visits and visits[row['visit_id']]['run_id'] == row['run_id'])),
                  'evidence_owner_conflict')
+        if runs[row['run_id']].get('engine_version', 1) == 2:
+            # The generic native reconstruction has already authenticated all
+            # terminal/outer bindings, bytes, digests and payloads in this same
+            # snapshot. Avoid decoding those same proofs in each auxiliary pass.
+            _require(row['kind'] in ('terminal', 'outer'), 'generic_evidence_unavailable')
+            continue
         if row['kind'] == 'preflight':
             _require(type(row['evidence_bytes']) is bytes and 0 < len(row['evidence_bytes']) <= 16384,
                      'subject_bytes_invalid')

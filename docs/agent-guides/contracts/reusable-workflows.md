@@ -36,6 +36,12 @@ witness paths retain their original bytes. Node data includes only declared,
 addressed selected inputs under current authority; an unaddressed node receives
 no private output. Domain task transport refuses @2.
 
+Within one history read, native reconstruction authenticates each terminal/outer
+proof before auxiliary validation. Auxiliary passes reuse that authentication,
+and native validation reuses the already authenticated assignment snapshot;
+neither repeats those decode reservations. Separate reads authenticate afresh,
+under the unchanged ledgers and cancellation reservation.
+
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4b=all`
 (and 3.14, or `--s4b=CASE`) exercises private production writers/readers and
 rendered node data. It does not establish genuine provider/process containment or
