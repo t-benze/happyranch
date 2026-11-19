@@ -3304,7 +3304,9 @@ The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/Reject
 RevokeSelected. I3a also ships the stdlib-only `helper_lifecycle.py` sibling and
 private lifecycle mount; I3b adds the stdlib-only `helper_invite.py` pipe adapter
 and private CancelInvite/RecoverInvite mounting; I4a adds private zero-input
-IssueInvite with the exact issue-invite auth_admin/no-keep action. Its fixed existing bundled-Python `-I -m
+IssueInvite with the exact issue-invite auth_admin/no-keep action. I4b-2 adds
+private RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-keep
+action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
 It captures protected activation G/O (including absence), initial Enable config
@@ -3348,6 +3350,12 @@ CheckAuthorization callback with the captured unique bus sender and exact action
 its terminal/cancellation rules retain the same slot through the entire worker.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
+I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains
+120 seconds total, including capture/auth, P1 recovery/publication and B16.
+After the audit outcome, it revalidates the live sender UID, B8 owner and
+protected G/O, then checks the original deadline before publishing its terminal
+result. That validation includes the final blocking read; no later blocking read
+can turn an expired operation into success. Lost/late results remain uncertain.
 IssueInvite also keeps its original 120-second budget: after B16 settlement
 and the final blocking revalidation read, both invite expiry and remaining
 budget must still validate immediately before its sole reply (I4a below).
@@ -3598,7 +3606,7 @@ inputs/environment/URL; its `.timer` has `OnUnitActiveSec=1800s`, `OnBootSec=60s
 `Persistent=false`. Under the installation lock it re-stamps only bytes matching
 the current shipped package route artifact, retaining the 3600-second envelope.
 Failure lets existing expiry close access. `RetryPolicyRenewal()` remains the
-fresh-auth retry. Turn off will stop, disable and unlink these owned units;
+fresh-auth retry. Turn off stops, disables and unlinks these owned units;
 their files remain package payload. Artifact mismatch refuses until B18 repair
 rewraps the installed policy; another timer tick cannot repair a package upgrade.
 Why no founder: pins the names/cadence of the already R2-approved mechanism.
@@ -3621,7 +3629,7 @@ the timer has an Install section, for that target.
 activation-directory lock across protected reads, the decision and publication.
 Automatic mode uses `renewal_candidate` unchanged: identical shipped artifact,
 active valid structure, current 3600-second envelope and no backwards time.
-Fresh-auth mode is callable without a production caller yet; it applies those
+Fresh-auth mode is used by private Retry and forward Enable; it applies those
 same checks but permits an expired installed envelope. Both increment revision,
 re-stamp issuance and retain all other envelope fields. Artifact equality uses
 `policy.canonical_json` SHA-256, excluding envelope timestamps and formatting.
@@ -3665,12 +3673,45 @@ current causes no restart or stream closure. Refusal retains the cache. On cache
 expiry, the existing readiness gate, shutdown/stream closure, return 1 and
 systemd `Restart=on-failure` remain unchanged. Startup still reads the file fresh.
 
-**Remaining I4b-2:** P3 fresh-auth Enable renewal and timer enablement inside the
-existing `managed_services` effect; Disable stop/disable/unlink and confirmed
-quiescence before B6, including renewal recovery or named partial cleanup; P5
-fresh-auth `RetryPolicyRenewal` and existing-field StatusV2 policy reporting.
+**Delivered in I4b-2:** Forward Enable runs the existing installer's fresh-auth
+renewal transition inside `managed_services`, before enabling the timer through
+`SystemdServiceManager.enable` and starting the managed target. The coordinator
+already holds the same activation-directory flock, so it calls the existing
+`_renew_policy_locked` transition used by `renew_policy`, without releasing or
+reacquiring it. The existing preflight current-policy checks are unchanged.
+Ready Enable stays inspect-only. I3a fresh-auth recovery still only verifies and
+publishes (or rolls over to prepared); it never renews policy, links the timer or
+replays any other effect. A later forward Enable runs the existing effect path.
+
+Disable's existing stop step stops the timer and renewal service, disables the
+timer through its manager, and confirms both units' quiescence and the literal
+timer-link absence before B6. It repeats that proof before cleanup. A remaining
+link or unconfirmed unit returns `partial_cleanup` naming it, without B6.
+Under the same lock, Disable also recovers an existing `policy-renewal@1`
+install journal using P1; refusal retains it and returns `partial_cleanup`
+naming `/etc/happyranch/install-transaction.json`. It never creates a renewal
+when there is no journal. `policy.json` and `provision.json` survive Turn off.
+
+Private zero-input `RetryPolicyRenewal` uses the existing B8/B9 capture and
+mutation slot, the exact noncached auth_admin action, B16 policy_renew
+intent/outcome, the original 120-second budget and the post-B16 final validation
+described in B9. It calls `renew_policy(fresh_auth=True)` with its private
+live-capture callback, which rechecks G/O and the parent UID/B8 under P1's same
+flock before publication. The automatic entry supplies no callback and keeps
+its original behavior. The existing
+ready/commit pipe framing performs live-caller validation around child work.
+It does not restart the connector; I4b-1 pickup observes the updated envelope.
+
+StatusV2 uses only its existing `policy` state/age fields: valid current policy
+with an active enabled waiting timer and a successful renewal service is
+`current`; active renewal is `renewing`; expired policy is `expired`; a failed
+service, inactive/disabled timer or artifact mismatch is `renewal_failed`;
+an install journal is `uncertain`. Unavailable/unsafe evidence stays `unknown`.
+These read-only observations grant no activation/admission authority.
 Only the timer receives its manager-owned Install link; receipt membership and
-B5 remain unchanged. Ready Enable stays inspect-only. Unit files remain dpkg
+B5 remain unchanged. Ready admission does not require this timer link: policy
+expiry remains the gate. `_unit_wants_names` and the B17 replacement veto remain
+unchanged; Turn off must remove the timer link before replacement. Unit files remain dpkg
 payload after Turn off. Public methods and the public gate remain closed until I5.
 
 **B18 dependency:** a package upgrade with a different shipped route artifact
@@ -3698,8 +3739,9 @@ The receipt maps prepared/activating/joined to setup in_progress, ready to ready
 failed_uncertain to uncertain. Missing/unreadable receipt means unknown, never Off;
 a receipt bound to a different UID refuses. A fresh successful connector snapshot
 supplies runtime available only when ready; otherwise unavailable. Unreachable connector
-supplies runtime unavailable independently of setup. Invite/address/policy/cleanup remain
-unknown until their authoritative sources are integrated. Observation ages measure time
+supplies runtime unavailable independently of setup. I3b/I4a project invite/cleanup
+observations, and I4b-2 reads policy/timer state through the same fixed bundled
+child into the existing policy dimension; address remains unknown. Observation ages measure time
 since the reads with a monotonic clock and pass through the existing stale normalization.
 No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
 The frozen `StatusV2` has exactly
@@ -3771,6 +3813,10 @@ the separately audited stop attempt; incomplete residue remains a closed partial
 operation result. I3b also brackets private invite cancel/recover with the existing
 invite events and lifecycle outcome mapping; I4a brackets issuance with
 invite_issued intent and succeeded/refused/uncertain settlement before delivery.
+I4b-2 brackets private RetryPolicyRenewal with `policy_renew` intent and
+succeeded/refused/uncertain settlement. Audit or final blocking validation past
+the original B9 deadline appends uncertainty and suppresses terminal success;
+the policy/provision journal keeps P1's recovery semantics.
 If expiry or the original B9 deadline lapses during the final blocking read,
 the succeeded outcome and consumed issuer journal remain; append uncertain
 before the sole uncertain error, without delivering invite text.

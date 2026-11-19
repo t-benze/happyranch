@@ -47,4 +47,9 @@
     <message>Authenticate to issue a home remote access invite</message>
     <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
   </action>
+  <action id="ai.happyranch.remote-access.retry-policy-renewal">
+    <description>Retry the fixed home remote access policy renewal</description>
+    <message>Authenticate to retry the fixed policy renewal</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
 </policyconfig>

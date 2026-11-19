@@ -394,6 +394,13 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                 self._source.require(receipt)
                 self._io.manager.daemon_reload()
                 self._managed_fragments(require_home=True)
+                # The coordinator already owns the SAME activation-directory
+                # flock used by renew_policy(). Never reacquire or release it.
+                self._source.require(receipt)
+                self._io._renew_policy_locked(fresh_auth=True)
+                from runtime.remote_access.policy_renew_units import TIMER_NAME
+                self._source.require(receipt)
+                self._io.manager.enable(TIMER_NAME)
                 for name in ("happyranch-release-verifier.socket", _TARGET):
                     self._source.require(receipt)
                     self._io.manager.enable(name)

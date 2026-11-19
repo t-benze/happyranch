@@ -253,13 +253,16 @@ def test_backend_enable_and_recover_real_owners(venue: Venue) -> None:
         assert reloads[-1][3] == v.home
         assert [row[0] for row in v.audit] == [["daemon-reload"], ["daemon-reload"],
             ["enable", adapters._HEADSCALE], ["start", adapters._HEADSCALE], ["daemon-reload"],
+            ["enable", "happyranch-remote-access-policy-renew.timer"],
             ["enable", "happyranch-release-verifier.socket"], ["enable", adapters._TARGET], ["start", adapters._TARGET]]
         v.path(ACTIVATION_PATH).write_bytes(replace(ready, phase="failed_uncertain").to_bytes())
         v.path(TRANSACTION_PATH).write_bytes(replace(txn, phase="failed_uncertain").to_bytes())
         before = list(v.audit)
+        policy_before = v.path('/etc/happyranch/policy.json').read_bytes()
         recovered = v.backend.recover(expected_generation=7, expected_operation_id=ready.operation_id,
                                        fresh_authenticated=True)
         assert recovered == ready and v.audit == before and len(requests) == 7
+        assert v.path('/etc/happyranch/policy.json').read_bytes() == policy_before
 
 
 @pytest.mark.parametrize("case", ["enable-auth", "enable-root", "enable-G", "recover-auth", "recover-O", "recover-G", "recover-root"])
@@ -563,9 +566,11 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
         assert ready.phase == 'ready' and ready.local_node_stable_id == 'self-stable'
         assert ready.operation_id != '0' * 32 and requests
         before = list(v.audit)
+        policy_before = v.path('/etc/happyranch/policy.json').read_bytes()
         observed = lifecycle.capture('Enable', v.prepared.release_uid)
         assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)['outcome'] == 'ready'
         assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+        assert v.path('/etc/happyranch/policy.json').read_bytes() == policy_before
         if case == 'ready':
             v.source.write_bytes(b'synthetic source-token rotation')
             with pytest.raises(ActivationRefused):

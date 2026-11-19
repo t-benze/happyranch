@@ -3620,13 +3620,16 @@ class ManagedInstaller:
             os.unlink("install-transaction.json", dir_fd=parent)
             os.fsync(parent)
 
-    def renew_policy(self, *, fresh_auth: bool = False) -> None:
+    def renew_policy(self, *, fresh_auth: bool = False,
+                     _before_renew: Callable[[], None] | None = None) -> None:
         """Fixed artifact only. Fresh-auth callers supply authorization separately."""
         from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
 
         if os.geteuid() != 0 or type(fresh_auth) is not bool:
             raise InstallerError("policy renewal unavailable")
         with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked():
+            if _before_renew is not None:
+                _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
             self._renew_policy_locked(fresh_auth=fresh_auth)
 
     def _renew_policy_locked(self, *, fresh_auth: bool) -> None:

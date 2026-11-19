@@ -13,7 +13,8 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from typing import Iterator
+from pathlib import Path
+from typing import Callable, Iterator
 
 from runtime.remote_access.home_activation import (
     ACTIVATION_PATH, INVITE_CONFIG_PATH, HomeActivationReceipt, HomeActivationStore, _generation,
@@ -150,6 +151,107 @@ class HelperLifecycleBackend:
         self.io = io
         self.store = HomeActivationStore(root=io.root, root_owner=io.root_owner)
 
+    def _policy_quiescence(self) -> list[str]:
+        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME
+        residue = []
+        for name in (TIMER_NAME, SERVICE_NAME):
+            keys = ('ActiveState', 'SubState', 'Job')
+            if name == SERVICE_NAME:
+                keys += ('MainPID', 'ControlPID', 'ControlGroup')
+            try:
+                props = self.io.manager.show_properties(name, keys)
+                if (props.get('ActiveState') not in ('inactive', 'failed')
+                        or props.get('SubState') not in ('dead', 'failed') or props.get('Job') != ''
+                        or name == SERVICE_NAME and any(props.get(k) != v for k, v in
+                            (('MainPID', '0'), ('ControlPID', '0'), ('ControlGroup', '')))):
+                    raise ActivationRefused()
+            except Exception:
+                residue.append(name + ': quiescence unconfirmed')
+        relative = 'etc/systemd/system/happyranch-managed.target.wants'
+        try:
+            with self.io._publication_parent(relative) as (parent, check):
+                try:
+                    os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    residue.append('/' + relative + '/' + TIMER_NAME)
+                check()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            residue.append('/' + relative + '/' + TIMER_NAME + ': absence unconfirmed')
+        return residue
+
+    def _stop_policy(self) -> list[str]:
+        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME
+        residue = []
+        timer_owned = False
+        for name in (TIMER_NAME, SERVICE_NAME):
+            try:
+                props = self.io.manager.show_properties(name, ('LoadState', 'FragmentPath', 'DropInPaths'))
+                loaded = props.get('LoadState') == 'loaded'
+                if (props.get('LoadState') not in ('loaded', 'not-found') or props.get('DropInPaths') != ''
+                        or props.get('FragmentPath') != (str(self.io.root / 'usr/lib/systemd/system' / name) if loaded else '')):
+                    raise ActivationRefused()
+                if name == TIMER_NAME:
+                    timer_owned = True
+                if loaded:
+                    self.io.manager.stop(name, timeout=50.0)
+            except Exception:
+                residue.append(name + ': stop unconfirmed')
+        if timer_owned:
+            try:
+                self.io.manager.disable(TIMER_NAME)
+            except Exception:
+                residue.append(TIMER_NAME + ': disable unconfirmed')
+        return residue + self._policy_quiescence()
+
+    def policy_status(self, uid: int) -> dict:
+        """Read-only aggregate for the existing B15 policy dimension."""
+        from datetime import datetime, timezone
+        from runtime.remote_access import installer
+        from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
+        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, fresh_auth_renewal_candidate
+        self.capture('RetryPolicyRenewal', uid)
+        self.io._service_owner = self.io._account(create=False)
+        if self.io._service_owner is None:
+            raise ActivationRefused()
+        with self.io._publication_parent() as (parent, check):
+            self.io._headscale_no_pending(parent, 'install-transaction.json')
+            try:
+                os.stat('install-transaction.json', dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                check()
+                return {'policy': 'uncertain'}
+            self.io._policy_renewal_pending(parent)
+            raw = self.io._read_file(parent, 'policy.json', owner=(self.io.root_owner[0], self.io._service_owner[1]), mode=0o640)
+            provision = self.io._read_file(parent, 'provision.json', owner=self.io.root_owner, mode=0o600)
+            self.io._validate_install_record('provision.json', provision)
+            if self.io._json(provision).get('digests', {}).get('policy.json') != hashlib.sha256(raw).hexdigest():
+                raise ActivationRefused()
+            check()
+        envelope = PolicyEnvelope.model_validate(self.io._json(raw))
+        consumer = RoutePolicyConsumer.from_envelope(envelope)
+        source = Path(installer.__file__).with_name('route_policy.json')
+        with self.io._input_parent(source) as parent:
+            shipped = self.io._json(self.io._read_file(parent, source.name, owner=self.io.root_owner))
+        now = datetime.now(timezone.utc)
+        if fresh_auth_renewal_candidate(envelope, shipped, now=now) is None:
+            return {'policy': 'renewal_failed'}
+        try:
+            consumer.require_current(now)
+        except PolicyError:
+            return {'policy': 'expired'}
+        service = self.io.manager.show_properties(SERVICE_NAME, ('ActiveState', 'SubState', 'Result'))
+        timer = self.io.manager.show_properties(TIMER_NAME, ('ActiveState', 'SubState', 'UnitFileState'))
+        state = ('renewing' if service.get('ActiveState') in ('active', 'activating') else
+                 'current' if service.get('Result') == 'success' and timer == dict(
+                     ActiveState='active', SubState='waiting', UnitFileState='enabled') else 'renewal_failed')
+        return {'policy': state}
+
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
@@ -185,8 +287,9 @@ class HelperLifecycleBackend:
                                replacement=replacement, configuration=configuration), sort_keys=True, separators=(',', ':'))
 
     def dispatch(self, method: str, uid: int, step: str, expected: str | None, *,
-                 revoke_succeeded: bool = False) -> dict:
-        if method not in ('Enable', 'ReplaceFailed', 'Disable') or type(uid) is not int or uid < 1000:
+                 revoke_succeeded: bool = False, deadline: float | None = None,
+                 before_commit: Callable[[], None] | None = None) -> dict:
+        if method not in ('Enable', 'ReplaceFailed', 'Disable', 'RetryPolicyRenewal') or type(uid) is not int or uid < 1000:
             raise ActivationRefused()
         if type(revoke_succeeded) is not bool or (revoke_succeeded and (method, step) != ('Disable', 'cleanup')):
             raise ActivationRefused()
@@ -194,10 +297,29 @@ class HelperLifecycleBackend:
             if expected is not None:
                 raise ActivationRefused()
             return {'snapshot': self.capture(method, uid)}
+        if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
+            return self.policy_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
             raise ActivationRefused()
+        if method == 'RetryPolicyRenewal' and step == 'renew':
+            if deadline is None or before_commit is None or time.monotonic() >= deadline:
+                raise ActivationRefused()
+            before_commit()
+            # Public entry holds the existing flock across P1 recovery/publication.
+            def before_renew() -> None:
+                if self.capture(method, uid) != expected:
+                    raise ActivationRefused()
+                before_commit()
+            self.io.renew_policy(fresh_auth=True, _before_renew=before_renew)
+            if self.capture(method, uid) != expected:
+                raise ActivationRefused()
+            before_commit()
+            return {'outcome': 'complete'}
         snapshot = json.loads(expected)
         if method == 'Disable' and step == 'cleanup':
+            residue = self._policy_quiescence()
+            if residue:
+                return {'outcome': 'partial_cleanup', 'residue': residue}
             receipt = self.store.current()
             if receipt is None:
                 raise ActivationRefused()
@@ -237,6 +359,22 @@ class HelperLifecycleBackend:
                                           expected_generation=snapshot['replacement'])
                 return {'outcome': 'off', 'residue': []}
             if method == 'Disable' and step == 'stop':
+                residue = self._stop_policy()
+                try:
+                    self.io._service_owner = self.io._account(create=False)
+                    with self.io._publication_parent() as (parent, check):
+                        self.io._headscale_no_pending(parent, 'install-transaction.json')
+                        try:
+                            transaction = self.io._read_file(parent, 'install-transaction.json', owner=self.io.root_owner, mode=0o600)
+                        except FileNotFoundError:
+                            transaction = None
+                        check()
+                    if transaction is not None:
+                        self.io._recover_policy_renewal(transaction)
+                except Exception:
+                    residue.append('/etc/happyranch/install-transaction.json')
+                if residue:
+                    return {'outcome': 'partial_cleanup', 'residue': residue}
                 self.io.stop_and_confirm()
                 from runtime.remote_access import headscale_service
                 from runtime.remote_access.home_unit_gate import HomeUnitGate
@@ -268,6 +406,9 @@ class HelperLifecycleBackend:
                         self.io.manager.disable(name)
                 self.io._confirm_quiescent()
                 self.io._headscale_stopped()
+                residue = self._policy_quiescence()
+                if residue:
+                    return {'outcome': 'partial_cleanup', 'residue': residue}
                 return {'outcome': 'in_progress', 'residue': []}
         raise ActivationRefused()
 
@@ -305,6 +446,10 @@ def helper_main() -> int:
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             result = HelperInviteBackend(io).dispatch(**request, deadline=deadline,
                                                       before_commit=lambda: confirm(deadline))
+        elif request['method'] == 'RetryPolicyRenewal':
+            from runtime.remote_access.helper_invite import confirm
+            result = HelperLifecycleBackend(io).dispatch(**request, deadline=deadline,
+                before_commit=lambda: confirm(deadline))
         else:
             result = HelperLifecycleBackend(io).dispatch(**request)
         if time.monotonic() >= deadline:

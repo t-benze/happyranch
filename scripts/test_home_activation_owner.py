@@ -148,6 +148,15 @@ def venue(tmp_path, monkeypatch):
     generated["connector.json"] = json.dumps(raw).encode()
     for name, data in generated.items():
         put(v.path("/etc/happyranch/" + name), data, 0o640)
+    names = ('connector.json', 'sidecar.json', 'policy.json', 'release-daemon.json', 'daemon.token')
+    put(v.path('/etc/happyranch/provision.json'), json.dumps(dict(version=1, phase='provisioned', layout=io.layout,
+        digests={name: hashlib.sha256(v.path('/etc/happyranch/' + name).read_bytes()).hexdigest()
+                 for name in names}), sort_keys=True).encode())
+    # Model the protected installed package source; the Git checkout is writable.
+    package = v.root / 'package'
+    package.mkdir(mode=0o755)
+    put(package / 'route_policy.json', Path(installer.__file__).with_name('route_policy.json').read_bytes(), 0o644)
+    monkeypatch.setattr(installer, '__file__', str(package / 'installer.py'))
     for name, data in installer.managed_units("source", connector_config=raw).items():
         put(v.path("/etc/systemd/system/" + name), data.encode(), 0o644)
     put(v.path("/etc/systemd/system/" + h._SIDECAR), v.production._sidecar_unit(), 0o644)
@@ -423,7 +432,14 @@ def test_managed_services_consumption_and_observation(venue, monkeypatch):
     monkeypatch.setattr(h.HomeObserver, "observe", lambda self, r, **kw: observations.append(r))
     monkeypatch.setattr(h.VerifierClient, "resolve", lambda self: 12345)
     v.native.on_start = lambda: consumed(v)
+    old = json.loads(v.path('/etc/happyranch/policy.json').read_bytes())
     v.production.perform("managed_services", receipt, None)
+    policy = json.loads(v.path('/etc/happyranch/policy.json').read_bytes())
+    assert policy['revision'] == old['revision'] + 1
+    record = json.loads(v.path('/etc/happyranch/provision.json').read_bytes())
+    assert record['digests']['policy.json'] == hashlib.sha256(v.path('/etc/happyranch/policy.json').read_bytes()).hexdigest()
+    actions = [call[1:] for call in v.native.calls if call[1] != 'show']
+    assert actions.index(['enable', 'happyranch-remote-access-policy-renew.timer']) < actions.index(['start', h._TARGET])
     assert not v.receipts._io._check_enrollment()
     assert len(observations) == 1
     v.admin.users = (HeadscaleUser(1, "happyranch-node"), HeadscaleUser(2, "happyranch-invite"))

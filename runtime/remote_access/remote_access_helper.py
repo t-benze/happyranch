@@ -58,6 +58,7 @@ ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
 # Deliberately absent from METHODS/introspection and public dispatch until I5.
 LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
+                     'RetryPolicyRenewal': 'retry-policy-renewal',
                      **_helper_invite.METHODS}
 IDLE_SECONDS = 60.0
 METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
@@ -259,8 +260,15 @@ class RemoteAccessHelper:
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
                 invite, cleanup = self._invite_status(uid, observed)
+                policy = None
+                try:
+                    state = _helper_generation.HomeLifecycleClient('RetryPolicyRenewal', uid).policy_status(
+                        deadline - time.monotonic())
+                    policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
+                except Exception:
+                    pass  # Unavailable evidence remains unknown, never current.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
-                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup))
+                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy))
             except Exception as error:
                 category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
             settled(raw, category)
@@ -417,6 +425,7 @@ class RemoteAccessHelper:
                     'Disable': 'Turn off home remote access and revoke all devices',
                     'CancelInvite': 'Cancel the current home remote access invite',
                     'RecoverInvite': 'Recover the current home remote access invite',
+                    'RetryPolicyRenewal': 'Retry the fixed home remote access policy renewal',
                     'IssueInvite': 'Issue a home remote access invite'}[method]
             self.authority.call('CheckAuthorization', GLib.Variant('((sa{sv})sa{ss}us)', (
                 ('system-bus-name', {'name': GLib.Variant('s', sender)}),
@@ -459,6 +468,9 @@ class RemoteAccessHelper:
                 self._clear()
 
     def _run_lifecycle(self, operation: object) -> None:
+        if operation.capture.method == 'RetryPolicyRenewal':
+            self._run_policy_renewal(operation)
+            return
         if operation.capture.method == 'IssueInvite':
             self._run_issue_invite(operation)
             return
@@ -546,17 +558,20 @@ class RemoteAccessHelper:
                 except Exception:
                     residue.append('un-revoked connector trust state and persisted sidecar state')
                 try:
-                    child('stop', _home_audit.Component.UNITS)
+                    stopped = child('stop', _home_audit.Component.UNITS)
                 except Exception:
                     residue.append('owned units: quiescence unconfirmed')
                 else:
-                    try:
-                        result = child('cleanup', _home_audit.Component.LIVE_STATE, revoke_succeeded=revoked)
-                        residue.extend(result['residue'])
-                        if result['outcome'] != 'off':
-                            residue.append('B6 cleanup incomplete')
-                    except Exception:
-                        residue.append('B6 custody or retained CA staging and B7/B11 evidence')
+                    if stopped.get('outcome') != 'in_progress' or stopped.get('residue'):
+                        residue.extend(stopped.get('residue') or ['owned units: quiescence unconfirmed'])
+                    else:
+                        try:
+                            result = child('cleanup', _home_audit.Component.LIVE_STATE, revoke_succeeded=revoked)
+                            residue.extend(result['residue'])
+                            if result['outcome'] != 'off':
+                                residue.append('B6 cleanup incomplete')
+                        except Exception:
+                            residue.append('B6 custody or retained CA staging and B7/B11 evidence')
                 outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
                            lifecycle.SetupPhase.PARTIAL_CLEANUP)
         except Exception:
@@ -570,6 +585,49 @@ class RemoteAccessHelper:
             except Exception:
                 # Unsettled worker keeps the slot sealed; no synthetic completion.
                 self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+
+    def _run_policy_renewal(self, operation: object) -> None:
+        capture = operation.capture
+        result = {'outcome': 'refused'}
+        intent, dispatched = None, False
+        try:
+            with self.effect_guard(capture):
+                operation._revalidate()
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                intent = self.audit.intent(_home_audit.Event.POLICY_RENEW,
+                    intent_id='intent-' + label, operation_id='op-' + label)
+
+                def before_commit() -> None:
+                    if self.cancelled or self.inflight is not capture:
+                        raise Refused('disconnected')
+                    operation._revalidate()
+
+                before_commit()
+                dispatched = True
+                result = operation.generations.retry_policy(capture.generation,
+                    operation.budget.deadline, before_commit)
+                operation.budget.remaining()
+                if type(result) is not dict or set(result) != {'outcome'} or result['outcome'] not in ('complete', 'refused'):
+                    raise Refused('unavailable')
+                self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED if result['outcome'] == 'complete'
+                                   else _home_audit.Outcome.REFUSED)
+                # B16 and this last blocking UID/B8/G/O read share the original
+                # deadline. Nothing blocking follows the final validation.
+                before_commit()
+                operation.budget.remaining()
+        except Exception:
+            result = {'outcome': 'uncertain' if dispatched else 'refused'}
+            if intent is not None:
+                try:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                except Exception:
+                    pass
+        finally:
+            self.lifecycle_result = result
+            self.release(capture)
 
     def _run_issue_invite(self, operation: object) -> None:
         """One authenticated terminal reply; secret never enters helper state."""

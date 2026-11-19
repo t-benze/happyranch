@@ -111,11 +111,11 @@ is unchanged; outside-home key delivery remains an open founder/security gate (�
 | `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready is inspect-only. |
 | `RefreshHomeAddress()` / `refresh-home-address` | Re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
-| `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
+| `Disable()` / `disable` | Stop admission, revoke devices, stop/disable/unlink owned remote units, then clean owned activation config/state/credentials. Renewal units remain package payload; install-scope policy/provision survive. Never stop/delete the release daemon or package. |
 | `IssueInvite()` / `issue-invite` | Mounted privately in I4a; public gate closed until I5. Fresh auth mints one-use join key and pairing secret, invalidates old invite, and delivers once in the sole terminal `(s)` JSON reply after B16 settlement within the original 120 seconds; no prior accepted reply. |
 | `CancelInvite()` / `cancel-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
 | `RecoverInvite()` / `recover-invite` | Mounted privately in I3b; public gate closed until I5. Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
-| `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
+| `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Mounted privately in I4b-2; public gate closed until I5. Fresh auth retries only fixed shipped-policy renewal under the original 120 seconds and B16 intent/outcome, with final deadline validation after audit. No connector restart; all readiness gates must pass before access resumes. |
 | `ApprovePending()` / `approve-pending` | Approve the sole redeemed pending identity captured before authentication, then atomically pin and issue its credential. |
 | `RejectPending()` / `reject-pending` | Permanently reject that captured pending identity and consume its invite. |
 | `NextDevice()` / none | Cycle a helper-owned per-bus-caller cursor over the protected device list; select nothing supplied by the caller. |
@@ -189,8 +189,12 @@ no second reply, fetch, polling or alternate delivery channel exists. Text is
 absent from StatusV2, B16, issuer journal, logs/errors and stderr (DEVNULL);
 StatusV2 carries only existing phase/deadline, and B10 only digest/deadline.
 The pinned wire-size/TTL limits remain unchanged. B14 I4b-1 delivers the fixed
-renewal transition, executable, inert package units and connector pickup; P3/P5
-Enable/Disable/Retry wiring and policy status remain I4b-2.
+renewal transition, executable, inert package units and connector pickup.
+I4b-2 delivers P3/P5 Enable renewal/timer wiring, Disable stop/disable/unlink and
+renewal-journal recovery, private Retry and existing-field policy/timer status.
+Ready Enable remains inspect-only, and fresh-auth activation recovery remains
+verify/publication-only without renewal or timer replay. The public gate stays
+closed until I5; B18 artifact-changing upgrade repair remains separate.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable
 denies and stream closure) → stop/disable recognized connector/sidecar/verifier
