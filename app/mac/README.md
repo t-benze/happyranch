@@ -6,12 +6,51 @@ reconcile its receipt. See [the notice contract](../../packaging/manifest-notice
 and [workflow operations](../../docs/operations/mac-workflow-operations.md).
 For the complete CI build, download/verification and owner-local signing flow,
 use the [Mac release handbook](../../docs/runbooks/mac-release-handbook.md).
-It supplies the pinned inventory required by `scripts/mac-sign.sh`; Jenkins
-signing stays disabled.
+The primary release path is the founder-run [`scripts/release.sh`](scripts/release.sh)
+in her own logged-in native arm64 macOS Terminal; Jenkins signing stays disabled.
 The asset/freezer/web evidence collectors and packaging supervisor are retired
 from build, spec, Vite, originals preparation, archive and independent verification.
 They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.
 Retained historical source is nonshipping; it is not invoked indirectly.
+
+## Founder release command
+
+Use a clean reviewed checkout, the existing private signing configuration from
+the handbook, the founder's Sparkle public key and the reviewed Sparkle 2.10.1
+tools. Create `$HOME/HappyRanch-signing` once with mode 0700. Run N first, then
+N+1 with a strictly higher build and N's complete retained feed:
+
+```sh
+bash app/mac/scripts/release.sh --version 1.1.0 --build 1.1.0 --sparkle-public-key PUBLIC_KEY --sparkle-tools /absolute/Sparkle-2.10.1/bin --run-dir "$HOME/HappyRanch-signing/N" --bootstrap --feed-out /absolute/host/mac/appcast.xml
+bash app/mac/scripts/release.sh --version 1.1.1 --build 1.1.1 --sparkle-public-key PUBLIC_KEY --sparkle-tools /absolute/Sparkle-2.10.1/bin --run-dir "$HOME/HappyRanch-signing/N-plus-1" --input "$HOME/HappyRanch-signing/N/appcast.xml" --feed-out /absolute/host/mac/appcast.xml
+```
+
+Replace the public key and absolute paths. Feed hosting is founder-selected;
+`--feed-out` copies to that destination after verification and consent. Alternatively
+use `--publish-cmd 'your-publisher "$1"'`; the feed is also available as
+`HAPPYRANCH_RELEASE_FEED`. Use existing authentication, with no literal secrets
+in the command. With neither option the verified feed stays local in RUN/appcast.xml.
+Add `--dry-run` to print the full order without running build, signing, Keychain,
+Apple, GitHub or publishing commands or writing files. Values produced later
+(signature, length, Accepted log hash) appear as explicit runtime expressions.
+`--channel internal` passes through to the feed tool; shipped apps cannot see it.
+
+The command wraps originals preparation → build/receipt reconciliation → exact
+eight-line pins → preflight/sign/submit/status → full-log review → finalize/test
+→ Sparkle sign/verify → feed creation → GitHub upload/download/hash comparison
+→ explicitly confirmed publication (y/N, default N). Type `REVIEWED <log SHA256>`
+only after reading the entire printed Apple log and resolving warnings.
+The private run directory retains hash checkpoints. Rerun the **identical command**
+to resume; a pending Apple observation stops and never resubmits. There is one
+observation per invocation; keep the handbook's limit of three per local session
+at owner-chosen times. Missing Apple ID requires history reconciliation, then
+`--recover-id ACTUAL_APPLE_UUID`. Partial signing/finalization and uncertain
+external effects stop for reconciliation; never delete attempt markers to retry.
+See the [resume details and manual reference](../../docs/runbooks/mac-release-handbook.md#single-command-release-founder-only).
+
+**Native execution is unproven on Linux.** Stub transcripts and shell/static
+checks do not prove building, signing, notarization, Keychain, Gatekeeper,
+publishing or signed N→N+1 acceptance. Agents do not run these release operations.
 
 ## Development
 

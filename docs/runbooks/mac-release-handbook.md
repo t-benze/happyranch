@@ -1,7 +1,8 @@
 # Mac release handbook
 
 Use this from a checkout of `t-benze/happyranch` on the founder's Mac mini.
-CI builds an **unsigned inner app ZIP and build receipt**. The local agent signs
+The primary path is the [single founder-run command](#single-command-release-founder-only).
+It builds an **unsigned inner app ZIP and build receipt**, signs
 a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Only the founder performs the publication steps below;
@@ -235,6 +236,82 @@ marker is missing or invalid. Unobservable ancestry stays UNKNOWN through shutdo
 Only an ancestry-proven session-private PGID is subject to the session-group
 absence assertion. The final native run remains separately authorized; source
 tests do not prove macOS backend selection or packaged cleanup.
+
+## Single-command release (founder only)
+
+Run [`release.sh`](../../app/mac/scripts/release.sh) in your own logged-in native
+arm64 macOS Terminal, from a clean reviewed checkout. Complete the prerequisites
+above and the [one-time Sparkle key setup](#one-time-eddsa-key-custody) below first.
+Use the reviewed Sparkle 2.10.1 tools. Create the private parent once:
+`mkdir -m 700 "$HOME/HappyRanch-signing"` (if it already exists, inspect its mode).
+
+```sh
+bash app/mac/scripts/release.sh --version 1.1.0 --build 1.1.0 --sparkle-public-key PUBLIC_KEY --sparkle-tools /absolute/Sparkle-2.10.1/bin --run-dir "$HOME/HappyRanch-signing/N" --bootstrap --feed-out /absolute/host/mac/appcast.xml
+bash app/mac/scripts/release.sh --version 1.1.1 --build 1.1.1 --sparkle-public-key PUBLIC_KEY --sparkle-tools /absolute/Sparkle-2.10.1/bin --run-dir "$HOME/HappyRanch-signing/N-plus-1" --input "$HOME/HappyRanch-signing/N/appcast.xml" --feed-out /absolute/host/mac/appcast.xml
+```
+
+Replace PUBLIC_KEY and paths with your public pin, tools and chosen feed destination.
+`--bootstrap` is for the first-ever feed only; preserve all channel history for N+1.
+The existing feed tool owns the strictly-higher-build check. The wrapper resolves
+and pins this checkout's commit/tree, copies the existing signing script and
+inventory together under RUN/tools, and calls the existing scripts in order:
+
+1. `prepare_web_originals.py`, then `build-app.sh --sparkle-public-key`; verify
+   receipt identity, ZIP byte length and SHA256. Write the exact eight-line pin
+   format in Step 3, with the SHA256 of `unzip -Z1` as LAYOUT_SHA.
+2. `mac-sign.sh pins`, `preflight`, `sign`, `submit` once, `status`; print the
+   entire Accepted log and require typed `REVIEWED <log SHA256>` in the terminal.
+   Resolve all unexplained warnings before confirming. Then `finalize` and `test`.
+3. Sparkle `sign_update --account happyranch` on the final stapled ZIP, mandatory
+   `--verify`, then `appcast_entry.py` with bootstrap or the previous feed.
+4. `gh release create v<BUILD>` with the exact final ZIP, download the asset,
+   compare length and SHA256, then ask `Publish feed? [y/N]` (default N).
+
+Feed hosting remains your choice. `--feed-out PATH` copies the verified feed to
+your destination; `--publish-cmd 'your-publisher "$1"'` invokes your command with
+the feed path as `$1` and `HAPPYRANCH_RELEASE_FEED`. Both may be provided; copy
+runs first. Use existing authentication, never literal credentials in the command.
+Neither option publishes until the downloaded archive matches and you answer y/Y.
+With no publisher, RUN/appcast.xml stays local. `--channel internal` passes through;
+internal entries stay invisible to shipped apps. Retain both feed snapshots.
+
+`--dry-run` prints the complete fresh-run order and resolved paths/source pins,
+with explicit runtime expressions for future receipt/signature/log values. It
+writes nothing and invokes no build, signing, Keychain, Apple or GitHub tools.
+`--help` lists the options. No signing env file is sourced or read by the wrapper.
+
+RUN is mode0700 outside the checkout. Its completion markers contain only public
+file hashes/lengths; all completed inputs/outputs are checked before resume.
+Always rerun with the same arguments, source, tool bytes and RUN. A changed ZIP
+refuses continuation. One `status` call occurs per invocation: pending/error stops
+with retained evidence, never an automatic submit or polling loop. Observe at most
+three times per local session, at owner-chosen times around 0, 5 and 15 minutes;
+return pending for a later session. For missing ID, reconcile real Apple history
+first, then add `--recover-id ACTUAL_APPLE_UUID`; it is passed only while no ID
+is saved, and cannot replace one. Existing native checks remain authoritative.
+
+Partial originals/build output, missing `sign.complete`, partial `final/`, or
+uncertain Sparkle signing require reconciliation. Completed native sign/finalize
+receipts allow adoption after interruption without repeating those operations.
+A submission directory or wrapper submit intent always prevents another submit,
+even when preparation failed before an ID. An uncertain GitHub create is reconciled
+by a fresh download only; the wrapper never replaces assets. Downloads are checked
+again on every resume before publishing. A declined publication can be resumed.
+An interrupted publisher leaves `publish.intent` and stops for reconciliation;
+it is never retried automatically. Never remove attempt markers to evade these
+stops. A leftover empty `.lock` after an uncatchable exit may be removed only
+after proving the previous process has ended. Preserve the rest of RUN.
+
+**Native execution remains NOT RUN/unproven on Linux.** Shell/static checks and
+stub runs establish orchestration behavior only. The founder must still prove
+native building, signing, notarization, Sparkle/Keychain verification, Gatekeeper,
+hosting and the signed N→N+1 acceptance cases. This command does not authorize
+agents to perform signing, publishing or budgeted native builds.
+
+## Manual reference
+
+The existing steps below remain the separate-stage reference. The CI path is
+unsigned and keyless; use the single command's local build for Sparkle releases.
 
 ## Step 1 — Build in CI, only when a new build is needed
 
