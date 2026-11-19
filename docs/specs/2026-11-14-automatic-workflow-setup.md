@@ -124,7 +124,17 @@ backup and history refusals use `integrity_check_failed`,
 `backup_verification_failed` and `history_check_failed`.
 `writer_exclusion_unproven` means EX could not be acquired or original custody
 was lost; missing predecessor proof never selects it. Existing attempt phases
-are never replaced by a hold. `pre_commit` stays `unknown/commit_uncertain`;
+are never replaced by a hold. Status now includes advisory `writer_blockers`
+for this reason: on Linux it names recorded jobs holding the fence, with job
+ID, live PID/PGID and process age. It compares the fence device/inode in
+`/proc/locks` and matching groups' FD lock records; an inherited flock can be
+absent from the global list after the acquiring daemon dies. Legacy jobs without
+process sidecars, missing `/proc`, read errors and observation-budget exhaustion
+report `unavailable`. Job IDs come only from an existing fenced org attachment;
+an unattached org reports unavailable without a database open or new fence.
+An empty sampled list never proves the fence free. This
+observation does not release, adopt, kill or clear any owner or setup latch.
+`pre_commit` stays `unknown/commit_uncertain`;
 committed/verified without registered stays installed_unverified. Failed,
 unfinished, malformed and unknown recorded attempts never replay or auto-restore,
 even after restart. Backups and records remain for separately authorized operator

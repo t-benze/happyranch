@@ -60,6 +60,74 @@ Stop success/error settlement refreshes actual detail/list; locale changes issue
 no requests. A terminal hint alone never verifies [done]. Source publication is separate
 from deployment or historical recovery.
 
+### Independent runtime budgets and retained-job diagnostics (#1699)
+
+A bounded job starts a small guardian as its original session/group leader.
+The script child stays in that group and inherits the same org-fence descriptor
+as before. The guardian closes its extra fence copy after spawning; it never
+unlocks the fence. It survives daemon loss, writes and fsyncs
+`jobs/JOB-NNN.err.timeout.json` with `reason=timeout` at its monotonic budget,
+sends group TERM, then group KILL after five seconds if members remain. It
+continues supervising background group members after the script leader exits.
+The guardian pins the group identity until exit. Normal daemon supervision reads
+the same marker, preserves an established first cause and commits one terminal
+result; its wait timeout is a fallback after budget plus TERM grace. Storage is
+reserved before script launch; marker-write failure still kills the group and
+attempts a stderr diagnostic. No parent-death signal or EOF release is added.
+Unbounded jobs retain direct launch and their existing lifetime behavior.
+Escaping the original session/group with setsid/daemonization remains outside
+the existing containment guarantee.
+
+New launches record PID/PGID, session, timestamp and Linux boot ID/start ticks in
+`jobs/JOB-NNN.err.process.json`, without a schema change. On boot, retained
+running jobs are still `job_liveness_unknown`. Startup logs, `jobs show` and the
+job-detail route expose advisory `fence_observation`; the setup status's
+`writer_blockers` names matching job IDs, holder PIDs/PGIDs and age in the
+`writer_exclusion_unproven` detail. Linux observation matches fence device/inode
+in `/proc/locks` and the recorded groups' actual FD lock records. The latter
+remains useful after the acquiring daemon dies and the global list omits its
+inherited flock. Missing legacy identity, unsupported platforms, I/O or bounded
+observation exhaustion report `unavailable`. Limits are 1 second, 1024 jobs,
+65536 process entries, 4096 candidate FDs and bounded individual reads. Empty or
+unavailable observations never certify exclusion or process-tree quiescence.
+The workflow status route gets job IDs through the existing fenced attachment
+and bounded database reader. Without that attachment, observation is unavailable;
+the diagnostic opens no database and acquires no new fence.
+A timeout marker is visible even while the retained DB row remains running;
+these readers never change rows, kill, adopt, clear holds or release descriptors.
+
+### Operator stop with the daemon down
+
+There is no new offline CLI: legacy jobs lack persisted start identity and the
+online Stop path deliberately requires its original live registration. A
+separate reconciler would exceed this observation/budget fix. An operator with
+separate stop authority can use the following manual Linux procedure:
+
+1. Read the exact job's `.err.process.json`; compare its `boot_id` with
+   `/proc/sys/kernel/random/boot_id` and its PID's `/proc/PID/stat` field 22
+   (`start_ticks`), field 5 (`pgid`) and field 6 (`sid`). Parse after the final
+   `)` because the command name can contain spaces. All must match the record;
+   never signal based on a PID, age or job row alone. Missing/changed identity
+   requires separately authorized investigation, including for legacy jobs.
+2. Use `lsof -p PID` and `/proc/PID/fdinfo/*` for recorded group members to
+   confirm the exact org fence's device/inode. Recheck the original group
+   leader's boot/start identity immediately before signalling. Send
+   `kill -TERM -- -PGID` to that verified original group and allow five seconds.
+3. If processes remain, repeat the original leader identity check before
+   `kill -KILL -- -PGID`. A missing/reused leader does not authorize signalling
+   a numeric group; stop and reconcile that uncertainty separately. Never
+   unlink the fence, use `flock -u` on inherited custody or edit job/hold rows.
+4. Observe actual group exit and fence descriptors afterward. A signal return,
+   missing PID or global `/proc/locks` absence is not release proof. Independent
+   original-owner cleanup and workflow setup latch rules still apply; this
+   procedure grants no install, retry, historical cleanup or live restart authority.
+
+Focused standalone checks (not the retired Python suite):
+`uv run --frozen python -B -m unittest scripts.test_job_guardian -v`.
+They include the private-runtime parent-SIGKILL demonstration, real inherited
+flock/lsof and EX probe, durable marker, whole-group timeout and retained-boot
+job/setup status output. Native frozen/Darwin execution remains separate evidence.
+
 **Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
 
 THR307 seq337 step 3 ownership reads use a new read-only transaction at every

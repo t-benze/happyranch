@@ -69,6 +69,7 @@ _common_analysis_kwargs = dict(
         # Fixed cleanup entry; worktree scripts already travel in _runtime_data
         # via the wheel's runtime/skills/bundled force-include inventory.
         'runtime.daemon.cleanup_helpers',
+        'runtime.daemon.job_guardian',
         'runtime.workflows.repository_artifact_objects',
         'runtime.daemon.disk_sweeper',
         'runtime.orchestrator.run_step',

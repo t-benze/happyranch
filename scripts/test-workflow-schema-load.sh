@@ -5291,7 +5291,8 @@ if sys.argv[1:] in ([], ['--bootstrap-selection']):
                         except Exception as exc:
                             raise AssertionError('A4-S independent status projection changed') from exc
                         assert set(public) == {'format', 'org_slug', 'state', 'reason', 'attempt_time', 'backup_path',
-                            'integrity_report'} and public['state'] == 'installed_verified', 'A4-S independent status projection changed'
+                            'integrity_report', 'writer_blockers'} and public['state'] == 'installed_verified', 'A4-S independent status projection changed'
+                        assert public['writer_blockers'] is None, 'A4-S registered status has no writer hold'
                     if fault == 'ex_reselect':
                         fence.close()
                         fence = OrgAccessFence.acquire(root, exclusive=True)

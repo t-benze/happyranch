@@ -206,10 +206,13 @@ async def _lifespan(app: FastAPI):
                 )
             unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
             if unknown_jobs:
+                from runtime.daemon.job_fence_observation import observe_job_fences
+                from runtime.runtime import daemon_home
+                observation = observe_job_fences(daemon_home(), org.root, unknown_jobs)
                 _logger.warning(
                     "job_liveness_unknown: retained %d running jobs in org %s: %s; "
-                    "restart is not attributable orphan/cleanup proof",
-                    len(unknown_jobs), org.slug, unknown_jobs,
+                    "restart is not attributable orphan/cleanup proof; %s",
+                    len(unknown_jobs), org.slug, unknown_jobs, observation.model_dump(),
                 )
 
         # THR-195: observation (read-only) of stale never-started pending jobs.
