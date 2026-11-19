@@ -898,7 +898,7 @@ own fresh auth_admin dialog. The fixed private owner permit file is read once;
 Services admission gates the existing one-shot Headscale minter. Digest, expiry,
 generation and fixed nonsecret target IDs reach its sole pairing owner. Lost
 replies never remint/redeliver; fresh recovery fences issuance until network
-cleanup and Services settlement are proved. Invitation transfer remains allowed;
+cleanup and any required Services settlement are proved. Invitation transfer remains allowed;
 Host approval of the actual Client tuple remains separately authenticated.
 The daemon stays loopback-only and local/DIY account-free operation stays separate.
 No native sign-in, real LOCAL acceptance, outside-home or production readiness is
@@ -908,3 +908,13 @@ Linux payload/deb packaging includes only the helper's fixed stdlib sibling
 closure; its isolated import/policy/payload checks run with
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`. Full disposable
 LOCAL acceptance belongs to PR4; this text authorizes no host/server action.
+
+PR3 custody/recovery correction: protected account configuration lives in
+`/var/lib/happyranch-remote-access/account-invite/config/` (root:root0700,
+root:root0600 files), outside the existing `/etc/happyranch` install inventory.
+It is operator-prepared/preserved; no installer adoption or purge authority is
+added. The canonical public control CA remains root:happyranch0640. A durable
+pending mapping plus safely absent dispatch marker permits fresh-auth recovery
+after a proven pre-request failure; legacy/possibly dispatched operations still
+require Services observe/settlement and never remint. See the linked contract
+for exact custody, marker ordering, cleanup and compatibility rules.

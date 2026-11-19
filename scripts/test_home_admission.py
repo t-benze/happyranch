@@ -52,8 +52,15 @@ def config(v):
     return supervisor.ConnectorConfig(**raw, managed=supervisor.ManagedProviderConfig(**managed))
 
 
-def test_ready_composed_admission_and_keyless_restart(venue):
+@pytest.mark.parametrize("account_config", [False, True])
+def test_ready_composed_admission_and_keyless_restart(venue, account_config):
     v, io = venue, venue.receipts._io
+    if account_config:
+        from runtime.remote_access import account_enrollment as account
+        directory = v.path(str(account.CONFIG.parent))
+        directory.mkdir(parents=True, mode=0o700)
+        for path in (account.CONFIG, account.CREDENTIAL, account.SERVICES_CA):
+            put(v.path(str(path)), b"synthetic operator config")
     records = v.records()
     before = {p: v.path(p).read_bytes() for p in CONFIG_MEMBERS}
     assert h.HomeProfileAdmission(io).require().receipt == v.ready

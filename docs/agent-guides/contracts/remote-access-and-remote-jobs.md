@@ -3750,7 +3750,7 @@ owner, protected binding/receipt and connector generation. Status never contains
 an invitation. Busy/denied/disconnected/late/changed requests cannot mint.
 
 Operator preparation in a disposable venue supplies root:root0700
-`/etc/happyranch/account-invite/` containing root:root0600 `config.json`,
+`/var/lib/happyranch-remote-access/account-invite/config/` containing root:root0600 `config.json`,
 `binding.credential` (exactly43 base64url characters, random256-bit scoped Host
 credential, no newline) and `services-ca.pem`. The config is a closed object:
 `format:"account-invite@1"`, `enabled:true`, `environment:"TEST"` or
@@ -3758,8 +3758,15 @@ credential, no newline) and `services-ca.pem`. The config is a closed object:
 opaque bind ID), and all B1 `BINDING_KEYS`. They must match the current ready
 activation receipt and digest-bound invite config. Staging/production/unspecified
 refuse. Neither environment variables nor D-Bus arguments enable or select it.
-Root:root0700 `/var/lib/happyranch-remote-access/account-invite/` holds only
-nonsecret issuer/provider/Services operation metadata. Preparation does not run
+Root:root0700 `/var/lib/happyranch-remote-access/account-invite/` holds
+nonsecret issuer/provider/Services operation metadata beside that private config
+subdirectory. No account directory is added to `/etc/happyranch`: the existing
+ready-home/keyless install inventory and DIY/historical classification stay
+unchanged. Installer uninstall/purge does not adopt or remove this operator
+configuration; the existing unknown-state cleanup refusal/preservation remains.
+The canonical public control CA retains root:happyranch0640 custody, a bounded
+no-follow single-link read and B1 digest/DER checks. Permit/config/credential
+reads retain their separate private0600 rules. Preparation does not run
 through these methods and is not authorized by this documentation.
 
 The LOCAL driver writes only `{enrollment_id,permit,verifier}` to
@@ -3785,8 +3792,17 @@ Before replacing any consumed/uncertain delivery, use separately authenticated
 Cancel/Recover; the original60s issue limiter still applies. Recovery fences the
 current journal, acknowledges connector invalidation, expires and completely
 re-lists the dedicated user's keys, then observes/settles Services metadata.
-Services outage leaves issuance fenced even when network cleanup is complete;
-the returned invite/cleanup/outcome axes describe those effects separately.
+Before dispatch, a new mapping fsyncs `dispatch:"pending"`. After TLS connect,
+a single-link root0600 `.dispatched` marker and its parent are fsynced BEFORE
+any HTTP request bytes. Fresh-auth B11 cleanup may finish without Services only
+when a validated new mapping has a safely absent marker (or the mapping itself
+is safely absent): no admission was dispatched. A failure during/after request,
+an existing marker, a historical three-field mapping, or malformed/unsafe
+metadata never proves no dispatch. Possibly dispatched operations still require
+matching Services observe and recovered settlement, with no mint permission.
+No retry uses the old permit or operation. Services outage/NULL-operation denial
+keeps ambiguous issuance fenced even when network cleanup is complete; the
+returned invite/cleanup/outcome axes describe those effects separately.
 Recovery accepts no operation ID, never creates, and needs no active grant.
 Only a later fresh IssueInvite can create authority.
 
@@ -3798,7 +3814,7 @@ loopback-only; bearer injection stays solely on the connector's loopback hop.
 No account-linked failure falls back to the account-free local/DIY path.
 
 Focused verification (temporary private bus/socket, synthetic external providers):
-`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py -v --tb=short`.
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py scripts/test_home_admission.py -v --tb=short`.
 Packaging/import isolation: `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`.
 These do not prove real polkit, MySQL/Services/Headscale LOCAL acceptance or a
 packaged release UI load. Those are PR4's disposable-venue acceptance, NOT RUN

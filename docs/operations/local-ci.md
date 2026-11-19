@@ -3845,7 +3845,7 @@ Citations removed from the body, with the section they supported:
 THR-378 PR3 focused account-helper verification (existing standalone venues):
 
 ```bash
-uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py -v --tb=short
+uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py scripts/test_home_admission.py -v --tb=short
 /usr/bin/python3 -B packaging/linux/test_build_deb.py -v
 ```
 

@@ -68,7 +68,7 @@ def binding(uid: int) -> Binding:
             or invite.home_endpoint != receipt.home_endpoint
             or hashlib.sha256(config_raw).hexdigest() != receipt.member_digests[INVITE_CONFIG_PATH]):
         raise Refused('changed')
-    ca_pem = account.private_read(Path('/etc/happyranch/control-ca.pem'), uid=0, limit=16384, private_parent=False)
+    ca_pem = account.public_ca_read()
     ca_der = ssl.PEM_cert_to_DER_cert(ca_pem.decode('ascii'))
     if (hashlib.sha256(ca_der).hexdigest() != invite.ca_der_sha256
             or hashlib.sha256(ca_pem).hexdigest() != receipt.member_digests['/etc/happyranch/control-ca.pem']):

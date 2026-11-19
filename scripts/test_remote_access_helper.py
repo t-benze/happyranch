@@ -1512,11 +1512,39 @@ def account_venue(venue: Any, tmp_path: Path, monkeypatch: Any) -> Any:
     fixed = {account.CREDENTIAL: token.encode(), account.SERVICES_CA: ssl.DER_cert_to_PEM_cert(SWIFT_CA).encode(),
              Path(module.ACTIVATION_PATH): encoded(receipt), Path(module.INVITE_CONFIG_PATH): encoded(config),
              Path('/etc/happyranch/control-ca.pem'): ssl.DER_cert_to_PEM_cert(SWIFT_CA).encode()}
+    # Keep real file modes/link predicates for the installed public CA. Only
+    # root/group ownership and NSS are synthetic in this private bus venue.
+    ca_file = tmp_path / 'public-ca/control-ca.pem'
+    ca_file.parent.mkdir(mode=0o755)
+    ca_file.write_bytes(fixed[Path('/etc/happyranch/control-ca.pem')])
+    ca_file.chmod(0o640)
+    monkeypatch.setattr(account, 'CONTROL_CA', ca_file, raising=False)
+    ca_inode, ca_parent_inode = ca_file.stat().st_ino, ca_file.parent.stat().st_ino
+    ca_group = [4321]
+    ca_parents = {p.stat().st_ino for p in ca_file.parents}
+    import grp
+    monkeypatch.setattr(grp, 'getgrnam', lambda name: SimpleNamespace(gr_gid=4321))
+    custody = threading.local()
+    real_public = getattr(account, 'public_ca_read', None)
+    if real_public is not None:
+        def public_read():
+            custody.active = True
+            try:
+                return real_public()
+            finally:
+                custody.active = False
+        monkeypatch.setattr(account, 'public_ca_read', public_read)
     reads = []
     real_read = account.private_read
     def root_read(path, **kwargs):
         if path == account.CONFIG:
             return encoded(protected)
+        if path == Path('/etc/happyranch/control-ca.pem'):
+            custody.active = True
+            try:
+                return real_read(ca_file, **kwargs)
+            finally:
+                custody.active = False
         if path in fixed:
             return fixed[path]
         if path.name == 'request.json':
@@ -1530,18 +1558,27 @@ def account_venue(venue: Any, tmp_path: Path, monkeypatch: Any) -> Any:
     request_file.write_text(json.dumps(dict(enrollment_id=eid, permit=token, verifier=token)))
     request_file.chmod(0o600)
     # Emulate only root ownership/chown for the existing real durable provider store.
-    real_fstat = os.fstat
+    real_fstat, real_stat = os.fstat, os.stat
     admin_inode = admin_state.stat().st_ino
+    def public_metadata(info):
+        if getattr(custody, 'active', False) and (info.st_ino == ca_inode or info.st_ino in ca_parents):
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+            values.update(st_uid=0, st_gid=ca_group[0] if info.st_ino == ca_inode else 0)
+            if info.st_ino in ca_parents and info.st_ino != ca_parent_inode:
+                values['st_mode'] &= ~0o022
+            return SimpleNamespace(**values)
+        return info
     def root_fstat(fd):
-        info = real_fstat(fd)
+        info = public_metadata(real_fstat(fd))
         if info.st_ino == admin_inode:
             return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_gid=0)
         return info
     monkeypatch.setattr(account.os, 'fstat', root_fstat)
+    monkeypatch.setattr(account.os, 'stat', lambda *a, **kw: public_metadata(real_stat(*a, **kw)))
     monkeypatch.setattr(account.os, 'fchown', lambda *args: None)
     monkeypatch.setattr(account, 'admin_directory', lambda: os.open(admin_state, os.O_RDONLY | os.O_DIRECTORY))
     external = SimpleNamespace(mode='ok', creates=0, rows=[], posts=[], events=[],
-        protected=protected, mailbox=request_file, state=state, reads=reads, eid=eid, bid=bid, token=token)
+        protected=protected, mailbox=request_file, state=state, reads=reads, eid=eid, bid=bid, token=token, ca_file=ca_file, ca_group=ca_group)
     class Admin:
         def list_pre_auth_keys(self, *, user, timeout_s):
             assert user == 'happyranch-invite' and 0 < timeout_s <= 5
@@ -1563,7 +1600,10 @@ def account_venue(venue: Any, tmp_path: Path, monkeypatch: Any) -> Any:
             return row
     monkeypatch.setattr(account, 'RootHeadscaleAdminOperations', Admin)
     original_post = account.ServicesClient.post
-    def post(client, verb, body, deadline):
+    external.original_post = original_post
+    def post(client, verb, body, deadline, *, before_dispatch=None):
+        if before_dispatch is not None:
+            before_dispatch()
         external.posts.append((verb, body))
         external.events.append(verb)
         assert deadline > time.monotonic()
@@ -1835,15 +1875,19 @@ def test_account_initial_reservation_refusal_makes_zero_create(account_venue: An
     assert not external.posts and external.creates == 0
     Call(caller, 'IssueInvite').finish('unavailable')
     assert not external.posts and external.creates == 0
+    monkeypatch.setattr(helper.control, 'reserve_invite', original)
+    assert Call(caller, 'RecoverInvite').finish()['outcome'] == 'complete'
+    assert not external.posts and external.creates == 0
 
 
 @pytest.mark.parametrize('fault', ['owner', 'mode', 'parent-mode', 'symlink', 'hardlink', 'oversize'])
 def test_account_root_credential_custody(tmp_path: Path, monkeypatch: Any, fault: str) -> None:
     account = HELPER._invite.account
-    directory = tmp_path / 'etc/happyranch/account-invite'
+    directory = tmp_path / str(account.CREDENTIAL.parent).lstrip('/')
     directory.mkdir(parents=True, mode=0o700)
-    (tmp_path / 'etc').chmod(0o755)
-    (tmp_path / 'etc/happyranch').chmod(0o755)
+    for parent in directory.parents:
+        if parent.is_relative_to(tmp_path):
+            parent.chmod(0o755)
     path = directory / 'binding.credential'
     path.write_bytes(b'S' * 43)
     path.chmod(0o600)
@@ -1883,3 +1927,97 @@ def test_account_recovery_while_connector_not_ready(account_venue: Any) -> None:
     assert result == {'outcome': 'complete', 'invite': 'recovered', 'cleanup': 'complete'}
     assert external.creates == 1 and external.supervisor.state_store.load().invite_record is None
     assert authority.calls[-1][1] == HELPER.ACTION_PREFIX + 'recover-invite'
+
+
+@pytest.mark.parametrize('fault', ['private-mode', 'world-readable', 'group', 'parent-write', 'symlink', 'hardlink'])
+def test_account_public_ca_custody_before_auth(account_venue: Any, fault: str) -> None:
+    _, authority, caller, _, external = account_venue
+    # Positive control also authenticates the public file's digest/DER binding.
+    assert Call(caller, 'IssueInvite').finish().startswith('hrinvite2:')
+    ca = external.ca_file
+    if fault == 'group':
+        external.ca_group[0] = 0
+    elif fault == 'parent-write':
+        ca.parent.chmod(0o777)
+    elif fault in ('private-mode', 'world-readable'):
+        ca.chmod(0o600 if fault == 'private-mode' else 0o644)
+    else:
+        retained = ca.with_name('retained')
+        ca.rename(retained)
+        ca.symlink_to(retained) if fault == 'symlink' else os.link(retained, ca)
+    Call(caller, 'RecoverInvite').finish('unavailable')
+    assert len(authority.calls) == 1 and external.creates == 1
+
+
+@pytest.mark.parametrize('fault', ['connect', 'request', 'response', 'legacy', 'admitted-loss', 'marker-invalid', 'marker-unsafe'])
+def test_account_admission_transport_recovery(account_venue: Any, monkeypatch: Any, fault: str) -> None:
+    import http.client
+    helper, authority, caller, _, external = account_venue
+    account = HELPER._invite.account
+    fixture_post = account.ServicesClient.post
+    requests = []
+    class Connection:
+        sock = SimpleNamespace(settimeout=lambda _: None, shutdown=lambda _: None)
+        def __init__(self, *args, **kwargs):
+            pass
+        def connect(self):
+            if fault in ('connect', 'legacy', 'marker-invalid', 'marker-unsafe'):
+                raise ConnectionRefusedError('synthetic absent listener')
+        def request(self, *args):
+            requests.append((args[0], [p.read_bytes() for p in external.state.glob('*.dispatched')]))
+            if fault == 'request':
+                raise ConnectionResetError('synthetic possibly sent request')
+        def getresponse(self):
+            raise ConnectionResetError('synthetic lost response')
+        def close(self):
+            pass
+    monkeypatch.setattr(http.client, 'HTTPSConnection', Connection)
+    transport = external.original_post
+    def post(client, verb, body, deadline, **kwargs):
+        if verb == 'admit':
+            external.posts.append((verb, body))
+            if fault == 'admitted-loss':
+                external.expiry = body['requested_expiry']
+            return transport(client, verb, body, deadline, **kwargs)
+        if verb == 'observe' and fault != 'admitted-loss':
+            external.posts.append((verb, body))
+            # Existing Services denies permitted enrollment with NULL operation.
+            raise account.MintUncertain()
+        return fixture_post(client, verb, body, deadline, **kwargs)
+    monkeypatch.setattr(account.ServicesClient, 'post', post)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.creates == 0 and len(requests) == (0 if fault in ('connect', 'legacy', 'marker-invalid', 'marker-unsafe') else 1)
+    assert all(markers == [b'1'] for _, markers in requests), 'dispatch fence must precede HTTP bytes'
+    mapping = next(external.state.glob('account-*.json'))
+    if fault == 'legacy':
+        raw = json.loads(mapping.read_bytes())
+        raw.pop('dispatch', None)  # Historical three-field mapping proves nothing about dispatch.
+        mapping.write_text(json.dumps(raw))
+    if fault in ('marker-invalid', 'marker-unsafe'):
+        marker = mapping.with_suffix('.dispatched')
+        marker.write_bytes(b'0') if fault == 'marker-invalid' else marker.symlink_to(mapping)
+        if fault == 'marker-invalid':
+            marker.chmod(0o600)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert len(external.posts) == 1 and external.creates == 0
+    for _ in range(2):
+        result = Call(caller, 'RecoverInvite').finish()
+        assert result['outcome'] == ('complete' if fault in ('connect', 'admitted-loss') else 'partial_cleanup')
+        assert result['cleanup'] == 'complete' and external.creates == 0
+    assert [verb for verb, _ in external.posts].count('observe') == (0 if fault in ('connect', 'marker-invalid', 'marker-unsafe') else 2)
+    assert all(row[1] == HELPER.ACTION_PREFIX + 'recover-invite' for row in authority.calls[-2:])
+    # Reconciliation does not waive the original durable 60s limiter.
+    monkeypatch.setattr(account.ServicesClient, 'post', fixture_post)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.creates == 0
+    # Model the same journal after its limiter expires, without sleeping a minute.
+    journal = external.state / 'invite-issuer.json'
+    raw = json.loads(journal.read_bytes())
+    raw['not_before'] = time.time() - 1
+    journal.write_text(json.dumps(raw))
+    if fault in ('connect', 'admitted-loss'):
+        assert Call(caller, 'IssueInvite').finish().startswith('hrinvite2:')
+        assert external.creates == 1
+    else:
+        Call(caller, 'IssueInvite').finish('unavailable')
+        assert external.creates == 0

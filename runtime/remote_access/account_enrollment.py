@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import grp
 import json
 import math
 import os
@@ -26,10 +27,11 @@ from .home_admin import RootHeadscaleAdminOperations, DurableOperationRecordStor
 from .invite_issuer import MintedKey, MintRefused, _directory, _metadata, _pairs
 from .invite_recovery import HeadscaleRecoveryMinter
 
-CONFIG = Path('/etc/happyranch/account-invite/config.json')
+STATE = Path('/var/lib/happyranch-remote-access/account-invite')
+CONFIG = STATE / 'config/config.json'
+CONTROL_CA = Path('/etc/happyranch/control-ca.pem')
 CREDENTIAL = CONFIG.with_name('binding.credential')
 SERVICES_CA = CONFIG.with_name('services-ca.pem')
-STATE = Path('/var/lib/happyranch-remote-access/account-invite')
 
 
 class MetadataAbsent(Exception):
@@ -42,6 +44,23 @@ def signature(info: os.stat_result) -> tuple[int, ...]:
 
 
 def private_read(path: Path, *, uid: int, limit: int, private_parent: bool = True) -> bytes:
+    """Private permit/config/credential custody remains owner0600, private parent."""
+    return _custody_read(path, uid=uid, gid=0 if uid == 0 else None, mode=0o600,
+                         limit=limit, private_parent=private_parent)
+
+
+def public_ca_read() -> bytes:
+    # Same root:happyranch0640 public custody as the installed control client;
+    # never apply this readership to a credential or permit.
+    gid = grp.getgrnam('happyranch').gr_gid
+    if gid <= 0:
+        raise ValueError('custody')
+    return _custody_read(CONTROL_CA, uid=0, gid=gid, mode=0o640,
+                         limit=16384, private_parent=False)
+
+
+def _custody_read(path: Path, *, uid: int, gid: int | None, mode: int,
+                 limit: int, private_parent: bool) -> bytes:
     """One bounded no-follow read; pin all literal parents and leaf metadata."""
     if not path.is_absolute() or '..' in path.parts:
         raise ValueError('custody')
@@ -67,7 +86,7 @@ def private_read(path: Path, *, uid: int, limit: int, private_parent: bool = Tru
         descriptors.append(leaf)
         before = os.fstat(leaf)
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != uid
-                or (uid == 0 and before.st_gid != 0) or stat.S_IMODE(before.st_mode) != 0o600
+                or (gid is not None and before.st_gid != gid) or stat.S_IMODE(before.st_mode) != mode
                 or not 0 < before.st_size <= limit
                 or signature(os.stat(path.name, dir_fd=fd, follow_symlinks=False)) != signature(before)):
             raise ValueError('custody')
@@ -125,7 +144,8 @@ class ServicesClient:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.load_verify_locations(cadata=self.ca_pem)
 
-    def post(self, verb: str, body: dict, deadline: float) -> dict:
+    def post(self, verb: str, body: dict, deadline: float, *,
+             before_dispatch: Callable[[], None] | None = None) -> dict:
         # Loaded only when this TEST transport is used, not during helper import.
         import http.client
         if verb not in ('admit', 'settle', 'observe'):
@@ -151,6 +171,9 @@ class ServicesClient:
             try:
                 connection.connect()
                 active_socket.append(connection.sock)
+                check(deadline)
+                if before_dispatch is not None:
+                    before_dispatch()  # Durable possible-dispatch fence BEFORE any HTTP bytes.
                 check(deadline)
                 connection.request('POST', '/internal/remote/enrollments/' + verb,
                     json.dumps(body, separators=(',', ':')).encode(),
@@ -230,7 +253,9 @@ class AccountEnrollmentMinter:
                 if len(raw) > 1024 or signature(os.fstat(stream.fileno())) != before:
                     raise MintUncertain()
         result = json.loads(raw, object_pairs_hook=_pairs)
-        if (type(result) is not dict or result.keys() != {'binding_id', 'enrollment_id', 'operation_id'}
+        if (type(result) is not dict or result.keys() not in ({'binding_id', 'enrollment_id', 'operation_id'},
+                    {'binding_id', 'enrollment_id', 'operation_id', 'dispatch'})
+                or ('dispatch' in result and result['dispatch'] != 'pending')
                 or result['binding_id'] != self.client.binding_id
                 or result['operation_id'] != 'op_' + base64.b32encode(bytes.fromhex(operation)).decode().lower().rstrip('=')):
             raise MintUncertain()
@@ -238,6 +263,7 @@ class AccountEnrollmentMinter:
         return result
 
     def _ack(self, value: dict, record: dict, state: str, *, mint: bool = False) -> datetime:
+        record = {'binding_id': record['binding_id'], **body_from(record)}
         if (type(value) is not dict or value.keys() != {*record, 'state', 'mint_allowed', 'key_expires_at'}
                 or any(value[k] != v for k, v in record.items())
                 or value['state'] != state or value['mint_allowed'] is not mint):
@@ -246,6 +272,17 @@ class AccountEnrollmentMinter:
         if expiry.tzinfo is None or expiry.utcoffset().total_seconds() != 0:
             raise MintUncertain()
         return expiry
+
+    def _mark(self, operation: str, suffix: str) -> None:
+        with _directory(self.state_dir) as parent:
+            fd = os.open('account-' + operation + '.' + suffix,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            with os.fdopen(fd, 'wb') as stream:
+                _metadata(stream.fileno(), parent, 'account-' + operation + '.' + suffix)
+                stream.write(b'1')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.fsync(parent)
 
     def mint(self, operation_id: str, expires_at: datetime) -> MintedKey:
         # The issuer has fsynced minting and received its initial B10 ack.
@@ -256,12 +293,17 @@ class AccountEnrollmentMinter:
             if self.permit is None:
                 raise MintRefused('refused')
             record = dict(binding_id=self.client.binding_id, enrollment_id=self.permit['enrollment_id'],
-                          operation_id='op_' + base64.b32encode(bytes.fromhex(operation_id)).decode().lower().rstrip('='))
+                          operation_id='op_' + base64.b32encode(bytes.fromhex(operation_id)).decode().lower().rstrip('='),
+                          dispatch='pending')
             self._record(operation_id, record)  # BEFORE admission can commit remotely.
-            body = {k: v for k, v in record.items() if k != 'binding_id'}
+            body = body_from(record)
             body.update(permit=self.permit['permit'], verifier=self.permit['verifier'],
                         requested_expiry=expires_at.isoformat())
-            ack = self.client.post('admit', body, self.deadline)
+            def dispatch() -> None:
+                self.before()
+                check(self.deadline)
+                self._mark(operation_id, 'dispatched')
+            ack = self.client.post('admit', body, self.deadline, before_dispatch=dispatch)
             expiry = self._ack(ack, record, 'admitted', mint=True)
             admitted = True
             check(self.deadline)
@@ -295,14 +337,7 @@ class AccountEnrollmentMinter:
                     result = self.client.post('settle', {**body_from(record), 'outcome': 'refused',
                         'provider_key_id': '', 'actual_expiry': ''}, self.deadline)
                     self._ack(result, record, 'refused')
-                with _directory(self.state_dir) as parent:
-                    fd = os.open('account-' + operation_id + '.refused',
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
-                    with os.fdopen(fd, 'wb') as stream:
-                        stream.write(b'1')
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.fsync(parent)
+                self._mark(operation_id, 'refused')
             except BaseException:
                 uncertain = True
         except BaseException:
@@ -339,6 +374,15 @@ class AccountEnrollmentMinter:
             if refused != b'1':
                 raise MintUncertain()
             return
+        try:
+            dispatched = private_read(self.state_dir / ('account-' + operation_id + '.dispatched'), uid=0, limit=1)
+        except FileNotFoundError:
+            if record.get('dispatch') == 'pending':
+                return  # New-format mapping + no marker proves zero admission dispatch.
+            # Legacy mapping absence is ambiguous, and still requires Services.
+        else:
+            if dispatched != b'1':
+                raise MintUncertain()
         observed = self.client.post('observe', body_from(record), self.deadline)
         state = observed.get('state')
         if state not in ('admitted', 'issued', 'uncertain', 'recovered'):
