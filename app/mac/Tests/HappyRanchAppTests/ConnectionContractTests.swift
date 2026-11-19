@@ -208,6 +208,8 @@ struct ConnectionContractTests {
         // Confirmed stop has invalidated the model attempt; it is now stopping.
         #expect(try error(ledger.begin(repeated))?["effect"] == .string("unknown"))
         #expect(ledger.promptID == nil && ledger.mutationID == connect.id)
+        ledger.timedOut(cancel.id)
+        #expect(try error(ledger.begin(repeated))?["effect"] == .string("unknown"))
         ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown)))
         #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
     }

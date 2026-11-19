@@ -388,22 +388,28 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         return answer == .alertSecondButtonReturn
     }
 
-    private func targetDescription(_ trust: SavedHomeTrust?) -> String {
+    private func targetDescription(_ trust: SavedHomeTrust?, binding: SavedDeviceBinding? = nil) -> String {
         guard let trust else { return Self.copy("the current computer", "当前电脑") }
         // Native identity details never cross into a bridge payload or log.
-        return [trust.homeEndpoint, trust.homeID, trust.controlPlaneID, trust.caSHA256]
-            .map(ConnectionClientProjection.displayText).joined(separator: "\n")
+        var details = [trust.homeEndpoint, trust.homeID, trust.controlPlaneID, trust.caSHA256]
+        if let binding { details.append(binding.stableNodeID) }
+        return details.map(ConnectionClientProjection.displayText).joined(separator: "\n")
     }
 
     private func clientAction(_ request: ConnectionRequest, model: HomeInviteModel, token: UUID,
                               context: HomeInviteModel.Lifetime) async -> ConnectionOutcome {
         guard current(token, context, model) else { return .failure(.init(.stateChanged)) }
-        defer { model.endConfirmation(for: context) }
+        var ownsConfirmation = false
+        defer { if ownsConfirmation { model.endConfirmation(for: context) } }
         @MainActor func unchanged() -> Bool { current(token, context, model) }
         @MainActor func action(_ effect: String = "confirmed", cleanup: String = "notApplicable") -> ConnectionOutcome {
             .result(ConnectionClientProjection.savedAction(model, catalog: catalog, effect: effect, localCleanup: cleanup))
         }
-        @MainActor func hold() -> Bool { model.beginConfirmation(for: context) }
+        @MainActor func hold() -> Bool {
+            guard model.beginConfirmation(for: context) else { return false }
+            ownsConfirmation = true
+            return true
+        }
         switch request.command {
         case "client.cancelAttempt", "client.disconnect":
             let cancelling = request.command == "client.cancelAttempt"
@@ -451,14 +457,14 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                 let replacing = model.bridgeCanReplace
                 let yes = await sheet(request, title: Self.copy(replacing ? "Replace saved access?" : "Retry saving access?",
                     replacing ? "替换已保存的访问权限？" : "重试保存访问权限？"),
-                    detail: targetDescription(target.trust) + "\n" + Self.copy(
+                    detail: targetDescription(target.trust, binding: target.binding) + "\n" + Self.copy(
                         replacing ? "Replace only this local item with the freshly approved device. The old Host grant remains revocable on the Host. Failed or unknown deletion is not successful replacement." : "Retry the delivered access in login Keychain. No Host approval or network membership is changed.",
                         replacing ? "仅以刚获批准的设备替换此本地项目。旧主机授权仍可在主机上撤销。删除失败或结果未知不代表替换成功。" : "在登录钥匙串中重试保存已交付的访问权限。不会改变主机批准或网络成员关系。"),
                     action: Self.copy(replacing ? "Replace local access" : "Retry save", replacing ? "替换本地访问权限" : "重试保存"))
                 guard unchanged(), model.bridgeReplacementTarget == target,
                       replacing ? model.bridgeCanReplace : model.bridgeCanRetrySave else { return .failure(.init(.stateChanged)) }
                 guard yes else { return action("none") }
-                model.endConfirmation(for: context)
+                model.endConfirmation(for: context); ownsConfirmation = false
                 return await save(request, model: model, replacing: replacing)
             }
             if !model.bridgeNeedsNewInvite, let target = model.savedHomes.first(where: { $0.id == model.selectedHomeID }) {
@@ -519,7 +525,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         defer { model.endConfirmation(for: context) }
         let yes = await sheet(request, title: Self.copy(removing ? "Remove local saved access?" : "Connect with saved access?",
             removing ? "移除本地已保存的访问权限？" : "使用已保存的访问权限连接？"),
-            detail: targetDescription(target.trust) + "\n" + Self.copy(
+            detail: targetDescription(target.trust, binding: target.binding) + "\n" + Self.copy(
                 removing ? "Stop this local session and erase only this computer's local credential, trust and owned network state. This does not revoke Host approval. Incomplete removal remains visible for explicit retry." : "Reread this exact saved binding and trust from login Keychain, then reconnect without an invite. Keychain permissions are unchanged.",
                 removing ? "停止此本地会话，仅删除此电脑的本地凭据、信任和所属网络状态。不会撤销主机批准。移除不完整时会保留提示，需明确重试。" : "从登录钥匙串重新读取此精确绑定和信任，然后无需邀请即可重新连接。钥匙串权限保持不变。"),
             action: Self.copy(removing ? "Remove local access" : "Connect", removing ? "移除本地访问权限" : "连接"))

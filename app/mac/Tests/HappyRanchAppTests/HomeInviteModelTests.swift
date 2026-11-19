@@ -617,7 +617,7 @@ struct HomeInviteModelTests {
         #expect(model.saveFailure == failure)
     }
 
-    @Test("Saved reconnect rereads the exact bearer after target consent")
+    @Test("Saved reconnect rereads the exact bearer before joining")
     func changedSavedBearerRefusesReconnect() async throws {
         let trust = try RemoteInvite.parse(invite()).trust
         let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID,
