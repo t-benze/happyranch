@@ -149,6 +149,8 @@ No request/response bodies, invite fragments, bearer values, raw native exceptio
 
 ## 7. Shared typed protocol v1
 
+See the maintained [command/event inventory](connection-bridge-inventory.md) for source-verified platform status, CLI mappings and landing PRs at its pinned origin/main snapshot. The slice descriptions below retain their historical delivery context.
+
 The language-neutral closed schema at `protocol/native-connection-bridge.v1.json` defines v1 payloads for TS and future Swift/Python adapters without a new dependency. Slice 1a supplies the web validator and TS projections; slice 1b-LINUX independently validates the read-only Linux boundary, and slice 1b-MAC independently validates the Mac client read-only boundary. Lifecycle adapters remain pending. Keep transport code separate from commands and model projections. Native code must validate independently even when TS types pass.
 
 ### Slice 1a schema/build implementation
