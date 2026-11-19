@@ -944,7 +944,10 @@ and available metadata for both. Failed no-follow opens retain observed mode, UI
 and type; unavailable observations are explicit. Private namespace expectations
 are `0700`, daemon UID and directory; ordinary ancestors have no private-mode or
 owner expectation. Diagnostic metadata never grants retry or repair authority.
-The private helper inherits daemon stderr (captured in `daemon.log` by the
-standard launcher). Logs contain filesystem metadata, not settings, credentials
-or database contents. Public setup status/result reason codes and shapes remain
-unchanged; consult the log for the specific cause behind a coarse refusal.
+The private helper's filesystem diagnostics reach daemon stderr (captured in
+`daemon.log` by the standard launcher). An early guard covers helper imports and
+execution: an escaping failure logs only its exception type, never exception
+values or a traceback. Logs contain filesystem metadata or that sanitized cause,
+not settings, credentials or database contents. Public setup status/result reason
+codes and shapes remain unchanged; consult the log for the specific cause behind
+a coarse refusal.

@@ -38,8 +38,18 @@ if TYPE_CHECKING:
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-sequential-bootstrap-helper']:
-    from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
-    raise SystemExit(bootstrap_helper_main(sys.argv[2:]))
+    try:
+        # Config validation can fail during import, before the helper's own
+        # sanitized result boundary. Never print its values or traceback.
+        from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
+        helper_result = bootstrap_helper_main(sys.argv[2:])
+    except BaseException as error:
+        helper_result = 1
+        try:
+            print(f'workflow setup helper failed: exception={type(error).__name__}', file=sys.stderr)
+        except BaseException:
+            pass  # A failed diagnostic sink must not expose the original cause.
+    raise SystemExit(helper_result)
 
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-integrity-helper']:
     from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main

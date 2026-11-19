@@ -517,6 +517,43 @@ def test_creation_failure_diagnostic(
         fence.close()
 
 
+def test_worker_import_failure_is_sanitized(
+    runtime: RuntimeDir, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture,
+) -> None:
+    """A config change before the real helper import must not leak its values."""
+    home = runtime.root.parent
+    settings = Settings()
+    canary = 'REVIEW_SYNTHETIC_SETTINGS_CANARY'
+    original = bootstrap.BootstrapSupervisor.run
+
+    async def run(self, qualify):
+        (home / 'config.yaml').write_text(f'queue_workers: {canary}\n')
+        return await original(self, qualify)
+
+    monkeypatch.setattr(bootstrap.BootstrapSupervisor, 'run', run)
+    state = DaemonState.from_runtime(runtime, settings, automatic_workflow_setup=True)
+    try:
+        worker, = state._workflow_bootstrap.workers
+        assert worker.reaped and worker.process.returncode == 1
+        assert worker.result is None
+        assert state._workflow_bootstrap.holds == {'scratch': 'install_incomplete'}
+        assert not list((home / 'backups').rglob('before.db'))
+        stderr = capfd.readouterr().err
+        assert canary not in stderr
+        assert 'Traceback' not in stderr and 'input_value' not in stderr
+        assert 'workflow setup helper failed: exception=ValidationError' in stderr
+        with capfd.disabled():
+            print(next(line for line in stderr.splitlines() if 'workflow setup helper failed:' in line))
+    finally:
+        # Transport loss retains the original unknown-custody refusal on close.
+        try:
+            asyncio.run(state.close_all())
+        except bootstrap.BootstrapEvidenceError as error:
+            assert str(error) == 'workflow_setup_original_worker_in_flight'
+        finally:
+            state.metrics_store.close()
+
+
 def test_worker_mkdir_diagnostic_reaches_installer_stderr(
     runtime: RuntimeDir, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture,
 ) -> None:
