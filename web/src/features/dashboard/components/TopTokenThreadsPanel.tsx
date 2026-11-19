@@ -1,5 +1,6 @@
 /**
- * "Top token threads (window)" — read-only cost-oversight card.
+ * "Top token threads (window)" — read-only cost-oversight group of the Home
+ * right-rail card.
  *
  * Self-contained: fetches its own data over the existing
  * `GET /tokens?group_by=thread` route (NOT DashboardSummaryResponse) and ranks
@@ -54,11 +55,13 @@ export function TopTokenThreadsPanel(): JSX.Element {
   const max = Math.max(...rows.map((r) => r.totalTokens), 1);
 
   return (
-    <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
+    // THR-376 r2 L1: a group inside the Home right-rail card, so no card
+    // chrome of its own; the rail Row supplies the 20px padding.
+    <section>
       {/* The title and the window control wrap onto two lines when the rail is
           too narrow for both; the control itself never wraps (THR-376 D3). */}
       <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+        <h2 className="text-eyebrow text-text-muted uppercase">
           {t('dashboard.topTokens.title', { window: t(win.labelKey) })}
         </h2>
         <SegmentedControl
@@ -84,11 +87,13 @@ export function TopTokenThreadsPanel(): JSX.Element {
               r.threadId === NO_THREAD_ID ? t('dashboard.topTokens.noThread') : r.threadId;
             return (
               <li key={r.threadId} className="flex items-center gap-2">
-                {/* Narrow lg rail (1024-1279px): the row cannot hold label, bar,
-                    total and cache, so the bar is hidden and the label may
-                    shrink (truncated, full text in the title) — THR-376 D3. */}
+                {/* The rail is a fixed 340px from lg (THR-376 r2 G1), so label,
+                    bar, total and cache fit there; the old narrow-rail bar
+                    hiding (1024-1279px) is no longer needed (D3). On a narrower
+                    phone the label shrinks (truncated, full text in the title)
+                    so the row stays inside the rail card. */}
                 <span
-                  className="text-text-primary w-20 shrink-0 truncate lg:max-xl:w-auto lg:max-xl:min-w-0 lg:max-xl:shrink"
+                  className="text-text-primary w-20 min-w-0 shrink truncate"
                   title={threadLabel}
                 >
                   {threadLabel}
@@ -96,7 +101,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
                 <svg
                   width={BAR_W}
                   height={BAR_H}
-                  className="shrink-0 lg:max-xl:hidden"
+                  className="shrink-0"
                   aria-hidden="true"
                 >
                   <rect
