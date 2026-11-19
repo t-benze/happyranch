@@ -685,6 +685,12 @@ may use wildcard/ephemeral sockets and reachable public endpoints; it never expo
 Turn off stops/removes the owned Headscale unit/config/DB/CA/leaf/Noise/DERP state and local nodes;
 keeps inert package payload/notices. Never remove an unrelated Headscale installation. Cleanup
 uncertainty stays visible; release daemon/org data remain. Re-enable creates fresh authority.
+After complete Turn off, renderer-exact retained configs/fragments may be reused
+only after protected provenance and absence of live/pending/cleanup residue are
+proved. The retained sidecar's single old binding is stripped for provenance
+verification only; the next normal activation renders generation 0 with fresh
+trust/enrollment. Admission and recovery never rewrite config bytes. Partial
+cleanup continues to require Retry turn off.
 
 ### Outside-home access (fixed operator server)
 

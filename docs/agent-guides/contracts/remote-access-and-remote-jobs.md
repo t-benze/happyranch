@@ -2824,6 +2824,17 @@ restoration or public Enable path. Installer/supervisor admission, provenance,
 drift, unit publication and home_transport selection remain E2; no CLI, helper,
 D-Bus, app or other production caller is mounted.
 
+I5d-2's post-Disable admission additionally permits a prepared generation-0
+receipt with no transaction to prove the retained connector against its exact
+provision digest and strip exactly one deterministic sidecar addition. Its
+stable IDs must equal protected provisioning and its old generation must be an
+integer >= 0. The stripped bytes must equal the provision sidecar digest; closed
+transport fields are retired values, never the next receipt's authority. Captured
+data/digests are proven staged bytes and custody signatures remain the live
+file's. Normal `home_config` perform/publication alone writes generation 0 with
+the new receipt's trust fields. No admission/recovery rewrite is added; the
+older-failed-transaction L1 branch and all current-transaction checks stay intact.
+
 **Manager Ruling 14 (G2-E1a, retained local-node key history):**
 The owner verifier validates the complete happyranch-node pre-auth-key inventory:
 an exact tuple of at most `_MAX_INVENTORY_KEYS`, every row through the existing
@@ -3255,6 +3266,16 @@ all are validated and unlinked without reading their contents. Unknown or unsafe
 residue prevents account/activation receipt retirement and complete Turn off.
 
 **B7 — Local-node mint uncertainty and explicit recovery.**
+
+Complete Disable retires receipt, transaction, invite configuration and live
+authority while retaining the renderer-exact managed fragments and configs.
+Turn on admits this retained shape only with complete protected provenance,
+exact connector digest and the single proven sidecar addition described in B4.
+No B7/B11/minter evidence, live connector/sidecar/Headscale state, pending entry
+or other cleanup residue may remain. Partial cleanup retains the existing Retry
+turn off route. Initial invite-config publication uses the staged-byte proof
+without changing retained config bytes. B6 remains stop/disable/retain and its
+closed deletion map is unchanged; the next activation creates fresh authority.
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
 new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:

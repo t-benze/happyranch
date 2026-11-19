@@ -4461,10 +4461,15 @@ def test_home_units_after_replace_failed_closure(fixture: Fixture, monkeypatch: 
     assert {path.name for path in (fixture.root / "etc/systemd/system").iterdir() if path.is_file()} == set(module.UNITS)
 
 
-def test_home_units_disable_cleanup_then_reuse(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("old_generation", [0, 7])
+@pytest.mark.parametrize("case", ["classification", "publisher", "live", "double", "tail", "ids",
+    "connector", "state", "pending", "txn", "minter", "unknown"])
+def test_home_units_disable_cleanup_then_reuse(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, old_generation: int, case: str,
+) -> None:
     from runtime.remote_access import home_activation as activation
     from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
-    from runtime.remote_access.home_live_config import render_home_live_configs
+    from runtime.remote_access.home_live_config import HomeLiveConfigOwner, render_home_live_configs
     from scripts.test_home_activation import receipt_record
 
     head = home_publication_setup(fixture, monkeypatch)
@@ -4481,7 +4486,8 @@ def test_home_units_disable_cleanup_then_reuse(fixture: Fixture, monkeypatch: py
     invite.write_bytes(b"synthetic protected invite config for B6 digest verification")
     invite.chmod(0o600)
     record = receipt_record("ready")
-    record.update(release_uid=os.getuid(), home_id=connector["home_id"], connector_id=connector["connector_id"],
+    record.update(release_uid=os.getuid(), activation_generation=old_generation,
+                  home_id=connector["home_id"], connector_id=connector["connector_id"],
                   control_plane_id=connector["managed"]["control_plane_id"], dial_ip=head.dial_ip,
                   ca_der_sha256=hashlib.sha256(b"synthetic public CA").hexdigest())
     record["member_digests"] = {path: hashlib.sha256((fixture.root / path.lstrip("/")).read_bytes()).hexdigest()
@@ -4491,8 +4497,9 @@ def test_home_units_disable_cleanup_then_reuse(fixture: Fixture, monkeypatch: py
     (state / "home-activation.json").write_bytes(receipt.to_bytes())
     (state / "home-activation.json").chmod(0o600)
     sidecar = fixture.root / "etc/happyranch/sidecar.json"
+    staged = sidecar.read_bytes()
     sidecar.write_bytes(render_home_live_configs((fixture.root / "etc/happyranch/connector.json").read_bytes(),
-                                                sidecar.read_bytes(), receipt)["/etc/happyranch/sidecar.json"])
+                                                staged, receipt)["/etc/happyranch/sidecar.json"])
     sidecar_unit = fixture.root / "etc/systemd/system" / module.UNITS[1]
     sidecar_unit.write_text(module.render_sidecar_unit(module.SidecarUnitSpec(
         binary_path="/opt/happyranch-desktop/bin/happyranch-tsnet-sidecar", home_transport=True)))
@@ -4512,6 +4519,60 @@ def test_home_units_disable_cleanup_then_reuse(fixture: Fixture, monkeypatch: py
     assert {name: ((fixture.root / "etc/systemd/system" / name).stat().st_ino,
                    (fixture.root / "etc/systemd/system" / name).read_bytes()) for name in module.UNITS} == before
     assert all(call[0] in {"show", "reload"} for call in io.manager.calls)
+    retained = sidecar.read_bytes()
+    if case == "classification":
+        assert io.inventory().detail == "post-disable"
+        return
+    io.prepare_headscale()
+    if case not in {"publisher", "live"}:
+        if case == "double":
+            tail = retained[retained.index(b',"ControlURL"'):retained.rindex(b'}')]
+            sidecar.write_bytes(retained[:retained.rindex(b'}')] + tail + retained[retained.rindex(b'}'):])
+        if case == "tail": sidecar.write_bytes(retained[:retained.rindex(b'}')] + b',"foreign":true}')
+        if case == "ids": sidecar.write_bytes(retained.replace(connector["home_id"].encode(), b"foreign", 1))
+        if case == "connector":
+            path = fixture.root / "etc/happyranch/connector.json"
+            path.write_bytes(path.read_bytes() + b" ")
+        if case == "state":
+            path = fixture.root / "var/lib/happyranch-connector"
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (path / "trust-state.json").write_bytes(b"synthetic retained trust")
+        if case == "pending": (sidecar.parent / ".sidecar.json.pending").touch(mode=0o600)
+        if case == "txn": (state / "home-activation-txn.json").write_bytes(b"{}")
+        if case == "minter": (state / "home-minter").mkdir(mode=0o700)
+        if case == "unknown": (sidecar.parent / "unknown").touch(mode=0o600)
+        untouched = staged_inventory(fixture)
+        writes.clear()
+        io.manager.calls.clear()
+        assert io.inventory().state == "manual-install-conflict"
+        with pytest.raises(ValueError): io.publish_invite_config()
+        assert staged_inventory(fixture) == untouched and writes == []
+        assert all(call[0] == "show" for call in io.manager.calls)
+        return
+    if case == "live":
+        # The existing Prepare boundary has not yet published a receipt. P3 is
+        # independently exercised without relying on the publisher succeeding.
+        first = __import__('dataclasses').replace(receipt, phase="prepared", activation_generation=0,
+            operation_id="d" * 32, local_node_stable_id=None, home_endpoint=None)
+        owner = HomeLiveConfigOwner(io=io, expected_generation=0, expected_operation_id=first.operation_id)
+        rendered = owner._prepare(first)
+        assert owner._inputs["sidecar.json"].data == staged
+        assert json.loads(rendered["/etc/happyranch/sidecar.json"])["home_binding"]["activation_generation"] == 0
+        assert sidecar.read_bytes() == retained
+        return
+    io.publish_invite_config()
+    assert sidecar.read_bytes() == retained
+    assert hashlib.sha256(staged).hexdigest() == json.loads(
+        (fixture.root / "etc/happyranch/provision.json").read_bytes())["digests"]["sidecar.json"]
+    # Prepare also calls this before its first receipt is published. Neither
+    # verification nor rendering may rewrite the retained file.
+    first = __import__('dataclasses').replace(receipt, phase="prepared", activation_generation=0,
+        operation_id="d" * 32, local_node_stable_id=None, home_endpoint=None)
+    owner = HomeLiveConfigOwner(io=io, expected_generation=0, expected_operation_id=first.operation_id)
+    rendered = owner._prepare(first)
+    assert owner._inputs["sidecar.json"].data == staged
+    assert json.loads(rendered["/etc/happyranch/sidecar.json"])["home_binding"]["activation_generation"] == 0
+    assert sidecar.read_bytes() == retained
 
 
 @pytest.mark.parametrize("key,value", [("FragmentPath", "/foreign/fragment"), ("DropInPaths", "/foreign/dropin"),

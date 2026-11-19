@@ -128,6 +128,7 @@ class HomeLiveConfigOwner:
             rollover = (receipt.phase == "prepared" and txn is not None
                         and txn.phase == "failed_uncertain"
                         and txn.activation_generation < receipt.activation_generation)
+            post_disable = receipt.phase == "prepared" and receipt.activation_generation == 0 and txn is None
             if rollover and self._context(receipt) != txn:
                 raise ActivationRefused()
             old_effect = next((e for e in txn.effects if e.name == "home_config"), None) if rollover else None
@@ -152,22 +153,29 @@ class HomeLiveConfigOwner:
                     raise ActivationRefused()
                 sidecar = inputs["sidecar.json"]
                 if sidecar.digest != raw["digests"]["sidecar.json"]:
-                    if not rollover:
+                    if post_disable:
+                        # PD3+PD4 use the existing exact-tail/staged-byte proof.
+                        # Old transport authority is discarded, never adopted;
+                        # the normal home_config effect renders from this receipt.
+                        proven = self._io._home_unit_provisioning(parent, raw, reuse=True)["sidecar.json"]
+                        inputs["sidecar.json"] = _Input(proven, sidecar.signature, _digest(proven))
+                    elif not rollover:
                         raise ActivationRefused()
-                    g = self._io._json(sidecar.data).get("home_binding", {}).get("activation_generation")
-                    if type(g) is not int or not 0 <= g < receipt.activation_generation:
-                        raise ActivationRefused()
-                    end, addition = sidecar.data.rindex(b"}"), _addition(replace(receipt, activation_generation=g))
-                    if sidecar.data[end-len(addition):end] != addition:
-                        raise ActivationRefused()
-                    staged = sidecar.data[:end-len(addition)] + sidecar.data[end:]
-                    if _digest(staged) != raw["digests"]["sidecar.json"]:
-                        raise ActivationRefused()
-                    if old_effect is not None and (
-                            g != txn.activation_generation or old_effect.member_digests != {
-                                _CONNECTOR: inputs["connector.json"].digest, _SIDECAR: sidecar.digest}):
-                        raise ActivationRefused()
-                    inputs["sidecar.json"] = _Input(staged, sidecar.signature, _digest(staged))
+                    else:
+                        g = self._io._json(sidecar.data).get("home_binding", {}).get("activation_generation")
+                        if type(g) is not int or not 0 <= g < receipt.activation_generation:
+                            raise ActivationRefused()
+                        end, addition = sidecar.data.rindex(b"}"), _addition(replace(receipt, activation_generation=g))
+                        if sidecar.data[end-len(addition):end] != addition:
+                            raise ActivationRefused()
+                        staged = sidecar.data[:end-len(addition)] + sidecar.data[end:]
+                        if _digest(staged) != raw["digests"]["sidecar.json"]:
+                            raise ActivationRefused()
+                        if old_effect is not None and (
+                                g != txn.activation_generation or old_effect.member_digests != {
+                                    _CONNECTOR: inputs["connector.json"].digest, _SIDECAR: sidecar.digest}):
+                            raise ActivationRefused()
+                        inputs["sidecar.json"] = _Input(staged, sidecar.signature, _digest(staged))
                 if inputs["release-daemon.json"].digest != raw["digests"]["release-daemon.json"]:
                     raise ActivationRefused()
                 release = self._io._json(inputs["release-daemon.json"].data)
