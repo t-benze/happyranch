@@ -838,6 +838,278 @@ def prepared_replacement(fixture: Fixture, case: str = "failed") -> tuple[Lifecy
     return manager, parent, data
 
 
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed", "manual-0600", "manual-0644", "partial-legacy"])
+def test_first_replacement_intent_precedes_stop(fixture: Fixture, case: str) -> None:
+    manager, parent, _ = prepared_replacement(fixture, case if case in {"partial", "modern-failed"} else "failed")
+    (parent / "install-transaction.json").unlink()
+    if case.startswith("manual-"):
+        (parent / "provision.json").unlink()
+        for name in QUARANTINE_CONFIGS:
+            (parent / name).chmod(int(case.removeprefix("manual-"), 8))
+    if case == "partial-legacy":
+        (parent / "sidecar.json").unlink()
+    manager.stop_error = module.UNITS[2]
+    candidate = fixture.installer.replacement_inventory()
+    with pytest.raises(module.InstallerError) as failure:
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
+            expected_generation=candidate.inventory_generation or "missing-first-inventory")
+    intent = json.loads((parent / "install-transaction.json").read_bytes()) if (parent / "install-transaction.json").exists() else None
+    assert intent is not None, str(failure.value)
+    assert intent["format"] == "replacement-intent@2"
+    assert intent["release"]["uid"] == os.getuid()
+    assert intent["phase"] == "prepared"
+    assert any(call[0] == "stop" for call in manager.calls)
+
+
+@pytest.mark.parametrize("case", ["failed", "modern-failed", "modern-unrecorded", "partial-legacy", "manual-0600", "manual-0640", "manual-0644", "prefix", "unit-only"])
+def test_first_replacement_recovers_to_fresh_inert_inventory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    manager, parent, _ = prepared_replacement(fixture, "modern-failed" if case in {"modern-failed", "modern-unrecorded"} else "failed")
+    (parent / "install-transaction.json").unlink()
+    if case == "modern-unrecorded":
+        (parent / "provision.json").unlink()
+    if case.startswith("manual-"):
+        (parent / "provision.json").unlink()
+        for name in QUARANTINE_CONFIGS:
+            (parent / name).chmod(int(case.removeprefix("manual-"), 8))
+    if case == "partial-legacy":
+        (parent / "sidecar.json").unlink()
+    if case in {"prefix", "unit-only"}:
+        # Real generated-writer prefix: connector precedes sidecar/release/token.
+        for path in parent.iterdir():
+            path.unlink()
+        if case == "prefix":
+            fixture.installer._write_provision_file("connector.json", fixture.installer._generated_configs()["connector.json"],
+                fixture.installer.root_owner, 0o640)
+            for name in module.UNITS:
+                (fixture.root / "etc/systemd/system" / name).unlink()
+        else:
+            parent.rmdir()
+        manager.states.clear()
+        user = list(pwd.getpwuid(os.getuid()))
+        user[5] = str(fixture.home)
+        home = fixture.home / ".local/share/happyranch"
+        home.mkdir(parents=True, mode=0o700)
+        fixture.write(home / "daemon.token", b"synthetic-release-token\n")
+        release_user = pwd.struct_passwd(user)
+        monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: release_user)
+        lookup = fixture.installer._lookup_user
+        monkeypatch.setattr(fixture.installer, "_lookup_user", lambda name: release_user if name == fixture.user else lookup(name))
+    candidate = fixture.installer.replacement_inventory()
+    with pytest.raises(module.InstallerError, match="replacement paused after stop intent"):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(), expected_generation=candidate.inventory_generation)
+    journal = parent / "install-transaction.json"
+    intent = json.loads(journal.read_bytes())
+    if case == "modern-unrecorded" or case.startswith("manual-"):
+        assert intent["digests"]["provision.json"] == "absent"
+    if case in {"partial-legacy", "prefix", "unit-only"}:
+        assert intent["digests"]["sidecar.json"] == "absent"
+    if case in {"prefix", "unit-only"}:
+        assert intent["digests"]["release-daemon.json"] == "absent"
+    for _ in range(8):
+        if not journal.exists():
+            break
+        try:
+            fixture.installer.replace_failed()
+        except module.InstallerError as failure:
+            assert "replacement paused after" in str(failure), str(failure)
+    assert not journal.exists()
+    result = fixture.installer.inventory()
+    assert (result.state, result.detail) == ("modern", "staged-inert")
+    assert not any(call[0] in {"enable", "start"} for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["stopped", "healthy", "staged", "recorded", "unknown", "mode", "symlink", "hardlink", "oversize", "unit-mode", "unit-oversize", "drop-in", "loaded-fragment", "directory-bound", "cross-config", "uid", "generation", "token-mode"])
+def test_first_replacement_refuses_without_effects(fixture: Fixture, attack: str) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    (parent / "install-transaction.json").unlink()
+    expected = fixture.installer.replacement_inventory().inventory_generation
+    if attack in {"stopped", "healthy"}:
+        (parent / "provision.json").unlink()
+        manager.states = dict.fromkeys(module.UNITS, "inactive" if attack == "stopped" else "active")
+    elif attack in {"staged", "recorded"}:
+        for path in parent.iterdir():
+            path.unlink()
+        for name in module.UNITS:
+            (fixture.root / "etc/systemd/system" / name).unlink()
+        manager.states.clear()
+        generated_bundle(fixture)
+        if attack == "recorded":
+            (fixture.root / "etc/systemd/system").rmdir()
+            inventory_units(fixture, modern=True)
+    elif attack == "unknown":
+        fixture.write(parent / "foreign.json", b"synthetic-foreign")
+    elif attack == "mode":
+        (parent / "connector.json").chmod(0o644)
+    elif attack in {"symlink", "hardlink"}:
+        (parent / "connector.json").unlink()
+        if attack == "symlink":
+            (parent / "connector.json").symlink_to(fixture.inputs / "connector.json")
+        else:
+            os.link(fixture.inputs / "connector.json", parent / "connector.json")
+    elif attack == "oversize":
+        fixture.write(parent / "connector.json", b" " * 65537)
+    elif attack in {"unit-mode", "unit-oversize"}:
+        path = fixture.root / "etc/systemd/system" / module.UNITS[0]
+        if attack == "unit-mode":
+            path.chmod(0o600)
+        else:
+            path.write_bytes(b" " * 65537)
+    elif attack == "drop-in":
+        path = fixture.root / "etc/systemd/system" / (module.UNITS[0] + ".d")
+        path.mkdir()
+        fixture.write(path / "override.conf", b"synthetic-foreign")
+    elif attack == "loaded-fragment":
+        manager.override["FragmentPath"] = "/foreign/fragment"
+    elif attack == "directory-bound":
+        for index in range(65):
+            fixture.write(parent / ("foreign-" + str(index)), b"synthetic-foreign")
+    elif attack == "cross-config":
+        (parent / "provision.json").unlink()
+        sidecar = json.loads((parent / "sidecar.json").read_bytes())
+        sidecar["ConnectorAddr"] = "127.0.0.1:19443"
+        fixture.write(parent / "sidecar.json", json.dumps(sidecar).encode())
+    elif attack == "token-mode":
+        fixture.token.chmod(0o644)
+    observed = fixture.installer.replacement_inventory()
+    if attack not in {"uid", "generation", "token-mode", "cross-config"}:
+        assert observed.installation.state in {"healthy-manual", "modern", "manual-install-conflict"}
+    if attack not in {"generation"}:
+        expected = observed.inventory_generation or "0" * 64
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid() + (1 if attack == "uid" else 0),
+            expected_generation="0" * 64 if attack == "generation" else expected)
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["inventory", "owner", "pending"])
+def test_first_replacement_rebinds_before_publication(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    (parent / "install-transaction.json").unlink()
+    expected = fixture.installer.replacement_inventory().inventory_generation
+    fsync = os.fsync
+    changed = False
+    def sync(fd: int) -> None:
+        nonlocal changed
+        fsync(fd)
+        pending = parent / ".install-transaction.json.pending"
+        if changed or not pending.exists() or os.fstat(fd).st_ino != pending.stat().st_ino:
+            return
+        changed = True
+        if attack == "inventory":
+            fixture.write(parent / "foreign.json", b"synthetic-foreign")
+        elif attack == "owner":
+            lookup = fixture.installer._lookup_user
+            old = lookup(fixture.user)
+            user = list(old)
+            user[2] += 1
+            monkeypatch.setattr(fixture.installer, "_lookup_user",
+                               lambda name: pwd.struct_passwd(user) if name == fixture.user else lookup(name))
+        else:
+            pending.rename(parent / "foreign-pending")
+            fixture.write(pending, b"synthetic-substitution")
+    monkeypatch.setattr(os, "fsync", sync)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(), expected_generation=expected)
+    assert changed
+    assert not (parent / "install-transaction.json").exists()
+    assert not any(call[0] != "show" for call in manager.calls)
+    if attack == "pending":
+        assert (parent / ".install-transaction.json.pending").read_bytes() == b"synthetic-substitution"
+
+
+@pytest.mark.parametrize("phase,next_phase", [("prepared", "replacement-stopped"),
+    ("replacement-stopped", "replacement-quarantined"), ("replacement-quarantined", "replacement-state-removed")])
+def test_first_replacement_keeps_v1_handoff(fixture: Fixture, phase: str, next_phase: str) -> None:
+    _, parent, prepared = prepared_replacement(fixture)
+    for _ in range(3):
+        if json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+            break
+        with pytest.raises(module.InstallerError, match="replacement paused after"):
+            fixture.installer.replace_failed()
+    journal = (parent / "install-transaction.json").read_bytes()
+    assert json.loads(journal)["phase"] == phase
+    with pytest.raises(module.InstallerError, match="replacement paused after"):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
+            expected_generation=hashlib.sha256(journal).hexdigest())
+    record = json.loads((parent / "install-transaction.json").read_bytes())
+    assert record == {**json.loads(prepared), "phase": next_phase}
+    assert record["version"] == 1 and "format" not in record
+
+
+def test_first_replacement_v1_validates_cross_config_bindings(fixture: Fixture) -> None:
+    manager, parent, prepared = prepared_replacement(fixture)
+    sidecar = json.loads((parent / "sidecar.json").read_bytes())
+    sidecar["ConnectorAddr"] = "127.0.0.1:19443"
+    (parent / "sidecar.json").write_bytes(json.dumps(sidecar).encode())
+    provenance = json.loads((parent / "provision.json").read_bytes())
+    provenance["configs"]["sidecar.json"] = hashlib.sha256((parent / "sidecar.json").read_bytes()).hexdigest()
+    (parent / "provision.json").write_bytes(json.dumps(provenance).encode())
+    record = json.loads(prepared)
+    for name in ("sidecar.json", "provision.json"):
+        record["digests"][name] = hashlib.sha256((parent / name).read_bytes()).hexdigest()
+    journal = json.dumps(record, sort_keys=True).encode()
+    (parent / "install-transaction.json").write_bytes(journal)
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
+            expected_generation=hashlib.sha256(journal).hexdigest())
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" for call in manager.calls)
+
+
+def test_first_replacement_opaque_state_is_metadata_only(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    (parent / "install-transaction.json").unlink()
+    manager.states[module.UNITS[0]] = "failed"
+    state = fixture.root / "var/lib/happyranch-connector/trust-state.json"
+    fixture.write(state, b"synthetic-opaque-state")
+    reader = fixture.installer._read_file
+    def read(fd: int, name: str, **kwargs: object) -> bytes:
+        assert name != "trust-state.json", "opaque state must never be read"
+        return reader(fd, name, **kwargs)
+    monkeypatch.setattr(fixture.installer, "_read_file", read)
+    expected = fixture.installer.replacement_inventory().inventory_generation
+    with pytest.raises(module.InstallerError, match="replacement paused after stop intent"):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(), expected_generation=expected)
+    record = json.loads((parent / "install-transaction.json").read_bytes())
+    assert record["inventory"]["var/lib/happyranch-connector/trust-state.json"].keys() == {"metadata"}
+
+
+@pytest.mark.parametrize("case", ["stop-failure", "process"])
+def test_first_replacement_preserves_pending_discard_exception(fixture: Fixture, case: str) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    (parent / "install-transaction.json").unlink()
+    expected = fixture.installer.replacement_inventory().inventory_generation
+    manager.stop_error = module.UNITS[2]
+    with pytest.raises(module.InstallerError, match="quiescence unconfirmed"):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(), expected_generation=expected)
+    journal = (parent / "install-transaction.json").read_bytes()
+    intent = {**json.loads(journal), "phase": "replacement-stopped"}
+    pending = parent / ".install-transaction.json.pending"
+    fixture.write(pending, json.dumps(intent, sort_keys=True).encode())
+    if case == "process":
+        manager.override["MainPID"] = "42"
+    before = fixture.inventory()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert pending.exists() == (case == "process")
+    assert (parent / "install-transaction.json").read_bytes() == journal
+    after = fixture.inventory()
+    assert after == (before if case == "process" else {key: value for key, value in before.items()
+                    if key != "etc/happyranch/.install-transaction.json.pending"})
+
+
 @pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
 def test_replacement_inventory_binds_exact_prepared_generation(fixture: Fixture, case: str) -> None:
     manager, parent, data = prepared_replacement(fixture, case)
