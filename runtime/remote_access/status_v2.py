@@ -8,13 +8,23 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from enum import Enum
 from typing import TypeVar
 
 MAX_BYTES = 16384  # Includes the terminating newline.
 STALE_AFTER_SECONDS = 30
 MAX_AGE_SECONDS = 2_147_483_647
 MAX_DEADLINE_UTC_SECONDS = 9_223_372_036_854_775_807
+
+
+class _StringEnum(str, Enum):
+    """Value text on every supported Python, including system Python 3.10."""
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __format__(self, spec: str) -> str:
+        return format(self.value, spec)
 
 
 class StatusError(ValueError):
@@ -24,7 +34,7 @@ class StatusError(ValueError):
         super().__init__('invalid-status-v2')
 
 
-class SetupPhase(StrEnum):
+class SetupPhase(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     READY = 'ready'
@@ -35,14 +45,14 @@ class SetupPhase(StrEnum):
     PARTIAL_CLEANUP = 'partial_cleanup'
 
 
-class RuntimeAvailability(StrEnum):
+class RuntimeAvailability(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     AVAILABLE = 'available'
     UNAVAILABLE = 'unavailable'
 
 
-class InvitePhase(StrEnum):
+class InvitePhase(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     NONE = 'none'
@@ -59,7 +69,7 @@ class InvitePhase(StrEnum):
     UNCERTAIN = 'uncertain'
 
 
-class AddressState(StrEnum):
+class AddressState(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     CURRENT = 'current'
@@ -70,7 +80,7 @@ class AddressState(StrEnum):
     UNCERTAIN = 'uncertain'
 
 
-class PolicyState(StrEnum):
+class PolicyState(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     CURRENT = 'current'
@@ -80,7 +90,7 @@ class PolicyState(StrEnum):
     UNCERTAIN = 'uncertain'
 
 
-class CleanupState(StrEnum):
+class CleanupState(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     NOT_NEEDED = 'not_needed'
@@ -129,7 +139,7 @@ class CleanupObservation:
     age_seconds: int | None = None
 
 
-class ConnectorState(StrEnum):
+class ConnectorState(_StringEnum):
     UNKNOWN = 'unknown'
     STALE = 'stale'
     RUNNING = 'running'
@@ -174,7 +184,7 @@ def _integer(value: object, maximum: int) -> bool:
     return type(value) is int and 0 <= value <= maximum
 
 
-def _validate_observation(value: O, kind: type[O], states: type[StrEnum]) -> None:
+def _validate_observation(value: O, kind: type[O], states: type[_StringEnum]) -> None:
     if type(value) is not kind or type(value.state) is not states:
         raise StatusError()
     age = value.age_seconds
@@ -206,7 +216,7 @@ def _validate_status(value: StatusV2) -> None:
             raise StatusError()
 
 
-def _fresh(value: O | None, kind: type[O], states: type[StrEnum]) -> O:
+def _fresh(value: O | None, kind: type[O], states: type[_StringEnum]) -> O:
     if value is None:
         return kind()
     _validate_observation(value, kind, states)

@@ -13,7 +13,7 @@ import re
 import stat
 import time
 from dataclasses import asdict, dataclass, replace
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path
 
 AUDIT_PATH = Path('/var/lib/happyranch-remote-access/home-audit.jsonl')
@@ -23,7 +23,17 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 
 
-class Event(StrEnum):
+class _StringEnum(str, Enum):
+    """Value text on every supported Python, including system Python 3.10."""
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __format__(self, spec: str) -> str:
+        return format(self.value, spec)
+
+
+class Event(_StringEnum):
     ACTIVATION = 'activation'
     INVITE_ISSUED = 'invite_issued'
     INVITE_CANCELLED = 'invite_cancelled'
@@ -39,7 +49,7 @@ class Event(StrEnum):
     UNCERTAIN = 'uncertain'
 
 
-class Phase(StrEnum):
+class Phase(_StringEnum):
     PREPARED = 'prepared'
     ACTIVATING = 'activating'
     JOINED = 'joined'
@@ -47,7 +57,7 @@ class Phase(StrEnum):
     FAILED_UNCERTAIN = 'failed_uncertain'
 
 
-class Component(StrEnum):
+class Component(_StringEnum):
     SIDECAR = 'sidecar'
     CONNECTOR = 'connector'
     HEADSCALE = 'headscale'
@@ -57,7 +67,7 @@ class Component(StrEnum):
     ACCOUNTS = 'accounts'
 
 
-class Outcome(StrEnum):
+class Outcome(_StringEnum):
     SUCCEEDED = 'succeeded'
     FAILED = 'failed'
     REFUSED = 'refused'
@@ -67,7 +77,7 @@ class Outcome(StrEnum):
     UNCERTAIN = 'uncertain'
 
 
-class Stage(StrEnum):
+class Stage(_StringEnum):
     INTENT = 'intent'
     OUTCOME = 'outcome'
     UNCERTAIN = 'uncertain'
@@ -85,7 +95,7 @@ def _identifier(value: str, prefix: str) -> None:
         raise AuditRefused('record')
 
 
-def _enum(value: object, kind: type[StrEnum]) -> None:
+def _enum(value: object, kind: type[_StringEnum]) -> None:
     if type(value) is not str and type(value) is not kind:
         raise AuditRefused('record')
     try:

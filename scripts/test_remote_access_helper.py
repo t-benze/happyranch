@@ -529,6 +529,109 @@ def test_system_python_isolated_import() -> None:
     assert result.returncode == 0, result.stderr
 
 
+PYTHON_FLOOR_SMOKE = r'''
+import enum, importlib, importlib.util, json, os, pathlib, runpy, sys, tempfile, types
+root = pathlib.Path(sys.argv[1])
+strenum = getattr(enum, 'StrEnum', None)
+if sys.argv[2] == 'without-strenum' and hasattr(enum, 'StrEnum'):
+    del enum.StrEnum
+source = root / 'runtime/remote_access'
+for name in ('status_v2', 'home_audit', 'home_activation', 'helper_generation',
+             'helper_lifecycle', 'remote_access_helper', 'helper_control',
+             'helper_owner', 'release_verifier'):
+    path = source / (name + '.py')
+    compile(path.read_bytes(), str(path), 'exec')
+def load(name):
+    spec = importlib.util.spec_from_file_location('floor_' + name, source / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+modules = {name: load(name) for name in (
+    'status_v2', 'home_audit', 'helper_generation', 'helper_control',
+    'helper_owner', 'release_verifier')}
+# Host Gio is a system dependency. A test-only 3.10 interpreter may lack its ABI.
+sys.path.insert(0, '/usr/lib/python3/dist-packages')
+try:
+    from gi.repository import Gio, GLib
+except ImportError:
+    print('Gio unavailable: helper entry NOT RUN; lifecycle pure paths only')
+    helper = types.ModuleType('runtime.remote_access.remote_access_helper')
+    helper.AUTH_DEADLINE = 120.0
+    sys.modules[helper.__name__] = helper
+else:
+    runpy.run_path(str(source / 'remote_access_helper.py'))
+    assert not any(n.startswith('runtime.remote_access') for n in sys.modules)
+    assert 'pydantic' not in sys.modules
+    print('isolated helper entry PASS (Gio available; no bus registration)')
+# Only the bundled-child modules need the connector package and its dependencies.
+# Host stdlib (e.g. Python 3.14's http) may itself require StrEnum; do not emulate it.
+if strenum is not None:
+    enum.StrEnum = strenum
+sys.path.insert(0, str(root))
+activation = importlib.import_module('runtime.remote_access.home_activation')
+if sys.argv[2] == 'without-strenum' and strenum is not None:
+    del enum.StrEnum
+lifecycle = importlib.import_module('runtime.remote_access.helper_lifecycle')
+if strenum is not None:
+    enum.StrEnum = strenum
+assert activation.HomeActivationStore is not None
+assert lifecycle.OperationBudget.status().remaining() > 0
+v2, audit = modules['status_v2'], modules['home_audit']
+vocabularies = [
+    (v2.SetupPhase, 'unknown stale ready off in_progress failed uncertain partial_cleanup'),
+    (v2.RuntimeAvailability, 'unknown stale available unavailable'),
+    (v2.InvitePhase, 'unknown stale none minting encoding pairing issued pending_approval consumed cancelled recovered expired refused uncertain'),
+    (v2.AddressState, 'unknown stale current changed refreshing identity_changed failed uncertain'),
+    (v2.PolicyState, 'unknown stale current renewing expired renewal_failed uncertain'),
+    (v2.CleanupState, 'unknown stale not_needed in_progress complete pending partial_cleanup failed uncertain'),
+    (v2.ConnectorState, 'unknown stale running stopped unreachable'),
+    (audit.Event, 'activation invite_issued invite_cancelled invite_recovered invite_expired device_approved device_rejected device_revoked refresh policy_renew policy_fail turn_off uncertain'),
+    (audit.Phase, 'prepared activating joined ready failed_uncertain'),
+    (audit.Component, 'sidecar connector headscale units live_state credentials accounts'),
+    (audit.Outcome, 'succeeded failed refused absent retained partial_cleanup uncertain'),
+    (audit.Stage, 'intent outcome uncertain'),
+    (lifecycle.CallReply, 'accepted refused'),
+]
+for kind, words in vocabularies:
+    values = words.split()
+    assert [member.value for member in kind] == values
+    assert json.dumps(list(kind)) == json.dumps(values)
+    for member, value in zip(kind, values):
+        assert member == value and hash(member) == hash(value)
+        assert str(member) == format(member) == f'{member}' == value
+        assert format(member, '>24') == format(value, '>24')
+expected = (b'{"address":{"age_seconds":null,"state":"unknown"},'
+    b'"cleanup":{"age_seconds":null,"state":"unknown"},'
+    b'"invite":{"age_seconds":null,"deadline_utc_seconds":null,"state":"unknown"},'
+    b'"policy":{"age_seconds":null,"state":"unknown"},'
+    b'"runtime":{"age_seconds":null,"state":"unknown"},'
+    b'"setup":{"age_seconds":null,"state":"unknown"},"version":2}\n')
+assert v2.encode(v2.build_status(now_utc_seconds=100)) == expected
+assert v2.encode(v2.decode(expected)) == expected
+expected = (b'{"component":null,"event":"device_approved","intent_id":"intent-1",'
+    b'"operation_id":"op-1","outcome":"succeeded","phase":null,"stage":"outcome",'
+    b'"subject_id":null,"timestamp_ns":100,"version":1}\n')
+record = audit.Record(audit.Event.DEVICE_APPROVED, audit.Stage.OUTCOME,
+    'intent-1', 'op-1', 100, outcome=audit.Outcome.SUCCEEDED)
+assert audit.encode(record) == expected
+with tempfile.TemporaryDirectory() as parent:
+    path = pathlib.Path(parent) / 'audit.jsonl'
+    audit.HomeAudit(path, uid=os.getuid(), gid=os.getgid()).append(record)
+    assert path.read_bytes() == expected
+    assert json.loads(path.read_bytes())['outcome'] == 'succeeded'
+print('all sibling imports, enum text/format/JSON/comparison, StatusV2 and audit bytes PASS')
+'''
+
+
+def test_python310_stdlib_and_wire_contract() -> None:
+    # Version-independent regression; real floor/bundled runs use this same code.
+    result = subprocess.run([sys.executable, '-I', '-c', PYTHON_FLOOR_SMOKE,
+                             str(ROOT), 'without-strenum'],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize('venue', [{'deadline': .05}], indirect=True)
 @pytest.mark.parametrize('delayed_read', [2, 3, 4])
 def test_deadline_under_store_lock(venue: Any, delayed_read: Any) -> None:
