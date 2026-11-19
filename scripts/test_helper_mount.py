@@ -20,6 +20,7 @@ import pytest
 
 from runtime.remote_access import home_activation_backend as backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
+from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 
 
 class Variant:
@@ -64,7 +65,7 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     effects = []
     token = 'protected-generation-and-operation'
     reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token))
-    def effect(step: str, expected: str, remaining: float) -> dict:
+    def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
         assert helper.inflight is not None and expected == 'protected-generation-and-operation'
         assert 0 < remaining <= 300
         assert json.loads(helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
@@ -100,8 +101,10 @@ def test_disable_order_slot_audit_and_r7(mount: Any, revoke: str, cleanup: str) 
             raise v.h.Refused('unavailable' if revoke == 'lost_reply' else revoke)
         v.helper.control.revoke_all.side_effect = failed
     original = v.reader.effect.side_effect
-    def effect(step: str, *args: Any) -> dict:
-        result = original(step, *args)
+    def effect(step: str, *args: Any, **options: Any) -> dict:
+        if step == 'cleanup':
+            assert options == {'revoke_succeeded': revoke == 'succeeded'}
+        result = original(step, *args, **options)
         if cleanup == 'failed_stop' and step == 'stop':
             raise OSError('synthetic lost stop')
         if cleanup == 'residue' and step == 'cleanup':
@@ -191,17 +194,29 @@ def test_auth_loss_retains_slot_until_terminal_ack(mount: Any) -> None:
     assert v.helper.inflight is None
 
 
-def test_backend_expectations_come_from_protected_store(store: Any) -> None:
+@pytest.mark.parametrize('revoked', [True, False])
+def test_backend_expectations_come_from_protected_store(store: Any, revoked: bool,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
     put_pair(store._io.root)
     io = store._io
     io.layout = 'deb'
     lifecycle = backend.HelperLifecycleBackend(io)
     expected = lifecycle.capture('Disable', 1000)
     io.cleanup_headscale = Mock(return_value={'state': 'removed'})
-    assert lifecycle.dispatch('Disable', 1000, 'cleanup', expected) == {'outcome': 'off', 'residue': []}
+    from runtime.remote_access.helper_generation import HomeLifecycleClient
+    from runtime.remote_access import helper_generation
+    def child(command: Any, *, input: bytes, **kwargs: Any) -> Any:
+        request = json.loads(input)
+        assert request.pop('deadline') > time.monotonic()
+        assert request['revoke_succeeded'] is revoked
+        result = lifecycle.dispatch(**request)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(result).encode())
+    monkeypatch.setattr(helper_generation.subprocess, 'run', child)
+    assert HomeLifecycleClient('Disable', 1000).effect('cleanup', expected, 30,
+        revoke_succeeded=revoked) == {'outcome': 'off', 'residue': []}
     assert io.cleanup_headscale.call_args.kwargs == dict(expected_release_uid=1000, expected_home_id='home',
         expected_control_plane_id='control', expected_connector_id='connector', expected_generation=7,
-        expected_operation_id='b' * 32)
+        expected_operation_id='b' * 32, revoke_succeeded=revoked)
     updated = receipt_record('ready')
     updated['operation_id'] = 'e' * 32
     put(io.root, RECEIPT, encoded(updated))
@@ -209,6 +224,43 @@ def test_backend_expectations_come_from_protected_store(store: Any) -> None:
     with pytest.raises(backend.ActivationRefused):
         lifecycle.dispatch('Disable', 1000, 'cleanup', expected)
     assert not io.cleanup_headscale.called
+
+
+@pytest.mark.parametrize('case', ['complete', 'failed-revoke', 'unsafe-minter'])
+def test_mounted_disable_real_b6_result(mount: Any, custody: Any, monkeypatch: pytest.MonkeyPatch,
+                                       capsys: Any, case: str) -> None:
+    activation, _ = b6_setup(custody, monkeypatch, capsys, staging=True)
+    minters = b6_minters(custody.root)
+    from runtime.remote_access.installer import _HOME_STATE_MEMBERS
+    for path in _HOME_STATE_MEMBERS:
+        target = custody.root / path.lstrip('/')
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        target.write_bytes(b'synthetic state')
+        target.chmod(0o600)
+    if case == 'unsafe-minter':
+        (minters / 'happyranch-invite' / 'unknown').touch(mode=0o600)
+    if case == 'failed-revoke':
+        mount.helper.control.revoke_all.side_effect = mount.h.Refused('unavailable')
+    lifecycle = backend.HelperLifecycleBackend(custody.installer)
+    mount.reader.current_generation.side_effect = lambda remaining: lifecycle.capture('Disable', 1000)
+    def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
+        if step == 'stop':
+            # Native systemd transport is already synthetic in this venue.
+            custody.installer._confirm_quiescent()
+            custody.installer._headscale_stopped()
+            return {'outcome': 'in_progress', 'residue': []}
+        return lifecycle.dispatch('Disable', 1000, step, expected, **options)
+    mount.reader.effect.side_effect = effect
+    mount.admit()
+    assert mount.helper.lifecycle_result['outcome'] == ('off' if case == 'complete' else 'partial_cleanup')
+    assert mount.helper.inflight is None
+    if case == 'complete':
+        assert not activation.exists() and not minters.exists()
+        assert all(not (custody.root / p.lstrip('/')).exists() for p in _HOME_STATE_MEMBERS)
+    else:
+        assert activation.exists() and minters.exists()
+        if case == 'failed-revoke':
+            assert all((custody.root / p.lstrip('/')).exists() for p in _HOME_STATE_MEMBERS)
 
 
 def test_replacement_binds_inventory_before_auth_and_uses_captured_uid(store: Any) -> None:

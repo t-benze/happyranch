@@ -501,10 +501,11 @@ class RemoteAccessHelper:
                     operation.outcome = previous
             return result
 
-        def child(step: str, component: object) -> dict:
+        def child(step: str, component: object, *, revoke_succeeded: bool = False) -> dict:
             def effect(remaining: float, commit: Callable[[], None]) -> dict:
                 commit()
-                return client.effect(step, capture.generation, min(remaining, operation.budget.remaining()))
+                options = {'revoke_succeeded': revoke_succeeded} if step == 'cleanup' else {}
+                return client.effect(step, capture.generation, min(remaining, operation.budget.remaining()), **options)
             return audited(step, component, effect)
 
         try:
@@ -542,7 +543,7 @@ class RemoteAccessHelper:
                     residue.append('owned units: quiescence unconfirmed')
                 else:
                     try:
-                        result = child('cleanup', _home_audit.Component.LIVE_STATE)
+                        result = child('cleanup', _home_audit.Component.LIVE_STATE, revoke_succeeded=revoked)
                         residue.extend(result['residue'])
                         if result['outcome'] != 'off':
                             residue.append('B6 cleanup incomplete')

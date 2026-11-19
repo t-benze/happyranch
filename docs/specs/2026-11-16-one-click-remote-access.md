@@ -173,12 +173,13 @@ denies and stream closure) → stop/disable recognized connector/sidecar/verifie
 and stop the receipt-bound local Headscale, with native quiescence proof → B6
 with authenticated-store expectations. B6 owns the exact Headscale-link disable.
 Stop still runs if revocation fails; uncertain stop prevents B6. **R7 corrects R4:**
-B6 retains connector trust-state.json/.anchor/.lock and persisted sidecar state.
-Complete requires revoke-all success AND confirmed stop AND B6 success AND no
-residue. Failed revoke always reports partial_cleanup and names retained
-un-revoked trust state, including when stop/B6 succeed. CA staging and B7/B11
-residue also require incomplete cleanup; I3c owns retirement. No new deletion
-allowlist/executor, purge reuse or B17 reuse for Disable. One changed-generation
+I3c carries the helper's trusted revoke-success fact into the existing B6 owner.
+Only successful revoke permits fixed connector trust and persisted sidecar state
+retirement. Complete still requires revoke success, confirmed quiescence, B6
+success and all admitted residue retired. Failed revoke reports partial_cleanup
+and names retained un-revoked trust/sidecar state. CA staging and B7/B11/minter
+evidence follow I3c's fixed custody and proof/audit retirement; any remainder is
+incomplete. No new executor, purge reuse or B17 reuse for Disable. One changed-generation
 re-read/retry is allowed within the original 300-second budget. Successful revoke
 leaves no admissible ceremony/device after restart/rotation before stop.
 
@@ -786,14 +787,27 @@ operator CLI/uninstall calls retain their pre-activation scope. It requires
 trusted expected identities/generation and all owned services already quiescent,
 removes only the fixed per-type live-state/receipted members, and explicitly
 destroys the owned CA private key. I3a mounts revocation/stop/B6 privately;
-public Disable remains gated until I5. R7 retains connector/sidecar trust state
-and requires failed-revoke Disable to remain incomplete even when B6 succeeds. Key fences, nonempty issuer journals and transaction evidence remain
-retained with incomplete cleanup until a B7/B11 proof-and-audit retirement owner
-is delivered. Accounts continue to follow A–E without a new account rule.
-The B6 exception destroys only the root CA signing key: other root-only CA
-staging files are outside its fixed deletion list and remain with incomplete
-cleanup and retained receipts. This executor alone cannot report a completed
-Turn off while that staging or uncertain evidence remains.
+public Disable remains gated until I5. I3c extends this same owner to the fixed
+root-only CA staging files and, only with trusted successful revoke-all, the
+fixed connector trust and persisted sidecar state. Failed revoke still retains
+that state and reports partial cleanup. B7/B11 transaction, uncertain journal
+and home-minter evidence retire only after B6 proves all five Headscale DB,
+WAL/SHM, Noise and DERP files gone in that same receipt-admitted operation, with
+B16 intent/outcome audit. Nonterminal/pending issuer evidence with an active
+ceremony refuses; unknown pending entries remain incomplete.
+
+The contract's I3c M1-M7 table fixes the root:root 0700 home-minter parent and
+two user directories, exact 0600 single-link record names and per-user streamed
+600,000-entry bound. Validate the whole set under existing nonblocking flocks;
+unlink operation reservations, user-create, fence, fence.pending, rpc.lock last,
+fsync, release, rmdir empty directories and fsync parents. Audit contains only
+per-user counts. Retention is within one DB lifetime; after proven DB deletion,
+keeping user-create would permanently block a fresh Enable. Fresh activation
+G/O CAS still blocks stale replay. Without DB proof all evidence stays, incomplete.
+Unknown/unsafe entries, contention or exhaustion refuse; no recursive removal.
+No-argument CLI/uninstall D and account rules A–E remain unchanged. Complete
+Turn off requires revoke success, stop proof, B6 success and all residue retired;
+package/helper, audit and unrelated release/org data remain.
 
 Upgrades preserve protected installation IDs/pins and revocations, validate the old version, stop
 admission, migrate under the same trust lock, reload exact system units and verify loaded

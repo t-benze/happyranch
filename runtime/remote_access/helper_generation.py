@@ -68,12 +68,14 @@ class HomeLifecycleClient:
             raise GenerationUnavailable()
         self.method, self.uid = method, uid
 
-    def _call(self, step: str, expected: str | None, remaining: float) -> dict:
+    def _call(self, step: str, expected: str | None, remaining: float, *, revoke_succeeded: bool = False) -> dict:
         if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
             raise GenerationUnavailable()
         deadline = time.monotonic() + remaining
         request = dict(method=self.method, uid=self.uid, step=step, expected=expected,
                        deadline=deadline)
+        if self.method == 'Disable' and step == 'cleanup':
+            request['revoke_succeeded'] = revoke_succeeded
         try:
             result = subprocess.run(LIFECYCLE_COMMAND, input=json.dumps(request).encode(),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=remaining,
@@ -93,8 +95,8 @@ class HomeLifecycleClient:
             raise GenerationUnavailable()
         return value['snapshot']  # Immutable CAS token, including protected absence.
 
-    def effect(self, step: str, expected: str, remaining: float) -> dict:
-        return self._call(step, expected, remaining)
+    def effect(self, step: str, expected: str, remaining: float, *, revoke_succeeded: bool = False) -> dict:
+        return self._call(step, expected, remaining, revoke_succeeded=revoke_succeeded)
 
     def recover_invite(self, expected: str, deadline: float, before_commit: Callable[[], None]) -> dict:
         if not time.monotonic() < deadline <= time.monotonic() + 120:

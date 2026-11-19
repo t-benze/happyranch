@@ -2341,7 +2341,9 @@ nonblocking directory flock spans the whole mint/recover, including cleanup,
 reserve, create and result validation. Cooperating invite writers use this
 composition. Reservations use exclusive 0600 files named by SHA256 of operation
 ID, containing only UTC creation/deadline timestamps; file and parent fsync
-precede success. Existing/partial slots are never overwritten, removed or reused.
+precede success. Within one Headscale DB lifetime, existing/partial slots are never
+overwritten, removed or reused. The sole removal exception is B6 retirement after
+same-operation DB deletion proof (I3c M1).
 The runner independently serializes each user's RPCs using a protected 0600
 single-link `rpc.lock`. Before Create it writes/fsyncs an exclusive
 `fence.pending`, renames to `fence` and fsyncs the directory. A complete successful
@@ -2350,7 +2352,9 @@ leaves the requested expiration fence across invocations/restart. List and new
 Create refuse until that deadline passes; RPC cancellation is no settlement.
 A malformed/unsafe fence or any pending residue refuses indefinitely, preserving
 operator evidence. Expire may run, but cannot prove cleanup without complete List.
-No record/fence auto-cleanup or retention/reset operation is introduced.
+No record/fence auto-cleanup or retention/reset operation is introduced within
+one Headscale DB lifetime; the sole removal exception is B6 retirement after
+same-operation DB deletion proof (I3c M1).
 
 HomeInviteConfig reader deferred to 3b-2g-2: home_endpoint is the node's runtime tailnet endpoint, which exists only after activation joins the local node; it will come from a root receipt written at activation.
 The activation endpoint receipt remains undelivered. Items 4 and 5 now supply
@@ -2375,14 +2379,18 @@ whole directory with typed secret-free `issuer-cleanup-uncertain`. A removal
 interruption retains a cleanup pending marker and reports
 `issuer-partial-cleanup-uncertain`; retry preserves that residue. This issuer
 cleanup does not remove its parent, `home-ca/`, `home-minter/` or any receipts.
-It performs no mint/recovery or key-revocation operation.
+It performs no mint/recovery or key-revocation operation. I3c extends only the
+receipt-bound B6 path after DB proof plus successful Disable revocation, with
+B16 intent/outcome; no-argument issuer cleanup keeps these rules unchanged.
 
 `home_admin.mint_local_node(operation_id, expires_at)` reuses the same root admin
 transport, minter policy and durable reservation store for fixed
 `happyranch-node`, with a separate root:root 0700
 `home-minter/happyranch-node` directory flock. It returns `MintedKey` only in
 memory, enforces at most five minutes, single-use/non-reusable, non-ephemeral and
-no ACL tags, and retains existing/partial reservations without reuse. No installer,
+no ACL tags, and retains existing/partial reservations without reuse within one
+Headscale DB lifetime; the sole removal exception is B6 retirement after
+same-operation DB deletion proof (I3c M1). No installer,
 enable or helper path calls it; activation remains 3b-2g-2.
 This inert admin slice changes no unit bytes, default home_transport flag or
 activation caller. E2a below supersedes its blanket admission deferral for
@@ -2472,7 +2480,8 @@ and the B5 link are separate ownership inventory, not digests.
 
 `ownership` has exactly `members` and `links`: `members` is a
 duplicate-free array enumerating exactly the eight literal paths in B6's table
-(the five individual files, two sockets and empty directory), and `links`
+(the five individual files, two sockets and empty directory; I3c extensions are
+not receipt ownership members), and `links`
 is the single-key object mapping the literal B5 link path to its exact literal
 target. No path selection or deletion authority follows from parsing it.
 The G2-A reader requires an externally expected generation, a ready receipt,
@@ -2588,7 +2597,9 @@ stdout. The Python adapter independently validates these bounded fields.
 CreateUser serializes on the existing per-user `rpc.lock` and honors the existing
 pre-auth-key fence. Before its sole create, it fsyncs an insert-only root:root
 0600 `home-minter/<fixed-user>/user-create` attempt marker containing `1`.
-The marker is retained on every outcome. A missing user with a prior marker or
+The marker is retained on every outcome within one Headscale DB lifetime; the
+sole removal exception is B6 retirement after same-operation DB deletion proof
+(I3c M1). A missing user with a prior marker or
 an unsafe/torn marker refuses as uncertain, never retries create or repairs it.
 Both successful and lost replies require a complete exact-name re-list and
 zero nodes/keys under the same original deadline; a successful reply must also
@@ -3032,7 +3043,7 @@ Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
 Only a valid current-generation `home-activation@1` receipt admits its enumerated
-fixed members plus the Headscale-written allowlist below. Require full
+fixed members plus the Headscale-written allowlist and I3c extensions below. Require full
 quiescence: all owned units inactive, no job/process/cgroup, and ruling C's
 bounded UID process snapshot. Every entry uses literal no-follow parent
 traversal; absence is fine, wrong type/owner/mode/link count is retained and
@@ -3045,13 +3056,44 @@ reported as incomplete cleanup.
 | `/run/happyranch-tsnet-sidecar/observe.sock` | S_ISSOCK, owner `happyranch`, 0600, nlink 1; unlink only, never connect/read. |
 | `/var/lib/happyranch-headscale/acme-unused` | Empty real directory, receipted Headscale UID, 0700; rmdir only. |
 
-Fixed custody directories then follow existing D/custody rules: rmdir only when
-empty. Without that activation receipt D still refuses DB/Noise/socket and
-unreceipted entries, even with an account receipt. Unknown/extra/tampered objects
-remain and report incomplete cleanup; no recursive deletion. Explicitly destroy
-the owned CA private key on Turn off. Preserve uncertain key fences/issuer
-journals until B7/B11 prove no usable key remains, then retire with a retained
-nonsecret audit event.
+The first four rows above remain the eight `ownership.members` in B1; the I3c
+fixed extensions below do not change the receipt schema.
+
+| Exact I3c residue | Required type/custody and removal |
+| --- | --- |
+| `/var/lib/happyranch-remote-access/home-ca/{ca.key,ca.pem,leaf.pem,leaf.key}` | S_ISREG, root:root 0600, nlink 1; metadata-only unlink. Parent root:root 0700; rmdir only when empty. |
+| `/var/lib/happyranch-connector/{trust-state.json,trust-state.json.anchor,trust-state.json.lock}` | S_ISREG, happyranch:happyranch 0600, nlink 1; metadata-only unlink, only after successful Disable revoke-all. Parent real happyranch:happyranch 0700, nlink 2 when empty; rmdir only when empty. |
+| `/var/lib/happyranch-tsnet-sidecar/{tailscaled.state,credential.consumed,tailscaled.log.conf,tailscaled.log1.txt,tailscaled.log2.txt}` | Same service file/parent custody and revoke-success requirement as connector state; no opaque state read. |
+| `/var/lib/happyranch-remote-access/home-activation-txn.json` | Existing bound B4/A5 root:root 0600, regular single-link transaction; canonical reader and current binding required, then unlink only after DB proof and B16 intent. |
+| `/var/lib/happyranch-remote-access/home-issuer/{invite-issuer.json,invite-issuer.lock}` and `home-issuer-publication.json` beside the directory | Existing canonical root:root 0600 regular single-link journal/empty lock and fixed-directory identity receipt; existing nonblocking issuer lock. After DB proof and successful revoke (ceremony burned), B6 also admits canonical minting/uncertain outcomes; pending/unknown/unsafe entries still refuse. Parent root:root 0700, nlink 2; existing fixed unlink/rmdir and parent fsync, B16 intent/outcome. |
+| `/var/lib/happyranch-remote-access/home-minter` | Real root:root 0700 directory; only `happyranch-node` and `happyranch-invite` child names admitted; nlink equals 2 plus present children; rmdir only when empty. |
+| `home-minter/{happyranch-node,happyranch-invite}` | Real root:root 0700 directories, nlink 2; nonblocking directory flock in that fixed order. Only `operation-[0-9a-f]{64}`, `user-create`, `fence`, `fence.pending`, `rpc.lock` admitted, each S_ISREG root:root 0600 nlink 1, metadata only. Streamed enumeration is bounded at 600,000 entries per user. Existing rpc.lock flock also must be free. Unknown name/type/owner/mode/link count, bound exhaustion or contention refuses the whole minter set unchanged. |
+
+I3c C4/M1 proof is derived inside the existing B6 run: all five Headscale DB,
+WAL/SHM, Noise and DERP members have been removed and re-observed absent while
+the owned units are quiescent. An already-absent member is admitted only by the
+existing receipt-bound partial-removal retry handling. No caller supplies this
+proof. Without it all B7/B11/home-minter evidence remains and cleanup is incomplete.
+Nonterminal/pending issuer state with an active ceremony refuses; successful
+revoke-all proves the ceremony was burned, not that the DB was removed.
+
+M1-M7 scope reservation/marker/fence retention to one Headscale DB lifetime.
+After the proof, validate and lock the entire two-user minter set before any
+record removal. Per user unlink operation reservations, user-create, fence,
+fence.pending, then rpc.lock last; fsync the user directory, release its directory
+flock, rmdir it, and fsync its parent. Finally rmdir empty home-minter and fsync
+`/var/lib/happyranch-remote-access`. Interruption leaves a subset; retry requires
+fresh same-operation B6 proof again. B16 records a durable intent before and
+outcome after each fixed user's retirement, with counts only for reservations,
+markers, fences and pending fences; never IDs, hashes, contents or key material.
+Retaining user-create beyond the DB lifetime would permanently refuse a later
+fresh CreateUser. Fresh Enable still requires a new activation G/O CAS.
+
+Fixed custody directories otherwise follow existing D/custody rules: rmdir only
+when empty. Without a valid activation receipt D still refuses DB/Noise/socket
+and unreceipted entries; no-argument callers remain unchanged. Unknown/extra or
+unsafe objects remain and report incomplete cleanup; no recursive deletion.
+Explicitly destroy the owned CA private key on Turn off. B16 audit survives.
 
 Accounts follow A–E and spec §7 unchanged. Remove a helper-created, validly
 receipted `happyranch-headscale` user/group only after the owned unit is stopped
@@ -3093,15 +3135,16 @@ admissible devices or ceremony after successful revocation. This composition
 adds no IPC verb or new meaning to `revoke-all@1`. Revocation non-success
 (unavailable, changed, expired or lost reply) records the appropriate B16
 refused/uncertain outcome and **still runs stop**. Stop/ownership uncertainty
-prevents B6 and reports partial cleanup. **R7: B6 retains connector
-`trust-state.json`, `.anchor`, `.lock` and persisted sidecar state.** No deletion
-member, allowlist or executor is added; neither purge nor B17 is used for Disable.
-Complete requires successful revoke-all AND confirmed stop AND successful B6 AND
-no residue. Failed revoke ALWAYS produces `partial_cleanup`, naming retained
-un-revoked trust/sidecar state even if stop and B6 succeed. A changed generation
-permits at most one fresh read/retry within the original 300-second budget.
-Retained CA staging and B7/B11 evidence also require incomplete cleanup; I3c owns
-all such retirement. Today's real CA/evidence residue prevents complete Turn off.
+prevents B6 and reports partial cleanup. **I3c extends the same B6 executor:**
+the private helper carries its actual revoke-success Boolean through the fixed
+root child, alongside captured identities/G/O; it never comes from D-Bus inputs.
+Only successful revoke permits connector trust and persisted sidecar retirement.
+Neither purge nor the B17 executor is used for Disable. Complete requires
+successful revoke-all AND confirmed stop AND successful B6 AND all admitted
+residue retired. Failed revoke ALWAYS produces `partial_cleanup`, naming retained
+un-revoked trust/sidecar state. A changed generation permits at most one fresh
+read/retry within the original 300-second budget. CA staging and B7/B11/minter
+evidence follow the I3c custody/proof/audit rules above; any remainder is incomplete.
 I3a's private helper worker mounts this composition and records the closed outcome
 and safe residue components; public methods remain absent until I5.
 
@@ -3112,15 +3155,12 @@ when empty. Absence supports a partial-cleanup retry; existing preparation
 publication validation still requires every member. Unknown/unsafe entries
 refuse, with no recursive removal. Activation/publication evidence survives
 earlier partial failures; the account receipt retires last under A–E.
-Key-fence, nonempty issuer and transaction evidence retirement remains
-**DEFERRED**: main has no cleanup proof-plus-audit retirement owner for B7/B11.
-Those objects and the activation/account receipts stay retained and cleanup
-reports `partial-cleanup-uncertain` after known members were removed. No key
-settlement, journal adoption or automatic retry is inferred from quiescence.
-The B6 CA exception is only `home-ca/ca.key`: unlisted root-only staging
-`ca.pem`, `leaf.pem` and `leaf.key` also remain and report incomplete cleanup;
-they are not silently added to the deletion allowlist. Their presence prevents
-receipt/account retirement. The root-only directory is removed only if empty.
+I3c retires canonical B7/B11 evidence and the whole fixed home-minter record set
+only after same-operation DB deletion proof, with B16 intent/outcome persistence.
+This is evidence retirement, not recovery, journal adoption or automatic retry.
+The fixed CA staging set now includes ca.pem/leaf.pem/leaf.key as well as ca.key;
+all are validated and unlinked without reading their contents. Unknown or unsafe
+residue prevents account/activation receipt retirement and complete Turn off.
 
 **B7 — Local-node mint uncertainty and explicit recovery.**
 Persist one root-generated activation operation ID before `mint_local_node`.
@@ -3130,6 +3170,8 @@ exactly our fenced used key plus exactly one matching enrolled node observable
 through B2 permits resuming to `ready`; no usable key and no node permits one
 fresh mint under a new generation. Anything else stays uncertain and requires
 Turn off/ReplaceFailed. Valid restart uses empty-key state and never rekeys.
+B6's sole retirement exception requires the same-operation DB deletion proof
+and B16 audit described above; it does not permit replay inside a DB lifetime.
 Why no founder: fail-closed recovery through the existing Enable action.
 
 **Manager Ruling 12 (G2-C2, B7 explicit fresh-auth recovery)** —
@@ -3148,7 +3190,9 @@ engineering_manager, TASK-17421 step 19. Context: main after G2-D1 #1690
    complete bounded lists. Error, timeout, limit or parse failure retains uncertain
    state unchanged. Our fenced key has creation time inside O's durable
    `CreationWindow`, read without mutation from the existing root-custodied,
-   no-follow `operation-<sha256>` reservation. Never rewrite/delete reservations.
+   no-follow `operation-<sha256>` reservation. Never rewrite/delete reservations
+   within one Headscale DB lifetime; the sole removal exception is B6 retirement
+   after same-operation DB deletion proof (I3c M1).
 3. RESUME requires exactly one key, inside O's window, used, non-reusable and
    non-ephemeral; exactly one node; B2 observation passing Ruling 11 against that
    node; and independent owner verification of all eight effects, without executing
@@ -3418,6 +3462,12 @@ Deadline checks bracket journal, IPC, revalidation, minter and final publication
 a late reply never yields `complete`. OS I/O and dependency time bounds remain
 cooperative, not a hard interruption guarantee.
 
+B11 recovery does not delete its journal. Only receipt-bound B6 may retire it
+after same-operation DB deletion proof and B16 intent/outcome. Canonical
+nonterminal journals additionally require successful Disable revocation, proving
+no active ceremony; pending/unknown entries remain incomplete. The no-argument
+issuer cleanup contract is unchanged.
+
 Results use closed outcomes `complete`, `refused`, `uncertain`,
 `partial_cleanup` and the existing B15 invite/cleanup enums, without changing
 StatusV2 bytes. Acknowledged product invalidation can report invite `cancelled`
@@ -3639,7 +3689,12 @@ components are `sidecar`, `connector`, `headscale`, `units`, `live_state`,
 `credentials`, `accounts`; outcomes are `succeeded`, `failed`, `refused`, plus
 Turn off's `absent`, `retained`, `partial_cleanup`. Lost settlement instead uses
 an explicit `uncertain` event/stage/outcome referencing the original intent.
-Records contain only `version=1`, `event`, `stage` (`intent`, `outcome`,
+I3c minter retirement additionally permits a closed `counts` object only for
+`turn_off`/`uncertain`, `live_state`, and fixed subject-home-minter-node/invite
+labels. Its exact keys are reservations, markers, fences, pending_fences; each
+is a real integer in 0..600,000 and their sum is at most 600,000. No operation
+IDs/hashes or record contents are emitted. Existing records omit counts and
+retain their bytes. Other records contain only `version=1`, `event`, `stage` (`intent`, `outcome`,
 `uncertain`), `intent_id`, `operation_id`, `timestamp_ns`, nullable `subject_id`,
 `phase`, `component`, `outcome`. IDs are local audit labels, at most 320 ASCII
 bytes each: `intent-`, `op-`, `subject-` respectively, followed by lowercase
@@ -3649,7 +3704,10 @@ node identities, digest prefixes, arbitrary labels and diagnostics are not ID
 inputs. The complete JSON line including newline must fit 1024 bytes or refuse
 before I/O. The existing parent must be owned by the expected UID/GID and not
 group/world writable; all literal parents are opened without following links.
-Cooperating appends/rotation lock that directory through file fsync and directory
+B6 reuses the actual held activation-directory open file description, after
+literal-parent identity/custody validation, so B16 cannot deadlock by acquiring
+a separate flock on its own locked parent. It neither unlocks nor takes ownership
+of that borrowed descriptor. Cooperating appends/rotation lock that directory through file fsync and directory
 fsync before every successful append acknowledgement, including a reopened file
 left by an interrupted create, and after rename. An unsafe existing file or `.1`
 refuses without repair; only cap rotation replaces `.1`, never creating `.2` or

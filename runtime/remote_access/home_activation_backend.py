@@ -184,8 +184,11 @@ class HelperLifecycleBackend:
         return json.dumps(dict(uid=uid, activation=activation, generation=generation,
                                replacement=replacement, configuration=configuration), sort_keys=True, separators=(',', ':'))
 
-    def dispatch(self, method: str, uid: int, step: str, expected: str | None) -> dict:
+    def dispatch(self, method: str, uid: int, step: str, expected: str | None, *,
+                 revoke_succeeded: bool = False) -> dict:
         if method not in ('Enable', 'ReplaceFailed', 'Disable') or type(uid) is not int or uid < 1000:
+            raise ActivationRefused()
+        if type(revoke_succeeded) is not bool or (revoke_succeeded and (method, step) != ('Disable', 'cleanup')):
             raise ActivationRefused()
         if step == 'capture':
             if expected is not None:
@@ -202,7 +205,7 @@ class HelperLifecycleBackend:
                 expected_home_id=snapshot['activation']['home_id'],
                 expected_control_plane_id=snapshot['activation']['control_plane_id'],
                 expected_connector_id=snapshot['activation']['connector_id'], expected_generation=snapshot['generation'],
-                expected_operation_id=snapshot['activation']['operation'])
+                expected_operation_id=snapshot['activation']['operation'], revoke_succeeded=revoke_succeeded)
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
@@ -278,7 +281,12 @@ def helper_main() -> int:
         if len(raw) > 4096:
             raise ActivationRefused()
         request = json.loads(raw)
-        if type(request) is not dict or set(request) != {'method', 'uid', 'step', 'expected', 'deadline'}:
+        if type(request) is not dict:
+            raise ActivationRefused()
+        fields = {'method', 'uid', 'step', 'expected', 'deadline'}
+        if (request.get('method'), request.get('step')) == ('Disable', 'cleanup'):
+            fields.add('revoke_succeeded')
+        if set(request) != fields:
             raise ActivationRefused()
         deadline = request.pop('deadline')
         if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= time.monotonic():

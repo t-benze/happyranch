@@ -24,7 +24,7 @@ import ssl
 import stat
 import sys
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +76,19 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 HOME_ISSUER = headscale.INSTALLER_STATE + "/home-issuer"
 _ISSUER_RECEIPT = "home-issuer-publication.json"
+_HOME_MINTER = headscale.INSTALLER_STATE + "/home-minter"
+_HOME_MINTER_USERS = ("happyranch-node", "happyranch-invite")
+_HOME_MINTER_LIMIT = 600_000
+_HOME_STATE_MEMBERS = (
+    "/var/lib/happyranch-connector/trust-state.json",
+    "/var/lib/happyranch-connector/trust-state.json.anchor",
+    "/var/lib/happyranch-connector/trust-state.json.lock",
+    "/var/lib/happyranch-tsnet-sidecar/tailscaled.state",
+    "/var/lib/happyranch-tsnet-sidecar/credential.consumed",
+    "/var/lib/happyranch-tsnet-sidecar/tailscaled.log.conf",
+    "/var/lib/happyranch-tsnet-sidecar/tailscaled.log1.txt",
+    "/var/lib/happyranch-tsnet-sidecar/tailscaled.log2.txt",
+)
 _QUARANTINE_CONFIGS = ("connector.json", "sidecar.json", "policy.json")
 _QUARANTINE_PHASES = ("replacement-quarantine-connector", "replacement-quarantine-sidecar",
                       "replacement-quarantine-policy", "replacement-quarantined")
@@ -2020,7 +2033,7 @@ class ManagedInstaller:
         return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
                 info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
-    def _issuer_members(self, directory: int) -> dict[str, tuple[tuple[int, ...], bytes]]:
+    def _issuer_members(self, directory: int, *, db_retired: bool = False) -> dict[str, tuple[tuple[int, ...], bytes]]:
         names = set()
         with os.scandir(directory) as entries:
             for entry in entries:
@@ -2052,7 +2065,8 @@ class ManagedInstaller:
                         or any(type(record[k]) is not str or re.fullmatch(pattern, record[k]) is None
                                for k, pattern in (("operation_id", "[0-9a-f]{32}"), ("binding_digest", "[0-9a-f]{64}")))
                         or type(record["outcome"]) is not str
-                        or record["outcome"] not in {"issued", "refused", "expired", "encoding", "pairing", "recovered"}
+                        or record["outcome"] not in ({"issued", "refused", "expired", "encoding", "pairing", "recovered"}
+                                                    | ({"minting", "uncertain"} if db_retired else set()))
                         or any(type(record[k]) not in (int, float) or not 0 <= record[k] < 253402300300
                                or not math.isfinite(record[k]) for k in ("not_before", "expires_at"))
                         or json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() != data):
@@ -2062,7 +2076,7 @@ class ManagedInstaller:
             members[name] = self._issuer_signature(before), data
         return members
 
-    def _issuer_inventory(self, *, cleanup: bool = False) -> tuple[dict | None, bool]:
+    def _issuer_inventory(self, *, cleanup: bool = False, db_retired: bool = False) -> tuple[dict | None, bool]:
         receipt = self._issuer_receipt()
         present = False
         try:
@@ -2080,7 +2094,7 @@ class ManagedInstaller:
             info = os.fstat(directory)
             if info.st_nlink != 2:
                 raise InstallerError("issuer directory")
-            members = self._issuer_members(directory)
+            members = self._issuer_members(directory, db_retired=db_retired)
             if "invite-issuer.lock" in members:
                 lock = os.open("invite-issuer.lock", _FILE_FLAGS, dir_fd=directory)
                 try:
@@ -2131,24 +2145,24 @@ class ManagedInstaller:
             revalidate()
             self._issuer_inventory()
 
-    def _cleanup_issuer(self) -> None:
+    def _cleanup_issuer(self, *, db_retired: bool = False) -> None:
         partial = False
         lock = None
         try:
-            receipt, present = self._issuer_inventory(cleanup=True)
+            receipt, present = self._issuer_inventory(cleanup=True, db_retired=db_retired)
             if not present:
                 return
             with self._publication_parent(HOME_ISSUER) as (directory, revalidate):
                 info = os.fstat(directory)
                 if receipt is None or (receipt["device"], receipt["inode"]) != (info.st_dev, info.st_ino):
                     raise InstallerError("issuer directory changed")
-                members = self._issuer_members(directory)
+                members = self._issuer_members(directory, db_retired=db_retired)
                 if "invite-issuer.lock" in members:
                     lock = os.open("invite-issuer.lock", _FILE_FLAGS, dir_fd=directory)
                     if self._issuer_signature(os.fstat(lock)) != members["invite-issuer.lock"][0]:
                         raise InstallerError("issuer lock changed")
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if self._issuer_receipt() != receipt or self._issuer_members(directory) != members:
+                if self._issuer_receipt() != receipt or self._issuer_members(directory, db_retired=db_retired) != members:
                     raise InstallerError("issuer changed")
                 with self._publication_parent(headscale.INSTALLER_STATE) as (parent, parent_revalidate):
                     revalidate()
@@ -2199,9 +2213,139 @@ class ManagedInstaller:
                 os.close(lock)
         raise headscale.HeadscaleServiceError("issuer-partial-cleanup-uncertain" if partial else "issuer-cleanup-uncertain")
 
+    def _retire_home_minters(self, *, proof: Callable[[], None], require: Callable[[], None],
+                            retire: Callable, removing: Callable[[], None]) -> None:
+        """M3-M5: validate the whole fixed set under its existing locks first.
+
+        Scan streaming, twice, without buffering 600,000 names or reading any
+        record contents. The activation lock and both user locks span removal.
+        """
+        with ExitStack() as stack:
+            try:
+                base, check_base = stack.enter_context(self._publication_parent(_HOME_MINTER))
+            except FileNotFoundError:
+                return
+            users = {}
+            with os.scandir(base) as entries:
+                for index, item in enumerate(entries):
+                    if index >= 2 or item.name not in _HOME_MINTER_USERS:
+                        raise InstallerError("home minter child")
+                    users[item.name] = None
+            if os.fstat(base).st_nlink != 2 + len(users):
+                raise InstallerError("home minter links")
+
+            def record_info(directory: int, name: str) -> os.stat_result:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or (info.st_uid, info.st_gid) != self.root_owner
+                        or stat.S_IMODE(info.st_mode) != 0o600):
+                    raise InstallerError("home minter record")
+                return info
+
+            for user in _HOME_MINTER_USERS:
+                if user not in users:
+                    continue
+                directory, check = stack.enter_context(self._publication_parent(_HOME_MINTER + "/" + user))
+                if os.fstat(directory).st_nlink != 2:
+                    raise InstallerError("home minter directory")
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                counts = dict(reservations=0, markers=0, fences=0, pending_fences=0)
+                with os.scandir(directory) as entries:
+                    for index, item in enumerate(entries):
+                        if index >= _HOME_MINTER_LIMIT:
+                            raise InstallerError("home minter bound")
+                        if re.fullmatch(r"operation-[0-9a-f]{64}", item.name):
+                            counts["reservations"] += 1
+                        elif item.name in {"user-create", "fence", "fence.pending"}:
+                            counts[{"user-create": "markers", "fence": "fences",
+                                    "fence.pending": "pending_fences"}[item.name]] += 1
+                        elif item.name != "rpc.lock":
+                            raise InstallerError("home minter name")
+                        record_info(directory, item.name)
+                # Direct fixed Go RPCs also hold rpc.lock. Never remove it from
+                # under an active RPC, even if another writer omitted its outer lock.
+                try:
+                    lock = os.open("rpc.lock", _FILE_FLAGS, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                else:
+                    stack.callback(os.close, lock)
+                    if self._issuer_signature(os.fstat(lock)) != self._issuer_signature(record_info(directory, "rpc.lock")):
+                        raise InstallerError("home minter lock changed")
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                check()
+                users[user] = directory, check, counts
+            check_base()
+            proof()
+
+            for user in _HOME_MINTER_USERS:
+                if user not in users:
+                    continue
+                directory, check, counts = users[user]
+
+                def remove() -> None:
+                    require()
+                    proof()
+                    check_base()
+                    check()
+
+                    def unlink(name: str) -> None:
+                        info = record_info(directory, name)
+                        check_base()
+                        check()
+                        if self._issuer_signature(record_info(directory, name)) != self._issuer_signature(info):
+                            raise InstallerError("home minter changed")
+                        removing()
+                        os.unlink(name, dir_fd=directory)
+
+                    # All users were validated before the first effect. Recheck
+                    # each leaf just before unlink; fixed records and RPC lock last.
+                    with os.scandir(directory) as entries:
+                        for index, item in enumerate(entries):
+                            if index >= _HOME_MINTER_LIMIT:
+                                raise InstallerError("home minter bound")
+                            if re.fullmatch(r"operation-[0-9a-f]{64}", item.name):
+                                unlink(item.name)
+                            elif item.name not in {"user-create", "fence", "fence.pending", "rpc.lock"}:
+                                raise InstallerError("home minter name")
+                    for name in ("user-create", "fence", "fence.pending", "rpc.lock"):
+                        try:
+                            unlink(name)
+                        except FileNotFoundError:
+                            pass
+                    os.fsync(directory)
+                    check_base()
+                    check()
+                    with os.scandir(directory) as entries:
+                        nonempty = next(entries, None) is not None
+                    if nonempty or os.fstat(directory).st_nlink != 2:
+                        raise InstallerError("home minter not empty")
+                    # M4: release only after fsync, then remove this empty user
+                    # directory before acknowledging its retirement in B16.
+                    fcntl.flock(directory, fcntl.LOCK_UN)
+                    check_base()
+                    removing()
+                    os.rmdir(user, dir_fd=base)
+                    os.fsync(base)
+
+                retire("subject-home-minter-" + user.removeprefix("happyranch-"), remove, counts=counts)
+            require()
+            proof()
+            check_base()
+            with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check_parent):
+                check_base()
+                check_parent()
+                with os.scandir(base) as entries:
+                    nonempty = next(entries, None) is not None
+                if nonempty or os.fstat(base).st_nlink != 2:
+                    raise InstallerError("home minter not empty")
+                removing()
+                os.rmdir("home-minter", dir_fd=parent)
+                os.fsync(parent)
+
     def _cleanup_home_headscale(
         self, release_uid: int, home_id: str, control_plane_id: str, connector_id: str,
-        generation: int, operation_id: str | None = None,
+        generation: int, operation_id: str | None = None, *, revoke_succeeded: bool = False,
     ) -> dict[str, str]:
         """Receipt-bound B6 executor. The lifecycle caller supplies trusted expectations.
 
@@ -2212,6 +2356,7 @@ class ManagedInstaller:
         """
         # Callable-local imports avoid the existing activation -> installer edge.
         from runtime.remote_access import home_activation as activation
+        from runtime.remote_access import home_audit
         from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
         from runtime.remote_access.home_unit_gate import HomeUnitGate
 
@@ -2226,7 +2371,9 @@ class ManagedInstaller:
                                 root=self.root, root_owner=self.root_owner)
             store = activation.HomeActivationStore(root=self.root, root_owner=self.root_owner)
             transactions = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
-            with transactions.locked():
+            with transactions.locked() as activation_directory:
+                audit = home_audit.HomeAudit(self.root / headscale.INSTALLER_STATE / "home-audit.jsonl",
+                    uid=self.root_owner[0], gid=self.root_owner[1], directory_fd=activation_directory)
                 current = store.read(expected_generation=generation)
                 if operation_id is not None and current.operation_id != operation_id:
                     raise InstallerError("home operation changed")
@@ -2280,10 +2427,14 @@ class ManagedInstaller:
                         members[path] = "file", owner, mode, digest
                     if "directories" in publication:
                         members["/" + headscale.EMPTY_CA] = "directory", self.root_owner, 0o755, None
-                # B6 grants only the signing-key exception to D's preservation
-                # of root-only CA staging. Other entries remain incomplete.
-                # CA private bytes and sockets are never opened/read/connected.
-                members[f"/{headscale.HOME_CA}/ca.key"] = "file", self.root_owner, 0o600, None
+                # I3c C2: fixed root-only staging, metadata only. The CA private
+                # bytes, opaque trust/tsnet state and sockets are never read.
+                for name in ("ca.key", "ca.pem", "leaf.pem", "leaf.key"):
+                    members[f"/{headscale.HOME_CA}/{name}"] = "file", self.root_owner, 0o600, None
+                state_paths = _HOME_STATE_MEMBERS
+                if revoke_succeeded:
+                    for path in state_paths:
+                        members[path] = "file", self._service_owner, 0o600, None
 
                 def entry(path: str, *, remove: bool = False) -> bool:
                     nonlocal partial
@@ -2338,9 +2489,13 @@ class ManagedInstaller:
 
                 def inventory() -> None:
                     # Shallow fixed custody only; never recurse into an unknown entry.
-                    for directory in headscale.CUSTODY:
+                    for directory in (*headscale.CUSTODY, headscale.HOME_CA,
+                                      *(_STATE_DIRS if revoke_succeeded else ())):
                         try:
                             with self._publication_parent(directory) as (parent, check):
+                                if directory in _STATE_DIRS and (stat.S_IMODE(os.fstat(parent).st_mode) != 0o700
+                                                                or os.fstat(parent).st_nlink != 2):
+                                    raise InstallerError("state directory custody")
                                 allowed = {Path(path).name for path in members
                                            if str(Path(path).parent) == "/" + directory}
                                 with os.scandir(parent) as entries:
@@ -2371,8 +2526,87 @@ class ManagedInstaller:
                 if any(entry(path) for path in members):
                     raise InstallerError("live member returned")
 
-                # B7/B11 currently expose no cleanup proof + audit retirement
-                # owner. Retain all fences, issuer journals and txn evidence.
+                # C4/M1 proof is derived here, never accepted from the caller.
+                # Existing absence supports a receipt-admitted partial retry.
+                def db_proof() -> None:
+                    if any(entry(path) for path in activation.LIVE_MEMBERS[:5]):
+                        raise InstallerError("Headscale DB retirement unproven")
+
+                def removing() -> None:
+                    nonlocal partial
+                    partial = True
+
+                def retire(subject: str, effect: Callable[[], None], *, counts: dict | None = None) -> None:
+                    require()
+                    db_proof()
+                    label = "-".join(str(byte) for byte in os.urandom(12))
+                    intent = audit.intent(home_audit.Event.TURN_OFF, intent_id="intent-" + label,
+                        operation_id="op-" + label, component=home_audit.Component.LIVE_STATE,
+                        subject_id=subject, counts=counts)
+                    try:
+                        require()
+                        db_proof()
+                        effect()
+                        audit.outcome(intent, home_audit.Outcome.SUCCEEDED)
+                    except Exception:
+                        audit.uncertain(intent)
+                        raise
+
+                db_proof()
+                # A failed revoke never licenses deleting un-revoked state.
+                if not revoke_succeeded:
+                    for path in state_paths:
+                        relative = Path(path.lstrip("/"))
+                        try:
+                            with self._publication_parent(str(relative.parent)) as (parent, check):
+                                try:
+                                    os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                                except FileNotFoundError:
+                                    check()
+                                    continue
+                                raise InstallerError("un-revoked state retained")
+                        except FileNotFoundError:
+                            pass
+
+                self._retire_home_minters(proof=db_proof, require=require, retire=retire, removing=removing)
+
+                # B7's bound nonsecret transaction may retire only after the DB.
+                transaction = transactions.read_optional()
+                if transaction is not None:
+                    if not transaction.matches(current):
+                        raise InstallerError("transaction binding")
+                    def remove_transaction() -> None:
+                        if transactions.read_optional() != transaction:
+                            raise InstallerError("transaction changed")
+                        with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
+                            check()
+                            removing()
+                            os.unlink("home-activation-txn.json", dir_fd=parent)
+                            os.fsync(parent)
+                    retire("subject-activation-evidence", remove_transaction)
+
+                # B11: successful revoke burns all active ceremonies. Only that
+                # fact plus DB retirement admits an otherwise uncertain journal.
+                issuer_receipt, issuer_present = self._issuer_inventory(cleanup=True,
+                    db_retired=revoke_succeeded)
+                if issuer_present:
+                    with self._publication_parent(HOME_ISSUER) as (parent, check):
+                        issuer_members = self._issuer_members(parent, db_retired=revoke_succeeded)
+                        check()
+                    if issuer_members and not revoke_succeeded:
+                        raise InstallerError("issuer ceremony not proven retired")
+                    retire("subject-issuer-evidence", lambda: self._cleanup_issuer(db_retired=revoke_succeeded))
+                if issuer_receipt is not None:
+                    def remove_issuer_receipt() -> None:
+                        if self._issuer_receipt() != issuer_receipt:
+                            raise InstallerError("issuer receipt changed")
+                        with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
+                            check()
+                            removing()
+                            os.unlink(_ISSUER_RECEIPT, dir_fd=parent)
+                            os.fsync(parent)
+                    retire("subject-issuer-custody", remove_issuer_receipt)
+
                 deferred = False
                 with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
                     with os.scandir(parent) as entries:
@@ -2381,7 +2615,8 @@ class ManagedInstaller:
                                 raise InstallerError("cleanup evidence inventory")
                             if item.name not in {Path(activation.ACTIVATION_PATH).name,
                                                  headscale.RECEIPT, headscale.PUBLICATION, "home-ca",
-                                                 "home-issuer", _ISSUER_RECEIPT}:
+                                                 "home-issuer", _ISSUER_RECEIPT,
+                                                 "home-audit.jsonl", "home-audit.jsonl.1"}:
                                 deferred = True
                     check()
                 try:
@@ -2399,9 +2634,8 @@ class ManagedInstaller:
                 except FileNotFoundError:
                     pass
                 if deferred:
-                    raise InstallerError("unlisted custody or B7/B11 retirement deferred")
+                    raise InstallerError("unlisted custody")
                 require()
-                self._cleanup_issuer()  # Empty, receipted issuer only; never a journal here.
                 # A-E are unchanged: fresh identity, userdel then unshared groupdel.
                 user, group = self._headscale_cleanup_identity(receipt)
                 if receipt:
@@ -2422,7 +2656,8 @@ class ManagedInstaller:
                             raise InstallerError("groupdel uncertain")
                     if self._headscale_cleanup_identity(receipt) != (False, False):
                         raise InstallerError("identity remains")
-                for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar"):
+                for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar",
+                                  *(_STATE_DIRS if revoke_succeeded else ())):
                     require()
                     inventory()
                     relative = Path(directory)
@@ -2476,7 +2711,7 @@ class ManagedInstaller:
                         "account": "removed" if receipt else "preserved: not created by HappyRanch",
                         "home_ca": "removed"}
         except (OSError, InstallerError, ValueError, UnicodeError, ServiceManagerError,
-                headscale.HeadscaleServiceError):
+                headscale.HeadscaleServiceError, home_audit.AuditRefused):
             pass
         finally:
             self._headscale_preparing = False
@@ -2486,6 +2721,7 @@ class ManagedInstaller:
         self, *, expected_release_uid: int | None = None, expected_home_id: str | None = None,
         expected_control_plane_id: str | None = None, expected_connector_id: str | None = None,
         expected_generation: int | None = None, expected_operation_id: str | None = None,
+        revoke_succeeded: bool = False,
     ) -> dict[str, str]:
         """Remove only proven custody; explicit trusted expectations select B6.
 
@@ -2495,8 +2731,13 @@ class ManagedInstaller:
         """
         expected = (expected_release_uid, expected_home_id, expected_control_plane_id,
                     expected_connector_id, expected_generation)
+        if type(revoke_succeeded) is not bool:
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
         if any(value is not None for value in (*expected, expected_operation_id)):
-            return self._cleanup_home_headscale(*expected, operation_id=expected_operation_id)
+            return self._cleanup_home_headscale(*expected, operation_id=expected_operation_id,
+                                                revoke_succeeded=revoke_succeeded)
+        if revoke_succeeded:
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
         if self.layout != "deb":
             raise headscale.HeadscaleServiceError("deb-layout-required")
         self._headscale_preparing = True
@@ -2856,6 +3097,8 @@ class ManagedInstaller:
             layout[headscale.INSTALLER_STATE] = (0o700, self.root_owner)
             layout[headscale.HOME_CA] = (0o700, self.root_owner)
             layout[HOME_ISSUER] = (0o700, self.root_owner)
+            for path in (_HOME_MINTER, *(_HOME_MINTER + "/" + user for user in _HOME_MINTER_USERS)):
+                layout[path] = (0o700, self.root_owner)
             layout[headscale.EMPTY_CA] = (0o755, self.root_owner)
             for path in headscale.CUSTODY:
                 layout[path] = (0o700, self._headscale_owner)

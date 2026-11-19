@@ -111,6 +111,45 @@ def test_closed_fields(venue: Any, field: str) -> None:
     assert not writer.path.exists()
 
 
+def test_minter_counts_and_borrowed_activation_lock(venue: Any) -> None:
+    writer, parent, _ = venue
+    held = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    contender = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        writer = audit.HomeAudit(writer.path, directory_fd=held)
+        counts = dict(reservations=599_996, markers=1, fences=1, pending_fences=1)
+        intent = writer.intent('turn_off', intent_id='intent-1', operation_id='op-1',
+            subject_id='subject-home-minter-node', component='live_state', counts=counts)
+        writer.outcome(intent, 'succeeded')
+        assert [row['counts'] for row in rows(writer.path)] == [counts, counts]
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = writer.path.read_bytes()
+        for bad in ({**counts, 'reservations': True}, {**counts, 'markers': -1},
+                    {**counts, 'reservations': 600_001}, {**counts, 'extra': 1},
+                    {**counts, 'reservations': 600_000}):
+            with pytest.raises(audit.AuditRefused, match='record'):
+                writer.intent('turn_off', intent_id='intent-1', operation_id='op-1',
+                    subject_id='subject-home-minter-node', component='live_state', counts=bad)
+        assert writer.path.read_bytes() == before
+    finally:
+        os.close(held)
+        os.close(contender)
+
+
+def test_borrowed_activation_lock_requires_same_parent(venue: Any, tmp_path: Path) -> None:
+    writer, _, _ = venue
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        borrowed = audit.HomeAudit(writer.path, directory_fd=descriptor)
+        with pytest.raises(audit.AuditRefused, match='custody'):
+            borrowed.append(record())
+        assert not writer.path.exists()
+    finally:
+        os.close(descriptor)
+
+
 @pytest.mark.parametrize('value', [
     'nodekey:synthetic', 'tskey-synthetic', 'op-tskey', 'op-nodekey', 'op-token',
     'op-' + 'a' * 64, 'op-deadbeef', 'op-0123456789abcdef',

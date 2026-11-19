@@ -156,13 +156,13 @@ class HomeActivationTransactionStore(HomeActivationStore):
             yield parent
 
     @contextmanager
-    def locked(self) -> Iterator[None]:
+    def locked(self) -> Iterator[int]:
         """One nonblocking directory lock spans both records and every effect."""
         try:
             with self._parent(TRANSACTION_PATH) as (parent, revalidate):
                 fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 revalidate()
-                yield
+                yield parent
                 revalidate()
         except (OSError, InstallerError, HeadscaleServiceError):
             raise HomeActivationError("state") from None

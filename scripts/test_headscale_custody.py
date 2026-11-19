@@ -5,6 +5,7 @@ Run: uv run --frozen --python /usr/bin/python3 pytest scripts/test_headscale_cus
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -1511,8 +1512,7 @@ def b6_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.C
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
     root = fixture.root
     if not staging:
-        # Model absence of paths outside B6; the complete materializer case below
-        # proves they are retained rather than silently added to the allowlist.
+        # Older B6 cases isolate live members; I3c below covers full staging.
         for name in ("ca.pem", "leaf.pem", "leaf.key"):
             (root / home.HOME_CA / name).unlink()
     lookup, run = fixture.lookup_user, fixture.run
@@ -1759,19 +1759,230 @@ def test_b6_accounts_partial_and_retained_evidence(
     if case == "unowned": assert not any(args[0] in {"userdel", "groupdel"} for args in fixture.calls)
 
 
-def test_b6_unlisted_ca_staging_is_retained(
+def test_b6_ca_staging_is_retired(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     activation, _ = b6_setup(fixture, monkeypatch, capsys, staging=True)
     staging = fixture.root / home.HOME_CA
-    before = {name: (staging / name).read_bytes() for name in ("ca.pem", "leaf.pem", "leaf.key")}
-    with pytest.raises(home.HeadscaleServiceError, match="^partial-cleanup-uncertain$"):
-        fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
-    assert {name: (staging / name).read_bytes() for name in before} == before
-    assert not (staging / "ca.key").exists()
+    assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED)["state"] == "removed"
+    assert not staging.exists()
     assert all(not (fixture.root / path).exists() for path in _B6_LIVE)
+    assert not activation.exists() and not fixture.receipt().exists()
+    assert not fixture.present and not fixture.group_present
+
+
+def b6_minters(root: Path) -> Path:
+    base = root / home.INSTALLER_STATE / "home-minter"
+    base.mkdir(mode=0o700)
+    for user in ("happyranch-node", "happyranch-invite"):
+        directory = base / user
+        directory.mkdir(mode=0o700)
+        for name in ("operation-" + "a" * 64, "user-create", "fence", "fence.pending", "rpc.lock"):
+            (directory / name).write_bytes(b"synthetic opaque evidence")
+            (directory / name).chmod(0o600)
+    return base
+
+
+def test_b6_retires_minters_after_db_with_counts_audit(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys, staging=True)
+    base = b6_minters(fixture.root)
+    journal = fixture.root / home.INSTALLER_STATE / "home-audit.jsonl"
+    original_unlink, original_open = os.unlink, os.open
+    removed = []
+    def remove(name: str, **kwargs: object) -> None:
+        if name in {"operation-" + "a" * 64, "user-create", "fence", "fence.pending", "rpc.lock"}:
+            assert all(not (fixture.root / path).exists() for path in _B6_LIVE[:5])
+            assert json.loads(journal.read_text().splitlines()[-1])["stage"] == "intent"
+            removed.append(name)
+        original_unlink(name, **kwargs)
+    def metadata_only(name: str, flags: int, *args: object, **kwargs: object) -> int:
+        assert name not in {"operation-" + "a" * 64, "user-create", "fence", "fence.pending"}
+        return original_open(name, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "unlink", remove)
+    monkeypatch.setattr(os, "open", metadata_only)
+    assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)["state"] == "removed"
+    assert not base.exists() and not activation.exists()
+    assert removed == ["operation-" + "a" * 64, "user-create", "fence", "fence.pending", "rpc.lock"] * 2
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    for user in ("node", "invite"):
+        pair = [r for r in rows if r["subject_id"] == "subject-home-minter-" + user]
+        assert [r["stage"] for r in pair] == ["intent", "outcome"]
+        assert pair[-1]["outcome"] == "succeeded"
+        assert all(r["counts"] == dict(reservations=1, markers=1, fences=1, pending_fences=1) for r in pair)
+    assert "a" * 64 not in journal.read_text() and "synthetic opaque evidence" not in journal.read_text()
+
+
+@pytest.mark.parametrize("failure", ["db-unlink", "noise-unlink", "db-returned"])
+def test_b6_no_db_proof_retains_whole_minter_set(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    base = b6_minters(fixture.root)
+    before = b6_snapshot(base)
+    native = os.unlink
+    def remove(name: str, **kwargs: object) -> None:
+        if name == ("db.sqlite" if failure == "db-unlink" else "noise.key") and failure != "db-returned":
+            raise OSError("synthetic failed DB retirement")
+        native(name, **kwargs)
+        if name == "derp.key" and failure == "db-returned":
+            path = fixture.root / _B6_LIVE[0]
+            path.write_bytes(b"returned DB")
+            path.chmod(0o600)
+    monkeypatch.setattr(os, "unlink", remove)
+    with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert b6_snapshot(base) == before and activation.exists() and fixture.receipt().exists()
+
+
+@pytest.mark.parametrize("bad", ["unknown-child", "unknown-name", "type", "symlink", "fifo", "mode", "owner",
+                                 "hardlink", "directory-mode", "directory-link", "busy", "rpc-busy", "bound"])
+def test_b6_bad_minter_refuses_whole_set(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    base = b6_minters(fixture.root)
+    directory = base / "happyranch-invite"  # Later user: earlier user's records must also remain.
+    marker = directory / "user-create"
+    if bad == "unknown-child": (base / "foreign").mkdir(mode=0o700)
+    if bad == "unknown-name": (directory / "operation-not-a-hash").touch(mode=0o600)
+    if bad in {"type", "symlink", "fifo"}:
+        marker.unlink()
+        if bad == "type": marker.mkdir(mode=0o700)
+        elif bad == "symlink": marker.symlink_to("foreign")
+        else: os.mkfifo(marker, 0o600)
+    if bad == "mode": marker.chmod(0o644)
+    if bad == "owner":
+        native = os.stat
+        def observe(name: str, *args: object, **kwargs: object) -> os.stat_result:
+            info = native(name, *args, **kwargs)
+            if name == "user-create":
+                fields = list(info)
+                fields[4] += 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(os, "stat", observe)
+    if bad == "hardlink": (fixture.root / "extra-link").hardlink_to(marker)
+    if bad == "directory-mode": directory.chmod(0o755)
+    if bad == "directory-link":
+        directory.rename(directory.with_name("foreign"))
+        directory.symlink_to("foreign", target_is_directory=True)
+    if bad == "bound":
+        assert module._HOME_MINTER_LIMIT == 600_000
+        monkeypatch.setattr(module, "_HOME_MINTER_LIMIT", 4)  # Real streamed scan, scaled boundary.
+    lock = None
+    try:
+        if bad in {"busy", "rpc-busy"}:
+            lock = os.open(directory if bad == "busy" else directory / "rpc.lock", os.O_RDONLY)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = b6_snapshot(base)
+        with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+        assert b6_snapshot(base) == before and activation.exists() and fixture.receipt().exists()
+    finally:
+        if lock is not None: os.close(lock)
+
+
+@pytest.mark.parametrize("revoked", [True, False])
+def test_b6_trust_and_sidecar_require_successful_revoke(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], revoked: bool,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    for path in module._HOME_STATE_MEMBERS:
+        target = fixture.root / path.lstrip("/")
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        target.write_bytes(b"synthetic opaque state")
+        target.chmod(0o600)
+    before = {p: (fixture.root / p.lstrip("/")).read_bytes() for p in module._HOME_STATE_MEMBERS}
+    if revoked:
+        assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)["state"] == "removed"
+        assert all(not (fixture.root / p.lstrip("/")).exists() for p in before)
+        assert not activation.exists()
+    else:
+        with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=False)
+        assert {p: (fixture.root / p.lstrip("/")).read_bytes() for p in before} == before
+        assert activation.exists() and fixture.receipt().exists()
+
+
+@pytest.mark.parametrize("outcome", ["minting", "uncertain", "issued", "recovered"])
+@pytest.mark.parametrize("revoked", [True, False])
+def test_b6_issuer_and_transaction_retirement(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], outcome: str, revoked: bool,
+) -> None:
+    from runtime.remote_access.home_activation import HomeActivationStore
+    from runtime.remote_access.home_activation_txn import HomeActivationTransaction, HomeActivationTransactionStore
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    receipts = HomeActivationStore(root=fixture.root, root_owner=(fixture.uid, fixture.gid))
+    transactions = HomeActivationTransactionStore(root=fixture.root, root_owner=(fixture.uid, fixture.gid))
+    transactions.publish(HomeActivationTransaction.begin(receipts.current()))
+    issuer_journal(fixture.root / ISSUER, outcome)
+    txn = activation.with_name("home-activation-txn.json")
+    if not revoked:
+        with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED)
+        assert (fixture.root / ISSUER / "invite-issuer.json").exists() and activation.exists()
+        return
+    assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)["state"] == "removed"
+    assert not txn.exists() and not (fixture.root / ISSUER).exists()
+    assert not activation.with_name(ISSUER_RECEIPT).exists()
+    rows = [json.loads(line) for line in activation.with_name("home-audit.jsonl").read_text().splitlines()]
+    for subject in ("subject-activation-evidence", "subject-issuer-evidence"):
+        assert [(r["stage"], r["outcome"]) for r in rows if r["subject_id"] == subject] == [
+            ("intent", None), ("outcome", "succeeded")]
+
+
+@pytest.mark.parametrize("db_safe", [True, False])
+def test_b6_minter_interruption_retry_reestablishes_db_proof(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], db_safe: bool,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    base = b6_minters(fixture.root)
+    native = os.unlink
+    def remove(name: str, **kwargs: object) -> None:
+        if name == "fence": raise OSError("synthetic interrupted removal")
+        native(name, **kwargs)
+    monkeypatch.setattr(os, "unlink", remove)
+    with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert not (base / "happyranch-node/user-create").exists()
+    assert (base / "happyranch-invite/user-create").exists() and activation.exists()
+    monkeypatch.setattr(os, "unlink", native)
+    if db_safe:
+        assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)["state"] == "removed"
+        assert not base.exists() and not activation.exists()
+    else:
+        db = fixture.root / _B6_LIVE[0]
+        db.write_bytes(b"unsafe returned DB")
+        db.chmod(0o644)
+        before = b6_snapshot(base)
+        with pytest.raises(home.HeadscaleServiceError, match="cleanup-uncertain"):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+        assert b6_snapshot(base) == before and activation.exists()
+
+
+@pytest.mark.parametrize("boundary", ["intent", "outcome"])
+def test_b6_retirement_audit_failure_retains_evidence(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], boundary: str,
+) -> None:
+    from runtime.remote_access import home_audit
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    base = b6_minters(fixture.root)
+    before = b6_snapshot(base)
+    def fail(*args: object, **kwargs: object) -> None:
+        raise home_audit.AuditRefused("unavailable")
+    monkeypatch.setattr(home_audit.HomeAudit, boundary, fail)
+    with pytest.raises(home.HeadscaleServiceError, match="partial-cleanup-uncertain"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
     assert activation.exists() and fixture.receipt().exists()
-    assert fixture.present and fixture.group_present
+    if boundary == "intent":
+        assert b6_snapshot(base) == before
+    else:
+        assert not (base / "happyranch-node").exists()
+        assert (base / "happyranch-invite/user-create").exists()
+        rows = [json.loads(line) for line in activation.with_name("home-audit.jsonl").read_text().splitlines()]
+        assert [(r["stage"], r["outcome"]) for r in rows] == [("intent", None), ("uncertain", "uncertain")]
 
 
 @pytest.mark.parametrize("relative", _B6_LIVE)
