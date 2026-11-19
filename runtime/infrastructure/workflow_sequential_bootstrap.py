@@ -37,6 +37,7 @@ class BootstrapEvidenceError(ValueError):
     """Closed cause; preserve original errors locally, never publish their text."""
 
 
+_TARGET_VERSION = 2
 _PHASES = ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')
 _STATES = {
     'intent': ('unknown', 'install_incomplete'),
@@ -46,6 +47,7 @@ _STATES = {
     'verified': ('installed_unverified', 'installation_unverified'),
     'registered': ('installed_verified', 'registered'),
     'not_installed': ('not_installed', 'not_installed'),
+    'not_upgraded': ('installed_unverified', 'installation_unverified'),
 }
 
 
@@ -134,6 +136,8 @@ class BootstrapAttempt:
         self._descriptors: list[dict] = []
         self._entries: set[str] = set()
         self._parent: int | None = None
+        self._prior_selection: BootstrapSelection | None = None
+        self.predecessor: dict | None = None
         self._sequence = 0
         self._previous: str | None = None
         self._phase: str | None = None
@@ -184,7 +188,15 @@ class BootstrapAttempt:
             # Complete bounded discovery, never a selected prefix. No observed
             # old/failed/unknown attempt is automatic retry authority.
             if _names(parent, 64, min(self.deadline, time.monotonic()+1)):
-                raise BootstrapEvidenceError('workflow_setup_attempt_latched')
+                self._prior_selection = BootstrapSelection(home=self.home, fence=self.fence,
+                    deadline=min(self.deadline, time.monotonic()+1))
+                prior = self._prior_selection._read_evidence(self._prior_selection.deadline)
+                self._prior_selection.close()
+                if (prior['phase'] != 'registered' or prior['target_version'] != 1
+                        or prior['db_identity'] != dict(path=self.source_identity[0],
+                            device=self.source_identity[1], inode=self.source_identity[2])):
+                    raise BootstrapEvidenceError('workflow_setup_attempt_latched')
+                self.predecessor = dict(attempt_id=prior['attempt_id'], digest=prior['record_digest'])
             os.mkdir(self.attempt_id, 0o700, dir_fd=parent)
             os.fsync(parent)
             self._parent = self._own(os.open(self.attempt_id,
@@ -207,16 +219,16 @@ class BootstrapAttempt:
             self._check(reserve=phase in ('intent', 'backup_verified', 'pre_commit'))
             if self._parent is None or self._sequence >= 16:
                 raise BootstrapEvidenceError('workflow_setup_phase_invalid')
-            terminal = phase == 'not_installed' and self._phase in ('intent', 'backup_verified', 'pre_commit')
+            terminal = phase in ('not_installed', 'not_upgraded') and self._phase in ('intent', 'backup_verified', 'pre_commit')
             if (not terminal and (self._sequence >= len(_PHASES) or phase != _PHASES[self._sequence])
-                    or self._phase in ('not_installed', 'registered')):
+                    or self._phase in ('not_installed', 'not_upgraded', 'registered')):
                 raise BootstrapEvidenceError('workflow_setup_phase_invalid')
             if backup_sha256 is not None:
                 if (type(backup_sha256) is not str or re.fullmatch('[0-9a-f]{64}', backup_sha256) is None
                         or self._backup_sha256 not in (None, backup_sha256)):
                     raise BootstrapEvidenceError('workflow_setup_backup_changed')
             digest = self._backup_sha256 if backup_sha256 is None else backup_sha256
-            if phase not in ('intent', 'not_installed') and digest is None:
+            if phase not in ('intent', 'not_installed', 'not_upgraded') and digest is None:
                 raise BootstrapEvidenceError('workflow_setup_backup_unproven')
             expected = self._entries.copy()
             if phase != 'intent' and (phase != 'not_installed' or digest is not None):
@@ -236,12 +248,12 @@ class BootstrapAttempt:
                         or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
                     raise BootstrapEvidenceError('workflow_setup_backup_unsafe')
             state, reason = _STATES[phase]
-            value = dict(format='workflow-setup-event@1', runtime_key=self.runtime_key,
+            value = dict(format='workflow-setup-event@2', runtime_key=self.runtime_key,
                 org_slug=self.slug, attempt_id=self.attempt_id, sequence=self._sequence,
                 previous_digest=self._previous, phase=phase, state=state, reason=reason,
                 attempt_time=self.attempt_time, backup_path=str(self.backup_path),
                 db_identity=dict(path=self.source_identity[0], device=self.source_identity[1], inode=self.source_identity[2]),
-                source_inventory_digest=self.source_inventory_digest, backup_sha256=digest, target_version=1)
+                source_inventory_digest=self.source_inventory_digest, backup_sha256=digest, target_version=_TARGET_VERSION, predecessor=self.predecessor)
             raw = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')
             if len(raw) > 65536:
                 raise BootstrapEvidenceError('workflow_setup_record_exhausted')
@@ -279,6 +291,11 @@ class BootstrapAttempt:
     def close(self) -> None:
         """One close attempt per original descriptor, retaining uncertainty."""
         errors = []
+        if self._prior_selection is not None:
+            try:
+                self._prior_selection.close()
+            except BaseException as exc:
+                errors.append(exc)
         for record in reversed(self._descriptors):
             if record['attempted']:
                 if not record['closed']:
@@ -346,6 +363,7 @@ class BootstrapSelection:
         self.source_identity: tuple | None = None
         self.attempt: dict | None = None
         self.result: str | None = None
+        self.upgrade = False
         self.started = self.failed = self.closed = False
         self.primary: BaseException | None = None
         self.close_error: BaseException | None = None
@@ -403,7 +421,8 @@ class BootstrapSelection:
             if not names:
                 return None
             value = self._read_evidence(evidence_deadline)
-            if value['state'] == 'not_installed' and value['phase'] == 'held':
+            if (value['state'] in ('not_installed', 'installed_unverified') and value['phase'] == 'held'
+                    or value['phase'] == 'not_upgraded'):
                 return value
             if (value['state'], value['reason'], value['phase']) != (
                     'installed_verified', 'registered', 'registered'):
@@ -429,7 +448,7 @@ class BootstrapSelection:
         try:
             self._check()
             self.attempt = self._prior()
-            if self.attempt is not None and self.attempt['phase'] == 'held':
+            if self.attempt is not None and self.attempt['phase'] in ('held', 'not_upgraded'):
                 self.close()
                 self._check()
                 self.result = 'held'
@@ -446,6 +465,15 @@ class BootstrapSelection:
             conn.execute('BEGIN')
             budget = _ReadBudget(deadline=self.deadline)
             present = sequential_storage_present(conn, budget=budget)
+            upgrade = False
+            if present:
+                from runtime.workflows.sequential_history import _sql_budget
+                with _sql_budget(conn, budget):
+                    # Routing only: partial/unknown objects still reach the full
+                    # ordinary reader. Source/writer qualification owns validity.
+                    marker = conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_seq_schema_versions'").fetchone()
+                    upgrade = marker is not None and [tuple(row) for row in conn.execute(
+                        "SELECT typeof(version)='integer' AND version=1 FROM workflow_seq_schema_versions LIMIT 3")] == [(1,)]
             budget.check()
             self._check()
             if _file(self.path) != before or _coding_org_identity(conn,
@@ -458,7 +486,8 @@ class BootstrapSelection:
             _close_descriptor(parent)
             self.close()
             self._check()
-            self.result = 'present' if present else 'absent'
+            self.upgrade = upgrade
+            self.result = 'absent' if upgrade or not present else 'present'
             return self.result
         except BaseException as exc:
             self.failed, self.primary = True, exc
@@ -559,6 +588,14 @@ class BootstrapStartup:
             if not record['closed']:
                 raise BootstrapEvidenceError('workflow_setup_original_descriptor_in_flight') from record.get('error')
 
+    @contextmanager
+    def _evidence_directory(self, path: Path, deadline: float) -> Iterator[int]:
+        record = _directory(path, self.hold_descriptors, deadline=deadline)
+        try:
+            yield record['fd']
+        finally:
+            _close_descriptor(record)
+
     def _hold(self, slug: str, reason: str, state: str) -> None:
         """External pre-intent latch only; never obscure an existing attempt."""
         self.holds[slug] = reason
@@ -576,10 +613,23 @@ class BootstrapStartup:
             self.hold_descriptors.append(child)
             parent = child['fd']
             _private_directory(parent)
+        predecessor = None
+        discovery = self.discoveries.get(self.runtime_root/'orgs'/slug)
+        upgrade = discovery is not None and any(selected.upgrade for selected in discovery.selections)
+        if upgrade:
+            state = 'installed_unverified'
         if _names(parent, 64, time.monotonic()+1):
-            return
-        value = dict(format='workflow-setup-hold@1', runtime_key=key, org_slug=slug,
+            from runtime.daemon.workflow_setup_status import _attempt_record
+            prior = _attempt_record(self.home, self.runtime_root, key, slug, time.monotonic()+1,
+                directory_reader=self._evidence_directory)
+            if prior['phase'] != 'registered' or prior['target_version'] != 1:
+                return
+            predecessor = dict(attempt_id=prior['attempt_id'], digest=prior['record_digest'])
+            state = 'installed_unverified'
+        value = dict(format='workflow-setup-hold@2' if upgrade or predecessor else 'workflow-setup-hold@1', runtime_key=key, org_slug=slug,
                      reason=reason, state=state, attempt_time=datetime.now(timezone.utc).isoformat())
+        if upgrade or predecessor is not None:
+            value['predecessor'] = predecessor
         raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf8')
         record = dict(fd=os.open('hold.pending', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                 0o600, dir_fd=parent), attempted=False, closed=False)
@@ -635,7 +685,8 @@ class BootstrapStartup:
                     deadline=min(discovery.deadline, time.monotonic()+1))
                 discovery.selections.append(selected)
                 record = selected._read_evidence(selected.deadline)
-                if (record['phase'] != 'registered' or record['attempt_id'] != worker.attempt_id
+                if (record['phase'] != 'registered' or record['target_version'] != _TARGET_VERSION
+                        or record['attempt_id'] != worker.attempt_id
                         or record['db_identity'] != dict(path=str(root/'happyranch.db'),
                             device=discovery.fence.database_identity[0], inode=discovery.fence.database_identity[1])):
                     raise BootstrapEvidenceError('workflow_setup_registration_unavailable')
@@ -1030,6 +1081,12 @@ class BootstrapSource:
             raw = json.dumps(self.source_inventory, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')
             self.inventory_digest = hashlib.sha256(raw).hexdigest()
             self._unchanged()
+            if self.layout.sequential:
+                from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES, SEQUENTIAL_RETAINED_TABLES
+                if (self.layout.schema_version != 1 or any(self.source_inventory[1][table][0]
+                        for table in SEQUENTIAL_TABLES
+                        if table not in (*SEQUENTIAL_RETAINED_TABLES, 'workflow_seq_schema_versions'))):
+                    raise BootstrapEvidenceError('workflow_setup_history_nonempty_upgrade_refused')
             require_bootstrap_idle_history(self)
             _close_descriptor(parent)
         except BaseException:
@@ -1078,7 +1135,8 @@ class BootstrapSource:
         """
         try:
             self._unchanged()
-            if (self._backup_started or self.layout is None or self.layout.sequential
+            if (self._backup_started or self.layout is None
+                    or self.layout.sequential and self.layout.schema_version != 1
                     or attempt.fence is not self.fence or attempt._phase != 'intent'
                     or attempt.source_identity != self.source_identity
                     or attempt.source_inventory_digest != self.inventory_digest
@@ -1196,7 +1254,8 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
         raise BootstrapEvidenceError('workflow_setup_history_latched')
     source._unchanged() if writer is None else source._check()
     conn = source.source if writer is None else writer
-    if (conn is None or source.layout is None or source.layout.sequential
+    if (conn is None or source.layout is None
+            or source.layout.sequential and source.layout.schema_version != 1
             or not conn.in_transaction
             or writer is None and conn.execute('PRAGMA query_only').fetchone()[0] != 1
             or writer is not None and not any(record['connection'] is writer and not record['attempted']
@@ -1490,8 +1549,8 @@ class BootstrapRehearsal:
             result = install_sequential_schema(conn, expected_org_slug=self.attempt.slug,
                 expected_path=str(path), source_identity=identity,
                 source_inventory=self.source.source_inventory, offline_check=self._inputs_unchanged,
-                allowance=self.source.allowance, integrity=self.source.integrity)
-            if result != 'installed':
+                allowance=self.source.allowance, integrity=self.source.integrity, schema_version=_TARGET_VERSION)
+            if result != ('upgraded' if self.source.layout.sequential else 'installed'):
                 raise BootstrapEvidenceError('workflow_setup_rehearsal_candidate_invalid')
             self._close_connection(self.connections[-1])
             timings = []
@@ -1522,7 +1581,7 @@ class BootstrapRehearsal:
                 self._inputs_unchanged()
             self.completed = True
             self.receipt = dict(source_inventory_digest=self.source.inventory_digest,
-                backup_sha256=self.source.backup_sha256, target_version=1,
+                backup_sha256=self.source.backup_sha256, target_version=_TARGET_VERSION,
                 catalog=tuple(pin.model_dump(mode='json') for pin in catalog),
                 first_seconds=timings[0], next_seconds=timings[1])
             return dict(self.receipt)
@@ -1655,7 +1714,7 @@ class BootstrapInstall:
                 or not self.rehearsal.closed or self.rehearsal.receipt is None
                 or self.rehearsal.receipt['source_inventory_digest'] != self.source.inventory_digest
                 or self.rehearsal.receipt['backup_sha256'] != self.source.backup_sha256
-                or self.rehearsal.receipt['target_version'] != 1
+                or self.rehearsal.receipt['target_version'] != _TARGET_VERSION
                 or self.attempt._backup_sha256 != self.source.backup_sha256
                 or self.attempt.source_identity != self.source.source_identity
                 or self.attempt.source_inventory_digest != self.source.inventory_digest
@@ -1709,23 +1768,29 @@ class BootstrapInstall:
         history = read_sequential_history(conn, expected_org_slug=self.attempt.slug,
             deadline=min(time.monotonic()+5, self.source.allowance.deadline))
         if (not history.layout.sequential or history.layout.ownership != 2
+                or history.layout.schema_version != _TARGET_VERSION
                 or (history.layout.document, history.layout.coding, history.layout.owner_indexed)
                 != (self.source.layout.document, self.source.layout.coding, self.source.layout.owner_indexed)):
             raise BootstrapEvidenceError('workflow_setup_target_mismatch')
         self._check(reserve=not self.committed)
 
     def _preserved(self, conn: sqlite3.Connection) -> None:
-        from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
+        from runtime.infrastructure.workflow_sequential_schema import (
+            SEQUENTIAL_TABLES, SEQUENTIAL_V2_TABLES, SEQUENTIAL_V2_REBUILT_TABLES,
+        )
         schema, tables = self.source._inventory(conn)
         old_schema, old_tables = self.source.source_inventory
+        changed = ((set(SEQUENTIAL_V2_TABLES) - set(SEQUENTIAL_TABLES))
+                   | set(SEQUENTIAL_V2_REBUILT_TABLES) if self.source.layout.sequential
+                   else set(SEQUENTIAL_V2_TABLES))
         replacements = {'workflow_task_ownership', 'workflow_task_owner_bindings'}
         objects = {(row[0], row[1]): row for row in schema}
-        if (set(tables) != set(old_tables) | set(SEQUENTIAL_TABLES)
-                or any(tables[name] != rows for name, rows in old_tables.items())
-                or any(tables[name][0] != (1 if name == SEQUENTIAL_TABLES[0] else 0)
-                       for name in SEQUENTIAL_TABLES)
+        if (set(tables) != set(old_tables) | set(SEQUENTIAL_V2_TABLES)
+                or any(tables[name] != rows for name, rows in old_tables.items() if name not in changed)
+                or any(tables[name][0] != (1 if name == 'workflow_seq_schema_versions' else 0)
+                       for name in changed)
                 or any(objects.get((row[0], row[1])) != row for row in old_schema
-                       if row[1] not in replacements)):
+                       if row[1] not in replacements and row[2] not in changed)):
             raise BootstrapEvidenceError('workflow_setup_retained_inventory_changed')
 
     def run(self, permit: Callable[[BootstrapAttempt], bool]) -> None:
@@ -1779,8 +1844,9 @@ class BootstrapInstall:
             result = install_sequential_schema(self.writer, expected_org_slug=self.attempt.slug,
                 expected_path=str(self.source.path), source_identity=self.source.source_identity,
                 source_inventory=self.source.source_inventory, offline_check=guard,
-                allowance=self.source.allowance, integrity=self.source.integrity, before_commit=before_commit)
-            if result != 'installed':
+                allowance=self.source.allowance, integrity=self.source.integrity, before_commit=before_commit,
+                schema_version=_TARGET_VERSION)
+            if result != ('upgraded' if self.source.layout.sequential else 'installed'):
                 raise BootstrapEvidenceError('workflow_setup_writer_target_changed')
             self.committed = True
             # Durable committed BEFORE any fallible original writer close.
@@ -1851,7 +1917,7 @@ class BootstrapInstall:
             if proof_error is not None:
                 raise proof_error
             if original_equal:
-                self.attempt.publish('not_installed')
+                self.attempt.publish('not_upgraded' if self.source.layout.sequential else 'not_installed')
                 self.unchanged = True
         except BaseException as exc:
             self.close_error = exc
@@ -1908,7 +1974,7 @@ class BootstrapRegistration:
         self.audit.insert_audit_log(task_id='', agent='daemon', action='workflow_setup_registered',
             payload=dict(format='workflow-setup-registered@1', runtime_key=attempt.runtime_key,
                 org_slug=attempt.slug, attempt_id=attempt.attempt_id,
-                backup_sha256=attempt._backup_sha256, target_version=1))
+                backup_sha256=attempt._backup_sha256, target_version=_TARGET_VERSION))
 
     def _close_org(self) -> None:
         if self.owner.get('registration_close_attempted'):

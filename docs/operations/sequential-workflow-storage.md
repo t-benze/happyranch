@@ -4,7 +4,8 @@
 
 The explicit offline command below may select `--schema-version 2` to install a
 fresh schema2 layout or upgrade a validated **zero-run, zero-history** schema1
-layout. Omission retains schema1; A2/A4 automatic behavior is unchanged until S2b.
+layout. Omission retains the offline schema1 default; A4 targets schema2 below.
+The separate positively fresh POST `/orgs` A2 initializer still creates schema1.
 `--check --schema-version 2` reports install-needed for a valid older layout;
 actual upgrade still requires the original verified backup/offline guards.
 Any @1 run/history refuses with `workflow_seq_nonempty_upgrade_refused`, including
@@ -20,6 +21,33 @@ history. Full FKs and original budgets are unchanged. See the [schema2 contract]
 The schema1 descriptions below retain their original-target meanings.
 
 
+## Automatic schema2 target (S2b)
+
+A4 installs schema2 directly when sequential storage is absent, and upgrades
+validated schema1 only with zero runs/history. It verifies a new backup before
+source writes and preserves definitions/settings/original-save rows and SQL
+byte-exactly through S2a's owning transaction. Existing registered schema1
+backup/event chains remain untouched; new `workflow-setup-event@2` phases pin
+the original attempt ID/final-record digest as `predecessor`. Only one linked
+1→2 transition is accepted. A schema1 run/history refuses visibly under its
+original reader. There is no history conversion, automatic downgrade or restore.
+
+Current-target status is `installed_unverified` for schema1-only registered
+evidence or a positively unchanged `not_upgraded` refusal. A pre-intent refusal
+retains its reason in `workflow-setup-hold@2`, linked to the original journal
+when present. Failed/unknown attempts remain latched. Verified schema2 takes
+ordinary SH selection/full reads on later loads, with zero installation,
+backup, setup-audit or definition-registration writes. Backup directories must
+be 0700 (including existing parents) and backup files 0600.
+
+Default 32M SQL, separate A/B/C 2M allowances, row/byte/traversal caps, 5s reads,
+120s/org and 180s upgrade windows, and <=10s ordinary all-org load/listener gate
+remain unchanged. The private `--automatic-schema2=CASE` schema-shell cases and
+`test-daemon-startup-timing.sh --startup_budget` observe actual default charges
+and first/next org loads; they do not establish live listener acceptance.
+Coding stays Disabled by default, @2 is not publicly admitted, and source
+merge grants no live installation, deployment or restart authority.
+
 ## Automatic daemon-start installation (A4:2)
 
 Founder THR-336 msg250/251 amends design v2 R2 (retained by v6): positive
@@ -31,12 +59,14 @@ A concurrent pre-A1/old-code daemon is a **documented cooperative limitation**, 
 does not acquire the participating lock. No clean-shutdown receipt is used.
 
 On the next startup each of happyranch, danze and family is treated conditionally:
-installed storage takes ordinary complete validation without another backup or
-installer; absent storage installs only if every gate passes. A refusal classified
-`not_installed` (absent/held discovery, no worker or closed worker without permit)
-loads the current layout under fresh SH after positive original custody closure.
+schema2 storage takes ordinary complete validation without another backup or
+installer; absent storage and empty schema1 qualify under the S2b rules above.
+A proven no-effect refusal (absent/held discovery, no worker or closed worker
+without permit) loads the current layout under fresh SH after positive original
+custody closure. Absent storage reports `not_installed`; schema1 reports
+`installed_unverified` for the current schema2 target.
 It stays out of `broken_orgs`; workflow-setup status and the daemon log expose the
-reason. A validated prior `not_installed` hold falls back on later boots without
+reason. A validated no-effect hold or `not_upgraded` falls back on later boots without
 retry or latch modification. Unknown effects/close, in-flight workers, sent permit
 and registration mismatch remain broken. Normal loader validation still applies.
 Only the existing historical UNKNOWN empty-scope `disk_sweep` exemption is applied
@@ -94,9 +124,9 @@ A later org refused before owned-worker admission has no worker sockets or child
 its original discovery closes through the same one-shot path. An earlier pending
 or expired original keeps its EX until positive closure, including after reap.
 The org HOLDs persist; this supplies no replay, restore or new attempt.
-All startup attempt-evidence reads share one custodied path, including the final
-registered read after the helper returns. A new child enters custody before its
-parent close. A close fault visibly holds the org and retains FIRST error and
+Startup selection/final-registration reads and schema1 hold reconciliation use
+the same complete evidence reader with their respective retained directory
+custody. A new child enters custody before its parent close. A close fault visibly holds the org and retains FIRST error and
 original EX through repeated refused shutdowns. A committed install/registration
 stays intact, without restore, undo or another attempt. Advisory status retains
 its independent traversal.

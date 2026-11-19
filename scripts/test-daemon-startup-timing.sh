@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+if [[ "${1:-}" == "--startup_budget" ]]; then
+    exec bash scripts/test-workflow-schema-load.sh --automatic-schema2=startup_budget
+fi
 uv run --frozen --python 3.14 python - <<'PY'
 import ast
 import asyncio
