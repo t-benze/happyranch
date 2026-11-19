@@ -1,7 +1,7 @@
 """Fixed no-input Gio service, intended for system Python -I as root.
 
 The installed entry binds each authenticated sender to its validated release
-home before connector reads or authorization. Lifecycle effects remain absent.
+home before connector reads or authorization. Lifecycle mounting stays private until I5.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator
 
@@ -42,7 +42,7 @@ _OWNER_SPEC.loader.exec_module(_owner)
 bootstrap_owner, OwnerRefused, Owner = _owner.bootstrap_owner, _owner.OwnerRefused, _owner.Owner
 
 # Stdlib-only package siblings; the receipt owner runs only in bundled Python -I.
-for _name in ('status_v2', 'home_audit', 'helper_generation'):
+for _name in ('status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle'):
     _spec = importlib.util.spec_from_file_location(
         'happyranch_fixed_' + _name, Path(__file__).with_name(_name + '.py'))
     _module = importlib.util.module_from_spec(_spec)
@@ -55,7 +55,9 @@ BUS_NAME = 'ai.happyranch.RemoteAccess1'
 OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
 INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
-AUTH_DEADLINE = 120.0
+AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
+# Deliberately absent from METHODS/introspection and public dispatch until I5.
+LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable'}
 IDLE_SECONDS = 60.0
 METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
@@ -93,6 +95,8 @@ class RemoteAccessHelper:
         self.inflight: Capture | LifecycleCapture | None = None
         self.generations = _helper_generation.HomeGenerationReader()
         self.audit = _home_audit.HomeAudit()
+        self.lifecycle_operation: object | None = None
+        self.lifecycle_result: dict | None = None
         self.status_worker: object | None = None
         self.status_lock = threading.Lock()
         self.timer = 0
@@ -151,7 +155,7 @@ class RemoteAccessHelper:
         return True  # serve removes the source even on the idle-exit path
 
     def close(self) -> None:
-        if isinstance(self.inflight, Capture):
+        if isinstance(self.inflight, (Capture, _helper_lifecycle.LifecycleCapture)):
             self._cancel('unavailable')
         self.connection.remove_filter(self.filter_id)
         self.connection.signal_unsubscribe(self.subscription)
@@ -360,7 +364,177 @@ class RemoteAccessHelper:
         self.authorization_terminal = False
         self.last_activity = self.clock()
 
-    def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture) -> None:
+    def _start_lifecycle(self, message: Gio.DBusMessage) -> None:
+        """Private I3a mount. Public dispatch/introspection NEVER selects this entry."""
+        method, sender = message.get_member(), message.get_sender()
+        fds = message.get_unix_fd_list()
+        if (method not in LIFECYCLE_ACTIONS or message.get_interface() != INTERFACE
+                or message.get_signature() or (fds is not None and fds.get_length())):
+            raise Refused('invalid-request')
+        if self.inflight is not None:
+            raise Refused('busy')
+        budget = _helper_lifecycle.OperationBudget.lifecycle(method, self.clock)
+        admission = budget.bounded(_helper_lifecycle.CALL_SECONDS)
+        uid = self._uid(sender)
+        client = _helper_generation.HomeLifecycleClient(method, uid)
+        capture = _helper_lifecycle.LifecycleCapture.take(method, sender, self, client, admission)
+        capture = replace(capture, deadline=min(admission.deadline, self.clock() + AUTH_DEADLINE),
+                          cancellation_id=uuid.uuid4().hex, message=message)
+        if not self.try_claim(capture):
+            raise Refused('busy')
+        operation = _helper_lifecycle.LifecycleOperation(capture, self, client, budget)
+        self.lifecycle_operation = operation
+        self.cancelled = self.authorization_terminal = False
+        try:
+            # Recheck the SAME original admission budget after every capture read.
+            remaining = min(AUTH_DEADLINE, admission.remaining())
+            self.timer = GLib.timeout_add(max(1, int(remaining * 1000)), self._expired)
+            verb = {'Enable': 'Enable home remote access', 'ReplaceFailed':
+                    'Replace failed remote access; existing pairings will be lost',
+                    'Disable': 'Turn off home remote access and revoke all devices'}[method]
+            self.authority.call('CheckAuthorization', GLib.Variant('((sa{sv})sa{ss}us)', (
+                ('system-bus-name', {'name': GLib.Variant('s', sender)}),
+                ACTION_PREFIX + LIFECYCLE_ACTIONS[method], {'polkit.message': verb},
+                1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
+                max(1, int(remaining * 1000)) + 2000, None, self._authorized, capture)
+        except Exception:
+            self._cancel('unavailable')
+
+    def _lifecycle_authorized(self, capture: object, terminal: bool, granted: bool) -> None:
+        with self.lock:
+            if self.inflight is not capture:
+                return
+            self.authorization_terminal = terminal
+            if self.cancelled:
+                if terminal:
+                    self._clear()
+                return
+            if not terminal:
+                self._cancel('unavailable')
+                return
+            operation = self.lifecycle_operation
+            try:
+                if self.clock() >= capture.deadline:
+                    raise Refused('expired')
+                if not granted:
+                    raise Refused('denied')
+                operation._revalidate(operation.budget.bounded(_helper_lifecycle.CALL_SECONDS))
+                if self.clock() >= capture.deadline:
+                    raise Refused('expired')
+                operation.accepted = True
+                if self.timer:
+                    GLib.source_remove(self.timer)
+                self.timer = 0  # Auth has settled; original operation budget continues.
+                self._reply(capture.message, 'accepted')
+                threading.Thread(target=self._run_lifecycle, args=(operation,), daemon=True).start()
+            except Exception as error:
+                self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
+                self._clear()
+
+    def _run_lifecycle(self, operation: object) -> None:
+        lifecycle = _helper_lifecycle
+        capture, client = operation.capture, operation.generations
+        residue: list[str] = []
+        outcome = lifecycle.SetupPhase.UNCERTAIN
+
+        def audited(step: str, component: object, effect: Callable[[float, Callable[[], None]], dict]) -> dict:
+            result = {}
+            def execute(_: object, remaining: float) -> None:
+                nonlocal result
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                kwargs = ({'component': component} if capture.method == 'Disable' else
+                          {'phase': _home_audit.Phase.ACTIVATING})
+                intent = self.audit.intent(_home_audit.Event.TURN_OFF if capture.method == 'Disable'
+                    else _home_audit.Event.ACTIVATION, intent_id='intent-' + label,
+                    operation_id='op-' + label, **kwargs)
+                dispatched = False
+                def before_commit() -> None:
+                    nonlocal dispatched
+                    operation._revalidate()
+                    dispatched = True
+                try:
+                    result = effect(remaining, before_commit)
+                    operation.budget.remaining()
+                except Exception:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                    raise
+                try:
+                    self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED)
+                except Exception:
+                    self.audit.uncertain(intent)
+                    raise
+            # A failed step must not prevent Disable's remaining safety stop.
+            # Preserve failure locally; the final closed result remains partial.
+            previous = operation.outcome
+            try:
+                operation.run_step(execute)
+            finally:
+                if capture.method == 'Disable':
+                    operation.outcome = previous
+            return result
+
+        def child(step: str, component: object) -> dict:
+            def effect(remaining: float, commit: Callable[[], None]) -> dict:
+                commit()
+                return client.effect(step, capture.generation, min(remaining, operation.budget.remaining()))
+            return audited(step, component, effect)
+
+        try:
+            if capture.method != 'Disable':
+                step = 'enable' if capture.method == 'Enable' else 'replace'
+                result = child(step, None)
+                outcome = lifecycle.SetupPhase(result['outcome'])
+                residue = result['residue']
+            else:
+                revoked = False
+                def revoke(remaining: float, commit: Callable[[], None]) -> dict:
+                    snapshot = self._snapshot(capture.uid)
+                    deadline = min(operation.budget.deadline, self.clock() + min(remaining, 120.0))
+                    # R4: one changed-generation reread/retry only, same deadline.
+                    for attempt in range(2):
+                        try:
+                            self.control.revoke_all(snapshot.generation, deadline, commit)
+                            return {}
+                        except Refused as error:
+                            if error.category != 'changed' or attempt:
+                                raise
+                            snapshot = self._snapshot(capture.uid)
+                    raise Refused('changed')
+                try:
+                    audited('revoke', _home_audit.Component.CREDENTIALS, revoke)
+                    revoked = True
+                except Exception:
+                    residue.append('un-revoked connector trust state and persisted sidecar state')
+                try:
+                    child('stop', _home_audit.Component.UNITS)
+                except Exception:
+                    residue.append('owned units: quiescence unconfirmed')
+                else:
+                    try:
+                        result = child('cleanup', _home_audit.Component.LIVE_STATE)
+                        residue.extend(result['residue'])
+                        if result['outcome'] != 'off':
+                            residue.append('B6 cleanup incomplete')
+                    except Exception:
+                        residue.append('B6 custody or retained CA staging and B7/B11 evidence')
+                outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
+                           lifecycle.SetupPhase.PARTIAL_CLEANUP)
+        except Exception:
+            outcome = lifecycle.SetupPhase.UNCERTAIN if operation.dispatched else lifecycle.SetupPhase.FAILED
+        finally:
+            # Keep ownership until the result is recorded; complete releases the slot.
+            try:
+                with self.effect_guard(capture):
+                    settled = operation.complete(outcome)
+                    self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
+            except Exception:
+                # Unsettled worker keeps the slot sealed; no synthetic completion.
+                self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+
+    def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture | LifecycleCapture) -> None:
         terminal = False
         try:
             authorization = proxy.call_finish(result)
@@ -371,6 +545,9 @@ class RemoteAccessHelper:
             # A polkit error reply is terminal too; a transport timeout/loss is not.
             remote = Gio.DBusError.get_remote_error(error) if isinstance(error, GLib.Error) else None
             terminal = terminal or bool(remote and remote.startswith('org.freedesktop.PolicyKit1.Error.'))
+        if isinstance(capture, _helper_lifecycle.LifecycleCapture):
+            self._lifecycle_authorized(capture, terminal, granted)
+            return
         with self.lock:
             if self.inflight is not capture:
                 return
@@ -398,8 +575,8 @@ class RemoteAccessHelper:
                 if self.clock() >= capture.deadline:
                     self._cancel('expired')
                     return
-                # B16 covers only the three already-existing device effects.
-                # I3 must add lifecycle/invite intents at their actual effect boundaries.
+                # B16 brackets this device boundary; the private lifecycle worker
+                # brackets its own activation/replacement/Turn off boundaries.
                 event = {'ApprovePending': _home_audit.Event.DEVICE_APPROVED,
                          'RejectPending': _home_audit.Event.DEVICE_REJECTED,
                          'RevokeSelected': _home_audit.Event.DEVICE_REVOKED}[capture.method]
@@ -455,9 +632,11 @@ class RemoteAccessHelper:
     def _cancel(self, category: str) -> None:
         with self.lock:
             capture = self.inflight
-            if not isinstance(capture, Capture) or self.cancelled:
+            if not isinstance(capture, (Capture, _helper_lifecycle.LifecycleCapture)) or self.cancelled:
                 return
             self.cancelled = True
+            if isinstance(capture, _helper_lifecycle.LifecycleCapture) and self.lifecycle_operation.accepted:
+                return  # Worker still owns the slot; never send a second admission reply.
             self._error(capture.message, category)
             if self.authorization_terminal:
                 self._clear()  # polkit already removed this completed cancellation ID.
@@ -481,7 +660,7 @@ class RemoteAccessHelper:
         if name.startswith(':') and old and not new:
             with self.lock:
                 self.cursors.pop(name, None)
-                if isinstance(self.inflight, Capture) and self.inflight.sender == name:
+                if isinstance(self.inflight, (Capture, _helper_lifecycle.LifecycleCapture)) and self.inflight.sender == name:
                     self._cancel('disconnected')
 
 

@@ -2095,8 +2095,9 @@ record when present; the optional trusted constructor UID remains a compatibilit
 pin. The root-only `serve()` connects Gio to the fixed system-bus socket
 (`/run/dbus/system_bus_socket`), ignoring address environment overrides. B8 packages
 the bus/polkit definitions and root Type=dbus unit; package install registers the
-service without running Enable. Installer-backed lifecycle activation remains
-deferred to serial integration. Run the fixed
+service without running Enable. I3a privately mounts Enable/ReplaceFailed/Disable
+through B9 and the fixed bundled-Python child; public dispatch and introspection
+still refuse all three until I5. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2963,9 +2964,9 @@ only to the unchanged terminal-marker path; no existing txn is resumed.
 the unchanged Ruling 12/12a recovery with the same production owners; no effect
 is executed by recovery. Authentication/freshness and expected G/O are trusted
 caller-supplied preconditions, never inferred from the records or a Boolean UI.
-The backend has **no production caller**: helper/CLI/D-Bus/app/web mounting remains
-Track B/serial integration. No public Enable, polkit, user, unit default or
-permission change is added. Temp-root/fake-native tests exercise ready and
+I3a privately mounts this backend through the fixed bundled-Python helper child,
+with B8/B9 fresh authorization and protected G/O capture. Public Enable stays
+unreachable until I5. No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
 recovery with real A5 records and observe.sock; installed/live-host operations
 remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
 sidecar SSL_CERT lines and B5 Headscale lines are selected by these owners.
@@ -3057,24 +3058,29 @@ stays unchanged. The two Headscale DB users are not OS users and disappear with
 the owned DB.
 Why no founder: exact ownership/removal under approved Turn off and existing A–E.
 
-I2a implements the **unmounted** installer B6 executor through
+I2a supplied the installer B6 executor; I3a privately mounts it through
 `ManagedInstaller.cleanup_headscale` with all five explicit expected release UID,
 installation IDs and generation arguments. It uses the A5 reader under the
 existing activation-directory lock, B5 disable/absence gate, full owned-unit
 quiescence and C's UID snapshot before deletion and fresh checks before effects.
-Existing no-argument CLI/uninstall calls retain D exactly; the future lifecycle
-caller must close admission, revoke and stop services first, in the order below.
-No public Disable, Enable or ReplaceFailed is mounted here. I2b now supplies
-B17's separate unmounted first-intent entry described below.
+Existing no-argument CLI/uninstall calls retain D exactly. The private I3a lifecycle
+caller closes admission, revokes and stops services first, in the order below.
+It additionally supplies the captured operation ID, checked under B6's existing
+receipt lock before any effect; the five identity/generation expectations retain
+their meanings. No public Disable, Enable or ReplaceFailed is mounted here.
+I2b supplies B17's separate first-intent entry described below.
 
-I3a admission-close ruling (TASK-17385 R1–R4): Disable holds the single helper
+I3a admission-close ruling (TASK-17385 R1–R4, corrected by R7): Disable holds the single helper
 mutation slot for its whole call, blocking all other root-owned admission paths.
 It then calls existing B10 `revoke-all@1` on the serving connector. Its first
 committed transaction burns the invite, pending approval and undelivered grant
 and snapshots the device set; per-device durable denial and attributed stream
 closure follow, including removed-owner fencing. Only then stop and disable the
-owned connector, sidecar, verifier and local Headscale through the existing
-installer stop/confirm path. B6 may run only after confirmed quiescence, using
+owned connector, sidecar and verifier through the existing installer stop/confirm
+path. The lifecycle owner also validates the receipted local Headscale unit and
+loaded fragment before stopping it, then checks its existing UID/process proof.
+The other recognized remote units are disabled only after quiescence; B6 owns
+the receipted Headscale link's disable/absence proof. B6 may run only after confirmed quiescence, using
 the five expectations captured from the authenticated activation store.
 
 A restart or supervisor runtime rotation between revoke and stop re-serves no
@@ -3082,14 +3088,17 @@ admissible devices or ceremony after successful revocation. This composition
 adds no IPC verb or new meaning to `revoke-all@1`. Revocation non-success
 (unavailable, changed, expired or lost reply) records the appropriate B16
 refused/uncertain outcome and **still runs stop**. Stop/ownership uncertainty
-prevents B6 and reports partial cleanup. After confirmed stop, B6 may remove
-trust state even if revocation failed; Disable must not report complete unless
-revocation succeeded or B6 removed that state. A changed generation permits at
-most one fresh generation read and retry within the original 300-second budget.
-Retained CA staging and B7/B11 evidence still require incomplete cleanup; I3c
-owns retirement. This paragraph specifies the lifecycle composition; the B10
-supervisor capability below is wired first, while helper lifecycle mounting
-remains deferred.
+prevents B6 and reports partial cleanup. **R7: B6 retains connector
+`trust-state.json`, `.anchor`, `.lock` and persisted sidecar state.** No deletion
+member, allowlist or executor is added; neither purge nor B17 is used for Disable.
+Complete requires successful revoke-all AND confirmed stop AND successful B6 AND
+no residue. Failed revoke ALWAYS produces `partial_cleanup`, naming retained
+un-revoked trust/sidecar state even if stop and B6 succeed. A changed generation
+permits at most one fresh read/retry within the original 300-second budget.
+Retained CA staging and B7/B11 evidence also require incomplete cleanup; I3c owns
+all such retirement. Today's real CA/evidence residue prevents complete Turn off.
+I3a's private helper worker mounts this composition and records the closed outcome
+and safe residue components; public methods remain absent until I5.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3243,8 +3252,15 @@ not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
 The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
-RevokeSelected; installer-backed lifecycle effects remain deferred to serial
-integration. Focused bootstrap/package verification uses
+RevokeSelected. I3a also ships the stdlib-only `helper_lifecycle.py` sibling and
+private lifecycle mount. Its fixed existing bundled-Python `-I -m
+runtime.remote_access.home_activation_backend` child accepts only the helper's
+closed bounded capture/effect request, empty environment and original timeout.
+It captures protected activation G/O (including absence), initial Enable config
+generation, and B17 inventory/journal generation. There is no bus-supplied UID,
+path or generation. Already-designed enable/replace-failed/disable polkit actions
+use the same auth_admin/no-keep defaults; bus policy and sandbox are unchanged.
+Focused bootstrap/package verification uses
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`; the existing
 standalone `scripts/test_remote_access_helper.py` private-bus command also
 checks refusal before connector reads/auth. These focused checks do not install
@@ -3276,7 +3292,14 @@ supplied timeout; these primitives do not preempt blocking code. Auth transport
 uncertainty retains the slot until terminal reply/cancellation acknowledgement.
 The six outcomes reuse B15's `status_v2.SetupPhase`, excluding UNKNOWN/STALE.
 The native 120-second auth and approximately 122-second transport are unchanged.
-No lifecycle method is exported and no root lifecycle effect is reachable.
+No lifecycle method is exported. I3a's private mount uses the real native polkit
+CheckAuthorization callback with the captured unique bus sender and exact action;
+its terminal/cancellation rules retain the same slot through the entire worker.
+It replies accepted before effects and keeps the original 480/300-second budget.
+The child revalidates protected activation G/O and release UID before each effect;
+B6 rechecks operation inside its existing lock. Native uncertainty seals the slot
+until terminal reply/cancellation acknowledgement. No public call can select this
+private mount before I5.
 I1 supplies `helper.generations` (`helper_generation.HomeGenerationReader`) as the
 concrete protected reader. Track A's additive `HomeActivationStore.current()` reads
 and pins the current receipt without an expected generation, preserving all existing
@@ -3291,11 +3314,12 @@ Python child (`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_a
 runs the zero-argument read entry with empty environment, no stdin and the supplied
 remaining timeout. It returns only the closed bounded snapshot, never full receipt,
 node identity or secrets. No installer effect runs; root/sandbox ownership is unchanged.
-I2a supplies only the unmounted installer B6 executor described above. Native
-lifecycle-auth wiring and mounted lifecycle step executors remain DEFERRED to
-I3; I2b supplies only B17's unmounted installer entry. Lifecycle/activation audit
-intents must be placed at those actual future effect
-boundaries; no synthetic lifecycle outcome is recorded by I1. Focused verification
+I3a mounts the existing activation backend, B6 and B17 in that fixed child.
+Native authorization precedes every call; B16 intents bracket activation/replacement
+and each Disable revoke, stop and cleanup boundary. Initial Enable config generation
+and B17 inventory/journal generation are protected capture fields distinct from
+activation G/O. Replacement remains staged-inert and never activates automatically.
+Focused verification
 uses the existing private-bus
 venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.
 
@@ -3344,7 +3368,7 @@ its current serving pinned pairing manager. It resolves that owner per call,
 refuses an absent owner and carries the unchanged generation/deadline into the
 manager's anchored transactions. The same manager mutation lock still spans the
 control ready/commit exchange; wire framing, root SO_PEERCRED and CAS checks are
-unchanged. Helper lifecycle mounting and root issuer wiring remain serial
+unchanged. Private helper lifecycle mounting is I3a; root issuer wiring remains serial
 integration work; no public helper method is opened by this capability.
 
 Why no founder: fixed operations on existing root-only private IPC.
@@ -3567,9 +3591,13 @@ persistence fails after an effect, attempt uncertain and return the fixed unavai
 error; no successful audit acknowledgement is inferred. Intent persistence failure
 prevents the effect. IDs are local random audit correlation labels, never the target
 StableID, record ID, activation operation ID or a digest. Read calls emit no audits.
-I3 lifecycle/invite/Turn off outcomes remain explicitly deferred until those effects
-exist; I1 does not invent them or export additional mutation methods. Its closed
-event spellings are
+I3a privately brackets activation/replacement with activation intents and each
+Disable revoke/stop/B6 step with turn_off component intents. An acknowledged
+step records succeeded, a proven pre-dispatch refusal records refused, and lost
+effect/audit settlement records uncertain. A failed revoke record never suppresses
+the separately audited stop attempt; incomplete residue remains a closed partial
+operation result. Invite outcomes remain I3b/I4. No extra public method is exported.
+The closed event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
 `policy_renew`, `policy_fail`, `turn_off`, `uncertain`. Activation uses the existing
@@ -3606,12 +3634,14 @@ parsing. Every successfully acknowledged record is a complete JSON line.
 Why no founder: the approved nonsecret retained audit, with bounded storage.
 
 **B17 — First replacement intent for recognized failed installation.**
-I2b delivers only the **unmounted** `ManagedInstaller.begin_replacement` entry.
-The future fresh-auth `ReplaceFailed()` owner (I3) must supply an explicit expected
+I2b delivers `ManagedInstaller.begin_replacement`; I3a privately mounts it from
+the fresh-auth ReplaceFailed owner, which supplies an explicit expected
 release UID and exact observed generation. The installer captures the complete fixed
 inventory, binds the derived validated release owner, then publishes/fsyncs the new
 `replacement-intent@2` at `install-transaction.json` before handing off to the existing
-per-intent recovery owner. No helper or CLI caller selects this capability.
+per-intent recovery owner. The private helper captures that inventory/journal
+generation before authentication and revalidates it before dispatch; no public
+helper or operator CLI selects this capability until I5.
 An existing exact v1 journal already has its first intent: the entry validates its
 expected generation/release UID and resumes that journal without converting it.
 This entry independently revalidates every remaining original/quarantined config's

@@ -547,3 +547,23 @@ def test_backend_prepared_without_txn(venue: Venue, monkeypatch: pytest.MonkeyPa
         ready = h.HomeActivationBackend(io=v.receipts._io).enable(expected_generation=7, authenticated=True)
     assert ready.phase == "ready"
     assert (ready.activation_generation, ready.operation_id) == (7, prepared.operation_id)
+
+
+def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(venue: Venue) -> None:
+    v = venue
+    lifecycle = h.HelperLifecycleBackend(v.backend._io)
+    expected = lifecycle.capture('Enable', v.prepared.release_uid)
+    with observations(v) as requests:
+        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', expected) == {
+            'outcome': 'ready', 'residue': []}
+        ready = v.receipts.read(expected_generation=7)
+        assert ready.phase == 'ready' and ready.local_node_stable_id == 'self-stable'
+        assert ready.operation_id != '0' * 32 and requests
+        before = list(v.audit)
+        observed = lifecycle.capture('Enable', v.prepared.release_uid)
+        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)['outcome'] == 'ready'
+        assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+        v.source.write_bytes(b'synthetic source-token rotation')
+        with pytest.raises(ActivationRefused):
+            lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+        assert v.receipts.read(expected_generation=7) == ready and v.audit == before

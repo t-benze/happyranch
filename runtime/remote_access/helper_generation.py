@@ -53,3 +53,44 @@ class HomeGenerationReader:
             return GenerationSnapshot(**value)
         except Exception:
             raise GenerationUnavailable() from None
+
+
+LIFECYCLE_COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
+                     'runtime.remote_access.home_activation_backend')
+
+
+class HomeLifecycleClient:
+    """Fixed child transport; only protected snapshots cross the system-Python seam."""
+
+    def __init__(self, method: str, uid: int) -> None:
+        if method not in ('Enable', 'ReplaceFailed', 'Disable') or type(uid) is not int or uid < 1000:
+            raise GenerationUnavailable()
+        self.method, self.uid = method, uid
+
+    def _call(self, step: str, expected: str | None, remaining: float) -> dict:
+        if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
+            raise GenerationUnavailable()
+        deadline = time.monotonic() + remaining
+        request = dict(method=self.method, uid=self.uid, step=step, expected=expected,
+                       deadline=deadline)
+        try:
+            result = subprocess.run(LIFECYCLE_COMMAND, input=json.dumps(request).encode(),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=remaining,
+                check=False, env={}, cwd='/')
+            if result.returncode or len(result.stdout) > 4096 or time.monotonic() >= deadline:
+                raise GenerationUnavailable()
+            value = json.loads(result.stdout)
+            if type(value) is not dict:
+                raise GenerationUnavailable()
+            return value
+        except Exception:
+            raise GenerationUnavailable() from None
+
+    def current_generation(self, remaining: float) -> str:
+        value = self._call('capture', None, remaining)
+        if set(value) != {'snapshot'} or type(value['snapshot']) is not str or len(value['snapshot']) > 2048:
+            raise GenerationUnavailable()
+        return value['snapshot']  # Immutable CAS token, including protected absence.
+
+    def effect(self, step: str, expected: str, remaining: float) -> dict:
+        return self._call(step, expected, remaining)

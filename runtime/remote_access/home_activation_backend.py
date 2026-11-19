@@ -1,16 +1,23 @@
-"""Uncalled production composition. Authentication is a trusted caller precondition.
+"""Guarded activation composition, privately mounted by the fixed root helper.
 
-No CLI/helper/D-Bus/app/web entry mounts this class. Recovery executes only the
+Public lifecycle calls remain gated until I5. Recovery executes only the
 existing Ruling 12/12a verify/publication path, never activation effects.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import os
+import sys
 import threading
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from runtime.remote_access.home_activation import ACTIVATION_PATH, HomeActivationReceipt, _generation
+from runtime.remote_access.home_activation import (
+    ACTIVATION_PATH, INVITE_CONFIG_PATH, HomeActivationReceipt, HomeActivationStore, _generation,
+)
 from runtime.remote_access.home_activation_coordinator import ActivationRefused, HomeActivationCoordinator
 from runtime.remote_access.home_activation_owner import HomeActivationOwner
 from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
@@ -18,7 +25,7 @@ from runtime.remote_access.home_activation_recovery import HomeActivationRecover
 from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
 from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
-from runtime.remote_access.installer import ManagedInstaller
+from runtime.remote_access.installer import ManagedInstaller, UNITS
 
 
 class _OperationTransactions(HomeActivationTransactionStore):
@@ -129,3 +136,158 @@ class HomeActivationBackend:
                     observation_owner=observer._owner)
         except Exception:
             raise ActivationRefused() from None
+
+
+class HelperLifecycleBackend:
+    """Existing bundled root child, selected only by the fixed helper.
+
+    No paths, identities or effect flags come from a D-Bus caller. The helper
+    sends its own authenticated UID and previously captured protected snapshot.
+    Each child revalidates the snapshot; B6 also checks operation under its flock.
+    """
+
+    def __init__(self, io: ManagedInstaller) -> None:
+        self.io = io
+        self.store = HomeActivationStore(root=io.root, root_owner=io.root_owner)
+
+    def capture(self, method: str, uid: int) -> str:
+        receipt = self.store.current()
+        activation = None
+        generation = None
+        replacement = None
+        configuration = None
+        if receipt is not None:
+            if receipt.release_uid != uid:
+                raise ActivationRefused()
+            activation = dict(generation=receipt.activation_generation, operation=receipt.operation_id,
+                              home_id=receipt.home_id, control_plane_id=receipt.control_plane_id,
+                              connector_id=receipt.connector_id)
+            generation = receipt.activation_generation
+        elif method == 'Enable':
+            from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
+            with self.store._record(INVITE_CONFIG_PATH) as data:
+                config = HomeInviteConfigRecord.parse(data)
+                configuration = hashlib.sha256(data).hexdigest()
+            if config.release_uid != uid:
+                raise ActivationRefused()
+            generation = config.activation_generation
+        if method == 'ReplaceFailed':
+            candidate = self.io.replacement_inventory()
+            replacement = candidate.journal_generation or candidate.inventory_generation
+            if candidate.installation.state != 'known-failed-or-partial' or replacement is None:
+                raise ActivationRefused()
+        if method == 'Disable' and receipt is None:
+            raise ActivationRefused()
+        return json.dumps(dict(uid=uid, activation=activation, generation=generation,
+                               replacement=replacement, configuration=configuration), sort_keys=True, separators=(',', ':'))
+
+    def dispatch(self, method: str, uid: int, step: str, expected: str | None) -> dict:
+        if method not in ('Enable', 'ReplaceFailed', 'Disable') or type(uid) is not int or uid < 1000:
+            raise ActivationRefused()
+        if step == 'capture':
+            if expected is not None:
+                raise ActivationRefused()
+            return {'snapshot': self.capture(method, uid)}
+        if type(expected) is not str or self.capture(method, uid) != expected:
+            raise ActivationRefused()
+        snapshot = json.loads(expected)
+        if method == 'Disable' and step == 'cleanup':
+            receipt = self.store.current()
+            if receipt is None:
+                raise ActivationRefused()
+            result = self.io.cleanup_headscale(expected_release_uid=uid,
+                expected_home_id=snapshot['activation']['home_id'],
+                expected_control_plane_id=snapshot['activation']['control_plane_id'],
+                expected_connector_id=snapshot['activation']['connector_id'], expected_generation=snapshot['generation'],
+                expected_operation_id=snapshot['activation']['operation'])
+            if result.get('state') != 'removed':
+                raise ActivationRefused()
+            return {'outcome': 'off', 'residue': []}
+        backend = HomeActivationBackend(io=self.io)
+        with backend._transactions.locked():
+            if self.capture(method, uid) != expected:
+                raise ActivationRefused()
+            if method == 'Enable' and step == 'enable':
+                current = self.store.current()
+                if current is not None and current.phase == 'ready':
+                    # Already-ready is inspect-only, never replays activation.
+                    coordinator, _, _ = backend._compose(current)
+                    if coordinator._owner.verify('joined', current) is not True:
+                        raise ActivationRefused()
+                else:
+                    backend.enable(expected_generation=snapshot['generation'], authenticated=True)
+                return {'outcome': 'ready', 'residue': []}
+            if method == 'ReplaceFailed' and step == 'replace':
+                self.io.begin_replacement(expected_release_uid=uid,
+                                          expected_generation=snapshot['replacement'])
+                return {'outcome': 'off', 'residue': []}
+            if method == 'Disable' and step == 'stop':
+                self.io.stop_and_confirm()
+                from runtime.remote_access import headscale_service
+                from runtime.remote_access.home_unit_gate import HomeUnitGate
+                receipt = self.store.current()
+                gate = HomeUnitGate(expected_release_uid=uid, expected_home_id=receipt.home_id,
+                    expected_control_plane_id=receipt.control_plane_id, expected_connector_id=receipt.connector_id,
+                    expected_generation=receipt.activation_generation, root=self.io.root, root_owner=self.io.root_owner)
+                gate.inspect()
+                account = self.io._headscale_receipt()
+                self.io._headscale_cleanup_identity(account)
+                if self.io._headscale_owner is None:
+                    raise ActivationRefused()
+                name = headscale_service.UNIT
+                props = self.io.manager.show_properties(name, ('LoadState', 'FragmentPath', 'DropInPaths'))
+                loaded = props.get('LoadState') == 'loaded'
+                if (props.get('LoadState') not in ('loaded', 'not-found') or props.get('DropInPaths') != ''
+                        or props.get('FragmentPath') != (str(self.io.root / 'etc/systemd/system' / name) if loaded else '')):
+                    raise ActivationRefused()
+                if loaded:
+                    self.io.manager.stop(name, timeout=50.0)
+                self.io._headscale_stopped()
+                # B6 owns its receipted Headscale link. Disable the other exact
+                # recognized remote units here, only after native stop proof.
+                for name in (UNITS[2], UNITS[0], UNITS[1], UNITS[3]):
+                    if self.io.inventory().state not in ('owned', 'owned-activated'):
+                        raise ActivationRefused()
+                    self.io._confirm_quiescent()
+                    if self.io.manager.show_properties(name, ('LoadState',)).get('LoadState') != 'not-found':
+                        self.io.manager.disable(name)
+                self.io._confirm_quiescent()
+                self.io._headscale_stopped()
+                return {'outcome': 'in_progress', 'residue': []}
+        raise ActivationRefused()
+
+
+def helper_main() -> int:
+    """Closed private input from the fixed helper; never an operator CLI."""
+    try:
+        if len(sys.argv) != 1 or os.geteuid() != 0:
+            raise ActivationRefused()
+        raw = sys.stdin.buffer.read(4097)
+        if len(raw) > 4096:
+            raise ActivationRefused()
+        request = json.loads(raw)
+        if type(request) is not dict or set(request) != {'method', 'uid', 'step', 'expected', 'deadline'}:
+            raise ActivationRefused()
+        deadline = request.pop('deadline')
+        if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= time.monotonic():
+            raise ActivationRefused()
+        # Existing command runner; every root/systemd step gets the ORIGINAL remainder.
+        from runtime.remote_access.service_manager import SystemdServiceManager, _default_run
+        def run(argv: list[str], timeout: float = 10.0, **kwargs: object) -> tuple[int, str]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ActivationRefused()
+            return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
+        manager = SystemdServiceManager(system=True, run=run)
+        io = ManagedInstaller(layout='deb', manager=manager, run=run)
+        result = HelperLifecycleBackend(io).dispatch(**request)
+        if time.monotonic() >= deadline:
+            raise ActivationRefused()
+        print(json.dumps(result, sort_keys=True, separators=(',', ':')))
+        return 0
+    except Exception:
+        return 1  # No raw paths, keys, credentials or diagnostics leave this child.
+
+
+if __name__ == '__main__':
+    raise SystemExit(helper_main())

@@ -134,23 +134,36 @@ a read-only protected HomeActivationStore snapshot through the fixed bundled Pyt
 bytes are unchanged. The B16 retained writer now brackets only the three existing
 fresh-auth device effects with durable intent and fixed outcome/uncertainty records.
 The fixed helper source contract already reflects B8/B9's optional compatibility UID
-pin and installed root Type=dbus packaging. Public Enable, installer effects,
-lifecycle authentication and I3 mutation audit outcomes remain deferred and unreachable;
+pin and installed root Type=dbus packaging. I3a adds the private lifecycle/auth/audit
+composition below; public lifecycle methods remain unreachable;
 this source integration does not activate the journey or switch bridge/CLI consumers.
 
-I3a's first serial slice wires the serving supervisor's optional B10
-reserve/invalidate/revoke-all capability to the existing InviteControl and its
-one current pinned pairing manager. No second owner, store, listener or IPC verb
-is added. Helper lifecycle mounting is still deferred and the public gate stays
-closed. The settled Disable composition is: hold the single helper mutation
-slot throughout → existing revoke-all (burn ceremony, durable denies and stream
-closure) → installer stop/disable and confirmed quiescence → B6 with the five
-authenticated-store expectations. Stop still runs if revocation fails; uncertain
-stop prevents B6. Complete requires successful revocation or B6 removal of trust
-state, and retained CA/key evidence still makes cleanup incomplete. A changed
-generation allows at most one re-read/retry within the original 300-second
-budget. Successful revocation leaves no admissible ceremony or credential after
-connector restart/runtime rotation before stop; B10's meaning is unchanged.
+I3a wires the serving supervisor's optional B10 reserve/invalidate/revoke-all
+capability to the existing InviteControl and its one current pinned pairing
+manager. It privately mounts Enable, ReplaceFailed and Disable through B9 capture,
+real polkit CheckAuthorization and the fixed bundled-Python activation/installer
+child. Every call captures and revalidates the kernel sender UID, B8 owner,
+protected activation generation/operation (including absence), and applicable
+Enable-config or B17 inventory/journal generation. B6 also checks the operation
+under its receipt lock. B16 durable intents precede effects, with succeeded,
+refused or uncertain settlement. Admission returns before the worker; the single
+slot remains held through all effects under the original 480/300-second budget.
+The already-designed three action definitions retain auth_admin/no-keep defaults.
+Public dispatch/introspection still excludes all three methods until I5.
+
+Disable holds that slot throughout → existing revoke-all (burn ceremony, durable
+denies and stream closure) → stop/disable recognized connector/sidecar/verifier
+and stop the receipt-bound local Headscale, with native quiescence proof → B6
+with authenticated-store expectations. B6 owns the exact Headscale-link disable.
+Stop still runs if revocation fails; uncertain stop prevents B6. **R7 corrects R4:**
+B6 retains connector trust-state.json/.anchor/.lock and persisted sidecar state.
+Complete requires revoke-all success AND confirmed stop AND B6 success AND no
+residue. Failed revoke always reports partial_cleanup and names retained
+un-revoked trust state, including when stop/B6 succeed. CA staging and B7/B11
+residue also require incomplete cleanup; I3c owns retirement. No new deletion
+allowlist/executor, purge reuse or B17 reuse for Disable. One changed-generation
+re-read/retry is allowed within the original 300-second budget. Successful revoke
+leaves no admissible ceremony/device after restart/rotation before stop.
 
 Action IDs are exactly `ai.happyranch.remote-access.<suffix>` for authenticated methods. Defaults:
 `allow_any=no`, `allow_inactive=no`, `allow_active=auth_admin`; never `_keep`, wildcard rules,
@@ -722,7 +735,7 @@ recipe for the user. Interrupted replacement stays off; next authenticated Repla
 only the exact journal generation. Do not roll back revoked credentials into service.
 
 I2b supplies only the unmounted `ManagedInstaller.begin_replacement` first-intent
-entry for B17; public ReplaceFailed/helper/CLI wiring remains I3. It requires the
+entry for B17; I3a mounts it privately and public ReplaceFailed/CLI remains gated until I5. It requires the
 expected release UID and exact observed inventory/journal generation, captures
 the full fixed inventory, validates the release owner under §1 and the same-FD
 source token, then durably publishes additive `replacement-intent@2` before stop
@@ -751,12 +764,13 @@ otherwise retain the locked nologin account and say so. Keep package/helper, non
 unrelated data; destroy quarantined secrets after successful replacement or disable. Any
 stop/ownership uncertainty aborts removal and reports partial state.
 
-I2a supplies an unmounted receipt-bound B6 installer cleanup executor; existing
+I2a supplies the receipt-bound B6 installer cleanup executor, privately mounted by I3a; existing
 operator CLI/uninstall calls retain their pre-activation scope. It requires
 trusted expected identities/generation and all owned services already quiescent,
 removes only the fixed per-type live-state/receipted members, and explicitly
-destroys the owned CA private key. Public Disable/revocation/stop wiring remains
-deferred. Key fences, nonempty issuer journals and transaction evidence remain
+destroys the owned CA private key. I3a mounts revocation/stop/B6 privately;
+public Disable remains gated until I5. R7 retains connector/sidecar trust state
+and requires failed-revoke Disable to remain incomplete even when B6 succeeds. Key fences, nonempty issuer journals and transaction evidence remain
 retained with incomplete cleanup until a B7/B11 proof-and-audit retirement owner
 is delivered. Accounts continue to follow A–E without a new account rule.
 The B6 exception destroys only the root CA signing key: other root-only CA
