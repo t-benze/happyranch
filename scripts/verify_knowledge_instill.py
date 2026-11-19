@@ -154,9 +154,11 @@ def curation_date_citation_prompt() -> None:
     source, _ = capture()
     brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
     for instruction in (
-        'open_work.as_of and any other date field must be an ISO 8601 date or datetime '
-        '(e.g. 2026-11-18 or 2026-11-18T09:00:00+08:00), or null when unknown; '
-        'never prose or a relative/approximate date.',
+        'open_work.as_of and any other date field must use only a valid calendar date YYYY-MM-DD '
+        'or datetime YYYY-MM-DDTHH:MM:SS (hours 00-23) followed by +HH:MM, -HH:MM or Z '
+        '(e.g. 2026-11-18, 2026-11-18T09:00:00+08:00, 2026-11-18T09:00:00-08:00 or 2026-11-18T01:00:00Z), '
+        'or null when unknown; never ordinal/week dates, prose or relative/approximate dates. '
+        'The exact captured authored_at/observed_at requirements above take precedence.',
         'founder_ruling must be the exact text THR-N seqN or THR-N#N appearing verbatim in '
         'the cited founder_ruling_reference captured body or JSON-serialized metadata; '
         'founder_ruling_reference must be one of the item references.',

@@ -2292,10 +2292,13 @@ checks inspect the normalized model. The curator brief requires any item flagged
 one non-empty warning stating the caveat; for `historical`, it must state that the
 item describes past state and may no longer hold. This clarifies the existing
 `curation_warning_missing` check without inventing, inserting or defaulting warnings.
-The brief also requires `open_work.as_of` and any other date field to be an ISO
-8601 date or datetime (e.g. `2026-11-18` or `2026-11-18T09:00:00+08:00`), or null
-when unknown, never prose or a relative/approximate date. Exact captured
-`authored_at` and `CAPTURE_CUTOFF` requirements still apply. `founder_ruling`
+The brief also requires `open_work.as_of` and any other date field to use only
+a valid calendar date `YYYY-MM-DD` or datetime `YYYY-MM-DDTHH:MM:SS` (hours 00-23)
+followed by `+HH:MM`, `-HH:MM` or `Z` (e.g. `2026-11-18`,
+`2026-11-18T09:00:00+08:00`, `2026-11-18T09:00:00-08:00` or `2026-11-18T01:00:00Z`),
+or null when unknown; never ordinal/week dates, prose or relative/approximate
+dates. Exact captured `authored_at` and `observed_at`/`CAPTURE_CUTOFF` requirements
+take precedence. `founder_ruling`
 must be the exact literal `THR-N seqN` or `THR-N#N` appearing verbatim in the
 cited `founder_ruling_reference` captured body or JSON-serialized metadata;
 that reference must be among the item's references. Otherwise both fields must
