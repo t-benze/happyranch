@@ -115,6 +115,7 @@ class Record:
     phase: Phase | None = None
     component: Component | None = None
     outcome: Outcome | None = None
+    counts: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         _enum(self.event, Event)
@@ -131,6 +132,15 @@ class Record:
             _enum(self.component, Component)
         if self.outcome is not None:
             _enum(self.outcome, Outcome)
+        if self.counts is not None:
+            if (type(self.counts) is not dict
+                    or self.counts.keys() != {'reservations', 'markers', 'fences', 'pending_fences'}
+                    or any(type(n) is not int or not 0 <= n <= 600_000 for n in self.counts.values())
+                    or sum(self.counts.values()) > 600_000
+                    or self.subject_id not in ('subject-home-minter-node', 'subject-home-minter-invite')
+                    or self.component != Component.LIVE_STATE
+                    or self.event not in (Event.TURN_OFF, Event.UNCERTAIN)):
+                raise AuditRefused('record')
         if self.event == Event.UNCERTAIN:
             if self.stage != Stage.UNCERTAIN or self.outcome != Outcome.UNCERTAIN:
                 raise AuditRefused('record')
@@ -150,7 +160,10 @@ def encode(record: Record) -> bytes:
     if type(record) is not Record:
         raise AuditRefused('record')
     record.__post_init__()
-    data = (json.dumps({'version': 1, **asdict(record)}, sort_keys=True,
+    fields = asdict(record)
+    if record.counts is None:
+        del fields['counts']  # Preserve existing B16 wire bytes.
+    data = (json.dumps({'version': 1, **fields}, sort_keys=True,
                        separators=(',', ':'), ensure_ascii=True) + '\n').encode('ascii')
     if len(data) > MAX_RECORD_BYTES:
         raise AuditRefused('record-too-large')
@@ -166,7 +179,8 @@ class HomeAudit:
     fence against another root process replacing entries outside this API.
     """
 
-    def __init__(self, path: Path = AUDIT_PATH, *, uid: int = 0, gid: int = 0) -> None:
+    def __init__(self, path: Path = AUDIT_PATH, *, uid: int = 0, gid: int = 0,
+                 directory_fd: int | None = None) -> None:
         self.path = Path(path)
         if (not self.path.is_absolute() or '..' in self.path.parts
                 or not self.path.name or self.path == Path('/')
@@ -174,12 +188,13 @@ class HomeAudit:
                        for value in (uid, gid))):
             raise AuditRefused('custody')
         self.uid, self.gid = uid, gid
+        self._directory_fd = directory_fd
 
     def intent(self, event: Event, *, intent_id: str, operation_id: str,
                subject_id: str | None = None, phase: Phase | None = None,
-               component: Component | None = None) -> Record:
+               component: Component | None = None, counts: dict[str, int] | None = None) -> Record:
         record = Record(event, Stage.INTENT, intent_id, operation_id, time.time_ns(),
-                        subject_id, phase, component)
+                        subject_id, phase, component, counts=counts)
         self.append(record)
         return record
 
@@ -210,6 +225,15 @@ class HomeAudit:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.uid
                     or info.st_gid != self.gid or info.st_mode & 0o022):
                 raise AuditRefused('custody')
+            if self._directory_fd is not None:
+                held = os.fstat(self._directory_fd)
+                if (held.st_dev, held.st_ino) != (info.st_dev, info.st_ino):
+                    raise AuditRefused('custody')
+                # dup retains the activation owner's open file description:
+                # flock below reuses its lock instead of blocking on ourselves.
+                borrowed = os.dup(self._directory_fd)
+                os.close(descriptor)
+                descriptor = borrowed
             return descriptor
         except BaseException:
             os.close(descriptor)
