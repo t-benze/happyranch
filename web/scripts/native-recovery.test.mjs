@@ -158,6 +158,24 @@ test('store: latest wins, clear notifies, identical report is a no-op', () => {
   off();
 });
 
+test('store: explicit retry clears the state before notifying latched read owners', () => {
+  const seen = [];
+  const off = recovery.subscribeNativeRecoveryRetry(() => { seen.push(recovery.getNativeRecoveryState()); });
+  recovery.reportNativeRecovery({ code: 'target_unreachable' });
+  recovery.retryNativeRecovery();
+  // The owner runs once, with the state already cleared, so its own read can
+  // report the state again if the target still answers with a recovery code.
+  assert.deepEqual(seen, [null]);
+  assert.equal(recovery.getNativeRecoveryState(), null);
+  off();
+  recovery.retryNativeRecovery();
+  assert.equal(seen.length, 1, 'unsubscribed owner is not retried');
+  // A report alone never triggers retry listeners.
+  recovery.subscribeNativeRecoveryRetry(() => { seen.push('unexpected'); });
+  recovery.reportNativeRecovery({ code: 'busy' });
+  assert.equal(seen.length, 1);
+});
+
 // --- client.request --------------------------------------------------------
 test('request: 503 native code -> NativeRecoveryError, state recorded, bearer kept, single send', async () => {
   queue.push(json(503, { detail: { code: 'no_target' } }));

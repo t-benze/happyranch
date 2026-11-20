@@ -5,6 +5,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useMatch,
   useParams,
   useSearchParams,
 } from 'react-router-dom';
@@ -14,8 +15,8 @@ import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
-import { useNativeRecovery, useRetryNativeRecovery } from '@/hooks/nativeRecovery';
-import { NativeRecoveryPanel } from '@/shared/connection/NativeRecoveryPanel';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
@@ -99,8 +100,9 @@ function OrgLayout(): JSX.Element {
 
 function AppShell(): JSX.Element {
   const location = useLocation();
-  const recovery = useNativeRecovery();
-  const retryRecovery = useRetryNativeRecovery();
+  // Settings fences only its target-backed sections itself, so local
+  // Settings -> Preferences stays usable during a recovery state.
+  const settingsRoute = useMatch('/orgs/:slug/settings/*') !== null;
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
@@ -112,12 +114,11 @@ function AppShell(): JSX.Element {
           <main className="flex-1 overflow-hidden">
             {/* THR-387 S1b: a native recovery state replaces the visible page
                 but keeps it mounted (hidden) so drafts and page state survive. */}
-            {recovery && <NativeRecoveryPanel state={recovery} onRetry={retryRecovery} />}
-            <div hidden={recovery !== null} className="contents">
+            <NativeRecoveryFence bypass={settingsRoute}>
               <AppShellErrorBoundary resetKey={location.pathname}>
                 <Outlet />
               </AppShellErrorBoundary>
-            </div>
+            </NativeRecoveryFence>
           </main>
         </div>
       </TopbarSlotsProvider>

@@ -119,6 +119,27 @@ export function clearNativeRecovery(): void {
   publish(null);
 }
 
+const retryListeners = new Set<() => void>();
+
+/**
+ * Explicit Retry/Recheck: clear the active state, then tell read owners that
+ * keep their own latched failure (outside TanStack refetch, e.g. the Threads
+ * committed-page owner) to retry. A request that still meets the native answer
+ * reports the state again.
+ */
+export function retryNativeRecovery(): void {
+  clearNativeRecovery();
+  for (const listener of [...retryListeners]) listener();
+}
+
+/** Subscribe a latched read owner to explicit Retry/Recheck. */
+export function subscribeNativeRecoveryRetry(listener: () => void): () => void {
+  retryListeners.add(listener);
+  return () => {
+    retryListeners.delete(listener);
+  };
+}
+
 /** Current recovery state, or null when none is active (stable reference). */
 export function getNativeRecoveryState(): NativeRecoveryState | null {
   return current;
@@ -135,4 +156,5 @@ export function subscribeNativeRecovery(listener: () => void): () => void {
 export function __resetNativeRecoveryForTests(): void {
   current = null;
   listeners.clear();
+  retryListeners.clear();
 }

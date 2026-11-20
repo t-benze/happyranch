@@ -19,7 +19,8 @@ import {
 } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { subscribeSSE, threads as threadsApi } from '@/lib/api';
+import { NativeRecoveryError, subscribeSSE, threads as threadsApi } from '@/lib/api';
+import { subscribeNativeRecoveryRetry } from '@/lib/nativeRecovery';
 import type {
   ThreadInboxEvent,
   ThreadMessage,
@@ -212,11 +213,21 @@ export function useCommittedThreadPages(
         }
       }
     });
+    // THR-387 S1b: the global recovery Retry also retries this owner's latched
+    // read when that failure was a native recovery answer. Same path as the
+    // page's own Retry, so generation/pin ownership is unchanged.
+    const unsubscribeRecovery = subscribeNativeRecoveryRetry(() => {
+      if (!leader() || !owner.failure || !(owner.error instanceof NativeRecoveryError)) return;
+      const kind = owner.failure;
+      owner.failure = null;
+      void run(kind);
+    });
     const refresh = () => { if (leader()) void run('refresh'); };
     window.addEventListener('focus', refresh);
     window.addEventListener('online', refresh);
     return () => {
       unsubscribe();
+      unsubscribeRecovery();
       window.removeEventListener('focus', refresh);
       window.removeEventListener('online', refresh);
       owner.users--;

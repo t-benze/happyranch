@@ -58,16 +58,26 @@ opens to a recovery answer stops (no retry), like other non-OK opens; network
 errors still retry. Streams are not resubscribed after Retry; a remount
 (navigation) reopens them.
 
-While a state is active, the AppShell shows `shared/connection/NativeRecoveryPanel`
-in place of the routed page, which stays mounted but hidden so drafts and page
-state survive; Sidebar, Settings and the AppBar Language selector stay
-reachable, and the index route does not redirect to onboarding. Copy (EN and
+While a state is active, `NativeRecoveryFence` (in
+`shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
+content, which stays mounted but hidden so drafts and page state survive. The
+AppShell fences every routed page except `/orgs/:slug/settings/*`; Settings
+fences only its target-backed sections (Capacity, Organization, Executors,
+Coding) inside the page, so the Settings sub-nav and the client-only
+Preferences section stay visible and usable. Sidebar and the AppBar Language
+selector stay reachable, and the index route does not redirect to onboarding.
+The panel content centers when it fits and otherwise starts at the scroll
+origin (short viewports or page zoom), keeping the action reachable by scroll. Copy (EN and
 zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update
 HappyRanch on the selected computer (this app needs no update), `app` →
 update this app (the computer needs no update), `unknown` → compatibility
 unavailable with no guessed component. The machine code is shown verbatim as
-details. Retry/Recheck clears the state and refetches active queries; a request
-that still meets the answer shows it again. Connection/Settings dialogs (S6)
+details. Retry/Recheck (`retryNativeRecovery`) clears the state, notifies
+read owners that keep their own latched failure (the Threads committed-page
+owner retries a read that failed with `NativeRecoveryError`, through its own
+generation-fenced path) and refetches active queries; a request that still
+meets the answer shows it again. No other read owner with a latched
+(skipToken/`enabled:false`) failure exists in `web/src`. Connection/Settings dialogs (S6)
 do not exist yet, so the panel names Connection in copy only.
 
 `web/src/lib/apiContract.ts` is the web owner of `CLIENT_CONTRACT = 1`,

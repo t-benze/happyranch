@@ -45,6 +45,8 @@ import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
@@ -86,17 +88,32 @@ export function SettingsPage(): JSX.Element {
   const settingsQuery = useSettings();
   const { t } = useTranslation();
 
+  const recovery = useNativeRecovery();
+
+  // THR-387 S1b: during a native recovery state the target-backed sections
+  // show the recovery panel inside Settings (panels stay mounted but hidden,
+  // so drafts survive), while the sub-nav and the client-only Preferences
+  // section stay usable. Without a recovery state the gate is unchanged.
   const gated = (panel: ReactNode): JSX.Element => (
     <>
-      {settingsQuery.isLoading && <div className="text-text-secondary flex-1 p-8 text-sm">{t('settings.page.loading')}</div>}
-      {settingsQuery.isError && (
+      {!recovery && settingsQuery.isLoading && <div className="text-text-secondary flex-1 p-8 text-sm">{t('settings.page.loading')}</div>}
+      {!recovery && settingsQuery.isError && (
         <div className="text-feedback-danger flex-1 p-8 text-sm">
           {t('settings.page.loadError')}
           {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
         </div>
       )}
-      {settingsQuery.data && <SettingsContent>{panel}</SettingsContent>}
+      {(settingsQuery.data || recovery) && (
+        <SettingsContent>
+          <NativeRecoveryFence>{settingsQuery.data && panel}</NativeRecoveryFence>
+        </SettingsContent>
+      )}
     </>
+  );
+  const fenced = (element: ReactNode): JSX.Element => (
+    <SettingsContent>
+      <NativeRecoveryFence>{element}</NativeRecoveryFence>
+    </SettingsContent>
   );
 
   return (
@@ -121,11 +138,7 @@ export function SettingsPage(): JSX.Element {
           />
           <Route
             path="coding"
-            element={
-              <SettingsContent>
-                <CodingPanel key={slug} />
-              </SettingsContent>
-            }
+            element={fenced(<CodingPanel key={slug} />)}
           />
           <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
           <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
