@@ -899,3 +899,37 @@ See the [current U7 source and evidence limits](../../specs/2026-11-11-sequentia
 U4c supersedes the earlier unmounted repository adapter checkpoint only: see
 [repository transport](../../specs/2026-11-12-sequential-coding-u4c.md).
 The callback and native settlement contracts above remain unchanged.
+
+## Workflow continuation terminality (S6a)
+
+A completed start/control/wait callback is not dispatch-terminal evidence,
+including the ordinary consumer's legacy JSON-in-`output_summary` representation
+when `decision_json` is absent. Both readers use that same decision parser. The
+shared reader serves parent chain/fanout release, delegated Pause eligibility
+and child-wait projection. A wait-set initiator's unfinished owned runs/ordinary
+dependencies also prevent early release; unavailable workflow evidence is
+nonterminal and projects unavailable. Readers do not acknowledge, enqueue or
+install storage. Absent workflow storage preserves ordinary THR-211 behavior,
+including exact current-session ordinary final done before native finalization
+and fingerprint-absence-only legacy fallback. Inbox readiness admits only its
+addressed initiator, preserving unfinished ordinary joins. See the S6a section
+of [reusable workflows](reusable-workflows.md) for internal decision wire fields
+and the native callback transaction boundary.
+
+Resume/discovery republishes a ready `seq_source_wait_set` through its continuation
+owner after a wake was consumed during Pause. The actual queue coalesces repeated
+discovery; unchanged Pause generation/current-ownership and TaskInvocation fences
+control admission without changing the stored owner mark or consuming events.
+Actual delivery or an already-pending coalesced item acknowledges that owner's
+publication. Queue refusal, including a stopping queue, retains Resume release
+intent; no-longer-ready initiators need no publication.
+
+Only active ordinary dependencies enter the bounded join observation; settled
+historical children and structural workflow carriers never impose a lifetime
+continuation/completion limit. Active-set overflow stays unavailable until it
+settles. Native blocked/job waits, failed results and ordinary decisions do not
+require a workflow receipt or consume pending events. Final ordinary done still
+rechecks outstanding work under native admission. Event-session ordinary
+delegate/fanout/parallel/then dispatch refuses under that same fence while a
+native join is unfinished, rolling back the result and retaining its exact
+chain/fanout bytes. With no unfinished join, ordinary dispatch is unchanged.

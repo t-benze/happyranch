@@ -6676,3 +6676,16 @@ Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before
 dispatch, and an ended attempt is not relabeled running during retry backoff.
+
+## Internal workflow initiator continuation (S6a)
+
+The ordinary manager owner may receive a bounded stored event page while its
+workflow runs and ordinary work continue. Event readiness is separate from
+ordinary join readiness and from dispatch terminality to its own parent.
+Unfinished chains/fanouts are retained at entry. The shared terminal reader
+excludes workflow start/control/wait callbacks, including after their last run
+returns; a later genuine ordinary done closes the task after an admission-fence
+dependency recheck. Internal control effects and inbox consumption bind the
+genuine INTEGER callback result and share its native transaction. Public @2
+start/control/wait capabilities remain unadvertised. See
+[reusable workflows](contracts/reusable-workflows.md#s6a-internal-decision-continuations).

@@ -1122,6 +1122,9 @@ def recall_task(
     return node
 
 
+from runtime.orchestrator.workflow_continuation import decision_schemas as continuation_decision_schemas
+
+
 class CompletionBody(BaseModel):
     session_id: str
     agent: str
@@ -1132,8 +1135,8 @@ class CompletionBody(BaseModel):
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
     decision: dict | None = Field(default=None, json_schema_extra={
-        'if': {'type': 'object', 'properties': {'action': {'const': 'workflow_start'}}, 'required': ['action']},
-        'then': {'anyOf': [start_decision_schema(), sequential_start_decision_schema()]},
+        'if': {'type': 'object', 'properties': {'action': {'enum': ['workflow_start', 'workflow_control', 'workflow_wait']}}, 'required': ['action']},
+        'then': {'anyOf': [start_decision_schema(), sequential_start_decision_schema(), *continuation_decision_schemas()]},
     })
     # Manager-only S6a semantic evidence. Kept raw at the HTTP boundary so a
     # malformed attempt can be reduced to a digest-only durable diagnostic;
@@ -1260,7 +1263,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt", "seq_visit"}
     workflow_owner = (org.workflow_sequential_dispatch if ownership.kind == "seq_visit" else org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
     if (ownership.kind in SEQUENTIAL_HELD_KINDS - {"seq_visit", "seq_source_waiting"}
-            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting", "seq_visit", "seq_source_waiting"}):
+            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting", "seq_visit", "seq_source_waiting", "seq_source_wait_set"}):
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft or ownership.kind == 'seq_source_waiting' else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -1277,6 +1280,12 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
         decision_payload.pop("_manager_self_evaluation", None)
         decision_payload.pop("_authority_v2_admission", None)
     sequential_start = False
+    if decision_payload is not None and decision_payload.get('action') in ('workflow_control', 'workflow_wait'):
+        from runtime.models import NextStep
+        try:
+            NextStep.model_validate(decision_payload)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={'code': 'workflow_invalid_decision'}) from None
     if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
         from runtime.workflows.coding_start_records import CodingStartDecision
         workflow = decision_payload.get('workflow')
@@ -1603,8 +1612,11 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     from runtime.workflows.sequential_engine import SequentialRefusal
     sequential_owner = org.workflow_sequential_dispatch if ownership.kind == 'seq_visit' else None
     coding_owner = sequential_owner or (org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None)
+    continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' else None
     try:
-        admission_context = coding_owner.callback_admission(task_id) if coding_owner is not None else nullcontext(None)
+        admission_context = (coding_owner.callback_admission(task_id) if coding_owner is not None else
+            continuation.callback_admission(task_id, body.decision, status=body.status)
+            if continuation is not None else nullcontext(None))
         async with admission_context as coding_capture:
             async with org.db_lock if coding_owner is None else nullcontext():
                 current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
@@ -1679,6 +1691,10 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
         if coding_owner is None:
             raise
         raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+    except ValueError as exc:
+        if ownership.kind != 'seq_source_wait_set' or not str(exc).startswith('workflow_seq_'):
+            raise
+        raise HTTPException(status_code=409, detail={'code': str(exc)}) from None
     # Generation-owned cleanup preserves a newer invocation that may have
     # replaced this callback while the route was awaiting its DB lock.
     if not workflow_draft:

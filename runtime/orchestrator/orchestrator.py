@@ -302,6 +302,12 @@ class Orchestrator:
                     rediscover_returned(sequential, queue=queue, sequential=True)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('sequential caller notification rediscovery unavailable')
+        continuation = getattr(self, '_workflow_continuation', None)
+        if continuation is not None:
+            try:
+                continuation.rediscover(queue=queue)
+            except (ValueError, TypeError, sqlite3.Error):
+                logger.exception('workflow initiator continuation rediscovery unavailable')
 
     def notify_escalated(
         self, *, task_id: str, agent: str, reason: str, last_summary: str = "",
@@ -1733,7 +1739,7 @@ class Orchestrator:
                   else getattr(self, "_workflow_coding_dispatch", None) if ownership.kind == "coding_attempt"
                   else getattr(self, "_workflow_sequential_dispatch", None) if ownership.kind == "seq_visit"
                   else getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None)
-        if ownership.kind != "legacy" and drafts is None:
+        if ownership.kind not in ("legacy", "seq_source_wait_set") and drafts is None:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
                                   error="workflow_reconciliation_required")
 
