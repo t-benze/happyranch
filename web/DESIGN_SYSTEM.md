@@ -123,6 +123,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   removed the old `--spacing-5..8` overrides (24/32/48/64px) and rewrote every
   use to the linear step with the same pixels (5->6, 6->8, 7->12, 8->16).
   `tokens.css` may still declare named spacing tokens (`--spacing-rail`,
+  `--spacing-rail-wide`,
   `--spacing-content`, button paddings) and linear-equal `--spacing-0..4`, but
   the `--scan-tokens` gate fails (exit 5) on any numeric `--spacing-N` whose
   value is not `N x 0.25rem`.
@@ -173,7 +174,11 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `PageTitle`: it keeps its own `text-display` h1. Do not pass the h1 classes
   through `cn()`: tailwind-merge reads `text-page-title` as a text colour and
   drops it next to `text-text-primary`. The old `PageHeader` (h2, Hanken
-  18/600) is removed; `ThreadHeader` keeps its own h2 detail-pane header.
+  18/600) is removed; `ThreadHeader` keeps its own h2 detail-pane header
+  (THR-376 thread detail: mockup `.td-head`, title `font-display text-h1
+  font-medium`, optional `crumb` slot and `messageCount` sub-line). The
+  thread-detail properties rail uses `--spacing-rail-wide` (300px,
+  `md:w-rail-wide`); the 244px `--spacing-rail` stays the AppShell rail.
   Detail, onboarding and story headings are not migrated yet.
 - `Card` and `CardHeader` (`primitives/Card.tsx`, THR-376 PR7) are Pasture
   ds.css `.card` / `.card-pad` / `.card-head` / `.card-title`: `bg-surface-raised`
@@ -501,7 +506,7 @@ visibility through titles, docs, controls, and representative renders.
 | `StatValue` | [source:patterns/StatValue.tsx#StatValue] [story:patterns/StatValue.coverage.stories.tsx#Coverage] Patterns / Stat Value Formats | token/count, right/inline | `components.stat_value` |
 | `StatusBadge` | [source:patterns/StatusBadge.tsx#StatusBadge] [story:patterns/StatusBadge.coverage.stories.tsx#Coverage] Patterns / Status Badge States | all lifecycle states; feature-vocabulary tone + label (+ led dot, icon) | `components.badge` |
 | `TaskCard` | [source:patterns/TaskCard.tsx#TaskCard] [story:patterns/TaskCard.coverage.stories.tsx#Coverage] Patterns / Task Card Density | populated/active; comfortable, compact; injected routes | badge/card |
-| `ThreadHeader` | [source:patterns/ThreadHeader.tsx#ThreadHeader] [story:patterns/ThreadHeader.coverage.stories.tsx#Coverage] Patterns / Thread Header States | open/dream/action, archived | thread layout |
+| `ThreadHeader` | [source:patterns/ThreadHeader.tsx#ThreadHeader] [story:patterns/ThreadHeader.coverage.stories.tsx#Coverage] Patterns / Thread Header States | open/dream/action (crumb + message count), archived | thread layout |
 | `TraceTree` | [source:patterns/TraceTree.tsx#TraceTree] [story:patterns/TraceTree.coverage.stories.tsx#Coverage] Patterns / Trace Tree Density | recursive cost fixture; comfortable, compact | `components.trace_tree` |
 | `TypingBubble` | [source:patterns/TypingBubble.tsx#TypingBubble] [story:patterns/TypingBubble.coverage.stories.tsx#Coverage] Patterns / Typing Bubble States | working, queued; shell remains 18px | info/muted, `--radius-lg` |
 | `AppBar` | [excluded:AppBar] Reads live shell/org/navigation contexts and hosts product commands; AppShell/route tests cover it. | shell context in tests | topbar/grid |
