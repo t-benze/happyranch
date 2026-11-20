@@ -2,7 +2,7 @@
 
 > Status: current design; U6b2b mounted business stop and original-owner composition
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
-> Notes: TASK-15349 below supersedes earlier split/unmounted statuses; native/V3 acceptance is separate.
+> Notes: TASK-15349 below supersedes earlier split/unmounted statuses; generic cancellation is retained. S6b extends the existing mixed owner to @2 source wait sets, preserving @1/legacy events and Option B UNSETTLED. Native/V3 acceptance is separate.
 
 THR-336 / ROOT TASK-15165; maker TASK-15287. Fetched base B is
 `dc35c34ca907d6094cc79654f6f7b5be7476fe82`. Plan rev3 TASK-14461 §U6

@@ -22,7 +22,7 @@ from runtime.workflows.sequential_history import (
 Cell: TypeAlias = str | bytes | int | float | None
 _RESULT_COLUMNS = ('id', 'task_id', 'agent', 'session_id', 'status')
 _RESULT_TYPES = (('integer',), ('text',), ('text',), ('text',), ('text',))
-_SEQUENTIAL = ('seq_source_waiting', 'seq_carrier', 'seq_visit')
+_SEQUENTIAL = ('seq_source_waiting', 'seq_carrier', 'seq_visit', 'seq_source_wait_set')
 
 
 @dataclass(frozen=True)
@@ -123,8 +123,10 @@ def close_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
             for value in binding:
                 _identity(value)
         kind, owner, instance = _binding_owner(key, bindings)
-        _require(marks[0][1:] == (2 if kind in _SEQUENTIAL else 1, kind, owner),
+        _require(marks[0][1:] == (3 if kind == 'seq_source_wait_set' else 2 if kind in _SEQUENTIAL else 1, kind, owner),
                  'mixed_owner_conflict')
+        if kind == 'seq_source_wait_set':
+            instance = None  # Wait sets never select one member run.
         owners[key] = (key, kind, owner, instance)
         adjacent = []
         if task['parent_task_id'] is not None:
@@ -132,6 +134,10 @@ def close_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
             adjacent.append(task['parent_task_id'])
         adjacent.extend(child[0] for child in _rows(conn, 'tasks', ('id',), (('text',),),
             budget, where='parent_task_id=?', args=(key,), maximum=512))
+        if kind == 'seq_source_wait_set':
+            adjacent.extend(member[0] for member in _rows(conn, 'workflow_seq_runs', ('carrier_task_id',),
+                (('text',),), budget, where='id IN (SELECT run_id FROM workflow_seq_source_memberships WHERE wait_set_id=?)',
+                args=(owner,), maximum=512))
         if instance is not None:
             family = (kind in _SEQUENTIAL, instance)
             if family not in families:
@@ -139,7 +145,7 @@ def close_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
                 predicate = 'IN' if family[0] else 'NOT IN'
                 adjacent.extend(member[0] for member in _rows(conn, 'tasks', ('id',), (('text',),),
                     budget, where='id IN (SELECT task_id FROM workflow_task_owner_bindings '
-                        f'WHERE instance_id=? AND relation {predicate} (?,?,?))',
+                        f'WHERE instance_id=? AND relation {predicate} (?,?,?,?))',
                     args=(instance, *_SEQUENTIAL), maximum=512))
         for adjacent_id in adjacent:
             budget.step()

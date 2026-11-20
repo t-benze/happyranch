@@ -16,7 +16,7 @@ from runtime.workflows.sequential_history import _ReadBudget, _bytes, _native_ro
 from runtime.workflows.sequential_run_validation import _selected_rows, validate_selected_run_uncommitted
 
 _TERMINAL = frozenset(('completed', 'failed', 'cancelled', 'superseded'))
-_KINDS = frozenset(('seq_source_waiting', 'seq_carrier', 'seq_visit'))
+_KINDS = frozenset(('seq_source_waiting', 'seq_carrier', 'seq_visit', 'seq_source_wait_set'))
 _TASK_COLUMNS = ('id', 'parent_task_id', 'status', 'block_kind', 'cancelled_at')
 
 

@@ -286,9 +286,11 @@ def _wake_body(run: dict, event: dict, compiled: Any, visits: dict[str, dict], b
             kind, state = ('failed' if edge['action'] == 'fail' else 'returned'), 'finished'
             outcome = 'failed' if edge['action'] == 'fail' else 'completed'
             cause = edge.get('code')
+    elif event['kind'] == 'cancellation_finished' and 'visit_id' in body and 'actor' not in body:
+        kind, state, outcome = 'cancellation_finished', 'finished', 'cancelled'
     if kind is None:
         return None
-    visit = visits.get(event['source_visit_id'])
+    visit = visits.get(event['source_visit_id'] or body.get('visit_id'))
     _require(visit is not None, 'initiator_wake_visit_conflict')
     node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
     return dict(format='workflow-sequential-initiator-wake@2', notification_id=_id('wake', event['id']),
@@ -476,6 +478,9 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
     from runtime.workflows.sequential_dispatch import _evidence
     from runtime.workflows.sequential_start import _source_outer_positive
     org, budget = dispatcher.org, _ReadBudget()
+    from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+    if fence_terminal_source(org, invocation.task.id):
+        return
     ready = []
     with dispatcher._writer() as conn, _sql_budget(conn, budget):
         wait = _audience(conn, invocation.task.id, invocation.agent, invocation.session_id, budget, current=False)
@@ -515,3 +520,23 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
     # queue insertion never acknowledges the source's inbox.
     for task_id in ready:
         dispatcher.notify_queued(task_id, org.orchestrator._queue)
+
+
+def finish_cancel_and_wake_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
+        run: dict, compiled: Any, authority: Any, capture: Any) -> str:
+    """Keep S4a's finish bytes intact; its member inbox FK is deferred like Held."""
+    from runtime.workflows.sequential_control import finish_cancellation_uncommitted
+    budget = _ReadBudget()
+    with _sql_budget(conn, budget):
+        visits = _rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run['id'],))
+        event = dict(id=_id('event', run['id'], str(run['event_count'] + 1)),
+            kind='cancellation_finished', sequence=run['event_count'] + 1,
+            source_visit_id=None, source_result_id=None)
+        raw = _bytes(dict(visit_id=run['active_visit_id']))
+        event.update(event_bytes=raw, event_digest=hashlib.sha256(raw).hexdigest())
+        conn.execute('PRAGMA defer_foreign_keys=ON')
+        wake_uncommitted(conn, run, event, compiled, {row['id']: row for row in visits}, budget)
+    event_id = finish_cancellation_uncommitted(conn, db, org_slug=org_slug, run_id=run['id'],
+        expected_cas=run['cas'], compiled=compiled, authority=authority, capture=capture)
+    budget.check()
+    return event_id
