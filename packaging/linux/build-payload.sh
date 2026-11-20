@@ -206,6 +206,8 @@ done
 install -m 755 "$WORK/source/packaging/linux/bin/happyranch-app" "$PAYLOAD/bin/happyranch-app"
 mkdir -p "$PAYLOAD/share/happyranch/desktop" "$PAYLOAD/share/applications"
 cp "$WORK/source/packaging/linux/desktop/happyranch_window.py" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/packaging/linux/desktop/app_scheme.py" \
+    "$WORK/source/packaging/linux/desktop/app_scheme_webkit.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/connection_contract.py" \
     "$WORK/source/packaging/linux/desktop/connection_cli.py" \
     "$WORK/source/packaging/linux/desktop/client_cli.py" \

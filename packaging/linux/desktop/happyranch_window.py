@@ -926,6 +926,7 @@ def run_gui(prefix: Path, home: Path) -> int:
     remote = None
     connection_windows = []
     client_ui = None
+    app_scheme = None
 
     def open_connection(_button: object) -> None:
         nonlocal client_ui
@@ -955,6 +956,10 @@ def run_gui(prefix: Path, home: Path) -> int:
         box.pack_start(remote.box, False, False, 0)
 
     def message(title: str, detail: str = "") -> None:
+        nonlocal app_scheme
+        if app_scheme is not None:
+            app_scheme.close()
+            app_scheme = None
         for widget in window.get_children():
             window.remove(widget)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -1045,9 +1050,31 @@ def run_gui(prefix: Path, home: Path) -> int:
             GLib.idle_add(render_controls, "off", str(exc), False, False)
 
     def show_web(url: str, fallback: bool = False) -> bool:
-        nonlocal controls
+        nonlocal controls, app_scheme
         if closing:
             return False
+        if app_scheme is not None:
+            app_scheme.close()
+            app_scheme = None
+        view = None
+        if os.environ.get("HAPPYRANCH_DESKTOP_APP_SCHEME") == "1":
+            # url is released only by the existing service/child ownership and
+            # health proof. Do not accept a caller-selected upstream address.
+            import importlib.util
+            from urllib.parse import urlsplit
+            endpoint = urlsplit(url)
+            try:
+                if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
+                    raise ValueError("invalid verified endpoint")
+                path = prefix / "share/happyranch/desktop/app_scheme_webkit.py"
+                spec = importlib.util.spec_from_file_location("app_scheme_webkit", path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web")
+                view, url = app_scheme.view, module.ORIGIN + "/"
+            except (OSError, ValueError, ImportError):
+                show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
+                return False
         for widget in window.get_children():
             window.remove(widget)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1059,7 +1086,8 @@ def run_gui(prefix: Path, home: Path) -> int:
         box.pack_start(controls, False, False, 0)
         attach_remote(box)
         box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
-        view = WebKit2.WebView()
+        if view is None:
+            view = WebKit2.WebView()
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
             return True
@@ -1180,6 +1208,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     def request_close(*_args: object) -> bool:
         nonlocal closing
         closing = True
+        if app_scheme is not None:
+            app_scheme.close()
         if remote is not None:
             remote.close()
         cancel.set()
