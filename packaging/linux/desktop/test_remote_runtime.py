@@ -932,6 +932,25 @@ class SwitchTests(PeerFixture):
         self.assertEqual(self.main.generation, generation)
         self.assertEqual(self.forward(self.main)["body"], b"native-peer-ok")
 
+    def test_native_entry_retry_after_cancel_gets_fresh_candidate_admission(self) -> None:
+        generation = self.main.generation
+        self.ready()
+        previous_id = self.main.candidate["id"]
+        self.command("cancelAttempt")
+        self.ui.confirmed(True)
+        self.ui.pump(lambda: self.model.stage == "idle" and not self.model.workers)
+        self.new_candidate()
+        del self.ui.consent
+        # Existing native/v1 controls call the shared model directly.
+        self.model.accept(object())
+        self.ui.pasted("synthetic-retry-invite")
+        self.ui.pump(lambda: hasattr(self.ui, "consent"))
+        self.ui.consent(True)
+        self.ui.pump(lambda: self.main.candidate["phase"] in ("ready_to_switch", "failed"))
+        self.assertEqual(self.main.candidate["phase"], "ready_to_switch")
+        self.assertNotEqual(self.main.candidate["id"], previous_id)
+        self.serves_old(generation)
+
 
 class DialCancellationTests(unittest.TestCase):
     def test_select_target_cancels_pending_dials(self) -> None:

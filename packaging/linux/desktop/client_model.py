@@ -112,11 +112,6 @@ class ClientModel:
             if command == "client.connectSaved" and computerRef not in self.records:
                 finish(None, "stateChanged")
                 return
-            self.switch_candidate = {"kind": "remote", "id": uuid.uuid4().hex,
-                "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
-                "phase": "signing_in", "deadline": None}
-            self.candidate_target = self.candidate_error = None
-            self.candidate_stop = threading.Event()
             if command == "client.connectSaved":
                 self.connect_saved(computerRef, document, finish)
             else:
@@ -136,6 +131,14 @@ class ClientModel:
             self.commit_switch(finish)
         else:
             finish(None, "unsupportedCommand")
+
+    def begin_candidate(self) -> None:
+        if self.main is not None:
+            self.switch_candidate = {"kind": "remote", "id": uuid.uuid4().hex,
+                "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
+                "phase": "signing_in", "deadline": None}
+            self.candidate_target = self.candidate_error = None
+            self.candidate_stop = threading.Event()
 
     def commit_switch(self, finish: object) -> None:
         if not self.valid(self.token):
@@ -234,6 +237,7 @@ class ClientModel:
             self.deferred.append(continuation)
 
     def accept(self, document: object) -> None:
+        self.begin_candidate()
         self.token += 1
         token = self.token
         self.document = document
@@ -496,6 +500,7 @@ class ClientModel:
         if record is None:
             finish(None, "stateChanged", "none")
             return
+        self.begin_candidate()
         self.token += 1
         token = self.token
         self.document, self.active_ref = document, ref
