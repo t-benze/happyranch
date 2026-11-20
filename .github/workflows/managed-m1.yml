@@ -41,18 +41,18 @@ jobs:
           key: managed-linux-amd64-tailscale-1.102.3-36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
       - name: Install system Python venv support
         run: sudo apt-get update && sudo apt-get install -y python3-venv
-      - name: Install, observe READY, request, uninstall and check residue
+      - name: Install and exercise public home lifecycle and Off residue
         run: |
           set -euo pipefail
           mkdir -p "$M1_LOGS"
           bash scripts/ci/m1_install_ready_uninstall.sh run 2>&1 | tee "$M1_LOGS/run.log"
-      - name: Dump plain diagnostics before teardown
+      - name: Collect nonsecret unit properties before teardown
         if: always()
         run: bash scripts/ci/m1_install_ready_uninstall.sh logs
-      - name: Stop disposable fixtures and discard input keys
+      - name: Stop disposable fixtures and restore runner clock
         if: always()
         run: bash scripts/ci/m1_install_ready_uninstall.sh teardown 2>&1 | tee "$M1_LOGS/teardown.log"
-      - name: Upload plain logs
+      - name: Upload nonsecret acceptance logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

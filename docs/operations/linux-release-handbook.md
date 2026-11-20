@@ -959,9 +959,13 @@ revision. No workflow trigger or signing automation is added.
 
 ### Installed layout and connector separation
 
-The single payload prefix is **`/opt/happyranch-desktop`**. The existing
-connector scripts (`scripts/ci/m1_install_ready_uninstall.sh`,
-`m2_tailnet_daemon.sh`, and the M3 recovery consumer) use
+The single payload prefix is **`/opt/happyranch-desktop`**. Home M1
+(`scripts/ci/m1_install_ready_uninstall.sh`) builds/installs this `.deb` and
+starts its unchanged release daemon user unit. Its fixed public system-bus
+Enable/ReplaceFailed/Disable/RetryPolicyRenewal calls use the packaged helper
+and executables, without operator JSON, expected-peer input, enrollment-key
+files, CLI pairing or test-side provisioning/preparation/publication calls.
+Existing legacy connector scripts (`m2_tailnet_daemon.sh` and its M3/M4 consumers) use
 `/opt/happyranch/{venv,bin}`, `/etc/happyranch`, service state under `/var/lib`
 and `/run`, and `happyranch-connector.service` /
 `happyranch-tsnet-sidecar.service`. Their provisioning also requires
@@ -971,6 +975,28 @@ no connector configuration, accounts, connector systemd units or enablement, and
 invokes the connector installer. Explicit `provision/install --layout deb`
 uses those packaged executables and retains separate config/state ownership. See
 [the connector contract](../agent-guides/contracts/remote-access-and-remote-jobs.md).
+
+Home M1 qualifies clean Enable/READY with exact fragments, loaded properties and
+hardening; immediate Disable after normal health.json plus a bounded synthetic
+numeric diagnostic (fresh helper namespace and I5f/I5g cleanup); FAILED manual
+replacement; between-step process interruption/recovery; and refused renewal
+followed by cached-policy expiry closing ingress. Its disposable clock/custody
+fixture is restored before public renewal and normal-supervision recovery for
+final Disable. Every call retains its unprivileged bus connection through helper
+release; accepted admission alone never means READY or Off. An unavailable
+namespace refusal/retry is logged, never hidden.
+
+Case 6 checks exact Turn off residue and the fixed post-Off `uninstall --purge`
+refusal with unchanged inventory/no native manager mutation. Five renderer-exact
+root:root 0644 fragments remain inert, not active/enabled and without drop-ins;
+release binding, policy and provision survive. All B6 removed members including
+sidecar health diagnostics must be absent after successful revoke. Failed revoke
+with persisted trust/sidecar state remains Q2 partial cleanup. **Home-profile
+uninstall remains deferred**; no legacy uninstall fixture is substituted. Runner
+disposal owns retained/root-only archived fixture data. Only categorical results
+and selected nonsecret properties are uploaded. **Disposable authentication
+simulation does not prove a real desktop dialog.** Earlier M1 receipts belong to
+the earlier operator journey; the new head needs its own hosted evidence.
 
 | Package path | Purpose |
 | --- | --- |

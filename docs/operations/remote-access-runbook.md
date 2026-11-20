@@ -11,11 +11,49 @@ setup, including its reusable-key example. Current THR-327 seq187/227 managed
 Linux installation, single-use credential-file handoff and lifecycle are maintained
 in [the remote-access guide](../agent-guides/contracts/remote-access-and-remote-jobs.md)
 and [the normative contract](../specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
-Bounded M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86`
+Historical operator-profile M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86`
 ([run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)).
 M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment
 remain **UNEXECUTED** and outside M1. This historical runbook is not evidence of
 those outcomes or authorization to provision/deploy.
+
+## Manual home M1 (I6a)
+
+The existing `managed-m1.yml` workflow remains manual and disposable. Its driver
+builds and installs the `.deb`, starts the unchanged packaged release daemon
+under the runner user manager, and invokes the CLI's fixed zero-input system-bus
+methods with a live unprivileged caller. Clean `Enable` owns all provisioning,
+Headscale preparation and publication; the harness supplies no operator JSON,
+expected peer, enrollment-key file or CLI pairing. Each lifecycle call records
+a fresh helper owner/process; one `unavailable` race refusal may be retried only
+after the refused helper releases its name, and is reported explicitly.
+
+The six cases are clean Enable to exact loaded-unit/hardening/notify READY;
+immediate Disable with the native sidecar `health.json` and a synthetic numeric
+temp already present (I5e/I5f/I5g); recognized FAILED manual fragments through
+fresh-auth ReplaceFailed phases and Enable; a native process interruption after
+complete provisioning, followed by recovery; refused RetryPolicyRenewal with
+unchanged policy/provenance and clock-driven cached-policy expiry closing actual
+ingress; and exact Off residue plus the fixed `uninstall --purge` refusal with
+unchanged byte/inode inventory and no systemd mutation. The interruption case
+fails if it misses the completed boundary. Policy recovery restores the test
+clock/custody, invokes public renewal and observes normal supervision before the
+final Disable; it does not start remote services from the test.
+
+Off retains five root:root 0644 renderer-exact inert fragments without enablement
+or drop-ins, release binding, policy and provision evidence. Successful revoke
+must remove all B6 members and sidecar diagnostics. Failed revoke with persisted
+trust/sidecar state retains the documented Q2 refusal and is never accepted as
+complete Off. Proven-Off cells may be archived root-only between independent
+fixtures; archival is not product cleanup. Home-profile uninstall remains
+deferred; M1 tests its refusal, with no legacy uninstall fixture.
+
+Only a runner-local test polkit rule simulates authentication. **Disposable
+authentication simulation does not prove a real desktop dialog.** Artifacts
+contain categorical case results/helper identities and selected nonsecret unit
+properties, never config, state, tokens or raw service journals. Historical M1
+receipts do not establish these home cases; native acceptance requires a run at
+the exact new head. M2/M3/M4, Product E2E and deployment are separate.
 
 ---
 
@@ -127,7 +165,8 @@ Supply `policy.json` as the current operational `PolicyEnvelope`: schema 1,
 version, that complete artifact under `artifact`, current aware UTC `issued_at`,
 `max_age_seconds` (for example 3600), revision 1 or the current revision, and
 `state: "active"`. This is the same envelope used by
-`scripts/ci/m1_install_ready_uninstall.sh`. Both structural policy validation and
+the legacy operator path. Home M1 instead exercises helper-generated policy.
+Both structural policy validation and
 freshness run before any service start; preserve the policy's existing renewal
 process. Provisioning does not mint a new policy or relax its lifetime.
 
@@ -333,9 +372,9 @@ Systemctl's local user-bus syntax is documented in the
 The service deliberately retains the host network namespace even though its
 only sockets are Unix sockets. Unit text and fixture checks do not prove that
 all hardening settings work together; hosted M1/M2 must supply that evidence.
-M1's synthetic server and M2's real daemon use the runner user manager and exact
-packaged FragmentPath, with a CI source-wheel ExecStart instead of the `.deb`
-binary. Neither allows a drop-in exception. M2 requires a squatter/non-MainPID
+Home M1 uses the unchanged packaged release daemon and exact packaged
+FragmentPath. M2's legacy real-daemon fixture uses the runner user manager with
+a CI source-wheel ExecStart. Neither allows a drop-in exception. M2 requires a squatter/non-MainPID
 port-file negative. M3/M4's legacy shared-driver assumptions require separate
 alignment before reuse. These source changes authorize no host installation,
 activation or Mac testing.

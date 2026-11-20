@@ -1,0 +1,499 @@
+"""Root-only observations/fixtures for manual M1; never imported by production.
+
+No staging, preparation, publication or activation owner is called here.
+All lifecycle effects come from the zero-input public system-bus methods.
+"""
+from __future__ import annotations
+
+import argparse
+import ctypes
+from datetime import datetime
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import time
+import pwd
+
+from runtime.remote_access import headscale_service as hs, home_audit
+from runtime.remote_access import policy_renew_units as renewal
+from runtime.remote_access.home_activation import ACTIVATION_PATH, LIVE_MEMBERS, MEMBER_PATHS, HomeActivationStore
+from runtime.remote_access.home_activation_txn import TRANSACTION_PATH
+from runtime.remote_access.installer import ManagedInstaller, UNITS, managed_units
+from runtime.remote_access.systemd_unit import SidecarUnitSpec, render_sidecar_unit
+
+WORK = Path('/var/tmp/happyranch-m1')
+HELPER = 'happyranch-remote-access-helper.service'
+REMOTE = (*UNITS, hs.UNIT, renewal.TIMER_NAME, renewal.SERVICE_NAME)
+MUTATORS = r'member=(?:StartUnit|StopUnit|RestartUnit|TryRestartUnit|ReloadUnit|ReloadOrRestartUnit|KillUnit|EnableUnitFiles|DisableUnitFiles|ReenableUnitFiles|LinkUnitFiles|MaskUnitFiles|UnmaskUnitFiles|SetUnitProperties|ResetFailedUnit|Reload)\b'
+
+
+def command(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(args, capture_output=True, text=True, check=check, timeout=30)
+
+
+def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
+    raw = command('systemctl', 'show', unit, '--property=' + ','.join(names)).stdout
+    return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
+
+
+def absent(path: str | Path) -> None:
+    assert not os.path.lexists(path), f'unexpected fixed residue: {path}'
+
+
+def fixed_file(path: Path, mode: int, expected: bytes | None = None) -> None:
+    value = path.lstat()
+    assert stat.S_ISREG(value.st_mode) and value.st_nlink == 1
+    assert (value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode)) == (0, 0, mode), str(path)
+    if expected is not None:
+        assert path.read_bytes() == expected, f'renderer drift: {path.name}'
+
+
+def units() -> dict[str, str]:
+    connector = json.loads(Path('/etc/happyranch/connector.json').read_bytes())
+    expected = managed_units('deb', connector_config=connector)
+    expected[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(
+        binary_path='/opt/happyranch-desktop/bin/happyranch-tsnet-sidecar', home_transport=True))
+    return expected
+
+
+def fragments() -> None:
+    for name, expected in units().items():
+        fixed_file(Path('/etc/systemd/system') / name, 0o644, expected.encode())
+        assert properties(name, ('Names', 'FragmentPath', 'DropInPaths', 'NeedDaemonReload', 'LoadState')) == {
+            'Names': name, 'FragmentPath': '/etc/systemd/system/' + name,
+            'DropInPaths': '', 'NeedDaemonReload': 'no', 'LoadState': 'loaded'}, name
+    for name, render in ((renewal.TIMER_NAME, renewal.render_timer), (renewal.SERVICE_NAME, renewal.render_service)):
+        fixed_file(Path('/usr/lib/systemd/system') / name, 0o644, render().encode())
+        assert properties(name, ('FragmentPath', 'DropInPaths', 'NeedDaemonReload', 'LoadState')) == {
+            'FragmentPath': '/usr/lib/systemd/system/' + name, 'DropInPaths': '',
+            'NeedDaemonReload': 'no', 'LoadState': 'loaded'}, name
+
+
+def ready() -> None:
+    assert HomeActivationStore().current().phase == 'ready'
+    assert ManagedInstaller(layout='deb').inventory().state == 'owned-activated'
+    fragments()
+    hardening = dict(NoNewPrivileges='yes', ProtectSystem='strict', ProtectHome='yes',
+                     PrivateTmp='yes', PrivateDevices='yes', ProtectKernelTunables='yes',
+                     ProtectKernelModules='yes', ProtectKernelLogs='no', ProtectControlGroups='yes',
+                     RestrictSUIDSGID='yes', RestrictRealtime='yes', LockPersonality='yes',
+                     MemoryDenyWriteExecute='yes', CapabilityBoundingSet='', AmbientCapabilities='')
+    hardening.update(SystemCallArchitectures='native', UMask='0077')
+    for name in UNITS[:2]:
+        assert properties(name, tuple(hardening)) == hardening, 'loaded hardening: ' + name
+        expected = dict(Type='notify', NotifyAccess='main', ActiveState='active', SubState='running',
+                        User='happyranch', Group='happyranch', DynamicUser='no', Result='success',
+                        ExecMainStatus='0', WatchdogUSec='30s', Restart='on-failure', RestartUSec='1s',
+                        StartLimitBurst='5', StartLimitIntervalUSec='5min')
+        assert properties(name, tuple(expected)) == expected, 'notify READY: ' + name
+        families = set(properties(name, ('RestrictAddressFamilies',))['RestrictAddressFamilies'].split())
+        assert families == {'AF_INET', 'AF_INET6', 'AF_UNIX'} | ({'AF_NETLINK'} if name == UNITS[1] else set())
+        assert int(properties(name, ('MainPID',))['MainPID']) > 0
+    # Nonsecret retained config signatures; no configuration bytes are exported.
+    (WORK / 'retained.json').write_text(json.dumps({name: hashlib.sha256(
+        Path('/etc/happyranch', name).read_bytes()).hexdigest()
+        for name in ('release-daemon.json', 'policy.json', 'provision.json')}))
+    print('READY: protected receipt, exact fragments/loads/hardening and both notify services running')
+
+
+def health_diagnostics() -> None:
+    health = Path('/run/happyranch-tsnet-sidecar/health.json')
+    deadline = time.monotonic() + 5
+    while not health.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    info = health.lstat()
+    account = pwd.getpwnam('happyranch')
+    assert (stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 65536
+            and stat.S_IMODE(info.st_mode) == 0o644
+            and (info.st_uid, info.st_gid) == (account.pw_uid, account.pw_gid)), 'native health.json custody'
+    # Empty test-side residue models a killed Go CreateTemp writer. The real
+    # health.json remains untouched/unread. Both exist BEFORE public Disable,
+    # exercising I5g's stop inventory and I5f's later retirement together.
+    temp = health.with_name('.health-123456')
+    with temp.open('xb'):
+        pass
+    temp.chmod(0o600)
+    os.chown(temp, account.pw_uid, account.pw_gid, follow_symlinks=False)
+    print('I5f/I5g pre-stop evidence: native health.json observed; synthetic numeric temp present; contents unread')
+
+
+def off() -> None:
+    io = ManagedInstaller(layout='deb')
+    assert io.inventory().detail == 'post-disable', 'complete protected post-Off inventory required'
+    fragments()
+    for unit in REMOTE:
+        value = properties(unit, ('ActiveState', 'MainPID', 'ControlPID', 'Job', 'UnitFileState'))
+        assert value['ActiveState'] in ('inactive', 'failed') and value.get('MainPID', '0') == '0'
+        assert value.get('ControlPID', '0') == '0' and not value.get('Job', ''), unit
+        assert value['UnitFileState'] in ('disabled', 'static', ''), unit
+    # All B6 fixed-file members, including the public CA/config copies and
+    # activation evidence, must be absent after a successful revoke and Off.
+    removed = {*LIVE_MEMBERS, *MEMBER_PATHS, ACTIVATION_PATH, TRANSACTION_PATH,
+               '/var/lib/happyranch-remote-access/' + hs.PUBLICATION,
+               '/var/lib/happyranch-remote-access/' + hs.RECEIPT,
+               '/var/lib/happyranch-remote-access/home-issuer-publication.json',
+               '/var/lib/happyranch-remote-access/home-issuer',
+               '/var/lib/happyranch-remote-access/home-minter',
+               '/var/lib/happyranch-remote-access/home-ca',
+               '/' + hs.EMPTY_CA,
+               '/etc/credstore/happyranch-tsnet-enrollment', '/etc/happyranch/enrollment.key',
+               '/run/happyranch-release-verifier/control.sock',
+               '/etc/systemd/system/multi-user.target.wants/happyranch-managed.target',
+               '/etc/systemd/system/happyranch-managed.target.wants/happyranch-headscale.service',
+               '/etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket',
+               '/etc/systemd/system/happyranch-managed.target.wants/' + renewal.TIMER_NAME,
+               '/run/happyranch-tsnet-sidecar',
+               '/var/lib/happyranch-connector', '/var/lib/happyranch-tsnet-sidecar'}
+    for relative in (*hs.CONFIG_FILES, *hs.LEAF_FILES, 'policy.hujson'):
+        removed.add('/etc/happyranch/headscale/' + relative)
+    for relative in hs.CUSTODY:
+        removed.add('/' + relative)
+    for directory, names in (
+        ('connector', ('trust-state.json', 'trust-state.json.anchor', 'trust-state.json.lock')),
+        ('tsnet-sidecar', ('tailscaled.state', 'credential.consumed', 'tailscaled.log.conf',
+                          'tailscaled.log1.txt', 'tailscaled.log2.txt'))):
+        for name in names:
+            removed.add('/var/lib/happyranch-' + directory + '/' + name)
+    for path in sorted(removed):
+        absent(path)
+    retained = json.loads((WORK / 'retained.json').read_text())
+    for name, digest in retained.items():
+        assert hashlib.sha256(Path('/etc/happyranch', name).read_bytes()).hexdigest() == digest, name
+    fixed_file(Path('/etc/happyranch/release-daemon.json'), 0o644)
+    fixed_file(Path('/etc/happyranch/provision.json'), 0o600)
+    try:
+        pwd.getpwnam(hs.ACCOUNT)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError('B6-created Headscale account retained after successful revoke')
+    print('OFF: exact inert five fragments retained, not active/enabled; successful-revoke B6 members and ALL sidecar diagnostics absent')
+
+
+def inventory() -> dict[str, tuple]:
+    # Byte/inode/metadata comparison stays in memory, including all protected
+    # state and all systemd load roots. No contents or digests are logged.
+    result = {}
+    roots = ('/etc/happyranch', '/etc/credstore', '/var/lib/happyranch-remote-access',
+             '/var/lib/happyranch-headscale', '/var/lib/happyranch-connector',
+             '/var/lib/happyranch-tsnet-sidecar', '/run/happyranch-headscale',
+             '/run/happyranch-connector', '/run/happyranch-tsnet-sidecar',
+             '/run/happyranch-release-verifier', '/etc/systemd/system',
+             '/run/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system')
+    def visit(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            result[str(path)] = ('absent',)
+            return
+        data = (path.read_bytes() if stat.S_ISREG(metadata.st_mode) else
+                os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None)
+        result[str(path)] = (metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_gid,
+                             metadata.st_mode, metadata.st_nlink, metadata.st_size,
+                             metadata.st_mtime_ns, metadata.st_ctime_ns, data)
+        if stat.S_ISDIR(metadata.st_mode):
+            for child in sorted(path.iterdir()):
+                visit(child)
+    for root in roots:
+        visit(Path(root))
+    return result
+
+
+def uninstall_refusal() -> None:
+    off()
+    before = inventory()
+    states = {name: properties(name, ('ActiveState', 'SubState', 'MainPID', 'ControlPID', 'UnitFileState',
+                                      'ActiveEnterTimestampMonotonic', 'InactiveEnterTimestampMonotonic')) for name in REMOTE}
+    # Observe actual native manager mutation calls, not merely final states.
+    monitor = subprocess.Popen(['dbus-monitor', '--system',
+        "type='method_call',destination='org.freedesktop.systemd1'"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        time.sleep(.2)
+        assert monitor.poll() is None, 'system bus monitor unavailable'
+        result = command('/opt/happyranch-desktop/python/bin/python3', '-I', '-B', '-m',
+                         'runtime.remote_access.installer', 'uninstall', '--layout', 'deb', '--purge', check=False)
+        time.sleep(.2)
+    finally:
+        monitor.terminate()
+        observed, errors = monitor.communicate(timeout=5)
+    assert not errors and b'member=NameAcquired' in observed and b'member=NameLost' in observed, \
+        'native bus monitor did not establish monitoring'
+    assert result.returncode != 0 and not result.stdout
+    assert result.stderr.strip() == 'error: home control binding not provisioned; requires slice 3b-2'
+    assert inventory() == before, 'uninstall refusal changed inventory'
+    assert states == {name: properties(name, tuple(states[name])) for name in REMOTE}
+    assert not re.search(MUTATORS, observed.decode(errors='replace')), 'service mutation during uninstall refusal'
+    print('UNINSTALL DEFERRED: fixed nonzero refusal; unchanged byte/inode inventory; no manager mutation')
+
+
+def archive_off() -> None:
+    off()
+    # Independent synthetic cells, never an uninstall implementation. Every
+    # retained object remains in root-only storage until runner disposal.
+    archive = WORK / ('cell-' + str(time.monotonic_ns()))
+    archive.mkdir(mode=0o700)
+    for path in [Path('/etc/happyranch'), Path('/var/lib/happyranch-remote-access'),
+                 *(Path('/etc/systemd/system', name) for name in UNITS)]:
+        shutil.move(str(path), str(archive / path.name))
+    Path('/var/lib/happyranch-remote-access').mkdir(mode=0o700)
+    command('systemctl', 'daemon-reload')
+    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    print('Independent fixture cell: proven Off retained files archived root-only (no product cleanup claim)')
+
+
+def failed_fixture() -> None:
+    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    # Recognized incomplete manual install: exact legacy fragments but no
+    # operator JSON, enrollment input or pre-staging calls. Real starts fail.
+    for name, value in managed_units('deb').items():
+        path = Path('/etc/systemd/system', name)
+        with path.open('xb') as stream:
+            stream.write(value.encode())
+        path.chmod(0o644)
+    command('systemctl', 'daemon-reload')
+    command('systemctl', 'start', UNITS[2], check=False)
+    candidate = ManagedInstaller(layout='deb').replacement_inventory()
+    assert candidate.installation.state == 'known-failed-or-partial'
+    assert candidate.inventory_generation is not None
+    print('FAILED-manual fixture: protected replacement inventory recognized exact incomplete fragments')
+
+
+def replacement_off() -> None:
+    assert ManagedInstaller(layout='deb').inventory().detail == 'staged-inert'
+    print('ReplaceFailed closure: staged-inert Off; next Enable owns all home preparation')
+
+
+def replacement_progress() -> None:
+    candidate = ManagedInstaller(layout='deb').replacement_inventory()
+    assert candidate.installation.state == 'known-failed-or-partial' and candidate.journal_generation
+    marker = WORK / 'replacement-phase'
+    phase = candidate.installation.detail
+    assert not marker.exists() or marker.read_text() != phase, 'replacement made no progress'
+    marker.write_text(phase)
+    print('ReplaceFailed requires next fresh authenticated bounded phase:', phase)
+
+
+def interrupt(pid: int) -> None:
+    # Observe the actual bundled child before provisioning completes. Stop it
+    # at the final provision publication; never inject a production flag/call.
+    deadline = time.monotonic() + 60
+    # Kernel notifications minimize the scheduling race at final provision
+    # rename; the independently checked state below remains authoritative.
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    assert fd >= 0, 'inotify unavailable'
+    watch = False
+    assert libc.inotify_add_watch(fd, b'/etc', 0x00000100 | 0x00000080) >= 0
+    child = None
+    print('ARMED', flush=True)
+    try:
+        while time.monotonic() < deadline:
+            if not watch and Path('/etc/happyranch').is_dir():
+                assert libc.inotify_add_watch(fd, b'/etc/happyranch', 0x00000080) >= 0
+                watch = True
+            try:
+                os.read(fd, 65536)  # Names only; never read configuration contents here.
+            except BlockingIOError:
+                pass
+            if not pid:
+                pid = int(properties(HELPER, ('MainPID',))['MainPID'])
+            child = None
+            for entry in Path('/proc').iterdir():
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    parent = int((entry / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+                    argv = (entry / 'cmdline').read_bytes().split(b'\0')
+                except (OSError, ValueError):
+                    continue
+                if parent == pid and b'runtime.remote_access.home_activation_backend' in argv:
+                    child = int(entry.name)
+            if not (child and Path('/etc/happyranch/provision.json').exists()):
+                time.sleep(.001)
+                continue
+            handle = os.pidfd_open(child)
+            try:
+                signal.pidfd_send_signal(handle, signal.SIGSTOP)
+            finally:
+                os.close(handle)
+            # The case is specifically BETWEEN completed steps. Refuse a
+            # pending/torn/advanced boundary instead of treating it as coverage.
+            io = ManagedInstaller(layout='deb')
+            candidate = io.inventory()
+            assert candidate.state == 'modern' and candidate.detail == 'staged-inert', 'missed provision boundary'
+            absent('/var/lib/happyranch-remote-access/' + hs.PUBLICATION)
+            absent('/etc/happyranch/invite-issuer.json')
+            absent(ACTIVATION_PATH)
+            command('systemctl', 'kill', '--signal=SIGKILL', '--kill-whom=all', HELPER)
+            print('Interrupted after public Enable provisioning; before Headscale/invite/activation')
+            return
+    finally:
+        os.close(fd)
+    raise AssertionError('did not observe a completed provisioning boundary')
+
+
+def policy_fault() -> None:
+    command('systemctl', 'stop', renewal.TIMER_NAME)
+    command('systemctl', 'stop', renewal.SERVICE_NAME)
+    assert properties(renewal.TIMER_NAME, ('ActiveState',))['ActiveState'] == 'inactive'
+    ready()
+    policy = Path('/etc/happyranch/policy.json')
+    (WORK / 'policy-before').write_bytes(policy.read_bytes())
+    (WORK / 'provision-before').write_bytes(Path('/etc/happyranch/provision.json').read_bytes())
+    (WORK / 'audit-before').write_text(json.dumps([row['intent_id'] for row in audit_records()]))
+    (WORK / 'serving-pids').write_text(json.dumps({name: process_identity(int(
+        properties(name, ('MainPID',))['MainPID'])) for name in UNITS[:2]}))
+    policy.chmod(0o600)  # Expected protected policy mode is 0640.
+
+
+def policy_refused() -> None:
+    assert Path('/etc/happyranch/policy.json').read_bytes() == (WORK / 'policy-before').read_bytes()
+    assert stat.S_IMODE(Path('/etc/happyranch/policy.json').stat().st_mode) == 0o600
+    assert Path('/etc/happyranch/provision.json').read_bytes() == (WORK / 'provision-before').read_bytes()
+    absent('/etc/happyranch/install-transaction.json')
+    previous = set(json.loads((WORK / 'audit-before').read_text()))
+    rows = audit_records()
+    intents = {row['intent_id'] for row in rows if row['event'] == 'policy_renew'
+               and row['stage'] == 'intent' and row['intent_id'] not in previous}
+    terminal = [row for row in rows if row['intent_id'] in intents and row['stage'] != 'intent']
+    assert len(intents) == 1 and len(terminal) == 1 and terminal[0]['outcome'] in ('refused', 'uncertain'), \
+        'missing attributable failed renewal settlement'
+    print('RetryPolicyRenewal: failed custody renewal settled in B16 without extending issuance/expiry')
+
+
+def audit_records() -> list[dict]:
+    rows = []
+    for path in (home_audit.AUDIT_PATH.with_name('home-audit.jsonl.1'), home_audit.AUDIT_PATH):
+        if not path.exists():
+            continue
+        fixed_file(path, 0o600)
+        assert path.stat().st_size <= home_audit.MAX_FILE_BYTES, 'audit size bound'
+        rows.extend(json.loads(line) for line in path.read_bytes().splitlines())
+    return rows
+
+
+def policy_closed() -> None:
+    deadline = time.monotonic() + 45
+    serving = json.loads((WORK / 'serving-pids').read_text())
+    assert all(isinstance(value, list) and len(value) == 2 for value in serving.values()), 'missing original serving process identity'
+    while time.monotonic() < deadline:
+        sidecar = properties(UNITS[1], ('MainPID', 'ActiveState'))
+        connector = properties(UNITS[0], ('ActiveState', 'SubState'))
+        old_gone = all(process_identity(value[0]) != value for value in serving.values())
+        # Restart=on-failure may already have a new connector waiting for
+        # readiness. Require the original serving processes gone, sidecar gone,
+        # no READY connector and an actually closed identity ingress socket.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(.2)
+            refused = probe.connect_ex('/run/happyranch-connector/ingress.sock') in (errno.ENOENT, errno.ECONNREFUSED)
+        if (old_gone and sidecar['MainPID'] == '0' and sidecar['ActiveState'] in ('inactive', 'failed')
+                and connector != {'ActiveState': 'active', 'SubState': 'running'} and refused):
+            print('Policy expiry: both original serving processes gone, external sidecar stopped, identity ingress closed')
+            return
+        time.sleep(.2)
+    raise AssertionError('expired cached policy did not close access')
+
+
+def process_identity(pid: int) -> list | None:
+    if pid <= 0:
+        return None
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return None if fields[0] == 'Z' else [pid, fields[19]]
+    except FileNotFoundError:
+        return None
+
+
+def clock_expire() -> None:
+    # Disposable-runner wall clock only; never edit issued_at, TTL or digests.
+    assert not (WORK / 'clock-before').exists()
+    before = {'wall': time.time(), 'mono': time.monotonic(),
+              'ntp': command('timedatectl', 'show', '--property=NTP', '--value').stdout.strip()}
+    (WORK / 'clock-before').write_text(json.dumps(before))
+    command('timedatectl', 'set-ntp', 'false')
+    command('date', '--set=@' + str(int(before['wall'] + 7200)))
+    policy = json.loads((WORK / 'policy-before').read_bytes())
+    assert time.time() > datetime.fromisoformat(policy['issued_at']).timestamp() + policy['max_age_seconds']
+    print('Disposable clock advanced beyond unchanged cached-policy expiry')
+
+
+def clock_restore() -> None:
+    marker = WORK / 'clock-before'
+    if not marker.exists():
+        return
+    before = json.loads(marker.read_text())
+    command('date', '--set=@' + str(before['wall'] + time.monotonic() - before['mono']))
+    command('timedatectl', 'set-ntp', 'true' if before['ntp'] == 'yes' else 'false')
+    marker.unlink()
+    print('Disposable clock restored using original elapsed monotonic time')
+
+
+def policy_renewed() -> None:
+    before = json.loads((WORK / 'policy-before').read_bytes())
+    after = json.loads(Path('/etc/happyranch/policy.json').read_bytes())
+    assert after['revision'] > before['revision'] and after['issued_at'] != before['issued_at']
+    absent('/etc/happyranch/install-transaction.json')
+    assert ManagedInstaller(layout='deb').inventory().state == 'owned-activated'
+    print('Public RetryPolicyRenewal restored the protected policy after custody/clock restoration')
+
+
+def recovered_ready() -> None:
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if all(properties(name, ('ActiveState', 'SubState')) == {
+                'ActiveState': 'active', 'SubState': 'running'} for name in UNITS[:2]):
+            ready()
+            return
+        time.sleep(.5)
+    raise AssertionError('normal systemd supervision did not recover READY before final public Disable')
+
+
+def main() -> None:
+    assert os.geteuid() == 0 and os.environ.get('GITHUB_ACTIONS') == 'true'
+    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action')
+    parser.add_argument('pid', nargs='?', type=int)
+    args = parser.parse_args()
+    actions = {'ready': ready, 'off': off, 'uninstall-refusal': uninstall_refusal,
+               'health-diagnostics': health_diagnostics,
+               'archive-off': archive_off, 'failed-fixture': failed_fixture,
+               'replacement-off': replacement_off, 'replacement-progress': replacement_progress,
+               'policy-fault': policy_fault, 'policy-refused': policy_refused, 'policy-closed': policy_closed,
+               'clock-expire': clock_expire, 'clock-restore': clock_restore,
+               'policy-renewed': policy_renewed, 'recovered-ready': recovered_ready,
+               'policy-restore': lambda: Path('/etc/happyranch/policy.json').chmod(0o640),
+               'clean': lambda: assert_clean(), 'interrupted': lambda: assert_staged(),
+               'interrupt': lambda: interrupt(args.pid)}
+    assert args.action in actions
+    actions[args.action]()
+
+
+def assert_clean() -> None:
+    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    absent('/etc/happyranch/invite-issuer.json')
+    absent(ACTIVATION_PATH)
+    print('Clean package: no home config, activation, enrollment or managed fragments')
+
+
+def assert_staged() -> None:
+    assert ManagedInstaller(layout='deb').inventory().detail == 'staged-inert'
+    absent(ACTIVATION_PATH)
+    print('Interrupted complete generated staging is resumable by the next public Enable')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        # Never emit private config/native stdout/tracebacks from this fixture.
+        print('M1 check failed:', type(error).__name__, str(error) if isinstance(error, AssertionError) else '')
+        raise SystemExit(1) from None
