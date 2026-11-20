@@ -206,6 +206,21 @@ def adopt_sequential_source_uncommitted(db: Any, task_id: str, run_id: str) -> N
         raise ValueError('workflow_task_ownership_source_conflict:' + task_id)
 
 
+def adopt_sequential_wait_set_uncommitted(db: Any, task_id: str, wait_set_id: str) -> None:
+    """The S5 batch writer adopts a stable source dependency identity once."""
+    if not db._conn.in_transaction:
+        raise ValueError('workflow_task_ownership_requires_transaction')
+    row = db._conn.execute('SELECT version,kind,owner_id FROM workflow_task_ownership WHERE task_id=? AND org_slug=?',
+        (task_id, getattr(db, '_task_ownership_org', None))).fetchone()
+    if row is not None and tuple(row) == (3, 'seq_source_wait_set', wait_set_id):
+        return
+    changed = db._conn.execute("UPDATE workflow_task_ownership SET version=3,kind='seq_source_wait_set',owner_id=? "
+        "WHERE task_id=? AND org_slug=? AND version=1 AND kind='legacy' AND owner_id IS NULL",
+        (wait_set_id, task_id, getattr(db, '_task_ownership_org', None)))
+    if changed.rowcount != 1:
+        raise ValueError('workflow_task_ownership_source_conflict:' + task_id)
+
+
 def selected_owner(conn: sqlite3.Connection, task_id: str, org_slug: str | None) -> tuple[str, str | None, str | None]:
     """Indexed selected mark plus scalar consistency, inside the caller snapshot."""
     row = conn.execute('SELECT o.org_slug,o.version,o.kind,o.owner_id,t.assigned_agent,t.parent_task_id,'

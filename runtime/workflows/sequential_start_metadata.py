@@ -240,6 +240,8 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
     original_error = sys.exception()
     try:
         value = _json(raw, budget)
+        if 'workflows' in value:
+            return _recognized_plural(value, raw, result_id, sequential, budget, reserved)
         _require(set(value) in ({'action', 'workflow'}, {'action', 'workflow', '_manager_self_evaluation'})
                  and value['action'] == 'workflow_start')
         if '_manager_self_evaluation' in value:
@@ -288,3 +290,105 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
             original_error.__cause__ = exc
         return False
     return clean
+
+
+def _recognized_plural(value: dict, raw: object, result_id: int, sequential: dict,
+                       budget: _Budget, reserved: Callable[[str, object], bool]) -> bool:
+    """Closed @2 family branch on the caller's original finite budget.
+
+    No Coding parser or special bundle branch is used. Only the exact outer
+    action and already-validated definition-pin identity paths are exempt;
+    every other residual scalar is scanned on the original budget.
+    """
+    from runtime.workflows.sequential_assignments import validate_assignment_snapshot
+    from runtime.workflows.sequential_definition import compile_generic_definition, parse_generic_start, validate_generic_start
+    from runtime.workflows.sequential_history import GenericStorageSettings
+    _require(set(value) in ({'action', 'workflows'}, {'action', 'workflows', 'consume_notifications'},
+        {'action', 'workflows', '_manager_self_evaluation'},
+        {'action', 'workflows', 'consume_notifications', '_manager_self_evaluation'})
+        and value['action'] == 'workflow_start' and type(value['workflows']) is list
+        and 1 <= len(value['workflows']) <= 8)
+    if '_manager_self_evaluation' in value:
+        _carrier(value['_manager_self_evaluation'], budget)
+    ids = value.get('consume_notifications', [])
+    _require(type(ids) is list and len(ids) <= 32 and all(type(key) is str and key and '\x00' not in key for key in ids)
+        and len(set(ids)) == len(ids))
+    commands, keys = [], set()
+    for item in value['workflows']:
+        _reserve(budget, 12 * len(raw) + 4096)
+        command_raw = json.dumps(item, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf8')
+        command = parse_generic_start(command_raw)
+        _require(command.operation_key not in keys)
+        keys.add(command.operation_key)
+        pin = item['definition']
+        definitions = []
+        for row in sequential.get('workflow_seq_definitions', ()):
+            _step(budget)
+            _reserve(budget, 4096)
+            fields = dict(identity=row['identity'], version=row['version'], definition_digest=row['definition_digest'],
+                source_digest=row['source_digest'], compiler=row['compiler_pin'], validator=row['validator_pin'],
+                interpreter=row['interpreter_pin'], capabilities=row['capability_pin'])
+            if _same(pin, fields, budget):
+                definitions.append(row)
+        _require(len(definitions) == 1)
+        definition = definitions[0]
+        _reserve(budget, 48 * len(definition['definition_bytes']) + 512)
+        compiled = compile_generic_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
+        _require(command.definition == compiled.pin)
+        settings = []
+        for row in sequential.get('workflow_seq_settings', ()):
+            _step(budget)
+            if (row['definition_id'] == definition['id'] and row['definition_identity'] == pin['identity']
+                    and type(row['generation']) is int and row['generation'] == command.settings.generation
+                    and row['snapshot_digest'] == command.settings.snapshot_digest):
+                saved = _json(row['snapshot_bytes'], budget)
+                snapshot = GenericStorageSettings.model_validate(saved)
+                _require(_same(pin, saved['definition'], budget) and snapshot.admission == 'Allowed')
+                validate_generic_start(command, compiled, original_limits=snapshot.limits)
+                settings.append((row, snapshot))
+        _require(len(settings) == 1)
+        commands.append((item, command, definition, compiled, settings[0]))
+    referenced = []
+    for row in sequential.get('workflow_seq_runs', ()):
+        _step(budget)
+        if type(row['source_result_id']) is int and row['source_result_id'] == result_id:
+            referenced.append(row)
+    _require(len(referenced) in (0, len(commands)))
+    matched = set()
+    for row in referenced:
+        _reserve(budget, 4096)
+        candidates = [item for item in commands if item[1].operation_key == row['start_operation_key']]
+        _require(len(candidates) == 1 and row['engine_version'] == 2 and row['start_operation_key'] not in matched)
+        matched.add(row['start_operation_key'])
+        item, command, definition, compiled, (setting, snapshot) = candidates[0]
+        _require(row['definition_id'] == definition['id'] and row['settings_id'] == setting['id']
+            and _original(item, row['start_bytes'], len(raw), budget))
+        resolved = _json(row['assignment_snapshot_bytes'], budget)
+        validate_assignment_snapshot(resolved, compiled, command, defaults=snapshot.bindings, org_slug=row['org_slug'])
+        members = []
+        for member in sequential.get('workflow_seq_source_memberships', ()):
+            _step(budget)
+            if member['run_id'] == row['id']:
+                members.append(member)
+        _require(len(members) == 1 and (members[0]['source_task_id'], members[0]['source_result_id'],
+            members[0]['start_operation_key']) == (row['source_task_id'], result_id, command.operation_key))
+    def residual(item: object, path: tuple[str, ...] = ()) -> bool:
+        _step(budget)
+        if type(item) is dict:
+            clean = True
+            for key, child in item.items():
+                _step(budget)
+                exempt = (path == () and key == 'action' and child == 'workflow_start') or (
+                    path == ('workflows', '[]', 'definition') and key == 'identity')
+                marker = False if exempt else reserved(key, child)
+                nested = residual(child, path + (key,))
+                clean = clean and not marker and nested
+            return clean
+        if type(item) is list:
+            clean = True
+            for child in item:
+                nested = residual(child, path + ('[]',))
+                clean = clean and nested
+            return clean
+        return True
+    return residual(value)

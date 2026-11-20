@@ -164,3 +164,15 @@ def notify_returned(dispatcher: Any, run_id: str, *, queue: Any = None) -> bool:
     _enqueue_parent_if_waiting(orch, source_id, queue=queue)
     _terminal_thread_tail(orch, source_id)
     return True
+
+
+def close_member_carrier_uncommitted(conn: sqlite3.Connection, run: dict, action: str,
+                                     budget: _ReadBudget) -> None:
+    """@2 return ends only this carrier; source/parent continuation is S6a."""
+    from datetime import datetime, timezone
+    members = _engine_rows(conn, 'workflow_seq_source_memberships', budget, 'run_id=?', (run['id'],))
+    if not members:
+        return
+    stamp = datetime.now(timezone.utc).isoformat()
+    conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=? WHERE id=?',
+        ('failed' if action == 'fail' else 'completed', stamp, stamp, run['carrier_task_id']))

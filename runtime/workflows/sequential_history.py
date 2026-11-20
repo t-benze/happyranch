@@ -927,13 +927,6 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                      'schema_marker_invalid')
             for table in tables:
                 _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
-            # S4a additionally authenticates inactive @2 holds/controls/counters.
-            # Wait/inbox and mounted acceptance remain unavailable here.
-            if layout.schema_version == 2:
-                _require(all(not data[table] for table in tables
-                             if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments',
-                                              'workflow_seq_controls', 'workflow_seq_node_counters')),
-                         'schema2_runtime_history_unavailable')
             if layout.schema_version == 2 and not any(row['engine_version'] == 2 for row in data['workflow_seq_outputs']):
                 _require(all(row['engine_version'] == 1 for row in data['workflow_seq_outputs']),
                          'schema2_runtime_history_unavailable')
@@ -973,7 +966,9 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             start_keys = set()
             for run in runs.values():
                 budget.step()
-                key = (run['org_slug'], run['source_principal'], run['start_operation_key'])
+                key = ((run['org_slug'], run['source_principal'], run['source_task_id'], run['start_operation_key'])
+                    if run.get('engine_version', 1) == 2 else
+                    (run['org_slug'], run['source_principal'], run['start_operation_key']))
                 _require(key not in start_keys, 'start_operation_conflict')
                 start_keys.add(key)
                 setting = settings.get(run['settings_id'])
@@ -998,6 +993,9 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                 _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
                              for table in ('workflow_seq_controls', 'workflow_seq_node_counters')
                              for row in data[table]), 'control_owner_conflict')
+            if layout.schema_version == 2:
+                from runtime.workflows.sequential_initiator import validate_initiator_history
+                validate_initiator_history(conn, data, runs, visits, events, definitions, budget, expected_org_slug)
             _auxiliary(conn, data, runs, visits, events, budget, definitions)
             if layout.ownership:
                 validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,

@@ -691,9 +691,10 @@ def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: 
         budget.work(len(data[table]))
         _require(not any(row['run_id'] == run['id'] for row in data[table]), 'generic_lifecycle_unavailable')
     _result(conn, run['source_result_id'], run['source_task_id'], run['source_principal'], run['source_session_id'], budget)
-    # Source is deliberately still ordinary. S5 supplies plural wait membership;
-    # S3 must not call the @1 source adopter against schema2's @2 binding view.
-    _require(selected_owner(conn, run['source_task_id'], org_slug) == ('legacy', None, None), 'generic_source_conflict')
+    # Retained singleton sources stay ordinary; S5 batches authenticate the
+    # stable wait set and this run's normalized membership instead of @1 adoption.
+    from runtime.workflows.sequential_initiator import source_owner
+    _require(source_owner(conn, run), 'generic_source_conflict')
     source_rows = _native_rows(conn, 'tasks', ('assigned_agent', 'team'), (('text',), ('text',)), run['source_task_id'], budget)
     _require(source_rows == [(run['source_principal'], resolved['team'])], 'generic_source_conflict')
     for task, kind, owner, parent, principal in (
@@ -1005,7 +1006,8 @@ def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[di
     from runtime.infrastructure.workflow_task_ownership import selected_owner
     from runtime.workflows.sequential_business_hold import _proof, generic_closed_visit
     _result(conn, run['source_result_id'], run['source_task_id'], run['source_principal'], run['source_session_id'], budget)
-    _require(selected_owner(conn, run['source_task_id'], run['org_slug']) == ('legacy', None, None), 'generic_source_conflict')
+    from runtime.workflows.sequential_initiator import source_owner, validate_source_outer
+    _require(source_owner(conn, run), 'generic_source_conflict')
     _require(selected_owner(conn, run['carrier_task_id'], run['org_slug']) == ('seq_carrier', run['id'], run['state']),
              'ownership_relation_conflict')
     source = _native_rows(conn, 'tasks', ('assigned_agent', 'team'), (('text',), ('text',)), run['source_task_id'], budget)
@@ -1013,9 +1015,14 @@ def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[di
     _require(source == [(run['source_principal'], resolved['team'])], 'generic_source_conflict')
     carrier = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'team', 'task_type', 'status',
         'current_session_id'), (('text',), ('text',), ('text',), ('text',), ('text',), ('null',)), run['carrier_task_id'], budget)
-    _require(carrier == [(run['source_task_id'], run['source_principal'], resolved['team'], 'subtask', 'pending', None)],
+    member = conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE run_id=?', (run['id'],)).fetchone()
+    carrier_status = ('failed' if run['terminal_outcome'] == 'failed' else 'completed') if member and run['state'] == 'finished' and run['terminal_outcome'] != 'cancelled' else 'pending'
+    _require(carrier == [(run['source_task_id'], run['source_principal'], resolved['team'], 'subtask', carrier_status, None)],
              'generic_native_selection_conflict')
+    validate_source_outer(conn, run, [row for row in evidence if row['visit_id'] is None], budget)
     for row in evidence:
+        if row['visit_id'] is None:
+            continue
         _require(row['kind'] in ('terminal', 'outer') and row['visit_id'] in {visit['id'] for visit in visits},
                  'generic_evidence_unavailable')
     for visit in visits:
