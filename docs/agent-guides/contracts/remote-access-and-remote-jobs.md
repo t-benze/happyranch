@@ -801,13 +801,16 @@ rechecks after creating the account; dpkg paths remain read-only.
 The `provision` command accepts connector/sidecar/current-policy JSON, explicit
 `--release-user`, optional validated `--data-home`, and an optional absolute
 daemon-token source (default `<data_home>/daemon.token`). It validates before effects, creates only the
-existing installer-owned account/config/state layout, and stages root-owned
+existing installer-owned account/config layout, and stages root-owned
 0640 root:happyranch configs, a 0600 happyranch:happyranch token, and root-owned
 0600 layout/config/token provenance. Stable IDs come from the operator;
 trust state is fixed under `/var/lib/happyranch-connector`, sidecar state under
 `/var/lib/happyranch-tsnet-sidecar`. Credentials remain file-only systemd input;
 no key generation, pairing or secret diagnostics are added. Existing files
 refuse; partial failure has no automatic rollback or overwrite recovery.
+Connector/sidecar state, log and runtime directories are supplied by systemd's
+existing directory declarations at service start, as specified in B8; provisioning
+checks present custody but leaves absent service-owned directories absent.
 
 The 3b-1b writer sub-part uses exclusive `.<fixed-name>.pending` files under
 the protected `/etc/happyranch` directory. It bounds each write to 64 KiB,
@@ -866,7 +869,7 @@ other unit bytes remain unchanged, including `home_transport=False`.
 Legacy/omitted-profile configs and installed units retain main's exact bytes.
 The CLI still requires all original operator config inputs. I5d-1 supplies the
 installer-owned `publish_home_units()` prerequisite for clean-install Enable;
-public helper composition remains I5d-2. This separate inert step verifies the
+I5d-2 calls it from public Enable. This separate inert step verifies the
 complete protected staged generation and publishes the five existing identity
 renderer fragments under the activation-directory lock. It never enables or
 starts them. `install()`, `_write_units()` and staged-identity admission remain
@@ -2467,8 +2470,8 @@ are maxima; smaller implementation limits need sizing evidence.
 control URL. Generation and endpoint belong only to the activation receipt;
 legacy @1 bytes refuse. No-receipt Enable capture expects generation 0, including
 a first activation after B6 retires the receipt.
-`ManagedInstaller.publish_invite_config()` is the sole initial publisher, with no
-public/CLI caller. Under the existing activation-directory flock it derives fields
+`ManagedInstaller.publish_invite_config()` is the sole initial publisher, called
+by public Enable with no operator inputs. Under the existing activation-directory flock it derives fields
 from complete protected staged-inert provenance, release/source-token binding,
 Headscale publication and materializer status. Release UID/IDs, CA and dial IP
 come only from those protected sources; control URL is fixed. The existing A5
@@ -2809,20 +2812,38 @@ reaches home_config done; installed acceptance remains unverified.
 E1b's original fail-closed boundary reported provisioned-config drift/refused the
 live profile after home_config done. E2a below supplies the validated exception.
 For I5d-0, only a prepared receipt paired with an older failed_uncertain txn
-admits staged bytes or a proven earlier render: connector equals its provision
+admits (a) staged bytes or (b) a proven earlier render: connector equals its provision
 digest, and sidecar ends in the exact authorized insertion for integer
 0 <= g < receipt generation, with every other field equal to the receipt.
 Stripping that insertion must yield the provision sidecar digest. An old done
 home_config additionally requires both live digests equal its member_digests
-and g equal its txn generation; intent/partial evidence refuses. Unknown/foreign
+and g equal its txn generation; intent/partial evidence refuses. I5d-2 adds
+(c), checked after (a) and (b), only when that older txn has NO home_config record
+at all: reuse the generation-0 post-Disable proof below for exactly one retained
+insertion with protected stable IDs, any integer g >= 0 (even g >= receipt G),
+and a strip digest equal to provision. Retired CA/dial fields are not compared
+with the new receipt. An old home_config record, including intent or partial
+publication, never uses (c); done evidence keeps (b)'s digest/g rule. Unknown/foreign
 tails, strip mismatch, pending residue and custody drift refuse without effects.
 Captured data/digests are the proven staged bytes, with the live custody signature.
 The next normal home_config perform/_publish alone writes the new render;
 recovery never rewrites configs. Current-txn _verify_live matching, renderer,
 source checks, B1 digests and B5/B6/B17 stay unchanged. E1b grants no
-restoration or public Enable path. Installer/supervisor admission, provenance,
-drift, unit publication and home_transport selection remain E2; no CLI, helper,
-D-Bus, app or other production caller is mounted.
+restoration authority. Installer/supervisor admission, provenance, drift, unit
+publication and home_transport selection remain E2; I5d-2 selects that existing
+backend through public helper Enable with the unchanged native authorization.
+
+I5d-2's post-Disable admission additionally permits a prepared generation-0
+receipt with no transaction to prove the retained connector against its exact
+provision digest and strip exactly one deterministic sidecar addition. Its
+stable IDs must equal protected provisioning and its old generation must be an
+integer >= 0. The stripped bytes must equal the provision sidecar digest; closed
+transport fields are retired values, never the next receipt's authority. Captured
+data/digests are proven staged bytes and custody signatures remain the live
+file's. Normal `home_config` perform/publication alone writes generation 0 with
+the new receipt's trust fields. No admission/recovery rewrite is added. L1(c)
+reuses this same proof for the bounded older-failed-transaction case above;
+all current-transaction checks stay intact.
 
 **Manager Ruling 14 (G2-E1a, retained local-node key history):**
 The owner verifier validates the complete happyranch-node pre-auth-key inventory:
@@ -3104,7 +3125,7 @@ E2a now wires this gate into protected ordinary admission and phase-aware
 inventory. E2b adds first publication only through Prepare and the intent-bound
 managed_services owner; ordinary installation does not publish a first home unit.
 I5d-1's `ManagedInstaller.publish_home_units()` fills the clean-install fragment
-publication prerequisite without a public/CLI caller. Under the existing
+publication prerequisite; I5d-2 selects it from public Enable. Under the existing
 activation-directory flock it re-verifies protected modern provenance, all five
 original config/token digests, release binding and same-FD token source. Missing
 fragments require a complete current staged-inert bundle. It writes exactly
@@ -3255,6 +3276,16 @@ all are validated and unlinked without reading their contents. Unknown or unsafe
 residue prevents account/activation receipt retirement and complete Turn off.
 
 **B7 — Local-node mint uncertainty and explicit recovery.**
+
+Complete Disable retires receipt, transaction, invite configuration and live
+authority while retaining the renderer-exact managed fragments and configs.
+Turn on admits this retained shape only with complete protected provenance,
+exact connector digest and the single proven sidecar addition described in B4.
+No B7/B11/minter evidence, live connector/sidecar/Headscale state, pending entry
+or other cleanup residue may remain. Partial cleanup retains the existing Retry
+turn off route. Initial invite-config publication uses the staged-byte proof
+without changing retained config bytes. B6 remains stop/disable/retain and its
+closed deletion map is unchanged; the next activation creates fresh authority.
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
 new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:
@@ -3335,7 +3366,12 @@ and no pending deletion outside B6.
   mixed pair is admitted to recovery.
 - ROLLOVER publishes only prepared(G+1,O'); txn(G) stays untouched. Crash outcomes
   are exactly the old failed pair, retained pending residue, or the new prepared
-  receipt plus the older failed txn.
+  receipt plus the older failed txn. The next Enable's B4 live-config admission
+  tries provision-equal bytes, then the exact earlier render, then L1(c)'s retained
+  post-Disable proof only if the older txn has no home_config record. That proof
+  also applies after repeated rollovers; it captures staged bytes with the live
+  signature, and only normal home_config publication renders the new G/trust.
+  Older intent/partial home_config publication keeps its existing refusal limit.
 
 G2-C2 implements `HomeActivationRecovery.recover` with externally expected G/O,
 a strict fresh-auth precondition and an injected observation owner. It constructs
@@ -3391,7 +3427,8 @@ root CA/issuer custody under packaged `/var/lib/happyranch-remote-access`;
 none requires writing inside the absent service-owned state/runtime dirs.
 Root-only `/etc` and packaged installer-state creation retain their existing
 rules. A temporary-root test enumerates actual write-open/mkdir events and
-created paths for provision → prepare_headscale → publish_home_units, comparing
+created paths for the composed provision → prepare_headscale → publish_home_units
+→ publish_invite_config → forward Enable path, comparing
 them to the shipped B8 list; optional entries count only when present before
 the sequence. This is source/temporary-root evidence, not a live sandbox proof.
 `/etc` permits shadow-utils' lock/temp/rename for passwd,
@@ -3534,6 +3571,35 @@ Native authorization precedes every call; B16 intents bracket activation/replace
 and each Disable revoke, stop and cleanup boundary. Initial Enable config generation
 and B17 inventory/journal generation are protected capture fields distinct from
 activation G/O. Replacement remains staged-inert and never activates automatically.
+I5d-2 completes initial public Enable composition. Before auth, a missing receipt
+admits exactly a UID-bound @2 config, a clean fixed inventory, complete protected
+staging, or the proven post-Disable shape in B4/B6. Capture records the pre-state,
+expected generation 0 and the existing inventory/provenance token, including
+protected Headscale/issuer publication identity. Pending, unsafe, partial/unknown
+and source/UID drift refuse; recognized failures retain ReplaceFailed routing.
+A retained ready receipt with incomplete Headscale publication also refuses
+before auth, preserving Retry turn off after partial cleanup.
+
+Under the one activation-directory flock, the worker repeats capture/CAS and
+uses omitted-input `provision` only for clean inventory. Release user/data_home
+come exclusively from the authenticated UID's existing B8 bootstrap binding and
+unique passwd row, never caller input. It then calls `prepare_headscale`,
+`publish_home_units`, `publish_invite_config` and the existing forward backend.
+Present staging is verified against provenance/source; existing outputs use
+their owners' exact reuse rules. Both publication owners borrow the held open
+file description, with literal directory-identity revalidation, rather than
+acquiring an independent flock. There is no new privileged owner or lock.
+Each boundary checks the same original 480-second deadline; the fixed runner
+clips native calls to that remainder, and the existing helper checks after B16
+settlement before terminal success. No step renews the budget.
+
+Interruption after a complete staging step permits only exact owner reuse on the
+next fresh-auth Enable; unknown/pending/partial residue is never adopted or
+deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable is
+inspect-only. Disable, replacement closure, invite and renewal effects and the
+closed B5/B6/B17 maps remain unchanged. Temp-root tests exercise all five owners,
+including replacement closure, repeated Turn off/Turn on, CAS, refusal and expiry;
+native/NSS/materializer/LAN responses are simulated. Installed acceptance remains I6.
 Focused verification
 uses the existing private-bus
 venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.

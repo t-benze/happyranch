@@ -23,6 +23,8 @@ from runtime.remote_access import home_activation_backend as backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
 from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 from scripts.test_installer_token_custody import fixture as renewal_fixture, renewal_intent, renewal_setup  # noqa: F401
+from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
+from scripts.test_installer_token_custody import staged_inventory
 
 
 class Variant:
@@ -38,6 +40,36 @@ PUBLIC_LIFECYCLE = {
     'RetryPolicyRenewal': 'retry-policy-renewal', 'IssueInvite': 'issue-invite',
     'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite',
 }
+
+
+@pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
+def test_public_enable_composes_or_refuses_before_auth(
+    composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    v, m = composition, mount
+    if case != 'clean': corrupt_composition(v, case)
+    uid = os.getuid() + (case == 'uid')
+    m.message.get_member = lambda: 'Enable'
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    def effect(step: str, expected: str, remaining: float, **kw: Any) -> dict:
+        assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        return v.lifecycle.dispatch('Enable', uid, step, expected, deadline=time.monotonic() + remaining)
+    m.reader.effect.side_effect = effect
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    if case == 'clean': m.admit()
+    else: m.helper._dispatch(m.message)
+    if case == 'clean':
+        assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
+        assert m.helper.authority.call.call_args.args[1].unpack()[1] == 'ai.happyranch.remote-access.enable'
+        rows = [json.loads(line) for line in m.helper.audit.path.read_text().splitlines()]
+        assert [row['stage'] for row in rows] == ['intent', 'outcome']
+        assert m.helper.inflight is None and len(v.mints) == 1
+    else:
+        assert not m.helper.authority.call.called and not m.reader.effect.called
+        assert not m.helper.audit.path.exists() and not m.helper._reply.called
+        assert staged_inventory(v.fixture) == before and v.calls == calls and not v.mints
 
 
 @pytest.mark.parametrize('method,action', PUBLIC_LIFECYCLE.items())
@@ -243,7 +275,8 @@ def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: py
 
 
 @pytest.mark.parametrize('method,step,outcome,setup', [('Enable', 'enable', 'ready', 'ready'),
-    ('Enable', 'enable', 'prepared', 'in_progress'), ('ReplaceFailed', 'replace', 'off', 'off')])
+    ('Enable', 'enable', 'prepared', 'in_progress'), ('ReplaceFailed', 'replace', 'off', 'off'),
+    ('Enable', 'enable', 'ready', 'uncertain')])
 def test_lifecycle_public_mount_fresh_auth_and_audit(
         mount: Any, method: str, step: str, outcome: str, setup: str) -> None:
     v = mount
@@ -253,6 +286,13 @@ def test_lifecycle_public_mount_fresh_auth_and_audit(
         assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['event'] == 'activation'
         return {'outcome': outcome, 'residue': []}
     v.reader.effect.side_effect = effect
+    if setup == 'uncertain':
+        original = v.helper.audit.outcome
+        def late_audit(*args: Any) -> None:
+            original(*args)
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline
+        v.helper.audit.outcome = late_audit
     for _ in range(2):
         v.admit()
         assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
