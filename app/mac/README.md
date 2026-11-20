@@ -689,6 +689,9 @@ Every Sparkle relaunch request, including its scheduled/impatient prompt,
 is postponed through `SPUUpdaterDelegate`. The pure `UpdateGate` policy lives
 in HappyRanchSupervisor. For a live owned daemon it reads the public loopback
 `GET /api/v1/health` field `update_busy` (see the [API contract](../../docs/agent-guides/web-and-cli.md#update-readiness-health-field)).
+Additive `api_contract` and `release` fields are ignored by the existing decoder;
+current frozen Mac builds use the `"unreleased"` identity fallback
+([health metadata](../../docs/agent-guides/web-and-cli.md#host-compatibility-health-metadata)).
 The old `host_sessions.admission.active` gauge measures attempt capacity;
 it does not cover durable jobs or logical invocations during retry backoff.
 The new observation includes those producers and retained running job rows.

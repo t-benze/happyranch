@@ -247,6 +247,11 @@ For a smoke run, unpack outside the repository, use a new scratch
 `<scratch-home>/daemon.port`, check `/api/v1/health` and `/`, and SIGTERM/wait that
 owned daemon process. Keep the live daemon and its home out of the test.
 
+Health includes additive `api_contract: {current: 1, min_client: 1}` and
+`release: "0.1.0+<source_sha>"`, using the payload's existing `build-info.json`
+beside `python/`. Source or missing/invalid build identity reports `"unreleased"`;
+see the [health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata).
+
 ## Inert Headscale custody prefix (3b-2f-1)
 
 The explicit root operator command `python -m runtime.remote_access.installer

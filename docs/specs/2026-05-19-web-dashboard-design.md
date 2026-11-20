@@ -48,6 +48,10 @@ client-side) plus one `getHealth()` query for the health card.
 
 Source: `GET /api/v1/health` (already mirrored at `lib/api/health.ts`).
 
+The dashboard and mock examples below consume only `status` and `active_runtime`.
+The full response also includes `update_busy`, `api_contract`, `release`, and
+conditional `host_sessions`; see the [current health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata).
+
 Render:
 
 ```
