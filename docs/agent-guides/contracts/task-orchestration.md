@@ -933,3 +933,20 @@ rechecks outstanding work under native admission. Event-session ordinary
 delegate/fanout/parallel/then dispatch refuses under that same fence while a
 native join is unfinished, rolling back the result and retaining its exact
 chain/fanout bytes. With no unfinished join, ordinary dispatch is unchanged.
+
+
+## S6b source cancellation and pending-event dispositions
+
+Founder cancellation of an @2 source or ordinary ancestor selects the existing
+mixed owner and re-reads all wait-set memberships under its authority writer.
+Every unfinished member is fenced; a one-run S4a control leaves siblings/source
+alive. Failed/cancelled/superseded sources are fenced by existing settlement and
+rediscovery hooks without revival or a replacement manager. Original failure
+handling and ordinary-parent observation remain native-owned.
+
+Dependency observations derive `initiator_terminal` or `unavailable` with an
+`initiator_agent_unavailable` reason; immutable inbox/delivery rows are neither
+rewritten nor acknowledged. An unavailable initiator cannot enter through the
+ordinary empty-child barrier. Pause/Resume retain committed obligations,
+original limits and native closure. See [S6b](reusable-workflows.md#s6b-source-cancellation-and-terminal-initiators-2)
+for event, ownership, replay and private-verification boundaries.
