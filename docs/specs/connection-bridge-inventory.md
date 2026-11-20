@@ -1,6 +1,6 @@
 # Connection bridge command/event inventory
 
-V1 inventory baseline: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair, 2026-11-19. S5 v2 status below is separately pinned to main 921f126e14d6dd5befc869ae77278134b20985ab, 2026-11-21.
+V1 inventory baseline: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair, 2026-11-19. S5 v2 has two source epochs: historical main 921f126e14d6dd5befc869ae77278134b20985ab, then PR #1769 (S5-L1 including the round-2 recovery fix), 2026-11-21.
 
 This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. **Linux: 16/19 commands implemented; Mac: 11/19 commands implemented.** Events are counted separately: Linux 2/2, Mac 1/2. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
 
@@ -19,26 +19,28 @@ Linux Settings S2b PR-A / S4b PR-B transport inventory (TASK-18097 / TASK-18122)
 The new [v2 payload schema](../../protocol/native-connection-bridge.v2.json)
 and [v2 specification/status evidence](2026-11-17-web-native-bridge.md#12-settings-bridge-v2-status-errors-and-target-generation)
 define the target contract, not callable implementations. V1 is unchanged;
-the command/event totals below count v1 only. Linux observations refer to
-**main 921f126e** (PRs #1762, #1765, #1767). Mac is pending with no Mac work
+the command/event totals below count v1 only. The historical Linux baseline is
+**main 921f126e** (PRs #1762, #1765, #1767); all Linux implementation rows and
+file/line citations in the S5 table refer to the later **PR #1769 source tree**
+(S5-L1 including the round-2 recovery fix). Mac is pending with no Mac work
 this wave; web is pending S5-W1. No native/live v2 acceptance is claimed.
 
-| Surface / code | Linux main status | Mac status | Web status |
+| Surface / code | Linux PR #1769 status | Mac status | Web status |
 | --- | --- | --- | --- |
 | `app.status` | Implemented S5-L1 (this PR), shared closed appState: `app_scheme_webkit.py:331–351` (`status`); trusted Main-document admission: `app_scheme_webkit.py:457–486` (`probe_document`). | Pending | Pending S5-W1 |
 | `app.stateChanged` | Implemented S5-L1 (this PR), same full status payload: `app_scheme_webkit.py:417–424` (`emit_state`). | Pending | Pending S5-W1 |
 | `X-HappyRanch-Target` | Implemented S5-L1 (this PR): missing/stale generation refuses pre-forward; GET bootstrap exempt. Existing local/remote stripping retained: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:75–81` (`request_headers`), `client_runtime.py:139–151`. | Pending | Pending S5-W1 on every other scheme API request |
-| `503 no_target` | Emitted (`app_scheme_webkit.py:301–303`). | Pending | Pending S5-W1 |
-| `503 target_starting` | Emitted (`app_scheme.py:313–318,395–398`). | Pending | Pending S5-W1 |
+| `503 no_target` | Emitted (`app_scheme_webkit.py:632–634`). | Pending | Pending S5-W1 |
+| `503 target_starting` | Emitted (`app_scheme.py:369–374,463–466`). | Pending | Pending S5-W1 |
 | `503 target_unreachable` | L-1 retained; S5-L1 post-forward failures use ordinary 502 codes: `app_scheme_webkit.py:618–756` (`forward`). | Pending | Pending S5-W1 |
-| `503 incompatible` | PR #1767 implements contract 1/1 health admission and host/app side (`app_scheme.py:283–304`). | Pending | Pending S5-W1 |
-| `503 busy` (host update_busy only) | L-4 implemented S5-L1: health update_busy only, transient and rechecked: `app_scheme.py:302–361` (`bootstrap`). | Pending | Pending S5-W1; W-1 transient/clear on success |
+| `503 incompatible` | PR #1767 implements contract 1/1 health admission and host/app side (`app_scheme.py:319–350`). | Pending | Pending S5-W1 |
+| `503 busy` (host update_busy only) | L-4 implemented S5-L1: health update_busy only, transient and rechecked: `app_scheme.py:302–364` (`bootstrap`). | Pending | Pending S5-W1; W-1 transient/clear on success |
 | `409 target_changed` (not forwarded) | L-3 implemented S5-L1: first upstream HTTP send fence, independent of page delivery: `app_scheme_webkit.py:214–258` (`Transfer`), `app_scheme.py:173–182` (`_LocalConnection`), `app_scheme.py:159–170` (`_SendSocket`). | Pending | Pending S5-W1; W-2 mutations never auto-retry |
-| `429 too_many_requests` | Implemented S5-L1 for native cap/body cap and lock timeout; ordinary request error: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:302–361` (`bootstrap`). | Pending | Pending S5-W1 |
+| `429 too_many_requests` | Implemented S5-L1 for native cap/body cap and lock timeout; ordinary request error: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:302–364` (`bootstrap`). | Pending | Pending S5-W1 |
 | `499 cancelled` / stream error | L-3 implemented S5-L1: forwarded switch is 499 or a GIO stream error, never 409 or successful EOF: `app_scheme_webkit.py:618–756` (`forward`), `app_scheme_webkit.py:764–773` (`deliver`). | Pending | Pending S5-W1 |
 | Target+generation commit → cancel → event | Implemented S5-L1 under the same first-send lock: `app_scheme_webkit.py:373–389` (`_replace_target`). | Pending | Pending S5-W1 |
 | Refuse commit during non-GET / pending-unknown saves | Native gate implemented S5-L1 with named refusals: `app_scheme_webkit.py:353–371` (`select_target`). Missing owner evidence fails closed. Callable client.commitSwitch and owner registry integration remain S5-L2/S6-W2. | Pending | Pending S5-W1 / S6-W2 owner registry |
-| Reconnect/Restart compatibility and bearer | S5-L1 implemented: native health admission independent of page requests, reset clears bearer, 401 causes next-request re-bootstrap without replay: `app_scheme_webkit.py:391–410` (`refresh_status`), `app_scheme.py:198–206` (`reset`), `app_scheme.py:403–434` (`LocalDaemon.send`). | Pending | Pending S5-W1 |
+| Reconnect/Restart compatibility and bearer | S5-L1 implemented: native health admission independent of page requests; observed transport loss requires fresh successful health/compatibility before ready, with bootstrap if needed (`app_scheme.py:302–364`). Reset clears bearer, 401 causes next-request re-bootstrap without replay: `app_scheme_webkit.py:391–410` (`refresh_status`), `app_scheme.py:198–206` (`reset`), `app_scheme.py:406–437` (`LocalDaemon.send`). | Pending | Pending S5-W1 |
 
 The spec's current implementation table also records each existing ordinary
 request/transport code and exact Linux source lines. V2 errors have only

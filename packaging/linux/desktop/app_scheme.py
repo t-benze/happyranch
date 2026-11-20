@@ -312,7 +312,10 @@ class _Target:
             self._check(stop, epoch)
             with self._state:
                 side = self._compatibility
-            if side is None or self.busy:
+                recheck = self.busy or self.state == "unreachable"
+            # Cached compatibility/bearer cannot establish recovery after an
+            # observed transport loss. Recheck health before publishing ready.
+            if side is None or recheck:
                 try:
                     value = self._json("/api/v1/health", MAX_HEALTH, deadline, stop, epoch, health=True)
                     contract = value.get("api_contract") if isinstance(value, dict) else None

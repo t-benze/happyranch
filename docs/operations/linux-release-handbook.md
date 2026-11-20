@@ -764,9 +764,12 @@ The full v2 appState supplies native generation, target, state, compatibility,
 local status, nullable candidate, access_unsaved and session locale. A selected
 remote never exposes a local prompt URL or remote address. Native owners supply
 sanitized remote id/name; active/candidate integration remains S5-L2, locale
-persistence remains S8. Every scheme API request requires the captured
-X-HappyRanch-Target header except GET /api/v1/auth/bootstrap. Native refuses a
-missing/mismatched generation before forwarding and strips it upstream. Browser
+persistence remains S8. After an admitted target becomes unreachable, status
+refresh requires fresh successful health and compatibility checks before ready,
+and native bootstrap if its bearer is absent. Cached compatibility/bearer alone
+cannot establish recovery; no forwarded request is replayed. Every scheme API
+request requires the captured X-HappyRanch-Target header except
+GET /api/v1/auth/bootstrap. Native refuses a missing/mismatched generation before forwarding and strips it upstream. Browser
 mode and opt-in activation stay unchanged; web stamping/stale-drop is S5-W1.
 
 Focused standalone native checks (no GI/display/retired Python suite):

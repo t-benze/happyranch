@@ -597,11 +597,8 @@ class V2Tests(PeerFixture):
                                                             "client_contract": 1, "min_daemon": 1})
 
     def test_native_status_progresses_without_page_api_requests(self) -> None:
-        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
-            app = self.app(daemon)
-            events = []
-            app.emit_state = lambda: events.append(app.status())
-            self.assertEqual(app.status()["state"], "target_starting")
+        def refresh() -> None:
+            events.clear()
             app.refresh_status()
             until = time.monotonic() + 2
             context = GLib.MainContext.default()
@@ -610,10 +607,42 @@ class V2Tests(PeerFixture):
                     context.iteration(False)
                 time.sleep(0.005)
             self.assertTrue(events, "native admission must publish without waiting for page API traffic")
-            self.assertEqual(events[-1]["state"], "ready")
-            self.assertEqual([path for path, *_ in self.observed], ["/api/v1/health"] +
-                             ([] if daemon is self.remote else ["/api/v1/auth/bootstrap"]))
-            self.observed.clear()
+
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            with self.subTest(remote=daemon is self.remote):
+                app = self.app(daemon)
+                events = []
+                app.emit_state = lambda: events.append(app.status())
+                self.assertEqual(app.status()["state"], "target_starting")
+                refresh()
+                self.assertEqual(events[-1]["state"], "ready")
+                self.assertEqual([path for path, *_ in self.observed], ["/api/v1/health"] +
+                                 ([] if daemon is self.remote else ["/api/v1/auth/bootstrap"]))
+                self.assertEqual(self.forward(app)["status"], 200)
+                self.observed.clear()
+
+                self.cleanup_peer()
+                try:
+                    result = self.forward(app)
+                    self.assertEqual((result["status"], json.loads(result["body"])),
+                                     (503, {"detail": {"code": "target_unreachable"}}))
+                    self.assertEqual(app.status()["state"], "unreachable")
+                    refresh()
+                    self.assertEqual(app.status()["state"], "unreachable")
+                    self.assertEqual([event["state"] for event in events], ["unreachable"])
+                    self.assertFalse(self.observed, "stopped peer must receive no HTTP")
+                finally:
+                    # Restore the actual peer at the same address, including
+                    # when the regression assertion fails on pre-fix code.
+                    self.server = ThreadingHTTPServer(self.server.server_address, self.server.RequestHandlerClass)
+                    self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
+                    self.thread.start()
+
+                refresh()
+                self.assertEqual(events[-1]["state"], "ready")
+                self.assertEqual(app.status()["state"], "ready")
+                self.assertEqual([path for path, *_ in self.observed], ["/api/v1/health"])
+                self.observed.clear()
 
     def test_lock_timeout_is_ordinary_429(self) -> None:
         app = self.app(self.remote)
