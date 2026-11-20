@@ -14,6 +14,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Annotated, ClassVar, Literal, TypeVar, TYPE_CHECKING
 
@@ -194,10 +195,17 @@ class _ReadBudget(_Budget):
         return 0
 
 
+_sql_budgets: ContextVar[tuple[tuple[sqlite3.Connection, _ReadBudget], ...]] = ContextVar(
+    'workflow_sequential_sql_budgets', default=(),
+)
+
+
 @contextmanager
 def _sql_budget(conn: sqlite3.Connection, budget: _ReadBudget) -> Iterator[None]:
     budget.check()
+    enclosing = next((owner for connection, owner in reversed(_sql_budgets.get()) if connection is conn), None)
     conn.set_progress_handler(budget.progress, 1000)
+    token = _sql_budgets.set((*_sql_budgets.get(), (conn, budget)))
     try:
         yield
         budget.check()
@@ -206,7 +214,11 @@ def _sql_budget(conn: sqlite3.Connection, budget: _ReadBudget) -> Iterator[None]
             raise exc from budget._sql_exhaustion
         raise
     finally:
-        conn.set_progress_handler(None, 0)
+        _sql_budgets.reset(token)
+        # A nested layout selector must not clear the retained reader's L meter
+        # or its original deadline on the no-sequential fallback.
+        conn.set_progress_handler(enclosing.progress if enclosing is not None else None,
+                                  1000 if enclosing is not None else 0)
 
 
 def _rows(conn: sqlite3.Connection, table: str, metadata: tuple[tuple, ...],

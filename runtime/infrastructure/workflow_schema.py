@@ -853,7 +853,7 @@ def _sequential_validated_rows(conn: sqlite3.Connection) -> dict[str, list[dict]
 @lru_cache(maxsize=72)
 def _canonical_sequential_layout(layout: str, *, coding_extension: bool,
                                  owner_indexed: bool, ownership: int, schema_version: int = 1) -> tuple[object, ...]:
-    """Independent combined reference, used only by the explicit new reader."""
+    """Independent combined reference for every installed-layout reader."""
     from runtime.infrastructure.workflow_sequential_schema import sequential_ddl
     from runtime.infrastructure.workflow_sequential_ownership import (
         sequential_ownership_ddl, sequential_binding_view_ddl,
@@ -876,7 +876,7 @@ def _read_sequential_legacy_data(conn: sqlite3.Connection, *, expected_org_slug:
     Only the standalone sequential reader enters this scope. Recursive structure
     checks still compare every object/column/index/FK against literal references;
     the native connection, exact budget and all retained data readers are used
-    unchanged. Default installed readers continue refusing the new extension.
+    unchanged. Plain readers select this same complete path when installed.
     """
     if not conn.in_transaction or _sequential_legacy_read.get() is not None:
         raise ValueError('workflow_seq_legacy_reader_requires_snapshot')
@@ -888,7 +888,7 @@ def _read_sequential_legacy_data(conn: sqlite3.Connection, *, expected_org_slug:
 
 
 def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:
-    """Independently recognize document layout plus the unchanged coding family.
+    """Independently recognize document, Coding and installed sequential layout.
 
     Complete workflow objects/metadata are compared, including reserved aliases,
     indexes/triggers and optional-family constraints. No observed SQL constructs
@@ -908,7 +908,8 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     expected = _canonical_layout(layout, coding_extension=coding,
                                  owner_indexed=bool(_owner_indexes_present(conn)),
                                  owner_marked='workflow_task_ownership' in names or 'workflow_task_owner_bindings' in names)
-    if _sequential_validated_rows(conn):
+    if any(str(value).casefold().startswith('workflow_seq_')
+           for row in actual[0] for value in row[1:3]):
         from runtime.infrastructure.workflow_sequential_ownership import SEQUENTIAL_OWNERSHIP_DDL
         companion = ' '.join(SEQUENTIAL_OWNERSHIP_DDL.strip().removesuffix(';').split())
         marked = bool(names & {'workflow_task_ownership', 'workflow_task_owner_bindings'})
@@ -1399,19 +1400,32 @@ def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str
 def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
                           budget: _Budget | None = None,
                           ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
-    """Complete composition in one coherent schema snapshot."""
-    with _schema_snapshot(conn):
-        layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
-                                         budget=budget)
-        # Only our own reconstructed coding inventory proves the inner reader
-        # performed source/naming/team validation on this unchanged snapshot.
-        # Independent installed/metadata consumers retain those inner checks.
-        if coding is None:
-            _validate_source_data(conn, coding=coding)
-            # Optional org extension: validate, never install or admit it.
-            from runtime.infrastructure.team_move_store import validate_team_move_schema
-            validate_team_move_schema(conn, org_slug=expected_org_slug)
-    return layout, coding
+    """Complete composition, including installed sequential rows, in one snapshot.
+
+    Plain readers use the same bounded installed-layout selector as org load.
+    The complete sequential reader re-enters here with authenticated rows on the
+    same connection; only that scope may enter retained readers directly. Their
+    Coding native exclusions and ownership validation need those row proofs.
+    """
+    def retained() -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
+        with _schema_snapshot(conn):
+            layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
+                                             budget=budget)
+            # Only our own reconstructed coding inventory proves the inner reader
+            # performed source/naming/team validation on this unchanged snapshot.
+            # Independent installed/metadata consumers retain those inner checks.
+            if coding is None:
+                _validate_source_data(conn, coding=coding)
+                # Optional org extension: validate, never install or admit it.
+                from runtime.infrastructure.team_move_store import validate_team_move_schema
+                validate_team_move_schema(conn, org_slug=expected_org_slug)
+        return layout, coding
+
+    if _sequential_validated_rows(conn):
+        return retained()
+    from runtime.infrastructure.workflow_schema_load import read_org_layout
+    return read_org_layout(conn, expected_org_slug=expected_org_slug,
+                           budget=budget, legacy=retained)
 
 
 def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:

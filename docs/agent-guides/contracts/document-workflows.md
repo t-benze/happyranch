@@ -660,8 +660,12 @@ deadline, as detailed in the reusable storage guide.
 TASK-14576 composes all original complete document/Coding data readers in an
 explicit connection-bound scope, after the new history validates. Every recursive
 schema check compares a complete independent combined reference; original native
-connection/budget guards remain. Normal installed schema readers outside that
-scope still refuse the extension. No installation is authorized by source delivery.
+connection/budget guards remain. After #1744, plain installed schema readers
+select the same complete sequential reader before entering that scope. Structural
+helpers recognize only the exact canonical installed family independently of the
+scope; retained row readers still require its authenticated sequential rows.
+See the [post-install legacy-reader contract](../../specs/2026-11-14-automatic-workflow-setup.md#post-install-legacy-readers-1744).
+No installation is authorized by source delivery.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
 and [UNVERIFIED operator draft](../../operations/sequential-workflow-storage.md).
 

@@ -2567,6 +2567,16 @@ async def revisit_task(
     }
 
 
+def _log_cancellation_refusal(task_id: str, code: str, exc: BaseException) -> None:
+    """Keep diagnostics categorical: validation chains can contain stored input."""
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    logger.warning('%s task_id=%s exception=%s cause=%s authority_code=%s',
+                   code, task_id, type(exc).__name__,
+                   type(exc.__cause__).__name__ if exc.__cause__ is not None else None,
+                   exc.code if isinstance(exc, WorkflowAuthorityError) else None)
+
+
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(
     task_id: str, body: CancelBody, org: OrgDep,
@@ -2636,7 +2646,8 @@ async def cancel_task(
                 from runtime.workflows.sequential_mixed_cancel import has_sequential_descendant
                 try:
                     mixed = has_sequential_descendant(org, task_id)
-                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    _log_cancellation_refusal(task_id, 'sequential_cancellation_reconciliation_required', exc)
                     raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
         if mixed:
             from runtime.workflows.authority import WorkflowAuthorityError
@@ -2644,7 +2655,8 @@ async def cancel_task(
             try:
                 cancellation = await cancel_mixed(org, task_id, cascade=body.cascade,
                     rationale=rationale, actor=actor, transitions=root_transitions)
-            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError) as exc:
+                _log_cancellation_refusal(task_id, 'sequential_cancellation_reconciliation_required', exc)
                 raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
             to_cancel = cancellation['tasks']
             prior_statuses = cancellation['prior']
@@ -2657,7 +2669,8 @@ async def cancel_task(
             try:
                 cancellation = await cancel_selected(org, task_id, cascade=body.cascade,
                     rationale=rationale, actor=actor, transitions=root_transitions)
-            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError) as exc:
+                _log_cancellation_refusal(task_id, 'sequential_cancellation_reconciliation_required', exc)
                 raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
             to_cancel = cancellation['tasks']
             prior_statuses = cancellation['prior']
@@ -2669,7 +2682,8 @@ async def cancel_task(
                 from runtime.workflows.sequential_cancel import guard_ordinary_ancestor
                 try:
                     guard_ordinary_ancestor(org, task_id)
-                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    _log_cancellation_refusal(task_id, 'sequential_cancellation_reconciliation_required', exc)
                     raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
                 cancellation = None
                 try:
@@ -2682,7 +2696,8 @@ async def cancel_task(
                         from runtime.workflows.coding_cancellation import cancel_locked
                         cancellation = cancel_locked(org, task_id, cascade=body.cascade,
                             rationale=rationale, actor=actor, transitions=root_transitions)
-                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    _log_cancellation_refusal(task_id, 'coding_cancellation_reconciliation_required', exc)
                     raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
                 if cancellation is not None:
                     to_cancel = cancellation['tasks']

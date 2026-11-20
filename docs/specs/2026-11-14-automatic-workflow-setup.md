@@ -1020,3 +1020,29 @@ values or a traceback. Logs contain filesystem metadata or that sanitized cause,
 not settings, credentials or database contents. Public setup status/result reason
 codes and shapes remain unchanged; consult the log for the specific cause behind
 a coarse refusal.
+
+
+## Post-install legacy readers (#1744)
+
+Plain `_read_workflow_schema` callers select the same installed-layout reader
+as org load (`workflow_schema_load.read_org_layout`). Installed sequential
+storage requires the complete sequential history read before the retained
+Coding/document composition; structural recognition alone is insufficient.
+Coding's native-row exclusions consume `_sequential_validated_rows`, and
+`validate_ownership_data` needs that authenticated scope for version 2/3 marks.
+The original connection, caller transaction and retained Coding allowance are
+preserved. Only the complete sequential reader installs the contextvar; its
+recursive retained calls bypass selection exactly as before.
+
+The canonical combined comparison still recognizes ownership 0/1/2 and sequential
+schema versions 1/2. It compares every reserved object and layout detail; partial,
+foreign or altered `workflow_seq_*` families refuse. Sequential row, FK, ownership
+and history checks remain required, with their existing budgets and deadline.
+No installation, migration or missing-run cancellation shortcut is introduced.
+The task-cancel route logs the reconciliation code, task ID, exception/cause
+class names and declared categorical authority code before each opaque
+cancellation 409. Exception text, tracebacks and stored input values are excluded.
+
+Standalone regression cases live in `scripts/test_workflow_bootstrap.py` and
+`scripts/test_task_cancel.py`; see the focused commands in
+[Local CI](../operations/local-ci.md#focused-a4-carry-forward-no-effect-refusal-and-live-owners).
