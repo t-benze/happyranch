@@ -644,16 +644,24 @@ forwarded identity never reach the daemon. Daemon authentication is unchanged.
 The document-start fetch adapter serializes request bodies into bytes before
 calling WebKit, including Blob/FormData and S1a's byte multipart bodies.
 Unadapted body requests are rejected before `get_http_body`: S0 observed a
-native crash when calling that API on raw Blob/FormData. This adapter is
-local to the opted-in view; no web source changes are needed here. Body cap:
+native crash when calling that API on raw Blob/FormData. This adapter remains
+local to the opted-in view after S1a: S1a serializes multipart, while native
+JSON byte conversion/admission, request IDs and explicit abort messages still
+use this adapter; no web source changes are needed here. Body cap:
 64 MiB/10 seconds, at most two body transfers and 32 total API transfers.
 Native setup has a 15-second deadline; upstream socket operations time out
-after 5 seconds before headers and 30 seconds during response reads. Streams
-are incremental, capped at one hour, with a 10-second slow-reader limit.
+after 5 seconds before headers and 30 seconds during non-event response reads.
+Quiet `text/event-stream` reads have no idle timeout and deliver later events.
+Streams are incremental, capped at one hour, with a 10-second slow-reader limit.
 Abort, document navigation, process termination and view destruction cancel
-owned upstreams; pipe closure is checked every 100 ms even when SSE is idle.
-Failures before headers return closed JSON HTTP errors. After headers,
-transport failure terminates the stream; no exception text or bearer is sent.
+owned upstreams; downstream closure is checked every 100 ms even when SSE is idle.
+Failures before headers return closed JSON HTTP errors. After headers, timeout,
+lifetime expiry, abort, short Content-Length bodies and transport/chunk-framing
+failures produce a GIO input-stream error, never successful EOF. Known response
+lengths are passed to WebKit and delivered byte counts are validated; complete
+bodies close normally. The bounded AF_UNIX socket pair has no network listener;
+its unread completion marker produces a kernel read error on failed closure.
+No exception text or bearer is sent.
 
 Downloads use fetch → blob → `a.download`, followed by the native Save chooser
 with overwrite confirmation. Direct API attachment navigation is blocked;
@@ -665,6 +673,13 @@ Focused standalone native checks (no GI/display/retired Python suite):
 
 ```sh
 /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme.py -v
+```
+
+Response-body checks use real loopback HTTP and system GIO/GLib (no display).
+The quiet-stream case waits 31 seconds, exceeding the former 30-second cap:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_response.py -v
 ```
 
 The main window has a compact **Remote access** card, including while the

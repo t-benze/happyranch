@@ -22,9 +22,10 @@ METHODS, ORIGIN, RESPONSE_HEADERS = _transport.METHODS, _transport.ORIGIN, _tran
 Bundle, LocalDaemon, SchemeError, route = _transport.Bundle, _transport.LocalDaemon, _transport.SchemeError, _transport.route
 
 # Document-start, top-frame fetch adaptation. Raw Blob/FormData must never reach
-# URISchemeRequest.get_http_body (S0: WebKitGTK 2.52.6 SIGSEGV). This also makes
-# today's bundle usable before S1a's web-side byte adapter lands. Unadapted XHR /
-# form-navigation bodies are rejected before touching WebKit's body API.
+# URISchemeRequest.get_http_body (S0: WebKitGTK 2.52.6 SIGSEGV). S1a handles
+# multipart serialization; this still owns JSON byte admission, request IDs
+# and explicit abort messages. Unadapted XHR/form-navigation bodies are
+# rejected before touching WebKit's body API.
 FETCH_BYTES = r"""
 (() => {
   if (location.protocol !== 'happyranch-app:' || location.host !== 'app') return;
@@ -271,7 +272,8 @@ class AppScheme:
     def forward(self, request: object, transfer: Transfer, method: str, target: str,
                 headers: dict[str, str], body_stream: object) -> None:
         sent = False
-        write_fd = None
+        writer = None
+        complete = False
         try:
             body = bytearray()
             began = time.monotonic()
@@ -300,10 +302,19 @@ class AppScheme:
                     kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in RESPONSE_HEADERS}
                     # Fetch retains the attachment header for the existing blob
                     # path. Direct navigation is blocked by policy below.
-                    read_fd, write_fd = os.pipe()
-                    os.set_blocking(write_fd, False)
+                    # A plain pipe can only report EOF. On Linux an AF_UNIX
+                    # peer closed with unread input reports ECONNRESET after
+                    # queued output, which GIO/WebKit propagate as a body error.
+                    # Drain this completion marker ONLY after validated EOF.
+                    reader, writer = socket.socketpair()
+                    reader.sendall(b"\0")
+                    writer.setblocking(False)
+                    write_fd = writer.fileno()
                     transfer.write_fd = write_fd
-                    source = self.Gio.UnixInputStream.new(read_fd, True)
+                    source = self.Gio.UnixInputStream.new(reader.detach(), True)
+                    length = response.length
+                    if length is not None:
+                        kept["content-length"] = str(length)
                     transfer.deadline = time.monotonic() + 3600
                     self.GLib.idle_add(self.deliver, request, transfer, response.status, source, kept)
                     sent = True
@@ -311,12 +322,22 @@ class AppScheme:
                     # HTTPConnection closes its socket reference on Connection:
                     # close responses, so retain the response socket for abort.
                     upstream_socket = response.fp.raw._sock
-                    upstream_socket.settimeout(30)
+                    # Quiet SSE is healthy. Shutdown from abort/monitor wakes
+                    # this blocking read; the lifetime deadline still bounds it.
+                    is_events = kept.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream"
+                    upstream_socket.settimeout(None if is_events else 30)
                     transfer.socket = upstream_socket
+                    if transfer.stop.is_set():
+                        transfer.cancel()
+                    delivered = 0
                     while not transfer.stop.is_set():
                         chunk = response.read1(65536)
                         if not chunk:
+                            if length is not None and delivered != length:
+                                raise SchemeError(502, "incomplete_body")
+                            complete = not transfer.stop.is_set()
                             break
+                        delivered += len(chunk)
                         pending = memoryview(chunk)
                         deadline = time.monotonic() + 10
                         while pending and not transfer.stop.is_set():
@@ -341,8 +362,16 @@ class AppScheme:
                 except self.GLib.Error:
                     pass
             transfer.write_fd = None
-            if write_fd is not None:
-                os.close(write_fd)
+            if writer is not None:
+                if complete and not transfer.stop.is_set():
+                    # Success consumes the marker, allowing normal EOF. Every
+                    # other path (timeout, abort, transport/framing failure)
+                    # leaves it unread and therefore errors the input stream.
+                    try:
+                        writer.recv(1)
+                    except OSError:
+                        pass
+                writer.close()
             transfer.finished = True
 
     def deliver(self, request: object, transfer: Transfer, status: int, source: object,
@@ -351,7 +380,7 @@ class AppScheme:
             source.close(None)
             self.error(request, SchemeError(499, "cancelled"))
         else:
-            self.finish(request, status, source, -1, headers)
+            self.finish(request, status, source, int(headers.get("content-length", "-1")), headers)
         return False
 
     def policy(self, _view: object, decision: object, kind: object) -> bool:
