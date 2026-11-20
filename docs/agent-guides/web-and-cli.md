@@ -95,8 +95,8 @@ read owners that keep their own latched failure (the Threads committed-page
 owner retries a read that failed with `NativeRecoveryError`, through its own
 generation-fenced path) and refetches active queries; a request that still
 meets the answer shows it again. No other read owner with a latched
-(skipToken/`enabled:false`) failure exists in `web/src`. Connection/Settings dialogs (S6)
-do not exist yet, so the panel names Connection in copy only.
+(skipToken/`enabled:false`) failure exists in `web/src`. The panel names
+Connection in copy only; it does not open the desktop dialogs below.
 
 `web/src/lib/apiContract.ts` is the web owner of `CLIENT_CONTRACT = 1`,
 `MIN_DAEMON = 1` and the pure `isCompatible(health)`: compatible iff
@@ -107,6 +107,54 @@ missing or invalid metadata is incompatible. Bump rules mirror
 `node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
 (Node 24, repository root; transform-types is needed for TS parameter
 properties).
+
+## Desktop Settings and Connection dialogs (THR-387 S6-W1)
+
+In the desktop app (handoff v2.4 §2–§3), Settings and Connection are web
+dialogs inside Main, in the same document. `web/src/features/desktop-dialogs/`
+owns the host: `DesktopDialogsProvider` (mounted around `AppRoutes` in
+`routes.tsx`) shows at most ONE top-level dialog; opening the other replaces it
+inside the same Radix root and never spawns a window. The one internal API is
+`useDesktopDialogs()` → `openDesktopDialog(request, invoker?)` /
+`requestDesktopDialogClose()`. The close button and Escape both go through
+`requestDesktopDialogClose`, the single seam where the S6-W2 owner registry /
+keep-discard gate will decide; today it closes immediately. Backdrop clicks do
+not dismiss. Focus stays inside the dialog (Main is inert), moves to the dialog
+heading on open and on every switch, and returns on final close to the
+recorded invoker, else to the Main recovery control when a recovery panel is
+shown, else to the Main content landmark (`MAIN_CONTENT_ID`). Pure rules
+(one-at-a-time replacement, repeated entry, route-to-page mapping) live in
+`dialogModel.ts`; focused checks:
+`node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`.
+
+Native mode is `isDesktopShell()`: the `happyranch-app:` scheme or a
+`window.happyranchConnection` `call`/`on` facade. This is presentation only
+and grants no bridge capability. In native mode, Main `/orgs/:slug/settings/*`
+and the org-less `/settings/*` render `DesktopSettingsRoute`: it opens the
+Settings dialog at exactly the requested page (bare, legacy
+`assistant`/`system`/`agents` and unknown org pages select Capacity, as the
+page route redirects; org-less defaults to Language), then replaces the URL
+with the previous Main page of the same org, else `/orgs/:slug/dashboard`
+(or `/`). Browser mode keeps both full-page routes unchanged. Native
+`app.dialogRequested` is not wired yet (follow-up once its protocol merges).
+
+The Settings dialog body is `features/settings/SettingsDialogBody.tsx`,
+composed by `routes.tsx` so neither feature imports the other. Its nav follows
+v2.4 §2: This app → Language; Runtime settings (with the current org named in
+full) → Capacity, Executors, Organization, Coding; Open Connection. Panes are
+the existing sections through `SettingsPane` (same loading/error/recovery
+gates as the page), so there is one Settings editor. Runtime pages with no
+org in Main show the recovery panel during a recovery state, otherwise an
+"open an organization" note. The "This computer" group shows only the C5
+scope note (“These controls affect this computer, not {host}.”) and only when
+a remote Host name is supplied; nothing supplies it until the S5-W1 status
+store lands, and the local controls page itself is S7-L2. The Connection
+dialog is a placeholder shell (S6-W3 moves the `web/connection` screens in)
+with a Settings cross-action. Layout (C4): at md and wider a large centered
+dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
+fills the Main content area, nav groups stack and items wrap above the page in
+one vertically scrolling column, and choosing a page scrolls it into view.
+Unsaved drafts are not yet protected on close/switch/page change (S6-W2).
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 
