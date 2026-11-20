@@ -104,7 +104,7 @@ class ClientModel:
         elif command == "client.savedComputers":
             self.discover(finish)
         elif command in ("client.acceptInvite", "client.retry", "client.connectSaved"):
-            if (self.session or self.saving or self.storage_busy or self.hold or self.ui.prompt
+            if (self.session or self.saving or self.storage_busy or self.reading or self.hold or self.ui.prompt
                     or self.host_prompt_document is not None or self.stage not in ("idle", "failed", "connected")
                     or self.cleanup == "incomplete"):
                 finish(None, "busy")
@@ -491,7 +491,7 @@ class ClientModel:
         self.work(token, write, saved, settle=True)  # retain outcome after Cancel
 
     def connect_saved(self, ref: str, document: object, finish: object) -> None:
-        if (self.session or self.storage_busy or self.hold or self.ui.prompt
+        if (self.session or self.storage_busy or self.reading or self.hold or self.ui.prompt
                 or self.stage not in (("idle", "failed", "connected") if self.main else ("idle", "failed"))
                 or self.cleanup == "incomplete"):
             finish(None, "busy", "none")

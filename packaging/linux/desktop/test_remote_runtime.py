@@ -911,6 +911,10 @@ class SwitchTests(PeerFixture):
     def test_owned_remote_survives_second_attempt_and_main_recreation(self) -> None:
         self.ready()
         self.assertEqual(self.command("commitSwitch")[0]["effect"], "confirmed")
+        self.model.reading = True  # Native health already owns this model token.
+        self.assertEqual(self.command("acceptInvite")[1:], ("busy",))
+        self.assertIsNone(self.main.candidate)
+        self.model.reading = False
         active = self.candidate
         target_id = self.main.daemon.target_id
         old = self.main
