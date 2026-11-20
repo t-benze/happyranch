@@ -80,7 +80,8 @@ class HomeLiveConfigOwner:
     Prepared inputs are read once, then retained with custody signatures. Each
     publication validates source and original inputs again; a partial pair is
     never resumed. Current txn verification uses done digests. Post-B7 prepared
-    admission proves staged provenance under the exact earlier render.
+    admission proves staged provenance under an earlier render, or the retained
+    post-Disable insertion when the older txn never reached home_config.
     """
 
     def __init__(self, *, io: ManagedInstaller, expected_generation: int,
@@ -163,18 +164,25 @@ class HomeLiveConfigOwner:
                         raise ActivationRefused()
                     else:
                         g = self._io._json(sidecar.data).get("home_binding", {}).get("activation_generation")
-                        if type(g) is not int or not 0 <= g < receipt.activation_generation:
-                            raise ActivationRefused()
-                        end, addition = sidecar.data.rindex(b"}"), _addition(replace(receipt, activation_generation=g))
-                        if sidecar.data[end-len(addition):end] != addition:
-                            raise ActivationRefused()
-                        staged = sidecar.data[:end-len(addition)] + sidecar.data[end:]
-                        if _digest(staged) != raw["digests"]["sidecar.json"]:
-                            raise ActivationRefused()
-                        if old_effect is not None and (
-                                g != txn.activation_generation or old_effect.member_digests != {
-                                    _CONNECTOR: inputs["connector.json"].digest, _SIDECAR: sidecar.digest}):
-                            raise ActivationRefused()
+                        staged = None
+                        # L1(b) keeps its exact earlier-render and old-done proof.
+                        if type(g) is int and 0 <= g < receipt.activation_generation:
+                            end = sidecar.data.rindex(b"}")
+                            addition = _addition(replace(receipt, activation_generation=g))
+                            if sidecar.data[end-len(addition):end] == addition:
+                                candidate = sidecar.data[:end-len(addition)] + sidecar.data[end:]
+                                if (_digest(candidate) == raw["digests"]["sidecar.json"]
+                                        and (old_effect is None or (
+                                            g == txn.activation_generation and old_effect.member_digests == {
+                                                _CONNECTOR: inputs["connector.json"].digest, _SIDECAR: sidecar.digest}))):
+                                    staged = candidate
+                        if staged is None:
+                            if old_effect is not None:
+                                raise ActivationRefused()
+                            # L1(c): no older home_config record. Reuse P3's PD4
+                            # proof; retired transport fields/g are not authority
+                            # for this receipt. Admission remains read-only.
+                            staged = self._io._home_unit_provisioning(parent, raw, reuse=True)["sidecar.json"]
                         inputs["sidecar.json"] = _Input(staged, sidecar.signature, _digest(staged))
                 if inputs["release-daemon.json"].digest != raw["digests"]["release-daemon.json"]:
                     raise ActivationRefused()

@@ -813,11 +813,19 @@ READY/RESUME and half-published recovery leave enrollment untouched.
 Backend Enable forwards the rollover pair to the existing
 coordinator only when stable bindings match, txn is older failed_uncertain and
 operation IDs differ; matching pairs keep Ruling 17 terminal handling. The existing
-live-config owner admits an exact earlier render over protected staged provenance
-only for this prepared rollover: connector digest unchanged, exact sidecar insertion
+live-config owner first admits provision-equal staged bytes, then an exact earlier
+render over protected staged provenance for this prepared rollover: connector
+digest unchanged, exact sidecar insertion
 for integer 0 <= g < G+1, stripped digest equal to provision. Old done home_config
 also requires its live member digests and g equal to the old transaction generation.
-Partial/foreign/pending/unsafe inputs refuse without effects. Captured inputs are
+If neither rule admits the bytes and the older txn has NO home_config record,
+I5d-2 reuses the post-Disable proof: exactly one trailing insertion bound to the
+protected stable IDs, any integer old g >= 0 (including g >= the new generation),
+and an exact provision digest after stripping it. Its retired CA/dial are not
+compared to the new receipt; repeated pre-home_config failures and rollovers use
+the same proof. Older home_config intent/partial publication keeps its existing
+refusal limit and never uses this rule. Foreign/pending/unsafe inputs refuse
+without effects. Captured inputs are
 the proven staged bytes; only the normal next home_config effect publishes the
 G+1 render. Recovery never rewrites live configs or stable @2 invite configuration.
 Current transaction checks, custody, receipt CAS and B2 observation remain required.

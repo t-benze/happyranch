@@ -2812,12 +2812,18 @@ reaches home_config done; installed acceptance remains unverified.
 E1b's original fail-closed boundary reported provisioned-config drift/refused the
 live profile after home_config done. E2a below supplies the validated exception.
 For I5d-0, only a prepared receipt paired with an older failed_uncertain txn
-admits staged bytes or a proven earlier render: connector equals its provision
+admits (a) staged bytes or (b) a proven earlier render: connector equals its provision
 digest, and sidecar ends in the exact authorized insertion for integer
 0 <= g < receipt generation, with every other field equal to the receipt.
 Stripping that insertion must yield the provision sidecar digest. An old done
 home_config additionally requires both live digests equal its member_digests
-and g equal its txn generation; intent/partial evidence refuses. Unknown/foreign
+and g equal its txn generation; intent/partial evidence refuses. I5d-2 adds
+(c), checked after (a) and (b), only when that older txn has NO home_config record
+at all: reuse the generation-0 post-Disable proof below for exactly one retained
+insertion with protected stable IDs, any integer g >= 0 (even g >= receipt G),
+and a strip digest equal to provision. Retired CA/dial fields are not compared
+with the new receipt. An old home_config record, including intent or partial
+publication, never uses (c); done evidence keeps (b)'s digest/g rule. Unknown/foreign
 tails, strip mismatch, pending residue and custody drift refuse without effects.
 Captured data/digests are the proven staged bytes, with the live custody signature.
 The next normal home_config perform/_publish alone writes the new render;
@@ -2835,8 +2841,9 @@ integer >= 0. The stripped bytes must equal the provision sidecar digest; closed
 transport fields are retired values, never the next receipt's authority. Captured
 data/digests are proven staged bytes and custody signatures remain the live
 file's. Normal `home_config` perform/publication alone writes generation 0 with
-the new receipt's trust fields. No admission/recovery rewrite is added; the
-older-failed-transaction L1 branch and all current-transaction checks stay intact.
+the new receipt's trust fields. No admission/recovery rewrite is added. L1(c)
+reuses this same proof for the bounded older-failed-transaction case above;
+all current-transaction checks stay intact.
 
 **Manager Ruling 14 (G2-E1a, retained local-node key history):**
 The owner verifier validates the complete happyranch-node pre-auth-key inventory:
@@ -3359,7 +3366,12 @@ and no pending deletion outside B6.
   mixed pair is admitted to recovery.
 - ROLLOVER publishes only prepared(G+1,O'); txn(G) stays untouched. Crash outcomes
   are exactly the old failed pair, retained pending residue, or the new prepared
-  receipt plus the older failed txn.
+  receipt plus the older failed txn. The next Enable's B4 live-config admission
+  tries provision-equal bytes, then the exact earlier render, then L1(c)'s retained
+  post-Disable proof only if the older txn has no home_config record. That proof
+  also applies after repeated rollovers; it captures staged bytes with the live
+  signature, and only normal home_config publication renders the new G/trust.
+  Older intent/partial home_config publication keeps its existing refusal limit.
 
 G2-C2 implements `HomeActivationRecovery.recover` with externally expected G/O,
 a strict fresh-auth precondition and an injected observation owner. It constructs

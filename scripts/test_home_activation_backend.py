@@ -393,36 +393,69 @@ def test_composed_replace_failed_then_enable(composition: Any) -> None:
     assert v.receipts.read(expected_generation=0).phase == 'ready'
 
 
-@pytest.mark.parametrize('boundary', ['publish_invite_config', 'home_config'])
-def test_composed_post_disable_interruption(composition: Any, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+def post_disable_interrupted(v: Any, monkeypatch: pytest.MonkeyPatch, boundary: str, *,
+                             rollovers: int = 1, retained_generation: int = 0) -> Any:
+    """Real PD -> interruption -> B7, including a newly materialized CA."""
     from datetime import timedelta
-    v = composition
+    from runtime.remote_access.home_live_config import HomeLiveConfigOwner
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    old_ca = v.receipts.current().ca_der_sha256
     v.observers.close()
     v.observers = ExitStack()
     expected = v.lifecycle.capture('Disable', os.getuid())
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)['outcome'] == 'off'
     v.admin.users, v.admin.nodes = (), ()
+    if retained_generation:
+        # Synthetic old-generation variation of the exact deterministic tail.
+        path = v.path('/etc/happyranch/sidecar.json')
+        data = path.read_bytes()
+        assert data.count(b'"activation_generation":0') == 1
+        path.write_bytes(data.replace(b'"activation_generation":0',
+                                     f'"activation_generation":{retained_generation}'.encode()))
     v.head.ca_pem = ssl.DER_cert_to_PEM_cert(b'synthetic replacement CA').encode()
-    expected = v.lifecycle.capture('Enable', os.getuid())
-    with monkeypatch.context() as patch:
+    for generation in range(rollovers):
+        expected = v.lifecycle.capture('Enable', os.getuid())
+        connector_inode = v.path('/etc/happyranch/connector.json').stat().st_ino
+        retained_sidecar = v.path('/etc/happyranch/sidecar.json').read_bytes()
+        with monkeypatch.context() as patch:
+            if boundary == 'publish_invite_config':
+                publish = v.io.publish_invite_config
+                def interrupted(**kw: Any) -> None:
+                    publish(**kw)
+                    raise Crash()
+                patch.setattr(v.io, 'publish_invite_config', interrupted)
+            elif boundary == 'home_config-partial':
+                publish = HomeLiveConfigOwner._publish
+                def interrupted(owner: Any, name: str, *args: Any) -> None:
+                    publish(owner, name, *args)
+                    if name == 'connector.json': raise Crash()
+                patch.setattr(HomeLiveConfigOwner, '_publish', interrupted)
+            else:
+                publish = h.HomeActivationCoordinator._publish_transaction
+                def interrupted(owner: Any, txn: Any, *args: Any) -> None:
+                    publish(owner, txn, *args)
+                    effect = txn.effects[-1]
+                    name = 'home_config' if boundary == 'home_config-intent' else boundary
+                    state = 'intent' if boundary == 'home_config-intent' else 'done'
+                    if effect.name == name and effect.state == state: raise Crash()
+                patch.setattr(h.HomeActivationCoordinator, '_publish_transaction', interrupted)
+            with pytest.raises(Crash):
+                v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
         if boundary == 'publish_invite_config':
-            publish = v.io.publish_invite_config
-            def interrupted(**kw: Any) -> None:
-                publish(**kw)
-                raise Crash()
-            patch.setattr(v.io, 'publish_invite_config', interrupted)
-        else:
-            publish = h.HomeActivationCoordinator._publish_transaction
-            def interrupted(owner: Any, txn: Any, *args: Any) -> None:
-                publish(owner, txn, *args)
-                if txn.effects[-1].name == 'home_config' and txn.effects[-1].state == 'done': raise Crash()
-            patch.setattr(h.HomeActivationCoordinator, '_publish_transaction', interrupted)
-        with pytest.raises(Crash):
-            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
-    if boundary == 'home_config':
+            break
+        assert v.receipts.current().ca_der_sha256 != old_ca
+        if boundary == 'credential_staging':
+            assert all(e.name != 'home_config' for e in v.transactions.read_optional().effects)
+            retained = json.loads(v.path('/etc/happyranch/sidecar.json').read_bytes())
+            assert retained['control_tls']['ca_sha256'] == old_ca
+            assert retained['home_binding']['activation_generation'] == retained_generation
+        if boundary.startswith('home_config-'):
+            assert v.transactions.read_optional().effects[-1] == Effect('home_config', 'intent', {})
+            assert v.path('/etc/happyranch/sidecar.json').read_bytes() == retained_sidecar
+            assert (v.path('/etc/happyranch/connector.json').stat().st_ino != connector_inode) == (
+                boundary == 'home_config-partial')
         # Unchanged Ruling 17 first marks the interrupted current pair terminal.
         with pytest.raises(ActivationRefused):
             v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
@@ -432,11 +465,66 @@ def test_composed_post_disable_interruption(composition: Any, monkeypatch: pytes
         v.admin.key = replace(v.admin.key, expiration=datetime.now(timezone.utc) - timedelta(seconds=1))
         assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
                                     deadline=time.monotonic() + 480)['outcome'] == 'prepared'
+        assert v.receipts.current().activation_generation == generation + 1
+    return v.receipts.current()
+
+
+@pytest.mark.parametrize('boundary,rollovers,retained_generation', [
+    ('publish_invite_config', 1, 0), ('home_config', 1, 0),
+    ('credential_staging', 1, 0), ('credential_staging', 2, 0),
+    ('credential_staging', 1, 1), ('credential_staging', 1, 7),
+])
+def test_composed_post_disable_interruption(composition: Any, monkeypatch: pytest.MonkeyPatch,
+        boundary: str, rollovers: int, retained_generation: int) -> None:
+    v = composition
+    prepared = post_disable_interrupted(v, monkeypatch, boundary,
+        rollovers=rollovers, retained_generation=retained_generation)
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     ready = v.receipts.current()
-    assert ready.activation_generation == (1 if boundary == 'home_config' else 0)
+    assert ready.activation_generation == (0 if boundary == 'publish_invite_config' else rollovers)
     assert ready.phase == 'ready'
+    if prepared is not None:
+        assert ready.ca_der_sha256 == prepared.ca_der_sha256
+    sidecar = json.loads(v.path('/etc/happyranch/sidecar.json').read_bytes())
+    assert sidecar['home_binding']['activation_generation'] == ready.activation_generation
+    assert sidecar['control_tls']['ca_sha256'] == ready.ca_der_sha256
+    assert v.transactions.read_optional().matches(ready)
+
+
+@pytest.mark.parametrize('case', ['home_config-intent', 'home_config-partial', 'two-additions',
+    'foreign-tail', 'stable-ID', 'connector-drift', 'strip-mismatch', 'pending'])
+def test_composed_post_disable_rollover_refuses_without_effects(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    from runtime.remote_access.home_live_config import HomeLiveConfigOwner, _addition
+    v = composition
+    prepared = post_disable_interrupted(v, monkeypatch,
+        case if case.startswith('home_config-') else 'credential_staging')
+    path = v.path('/etc/happyranch/sidecar.json')
+    data = path.read_bytes()
+    if case == 'two-additions':
+        end = data.rindex(b'}')
+        path.write_bytes(data[:end] + _addition(prepared) + data[end:])
+    if case == 'foreign-tail':
+        end = data.rindex(b'}')
+        path.write_bytes(data[:end] + b',"foreign":true' + data[end:])
+    if case == 'stable-ID':
+        needle = b'"home_id":"' + prepared.home_id.encode() + b'"'
+        assert data.count(needle) == 1
+        path.write_bytes(data.replace(needle, b'"home_id":"foreign-home"'))
+    if case == 'connector-drift':
+        connector = v.path('/etc/happyranch/connector.json')
+        connector.write_bytes(connector.read_bytes() + b' ')
+    if case == 'strip-mismatch': path.write_bytes(b' ' + data)
+    if case == 'pending': put(path.with_name('.sidecar.json.pending'), b'synthetic pending')
+    before = staged_inventory(v.fixture)
+    calls, mints = len(v.calls), len(v.mints)
+    writes = home_unit_writes(monkeypatch, v.root)
+    config = HomeLiveConfigOwner(io=v.io, expected_generation=prepared.activation_generation,
+        expected_operation_id=prepared.operation_id)
+    assert not config.verify('preflight', prepared), case
+    assert writes == [] and staged_inventory(v.fixture) == before
+    assert v.calls[calls:] == [] and len(v.mints) == mints
 
 
 @pytest.fixture
