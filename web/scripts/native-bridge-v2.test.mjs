@@ -1119,3 +1119,83 @@ test('R2-3 browser control: bootstrap failure behavior unchanged (BootstrapError
   assert.equal(err.status, 401);
   assert.deepEqual(PATHS(), ['/api/v1/auth/bootstrap']);
 });
+
+// R3-1 — the current generation never inherits an older generation's pending
+// bootstrap. Mirrors reviewer probe cross-generation-bootstrap.mjs (TASK-18189).
+test('R3-1: g1 no_target bootstrap body pending, switch to g2/ready -> mounted orgs query bootstraps afresh and loads', async () => {
+  const bridge = desktop(state('g1', { state: 'no_target', target: null }));
+  await target.captureTarget();
+  sessionStorage.removeItem('happyranch.token');
+  const body = deferredBody(503);
+  queue.push(body.respond); // g1 bootstrap, error body still pending
+  const { qc, observer, close } = orgsClient();
+  await tick(10);
+  const oldWrite = request('/x', { method: 'POST', body: {} }).catch((e) => e); // shares the g1 bootstrap
+  await tick(10);
+  queue.push(json(200, { token: 'tok-g2' })); // the g2 query's own bootstrap
+  queue.push(json(200, { orgs: [{ slug: 'demo' }] }));
+  bridge.emit(state('g2'));
+  await tick(10);
+  body.deliver({ detail: { code: 'no_target' } });
+  await tick(50);
+  const result = observer.getCurrentResult();
+  assert.deepEqual(result.data, { orgs: [{ slug: 'demo' }] }, `current target org data loaded (${result.status} ${result.error?.name})`);
+  assert.deepEqual(qc.getQueryCache().getAll().map((q) => [q.queryHash, q.state.status]), [
+    ['[{"target":"g2"},"orgs"]', 'success'],
+  ]);
+  // The old generation's consumer stays stale/not sent and is never replayed.
+  assert.ok((await oldWrite) instanceof NotSentError);
+  assert.deepEqual(calls.map((c) => [new URL(c.url, 'http://h').pathname, c.method, c.target]), [
+    ['/api/v1/auth/bootstrap', 'GET', null],
+    ['/api/v1/auth/bootstrap', 'GET', null],
+    ['/api/v1/orgs', 'GET', 'g2'],
+  ]);
+  assert.equal(recovery.getNativeRecoveryState(), null, 'the old body published nothing');
+  close();
+});
+
+// R3-2 — explicit-token callers pin the save's generation before preparing the
+// bearer. Mirrors reviewer probe explicit-token-pin.mjs (TASK-18189).
+const sequential = await import('../src/lib/api/workflowSequential.ts');
+const settingsApi = await import('../src/lib/api/settings.ts');
+const SEQ_COMMAND = {
+  format: 'workflow-sequential-settings-put@1', operation_key: 's5-w1-test-key', expected_generation: 1,
+  definition: { identity: 'review/synthetic', version: 1, definition_digest: 'a'.repeat(64), source_digest: 'b'.repeat(64),
+    compiler: 'workflow-sequential-compiler@1', validator: 'workflow-sequential-validator@1',
+    interpreter: 'workflow-sequential-interpreter@1', capabilities: 'workflow-sequential-capabilities@1' },
+  bindings: [{ role: 'author', principal: 'agent:synthetic' }],
+  limits: { content_returns: 1, max_content_epochs: 1, max_visits: 10, max_events: 100 },
+};
+
+for (const [name, save] of [
+  ['Workflow Setup putSequentialSettings', () => sequential.putSequentialSettings('demo', SEQ_COMMAND)],
+  ['Coding settings putCodingSettings', () => settingsApi.putCodingSettings('demo', { org_slug: 'demo' })],
+]) {
+  test(`R3-2: ${name} authored under g1, bootstrap resolves after switch to g2 -> Not sent, no PUT`, async () => {
+    const bridge = desktop(state('g1'));
+    await target.captureTarget();
+    sessionStorage.removeItem('happyranch.token');
+    let release;
+    queue.push(() => new Promise((r) => { release = () => r(json(200, { token: 'tok-2' })()); }));
+    const pending = save().catch((e) => e);
+    await tick(10);
+    bridge.emit(state('g2'));
+    release();
+    const err = await pending;
+    assert.deepEqual(calls.map((c) => [new URL(c.url, 'http://h').pathname, c.method, c.target]), [['/api/v1/auth/bootstrap', 'GET', null]], 'no PUT to either target');
+    assert.ok(err instanceof NotSentError, String(err));
+    assert.equal(notices.getNativeNotice(), 'not_sent');
+  });
+}
+
+test('R3-2 control: explicit-token save keeps single send on 401 (no re-bootstrap, no replay) under an unchanged generation', async () => {
+  desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(401, { detail: 'expired' }));
+  const err = await sequential.putSequentialSettings('demo', SEQ_COMMAND).catch((e) => e);
+  assert.equal(err.status, 401);
+  assert.deepEqual(calls.map((c) => [new URL(c.url, 'http://h').pathname, c.method, c.target]), [
+    ['/api/v1/orgs/demo/workflows/sequential/settings', 'PUT', 'g1'],
+  ]);
+  assert.equal(sessionStorage.getItem('happyranch.token'), 'tok-1', 'explicit-token path does not clear the bearer');
+});

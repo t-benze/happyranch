@@ -13,7 +13,12 @@ import { parseNativeRecovery, reportNativeRecovery } from './nativeRecovery';
 const STORAGE_KEY = 'happyranch.token';
 const BOOTSTRAP_URL = '/api/v1/auth/bootstrap';
 
+// One shared in-flight bootstrap per native target generation (R3-1): callers
+// under the current generation never inherit an older generation's pending
+// bootstrap (its stale rejection would strand them). Browser: one slot.
 let inflight: Promise<string> | null = null;
+let inflightGeneration: string | null = null;
+let inflightSlot: object | null = null;
 
 export class BootstrapError extends Error {
   constructor(public readonly status: number, public readonly detail: unknown) {
@@ -38,13 +43,17 @@ export class BootstrapStaleError extends Error {
 export async function getToken(): Promise<string> {
   const cached = sessionStorage.getItem(STORAGE_KEY);
   if (cached) return cached;
-  if (inflight) return inflight;
-  inflight = (async () => {
-    // The bootstrap request carries no target header, but its error side
-    // effects are fenced like every other answer: one generation for the
-    // shared in-flight bootstrap, captured at its start (desktop only).
-    const native = isNativeTarget();
-    const captured = native ? currentGeneration() : null;
+  const native = isNativeTarget();
+  const captured = native ? currentGeneration() : null;
+  if (inflight && inflightGeneration === captured) return inflight;
+  // The bootstrap request carries no target header, but its error side
+  // effects are fenced like every other answer: one generation for the
+  // shared in-flight bootstrap, captured at its start (desktop only). An
+  // older generation's bootstrap keeps running for its own callers only.
+  const slot = {};
+  inflightSlot = slot;
+  inflightGeneration = captured;
+  const pending: Promise<string> = (async () => {
     try {
       const r = await fetch(BOOTSTRAP_URL, { credentials: 'same-origin' });
       if (!r.ok) {
@@ -69,10 +78,15 @@ export async function getToken(): Promise<string> {
       sessionStorage.setItem(STORAGE_KEY, body.token);
       return body.token;
     } finally {
-      inflight = null;
+      if (inflightSlot === slot) {
+        inflight = null;
+        inflightGeneration = null;
+        inflightSlot = null;
+      }
     }
   })();
-  return inflight;
+  if (inflightSlot === slot) inflight = pending;
+  return pending;
 }
 
 export function clearToken(): void {
@@ -82,5 +96,7 @@ export function clearToken(): void {
 /** Test-only: drop the in-memory inflight ref + the storage entry. */
 export function __resetTokenCacheForTests(): void {
   inflight = null;
+  inflightGeneration = null;
+  inflightSlot = null;
   sessionStorage.removeItem(STORAGE_KEY);
 }

@@ -782,7 +782,9 @@ and W-2b (mutations never auto-retry on 409) are implemented with focused checks
 `web/scripts/native-bridge-v2.test.mjs`. Review round 1 (TASK-18178) added
 per-operation generation pinning across the 401 re-send, error-body generation
 rechecks, Result unknown for native mutation transport loss, Settings editor
-custody across a switch and transient read recovery. This is source/unit evidence only. Merged
+custody across a switch and transient read recovery. Review round 3 (TASK-18189)
+added a per-generation bearer bootstrap (a newer generation never shares an older
+pending bootstrap) and pinning before explicit-token bearer preparation. This is source/unit evidence only. Merged
 S1b-A PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec
 slice itself changed no implementation, tests, required checks or CI triggers.
 Live Linux, Mac and web v2 behavior is **NOT RUN** by these changes.

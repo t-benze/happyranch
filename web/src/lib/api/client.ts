@@ -34,8 +34,11 @@ export interface RequestOptions {
    * When set, overrides the default master daemon bearer with a scoped token.
    * Used by loopback-only, scoped-token-gated routes (e.g. register-binary).
    * Sends ``Authorization: Bearer <token>`` instead of the cached bearer.
+   * A function is prepared only AFTER the target generation is pinned (R3-2),
+   * so a token awaited across a target switch never carries the operation to
+   * the new target. Either form is sent once, including on 401.
    */
-  auth?: { token: string };
+  auth?: { token: string | (() => Promise<string>) };
   /**
    * Opt-in single send. `false`: on a master-bearer 401 the cached bearer is
    * still cleared and re-acquired, but the request is NOT re-sent; the 401 is
@@ -233,8 +236,12 @@ export async function repinBeforeSend(pinned: string, read: boolean): Promise<st
  * page for the operation itself).
  */
 export async function pinnedToken(read: boolean): Promise<string> {
+  return pinnedTokenFrom(getToken, read);
+}
+
+async function pinnedTokenFrom(prepare: () => Promise<string>, read: boolean): Promise<string> {
   try {
-    return await getToken();
+    return await prepare();
   } catch (error) {
     if (error instanceof BootstrapStaleError) throw read ? new StaleTargetError() : notSent();
     throw error;
@@ -438,8 +445,9 @@ export async function request<T = unknown>(
   const pinned = await pinTarget(read);
   let token: string;
   if (opts.auth) {
-    // Scoped-token path: use the caller-supplied token.
-    token = opts.auth.token;
+    // Scoped-token path: use the caller-supplied token (prepared under the pin).
+    const supplied = opts.auth.token;
+    token = typeof supplied === 'string' ? supplied : await pinnedTokenFrom(supplied, read);
   } else {
     token = await pinnedToken(read);
   }

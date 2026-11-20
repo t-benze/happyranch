@@ -145,6 +145,9 @@ app is detected only by origin `happyranch-app://app` with the
   operation, before any preparatory await (bearer bootstrap, multipart
   preparation), and keep it across the 401 clear/re-bootstrap/re-send. If the
   generation changed before a send, a change is never sent to the new target:
+  this includes explicit-token callers (Workflow Setup and Coding settings
+  saves pass `auth: { token: getToken }`, so the bearer is prepared after the
+  pin and still sent once, including on 401, without clearing the bearer);
   `NotSentError` / Not sent (that send never left the page; a 401 is a
   definite refusal, so nothing was applied). A GET re-pins once and is sent
   under the new generation. Browser mode keeps the unchanged single 401
@@ -156,7 +159,8 @@ app is detected only by origin `happyranch-app://app` with the
   open handlers and the bearer bootstrap), so an old body never publishes a
   notice or recovery state for the new target. The bootstrap is exempt from
   the header only: one generation is captured when the shared in-flight
-  bootstrap starts, and a failed body that finishes after a switch publishes
+  bootstrap starts (callers under a newer generation start their own
+  bootstrap instead of sharing an older one), and a failed body that finishes after a switch publishes
   nothing (`BootstrapStaleError`); `pinnedToken` turns it into
   `StaleTargetError` for a read and Not sent for a change (browser mode and
   the stored bearer are unchanged). A change (non-GET) that is stale, answered 499
