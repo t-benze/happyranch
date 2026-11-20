@@ -1326,6 +1326,14 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                     publication = org.workflow_sequential_dispatch.notify_queued(task_id, queue)
                 elif ownership.kind == 'seq_source_wait_set':
                     publication = org.orchestrator._workflow_continuation.wake(task_id, queue=queue)
+                    if publication is None:
+                        continue  # No longer ready; no current release work.
+                    if publication is False:
+                        # enqueue_if_absent also refuses coalesced delivery.
+                        # Only an actual pending item, not a reservation, is
+                        # publication evidence. No DB work under this lock.
+                        with queue._admission_lock:
+                            publication = queue._pending_counts[(org.slug, task_id)] > 0
                 elif ownership.kind == "legacy":
                     publication = queue.enqueue_if_absent(org.slug, task_id,
                         publisher=lambda task_id=task_id: enqueue_task_generation_aware(

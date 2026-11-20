@@ -920,6 +920,9 @@ Resume/discovery republishes a ready `seq_source_wait_set` through its continuat
 owner after a wake was consumed during Pause. The actual queue coalesces repeated
 discovery; unchanged Pause generation/current-ownership and TaskInvocation fences
 control admission without changing the stored owner mark or consuming events.
+Actual delivery or an already-pending coalesced item acknowledges that owner's
+publication. Queue refusal, including a stopping queue, retains Resume release
+intent; no-longer-ready initiators need no publication.
 
 Only active ordinary dependencies enter the bounded join observation; settled
 historical children and structural workflow carriers never impose a lifetime

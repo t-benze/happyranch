@@ -61,7 +61,8 @@ S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refuse
     'sibling_finishes_run_B_live', 'pause_live_initiator', 'read_waiting_children',
     'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain',
     'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused',
-    'legacy_summary_workflow_not_terminal', 'resume_publishes_ready_initiator')
+    'legacy_summary_workflow_not_terminal', 'resume_publishes_ready_initiator',
+    'resume_queue_refused_retains_release')
 s6a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     s6a_case = sys.argv[1].split('=', 1)[1]
@@ -4530,6 +4531,52 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
                 assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 2))
                 assert s6queue(f) == [f.batch_ids[1].visit_task_id]
                 assert classify_task(f.db, source.id, org_slug='scratch').kind == 'seq_source_wait_set'
+        elif case == 'resume_queue_refused_retains_release':
+            from runtime.orchestrator.task_pause import discover_root_pause_work
+            from runtime.workflows.recovery import classify_task
+            import asyncio
+            with s6fixture(hold=False) as f:
+                for ids in f.batch_ids:
+                    f.ids = ids
+                    s4closed(f, ids.visit_id, summary=s4bsummary('finish'), terminal='success')
+                    s4baccept(f)
+                assert all(s4row(f, 'workflow_seq_runs', ids.run_id)['state'] == 'finished' for ids in f.batch_ids)
+                for ids in f.batch_ids:
+                    assert f.db.get_task(ids.visit_task_id).status == 'completed'
+                    assert f.db.get_task(ids.carrier_task_id).status == 'completed'
+                while not f.queue._queue.empty():
+                    f.queue._queue.get_nowait()
+                root_id = 's5-parent'
+                source = f.db.get_task(f.source.id)
+                store = f.db._task_pause_store
+                assert observation(f.db, source.id)['pending'] and ready(f.org.orchestrator, source)
+                assert classify_task(f.db, source.id, org_slug='scratch').kind == 'seq_source_wait_set'
+                before = s5snap(f)
+                assert store.control(root_id, held=True, expected_generation=0, actor='founder', sessions=f.org.sessions)
+                f.queue.close_admission()
+                assert store.control(root_id, held=False, expected_generation=1, actor='founder', sessions=f.org.sessions)
+                assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 2))
+                assert s6queue(f) == [], 'closed queue admitted an initiator'
+                assert f.conn.execute('SELECT release_pending_generation FROM task_pause_controls WHERE root_task_id=?',
+                    (root_id,)).fetchone()[0] == 2, 'RESUME_QUEUE_REFUSAL_ACKNOWLEDGED_RELEASE'
+                # Reopen only this private queue; no production restart hook.
+                with f.queue._admission_lock:
+                    f.queue._stopping = False
+                assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 2))
+                assert s6queue(f) == [source.id], 'Resume failed once-only publication after admission reopened'
+                assert f.conn.execute('SELECT release_pending_generation FROM task_pause_controls WHERE root_task_id=?',
+                    (root_id,)).fetchone()[0] is None, 'published initiator release was not acknowledged'
+                # A later real Resume must also recognize the same pending
+                # item as published, even when new admission is closed.
+                assert store.control(root_id, held=True, expected_generation=2, actor='founder', sessions=f.org.sessions)
+                assert store.control(root_id, held=False, expected_generation=3, actor='founder', sessions=f.org.sessions)
+                f.queue.close_admission()
+                for _ in range(2):
+                    assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 4))
+                    assert s6queue(f) == [source.id], 'coalesced Resume duplicated the initiator'
+                    assert f.conn.execute('SELECT release_pending_generation FROM task_pause_controls WHERE root_task_id=?',
+                        (root_id,)).fetchone()[0] is None, 'coalesced publication retained release intent'
+                assert s5snap(f) == before, 'Resume publication consumed or rewrote workflow events'
         elif case == 'ordinary_done_lag':
             with s6fixture() as f:
                 # Separate ordinary barrier, without I as its child.

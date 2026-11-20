@@ -3977,12 +3977,17 @@ and the same command with `3.14`, or `--s6a=CASE`. Cases are
 `initiator_event_run_B_live`, `ordinary_done_lag`, `modern_missing_no_fallback`,
 `final_done_after_drain`, `blocked_job_wait_passthrough`,
 `settled_history_not_veto`, `event_session_dispatch_refused`,
-`legacy_summary_workflow_not_terminal`, and `resume_publishes_ready_initiator`.
+`legacy_summary_workflow_not_terminal`, `resume_publishes_ready_initiator`, and
+`resume_queue_refused_retains_release` (21 cases total).
 The correction cases observe native blocked/job and ordinary passthrough without
 event acknowledgement, readiness/final done with 262 retained settled
 children/carriers, pre-COMMIT dispatch refusal preserving an unfinished join,
 legacy-summary workflow callbacks retaining their parent barrier, and Resume
 republishing one ready wait-set initiator after a consumed paused wake.
+The queue-refusal case drains every member, retains a pending initiator event,
+and observes real closed queue admission retaining release intent, reopened
+admission publishing exactly once and acknowledging release, and coalesced
+pending delivery acknowledging a later Resume without a duplicate.
 These private direct boundaries forbid provider
 launch and observe actual native results, persisted dependencies, receipts and
 queue IDs. They do not establish live provider or deployment acceptance. Run

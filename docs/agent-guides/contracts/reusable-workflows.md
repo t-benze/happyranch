@@ -2624,6 +2624,9 @@ Resume and the existing Pause discovery sweep publish ready wait-set initiators
 through that same continuation owner and coalescing queue. A wake consumed during
 Pause remains pending for Resume; native generation/current-ownership and
 TaskInvocation fences still decide session admission.
+Resume acknowledges release only after actual delivery or an already-pending
+coalesced item. Queue admission refusal, including shutdown, retains the release
+generation; an initiator that is no longer ready needs no publication.
 
 Dependency observations fetch a bounded active set: unfinished ordinary children
 and retained native join members, excluding workflow carriers. Settled children

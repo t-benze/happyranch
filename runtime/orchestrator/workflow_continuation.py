@@ -286,13 +286,14 @@ class WorkflowContinuation:
             if row is None:
                 return False
             source_id = row[0]
-        return self.wake(source_id, queue=queue)
+        return bool(self.wake(source_id, queue=queue))
 
-    def wake(self, task_id: str, *, queue: Any = None) -> bool:
+    def wake(self, task_id: str, *, queue: Any = None) -> bool | None:
+        """Return delivery, refusal, or None when no publication is needed."""
         task = self.db.get_task(task_id)
         if task is None or not ready(self.org.orchestrator, task):
-            return False
+            return None
         selected = queue or getattr(self.org.orchestrator, '_queue', None)
         if selected is not None:
-            selected.enqueue_if_absent(self.org.slug, task_id)
-        return True
+            return selected.enqueue_if_absent(self.org.slug, task_id)
+        return False
