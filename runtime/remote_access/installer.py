@@ -2494,6 +2494,8 @@ class ManagedInstaller:
                             if remove:
                                 require()
                                 inventory()
+                                if path == "/run/happyranch-tsnet-sidecar/observe.sock":
+                                    runtime_diagnostics(parent, allow_observer=True)
                                 check()
                                 if activation._signature(os.stat(relative.name, dir_fd=parent,
                                                                   follow_symlinks=False)) != activation._signature(info):
@@ -2504,6 +2506,26 @@ class ManagedInstaller:
                             return True
                     except FileNotFoundError:
                         return False
+
+                def runtime_diagnostics(parent: int, *, allow_observer: bool = False) -> list[tuple[str, tuple[int, ...]]]:
+                    # H1: admit the whole bounded set before any unlink.
+                    # The existing live-member inventory owns observe.sock.
+                    diagnostics = []
+                    with os.scandir(parent) as entries:
+                        for item in entries:
+                            if allow_observer and item.name == "observe.sock":
+                                continue
+                            info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+                            modes = ((0o644,) if item.name == "health.json" else
+                                     (0o600, 0o644) if re.fullmatch(r"\.health-[0-9]+", item.name) else ())
+                            if (len(diagnostics) >= 8 or not stat.S_ISREG(info.st_mode)
+                                    or info.st_nlink != 1
+                                    or (info.st_uid, info.st_gid) != self._service_owner
+                                    or stat.S_IMODE(info.st_mode) not in modes
+                                    or info.st_size > 65536):
+                                raise InstallerError("custody not empty")
+                            diagnostics.append((item.name, activation._signature(info)))
+                    return diagnostics
 
                 def inventory() -> None:
                     # Shallow fixed custody only; never recurse into an unknown entry.
@@ -2681,6 +2703,19 @@ class ManagedInstaller:
                     relative = Path(directory)
                     try:
                         with self._publication_parent(directory) as (opened, check):
+                            if directory == "run/happyranch-tsnet-sidecar":
+                                diagnostics = runtime_diagnostics(opened)
+                                check()
+                                for name, signature in diagnostics:
+                                    require()
+                                    check()
+                                    if activation._signature(os.stat(name, dir_fd=opened,
+                                                                      follow_symlinks=False)) != signature:
+                                        raise InstallerError("custody not empty")
+                                    partial = True
+                                    os.unlink(name, dir_fd=opened)
+                                if diagnostics:
+                                    os.fsync(opened)
                             with os.scandir(opened) as entries:
                                 if next(entries, None) is not None:
                                     raise InstallerError("custody not empty")

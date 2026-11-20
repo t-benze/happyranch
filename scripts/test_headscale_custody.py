@@ -1613,6 +1613,73 @@ def test_b6_fixed_members_and_every_phase(
     assert not any(args[0] == "useradd" or args[:2] == ["systemctl", "stop"] for args in fixture.calls)
 
 
+@pytest.mark.parametrize("revoked", [True, False])
+def test_b6_retires_runtime_diagnostics_without_reading(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], revoked: bool,
+) -> None:
+    b6_setup(fixture, monkeypatch, capsys)
+    runtime = fixture.root / "run/happyranch-tsnet-sidecar"
+    names = ["health.json", *(f".health-{index}" for index in range(7))]
+    for index, name in enumerate(names):
+        path = runtime / name
+        path.write_bytes(b"x" * 65536)
+        path.chmod(0o644 if index % 2 == 0 else 0o600)
+    original = os.open
+    def no_diagnostic_read(name: str, flags: int, *args: object, **kwargs: object) -> int:
+        assert Path(name).name not in names
+        return original(name, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", no_diagnostic_read)
+    assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=revoked)["state"] == "removed"
+    assert not runtime.exists()
+
+
+@pytest.mark.parametrize("bad", ["symlink", "hardlink", "uid", "gid", "mode", "fifo",
+                                 "unknown", "nine", "oversize"])
+def test_b6_unsafe_runtime_diagnostics_retains_whole_directory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    runtime = fixture.root / "run/happyranch-tsnet-sidecar"
+    # An admissible entry precedes the bad entry: preflight must retain both.
+    healthy = runtime / "health.json"
+    healthy.write_bytes(b"synthetic diagnostic")
+    healthy.chmod(0o644)
+    path = runtime / ".health-123"
+    path.write_bytes(b"synthetic interrupted diagnostic")
+    path.chmod(0o600)
+    if bad == "symlink":
+        path.unlink()
+        path.symlink_to(healthy.name)
+    if bad == "hardlink": os.link(path, fixture.root / "held-diagnostic")
+    if bad == "mode": path.chmod(0o640)
+    if bad == "fifo":
+        path.unlink()
+        os.mkfifo(path, 0o600)
+    if bad == "unknown": path.rename(runtime / ".health-not-numeric")
+    if bad == "nine":
+        for index in range(7):
+            extra = runtime / f".health-{index}"
+            extra.write_bytes(b"synthetic diagnostic")
+            extra.chmod(0o644)
+    if bad == "oversize": path.write_bytes(b"x" * 65537)
+    if bad in {"uid", "gid"}:
+        original = os.stat
+        identity = path.lstat().st_ino
+        def metadata(*args: object, **kwargs: object) -> os.stat_result | SimpleNamespace:
+            info = original(*args, **kwargs)
+            if info.st_ino != identity: return info
+            value = SimpleNamespace(**{key: getattr(info, key) for key in dir(info) if key.startswith("st_")})
+            field = "st_" + bad
+            setattr(value, field, getattr(value, field) + 1)
+            return value
+        monkeypatch.setattr(os, "stat", metadata)
+    before = b6_snapshot(runtime)
+    with pytest.raises(home.HeadscaleServiceError, match="^partial-cleanup-uncertain$"):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert b6_snapshot(runtime) == before
+    assert activation.exists() and fixture.receipt().exists()
+
+
 @pytest.mark.parametrize("bad", ["absent", "generation", "release", "home", "control", "connector",
                                  "pending", "parse", "mode", "hardlink", "symlink", "parent-symlink", "headscale-unreceipted"])
 def test_b6_invalid_receipt_has_no_effect(
