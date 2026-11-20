@@ -292,3 +292,5 @@ One line per area; read the linked contract before changing it.
 
 - **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
 - **Startup attachment custody (A4):** partial constructor handles, bounded SQLite admission, per-org isolation and mounted automatic backup/install, qualified registrar and private worker/parent COMMIT custody (A4:2 cooperative startup trust): [lifecycle contract](docs/agent-guides/contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
+S6a private continuation checks: `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s6a=all` (also 3.14, or `--s6a=CASE`); see [local CI](docs/operations/local-ci.md#s6a-focused-continuation-cases).

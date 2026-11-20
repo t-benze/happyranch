@@ -3774,13 +3774,13 @@ class TasksMixin:
             if sequential is None or sequential.org.slug != org:
                 return False
             return sequential.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
-        if owner.kind != 'legacy':
+        if owner.kind not in ('legacy', 'seq_source_wait_set'):
             return False
         began = not self._conn.in_transaction
         if began:
             self._conn.execute('BEGIN IMMEDIATE')
         try:
-            if classify_task(self, task_id, org_slug=org).kind != 'legacy':
+            if classify_task(self, task_id, org_slug=org).kind not in ('legacy', 'seq_source_wait_set'):
                 if began:
                     self._conn.rollback()
                 return False

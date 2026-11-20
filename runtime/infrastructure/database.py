@@ -2012,7 +2012,7 @@ class Database(
                 return True
             if ownership.kind == 'f5':
                 drafts = getattr(self, '_workflow_reviews', None)
-            if ownership.kind != "legacy":
+            if ownership.kind not in ("legacy", "seq_source_wait_set"):
                 if ownership.kind not in ('draft', 'f5') or drafts is None:
                     self._conn.rollback()
                     return False
@@ -2231,6 +2231,12 @@ class Database(
                     task_id=task_id, agent=agent, session_id=session_id,
                     result_id=accepted_result_id, admission=v2_admission, now=now,
                 )
+            if ownership.kind == 'seq_source_wait_set':
+                continuation = getattr(self, '_workflow_continuation', None)
+                if continuation is None or not continuation.callback_uncommitted(
+                        task_id=task_id, agent=agent, session_id=session_id, result_id=accepted_result_id):
+                    self._conn.rollback()
+                    return False
             self._conn.commit()
             if admitted_attempt is not None:
                 # Register the live-owner proof only AFTER the durable commit,

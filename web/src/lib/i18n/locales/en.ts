@@ -611,7 +611,7 @@ export const en = {
   'shell.nav.primaryItems': 'Primary navigation items',
   'shell.orgSwitcher': 'Organization switcher',
   'shell.activeOrg': 'Active org',
-  'shell.addOrgOption': '+ Add org…',
+  'shell.addOrgOption': 'New organization',
   'shell.noOrg': 'No org',
   'shell.dayCount': 'Day {count}',
   'shell.account.label': 'Account: {name}, {role}',
