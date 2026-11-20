@@ -1,4 +1,4 @@
-"""WebKitGTK 4.1 loader for the opt-in, local-only packaged app scheme."""
+"""WebKitGTK 4.1 loader for the opt-in, native-routed packaged app scheme."""
 from __future__ import annotations
 
 import http.client
@@ -20,6 +20,7 @@ _spec.loader.exec_module(_transport)
 BODY_HEADER, CSP, MAX_BODY = _transport.BODY_HEADER, _transport.CSP, _transport.MAX_BODY
 METHODS, ORIGIN, RESPONSE_HEADERS = _transport.METHODS, _transport.ORIGIN, _transport.RESPONSE_HEADERS
 Bundle, LocalDaemon, SchemeError, route = _transport.Bundle, _transport.LocalDaemon, _transport.SchemeError, _transport.route
+RemoteDaemon, RemoteError = _transport.RemoteDaemon, _transport.RemoteError
 
 # Document-start, top-frame fetch adaptation. Raw Blob/FormData must never reach
 # URISchemeRequest.get_http_body (S0: WebKitGTK 2.52.6 SIGSEGV). S1a handles
@@ -90,8 +91,10 @@ FETCH_BYTES = r"""
 
 
 class Transfer:
-    def __init__(self) -> None:
+    def __init__(self, target: LocalDaemon | RemoteDaemon | None = None) -> None:
         self.stop = threading.Event()
+        self.target = target
+        self.cancel_code = "cancelled"
         self.cancellable = None
         self.connection = None
         self.socket = None
@@ -100,7 +103,9 @@ class Transfer:
         self.deadline = time.monotonic() + 15
         self.finished = False
 
-    def cancel(self) -> None:
+    def cancel(self, code: str = "cancelled") -> None:
+        if code == "target_changed" or not self.stop.is_set():
+            self.cancel_code = code
         self.stop.set()
         if self.cancellable is not None:
             self.cancellable.cancel()
@@ -111,11 +116,14 @@ class Transfer:
             except OSError:
                 pass
 
+        if self.connection is not None and callable(getattr(self.connection, "cancel", None)):
+            self.connection.cancel()
+
 
 class AppScheme:
     """One context/view and bounded transfers; no native connection bridge."""
 
-    def __init__(self, bundle: Path, verified_port: int, data: Path) -> None:
+    def __init__(self, bundle: Path, verified_port: int | None, data: Path) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("WebKit2", "4.1")
@@ -125,7 +133,8 @@ class AppScheme:
                 or not callable(getattr(WebKit2.URISchemeRequest, "get_http_body", None))):
             raise ValueError("WebKitGTK 2.40 or newer is required")
         self.Gio, self.GLib, self.Gtk, self.Soup, self.W = Gio, GLib, Gtk, Soup, WebKit2
-        self.bundle, self.daemon = Bundle(bundle), LocalDaemon(verified_port)
+        self.bundle = Bundle(bundle)
+        self.daemon = LocalDaemon(verified_port) if verified_port is not None else None
         self.closed = False
         self.transfers: dict[str, Transfer] = {}
         self.cancelled: dict[str, float] = {}
@@ -151,6 +160,12 @@ class AppScheme:
         self.context.connect("download-started", self.download_started)
         self.timer = GLib.timeout_add(100, self.monitor)
 
+    def select_target(self, target: LocalDaemon | RemoteDaemon | None) -> None:
+        """Native/UI-thread selection only. S5 owns candidate/commit policy."""
+        for transfer in self.transfers.values():
+            transfer.cancel("target_changed")
+        self.daemon = target
+
     def cancel_all(self) -> None:
         for transfer in self.transfers.values():
             transfer.cancel()
@@ -161,7 +176,9 @@ class AppScheme:
         self.closed = True
         self.cancel_all()
         self.GLib.source_remove(self.timer)
-        self.daemon._bearer = None
+        if isinstance(self.daemon, LocalDaemon):
+            self.daemon._bearer = None
+        self.daemon = None
 
     def load_changed(self, _view: object, event: object) -> None:
         if event == self.W.LoadEvent.STARTED:
@@ -252,7 +269,7 @@ class AppScheme:
             # Even a zero-byte POST must be adapted. Do not inspect a raw body.
             if method not in ("GET", "HEAD") and headers.get(BODY_HEADER.lower()) != "1":
                 raise SchemeError(415, "byte_body_required")
-            transfer = Transfer()
+            transfer = Transfer(self.daemon)
             transfer.has_body = headers.get(BODY_HEADER.lower()) == "1"
             transfer.cancellable = self.Gio.Cancellable()
             self.transfers[key] = transfer
@@ -261,7 +278,7 @@ class AppScheme:
             # Only byte-adapted requests can enter WebKit's body API.
             body_stream = request.get_http_body() if headers.get(BODY_HEADER.lower()) == "1" else None
             threading.Thread(target=self.forward, args=(request, transfer, method, target, headers, body_stream),
-                             daemon=True, name="app-scheme-local").start()
+                             daemon=True, name="app-scheme-api").start()
         except SchemeError as error:
             self.error(request, error)
         except (OSError, ValueError, self.GLib.Error):
@@ -281,7 +298,7 @@ class AppScheme:
                 while True:
                     chunk = body_stream.read_bytes(65536, transfer.cancellable).get_data()
                     if transfer.stop.is_set():
-                        raise SchemeError(499, "cancelled")
+                        raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
                     if time.monotonic() - began > 10:
                         raise SchemeError(408, "body_timeout")
                     if not chunk:
@@ -290,14 +307,17 @@ class AppScheme:
                     if len(body) > MAX_BODY:
                         raise SchemeError(413, "body_too_large")
             if transfer.stop.is_set():
-                raise SchemeError(499, "cancelled")
-            self.daemon.bootstrap(transfer.stop)
-            connection = self.daemon.connection()
+                raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+            daemon = transfer.target
+            if daemon is None:
+                raise SchemeError(503, "no_target")
+            daemon.bootstrap(transfer.stop)
+            connection = daemon.connection()
             transfer.connection = connection
             with closing(connection):
                 if transfer.stop.is_set():
-                    raise SchemeError(499, "cancelled")
-                response = self.daemon.send(connection, method, target, headers, bytes(body))
+                    raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                response = daemon.send(connection, method, target, headers, bytes(body))
                 with response:
                     kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in RESPONSE_HEADERS}
                     # Fetch retains the attachment header for the existing blob
@@ -321,7 +341,7 @@ class AppScheme:
                     # read1 delivers available bytes; read(n) can buffer SSE.
                     # HTTPConnection closes its socket reference on Connection:
                     # close responses, so retain the response socket for abort.
-                    upstream_socket = response.fp.raw._sock
+                    upstream_socket = response.socket if hasattr(response, "socket") else response.fp.raw._sock
                     # Quiet SSE is healthy. Shutdown from abort/monitor wakes
                     # this blocking read; the lifetime deadline still bounds it.
                     is_events = kept.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream"
@@ -351,10 +371,14 @@ class AppScheme:
                                 continue
         except SchemeError as error:
             if not sent:
+                if transfer.stop.is_set():
+                    error = SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
                 self.GLib.idle_add(self.error, request, error)
-        except (OSError, http.client.HTTPException, self.GLib.Error):
+        except (OSError, http.client.HTTPException, RemoteError, self.GLib.Error):
             if not sent:
-                self.GLib.idle_add(self.error, request, SchemeError(502, "upstream_unavailable"))
+                error = (SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                         if transfer.stop.is_set() else SchemeError(503, "target_unreachable"))
+                self.GLib.idle_add(self.error, request, error)
         finally:
             if body_stream is not None:
                 try:
@@ -378,7 +402,7 @@ class AppScheme:
                 headers: dict[str, str]) -> bool:
         if transfer.stop.is_set() or self.closed:
             source.close(None)
-            self.error(request, SchemeError(499, "cancelled"))
+            self.error(request, SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code))
         else:
             self.finish(request, status, source, int(headers.get("content-length", "-1")), headers)
         return False

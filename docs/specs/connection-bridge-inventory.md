@@ -4,6 +4,14 @@ Status: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19
 
 This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. **Linux: 16/19 commands implemented; Mac: 11/19 commands implemented.** Events are counted separately: Linux 2/2, Mac 1/2. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
 
+Linux Settings S2b PR-A transport inventory (TASK-18097):
+
+| Linux surface | Native implementation | Boundary / remaining owner |
+| --- | --- | --- |
+| Opt-in app scheme API target | `app_scheme_webkit.AppScheme.select_target`, `app_scheme.LocalDaemon` / `RemoteDaemon` | Native selects local, connecting/ready active remote, or none; the existing launcher still selects local. No bridge command added. |
+| Listener-free remote HTTP | `client_runtime.RemoteCall` / `RemoteResponse`, shared `remote_headers` | Existing `ClientSession.dial/release/_credential`; binary request, decoded streaming response, cancellation releases dial. Home connector unchanged. |
+| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Compatibility PR-B, candidates S5, remote window/default cutover and listener retirement S7. |
+
 ## Facade and closed v1 list
 
 The page-visible facade is defined in [`web/connection/src/bridge.ts:4`](../../web/connection/src/bridge.ts#L4), with the contract in [spec §7](2026-11-17-web-native-bridge.md#js-facing-api-founder-thr-379-seq2):
