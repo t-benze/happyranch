@@ -6,11 +6,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import socket
+import socketserver
+import tempfile
 import threading
 import time
+from types import SimpleNamespace
+from typing import Callable
 import unittest
+import uuid
 
 from gi.repository import Gio, GLib
 from app_scheme_webkit import AppScheme, LocalDaemon, RemoteDaemon, SchemeError, Transfer
@@ -111,12 +117,15 @@ class PeerFixture(unittest.TestCase):
         self.release = threading.Event()
         release = self.session.release
 
-        def dial(deadline: float) -> socket.socket:
+        def dial(deadline: float, acquire: Callable[[socket.socket], bool] | None = None) -> socket.socket:
             # Replace only the network venue, never the production adapter.
             stream = socket.create_connection(self.server.server_address, timeout=max(0.01, deadline - time.monotonic()))
             with self.session._lock:
                 self.session._streams.add(stream)
             self.dials.append(stream)
+            if acquire is not None and not acquire(stream):
+                self.session.release(stream)
+                raise runtime.ClientError("cancelled")
             return stream
 
         def released(stream: socket.socket) -> None:
@@ -286,7 +295,7 @@ class SchemeTests(PeerFixture):
             reserved.bind(("127.0.0.1", 0))
             address = reserved.getsockname()
         attempts = []
-        def dial(deadline: float) -> socket.socket:
+        def dial(deadline: float, acquire: Callable[[socket.socket], bool] | None = None) -> socket.socket:
             attempts.append(deadline)
             return socket.create_connection(address, timeout=1)
         self.session.dial = dial
@@ -325,6 +334,176 @@ class SchemeTests(PeerFixture):
         self.assertEqual(result["status"], 409)
         self.assertEqual(json.loads(result["body"]), {"detail": {"code": "target_changed"}})
         self.assertFalse(self.dials)
+
+
+class DialCancellationTests(unittest.TestCase):
+    def test_select_target_cancels_pending_dials(self) -> None:
+        self.check_pending_dials("target_changed", 409)
+
+    def test_abort_cancels_pending_dials(self) -> None:
+        self.check_pending_dials("cancelled", 499)
+
+    def check_pending_dials(self, code: str, status: int) -> None:
+        # The helper withholds its ack on all 32 slots. After cancellation it
+        # accepts a genuine HTTP request on the same pinned Unix endpoint.
+        entered = threading.Condition()
+        stalled, closed, observed, releases = [], [], [], []
+        stall = threading.Event()
+        stall.set()
+
+        class Helper(BaseHTTPRequestHandler):
+            def log_message(self, *_args: object) -> None:
+                pass
+
+            def handle(self) -> None:
+                if stall.is_set():
+                    with entered:
+                        stalled.append(self.connection)
+                        entered.notify_all()
+                    self.connection.settimeout(3)
+                    data = self.connection.recv(1)
+                    with entered:
+                        closed.append(data)
+                        entered.notify_all()
+                    return
+                self.connection.sendall(b"\0\0\0\0")
+                super().handle()
+
+            def do_GET(self) -> None:
+                observed.append((self.path, dict(self.headers)))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        class HelperServer(socketserver.ThreadingUnixStreamServer):
+            request_queue_size = 64
+
+        with tempfile.TemporaryDirectory(prefix="hr-dial-", dir="/tmp") as directory:
+            helper = HelperServer(str(Path(directory) / "dial"), Helper)
+            os.chmod(helper.server_address, 0o600)
+            acceptor = threading.Thread(target=helper.serve_forever, kwargs={"poll_interval": 0.01})
+            acceptor.start()
+            session = client.ClientSession(Path("/synthetic-unused-prefix"))
+            session._directory = Path(directory)
+            session._node = "synthetic-node"
+            session._bearer = "synthetic-device-credential"
+            session._process = SimpleNamespace(pid=os.getpid(), poll=lambda: None)
+            release = session.release
+
+            def released(stream: socket.socket) -> None:
+                releases.append(stream)
+                release(stream)
+
+            session.release = released
+            remote = RemoteDaemon(session, ready=True)
+            app = SchemeTests.app(self, remote)
+            app.view = object()
+            replies = {}
+            app.reply = lambda request, response_status, data, *_args: replies.update(
+                {request: (response_status, data)})
+
+            def finish(request: object, response_status: int, source: object, *_args: object) -> None:
+                try:
+                    replies[request] = (response_status, source.read_bytes(10, None).get_data())
+                finally:
+                    source.close(None)
+
+            app.finish = finish
+            workers, transfers = [], []
+            keys = [str(uuid.uuid4()) for _ in range(32)]
+            context = GLib.MainContext.default()
+
+            def dispatch() -> None:
+                while context.pending():
+                    context.iteration(False)
+
+            def request(key: str) -> object:
+                headers = SimpleNamespace(foreach=lambda callback, _data: callback("X-HappyRanch-Request-ID", key))
+                return SimpleNamespace(get_web_view=lambda: app.view, get_uri=lambda: "happyranch-app://app/api/v1/health",
+                                       get_http_method=lambda: "GET", get_http_headers=lambda: headers)
+
+            logs = io.StringIO()
+            try:
+                with redirect_stdout(logs), redirect_stderr(logs):
+                    for key in keys:
+                        transfer = Transfer(remote)
+                        app.transfers[key] = transfer
+                        transfers.append(transfer)
+                        worker = threading.Thread(target=app.forward, args=(key, transfer, "GET", "/api/v1/health", {}, None))
+                        workers.append(worker)
+                        worker.start()
+                    with entered:
+                        self.assertTrue(entered.wait_for(lambda: len(stalled) == 32, timeout=2))
+                    self.assertEqual(len(session._streams), 32)
+                    # Prove the slot guard is exercised before cancellation.
+                    busy_key = str(uuid.uuid4())
+                    busy = request(busy_key)
+                    app.reply = lambda req, response_status, data, *_args: replies.update(
+                        {busy_key if req is busy else req: (response_status, data)})
+                    app.handle(busy)
+                    self.assertEqual(replies[busy_key][0], 503)
+                    self.assertEqual(json.loads(replies[busy_key][1]), {"detail": {"code": "busy"}})
+                    began = time.monotonic()
+                    if code == "target_changed":
+                        app.select_target(None)
+                    else:
+                        for key in keys:
+                            message = SimpleNamespace(get_js_value=lambda key=key: SimpleNamespace(to_string=lambda: key))
+                            app.cancel_request(None, message)
+                    for worker in workers:
+                        worker.join(max(0, 1 - (time.monotonic() - began)))
+                    self.assertFalse(any(worker.is_alive() for worker in workers), "cancelled dial worker remained running")
+                    self.assertTrue(all(transfer.finished for transfer in transfers))
+                    with entered:
+                        self.assertTrue(entered.wait_for(lambda: len(closed) == 32, timeout=0.5))
+                    self.assertEqual(closed, [b""] * 32, "cancelled handshake emitted HTTP bytes")
+                    self.assertEqual(len(releases), 32)
+                    self.assertEqual(len(set(releases)), 32, "a dial was released twice")
+                    self.assertTrue(all(stream.fileno() == -1 for stream in releases))
+                    self.assertFalse(session._streams)
+                    dispatch()
+                    for key in keys:
+                        self.assertEqual(replies[key][0], status)
+                        self.assertEqual(json.loads(replies[key][1]), {"detail": {"code": code}})
+                    app.monitor()
+                    self.assertFalse(app.transfers)
+                    # Reuse the same session through actual handle/admission and HTTP.
+                    stall.clear()
+                    app.select_target(remote)
+                    fresh_key = str(uuid.uuid4())
+                    fresh = request(fresh_key)
+                    app.reply = lambda req, response_status, data, *_args: replies.update({fresh_key: (response_status, data)})
+                    app.finish = lambda req, response_status, source, *args: finish(fresh_key, response_status, source, *args)
+                    app.handle(fresh)
+                    until = time.monotonic() + 1
+                    while time.monotonic() < until and fresh_key not in replies:
+                        dispatch()
+                        time.sleep(0.005)
+                    self.assertEqual(replies.get(fresh_key), (200, b"ok"))
+                    self.assertEqual(len(observed), 1)
+                    self.assertEqual(observed[0][1]["x-happyranch-device-credential"], "synthetic-device-credential")
+                    self.assertEqual(len(releases), 33)
+                    self.assertEqual(len(set(releases)), 33)
+                    self.assertFalse(session._streams)
+                    for secret in ("synthetic-device-credential", "synthetic-local-bearer"):
+                        self.assertNotIn(secret, repr(replies))
+            finally:
+                app.cancel_all()
+                # Test cleanup also releases pre-fix sockets after the intended
+                # assertion failure, without completing the stalled handshake.
+                with session._lock:
+                    pending = list(session._streams)
+                for stream in pending:
+                    runtime.close_socket(stream)
+                for worker in workers:
+                    worker.join(4)
+                helper.shutdown()
+                helper.server_close()
+                acceptor.join(1)
+                dispatch()
+            self.assertNotIn("synthetic-device-credential", logs.getvalue())
+            self.assertNotIn("synthetic-local-bearer", logs.getvalue())
 
 
 if __name__ == "__main__":

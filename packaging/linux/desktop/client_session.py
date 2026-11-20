@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from typing import Callable
 
 
 def _load(name: str, path: Path) -> object:
@@ -344,8 +345,12 @@ class ClientSession:
                 except ClientError:
                     pass
 
-    def dial(self, deadline: float) -> socket.socket:
+    def dial(self, deadline: float, acquire: Callable[[socket.socket], bool] | None = None) -> socket.socket:
+        """Dial the pinned peer; an accepting acquire callback owns release,
+        including on handshake failure. Without it, retain listener ownership.
+        """
         stream = socket.socket(socket.AF_UNIX)
+        owned = False
         try:
             with self._lock:
                 if (self._closed or not self._node or self._process.poll() is not None
@@ -357,6 +362,10 @@ class ClientSession:
                 if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
                     raise ClientError("unavailable")
                 pid = self._process.pid
+            if acquire is not None:
+                owned = acquire(stream)
+                if not owned:
+                    raise ClientError("cancelled")
             stream.settimeout(max(0.001, min(10, deadline - time.monotonic())))
             stream.connect(str(path))
             peer = struct.unpack("3i", stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
@@ -364,7 +373,8 @@ class ClientSession:
                 raise ClientError("peerUnavailable")
             return stream
         except (OSError, ValueError, ClientError):
-            self.release(stream)
+            if not owned:
+                self.release(stream)
             raise ClientError("peerUnavailable") from None
 
     def release(self, stream: socket.socket) -> None:

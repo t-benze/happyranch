@@ -371,12 +371,14 @@ class AppScheme:
                                 continue
         except SchemeError as error:
             if not sent:
-                if transfer.stop.is_set() and transfer.cancel_code == "target_changed":
-                    error = SchemeError(409, "target_changed")
+                if transfer.stop.is_set():
+                    error = SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
                 self.GLib.idle_add(self.error, request, error)
         except (OSError, http.client.HTTPException, RemoteError, self.GLib.Error):
             if not sent:
-                self.GLib.idle_add(self.error, request, SchemeError(409, "target_changed") if transfer.cancel_code == "target_changed" else SchemeError(503, "target_unreachable"))
+                error = (SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                         if transfer.stop.is_set() else SchemeError(503, "target_unreachable"))
+                self.GLib.idle_add(self.error, request, error)
         finally:
             if body_stream is not None:
                 try:

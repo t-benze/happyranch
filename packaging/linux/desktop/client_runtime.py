@@ -164,12 +164,19 @@ class RemoteCall:
     during dial/upload/headers, and releases each acquired dial exactly once.
     """
 
-    def __init__(self, dial: Callable[[float], socket.socket],
+    def __init__(self, dial: Callable[[float, Callable[[socket.socket], bool]], socket.socket],
                  release: Callable[[socket.socket], None], credential: Callable[[], str]) -> None:
         self._dial, self._release, self._credential = dial, release, credential
         self._lock = threading.Lock()
         self._closed = False
         self.sock: socket.socket | None = None
+
+    def _acquire(self, stream: socket.socket) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            self.sock = stream
+            return True
 
     def close(self) -> None:
         with self._lock:
@@ -229,14 +236,13 @@ class RemoteCall:
         kept["content-length"] = str(len(body))
         kept["accept-encoding"] = "identity"
         try:
-            stream = self._dial(deadline)
+            stream = self._dial(deadline, self._acquire)
         except Exception:
+            self.close()
             raise ClientError("unavailable") from None
         with self._lock:
             if self._closed:
-                self._release(stream)
                 raise ClientError("cancelled")
-            self.sock = stream
         try:
             wire = Wire(stream, deadline)
             wire.send((f"{method} {target} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in kept.items())
