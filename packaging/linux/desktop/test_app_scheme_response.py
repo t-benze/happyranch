@@ -83,6 +83,7 @@ class ResponseTests(unittest.TestCase):
         self.app.daemon = LocalDaemon(self.server.server_port)
         self.app.Gio, self.app.GLib, self.app.closed = Gio, GLib, False
         self.app.transfers, self.app.cancelled = {}, {}
+        self.app.initialize_state()
 
     def cleanup_server(self) -> None:
         self.release.set()
@@ -121,6 +122,8 @@ class ResponseTests(unittest.TestCase):
                     if cancel == "lifetime":
                         transfer.deadline = time.monotonic() - 1
                         self.app.monitor()
+                    elif cancel == "switch":
+                        self.app.select_target(None, owner_saves=())
                     else:
                         transfer.cancel()
                     return False
@@ -176,7 +179,7 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(result["length"], 3)
 
     def test_abort_and_lifetime_error_with_bounded_cleanup(self) -> None:
-        for cancel in ("abort", "lifetime"):
+        for cancel in ("abort", "lifetime", "switch"):
             with self.subTest(cancel=cancel):
                 result = self.consume("/api/v1/silent", cancel)
                 self.assertIsInstance(result["error"], GLib.Error)

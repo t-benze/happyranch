@@ -25,20 +25,20 @@ this wave; web is pending S5-W1. No native/live v2 acceptance is claimed.
 
 | Surface / code | Linux main status | Mac status | Web status |
 | --- | --- | --- | --- |
-| `app.status` | Not emitted; Linux: pending S5-L1. `connection_contract.py:20–27,236–240` remains v1; `app_scheme_webkit.py:124,150–154` has only abort admission. | Pending | Pending S5-W1 |
-| `app.stateChanged` | Not emitted; Linux: pending S5-L1. Same full payload as status; no v2 event producer on main. | Pending | Pending S5-W1 |
-| `X-HappyRanch-Target` | No admission check (`app_scheme_webkit.py:261–279`). Already excluded by local allowlist (`app_scheme.py:34–36,75–81`) and stripped remotely (`client_runtime.py:139–151`). Linux: pending S5-L1 enforcement, except GET bootstrap. | Pending | Pending S5-W1 on every other scheme API request |
+| `app.status` | Implemented S5-L1 (this PR), shared closed appState: `app_scheme_webkit.py:331–351` (`status`); trusted Main-document admission: `app_scheme_webkit.py:457–486` (`probe_document`). | Pending | Pending S5-W1 |
+| `app.stateChanged` | Implemented S5-L1 (this PR), same full status payload: `app_scheme_webkit.py:417–424` (`emit_state`). | Pending | Pending S5-W1 |
+| `X-HappyRanch-Target` | Implemented S5-L1 (this PR): missing/stale generation refuses pre-forward; GET bootstrap exempt. Existing local/remote stripping retained: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:75–81` (`request_headers`), `client_runtime.py:139–151`. | Pending | Pending S5-W1 on every other scheme API request |
 | `503 no_target` | Emitted (`app_scheme_webkit.py:301–303`). | Pending | Pending S5-W1 |
 | `503 target_starting` | Emitted (`app_scheme.py:313–318,395–398`). | Pending | Pending S5-W1 |
-| `503 target_unreachable` | L-1 connect refusal fixed (`app_scheme.py:258–262`, `app_scheme_webkit.py:390–394`); post-forward error classification Linux: pending S5-L1. | Pending | Pending S5-W1 |
+| `503 target_unreachable` | L-1 retained; S5-L1 post-forward failures use ordinary 502 codes: `app_scheme_webkit.py:618–756` (`forward`). | Pending | Pending S5-W1 |
 | `503 incompatible` | PR #1767 implements contract 1/1 health admission and host/app side (`app_scheme.py:283–304`). | Pending | Pending S5-W1 |
-| `503 busy` (host update_busy only) | L-4: Linux: pending S5-L1. Main uses it for native caps (`app_scheme_webkit.py:269,272`) and lock timeout (`app_scheme.py:278`); no health update_busy mapping yet. | Pending | Pending S5-W1; W-1 transient/clear on success |
-| `409 target_changed` (not forwarded) | L-3: Linux: pending S5-L1. Can currently follow upstream send (`app_scheme_webkit.py:333,388,392,418`). | Pending | Pending S5-W1; W-2 mutations never auto-retry |
-| `429 too_many_requests` | Not emitted; Linux: pending S5-L1 replacement for native cap/lock busy. Ordinary per-request error. | Pending | Pending S5-W1 |
-| `499 cancelled` / stream error | Ordinary cancellation and stream error marker exist (`app_scheme.py:176–179`, `app_scheme_webkit.py:338–347,395–418`); post-forward switch handling Linux: pending S5-L1 (L-3). | Pending | Pending S5-W1 |
-| Target+generation commit → cancel → event | Linux: pending S5-L1; current selection cancels before target replacement, no generation/event (`app_scheme_webkit.py:163–171`). | Pending | Pending S5-W1 |
-| Refuse commit during non-GET / pending-unknown saves | Linux: pending S5-L1 with S6-W2 owner integration; no commitSwitch gate on main. | Pending | Pending S5-W1 / S6-W2 owner registry |
-| Reconnect/Restart compatibility and bearer | Linux compatibility implemented in #1767 with reset/reselection/ready-transition invalidation; L-2 reset clears bearer (`app_scheme.py:169–174`), re-bootstrap-on-401 Linux: pending S5-L1 verification/fix (`app_scheme.py:350–371`). | Pending | Pending S5-W1 |
+| `503 busy` (host update_busy only) | L-4 implemented S5-L1: health update_busy only, transient and rechecked: `app_scheme.py:302–361` (`bootstrap`). | Pending | Pending S5-W1; W-1 transient/clear on success |
+| `409 target_changed` (not forwarded) | L-3 implemented S5-L1: first upstream HTTP send fence, independent of page delivery: `app_scheme_webkit.py:214–258` (`Transfer`), `app_scheme.py:173–182` (`_LocalConnection`), `app_scheme.py:159–170` (`_SendSocket`). | Pending | Pending S5-W1; W-2 mutations never auto-retry |
+| `429 too_many_requests` | Implemented S5-L1 for native cap/body cap and lock timeout; ordinary request error: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:302–361` (`bootstrap`). | Pending | Pending S5-W1 |
+| `499 cancelled` / stream error | L-3 implemented S5-L1: forwarded switch is 499 or a GIO stream error, never 409 or successful EOF: `app_scheme_webkit.py:618–756` (`forward`), `app_scheme_webkit.py:764–773` (`deliver`). | Pending | Pending S5-W1 |
+| Target+generation commit → cancel → event | Implemented S5-L1 under the same first-send lock: `app_scheme_webkit.py:373–389` (`_replace_target`). | Pending | Pending S5-W1 |
+| Refuse commit during non-GET / pending-unknown saves | Native gate implemented S5-L1 with named refusals: `app_scheme_webkit.py:353–371` (`select_target`). Missing owner evidence fails closed. Callable client.commitSwitch and owner registry integration remain S5-L2/S6-W2. | Pending | Pending S5-W1 / S6-W2 owner registry |
+| Reconnect/Restart compatibility and bearer | S5-L1 implemented: native health admission independent of page requests, reset clears bearer, 401 causes next-request re-bootstrap without replay: `app_scheme_webkit.py:391–410` (`refresh_status`), `app_scheme.py:198–206` (`reset`), `app_scheme.py:403–434` (`LocalDaemon.send`). | Pending | Pending S5-W1 |
 
 The spec's current implementation table also records each existing ordinary
 request/transport code and exact Linux source lines. V2 errors have only

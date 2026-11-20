@@ -265,6 +265,50 @@ class GTKTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(predicate(), "GTK/WebKit result did not arrive")
 
+    def test_main_bridge_status_event_and_frame_navigation_refusal(self) -> None:
+        from app_scheme_webkit import AppScheme, ORIGIN
+        with tempfile.TemporaryDirectory(prefix="hr-main-bridge-") as directory:
+            root = Path(directory)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            (bundle / "index.html").write_text('<!doctype html><title>Synthetic Main</title><script src="/early.js"></script><p>Main</p>')
+            (bundle / "early.js").write_text("window.early=null;happyranchConnection.call('app.status','{}').then(raw=>early=JSON.parse(raw));")
+            scheme = AppScheme(bundle, None, root / "data")
+            window = Gtk.ApplicationWindow(application=self.app)
+            window.add(scheme.view)
+            window.show_all()
+            try:
+                def evaluate(source: str) -> object:
+                    values = []
+                    def done(view: object, result: object, _data: object) -> None:
+                        values.append(json.loads(view.call_async_javascript_function_finish(result).to_json(0)))
+                    scheme.view.call_async_javascript_function(source, -1, None, None, None, None, done, None)
+                    self.pump(lambda: bool(values))
+                    return values[0]
+                scheme.view.load_uri(ORIGIN + "/")
+                self.pump(lambda: scheme.bridge_token is not None)
+                self.assertTrue(evaluate("return typeof window.webkit?.messageHandlers?.appBridge === 'undefined';"))
+                self.pump(lambda: evaluate("return window.early!==null;"))
+                self.assertEqual(evaluate("return window.early.schema;"), 2)
+                status = evaluate("return JSON.parse(await happyranchConnection.call('app.status','{}'));")
+                self.assertEqual((status["schema"], status["state"], status["target"]), (2, "no_target", None))
+                evaluate("window.events=[];window.unsubscribe=happyranchConnection.on('app.stateChanged', raw=>events.push(JSON.parse(raw)));return null;")
+                self.pump(lambda: scheme.subscribed)
+                scheme.select_target(None, owner_saves=())
+                self.pump(lambda: evaluate("return events.some(item=>item.generation!==" + json.dumps(status["generation"]) + ");"))
+                self.assertEqual(evaluate("return events.at(-1);"), scheme.status())
+                evaluate("const frame=document.createElement('iframe');frame.srcdoc='<script>parent.happyranchConnection.call(\"app.status\",\"{}\")<\\/script>';document.body.append(frame);return null;")
+                self.pump(lambda: scheme.bridge_token is None)
+                self.assertFalse(scheme.subscribed)
+                self.assertEqual(evaluate("try {await happyranchConnection.call('app.status','{}');return 'admitted';} catch (raw) {return JSON.parse(raw).code;}"), "documentChanged")
+                scheme.view.load_uri(ORIGIN + "/")
+                self.pump(lambda: scheme.bridge_token is not None)
+                scheme.view.load_uri("about:blank")
+                self.pump(lambda: scheme.bridge_token is None)
+            finally:
+                scheme.close()
+                window.destroy()
+
     def test_host_invite_sheet_copy_expiry_and_close(self):
         parent = Gtk.ApplicationWindow(application=self.app)
         self.addCleanup(parent.destroy)

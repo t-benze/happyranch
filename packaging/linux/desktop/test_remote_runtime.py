@@ -69,6 +69,14 @@ class PeerFixture(unittest.TestCase):
                     self.close_connection = True
                 elif self.path == "/api/v1/auth/bootstrap":
                     self.reply(b'{"token":"synthetic-local-bearer"}')
+                elif self.path == "/api/v1/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", "/api/v1/must-not-follow")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    self.close_connection = True
+                elif self.path == "/api/v1/disappear":
+                    self.close_connection = True
                 elif self.path == "/api/v1/header-stall":
                     self.connection.settimeout(12)
                     try:
@@ -115,7 +123,15 @@ class PeerFixture(unittest.TestCase):
             def do_POST(self) -> None:
                 data = self.rfile.read(int(self.headers["Content-Length"]))
                 fixture.observed.append((self.path, dict(self.headers), data))
-                self.reply(data)
+                if self.path == "/api/v1/header-stall":
+                    self.connection.settimeout(3)
+                    try:
+                        self.connection.recv(1)
+                    except OSError:
+                        pass
+                    self.close_connection = True
+                else:
+                    self.reply(data)
 
             def reply(self, data: bytes) -> None:
                 self.send_response(200)
@@ -290,6 +306,7 @@ class SchemeTests(PeerFixture):
         app = AppScheme.__new__(AppScheme)
         app.daemon, app.closed = daemon, False
         app.transfers, app.cancelled = {}, {}
+        app.initialize_state()
         app.Gio, app.GLib = Gio, GLib
         return app
 
@@ -314,6 +331,61 @@ class SchemeTests(PeerFixture):
             context.iteration(False)
         self.assertTrue(transfer.finished)
         return result
+
+    def test_switch_after_upstream_send_before_headers_is_cancelled(self) -> None:
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            with self.subTest(remote=daemon is self.remote):
+                app = self.app(daemon)
+                transfer = Transfer(daemon)
+                app.transfers["test"] = transfer
+                result = {}
+                app.reply = lambda _request, status, data, *_args: result.update(status=status, body=data)
+                worker = threading.Thread(target=app.forward,
+                    args=(object(), transfer, "GET", "/api/v1/header-stall", {}, None))
+                worker.start()
+                until = time.monotonic() + 2
+                while not any(path == "/api/v1/header-stall" for path, *_ in self.observed) and time.monotonic() < until:
+                    time.sleep(0.005)
+                self.assertTrue(any(path == "/api/v1/header-stall" for path, *_ in self.observed))
+                app.select_target(None, owner_saves=())
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+                context = GLib.MainContext.default()
+                while context.pending():
+                    context.iteration(False)
+                self.assertEqual(result.get("status"), 499)
+                self.assertEqual(json.loads(result["body"]), {"detail": {"code": "cancelled"}})
+                self.observed.clear()
+
+    def test_post_forward_failures_are_ordinary_and_mutations_do_not_retry(self) -> None:
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            app = self.app(daemon)
+            for path, code in (("redirect", "upstream_redirect"), ("disappear", "incomplete_body")):
+                result = self.forward(app, path="/api/v1/" + path)
+                self.assertEqual((result["status"], json.loads(result["body"])), (502, {"detail": {"code": code}}))
+            transfer = Transfer(daemon)
+            app.transfers["mutation"] = transfer
+            result = {}
+            app.reply = lambda _request, status, data, *_args: result.update(status=status, body=data)
+            worker = threading.Thread(target=app.forward,
+                args=(object(), transfer, "POST", "/api/v1/header-stall", {}, None))
+            worker.start()
+            until = time.monotonic() + 2
+            while not any(path == "/api/v1/header-stall" for path, *_ in self.observed) and time.monotonic() < until:
+                time.sleep(0.005)
+            self.assertTrue(any(path == "/api/v1/header-stall" for path, *_ in self.observed))
+            self.assertEqual(app.select_target(None, owner_saves=()), "non_get_pending")
+            self.assertFalse(transfer.stop.is_set())
+            app.invalidate_document()  # Unexpected navigation/process loss still cancels the mutation.
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            context = GLib.MainContext.default()
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual((result.get("status"), json.loads(result["body"])), (499, {"detail": {"code": "cancelled"}}))
+            self.assertEqual(sum(path == "/api/v1/header-stall" for path, *_ in self.observed), 1)
+            self.assertNotIn("/api/v1/must-not-follow", [path for path, *_ in self.observed])
+            self.observed.clear()
 
     def test_shared_no_target_starting_unreachable_errors(self) -> None:
         unreachable = RemoteDaemon(self.session, ready=True)
@@ -355,12 +427,244 @@ class SchemeTests(PeerFixture):
     def test_native_selection_cancels_bound_request_with_target_changed(self) -> None:
         app = self.app(self.remote)
         transfer = Transfer(self.remote)
+        transfer.generation = app.generation
         app.transfers["old"] = transfer
-        app.select_target(None)
+        app.select_target(None, owner_saves=())
         result = self.forward(app, transfer)
         self.assertEqual(result["status"], 409)
         self.assertEqual(json.loads(result["body"]), {"detail": {"code": "target_changed"}})
         self.assertFalse(self.dials)
+
+
+class V2Tests(PeerFixture):
+    app = SchemeTests.app
+    forward = SchemeTests.forward
+
+    def request(self, app: object, generation: str | None, method: str = "GET", body: bool = False) -> object:
+        values = {"X-HappyRanch-Request-ID": str(uuid.uuid4())}
+        if generation is not None:
+            values["X-HappyRanch-Target"] = generation
+        if body:
+            values["X-HappyRanch-Body-Bytes"] = "1"
+        headers = SimpleNamespace(foreach=lambda callback, _data: [callback(k, v) for k, v in values.items()])
+        return SimpleNamespace(get_web_view=lambda: app.view, get_uri=lambda: transport.ORIGIN + "/api/v1/probe",
+                               get_http_method=lambda: method, get_http_headers=lambda: headers)
+
+    def test_generation_admission_and_native_pressure_shapes(self) -> None:
+        app = self.app(self.remote)
+        app.view = object()
+        replies = []
+        app.reply = lambda _request, status, data, *_args: replies.append((status, json.loads(data)))
+        for generation in (None, "stale", "", "non-ascii-你"):
+            app.handle(self.request(app, generation))
+            self.assertEqual(replies.pop(), (409, {"detail": {"code": "target_changed"}}))
+        self.assertFalse(app.transfers)
+        self.assertFalse(self.observed)
+        self.assertFalse(self.dials)
+        for count, body in ((32, False), (2, True)):
+            app.transfers = {str(i): Transfer(self.remote) for i in range(count)}
+            for transfer in app.transfers.values():
+                transfer.has_body = body
+            app.handle(self.request(app, app.generation, "POST" if body else "GET", body))
+            self.assertEqual(replies.pop(), (429, {"detail": {"code": "too_many_requests"}}))
+        self.assertFalse(self.observed)
+        self.assertNotEqual(app.status()["state"], "busy")
+
+    def test_current_generation_forwards_and_bootstrap_is_exempt(self) -> None:
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            app = self.app(daemon)
+            app.view = object()
+            replies = []
+            def finish(_request: object, status: int, source: object, *_args: object) -> None:
+                data = bytearray()
+                try:
+                    while chunk := source.read_bytes(65536, None).get_data():
+                        data.extend(chunk)
+                finally:
+                    source.close(None)
+                replies.append((status, bytes(data)))
+            app.finish = finish
+            for bootstrap in (False, True):
+                request = self.request(app, None if bootstrap else app.generation)
+                if bootstrap:
+                    request.get_uri = lambda: transport.ORIGIN + "/api/v1/auth/bootstrap"
+                app.handle(request)
+                until = time.monotonic() + 2
+                context = GLib.MainContext.default()
+                while not replies and time.monotonic() < until:
+                    while context.pending():
+                        context.iteration(False)
+                    time.sleep(0.005)
+                self.assertEqual(replies.pop(), (200, b'{"token":"hr_native_session","user":"founder","role":"admin"}'
+                                                if bootstrap else b"native-peer-ok"))
+            self.assertTrue(all("x-happyranch-target" not in {k.lower() for k in headers}
+                                for _, headers, *_ in self.observed))
+            self.observed.clear()
+
+    def test_commit_gate_and_swap_cancel_event_order(self) -> None:
+        app = self.app(self.remote)
+        original = app.generation
+        transfer = Transfer(self.remote)
+        transfer.generation = original
+        app.transfers["old"] = transfer
+        events = []
+        app.emit_state = lambda: events.append((app.daemon, app.generation, transfer.stop.is_set()))
+        for owners, expected in ((None, "owner_save_unknown"), (("unknown",), "owner_save_unknown"),
+                                 (("pending",), "owner_save_pending")):
+            self.assertEqual(app.select_target(None, owner_saves=owners), expected)
+            self.assertIs(app.daemon, self.remote)
+            self.assertEqual(app.generation, original)
+            self.assertFalse(transfer.stop.is_set())
+        for method in ("HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            transfer.method = method
+            self.assertEqual(app.select_target(None, owner_saves=()), "non_get_pending")
+            self.assertEqual(events, [])
+        transfer.method = "GET"
+        cancel = transfer.cancel
+        def cancelled(code: str) -> None:
+            self.assertIsNone(app.daemon, "target must swap before cancellation")
+            self.assertNotEqual(app.generation, original)
+            self.assertEqual(events, [])
+            cancel(code)
+        transfer.cancel = cancelled
+        self.assertIsNone(app.select_target(None, owner_saves=()))
+        self.assertEqual(events, [(None, app.generation, True)])
+        self.assertEqual((transfer.interrupted().status, transfer.interrupted().code), (409, "target_changed"))
+        generations = {app.generation, original}
+        for _ in range(32):
+            app.select_target(None, owner_saves=())
+            self.assertTrue(app.generation.isascii())
+            self.assertTrue(1 <= len(app.generation) <= 32)
+            self.assertNotIn(app.generation, generations)
+            generations.add(app.generation)
+        fresh = self.app(None)
+        self.assertNotIn(fresh.generation, generations)
+        reload_generations = []
+        for index in range(2):
+            spec = importlib.util.spec_from_file_location("scheme_reload_" + str(index), Path(app_scheme_webkit.__file__))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            reload_generations.append(module.new_generation())
+        self.assertNotEqual(*reload_generations, "loader recreation must not reset process generation")
+
+    def test_status_and_event_share_closed_projection(self) -> None:
+        local = LocalDaemon(self.server.server_port)
+        app = self.app(local)
+        local.bootstrap()
+        expected = {"schema": 2, "generation": app.generation,
+                    "target": {"kind": "local", "id": "local", "name": "This computer"},
+                    "state": "ready", "incompatible": None,
+                    "local": {"supported": True, "mode": "service", "running": "running",
+                              "prompt_base_url": f"http://127.0.0.1:{local.port}/api/v1"},
+                    "candidate": None, "access_unsaved": False,
+                    "locale": {"current": "en", "persisted": False}}
+        app.locale = {"current": "en", "persisted": False}
+        self.assertEqual(app.status(), expected)
+        app.subscribed, app.bridge_token = True, "native-probed-token"
+        delivered = []
+        app.view = SimpleNamespace(call_async_javascript_function=lambda *args: delivered.append(args[2].unpack()))
+        app.emit_state()
+        self.assertEqual(json.loads(delivered[0]["raw"]), expected)
+        app.local["running"] = "stopped"
+        self.assertEqual(app.status()["state"], "unreachable")
+        app.select_target(self.remote, owner_saves=())
+        self.assertEqual(app.status()["target"], {"kind": "remote", "id": "", "name": ""})
+        self.assertIsNone(app.status()["local"]["prompt_base_url"])
+        self.assertNotIn("synthetic-device-credential", json.dumps(app.status()))
+        app.select_target(None, owner_saves=())
+        self.assertEqual((app.status()["target"], app.status()["state"]), (None, "no_target"))
+
+    def test_busy_health_is_transient_and_metadata_is_projected(self) -> None:
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            app = self.app(daemon)
+            self.health_body = b'{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":true}}'
+            result = self.forward(app)
+            self.assertEqual(result["status"], 503)
+            self.assertEqual(json.loads(result["body"]), {"detail": {"code": "busy"}})
+            self.assertEqual(app.status()["state"], "busy")
+            self.health_body = b'{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":false}}'
+            self.assertEqual(self.forward(app)["status"], 200)
+            self.assertEqual(app.status()["state"], "ready")
+            app.select_target(daemon, owner_saves=())
+            self.health_body = b'{"api_contract":{"current":2,"min_client":2}}'
+            self.assertEqual(self.forward(app)["status"], 503)
+            self.assertEqual(app.status()["incompatible"], {"side": "app", "host_contract": {"current": 2,"min_client": 2},
+                                                            "client_contract": 1, "min_daemon": 1})
+            app.select_target(daemon, owner_saves=())
+            self.health_body = b'{}'
+            self.assertEqual(self.forward(app)["status"], 503)
+            self.assertEqual(app.status()["incompatible"], {"side": "host", "host_contract": None,
+                                                            "client_contract": 1, "min_daemon": 1})
+
+    def test_native_status_progresses_without_page_api_requests(self) -> None:
+        for daemon in (self.remote, LocalDaemon(self.server.server_port)):
+            app = self.app(daemon)
+            events = []
+            app.emit_state = lambda: events.append(app.status())
+            self.assertEqual(app.status()["state"], "target_starting")
+            app.refresh_status()
+            until = time.monotonic() + 2
+            context = GLib.MainContext.default()
+            while not events and time.monotonic() < until:
+                while context.pending():
+                    context.iteration(False)
+                time.sleep(0.005)
+            self.assertTrue(events, "native admission must publish without waiting for page API traffic")
+            self.assertEqual(events[-1]["state"], "ready")
+            self.assertEqual([path for path, *_ in self.observed], ["/api/v1/health"] +
+                             ([] if daemon is self.remote else ["/api/v1/auth/bootstrap"]))
+            self.observed.clear()
+
+    def test_lock_timeout_is_ordinary_429(self) -> None:
+        app = self.app(self.remote)
+        self.remote._lock.acquire()
+        try:
+            result = self.forward(app)
+        finally:
+            self.remote._lock.release()
+        self.assertEqual((result["status"], json.loads(result["body"])), (429, {"detail": {"code": "too_many_requests"}}))
+        self.assertFalse(self.observed)
+        self.assertNotEqual(app.status()["state"], "busy")
+
+    def test_cancelled_delivery_never_relabels_forwarded_request(self) -> None:
+        app = self.app(self.remote)
+        result = {}
+        app.reply = lambda _request, status, data, *_args: result.update(status=status, body=data)
+        for forwarded, status, code in ((False, 409, "target_changed"), (True, 499, "cancelled")):
+            transfer = Transfer(self.remote)
+            transfer.generation = app.generation
+            transfer.forwarded = forwarded
+            transfer.cancel("target_changed")
+            source = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(b"old"))
+            app.deliver(object(), transfer, 200, source, {})
+            self.assertTrue(source.is_closed())
+            self.assertEqual((result["status"], json.loads(result["body"])), (status, {"detail": {"code": code}}))
+
+    def test_native_bridge_refuses_unbound_or_replacement_document(self) -> None:
+        app = self.app(None)
+        app.controller = object()
+        app.bridge_token = "native-probed-token"
+        uri = [transport.ORIGIN + "/settings/connection"]
+        app.view = SimpleNamespace(get_uri=lambda: uri[0])
+        app.JSC = SimpleNamespace(Value=SimpleNamespace(new_string=lambda _context, raw: raw))
+        outcomes = []
+        reply = SimpleNamespace(return_value=lambda raw: outcomes.append((True, json.loads(raw))),
+                                return_error_message=lambda raw: outcomes.append((False, json.loads(raw))))
+        def message(token: str = "native-probed-token") -> object:
+            return SimpleNamespace(is_string=lambda: True, get_context=lambda: None,
+                to_string=lambda: json.dumps({"token": token, "command": "app.status", "data": "{}"}))
+        app.bridge_message(app.controller, message(), reply)
+        self.assertEqual(outcomes.pop(), (True, app.status()))
+        for manager, token, location in ((object(), "native-probed-token", uri[0]),
+                                        (app.controller, "stale", uri[0]),
+                                        (app.controller, "native-probed-token", "https://untrusted.invalid/")):
+            uri[0] = location
+            app.bridge_message(manager, message(token), reply)
+            self.assertFalse(outcomes.pop()[0])
+        uri[0] = transport.ORIGIN + "/"
+        app.invalidate_document()
+        app.bridge_message(app.controller, message(), reply)
+        self.assertFalse(outcomes.pop()[0])
 
 
 class DialCancellationTests(unittest.TestCase):
@@ -452,7 +756,8 @@ class DialCancellationTests(unittest.TestCase):
                     context.iteration(False)
 
             def request(key: str) -> object:
-                headers = SimpleNamespace(foreach=lambda callback, _data: callback("X-HappyRanch-Request-ID", key))
+                headers = SimpleNamespace(foreach=lambda callback, _data: (
+                    callback("X-HappyRanch-Request-ID", key), callback("X-HappyRanch-Target", app.generation)))
                 return SimpleNamespace(get_web_view=lambda: app.view, get_uri=lambda: "happyranch-app://app/api/v1/probe",
                                        get_http_method=lambda: "GET", get_http_headers=lambda: headers)
 
@@ -475,15 +780,14 @@ class DialCancellationTests(unittest.TestCase):
                     app.reply = lambda req, response_status, data, *_args: replies.update(
                         {busy_key if req is busy else req: (response_status, data)})
                     app.handle(busy)
-                    self.assertEqual(replies[busy_key][0], 503)
-                    self.assertEqual(json.loads(replies[busy_key][1]), {"detail": {"code": "busy"}})
+                    self.assertEqual(replies[busy_key][0], 429)
+                    self.assertEqual(json.loads(replies[busy_key][1]), {"detail": {"code": "too_many_requests"}})
                     began = time.monotonic()
                     if code == "target_changed":
-                        app.select_target(None)
+                        app.select_target(None, owner_saves=())
                     else:
                         for key in keys:
-                            message = SimpleNamespace(get_js_value=lambda key=key: SimpleNamespace(to_string=lambda: key))
-                            app.cancel_request(None, message)
+                            app.cancel_id(key)
                     for worker in workers:
                         worker.join(max(0, 1 - (time.monotonic() - began)))
                     self.assertFalse(any(worker.is_alive() for worker in workers), "cancelled dial worker remained running")
@@ -503,7 +807,7 @@ class DialCancellationTests(unittest.TestCase):
                     self.assertFalse(app.transfers)
                     # Reuse the same session through actual handle/admission and HTTP.
                     stall.clear()
-                    app.select_target(remote)
+                    app.select_target(remote, owner_saves=())
                     fresh_key = str(uuid.uuid4())
                     fresh = request(fresh_key)
                     app.reply = lambda req, response_status, data, *_args: replies.update({fresh_key: (response_status, data)})

@@ -645,7 +645,13 @@ and native target selection (`AppScheme.select_target`). The existing opt-in
 launcher still selects its verified local daemon. A native owner may select
 `LocalDaemon(port)`, `RemoteDaemon(active_session, ready=False/True)`, or `None`;
 passing `None` as the loader's verified port starts with no target. Selection
-is a native/UI-thread operation, never a page command. `ready=False` denotes
+is a native/UI-thread operation. S5-L1 gates voluntary commits through
+`select_target(target, owner_saves=...)`: missing/unknown owner evidence,
+pending saves, or current-generation non-GET transfers return a named refusal
+without changing target/generation. An empty tuple means a captured empty
+owner registry; it must not substitute for unavailable owner evidence. The
+client.commitSwitch command/active-candidate owner remains S5-L2 and web owner
+registry integration remains S6-W2. `ready=False` denotes
 a selected remote session still connecting; only its owner publishes readiness.
 The adapter calls that session's existing pinned-peer `dial`, `release` and
 native `_credential` callbacks, without constructing a proxy/listener. It shares
@@ -656,11 +662,17 @@ remote windows/listeners stay unchanged until S7; candidate/commit ownership
 remains S5. No enrollment or daemon authentication changes.
 
 Every scheme transfer captures its target before worker dispatch. Native
-selection cancels old transfers instead of rerouting them. Pre-header selection
-cancellation returns `409 {"detail":{"code":"target_changed"}}`; no selected
+selection atomically swaps target plus process-unique generation, cancels old
+generation transfers, then emits full app.stateChanged. A first upstream HTTP
+send fence distinguishes forwarding from page delivery: only a request with no
+upstream send can return `409 {"detail":{"code":"target_changed"}}`. An
+already-forwarded transfer interrupted before page headers returns 499 cancelled;
+an established stream errors through GIO, never successful EOF. Native never
+replays a mutation. No selected
 target, a connecting remote target, and unavailable transport return `503`
 with exactly `{"detail":{"code":"no_target"}}`, `target_starting`, or
-`target_unreachable` in the same envelope. Concurrency refusal uses `503 busy`.
+`target_unreachable` in the same envelope. Native concurrency/body caps and admission lock timeout use `429 too_many_requests`.
+`503 busy` is reserved for health update_busy.busy and is rechecked until clear.
 S4b-Linux PR-B gates every API transfer, including the page's dummy bootstrap,
 on native health admission. Browser authorization, cookies and native/
 forwarded identity headers are stripped before native injection. Only safe
@@ -689,8 +701,10 @@ as native errors or logged. Only the normal compatible health API response may
 be forwarded in answer to a page request for health.
 
 The health result (including incompatibility) is cached on that target instance.
-`AppScheme.select_target` cancels captured transfers and resets both old and new
-targets, even on reselection of the same object. `load-changed STARTED`,
+`AppScheme.select_target` gates commit, swaps target/generation, cancels captured
+old transfers and resets both old/new admission, even on reselection of the
+same object. Native status admission runs without requiring page API traffic,
+so a recovery page can receive ready/incompatible/busy state changes. `load-changed STARTED`,
 `web-process-terminated` and `close` invalidate admission; close also clears the
 local bearer. `RemoteDaemon.ready` transitions reset admission before the native
 owner publishes the new transport state. In the launcher, `message` closes the
@@ -701,8 +715,12 @@ no same-instance remote reconnect callback in this opt-in launcher: its future
 native owner must reselect the target or transition `ready` on reconnect. This
 is an integration assumption, not an automatic reconnect or S5 candidate switch.
 Cancellation during admission interrupts dial/headers/body and returns 499
-`cancelled`; native selection/reset returns 409 `target_changed`. Concurrent
-admission wait is bounded and may return 503 `busy`. An incompatible cached
+`cancelled`; native selection/reset before forwarding returns 409 target_changed.
+Concurrent admission wait is bounded and returns 429 too_many_requests. Reset
+clears the local bearer. A subsequent upstream 401 invalidates bearer and health
+admission; the next request performs native bootstrap, without replaying the
+401 request. Post-forward redirects and transport loss stay ordinary 502
+upstream_redirect / incomplete_body errors, never recovery codes. An incompatible cached
 instance performs no subsequent API forwarding or bearer-bootstrap fetch.
 
 The document-start fetch adapter serializes request bodies into bytes before
@@ -732,7 +750,24 @@ Downloads use fetch → blob → `a.download`, followed by the native Save choos
 with overwrite confirmation. Direct API attachment navigation is blocked;
 it does not reliably promote to a WebKit download. Off-origin HTTP(S) links
 open in the system browser. The opted-in view has persistent storage under
-`<desktop-home>/desktop-web`; it has no connection command bridge.
+`<desktop-home>/desktop-web`. S5-L1 exposes only app.status/app.stateChanged
+through the existing string call/on facade in the trusted Main document. The
+private controller registers its handler only in a named world; native probes
+the top document, empty frame tree and absence of a page-world native channel
+before admitting its isolated document token. TOP_FRAME relay, CSP and frame/CSP
+observation revoke on frame insertion. Navigation, process loss and close fence
+old messages/events. Reads queued during initial admission are bounded. Failed
+admission leaves the bridge unavailable. This does not migrate the separate
+Connection window or enable unfinished client commands.
+
+The full v2 appState supplies native generation, target, state, compatibility,
+local status, nullable candidate, access_unsaved and session locale. A selected
+remote never exposes a local prompt URL or remote address. Native owners supply
+sanitized remote id/name; active/candidate integration remains S5-L2, locale
+persistence remains S8. Every scheme API request requires the captured
+X-HappyRanch-Target header except GET /api/v1/auth/bootstrap. Native refuses a
+missing/mismatched generation before forwarding and strips it upstream. Browser
+mode and opt-in activation stay unchanged; web stamping/stale-drop is S5-W1.
 
 Focused standalone native checks (no GI/display/retired Python suite):
 
