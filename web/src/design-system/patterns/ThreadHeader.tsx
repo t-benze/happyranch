@@ -158,10 +158,14 @@ export function ThreadHeader({
   );
 
   return (
-    <header className="border-border-default shrink-0 border-b px-3.5 pt-4 pb-3.5 sm:px-7">
+    <header className="border-border-default @container shrink-0 border-b px-3.5 pt-4 pb-3.5 sm:px-7">
       {crumb && <div className="mb-2.5">{crumb}</div>}
-      {/* Actions stack under the title below `sm` (PageTitle convention). */}
-      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Actions stack under the title until the HEADER itself is >= 28rem
+          wide (container query, not viewport): beside the 244px app rail and
+          the 300px properties rail the conversation column can be ~224px at a
+          768px viewport, where a viewport `sm:flex-row` squeezed the title to
+          0px. Stacked, the title keeps the full column width (truncates). */}
+      <div className="flex flex-col items-start gap-3 @md:flex-row @md:items-center @md:justify-between">
         <div className="w-full min-w-0 flex-1">
           <h2 className="text-text-primary truncate">{title}</h2>
           <div className="text-caption text-text-secondary mt-1 flex flex-wrap items-center gap-2">
