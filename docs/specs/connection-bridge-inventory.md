@@ -1,6 +1,6 @@
 # Connection bridge command/event inventory
 
-Status: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair in this PR, 2026-11-19
+V1 inventory baseline: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair, 2026-11-19. S5 v2 status below is separately pinned to main 921f126e14d6dd5befc869ae77278134b20985ab, 2026-11-21.
 
 This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. **Linux: 16/19 commands implemented; Mac: 11/19 commands implemented.** Events are counted separately: Linux 2/2, Mac 1/2. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
 
@@ -10,9 +10,40 @@ Linux Settings S2b PR-A / S4b PR-B transport inventory (TASK-18097 / TASK-18122)
 | --- | --- | --- |
 | Opt-in app scheme API target | `app_scheme_webkit.AppScheme.select_target`, `app_scheme.LocalDaemon` / `RemoteDaemon` | Native selects local, connecting/ready active remote, or none; the existing launcher still selects local. No bridge command added. |
 | Listener-free remote HTTP | `client_runtime.RemoteCall` / `RemoteResponse`, shared `remote_headers` | Existing `ClientSession.dial/release/_credential`; binary request, decoded streaming response, cancellation releases dial. Home connector unchanged. |
-| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Compatibility is gated before every API transfer; candidates S5, remote window/default cutover and listener retirement S7. |
+| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Main's post-forward 409 and native-pressure busy semantics differ from v2 (see S5 table). Compatibility is gated before every API transfer; candidates S5, remote window/default cutover and listener retirement S7. |
 | Host compatibility admission | `app_scheme._Target.bootstrap/reset`, `LocalDaemon`, `RemoteDaemon` | Health before local bearer bootstrap; remote through existing pinned adapter. 64 KiB / five seconds. Integer contract 1/1; invalid/missing/failed reachable health → 503 incompatible side host; min_client > 1 → side app; unreachable stays target_unreachable. No unknown case. |
 | Admission invalidation | `AppScheme.select_target/load_changed/close`, web-process loss, `RemoteDaemon.ready` | Reset on reselection, navigation, process loss, close and readiness transition. Launcher Restart/retry/reattach closes and creates a fresh local target. Same-instance remote reconnect owner must reselect or transition readiness; no such launcher callback yet. No S5 candidate switch. |
+
+## S5 v2 target contract and implementation status
+
+The new [v2 payload schema](../../protocol/native-connection-bridge.v2.json)
+and [v2 specification/status evidence](2026-11-17-web-native-bridge.md#12-settings-bridge-v2-status-errors-and-target-generation)
+define the target contract, not callable implementations. V1 is unchanged;
+the command/event totals below count v1 only. Linux observations refer to
+**main 921f126e** (PRs #1762, #1765, #1767). Mac is pending with no Mac work
+this wave; web is pending S5-W1. No native/live v2 acceptance is claimed.
+
+| Surface / code | Linux main status | Mac status | Web status |
+| --- | --- | --- | --- |
+| `app.status` | Not emitted; Linux: pending S5-L1. `connection_contract.py:20–27,236–240` remains v1; `app_scheme_webkit.py:124,150–154` has only abort admission. | Pending | Pending S5-W1 |
+| `app.stateChanged` | Not emitted; Linux: pending S5-L1. Same full payload as status; no v2 event producer on main. | Pending | Pending S5-W1 |
+| `X-HappyRanch-Target` | No admission check (`app_scheme_webkit.py:261–279`). Already excluded by local allowlist (`app_scheme.py:34–36,75–81`) and stripped remotely (`client_runtime.py:139–151`). Linux: pending S5-L1 enforcement, except GET bootstrap. | Pending | Pending S5-W1 on every other scheme API request |
+| `503 no_target` | Emitted (`app_scheme_webkit.py:301–303`). | Pending | Pending S5-W1 |
+| `503 target_starting` | Emitted (`app_scheme.py:313–318,395–398`). | Pending | Pending S5-W1 |
+| `503 target_unreachable` | L-1 connect refusal fixed (`app_scheme.py:258–262`, `app_scheme_webkit.py:390–394`); post-forward error classification Linux: pending S5-L1. | Pending | Pending S5-W1 |
+| `503 incompatible` | PR #1767 implements contract 1/1 health admission and host/app side (`app_scheme.py:283–304`). | Pending | Pending S5-W1 |
+| `503 busy` (host update_busy only) | L-4: Linux: pending S5-L1. Main uses it for native caps (`app_scheme_webkit.py:269,272`) and lock timeout (`app_scheme.py:278`); no health update_busy mapping yet. | Pending | Pending S5-W1; W-1 transient/clear on success |
+| `409 target_changed` (not forwarded) | L-3: Linux: pending S5-L1. Can currently follow upstream send (`app_scheme_webkit.py:333,388,392,418`). | Pending | Pending S5-W1; W-2 mutations never auto-retry |
+| `429 too_many_requests` | Not emitted; Linux: pending S5-L1 replacement for native cap/lock busy. Ordinary per-request error. | Pending | Pending S5-W1 |
+| `499 cancelled` / stream error | Ordinary cancellation and stream error marker exist (`app_scheme.py:176–179`, `app_scheme_webkit.py:338–347,395–418`); post-forward switch handling Linux: pending S5-L1 (L-3). | Pending | Pending S5-W1 |
+| Target+generation commit → cancel → event | Linux: pending S5-L1; current selection cancels before target replacement, no generation/event (`app_scheme_webkit.py:163–171`). | Pending | Pending S5-W1 |
+| Refuse commit during non-GET / pending-unknown saves | Linux: pending S5-L1 with S6-W2 owner integration; no commitSwitch gate on main. | Pending | Pending S5-W1 / S6-W2 owner registry |
+| Reconnect/Restart compatibility and bearer | Linux compatibility implemented in #1767 with reset/reselection/ready-transition invalidation; L-2 reset clears bearer (`app_scheme.py:169–174`), re-bootstrap-on-401 Linux: pending S5-L1 verification/fix (`app_scheme.py:350–371`). | Pending | Pending S5-W1 |
+
+The spec's current implementation table also records each existing ordinary
+request/transport code and exact Linux source lines. V2 errors have only
+`detail.code`, plus optional `detail.side` for incompatible; existing v1
+command rejection envelopes remain separate.
 
 ## Facade and closed v1 list
 

@@ -3458,7 +3458,7 @@ authentication, bind, CORS or remote allowlist.
 
 `runtime/daemon/api_contract.py` owns both contract numbers. Only breaking API
 changes raise `current`; additive fields/routes do not. Raise `min_client` only
-to cut off old clients. Native compatibility checks (a later slice) use
+to cut off old clients. Native compatibility checks (Linux: PR #1767, merged `921f126e`; Mac: pending) use
 `min_client <= client contract <= current` and `current >= client min_daemon`;
 missing metadata means incompatible / Update Host. Metadata alone grants no access.
 

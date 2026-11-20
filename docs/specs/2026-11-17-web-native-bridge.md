@@ -536,3 +536,240 @@ Explicit estimating assumptions: native test venues and separately owned Linux l
 Qualification work is not another founder decision: native owners/security must prove custom-scheme origin/CSP/frame isolation, Linux actual-target fresh OS prompts/precommit checks, Mac client Keychain/unsigned reconnect, CLI parity and the persistent native-chrome save warning with connection view closed. Unproven engine means CLI as already decided; unavailable actions remain disabled at intermediate milestones, not accepted as full lifecycle delivery.
 
 Backend signal gaps in §8 remain tracked Engineering/TASK-16779 dependencies. Settle bounded versioned action mappings for invite invalidation/replacement, recognized recovery, address refresh and policy renewal before accepting B; do not invent readiness, expiry, early rejection or cleanup proof. Account-first delivery and outstanding outside-home operating acceptance remain visible. No open item reopens R2, strict trust, fixed operator services or no-secrets-in-JS.
+
+## 12. Settings bridge v2: status, errors and target generation
+
+THR-387 S5-0 / TASK-18133; target contract from TASK-18102 §§1.1–1.4 and
+TASK-18131. This section defines the next version; it does **not** claim that
+Linux, Mac or web implements it. The implementation table below is pinned to
+Linux main **`921f126e14d6dd5befc869ae77278134b20985ab`** (PRs #1762, #1765,
+#1767), rather than the earlier plan's WIP. Mac is pending (no Mac work this
+wave); web is pending S5-W1. The v1 file, facade and deployed admission remain
+unchanged. The proposed Main-view bridge/cutover supersedes the earlier
+separate-view placement only when its separately owned implementation lands.
+
+### v2 status payload
+
+[`native-connection-bridge.v2.json`](../../protocol/native-connection-bridge.v2.json)
+is JSON Schema Draft 2020-12. `#/$defs/appState` describes the JSON value inside
+the string returned by `app.status` and pushed by `app.stateChanged` (no v1
+event envelope). `#/$defs/nativeErrorBody` describes native HTTP errors. The
+root accepts either kind; adapters select the corresponding definition.
+The `call(command, data: string) -> Promise<string>` / `on(event, handler(string))`
+facade stays the same. No new transport/dispatcher is implemented here.
+
+Every listed key is required; nullable values are explicit. All payload and
+nested objects reject additional properties. No host address, invite,
+credential or fingerprint field is exposed. Names are presentation only.
+
+| Field | Contract |
+| --- | --- |
+| `schema` | Exactly `2`. |
+| `generation` | Nonempty opaque ASCII string, at most 32 characters. Native emits an HTTP-field-safe value, new on every active-target commit and every disconnect, never reused in one app process. Web compares only for equality. Lifetime uniqueness/header safety are semantic requirements beyond JSON shape. |
+| `target` | `null` for `no_target`; otherwise exactly `{kind, id, name}`, with kind `local` or `remote`, id `local` for local or the saved-computer id for remote, and display name. |
+| `state` | `no_target`, `target_starting`, `ready`, `unreachable`, `incompatible`, `busy`. Selected but stopped local service is `unreachable` with `local.running = stopped`; keep its target identity. |
+| `incompatible` | `null` except in state `incompatible`, when it is exactly `{side, host_contract, client_contract, min_daemon}`. Side is `host`, `app` or `unknown`; contract constants are `1`/`1`. `host_contract` is exactly integer `{current, min_client}`, or `null` for missing/invalid metadata; null requires side `host`. |
+| `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground` or `unsupported`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
+| `candidate` | `null` or exactly `{kind, id, name, phase, deadline}`. Kind is `local`/`remote`; phase is `signing_in`, `awaiting_approval`, `ready_to_switch`, `failed` or `cancelled`; deadline is an ISO8601/RFC3339 date-time or null. Candidate identity is sanitized and separate from the active target. |
+| `access_unsaved` | Boolean for the persistent native badge and Connection detail; only confirmed protected save clears it. |
+| `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Live locale switching/persistence is S8. |
+
+### v2 native errors and HTTP mapping
+
+The body is exactly `{"detail":{"code":C}}`. Only `C = incompatible` may
+optionally add `detail.side`, restricted to `host`, `app`, `unknown`.
+No other detail or top-level keys are allowed in v2, including diagnostics,
+`forwarded`, retry hints or addresses. The schema validates body shape; status
+and recovery classification follow this table. Existing ordinary request and
+transport error codes remain outside the recovery set.
+
+| HTTP | Code | Meaning / status mapping |
+| --- | --- | --- |
+| 503 | `no_target` | `state = no_target`. |
+| 503 | `target_starting` | `state = target_starting`. |
+| 503 | `target_unreachable` | `state = unreachable`; connection could not be established. Failures after forwarding are ordinary transport errors, not evidence of a request never sent. |
+| 503 | `incompatible` | `state = incompatible`; optional side as above. |
+| 503 | `busy` | `state = busy`: **host-busy only**, from target health `update_busy`. |
+| 409 | `target_changed` | Request was **not forwarded**: missing/mismatched generation header, or switch detected before any byte of this request was sent upstream. |
+| 429 | `too_many_requests` | Native per-view concurrency cap **or internal lock contention** (§1.4 extension 1). Ordinary per-request error; no host-busy/page recovery transition. |
+| 499 class | `cancelled` | Non-recovery cancellation after forwarding when a switch interrupts a transfer; outcome may be unknown. If response streaming has begun, signal a stream error instead. |
+
+A request already forwarded when a switch happens must **never** receive 409.
+Do not infer forwarding from whether response headers reached the web: upstream
+bytes can have been sent before page delivery. In-flight streams terminate with
+a stream/GIO error, **not a clean EOF**. 409 itself implies not forwarded;
+there is no `detail.forwarded` key. Mutations never auto-retry. A genuine
+pre-forward 409 preserves the unsaved draft as not sent; an interrupted
+post-forward mutation retains an unknown outcome / Check result.
+
+### v2 generation admission and commit ordering
+
+Web sends `X-HappyRanch-Target: <generation>` on **every scheme API request**
+except `GET /api/v1/auth/bootstrap`, including direct fetches, uploads/downloads
+and SSE. Native compares it before forwarding. Missing/mismatch answers 409
+`target_changed` without forwarding. Strip the header before forwarding as part
+of the `X-HappyRanch-*` class; page headers never become daemon authority.
+Browser mode has no bridge, sends no generation header and remains unchanged.
+
+Native refuses `client.commitSwitch` with a **named reason** while any non-GET
+transfer of the current generation is in flight, or the web owner registry
+(`app.owners`, S6-W2) reports pending/unknown saves. Refusal is not a completed
+switch. The implementation owns the reason vocabulary; this payload schema adds
+no commit command/envelope or reason field.
+
+Once admissible, native performs this ordering:
+
+1. Atomically swap active target **and** generation.
+2. Cancel all old-generation transfers with an error under the forwarding rule
+   above; never turn a cancelled stream into successful EOF.
+3. Emit `app.stateChanged` with the resulting full status. Report candidate and
+   cleanup outcomes truthfully; do not imply atomic cleanup success.
+
+Web seeds its generation from `app.status` and updates it from `app.stateChanged`.
+Each request captures it; a stale response is dropped with `StaleTargetError`,
+without cache, toast or draft updates. On change, abort old-generation SSE,
+cancel queries and remove target-scoped queries; desktop query keys include
+generation. Open drafts survive recovery rereads. On 409, re-read `app.status`;
+GET queries may refetch once under the new generation, mutations never retry.
+SSE stops and resubscribes only after the new generation is known. Browser's
+generation is the constant `browser` and does not trigger this logic. These are
+pending S5-W1 requirements, not a description of main's web implementation.
+
+### v2 compatibility rule
+
+Settled: `CLIENT=1`, `MIN_DAEMON=1`. Compatible iff health `api_contract` exists,
+has valid integer `current`/`min_client` (not Booleans), and
+`min_client <= 1 <= current` **and** `current >= 1`. Missing/invalid metadata
+means `incompatible`, side `host`, `host_contract: null`. Valid metadata with
+`min_client > 1` means side `app`; a host below the minimum means side `host`.
+Check before activation and again after reconnect/Restart, invalidating cached
+compatibility. Linux's current reset/reattachment behavior and remaining owner
+integration are distinguished below. Metadata grants no access; existing
+native credential custody and permission checks are unchanged.
+
+### v2 validation examples
+
+These examples validate the payload values, not transport envelopes or live
+implementation. Use Draft202012Validator with format checking enabled for URI
+and date-time values. The final two examples must be rejected.
+
+#### Valid: ready local
+
+```json
+{
+  "schema": 2,
+  "generation": "g12",
+  "target": {"kind": "local", "id": "local", "name": "This computer"},
+  "state": "ready",
+  "incompatible": null,
+  "local": {"supported": true, "mode": "service", "running": "running", "prompt_base_url": "http://127.0.0.1:8765/api/v1"},
+  "candidate": null,
+  "access_unsaved": false,
+  "locale": {"current": "en", "persisted": true}
+}
+```
+
+#### Valid: incompatible host with missing or invalid metadata
+
+```json
+{
+  "schema": 2,
+  "generation": "g13",
+  "target": {"kind": "local", "id": "local", "name": "This computer"},
+  "state": "incompatible",
+  "incompatible": {"side": "host", "host_contract": null, "client_contract": 1, "min_daemon": 1},
+  "local": {"supported": true, "mode": "service", "running": "running", "prompt_base_url": "http://127.0.0.1:8765/api/v1"},
+  "candidate": null,
+  "access_unsaved": false,
+  "locale": {"current": "zh-CN", "persisted": true}
+}
+```
+
+#### Valid: active remote with a signing-in candidate
+
+```json
+{
+  "schema": 2,
+  "generation": "g14",
+  "target": {"kind": "remote", "id": "saved-1", "name": "Studio Host"},
+  "state": "ready",
+  "incompatible": null,
+  "local": {"supported": true, "mode": "service", "running": "stopped", "prompt_base_url": null},
+  "candidate": {"kind": "remote", "id": "saved-2", "name": "Work Host", "phase": "signing_in", "deadline": "2026-11-21T03:30:00+08:00"},
+  "access_unsaved": true,
+  "locale": {"current": "en", "persisted": false}
+}
+```
+
+#### Valid: incompatible error with optional side
+
+```json
+{"detail":{"code":"incompatible","side":"host"}}
+```
+
+#### Valid: ordinary native capacity error
+
+```json
+{"detail":{"code":"too_many_requests"}}
+```
+
+#### Invalid: extra detail key
+
+```json
+{"detail":{"code":"target_changed","forwarded":false}}
+```
+
+#### Invalid: side on a non-incompatible error
+
+```json
+{"detail":{"code":"busy","side":"host"}}
+```
+
+### Current implementation status
+
+Evidence below is source inspection at Linux main `921f126e`, not live/native
+acceptance. `AS` = `packaging/linux/desktop/app_scheme.py`; `WK` =
+`packaging/linux/desktop/app_scheme_webkit.py`. File/line numbers in this table
+refer to that immutable base. For **every row**, Mac is **pending (no Mac work
+this wave)** and web is **pending S5-W1**. Existing v1 bridge result errors
+(`code/effect/recovery`) are a different envelope and are not reclassified here.
+
+| Code / rule | Linux main 921f126e status and file:line evidence |
+| --- | --- |
+| `no_target` → 503 | Emitted by `WK:301–303` when captured target is absent. |
+| `target_starting` → 503 | Emitted by `AS:313–318,395–398` for unchecked/not-ready targets. |
+| `target_unreachable` → 503 | **L-1 connect-refused already fixed**: `AS:258–262,341–345,413–419`, `WK:247,390–394`. The broad pre-page-delivery exception handler can also classify later failures this way; Linux: pending S5-L1 to preserve ordinary post-forward errors. |
+| `incompatible` → 503, optional side | Implemented by PR #1767: constants `AS:26`; metadata validation `AS:283–304`, envelope/side guard `AS:41–48`, `WK:224–228`. Host/app emitted; unknown reserved, not emitted. |
+| `busy` → 503, host-busy only | **L-4: Linux: pending S5-L1.** Main emits busy for native caps `WK:269,272` and lock timeout `AS:278`; `AS:283–304` reads api_contract but not update_busy. It does not implement the v2 host-busy meaning. |
+| `target_changed` → 409 only before forwarding | **L-3: Linux: pending S5-L1.** `WK:300,318,327,332` includes pre-forward checks, but `WK:333,352–353,385–394,414–420` can return 409 after sending upstream; sent tracks page delivery, not first upstream byte. `AS:176–181` also maps reset epochs to 409. |
+| `too_many_requests` → 429 | Not emitted. **Linux: pending S5-L1** replaces cap/lock busy at `WK:269,272`, `AS:278`. |
+| `cancelled` → 499 class / stream error | Existing non-switch cancellation at `AS:176–179`, `WK:300,388,392,418`; stream error marker at `WK:338–347,395–411`. **Linux: pending S5-L1 (L-3)** for every post-forward switch, including delayed page delivery. |
+| `invalid_path` → 400 | Ordinary request error emitted at `AS:52–72`. |
+| `invalid_headers` → 400 | Ordinary request error emitted at `AS:75–81`. |
+| `invalid_request` → 400 | Ordinary request error emitted at `AS:353–355,406–408`. |
+| `invalid_request_id` → 400 | Ordinary request error emitted at `WK:265–267`. |
+| `native_bootstrap_only` → 400 | Internal forwarding guard at `AS:356–357,409–410`; page GET bootstrap is handled natively at `WK:305–311`. |
+| `not_found` → 404 | Ordinary asset error emitted at `AS:137–152`. |
+| `method_not_allowed` → 405 | Ordinary request error emitted at `WK:249–260`. |
+| `body_timeout` → 408 | Ordinary body-read error emitted at `WK:319–320`. |
+| `body_too_large` → 413 | Ordinary request error emitted at `AS:358–359,411–412`, `WK:324–325`. |
+| `byte_body_required` → 415 | Ordinary request error emitted at `WK:273–275`. |
+| `headers_too_large` → 431 | Ordinary request error emitted at `WK:263–264`. |
+| `bundle_unavailable` → 500 | Ordinary loader error emitted at `WK:288–291`. |
+| `upstream_redirect` → 502 | Ordinary local transport error emitted at `AS:367–370`. Remote redirect currently maps to target_unreachable at `AS:417–419`; Linux: pending S5-L1 to keep post-forward failures non-recovery. |
+| `incomplete_body` → 502 | Emitted at `WK:368–370`; after streaming starts it reaches the body-error marker, not a replacement HTTP response. |
+| `reader_timeout` → 504 | Emitted at `WK:376–378`; streaming body fails through the error marker. |
+| Closed error envelope / side restriction | Already present at `AS:41–48`, `WK:224–228`; no other detail keys emitted. |
+| app.status / app.stateChanged v2 | Not emitted: `connection_contract.py:20–27,236–240,303–310` still describes v1 commands/events; `WK:124,150–154` installs only the abort channel. **Linux: pending S5-L1.** |
+| Generation header admission and stripping | No comparison/enforcement in `WK:261–279,293–333`. Local allowlist `AS:34–36,75–81` already excludes it; remote `client_runtime.py:139–151` strips page X-HappyRanch-* before native authority. **Linux: pending S5-L1** for admission. |
+| Atomic target+generation swap → cancellation → event | `WK:163–171` cancels before replacing target; no generation/event. **Linux: pending S5-L1.** |
+| Non-GET / pending-unknown owner commit refusal | No client.commitSwitch/owner-registry gate in `connection_contract.py:20–27`, `WK:163–171`. **Linux: pending S5-L1** with S6-W2 owner integration. |
+| Compatibility before activation, reconnect/Restart | Linux health admission implemented in #1767 (`AS:270–306`); reset `AS:169–174`, remote.ready `AS:389–398`, reselection/navigation/process loss `WK:157,163–189`. Launcher reattachment recreates local target (`happyranch_window.py:959–962,1052–1074`). Same-instance remote reconnect requires its owner to reset/reselect; full v2 commit integration **Linux: pending S5-L1**. Mac pending. |
+| L-2 bearer refresh | `_Target.reset()` clears bearer at `AS:169–174`; `_prepare()` bootstraps if absent at `AS:337–348`. `LocalDaemon.send()` at `AS:350–371` has no re-bootstrap-on-401 branch. **Linux: pending S5-L1 verification/fix**; reset alone is not proof of 401 recovery. |
+
+W-1/W-2 remain web-owner requirements: native 429 must stay an ordinary error;
+host busy must be transient and clear on successful forwarding; stale responses
+must not revive recovery, and mutations never auto-retry on 409. The open S1b-A
+PR #1764 is not counted as merged v2 web work. S5-0 changes no implementation,
+tests, required checks or CI triggers. Live Linux, Mac and web v2 behavior is
+**NOT RUN** by this specification change.
