@@ -10,12 +10,13 @@ import sys
 
 
 SCANNED_DIRS = ("runtime/infrastructure", "runtime/orchestrator")
-# Generated/dependency trees, nested checkouts and task artifacts are not source.
+# These artifact names are excluded only at the source root, never in packages.
 SOURCE_EXCLUDED_DIRS = {
     ".git", ".claude", ".agents", ".codex", ".happyranch", ".worktrees",
     ".venv", "venv", "env", "node_modules", "__pycache__", "build", "dist",
     "dist-connection", "output", "repos", "_pyi_hooks",
 }
+SOURCE_EXCLUDED_PATHS = {"web/node_modules", "web/dist", "web/dist-connection"}
 ASYNCIO_FIX = (
     "use asyncio.get_running_loop() inside a coroutine or asyncio.run() at a "
     "synchronous entry point; implicit get_event_loop() lookup is unsafe on Python 3.12+"
@@ -36,17 +37,36 @@ class ImportBindings(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             self.bind(alias.asname or alias.name.split(".")[0],
+                      "asyncio.events" if alias.name == "asyncio.events" and alias.asname else
                       "asyncio" if alias.name == "asyncio" or (
                           alias.name.startswith("asyncio.") and alias.asname is None) else None)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             self.bind(alias.asname or alias.name,
-                      f"asyncio.{alias.name}" if node.level == 0 and node.module == "asyncio" else None)
+                      f"{node.module}.{alias.name}" if node.level == 0 and node.module in (
+                          "asyncio", "asyncio.events") else None)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self.bind(node.id)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.bind(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs | ast.MatchStar) -> None:
+        if node.name is not None:
+            self.bind(node.name)
+        self.generic_visit(node)
+
+    visit_MatchStar = visit_MatchAs
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        if node.rest is not None:
+            self.bind(node.rest)
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
         self.bind(node.name)
@@ -143,7 +163,7 @@ class AsyncioCalls(ast.NodeVisitor):
         return None
 
     def visit_Call(self, node: ast.Call) -> None:
-        if self.qualified_name(node.func) == "asyncio.get_event_loop":
+        if self.qualified_name(node.func) in ("asyncio.get_event_loop", "asyncio.events.get_event_loop"):
             self.lines.append(node.lineno)
         self.generic_visit(node)
 
@@ -221,7 +241,10 @@ def scan(root: Path) -> tuple[int, list[str]]:
     paths: list[Path] = []
     for parent, dirs, files in os.walk(root, onerror=raise_walk_error):
         dirs[:] = sorted(name for name in dirs
-                         if name not in SOURCE_EXCLUDED_DIRS and not name.endswith(".egg-info"))
+                         if not (Path(parent) == root and (
+                             name in SOURCE_EXCLUDED_DIRS or name.endswith(".egg-info")))
+                         and (Path(parent) / name).relative_to(root).as_posix()
+                         not in SOURCE_EXCLUDED_PATHS)
         # Refuse skipped directory links rather than reporting incomplete coverage.
         for name in dirs:
             if (Path(parent) / name).is_symlink():
