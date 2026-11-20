@@ -13,7 +13,33 @@ from runtime.infrastructure.task_pause_controls import decode_journal
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_cancel import _check
 from runtime.workflows.sequential_engine import _engine_rows
-from runtime.workflows.sequential_history import _ReadBudget
+from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+
+
+def capture_member_cancel(org: Any, conn: sqlite3.Connection, run_id: str, captures: Any) -> dict:
+    """Reuse native opaque delivery/aggregation for exactly one @2 member.
+
+    The caller owns the control writer and its postcommit handoff. The source
+    and sibling native owners never belong to this cancellation.
+    """
+    from runtime.orchestrator.run_step import _RootWorktreeTransitions
+    from runtime.workflows.sequential_cancel import _controls
+    from runtime.workflows.sequential_mixed_history import read_selected_mixed_history_uncommitted
+
+    budget = _ReadBudget()
+    with _sql_budget(conn, budget):
+        run = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))[0]
+        history = read_selected_mixed_history_uncommitted(conn, org_slug=org.slug,
+            task_id=run['carrier_task_id'], deadline=budget.deadline)
+        keys = {key for key, kind, _, instance in history.owners
+            if instance == run_id and kind in ('seq_carrier', 'seq_visit')}
+        tasks = {row[0]: dict(zip(history.task_columns, row, strict=True)) for row in history.tasks if row[0] in keys}
+        controls, _ = _controls(org, conn, run['carrier_task_id'], tasks, budget)
+        owners = CancelOwners.capture(org, conn, tasks, history, budget, saved=None, retained_cancelled=False)
+        # Capture owns uncertainty; a known live original awaits observation.
+        owners.attach(_RootWorktreeTransitions(), captures)
+        budget.check()
+        return dict(controls=controls, owners=owners)
 
 
 @dataclass

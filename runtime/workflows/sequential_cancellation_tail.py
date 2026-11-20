@@ -17,6 +17,41 @@ from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, 
 from runtime.workflows.sequential_mixed_history import MixedSequentialHistory
 
 
+def drain_source_cancellations(org: Any, source_task_id: str) -> None:
+    """Rediscover committed original closure after a cancellation won the tail.
+
+    Missing proofs retain the outstanding owner. The existing finish writer
+    authenticates both proofs and the complete resulting history; no acceptance
+    or allocation is reachable from this path.
+    """
+    from runtime.workflows.sequential_definition import compile_generic_definition
+    from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
+
+    budget = _ReadBudget()
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_seq_runs'").fetchone() is None:
+            return
+        runs = _engine_rows(conn, 'workflow_seq_runs', budget,
+            "source_task_id=? AND engine_version=2 AND state='running' AND progress='cancelling'", (source_task_id,))
+    if not runs:
+        return
+    capture = org.workflow_authority.capture_admission()
+    with org.workflow_authority.admission_writer(capture) as conn, _sql_budget(conn, budget):
+        for observed in runs:
+            run = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (observed['id'],))[0]
+            if run['state'] != 'running' or run['progress'] != 'cancelling':
+                continue
+            proofs = _engine_rows(conn, 'workflow_seq_evidence', budget,
+                "run_id=? AND visit_id=? AND kind IN ('terminal','outer')", (run['id'], run['active_visit_id']))
+            if len(proofs) != 2:
+                continue
+            pin = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))[0]
+            compiled = compile_generic_definition(pin['definition_bytes'], source_digest=pin['source_digest'])
+            finish_cancel_and_wake_uncommitted(conn, org.db, org_slug=org.slug, run=run,
+                compiled=compiled, authority=org.workflow_authority, capture=capture)
+        budget.check()
+
+
 @dataclass(frozen=True)
 class CancelledOwnerDisposition:
     """Ephemeral observation of ONE original owner, not a reusable receipt."""

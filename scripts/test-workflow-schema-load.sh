@@ -4843,6 +4843,44 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
         if s6b_case not in (None, 'all', case):
             continue
         if case == 'cancel_source_all_runs':
+            with s6fixture(hold=False) as f:
+                task = f.db.get_task(f.ids.visit_task_id)
+                invocation = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                    's6b-original-' + f.ids.visit_id, owner='sequential', workflow_dispatcher=f.dispatcher)
+                invocation.prepare()
+                ids = s6blaunch(f, 0)
+                visit = s4row(f, 'workflow_seq_visits', ids.visit_id)
+                sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
+                parent = f.db.get_task('s5-parent')
+                stops = []
+                def original_stop():
+                    assert not f.conn.in_transaction and not f.org.db_lock.locked()
+                    assert not f.db._lock._is_owned()
+                    assert s4row(f, 'workflow_seq_runs', ids.run_id)['progress'] == 'cancelling'
+                    stops.append('original-stop')
+                f.org.sessions.set_active(visit['task_id'], visit['principal'], visit['session_id'], org_slug='scratch')
+                f.org.sessions.set_cancel_control(visit['task_id'], visit['principal'], visit['session_id'], original_stop)
+                result = s6land(f, 's6b-running-control', dict(action='workflow_control', workflow=s4command(f, 'cancel')))
+                bridge = f.org.orchestrator._workflow_continuation
+                assert stops == [], case + ': Stop escaped callback COMMIT/publication'
+                control = f.conn.execute('SELECT receipt_bytes FROM workflow_seq_controls WHERE run_id=?', (ids.run_id,)).fetchone()[0]
+                bridge.publish_result(result['id'], f.source.id)
+                assert stops == ['original-stop'], 'S6b F2: Running control did not deliver exactly one original Stop'
+                owners = invocation._sequential_cancel_owners
+                assert len(owners) == 1 and owners[0].sealed and owners[0].incomplete
+                assert not owners[0].unknown and owners[0].observations == {}, case + ': live original became permanently unknown'
+                assert owners[0].originals[invocation.identity][1] is invocation
+                assert all(original.task.id == visit['task_id'] for _, original in owners[0].originals.values())
+                assert invocation.store._live[invocation.identity] is invocation
+                assert f.db.get_task(f.source.id).status == 'in_progress' and f.db.get_task('s5-parent') == parent
+                assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id) == sibling
+                assert f.org.sessions.get_active(visit['task_id'], visit['principal']) == visit['session_id']
+                assert f.org.sessions.get_cancel_control(visit['task_id'], visit['principal']) is original_stop
+                before = s5snap(f)
+                assert f.db.admit_task_completion_callback(**f.s6_last_kwargs)
+                bridge.publish_result(result['id'], f.source.id)
+                assert stops == ['original-stop'] and s5snap(f) == before, case + ': exact replay issued another Stop'
+                assert f.conn.execute('SELECT receipt_bytes FROM workflow_seq_controls WHERE run_id=?', (ids.run_id,)).fetchone()[0] == control
             with s6fixture() as f:
                 sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
                 parent = f.db.get_task('s5-parent')
@@ -5029,6 +5067,47 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
                 assert tuple(tuple(row) for row in f.conn.execute('SELECT id,original_limits_bytes,visit_count,recovery_count FROM workflow_seq_runs ORDER BY id')) == limits
                 assert observation(f.db, source.id)['pending'], case + ': Pause/Resume lost obligation'
         elif case == 'unknown_effect_kept':
+            for source_loss in ('founder', 'failed'):
+                with s6fixture(hold=False) as f:
+                    ids = f.ids
+                    s4closed(f, ids.visit_id, summary=s4bsummary('finish'), terminal='success', positive=False)
+                    visit = s4row(f, 'workflow_seq_visits', ids.visit_id)
+                    run = s4row(f, 'workflow_seq_runs', ids.run_id)
+                    terminal = json.loads(f.conn.execute("SELECT evidence_bytes FROM workflow_seq_evidence WHERE visit_id=? AND kind='terminal'", (ids.visit_id,)).fetchone()[0])
+                    invocation = SimpleNamespace(task=f.db.get_task(visit['task_id']), agent=visit['principal'],
+                        session_id=visit['session_id'], identity=terminal['invocation_id'])
+                    before_visits = f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0]
+                    reached = []
+                    def lose_source_after_outer(run_id, *, visit_id):
+                        from runtime.workflows.sequential_business_hold import generic_closed_visit
+                        assert generic_closed_visit(f.conn, run=run, visit=visit, budget=seq_history._ReadBudget(), cancellation=True)['kind'] == 'settled'
+                        reached.append(True)
+                        if source_loss == 'founder':
+                            s6bcancel(f)
+                        else:
+                            f.conn.execute("UPDATE tasks SET status='failed',completed_at=?,block_kind=NULL WHERE id=?", ('2026-11-20T00:00:00+00:00', f.source.id))
+                            f.conn.commit()
+                        capture = f.org.workflow_authority.capture_admission()
+                        try:
+                            with f.org.workflow_authority.admission_writer(capture) as writer:
+                                f.dispatcher._accept_generic_uncommitted(writer, run_id=run_id, visit_id=visit_id, capture=capture)
+                        except ValueError as exc:
+                            assert str(exc) == 'sequential_carrier_identity_conflict'
+                        else:
+                            raise AssertionError(case + ': source loss accepted business output')
+                    with patch.object(f.dispatcher, '_advance_generic', lose_source_after_outer):
+                        f.dispatcher._generic_outer_settled(invocation, run, visit, f.compiled, dict(phase='result_processing'), True)
+                    assert reached == [True]
+                    bridge = f.org.orchestrator._workflow_continuation
+                    bridge.settled(visit['task_id']); bridge.rediscover(queue=f.queue)
+                    stopped = s4row(f, 'workflow_seq_runs', ids.run_id)
+                    assert (stopped['state'], stopped['terminal_outcome'], stopped['active_visit_id']) == ('finished', 'cancelled', None), 'S6b F1: committed original closure stranded after late cancellation'
+                    assert s4row(f, 'workflow_seq_visits', ids.visit_id)['result_id'] is None
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == before_visits
+                    before = s5snap(f)
+                    bridge.settled(visit['task_id']); bridge.rediscover(queue=f.queue)
+                    assert s5snap(f) == before and f.source.id not in s6queue(f)
             with s6fixture(hold=False) as f:
                 ids = s6blaunch(f)
                 original_ids = f.ids; f.ids = ids

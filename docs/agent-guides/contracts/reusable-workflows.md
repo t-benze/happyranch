@@ -8,6 +8,9 @@ re-read in the same authority writer, including runs admitted by earlier source
 results/SIDs and already finished members. Cancelling a source or ordinary
 ancestor fences every unfinished owned run. Finished history stays unchanged.
 A result-owned S4a cancel of one run leaves the source and sibling runs alive.
+Its original member-scoped opaque Stop controls and native-owner aggregation
+are captured with the control transaction and delivered after COMMIT. Exact
+control replay never issues another Stop; lost originals remain unsettled.
 Missing/malformed membership, hidden live work and native drift refuse the whole
 mutation with `sequential_cancellation_reconciliation_required` (409).
 
@@ -29,8 +32,12 @@ uses the original complete-reader budgets and operation deadline.
 
 Existing source settlement, continuation rediscovery and native member tails
 observe failed/cancelled/superseded sources and use that same mixed writer.
-They never revive the source or infer another manager. Unconsumed inbox and
-stored delivery rows remain immutable. Dependency observations derive
+They never revive the source or infer another manager. Already-cancelling
+members with committed original terminal and outer proofs
+are revisited under the authority writer and finished by the existing finish
+owner. This drains an outer-before-fence race without accepting output or
+allocating a visit. Missing proofs retain the outstanding original owner.
+Unconsumed inbox and stored delivery rows remain immutable. Dependency observations derive
 `initiator_terminal` for a terminal source, or `unavailable` with
 `initiator_agent_unavailable` when the recorded agent is no longer an active,
 eligible manager. Addressed events stay pending; ordinary admission cannot
