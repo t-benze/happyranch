@@ -1126,6 +1126,29 @@ if sys.argv[1:] in ([], ['--schema2']):
     cases = SCHEMA2_CASES if schema2_case in (None, 'all') else (schema2_case,)
     for case in cases:
         if case == 'schema1_preserved':
+            from runtime.orchestrator.workflow_continuation import WorkflowContinuation
+            for version in (0, 1):
+                with sequential_fixture(schema_version=version, trace=False) as (db, _, _):
+                    if version:
+                        populate_sequential(db)
+                        assert read_sequential_history(db._conn, expected_org_slug='scratch').run_ids == ('run',)
+                    original = schema2_inventory(db.db_path)
+                    before = hashlib.sha256(db.db_path.read_bytes()).hexdigest()
+                    changes = db._conn.total_changes
+                    statements = []
+                    db._conn.set_trace_callback(statements.append)
+                    failure = None
+                    try:
+                        org = SimpleNamespace(db=db, slug='scratch', orchestrator=SimpleNamespace(_db=db))
+                        WorkflowContinuation(org).settled('TASK-seq-load')
+                    except (ValueError, sqlite3.Error) as exc:
+                        failure = exc
+                    finally:
+                        db._conn.set_trace_callback(None)
+                    assert failure is None, 'S6b R2 F1: ordinary settlement failed on retained storage: ' + repr(failure)
+                    assert db._conn.total_changes == changes and schema2_inventory(db.db_path) == original
+                    assert hashlib.sha256(db.db_path.read_bytes()).hexdigest() == before
+                    assert not any('engine_version' in sql or 'progress' in sql for sql in statements), statements
             with schema2_fixture(history='finished') as (path, argv, original, before, *_):
                 with closing(sqlite3.connect(path)) as conn:
                     conn.row_factory = sqlite3.Row
@@ -4860,12 +4883,61 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
                     stops.append('original-stop')
                 f.org.sessions.set_active(visit['task_id'], visit['principal'], visit['session_id'], org_slug='scratch')
                 f.org.sessions.set_cancel_control(visit['task_id'], visit['principal'], visit['session_id'], original_stop)
-                result = s6land(f, 's6b-running-control', dict(action='workflow_control', workflow=s4command(f, 'cancel')))
                 bridge = f.org.orchestrator._workflow_continuation
-                assert stops == [], case + ': Stop escaped callback COMMIT/publication'
+                decision = dict(action='workflow_control', workflow=s4command(f, 'cancel'))
+                sid = 's6b-running-control'
+                s6sid(f, sid)
+                f.s6_last_kwargs = dict(task_id=f.source.id, agent=f.source.assigned_agent, session_id=sid,
+                    output_summary='Private S6a callback', confidence_score=80, status='completed',
+                    waiting_on_job_ids=None, decision_json=s4bytes(decision).decode())
+                before = s5snap(f)
+                callback_bridge = f.db._workflow_continuation
+                original_callback = callback_bridge.callback_uncommitted
+                def refuse_after_capture(**kwargs):
+                    assert original_callback(**kwargs)
+                    assert stops == []
+                    raise RuntimeError('S6b result rollback after owner capture')
+                async def rollback_capture():
+                    with patch.object(callback_bridge, 'callback_uncommitted', refuse_after_capture):
+                        async with callback_bridge.callback_admission(f.source.id, decision):
+                            f.db.admit_task_completion_callback(**f.s6_last_kwargs)
+                import asyncio
+                try:
+                    asyncio.run(rollback_capture())
+                except RuntimeError as exc:
+                    assert str(exc) == 'S6b result rollback after owner capture'
+                else:
+                    raise AssertionError(case + ': missed result rollback')
+                assert s5snap(f) == before and stops == [] and not bridge._cancel_publications
+                assert not invocation._sequential_cancel_owners, case + ': rolled-back owner handoff survived'
+                async def consumer_before_callback_exit():
+                    async with f.db._workflow_continuation.callback_admission(f.source.id, decision):
+                        assert f.db.admit_task_completion_callback(**f.s6_last_kwargs)
+                        result = f.db.get_latest_task_result(f.source.id, f.source.assigned_agent, sid)
+                        report = completion_report_from_result_row(f.source.id, result, fallback_agent=f.source.assigned_agent)
+                        assert not f.conn.in_transaction and not f.db._lock._is_owned()
+                        assert stops == [], case + ': Stop escaped callback COMMIT/publication'
+                        barrier, failures = Barrier(2), []
+                        def consume():
+                            try:
+                                barrier.wait(timeout=5)
+                                _consume_completion_report(f.org.orchestrator, f.source.id, report, result_row_id=result['id'])
+                            except BaseException as exc:
+                                failures.append(exc)
+                        worker = Thread(target=consume)
+                        worker.start()
+                        barrier.wait(timeout=5)
+                        worker.join(timeout=5)
+                        assert not worker.is_alive() and not failures, failures
+                    return result
+                result = asyncio.run(consumer_before_callback_exit())
                 control = f.conn.execute('SELECT receipt_bytes FROM workflow_seq_controls WHERE run_id=?', (ids.run_id,)).fetchone()[0]
+                assert stops == ['original-stop'], 'S6b R2 F2: early result consumer stranded the original Stop'
+                assert not bridge._cancel_publications, case + ': stranded cancellation handoff'
+                bridge.settled(f.source.id)
+                bridge.rediscover(queue=f.queue)
                 bridge.publish_result(result['id'], f.source.id)
-                assert stops == ['original-stop'], 'S6b F2: Running control did not deliver exactly one original Stop'
+                assert stops == ['original-stop'] and not bridge._cancel_publications
                 owners = invocation._sequential_cancel_owners
                 assert len(owners) == 1 and owners[0].sealed and owners[0].incomplete
                 assert not owners[0].unknown and owners[0].observations == {}, case + ': live original became permanently unknown'

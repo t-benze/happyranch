@@ -163,6 +163,11 @@ class WorkflowContinuation:
                         if committed is not None:
                             handoff['owners'].committed = True
                             self._cancel_publications[result_id] = handoff
+                # A result consumer can run after native COMMIT but before
+                # this context resumes. Complete its pending Stop here too;
+                # the shared locked pop lets only one publisher take it.
+                for result_id in cancellations:
+                    self._publish_cancellation(result_id)
             finally:
                 _control_capture.reset(token)
 
@@ -289,13 +294,8 @@ class WorkflowContinuation:
         for task_id in ids:
             self.wake(task_id, queue=queue)
 
-    def publish_result(self, result_id: int, task_id: str) -> None:
-        """Postcommit publication uses only the exact recorded effect receipt."""
-        with self.db.coherent_read_view() as conn:
-            row = conn.execute('SELECT receipt_bytes FROM workflow_seq_consumption_receipts '
-                'WHERE result_id=? AND initiator_task_id=?', (result_id, task_id)).fetchone()
-            _require(row is not None, 'initiator_receipt_missing')
-            effects = json.loads(row[0])['effects']
+    def _publish_cancellation(self, result_id: int) -> None:
+        """Take one committed member handoff, then Stop outside the DB lock."""
         with self.db._lock:
             cancellation = self._cancel_publications.pop(result_id, None)
         if cancellation is not None:
@@ -308,6 +308,15 @@ class WorkflowContinuation:
                 raise
             finally:
                 cancellation['owners'].seal(failed=failed)
+
+    def publish_result(self, result_id: int, task_id: str) -> None:
+        """Postcommit publication uses only the exact recorded effect receipt."""
+        with self.db.coherent_read_view() as conn:
+            row = conn.execute('SELECT receipt_bytes FROM workflow_seq_consumption_receipts '
+                'WHERE result_id=? AND initiator_task_id=?', (result_id, task_id)).fetchone()
+            _require(row is not None, 'initiator_receipt_missing')
+            effects = json.loads(row[0])['effects']
+        self._publish_cancellation(result_id)
         selected = getattr(self.org.orchestrator, '_queue', None)
         if selected is not None and effects.get('new_task_id') is not None:
             self.org.workflow_sequential_dispatch.notify_queued(effects['new_task_id'], selected)

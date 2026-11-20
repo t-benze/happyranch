@@ -13,7 +13,7 @@ from typing import Any
 from runtime.infrastructure.task_pause_controls import decode_journal
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_engine import _engine_rows
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_history
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_history, read_sequential_layout
 from runtime.workflows.sequential_mixed_history import MixedSequentialHistory
 
 
@@ -29,7 +29,8 @@ def drain_source_cancellations(org: Any, source_task_id: str) -> None:
 
     budget = _ReadBudget()
     with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
-        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_seq_runs'").fetchone() is None:
+        layout = read_sequential_layout(conn)
+        if not layout.sequential or layout.schema_version != 2:
             return
         runs = _engine_rows(conn, 'workflow_seq_runs', budget,
             "source_task_id=? AND engine_version=2 AND state='running' AND progress='cancelling'", (source_task_id,))

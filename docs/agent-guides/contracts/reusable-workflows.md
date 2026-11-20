@@ -11,6 +11,10 @@ A result-owned S4a cancel of one run leaves the source and sibling runs alive.
 Its original member-scoped opaque Stop controls and native-owner aggregation
 are captured with the control transaction and delivered after COMMIT. Exact
 control replay never issues another Stop; lost originals remain unsettled.
+Callback exit also drains the committed handoff, so a result consumer that
+runs before callback-context exit cannot strand it. Both publishers take the
+same one-shot handoff under the Database lock and call Stop outside locks and
+transactions; rollback discards the original capture.
 Missing/malformed membership, hidden live work and native drift refuse the whole
 mutation with `sequential_cancellation_reconciliation_required` (409).
 
@@ -37,6 +41,9 @@ members with committed original terminal and outer proofs
 are revisited under the authority writer and finished by the existing finish
 owner. This drains an outer-before-fence race without accepting output or
 allocating a visit. Missing proofs retain the outstanding original owner.
+This drain uses the complete layout reader before reading @2 columns; retained
+schema1 and absent sequential storage keep ordinary settlement unchanged and
+are never installed or migrated. Invalid supported @2 storage still refuses.
 Unconsumed inbox and stored delivery rows remain immutable. Dependency observations derive
 `initiator_terminal` for a terminal source, or `unavailable` with
 `initiator_agent_unavailable` when the recorded agent is no longer an active,
