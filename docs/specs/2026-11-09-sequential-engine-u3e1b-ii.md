@@ -1,5 +1,14 @@
 # U3e-1b-ii original source outer producer
 
+## S5 version boundary
+
+S5 adds the version-selected `seq_source_wait_set` branch: one genuine original
+source outer settlement authenticates and records every same-SID member before
+any first-visit queue publication. Negative/uncertain settlement records its cause
+and releases none; exact replay writes/publishes nothing. Source/null-visit proof
+retains source-settlement meaning. The original @1 producer below remains
+unchanged. Live initiator continuation and admission snapshots belong to S6a.
+
 Source unit TASK-14815, ROOT TASK-14640/THR-336 Founder85/102. Immutable base B is ead9ceb3274dcdd2eb0082fce4ddcf359e37a969 (PR1327). Governing design TASK14730 u3e-design.md SHA256 0188551f610bf26c099871eb470bd4192e1ac2285115c12c402df6527bc85fd5 §§4.4/7/8/8.1/9, manager acceptance D1–D4 and u3e1b-ruling.md select this final U3e slice.
 
 The original ordinary/v2 invocation alone can create the existing null-visit workflow-sequential-outer@1 row. Require genuine native success, supported real containment, receipt.quiescent is True, safe cleanup/no survivors/no cleanup_error, result_processing without execution_unknown, clear tracker and positive original-owner close/release removals. TaskInvocation/native/release attribution must match the original org/task/agent/SID/owner; actual retry ordinal is preserved. No new host plumbing or recovery reconstruction exists.

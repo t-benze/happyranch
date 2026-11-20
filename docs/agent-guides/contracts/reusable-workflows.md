@@ -1,5 +1,94 @@
 # Reusable workflow contracts
 
+## S5: internal initiator inbox and plural admission @2
+
+The internal `prepare_generic_batch` / `admit_batch_uncommitted` boundary accepts
+one to eight Start@2 commands, without a public parser, route or run_step mount.
+Discovery resolves all executor/assignment pairs outside SQL ownership. The
+single authority writer validates every member and the genuine source
+principal/SID/INTEGER result, aggregate wider-goal remaining limits and existing
+shared cancellation reservations before allocation. Any refusal or allocation
+failure rolls back the whole batch. The caller supplies the original remaining
+allowance; a new batch/key/session grants no allowance. The existing finite
+combined-history budget can refuse a syntactically valid eight-member batch.
+
+A stable normalized `workflow_seq_source_wait_sets` identity owns the source's
+version3 `seq_source_wait_set` mark. Membership retains source task, run, source
+result and start operation key. Run IDs are never placed in tasks.note,
+active_chain, active_fanout or blocked_on_job_ids. The source stays delegated;
+each run has its own structural carrier and sequential visit stream. The retained
+unmounted singleton S3/S4 primitive still supports ordinary sources.
+
+Batch start replay authenticates the entire original admission membership and
+bytes. It returns the original ordered IDs without writes only when **every**
+member passes `validate_selected_run_uncommitted(scope='admission')`. Any later
+member lifecycle transition refuses the whole batch with
+`workflow_seq_admission_replay_incomplete`; different original bytes conflict.
+This uses S4a's unchanged predicate and is distinct from decision-receipt replay.
+
+The original source outer-settlement boundary records source/null-visit outer
+proofs for every run admitted by that source SID. Only positive original native
+success, safe cleanup, tracker clearance and original close/release evidence
+release the first visits. Negative or uncertain settlement retains the bounded
+`source_outer_unsettled` cause and releases none. Every proof commits before
+queue publication; outbox recovery may publish later. Exact settlement replay
+writes and publishes nothing. No singleton first-match selection releases a batch.
+
+S5's member hold wrapper and generic terminal/result writer persist one immutable
+`workflow-sequential-initiator-wake@2` inbox obligation in the same transaction as
+the causal event. A terminal result closes only its member carrier (failed for a declared fail
+edge, completed for a terminal edge); a fail edge carries a failed wake and its
+declared cause. It never
+completes the source or the ordinary parent. The inbox addresses the original
+source task/principal; queue insertion is never consumption. The @1 event,
+return, parent-wake and terminal thread-tail behavior is retained unchanged.
+Live initiator queue/session continuation belongs to S6a; owned-run cancellation
+belongs to S6b. Coding remains Disabled and PR1252 remains held.
+
+`snapshot_delivery(conn, initiator_task_id, principal, session_id, cursor=...)`
+is called exactly once per genuinely admitted SID, inside its admission
+transaction. It selects at most 32 unconsumed notifications in ascending
+notification-ID order. Existing nonempty deliveries replay without writes.
+The stable cursor is the last delivered ID; further pending events are not
+acknowledged or discarded. `delivered_page` reads **only stored deliveries** for
+that task/SID and never selects pending inbox arrivals or inserts deliveries.
+Late arrivals remain pending for a later session. Delivery does not consume, so
+an unacknowledged notification may be delivered to another genuinely admitted SID.
+
+**Empty snapshot limitation:** zero delivery rows cannot distinguish an empty
+snapshot from no snapshot call. Write-once for an EMPTY snapshot is a caller
+contract, enforced by S6a's single admission call site. Every later read/consume
+uses stored rows only, including after reopening the connection. Do not call
+`snapshot_delivery` again to read an empty page. No schema, sentinel, result,
+visit evidence or invented run association represents this empty snapshot.
+
+`consume_decision_uncommitted` authenticates at most 32 consume IDs against the
+actual SID's stored deliveries and the genuine native INTEGER result/decision.
+On first processing it invokes the internal result consumer's effect writer on
+the SAME transaction, then records its effects and consumption receipt. Any
+exception rolls back result/effects/consumption together. Exact receipt replay
+returns original recorded effects without invoking the writer, even after later
+run/source-session transitions. Existing ordinary decisions consume their stored
+delivered page without extra historical decision keys. S6a owns the run_step
+call site and genuine result/transaction ownership; S5 does not mount it.
+
+Complete readers authenticate normalized membership, source outer proofs,
+causal inbox bytes, actual delivery membership and receipt/native-result equality
+on the original row/byte/work/SQL/deadline ledgers. Inbox/delivery/receipt work
+uses the existing reservations (16MiB plus 128 identity copies, 32 rows, 4096
+traversal and 65536 SQL steps per unfinished run), within the unchanged 64MiB
+combined history. No new allowance is added. S4a storage ceilings and max_events
+meaning remain unchanged. The documented R4-F1 cross-family @1 headroom
+limitation remains the manager override; S5 does not repair it.
+
+Focused private verification uses
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=all`
+(and 3.14 or `--s5=CASE`). The seven named cases cover all-or-none admission,
+whole-batch replay, every-member source release, independent hold/return,
+duplicate wake, empty page/reopen/late arrival before ack, and receipt replay
+after ack, through real SQL transactions and TaskQueue insertion. These are
+private source observations, not live host/provider or S6a acceptance evidence.
+
 ## S4b: generic dispatch and native closure @2
 
 The internal version-selected dispatcher supports generic queue admission,
@@ -60,8 +149,8 @@ under the unchanged ledgers and cancellation reservation.
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4b=all`
 (and 3.14, or `--s4b=CASE`) exercises private production writers/readers and
 rendered node data. It does not establish genuine provider/process containment or
-live admission. Initiator wakes, inbox/wait sets and source continuation belong
-to S5; cancellation delivery belongs to S6b. No live operations follow from
+live admission. S5 supplies durable initiator wakes and inbox/wait sets; live source continuation
+belongs to S6a and cancellation delivery belongs to S6b. No live operations follow from
 this source unit.
 
 ## S4a: Held and controls @2 (inactive consumer)

@@ -1,5 +1,16 @@
 # Project Layout
 
+## S5 version boundary
+
+`runtime/workflows/sequential_initiator.py` owns internal @2 wait-set/inbox
+history, write-once session delivery snapshots, read-only delivered pages and
+result-owned receipt/consumption. `sequential_start.py` owns internal all-or-none
+batch preparation/admission and source settlement for all members;
+`sequential_return.py` owns member-carrier closure. Complete history and selected
+run readers validate those normalized relationships on existing budgets. Session
+admission and run_step continuation remain S6a, cancellation S6b. No public @2
+mount or schema change is part of S5; historical @1 remains version-selected.
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

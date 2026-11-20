@@ -1,5 +1,14 @@
 # U3e-1b-i inert sequential start adapter
 
+## S5 version boundary
+
+S5 adds a separate internal plural Start@2 batch boundary in sequential_start.py
+with normalized stable source wait-set membership, aggregate allowance checks
+before allocation and all-or-none COMMIT. Exact batch replay remains admission-only
+for every member through the unchanged S4a predicate. The public singular Start@1
+adapter, source parking bytes and original proof requirements below are historical
+@1 contracts and remain unchanged. No public @2 or run_step mount is supplied.
+
 Authority: engineering_manager ROOT TASK-14640, THR-336 Founder msg85/msg102;
 TASK-14730 design, accepted D1–D4 and U3e1b inert-adapter split; accepted
 TASK-14752 B reader-seam design and TASK-14807 native R1 rev4 design

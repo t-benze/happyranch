@@ -357,7 +357,9 @@ class SequentialDispatcher:
                 run, visit, _ = self._entry(conn, task_id)
                 task = self.org.db.get_task(task_id)
                 if run.get('engine_version', 1) == 2:
-                    return (run['state'] == 'running' and run['progress'] == 'queued'
+                    from runtime.workflows.sequential_initiator import source_released
+                    member = conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE run_id=?', (run['id'],)).fetchone()
+                    return ((not member or source_released(conn, run)) and run['state'] == 'running' and run['progress'] == 'queued'
                         and run['active_visit_id'] == visit['id'] and visit['state'] == 'queued'
                         and visit['selected'] == 1 and visit['session_id'] is None and visit['result_id'] is None
                         and task is not None and task.status.value == 'pending'
@@ -1265,7 +1267,7 @@ class SequentialDispatcher:
                                        compiled: Any, capture: Any) -> bool:
         from runtime.workflows.authority import generic_assignment_authority
         from runtime.workflows.sequential_assignments import AssignmentRefusal, recheck_launch_assignment, selection_agent
-        from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
+        from runtime.workflows.sequential_initiator import hold_and_wake_uncommitted as hold_generic_uncommitted
         budget = _ReadBudget()
         current = generic_assignment_authority(capture, org_slug=self.org.slug)
         rows = _engine_rows(conn, 'workflow_seq_assignments', budget, 'id=?', (visit['assignment_id'],))
@@ -1323,7 +1325,8 @@ class SequentialDispatcher:
 
     def _accept_generic_uncommitted(self, conn: sqlite3.Connection, *, run_id: str, visit_id: str, capture: Any) -> str | None:
         """Native closure -> bounded generic composition -> one persisted result transition."""
-        from runtime.workflows.sequential_business_hold import generic_closed_visit, hold_generic_uncommitted
+        from runtime.workflows.sequential_business_hold import generic_closed_visit
+        from runtime.workflows.sequential_initiator import hold_and_wake_uncommitted as hold_generic_uncommitted
         from runtime.workflows.sequential_control import _append_event, _move, validate_control_write
         from runtime.workflows.sequential_definition import parse_generic_callback, parse_generic_result
         from runtime.workflows.sequential_document_access import document_recipients, generic_binding_context
@@ -1422,6 +1425,13 @@ class SequentialDispatcher:
             for key, counts in decision.after.nodes:
                 conn.execute('INSERT INTO workflow_seq_node_counters VALUES (?,?,?,?) ON CONFLICT(run_id,node_id) '
                     'DO UPDATE SET visits=excluded.visits,revisions=excluded.revisions', (run_id, key, counts.attempts, counts.revisions))
+            if resulting in ('held', 'finished'):
+                from runtime.workflows.sequential_initiator import wake_uncommitted
+                from runtime.workflows.sequential_return import close_member_carrier_uncommitted
+                event = _engine_rows(conn, 'workflow_seq_events', budget, 'id=?', (event_id,))[0]
+                wake_uncommitted(conn, run, event, compiled, {visit_id: visit}, budget)
+                if resulting == 'finished':
+                    close_member_carrier_uncommitted(conn, run, decision.edge.action, budget)
         validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
         return new_task
 
