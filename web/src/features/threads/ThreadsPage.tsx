@@ -1297,9 +1297,10 @@ function DetailColumn({
             status={threadStatusOrFallback(thread.status)}
             participants={thread.participants}
             crumb={crumb}
-            // Count of the messages loaded for this thread (THR-376 .td-sub);
-            // omitted while the transcript is still loading.
-            messageCount={messagesLoading ? undefined : t('threads.page.header.messageCount', { count: messages.length })}
+            // Count of the messages loaded for this thread (THR-376 .td-sub).
+            // null while the transcript is still loading: the sub-line shows
+            // the thread id alone, never the raw participant-id fallback.
+            messageCount={messagesLoading ? null : t('threads.page.header.messageCount', { count: messages.length })}
             archiveSummary={thread.summary}
             dreamOriginated={isDreamOriginated}
             renaming={renaming}

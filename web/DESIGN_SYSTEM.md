@@ -176,7 +176,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   drops it next to `text-text-primary`. The old `PageHeader` (h2, Hanken
   18/600) is removed; `ThreadHeader` keeps its own h2 detail-pane header
   (THR-376 thread detail: mockup `.td-head`, title `font-display text-h1
-  font-medium`, optional `crumb` slot and `messageCount` sub-line). The
+  font-medium`, optional `crumb` slot and `messageCount` sub-line; while the
+  count loads the page passes `messageCount={null}` and the sub-line shows the
+  thread id alone, never raw participant ids). The
   thread-detail properties rail uses `--spacing-rail-wide` (300px,
   `md:w-rail-wide`); the 244px `--spacing-rail` stays the AppShell rail.
   Detail, onboarding and story headings are not migrated yet.

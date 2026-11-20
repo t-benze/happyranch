@@ -4404,9 +4404,11 @@ created-at ties). Summary rows also include literal dispatch and derived origin
 fields. Ordinary delegated children are not discovered through revisit traversal.
 Task UI thread grouping/column/detail use the derived origin with literal fallback
 for older servers; the task detail rail cites the original task with a revisit
-arrow, and thread linked-task chips (including retries) show only a compact
-`status - current task ID` pill with no secondary origin line or link (founder
-THR-324). CLI details distinguishes
+arrow, and thread linked-task entries (including retries) are bordered rail
+rows showing only a separate `StatusBadge` and current task `IdBadge`, the row
+linked to that current task, with no secondary origin line or link (founder
+THR-324, THR-376 redesign). The complete list is rendered, with internal scroll
+only. CLI details distinguishes
 `Thread`/`Origin task` from literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
 uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.
 

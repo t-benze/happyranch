@@ -4460,9 +4460,11 @@ Task details/list/roots and thread linked-task summaries carry nullable
 `originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
 keeps its creation meaning. Task grouping/column/detail use origin with literal
 fallback for older servers. The task detail rail cites the original task with a
-revisit arrow; a thread linked-task chip is one compact `status - TASK-…` pill
-showing only its full status and current task ID (linked to that task), with no
-secondary origin line or link (founder THR-324). CLI
+revisit arrow; a thread linked-task entry is one bordered rail row (THR-376
+`.rail-link`) carrying a separate shared `StatusBadge` (full status) and task
+`IdBadge` (current task ID), the whole row linked to that task, with no
+secondary origin line or link (founder THR-324). The complete linked-task list
+is rendered; a bounded height scrolls internally and nothing is dropped. CLI
 details separates `Thread`/`Origin task` from literal `Dispatched`. Summary fields are additive; the existing dict responses
 have no property schema in the path/method/parameter/status OpenAPI snapshot.
 See [the complete lineage/read contract](features-and-invariants.md#root-retry-source-thread-association).

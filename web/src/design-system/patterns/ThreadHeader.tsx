@@ -18,7 +18,9 @@
  * the back link inside the header block; the title uses the mockup .h1 size
  * (22px display, weight 500); and when `messageCount` is passed the sub-line
  * reads `thread id · N messages` instead of the participant list (the
- * participants live in the page's rail).
+ * participants live in the page's rail). Passing `messageCount={null}` means
+ * the count is still loading: the sub-line shows the thread id alone and
+ * never falls back to raw participant ids.
  *
  * Pure prop-driven. Actions are handed in as a slot so the composition can
  * compose Button primitives with its own onClick wiring.
@@ -58,8 +60,10 @@ interface ThreadHeaderProps {
   /** Back link rendered at the top of the header block (mockup .crumb). */
   crumb?: ReactNode;
   /** Localized "N messages" sub-line text; when set it replaces the
-   *  participant list in the sub-line. Omitted keeps the participant list. */
-  messageCount?: string;
+   *  participant list in the sub-line. `null` = count still loading: the
+   *  sub-line shows only the thread id (no participant fallback). Omitted
+   *  (undefined) keeps the participant list. */
+  messageCount?: string | null;
   /* ---- THR-209 inline rename (controlled by the page) ---- */
   /** When true the subject renders as a prefilled input with Save/Cancel. */
   renaming?: boolean;
@@ -170,8 +174,12 @@ export function ThreadHeader({
           <h2 className="text-text-primary truncate">{title}</h2>
           <div className="text-caption text-text-secondary mt-1 flex flex-wrap items-center gap-2">
             <IdBadge id={threadId} kind="thread" />
-            <span aria-hidden="true" className="text-text-muted">·</span>
-            <span>{messageCount ?? (participantLabels ?? (participants.join(', ') || L.noParticipants))}</span>
+            {messageCount !== null && (
+              <>
+                <span aria-hidden="true" className="text-text-muted">·</span>
+                <span>{messageCount ?? (participantLabels ?? (participants.join(', ') || L.noParticipants))}</span>
+              </>
+            )}
           </div>
         </div>
         {actions && (
