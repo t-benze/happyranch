@@ -7,9 +7,13 @@ import json
 import os
 import socket
 import threading
-from contextlib import contextmanager
+import time
+import ssl
+from contextlib import contextmanager, ExitStack
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
@@ -27,8 +31,412 @@ from scripts.test_home_activation_owner import consumed, venue as owner_venue
 from scripts.test_home_live_config import venue as live_venue
 from scripts.test_home_activation_txn import Crash, Venue, put
 from scripts.test_home_observer import reply
+from scripts.test_installer_token_custody import Fixture, home_publication_setup, home_unit_writes, staged_inventory
 
 SIDECAR = "/etc/systemd/system/happyranch-tsnet-sidecar.service"
+
+
+@pytest.fixture
+def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Real installer/activation owners; simulated NSS, native/LAN/materializer.
+
+    The systemd simulation alone creates service directories and live state in
+    its own namespace. Helper writes remain separately observable for B8.
+    """
+    from scripts.test_headscale_custody import KernelDump
+    from scripts.test_home_activation_owner import Admin
+    from runtime.remote_access import installer, policy_renew_units as policy
+    from runtime.remote_access.home_minter import CreationWindow
+    from runtime.remote_access.invite_issuer import MintedKey
+
+    fixture = Fixture(tmp_path, monkeypatch)
+    for name in ('connector.json', 'sidecar.json', 'policy.json', 'enrollment.key'):
+        (fixture.inputs / name).unlink()
+    fixture.inputs.rmdir()
+    real_socket = socket.socket
+    head = home_publication_setup(fixture, monkeypatch)
+    monkeypatch.setattr(socket, 'socket', lambda *args, **kw:
+        KernelDump(head, args) if args[0] == socket.AF_NETLINK else real_socket(*args, **kw))
+    io = fixture.installer
+    (fixture.root / 'run').mkdir(mode=0o755)
+    v = SimpleNamespace(root=fixture.root, fixture=fixture, head=head, io=io,
+        path=lambda path: fixture.root / path.lstrip('/'), admin=Admin(), states={},
+        calls=[], mints=[], writes=[], systemd_writes=[], observers=ExitStack(), thread_factory=threading.Thread,
+        service_present=False, account_creations=[], track_systemd_paths=False, systemd_paths=set())
+    lookup_user, lookup_group = io._lookup_user, io._lookup_group
+    def user(name: str) -> Any:
+        if name == 'happyranch' and not v.service_present: raise KeyError(name)
+        return lookup_user(name)
+    def group(name: str) -> Any:
+        if name == 'happyranch' and not v.service_present: raise KeyError(name)
+        return lookup_group(name)
+    io._lookup_user, io._lookup_group = user, group
+    v.receipts = HomeActivationStore(root=v.root, root_owner=io.root_owner)
+    v.transactions = HomeActivationTransactionStore(root=v.root, root_owner=io.root_owner)
+    v.lifecycle = h.HelperLifecycleBackend(io)
+    monkeypatch.setattr(h.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=os.getuid(), data_home=fixture.home))
+    monkeypatch.setattr(h.pwd, 'getpwall', lambda: [SimpleNamespace(pw_uid=os.getuid(), pw_name=fixture.user)])
+    # Installed read-only package artifacts, including the existing P1 units.
+    package = v.root / 'package'
+    package.mkdir(mode=0o755)
+    put(package / 'route_policy.json', Path(installer.__file__).with_name('route_policy.json').read_bytes(), 0o644)
+    monkeypatch.setattr(installer, '__file__', str(package / 'installer.py'))
+    for name, render in ((policy.SERVICE_NAME, policy.render_service), (policy.TIMER_NAME, policy.render_timer)):
+        put(v.path('/usr/lib/systemd/system/' + name), render().encode(), 0o644)
+    for directory in ('usr', 'usr/lib', 'usr/lib/systemd', 'usr/lib/systemd/system'):
+        v.path('/' + directory).chmod(0o755)
+    v.admin.nodes = ()
+    v.admin.list_nodes = lambda **kw: v.admin.nodes
+    monkeypatch.setattr(adapters.home_admin, 'RootHeadscaleAdminOperations', lambda: v.admin)
+    monkeypatch.setattr(adapters.VerifierClient, 'resolve', lambda self: 12345)
+    monkeypatch.setattr(adapters.home_admin, 'read_local_node_window', lambda *a, **kw: v.admin.window)
+    def mint(operation_id: str, expires_at: datetime, **kw: Any) -> MintedKey:
+        assert_locked(v)
+        now = datetime.now(timezone.utc)
+        v.mints.append(operation_id)
+        v.admin.window = CreationWindow(now, expires_at)
+        v.admin.key = replace(v.admin.key, key=f'{len(v.mints):048x}', used=False,
+                              created_at=now, expiration=expires_at)
+        return MintedKey(v.admin.key.key, expires_at)
+    monkeypatch.setattr(adapters.home_admin, 'mint_local_node', mint)
+    links = {
+        adapters._HEADSCALE: OWNED_LINK,
+        adapters._TARGET: '/etc/systemd/system/multi-user.target.wants/' + adapters._TARGET,
+        'happyranch-release-verifier.socket': '/etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket',
+        policy.TIMER_NAME: '/etc/systemd/system/happyranch-managed.target.wants/' + policy.TIMER_NAME,
+    }
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        if args[0] == 'useradd' and args[-1] == 'happyranch':
+            v.account_creations.append(args)
+            v.service_present = True
+            return 0, ''
+        if args[0] != 'systemctl':
+            code, output = head.run(args, **kw)
+            if args[0].endswith('happyranch-home-ca'):
+                raw = json.loads(output)
+                raw['ca_fingerprint'] = hashlib.sha256(ssl.PEM_cert_to_DER_cert(head.ca_pem.decode())).hexdigest()
+                output = json.dumps(raw) + '\n'
+            return code, output
+        verb = args[1]
+        name = args[2] if len(args) > 2 else None
+        if verb == 'show':
+            path = v.path('/usr/lib/systemd/system/' + name) if name in (policy.SERVICE_NAME, policy.TIMER_NAME) else v.path('/etc/systemd/system/' + name)
+            state = v.states.get(name, 'inactive')
+            props = dict(Id=name, Names=name, FragmentPath=str(path) if path.exists() else '',
+                DropInPaths='', NeedDaemonReload='no', LoadState='loaded' if path.exists() else 'not-found',
+                ActiveState=state, SubState='running' if state == 'active' else 'dead', Job='',
+                MainPID=str(os.getpid()) if state == 'active' else '0', ControlPID='0', ControlGroup='',
+                User='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
+                Group='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
+                DynamicUser='no', Unit=policy.SERVICE_NAME)
+            return 0, '\n'.join(f'{key}={props[key]}' for key in
+                (arg.split('=', 1)[1] for arg in args if arg.startswith('--property=')))
+        v.calls.append(args[1:])
+        assert_locked(v)
+        mark = len(v.writes)
+        before_native = staged_inventory(v.fixture) if v.track_systemd_paths else {}
+        try:
+            if verb == 'enable' and name in links:
+                link = v.path(links[name])
+                link.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                if not link.is_symlink():
+                    link.symlink_to(OWNED_LINK_TARGET if name == adapters._HEADSCALE else '../' + name)
+            if verb == 'disable' and name in links:
+                v.path(links[name]).unlink(missing_ok=True)
+            if verb == 'stop': v.states[name] = 'inactive'
+            if verb == 'start':
+                v.states[name] = 'active'
+                if name == adapters._HEADSCALE:
+                    for relative in ('var/lib/happyranch-headscale', 'run/happyranch-headscale'):
+                        v.path('/' + relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+                    put(v.path('/var/lib/happyranch-headscale/db.sqlite'), b'synthetic native Headscale DB')
+                if name == adapters._TARGET:
+                    v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active'})
+                    v.path('/var/lib/happyranch-tsnet-sidecar').mkdir(mode=0o700, parents=True, exist_ok=True)
+                    v.path('/run/happyranch-tsnet-sidecar').mkdir(mode=0o755, parents=True, exist_ok=True)
+                    v.admin.key = replace(v.admin.key, used=True)
+                    v.admin.nodes = (HeadscaleNode(1, HeadscaleUser(1, 'happyranch-node'), 'c' * 64, ('100.64.0.10',)),)
+                    role = 'home-sidecar-' + v.receipts.current().home_id
+                    marker = hashlib.sha256((role + '\x00https://control.happyranch.invalid:8443').encode()).hexdigest()
+                    put(v.path('/var/lib/happyranch-tsnet-sidecar/credential.consumed'), (marker + '\n').encode())
+                    v.observers.enter_context(observations(v))
+        finally:
+            v.systemd_writes.extend(v.writes[mark:])
+            del v.writes[mark:]
+            if v.track_systemd_paths:
+                after_native = staged_inventory(v.fixture)
+                v.systemd_paths.update(path for path in before_native.keys() | after_native.keys()
+                                       if before_native.get(path) != after_native.get(path))
+        return 0, ''
+    io._run = run
+    io.manager = SystemdServiceManager(system=True, run=run)
+    try:
+        yield v
+    finally:
+        v.observers.close()
+
+
+@pytest.mark.parametrize('prestate', ['clean', 'staged-inert', 'prepared'])
+def test_composed_enable_real_owners(composition: Any, monkeypatch: pytest.MonkeyPatch, prestate: str) -> None:
+    v = composition
+    assert not v.fixture.inputs.exists() and not v.fixture.key.exists()
+    if prestate != 'clean': v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    if prestate == 'prepared':
+        v.io.prepare_headscale()
+        v.io.publish_home_units()
+        v.io.publish_invite_config()
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert json.loads(expected)['prestate'] == prestate
+    v.writes = home_unit_writes(monkeypatch, v.root)
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480) == {
+        'outcome': 'ready', 'residue': []}
+    ready = v.receipts.read(expected_generation=0)
+    assert ready.phase == 'ready' and ready.local_node_stable_id == 'self-stable'
+    assert len(v.mints) == 1 and not v.path('/etc/happyranch/enrollment.key').exists()
+    assert len(v.account_creations) == 1
+    assert json.loads(v.path('/etc/happyranch/sidecar.json').read_bytes())['home_binding']['activation_generation'] == 0
+    calls, files = list(v.calls), staged_inventory(v.fixture)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert v.calls == calls and staged_inventory(v.fixture) == files and len(v.mints) == 1
+
+
+@pytest.mark.parametrize('case', ['twice', 'failed-revoke'])
+def test_composed_disable_reenable(composition: Any, case: str) -> None:
+    v = composition
+    for cycle in range(3 if case == 'twice' else 1):
+        expected = v.lifecycle.capture('Enable', os.getuid())
+        assert json.loads(expected)['prestate'] == ('clean' if cycle == 0 else 'post-disable')
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                    deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        ready = v.receipts.read(expected_generation=0)
+        assert ready.ca_der_sha256 == hashlib.sha256(ssl.PEM_cert_to_DER_cert(v.head.ca_pem.decode())).hexdigest()
+        assert len(v.mints) == cycle + 1 and len(set(v.mints)) == cycle + 1
+        v.observers.close()
+        v.observers = ExitStack()
+        expected = v.lifecycle.capture('Disable', os.getuid())
+        assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+        if case == 'failed-revoke':
+            with pytest.raises(adapters.headscale_service.HeadscaleServiceError):
+                v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=False)
+            before, calls = staged_inventory(v.fixture), list(v.calls)
+            # Existing failed cleanup authority is retained. A new Enable may
+            # neither resume staging nor mutate this ready-but-stopped install.
+            with pytest.raises((ActivationRefused, OSError, adapters.headscale_service.HeadscaleServiceError)):
+                v.lifecycle.capture('Enable', os.getuid())
+            assert staged_inventory(v.fixture) == before and v.calls == calls
+            return
+        assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
+                                    revoke_succeeded=True) == {'outcome': 'off', 'residue': []}
+        assert v.receipts.current() is None and v.transactions.read_optional() is None
+        assert not v.path('/var/lib/happyranch-headscale/db.sqlite').exists()
+        assert not v.path('/etc/happyranch/invite-issuer.json').exists()
+        v.admin.users, v.admin.nodes = (), ()
+        v.head.ca_pem = ssl.DER_cert_to_PEM_cert(f'synthetic fresh public CA {cycle}'.encode()).encode()
+
+
+@pytest.mark.parametrize('boundary', ['provision', 'prepare_headscale', 'publish_home_units',
+                                      'publish_invite_config', 'enable'])
+def test_composed_interruption_retry(composition: Any, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    owner = h.HomeActivationBackend if boundary == 'enable' else v.io
+    original = getattr(owner, boundary)
+    def crash(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        raise Crash()
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, boundary, crash)
+        with pytest.raises(Crash):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert v.receipts.read(expected_generation=0).phase == 'ready' and len(v.mints) == 1
+
+
+@pytest.mark.parametrize('boundary', ['binding', 'provision', 'prepare_headscale', 'publish_home_units',
+                                      'publish_invite_config', 'enable'])
+def test_composed_original_deadline(composition: Any, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    v = composition
+    now = [100.0]
+    monkeypatch.setattr(h.time, 'monotonic', lambda: now[0])
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    owner = h if boundary == 'binding' else h.HomeActivationBackend if boundary == 'enable' else v.io
+    method = 'bootstrap_owner' if boundary == 'binding' else boundary
+    original = getattr(owner, method)
+    at_expiry = []
+    def expire(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        now[0] = 580.0
+        at_expiry.append((staged_inventory(v.fixture), list(v.calls), list(v.mints)))
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, method, expire)
+        with pytest.raises(ActivationRefused):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=580.0)
+    assert not v.mints or boundary == 'enable'
+    assert at_expiry == [(staged_inventory(v.fixture), v.calls, v.mints)]
+
+
+@pytest.mark.parametrize('case', ['partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
+def test_composed_capture_refusal(composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    v = composition
+    corrupt_composition(v, case)
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    writes = home_unit_writes(monkeypatch, v.root)
+    from runtime.remote_access.installer import InstallerError
+    with pytest.raises((ValueError, OSError, TypeError, InstallerError)):
+        v.lifecycle.capture('Enable', os.getuid() + 1 if case == 'uid' else os.getuid())
+    assert staged_inventory(v.fixture) == before and v.calls == calls and writes == []
+    assert v.receipts.current() is None and not v.mints
+
+
+def corrupt_composition(v: Any, case: str) -> None:
+    """Same fixed refusal inputs for owner and pre-auth transport boundaries."""
+    if case == 'clean-ca':
+        put(v.path('/var/lib/happyranch-remote-access/home-ca/ca.key'), b'synthetic unreceipted CA private key')
+        put(v.path('/var/lib/happyranch-remote-access/home-ca/ca.pem'), v.head.ca_pem)
+        v.path('/var/lib/happyranch-remote-access/home-ca').chmod(0o700)
+        return
+    if case == 'clean-unit':
+        put(v.path(MEMBER_PATHS[0]), render_headscale_unit().encode(), 0o644)
+        v.path('/etc/systemd').chmod(0o755)
+        v.path('/etc/systemd/system').chmod(0o755)
+        return
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    if case == 'partial': v.path('/etc/happyranch/provision.json').unlink()
+    if case == 'failed':
+        v.io.publish_home_units()
+        v.states[adapters._CONNECTOR] = 'failed'
+    if case == 'pending': v.path('/etc/happyranch/.sidecar.json.pending').touch(mode=0o600)
+    if case == 'unsafe': v.path('/etc/happyranch/sidecar.json').chmod(0o666)
+    if case == 'unknown': v.path('/etc/happyranch/unknown').touch(mode=0o600)
+    if case == 'txn': put(v.path(TRANSACTION_PATH), b'{}')
+    if case == 'source': v.fixture.token.write_bytes(b'synthetic rotated token')
+    if case == 'audit': put(v.path('/var/lib/happyranch-remote-access/home-audit.jsonl'), b'synthetic unsafe audit', 0o644)
+    if case == 'headscale-mode':
+        v.io.prepare_headscale()
+        v.path('/etc/happyranch/headscale').chmod(0o755)
+
+
+@pytest.mark.parametrize('when', ['before-lock', 'under-lock'])
+def test_composed_capture_cas_drift(composition: Any, monkeypatch: pytest.MonkeyPatch, when: str) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    original = h._OperationTransactions.locked
+    @contextmanager
+    def locked(store: Any) -> Iterator[int]:
+        with original(store) as parent:
+            v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+            yield parent
+    if when == 'before-lock': v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    else: monkeypatch.setattr(h._OperationTransactions, 'locked', locked)
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail('CAS drift reached a staging effect owner')
+    monkeypatch.setattr(v.lifecycle, '_enable_staging', forbidden)
+    with pytest.raises(ActivationRefused):
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert v.receipts.current() is None and not v.calls and not v.mints
+
+
+def test_composed_clean_helper_writes_stay_in_b8(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = composition
+    entries = [line.split('=', 1)[1] for line in Path(
+        'packaging/linux/systemd/happyranch-remote-access-helper.service').read_text().splitlines()
+        if line.startswith('ReadWritePaths=')]
+    allowed = [Path(entry.lstrip('-/')) for entry in entries
+               if not entry.startswith('-') or v.path(entry[1:]).is_dir()]
+    before = staged_inventory(v.fixture)
+    v.track_systemd_paths = True
+    v.writes = home_unit_writes(monkeypatch, v.root)
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    after = staged_inventory(v.fixture)
+    changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+    helper_changes = changed - v.systemd_paths
+    assert v.writes and helper_changes and v.systemd_writes and v.systemd_paths
+    outside = sorted({path for path in [*v.writes, *helper_changes]
+                      if not any(Path(path).is_relative_to(root) for root in allowed)})
+    assert not outside, outside
+
+
+def test_composed_replace_failed_then_enable(composition: Any) -> None:
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    v.io.publish_home_units()
+    v.states[adapters._CONNECTOR] = 'failed'
+    assert v.io.inventory().state == 'known-failed-or-partial'
+    from runtime.remote_access.home_activation import HomeActivationError
+    phases = []
+    # Existing B17 deliberately advances one bounded phase per fresh-auth call;
+    # its exact source/config/unit/staging/closure owner is unchanged here.
+    for _ in range(8):
+        expected = v.lifecycle.capture('ReplaceFailed', os.getuid())
+        try:
+            result = v.lifecycle.dispatch('ReplaceFailed', os.getuid(), 'replace', expected)
+        except HomeActivationError:
+            candidate = v.io.replacement_inventory()
+            assert candidate.installation.state == 'known-failed-or-partial' and candidate.journal_generation
+            phase = candidate.installation.detail
+            assert phase not in phases
+            phases.append(phase)
+        else:
+            assert result == {'outcome': 'off', 'residue': []}
+            break
+    else:
+        pytest.fail('existing replacement closure did not finish within its documented phases')
+    assert v.io.inventory().detail == 'staged-inert'
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert v.receipts.read(expected_generation=0).phase == 'ready'
+
+
+@pytest.mark.parametrize('boundary', ['publish_invite_config', 'home_config'])
+def test_composed_post_disable_interruption(composition: Any, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    from datetime import timedelta
+    v = composition
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    v.observers.close()
+    v.observers = ExitStack()
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)['outcome'] == 'off'
+    v.admin.users, v.admin.nodes = (), ()
+    v.head.ca_pem = ssl.DER_cert_to_PEM_cert(b'synthetic replacement CA').encode()
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    with monkeypatch.context() as patch:
+        if boundary == 'publish_invite_config':
+            publish = v.io.publish_invite_config
+            def interrupted(**kw: Any) -> None:
+                publish(**kw)
+                raise Crash()
+            patch.setattr(v.io, 'publish_invite_config', interrupted)
+        else:
+            publish = h.HomeActivationCoordinator._publish_transaction
+            def interrupted(owner: Any, txn: Any, *args: Any) -> None:
+                publish(owner, txn, *args)
+                if txn.effects[-1].name == 'home_config' and txn.effects[-1].state == 'done': raise Crash()
+            patch.setattr(h.HomeActivationCoordinator, '_publish_transaction', interrupted)
+        with pytest.raises(Crash):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    if boundary == 'home_config':
+        # Unchanged Ruling 17 first marks the interrupted current pair terminal.
+        with pytest.raises(ActivationRefused):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                 deadline=time.monotonic() + 480)
+        assert v.receipts.current().phase == 'failed_uncertain'
+        # Native key expiry and no node are the existing B7 rollover proof.
+        v.admin.key = replace(v.admin.key, expiration=datetime.now(timezone.utc) - timedelta(seconds=1))
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                    deadline=time.monotonic() + 480)['outcome'] == 'prepared'
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    ready = v.receipts.current()
+    assert ready.activation_generation == (1 if boundary == 'home_config' else 0)
+    assert ready.phase == 'ready'
 
 
 @pytest.fixture
@@ -130,7 +538,7 @@ def observations(v: Venue) -> Iterator[list[bytes]]:
                     conn.sendall(json.dumps(reply(receipt)).encode())
                 except BaseException as error:
                     errors.append(error)
-    thread = threading.Thread(target=serve)
+    thread = getattr(v, 'thread_factory', threading.Thread)(target=serve)
     thread.start()
     try:
         yield requests

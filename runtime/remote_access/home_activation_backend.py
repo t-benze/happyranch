@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import sys
 import threading
 import time
@@ -27,6 +28,7 @@ from runtime.remote_access.home_activation_txn import HomeActivationTransactionS
 from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
+from runtime.remote_access.helper_owner import bootstrap_owner
 
 
 class _OperationTransactions(HomeActivationTransactionStore):
@@ -40,21 +42,26 @@ class _OperationTransactions(HomeActivationTransactionStore):
         super().__init__(root=io.root, root_owner=io.root_owner)
         self._mutex = threading.RLock()
         self._depth = 0
+        self._directory: int | None = None
 
     @contextmanager
-    def locked(self) -> Iterator[None]:
+    def locked(self) -> Iterator[int]:
         if not self._mutex.acquire(blocking=False):
             raise ActivationRefused()
         try:
             if self._depth:
-                yield
+                if self._directory is None:
+                    raise ActivationRefused()
+                yield self._directory
             else:
-                with super().locked():
+                with super().locked() as parent:
                     self._depth = 1
+                    self._directory = parent
                     try:
-                        yield
+                        yield parent
                     finally:
                         self._depth = 0
+                        self._directory = None
         finally:
             self._mutex.release()
 
@@ -267,20 +274,67 @@ class HelperLifecycleBackend:
         generation = None
         replacement = None
         configuration = None
+        prestate = None
+        inventory = None
         if receipt is not None:
             if receipt.release_uid != uid:
                 raise ActivationRefused()
+            if method == 'Enable' and receipt.phase == 'ready':
+                # B6 can retain this receipt after partial cleanup. Reuse the
+                # existing strict publication verifier before prompting again.
+                preparing = self.io._headscale_preparing
+                try:
+                    self.io._service_owner = self.io._account(create=False)
+                    self.io._headscale_owner = self.io._headscale_shape()
+                    self.io._headscale_preparing = True
+                    if self.io._headscale_publication() is None:
+                        raise ActivationRefused()
+                finally:
+                    self.io._headscale_preparing = preparing
             activation = dict(generation=receipt.activation_generation, operation=receipt.operation_id,
                               home_id=receipt.home_id, control_plane_id=receipt.control_plane_id,
                               connector_id=receipt.connector_id)
             generation = receipt.activation_generation
         elif method == 'Enable':
             from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
-            with self.store._record(INVITE_CONFIG_PATH) as data:
-                config = HomeInviteConfigRecord.parse(data)
-                configuration = hashlib.sha256(data).hexdigest()
-            if config.release_uid != uid:
-                raise ActivationRefused()
+            try:
+                with self.io._publication_parent() as (parent, check):
+                    with self.store._record(INVITE_CONFIG_PATH, allow_absent=True) as data:
+                        config = None if data is None else HomeInviteConfigRecord.parse(data)
+                        configuration = None if data is None else hashlib.sha256(data).hexdigest()
+                    check()
+            except FileNotFoundError:
+                # Prove the entire config directory is safely absent. Missing
+                # parents inside a present generation never mean clean.
+                with self.io._publication_parent('etc') as (parent, check):
+                    self.io._refuse_provision_entry(parent, 'happyranch')
+                    check()
+                config = None
+            if config is not None:
+                if config.release_uid != uid:
+                    raise ActivationRefused()
+                prestate = 'prepared'
+            else:
+                candidate = self.io.inventory()
+                if candidate.state == 'clean':
+                    self.io._home_staging_residue(clean=True)
+                    prestate = 'clean'
+                else:
+                    if candidate.state == 'known-failed-or-partial':
+                        raise ActivationRefused()
+                    with self.io._publication_parent() as (parent, check):
+                        raw = self.io._json(self.io._read_file(parent, 'sidecar.json',
+                            owner=(self.io.root_owner[0], self.io._account(create=False)[1]), mode=0o640))
+                        check()
+                    candidate = self.io._home_staged_inventory(post_disable='home_binding' in raw)
+                    if self.io._check_release_record()['uid'] != uid:
+                        raise ActivationRefused()
+                    prestate = candidate.detail
+                with self.io._home_preparation_custody():
+                    inventory = hashlib.sha256(json.dumps(dict(
+                        inventory=self.io._replacement_snapshot(),
+                        headscale=self.io._headscale_publication(), issuer=self.io._issuer_receipt()),
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             generation = 0
         if method == 'ReplaceFailed':
             candidate = self.io.replacement_inventory()
@@ -289,8 +343,37 @@ class HelperLifecycleBackend:
                 raise ActivationRefused()
         if method == 'Disable' and receipt is None:
             raise ActivationRefused()
-        return json.dumps(dict(uid=uid, activation=activation, generation=generation,
-                               replacement=replacement, configuration=configuration), sort_keys=True, separators=(',', ':'))
+        result = dict(uid=uid, activation=activation, generation=generation,
+                      replacement=replacement, configuration=configuration)
+        if method == 'Enable' and receipt is None:
+            result.update(prestate=prestate, inventory=inventory)
+        return json.dumps(result, sort_keys=True, separators=(',', ':'))
+
+    def _enable_staging(self, uid: int, prestate: str, directory: int, deadline: float | None) -> None:
+        def check() -> None:
+            if deadline is None or not time.monotonic() < deadline:
+                raise ActivationRefused()
+
+        check()
+        owner = bootstrap_owner(uid)
+        rows = [row for row in pwd.getpwall() if row.pw_uid == owner.uid]
+        if owner.uid != uid or len(rows) != 1:
+            raise ActivationRefused()
+        check()
+        if prestate == 'clean':
+            self.io.provision(release_user=rows[0].pw_name, data_home=owner.data_home)
+        else:
+            release = self.io._check_release_record()
+            if (release['uid'], release['user'], Path(release['data_home'])) != (
+                    uid, rows[0].pw_name, owner.data_home):
+                raise ActivationRefused()
+        check()
+        self.io.prepare_headscale()
+        check()
+        self.io.publish_home_units(_activation_directory=directory)
+        check()
+        self.io.publish_invite_config(_activation_directory=directory)
+        check()
 
     def dispatch(self, method: str, uid: int, step: str, expected: str | None, *,
                  revoke_succeeded: bool = False, deadline: float | None = None,
@@ -338,7 +421,7 @@ class HelperLifecycleBackend:
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
         backend = HomeActivationBackend(io=self.io)
-        with backend._transactions.locked():
+        with backend._transactions.locked() as directory:
             if self.capture(method, uid) != expected:
                 raise ActivationRefused()
             if method == 'Enable' and step == 'enable':
@@ -358,7 +441,13 @@ class HelperLifecycleBackend:
                     current = backend.recover(expected_generation=snapshot['generation'],
                         expected_operation_id=snapshot['activation']['operation'], fresh_authenticated=True)
                 else:
+                    if current is None and snapshot.get('prestate') != 'prepared':
+                        self._enable_staging(uid, snapshot['prestate'], directory, deadline)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise ActivationRefused()
                     current = backend.enable(expected_generation=snapshot['generation'], authenticated=True)
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ActivationRefused()
                 return {'outcome': current.phase, 'residue': []}
             if method == 'ReplaceFailed' and step == 'replace':
                 self.io.begin_replacement(expected_release_uid=uid,
@@ -466,7 +555,7 @@ def helper_main() -> int:
             result = HelperLifecycleBackend(io).dispatch(**request, deadline=deadline,
                 before_commit=lambda: confirm(deadline))
         else:
-            result = HelperLifecycleBackend(io).dispatch(**request)
+            result = HelperLifecycleBackend(io).dispatch(**request, deadline=deadline)
         if time.monotonic() >= deadline:
             raise ActivationRefused()
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))

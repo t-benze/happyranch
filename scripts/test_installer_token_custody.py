@@ -4463,7 +4463,7 @@ def test_home_units_after_replace_failed_closure(fixture: Fixture, monkeypatch: 
 
 @pytest.mark.parametrize("old_generation", [0, 7])
 @pytest.mark.parametrize("case", ["classification", "publisher", "live", "double", "tail", "ids",
-    "connector", "state", "pending", "txn", "minter", "unknown"])
+    "connector", "state", "pending", "txn", "minter", "unknown", "audit", "generation", "tls"])
 def test_home_units_disable_cleanup_then_reuse(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, old_generation: int, case: str,
 ) -> None:
@@ -4521,7 +4521,8 @@ def test_home_units_disable_cleanup_then_reuse(
     assert all(call[0] in {"show", "reload"} for call in io.manager.calls)
     retained = sidecar.read_bytes()
     if case == "classification":
-        assert io.inventory().detail == "post-disable"
+        inventory = io.inventory()
+        assert (inventory.state, inventory.detail) == ("modern", "post-disable")
         return
     io.prepare_headscale()
     if case not in {"publisher", "live"}:
@@ -4529,7 +4530,9 @@ def test_home_units_disable_cleanup_then_reuse(
             tail = retained[retained.index(b',"ControlURL"'):retained.rindex(b'}')]
             sidecar.write_bytes(retained[:retained.rindex(b'}')] + tail + retained[retained.rindex(b'}'):])
         if case == "tail": sidecar.write_bytes(retained[:retained.rindex(b'}')] + b',"foreign":true}')
-        if case == "ids": sidecar.write_bytes(retained.replace(connector["home_id"].encode(), b"foreign", 1))
+        if case == "ids":
+            sidecar.write_bytes(retained.replace(b'"home_id":"' + connector["home_id"].encode() + b'"',
+                                                b'"home_id":"foreign"', 1))
         if case == "connector":
             path = fixture.root / "etc/happyranch/connector.json"
             path.write_bytes(path.read_bytes() + b" ")
@@ -4541,6 +4544,12 @@ def test_home_units_disable_cleanup_then_reuse(
         if case == "txn": (state / "home-activation-txn.json").write_bytes(b"{}")
         if case == "minter": (state / "home-minter").mkdir(mode=0o700)
         if case == "unknown": (sidecar.parent / "unknown").touch(mode=0o600)
+        if case == "audit": (state / "home-audit.jsonl").chmod(0o644)
+        if case == "generation":
+            sidecar.write_bytes(retained.replace(b'"activation_generation":' + str(old_generation).encode(),
+                                                b'"activation_generation":true'))
+        if case == "tls":
+            sidecar.write_bytes(retained.replace(b'},"home_binding":', b',"foreign":true},"home_binding":'))
         untouched = staged_inventory(fixture)
         writes.clear()
         io.manager.calls.clear()
@@ -4564,15 +4573,9 @@ def test_home_units_disable_cleanup_then_reuse(
     assert sidecar.read_bytes() == retained
     assert hashlib.sha256(staged).hexdigest() == json.loads(
         (fixture.root / "etc/happyranch/provision.json").read_bytes())["digests"]["sidecar.json"]
-    # Prepare also calls this before its first receipt is published. Neither
-    # verification nor rendering may rewrite the retained file.
-    first = __import__('dataclasses').replace(receipt, phase="prepared", activation_generation=0,
-        operation_id="d" * 32, local_node_stable_id=None, home_endpoint=None)
-    owner = HomeLiveConfigOwner(io=io, expected_generation=0, expected_operation_id=first.operation_id)
-    rendered = owner._prepare(first)
-    assert owner._inputs["sidecar.json"].data == staged
-    assert json.loads(rendered["/etc/happyranch/sidecar.json"])["home_binding"]["activation_generation"] == 0
-    assert sidecar.read_bytes() == retained
+    config = json.loads(invite.read_bytes())
+    assert config["format"] == "home-invite-config@2" and config["release_uid"] == os.getuid()
+    assert config["home_id"] == connector["home_id"] and "activation_generation" not in config
 
 
 @pytest.mark.parametrize("key,value", [("FragmentPath", "/foreign/fragment"), ("DropInPaths", "/foreign/dropin"),
@@ -4684,7 +4687,7 @@ def test_invite_config_clean_publication_and_reuse(fixture: Fixture, monkeypatch
 
 @pytest.mark.parametrize('case', ['different', 'old-format', 'pending', 'symlink', 'hardlink', 'mode',
     'source', 'provision', 'connector', 'release', 'missing-headscale', 'publication',
-    'materializer', 'ca-binding', 'locked'])
+    'materializer', 'ca-binding', 'locked', 'headscale-dir-mode'])
 def test_invite_config_refuses_without_effects(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     import fcntl
     from runtime.remote_access.home_activation import HomeActivationError
@@ -4718,6 +4721,7 @@ def test_invite_config_refuses_without_effects(fixture: Fixture, monkeypatch: py
         if case == 'materializer': status['renewal_due'] = True
         else: status['ca_fingerprint'] = 'a' * 64
         head.materializer_result = (0, json.dumps(status) + '\n')
+    if case == 'headscale-dir-mode': (fixture.root / 'etc/happyranch/headscale').chmod(0o755)
     before = staged_inventory(fixture)
     writes = home_unit_writes(monkeypatch, fixture.root)
     io.manager.calls.clear()

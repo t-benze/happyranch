@@ -440,7 +440,7 @@ class ManagedInstaller:
                         raise InstallerError(location) from None
                     sidecar = {}
                 if "home_binding" in sidecar and not activation_present:
-                    return self._post_disable_inventory()
+                    return self._home_staged_inventory()
                 if "home_binding" in sidecar or activation_present:
                     from runtime.remote_access.home_admission import HomeProfileAdmission
                     home = HomeProfileAdmission(self).require(ordinary=False)
@@ -3965,8 +3965,8 @@ class ManagedInstaller:
     def _generated_configs() -> dict[str, bytes]:
         """Fixed identity/socket settings and the shipped deny-default artifact.
 
-        This is staging only. Helper/package selection and a complete protected
-        home control binding are separate slices; there is no URL input here.
+        Public Enable proves the protected home control binding separately
+        before activation; this staging step has no URL input.
         """
         from runtime.remote_access.managed_provider import ManagedProviderConfig
         from runtime.remote_access.supervisor import ConnectorConfig
@@ -3996,7 +3996,7 @@ class ManagedInstaller:
         """Stage fresh files; omitted config inputs generate an inert identity bundle.
 
         The operator CLI still requires its original three inputs. Clean helper
-        composition can use omitted inputs; service-owned state/log/runtime
+        composition uses omitted inputs; service-owned state/log/runtime
         directories are left to systemd. Existing directories remain checked.
         """
         try:
@@ -4181,8 +4181,41 @@ class ManagedInstaller:
                     os.close(descriptor)
             os.fsync(parent)
 
-    def publish_invite_config(self) -> None:
-        """Publish the stable protected home identity; no public/CLI caller.
+    @contextmanager
+    def _home_preparation_custody(self) -> Iterator[None]:
+        """Select the existing exact Headscale custody layout for inert reads."""
+        preparing = self._headscale_preparing
+        self._headscale_preparing = True
+        try:
+            yield
+        finally:
+            self._headscale_preparing = preparing
+
+    @contextmanager
+    def _home_activation_lock(self, directory_fd: int | None) -> Iterator[int]:
+        """Use the existing flock, borrowing its open description in Enable."""
+        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore, TRANSACTION_PATH
+
+        store = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
+        if directory_fd is None:
+            with store.locked() as parent:
+                yield parent
+            return
+        with store._parent(TRANSACTION_PATH) as (parent, check):
+            held, observed = os.fstat(directory_fd), os.fstat(parent)
+            if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
+                raise InstallerError("activation directory changed")
+            borrowed = os.dup(directory_fd)
+            try:
+                fcntl.flock(borrowed, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                check()
+                yield borrowed
+                check()
+            finally:
+                os.close(borrowed)
+
+    def publish_invite_config(self, *, _activation_directory: int | None = None) -> None:
+        """Publish stable protected home identity for initial helper Enable.
 
         Only a complete staged-inert generation and protected Headscale
         publication supply fields. Exact bytes are read-only reuse; all other
@@ -4191,13 +4224,12 @@ class ManagedInstaller:
         from runtime.remote_access.home_activation import (
             CONTROL_URL, INVITE_CONFIG_PATH, HomeActivationStore, _encode_record,
         )
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
         from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
 
         if self.layout != "deb":
             raise InstallerError("deb layout required")
         store = HomeActivationStore(root=self.root, root_owner=self.root_owner)
-        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked() as activation_parent:
+        with self._home_activation_lock(_activation_directory) as activation_parent, self._home_preparation_custody():
             for name in ("home-activation.json", "home-activation-txn.json"):
                 self._headscale_no_pending(activation_parent, name)
             self._refuse_install_transaction()
@@ -4219,7 +4251,7 @@ class ManagedInstaller:
                         owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
                     retained = "home_binding" in sidecar
                     if retained:
-                        self._post_disable_inventory()
+                        self._home_staged_inventory()
                     self._home_unit_provisioning(parent, record, reuse=retained)
                     release = self._check_release_record()
                     connector = self._json(self._read_file(parent, "connector.json",
@@ -4254,17 +4286,15 @@ class ManagedInstaller:
                     store._publish_record(INVITE_CONFIG_PATH, data, expected=None, parse=HomeInviteConfigRecord.parse)
                 check()
 
-    def publish_home_units(self) -> None:
-        """Publish inert identity fragments; no public caller or service activation.
+    def publish_home_units(self, *, _activation_directory: int | None = None) -> None:
+        """Publish inert identity fragments for helper Enable, without activation.
 
         Missing fragments require complete staged provenance. A complete exact
         set (including the home sidecar retained by Disable) is read-only reuse;
         it grants no configuration admission. The activation-directory lock is
-        shared with B4/B6. Later composition must call outside a nested flock.
+        shared with B4/B6; composition borrows its held open description.
         """
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
-
-        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked() as activation_parent:
+        with self._home_activation_lock(_activation_directory) as activation_parent:
             for name in ("home-activation.json", "home-activation-txn.json"):
                 self._headscale_no_pending(activation_parent, name)
             self._service_owner = self._account(create=False)
@@ -4396,67 +4426,91 @@ class ManagedInstaller:
             raise InstallerError("home publication token drift")
         return files
 
-    def _post_disable_inventory(self) -> InstallInventory:
-        """PD1-PD5: prove retained bytes without adopting or rewriting them.
+    def _home_staging_residue(self, *, clean: bool = False) -> None:
+        """Existing fixed inventories must prove no live or pending authority."""
+        with self._home_preparation_custody():
+            from runtime.remote_access.home_activation import HomeActivationStore
+            from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+            from runtime.remote_access.home_audit import AuditRefused, HomeAudit
 
-        The existing inventories still own every path and custody check. No
-        receipt/transaction/invite authority or live state may survive here.
-        Inert Headscale preparation is allowed for interruption/retry between
-        preparation and initial invite-config publication.
-        """
-        from runtime.remote_access.home_activation import HomeActivationStore, INVITE_CONFIG_PATH
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
-
-        store = HomeActivationStore(root=self.root, root_owner=self.root_owner)
-        if (store.current() is not None or HomeActivationTransactionStore(
-                root=self.root, root_owner=self.root_owner).read_optional() is not None):
-            raise InstallerError("retained activation evidence")
-        with store._record(INVITE_CONFIG_PATH, allow_absent=True) as invite:
-            if invite is not None:
-                raise InstallerError("retained invite authority")
-        self._refuse_install_transaction()
-        self._service_owner = self._account(create=False)
-        self._headscale_owner = self._headscale_shape()
-        if self._service_owner is None:
-            raise InstallerError("retained service identity")
-        headscale_receipt = self._headscale_receipt()
-        if headscale_receipt and self._headscale_owner != (headscale_receipt["uid"], headscale_receipt["gid"]):
-            raise InstallerError("retained Headscale identity")
-        self._headscale_inventory()
-        self._headscale_ca_sources()
-        self._headscale_stopped()
-        self._confirm_quiescent()
-        self._issuer_inventory()
-        try:
-            with self._publication_parent(HOME_ISSUER) as (parent, check):
-                if self._issuer_members(parent):
-                    raise InstallerError("retained issuer evidence")
-                check()
-        except FileNotFoundError:
-            pass
-        with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
-            # Same fixed installer evidence names B6 already inventories. All
-            # other names (including minter/B7/pending evidence) veto admission.
-            with os.scandir(parent) as entries:
-                for index, item in enumerate(entries):
-                    if index >= 64 or item.name not in {
-                            headscale.RECEIPT, headscale.PUBLICATION, "home-ca", "home-issuer",
-                            _ISSUER_RECEIPT, "home-audit.jsonl", "home-audit.jsonl.1"}:
-                        raise InstallerError("retained lifecycle residue")
-            check()
-        for relative in (*_STATE_DIRS, "run/happyranch-connector", "run/happyranch-tsnet-sidecar",
-                         "run/happyranch-release-verifier"):
-            if self._inventory_files(relative, {}):
-                raise InstallerError("retained live state")
-        self._check_enrollment()
-        for relative, name in (("etc/happyranch", "enrollment.key"), (_CREDSTORE, _CREDENTIAL_NAME)):
+            store = HomeActivationStore(root=self.root, root_owner=self.root_owner)
+            if (store.current() is not None or HomeActivationTransactionStore(
+                    root=self.root, root_owner=self.root_owner).read_optional() is not None):
+                raise InstallerError("retained activation evidence")
             try:
-                with self._publication_parent(relative) as (parent, check):
-                    self._refuse_provision_entry(parent, name)
+                with self._publication_parent() as (parent, check):
+                    self._refuse_provision_entry(parent, "invite-issuer.json")
+                    check()
+            except FileNotFoundError:
+                with self._publication_parent("etc") as (parent, check):
+                    self._refuse_provision_entry(parent, "happyranch")
+                    check()
+            self._refuse_install_transaction()
+            self._service_owner = self._account(create=False)
+            self._headscale_owner = self._headscale_shape()
+            headscale_receipt = self._headscale_receipt()
+            if headscale_receipt and self._headscale_owner != (headscale_receipt["uid"], headscale_receipt["gid"]):
+                raise InstallerError("retained Headscale identity")
+            self._headscale_inventory()
+            if clean:
+                try:
+                    with self._publication_parent(_UNIT_DIR) as (parent, check):
+                        self._refuse_provision_entry(parent, headscale.UNIT)
+                        check()
+                except FileNotFoundError:
+                    pass
+            self._headscale_ca_sources()
+            self._headscale_stopped()
+            self._confirm_quiescent()
+            self._issuer_inventory()
+            try:
+                with self._publication_parent(HOME_ISSUER) as (parent, check):
+                    if self._issuer_members(parent):
+                        raise InstallerError("retained issuer evidence")
                     check()
             except FileNotFoundError:
                 pass
-        with self._publication_parent() as (parent, check):
+            with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
+                # Same fixed installer evidence names B6 already inventories. All
+                # other names (including minter/B7/pending evidence) veto admission.
+                with os.scandir(parent) as entries:
+                    for index, item in enumerate(entries):
+                        if index >= 64 or item.name not in {
+                                headscale.RECEIPT, headscale.PUBLICATION, "home-ca", "home-issuer",
+                                _ISSUER_RECEIPT, "home-audit.jsonl", "home-audit.jsonl.1"}:
+                            raise InstallerError("retained lifecycle residue")
+                        if clean and item.name not in {"home-audit.jsonl", "home-audit.jsonl.1"}:
+                            raise InstallerError("clean installation has Headscale residue")
+                        if item.name in {"home-audit.jsonl", "home-audit.jsonl.1"}:
+                            try:
+                                HomeAudit(uid=self.root_owner[0], gid=self.root_owner[1])._file_info(
+                                    os.stat(item.name, dir_fd=parent, follow_symlinks=False))
+                            except AuditRefused:
+                                raise InstallerError("retained audit custody") from None
+                check()
+            for relative in (*_STATE_DIRS, "run/happyranch-connector", "run/happyranch-tsnet-sidecar",
+                             "run/happyranch-release-verifier"):
+                if self._inventory_files(relative, {}):
+                    raise InstallerError("retained live state")
+            self._check_enrollment()
+            for relative, name in (("etc/happyranch", "enrollment.key"), (_CREDSTORE, _CREDENTIAL_NAME)):
+                try:
+                    with self._publication_parent(relative) as (parent, check):
+                        self._refuse_provision_entry(parent, name)
+                        check()
+                except FileNotFoundError:
+                    pass
+
+    def _home_staged_inventory(self, *, post_disable: bool = True) -> InstallInventory:
+        """Prove complete staging or PD1-PD5 without adopting/rewriting bytes.
+
+        Inert Headscale preparation is allowed between preparation and initial
+        invite publication. Only the retained PD shape needs all five fragments.
+        """
+        self._home_staging_residue()
+        if self._service_owner is None:
+            raise InstallerError("staged service identity")
+        with self._home_preparation_custody(), self._publication_parent() as (parent, check):
             self._inventory_files("etc/happyranch", {
                 **{name: ((self.root_owner[0], self._service_owner[1]), 0o640, False)
                    for name in ("connector.json", "sidecar.json", "policy.json")},
@@ -4470,21 +4524,25 @@ class ManagedInstaller:
             provenance = self._json(record)
             if provenance.get("version") != 1:
                 raise InstallerError("retained provenance")
-            files = self._home_unit_provisioning(parent, provenance, reuse=True)
+            files = self._home_unit_provisioning(parent, provenance, reuse=post_disable)
             live = self._json(self._read_file(parent, "sidecar.json",
                 owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
-            if "home_binding" not in live:
-                raise InstallerError("retained binding missing")
+            if ("home_binding" in live) != post_disable:
+                raise InstallerError("staged binding mismatch")
             connector = self._json(files["connector.json"])
             units = managed_units(self.layout, connector_config=connector)
             retained = dict(units)
             prefix = "happyranch-desktop" if self.layout == "deb" else "happyranch"
             retained[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(
                 binary_path=f"/opt/{prefix}/bin/happyranch-tsnet-sidecar", home_transport=True))
-            if len(self._home_unit_inventory(units, retained)) != len(units):
+            count = len(self._home_unit_inventory(units, retained))
+            if count not in ({len(units)} if post_disable else {0, len(units)}):
                 raise InstallerError("retained unit generation incomplete")
+            if any(self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") != "inactive"
+                   for name in units):
+                raise InstallerError("staged units are not inactive")
             check()
-        return InstallInventory("modern", "post-disable", tuple(sorted(
+        return InstallInventory("modern", "post-disable" if post_disable else "staged-inert", tuple(sorted(
             str(self.root / path) for path, value in self._replacement_snapshot().items() if value != "absent")))
 
     def _home_unit_inventory(self, units: dict[str, str], retained: dict[str, str]) -> dict[str, bytes]:

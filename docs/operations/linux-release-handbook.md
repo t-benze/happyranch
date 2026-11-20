@@ -126,7 +126,18 @@ The remote-access installer defaults to the separate source layout at
 `/opt/happyranch/venv/bin/python`. Its `--layout deb` option uses the packaged
 `/opt/happyranch-desktop/python/bin/python3 -I` and packaged sidecar. See
 [Desktop package host](remote-access-runbook.md#desktop-package-host)
-for provisioning before installation. The installer validates the dpkg-owned
+for explicit operator provisioning before installation. Public clean-install
+Enable now composes omitted-input provisioning, Headscale preparation, exact
+managed fragments, protected @2 invite config and forward activation. It derives
+release user/home only through the authenticated UID's B8 binding; the desktop
+supplies no JSON, ExpectedPeer or enrollment key. Complete staged generations
+(including ReplaceFailed closure) and proven post-Disable retained bytes reuse
+the same owners under one activation flock and original 480-second budget.
+Systemd supplies service state/log/runtime directories at start; the helper leaves
+absent service-owned paths absent. Partial/unknown/pending residue refuses and
+retains existing recovery routes. Installed clean Enable/READY acceptance remains
+I6; temporary-root/native-simulation tests do not establish it.
+The installer validates the dpkg-owned
 prefix and executables without creating or changing their permissions. The
 `happyranch` service account must have execute permission on both executables
 (including the resolved bundled Python target) and search permission on every

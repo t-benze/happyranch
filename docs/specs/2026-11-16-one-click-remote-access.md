@@ -121,6 +121,15 @@ is unchanged; outside-home key delivery remains an open founder/security gate (Â
 | `NextDevice()` / none | Cycle a helper-owned per-bus-caller cursor over the protected device list; select nothing supplied by the caller. |
 | `RevokeSelected()` / `revoke-selected` | Revoke only the selected protected record captured before authentication; close that device's live streams. |
 
+I5d-2 wires clean-install Enable to the existing installer owners: omitted-input
+provisioning, inert Headscale preparation, managed-fragment publication, protected
+@2 invite-config publication, then forward activation. No operator JSON,
+ExpectedPeer or enrollment-key input is needed. UID/B8 binding, pre-auth protected
+inventory capture, under-lock CAS, fresh auth_admin/no-keep, B16 and the single
+original 480-second budget cover the whole composition. Complete staging and the
+proven post-Disable shape reuse their owners' exact rules; Ready stays inspect-only.
+Native/package/cross-device acceptance remains separate from the temp-root tests.
+
 I5b delivers the seven Linux CLI lifecycle/invite mappings above. Every mutation
 requires a desktop and fresh native authorization. CLI timeouts are 482 seconds
 for Enable/ReplaceFailed, 302 for Disable and 122 for invite/policy methods.

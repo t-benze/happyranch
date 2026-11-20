@@ -53,6 +53,20 @@ names the path and permission; fresh-host provisioning rechecks after account
 creation. The installer never creates or chmods the dpkg prefix. Install/upgrade
 the package separately with the required deployment approval; neither provisioning nor installation below builds a package.
 
+Public clean-install Enable uses the existing omitted-input provision,
+prepare_headscale, publish_home_units and publish_invite_config owners before
+forward activation. It requires no operator JSON, ExpectedPeer or enrollment-key
+file. Release user/home derive only from authenticated UID/B8 evidence. The
+worker repeats protected capture under the same activation flock, borrows its
+descriptor for publication, and keeps the original 480-second budget through B16.
+Systemd creates service state/log/runtime paths at start; missing optional B8
+paths are not writable mounts and are never created by helper preparation.
+Complete staging after ReplaceFailed closure and proven retained post-Disable
+config/fragments support the next Enable at generation 0. Partial cleanup keeps
+Retry turn off; unknown/pending state is never adopted or deleted by Enable.
+These source/temp-root checks do not qualify installed polkit, sandbox or I6
+cross-device operation. The explicit operator flow below retains its inputs.
+
 The .deb additionally ships checksum-pinned Headscale v0.25.1 inert at
 `/opt/happyranch-desktop/libexec/headscale/headscale` (0755, dpkg root ownership).
 It is outside `bin/`, with no wrapper or symlink. Payload builds verify the
