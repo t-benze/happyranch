@@ -2637,6 +2637,7 @@ async def cancel_task(
                 try:
                     mixed = has_sequential_descendant(org, task_id)
                 except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    logger.warning('sequential_cancellation_reconciliation_required task_id=%s', task_id, exc_info=True)
                     raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
         if mixed:
             from runtime.workflows.authority import WorkflowAuthorityError
@@ -2645,6 +2646,7 @@ async def cancel_task(
                 cancellation = await cancel_mixed(org, task_id, cascade=body.cascade,
                     rationale=rationale, actor=actor, transitions=root_transitions)
             except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+                logger.warning('sequential_cancellation_reconciliation_required task_id=%s', task_id, exc_info=True)
                 raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
             to_cancel = cancellation['tasks']
             prior_statuses = cancellation['prior']
@@ -2658,6 +2660,7 @@ async def cancel_task(
                 cancellation = await cancel_selected(org, task_id, cascade=body.cascade,
                     rationale=rationale, actor=actor, transitions=root_transitions)
             except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+                logger.warning('sequential_cancellation_reconciliation_required task_id=%s', task_id, exc_info=True)
                 raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
             to_cancel = cancellation['tasks']
             prior_statuses = cancellation['prior']
@@ -2670,6 +2673,7 @@ async def cancel_task(
                 try:
                     guard_ordinary_ancestor(org, task_id)
                 except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    logger.warning('sequential_cancellation_reconciliation_required task_id=%s', task_id, exc_info=True)
                     raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
                 cancellation = None
                 try:
@@ -2683,6 +2687,7 @@ async def cancel_task(
                         cancellation = cancel_locked(org, task_id, cascade=body.cascade,
                             rationale=rationale, actor=actor, transitions=root_transitions)
                 except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    logger.warning('coding_cancellation_reconciliation_required task_id=%s', task_id, exc_info=True)
                     raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
                 if cancellation is not None:
                     to_cancel = cancellation['tasks']

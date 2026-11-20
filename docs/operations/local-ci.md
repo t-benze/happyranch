@@ -43,6 +43,14 @@ Unresolved native recovery receipts on terminal tasks install byte-identically;
 pending, in-progress and escalated tasks refuse with fallback on both boots.
 The live-producer negative holds a real mounted preparation and original SH
 while startup refuses EX and loads the old layout. No executor is launched.
+The `test_installed_legacy_*` cases run the actual A4 worker/registration on
+the private legacy DB before exercising ordinary point/cascade cancellation,
+Coding's retained writer COMMIT, compatibility/ownership reopens and settings
+reads. Partial, foreign, altered and row-corrupt sequential storage must refuse
+and roll back a changed target. The cancellation module also checks cause logging
+at all five opaque reconciliation conversions. These are standalone no-lifespan
+checks, outside retired units and general integration.
+
 `--bootstrap-owners=CASE` also checks carried-forward native histories/legacy,
 unchanged source bytes, writer/lease refusals and unchanged time/SQL limits.
 The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --bootstrap-startup=history`

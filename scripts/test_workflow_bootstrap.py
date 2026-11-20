@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 import json
 import os
 import stat
@@ -15,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from runtime.config import Settings
@@ -619,3 +621,127 @@ def test_worker_path_diagnostic_reaches_installer_stderr(
     finally:
         asyncio.run(state.close_all())
         state.metrics_store.close()
+
+
+@pytest.fixture
+def installed_org_client(runtime: RuntimeDir) -> Iterator[tuple[OrgState, httpx.AsyncClient]]:
+    """Real A4 worker install and registrar, confined to the existing private org."""
+    from runtime.daemon.app import create_app
+    from runtime.runtime import token_file
+
+    home = runtime.root.parent
+    token_file().write_text('synthetic-founder-token')
+    state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+    try:
+        assert not state.broken_orgs
+        assert read_setup_status(home, runtime.root, 'scratch').state == 'installed_verified'
+        assert len(state._workflow_bootstrap.workers) == 1
+        org = state.orgs['scratch']
+        assert org.db.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1
+        assert org.db.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(state)),
+                base_url='http://synthetic.test',
+                headers={'Authorization': 'Bearer synthetic-founder-token'})
+        try:
+            yield org, client
+        finally:
+            asyncio.run(client.aclose())
+    finally:
+        asyncio.run(state.close_all())
+        state.metrics_store.close()
+
+
+@pytest.mark.parametrize('cascade', [True, False])
+async def test_installed_legacy_cancel(installed_org_client: tuple[OrgState, httpx.AsyncClient], cascade: bool) -> None:
+    org, client = installed_org_client
+    org.db.insert_task(TaskRecord(id='TASK-child', parent_task_id='TASK-retained', brief='Synthetic child'))
+    response = await client.post('/api/v1/orgs/scratch/tasks/TASK-retained/cancel',
+                                 json={'cascade': cascade, 'rationale': 'synthetic stop'})
+    assert response.status_code == 200, response.text
+    assert set(response.json()['cancelled']) == ({'TASK-retained', 'TASK-child'} if cascade else {'TASK-retained'})
+    assert org.db.get_task('TASK-retained').status.value == 'cancelled'
+    assert org.db.get_task('TASK-child').status.value == ('cancelled' if cascade else 'pending')
+    assert any(row['action'] == 'task_cancelled' for row in org.db.get_audit_logs('TASK-retained'))
+
+
+async def test_installed_legacy_writers(installed_org_client: tuple[OrgState, httpx.AsyncClient]) -> None:
+    from runtime.infrastructure.workflow_schema import install_or_recover, _read_workflow_schema, _coding_document_exclusions
+    from runtime.workflows.coding_start import queued_storage
+    from runtime.workflows.coding_settings import CodingSettingsStore
+    from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore
+
+    org, _ = installed_org_client
+    # Actual retained writer checks the changed target before COMMIT; the same
+    # native connection/budget also feeds Coding's public inventory boundary.
+    with org.workflow_coding_dispatch._writer() as (conn, budget):
+        assert not queued_storage(conn, org.slug, budget=budget).runs
+        # Cancellation's later structural check runs after the authenticated
+        # row context has ended; it still needs the exact combined layout.
+        assert 'workflow_draft_dispatch_intents' in _coding_document_exclusions(conn)
+        conn.execute("UPDATE tasks SET note='synthetic committed write' WHERE id='TASK-retained'")
+    assert org.db.get_task('TASK-retained').note == 'synthetic committed write'
+    assert install_or_recover(org.db, expected_org_slug=org.slug) == 'reopened'
+    install_task_ownership(org.db, org_slug=org.slug)
+    principal = WorkflowTemplatePrincipal.founder(org_slug=org.slug, team_slug='engineering', revalidate=lambda: None)
+    view = await CodingSettingsStore(org).get(principal=principal)
+    assert view['current']['admission'] == 'disabled'
+    # Publication remains supported independently of retired document activation.
+    # Its schema readiness check is another real plain-reader write path.
+    templates = WorkflowTemplateStore(org.db)
+    published = templates.publish_version(org_slug=org.slug, principal=principal,
+        operation_key='synthetic-template', namespace='org/scratch/team/engineering',
+        template_name='synthetic-template', expected_current_version=0, definition=dict(
+            kind='document-review', schema_version=3, description='Synthetic template',
+            author=dict(role='author', kind='agent'),
+            output=dict(primitive='immutable-document-revision', description='Synthetic output'),
+            reviewers=[dict(role='reviewer', kind='agent')], outcomes=['approved'],
+            approval=dict(mode='all', revision='current', required_roles=['reviewer']),
+            request_changes=None, submission=dict(timing='on-completion', delivery='current-author-handoff@1')))
+    assert templates.get(org_slug=org.slug, namespace=published.namespace,
+                         template_name=published.template_name, version=1) == published
+    assert org.db.execute('SELECT count(*) FROM workflow_template_publish_operations '
+                          "WHERE operation_key='synthetic-template'").fetchone()[0] == 1
+    with org.db.coherent_read_view() as conn:
+        layout, coding = _read_workflow_schema(conn, expected_org_slug=org.slug)
+        assert layout == 'J' and coding is not None
+
+
+@pytest.mark.parametrize('corruption', ['partial', 'foreign', 'layout', 'row'])
+async def test_installed_legacy_refuses_corruption(
+    installed_org_client: tuple[OrgState, httpx.AsyncClient], corruption: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema, _coding_document_exclusions
+
+    org, client = installed_org_client
+    conn = org.db._conn
+    if corruption == 'partial':
+        conn.execute('DROP TABLE workflow_seq_outbox')
+    elif corruption == 'foreign':
+        conn.execute('CREATE TABLE workflow_seq_foreign (value TEXT)')
+    elif corruption == 'layout':
+        conn.execute('ALTER TABLE workflow_seq_runs ADD COLUMN foreign_value TEXT')
+    else:
+        conn.execute('DELETE FROM workflow_seq_schema_versions')
+    conn.commit()
+    before = tuple(conn.iterdump())
+    with org.db.coherent_read_view() as reader:
+        if corruption == 'row':
+            assert 'workflow_draft_dispatch_intents' in _coding_document_exclusions(reader)
+        else:
+            structural = 'layout' if corruption == 'layout' else 'object_set'
+            with pytest.raises(ValueError, match='^workflow_schema_' + structural + '_mismatch$'):
+                _coding_document_exclusions(reader)
+    cause = 'workflow_seq_schema_marker_invalid' if corruption == 'row' else 'workflow_seq_complete_layout_mismatch'
+    with pytest.raises(ValueError, match='^' + cause + '$'):
+        _read_workflow_schema(conn, expected_org_slug=org.slug)
+    with pytest.raises(ValueError, match='^' + cause + '$'):
+        with org.workflow_coding_dispatch._writer() as (writer, _):
+            writer.execute("UPDATE tasks SET note='must roll back' WHERE id='TASK-retained'")
+    assert tuple(conn.iterdump()) == before
+    response = await client.post('/api/v1/orgs/scratch/tasks/TASK-retained/cancel', json={})
+    assert response.status_code == 409, response.text
+    assert response.json()['detail']['code'] == 'coding_cancellation_reconciliation_required'
+    records = [record for record in caplog.records if 'coding_cancellation_reconciliation_required' in record.getMessage()]
+    assert len(records) == 1 and records[0].exc_info
+    assert str(records[0].exc_info[1]) == cause
+    assert tuple(conn.iterdump()) == before

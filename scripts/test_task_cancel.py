@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -214,4 +215,40 @@ async def test_refused_mixed_cancel_rolls_back_without_wake(org_client: OrgClien
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "sequential_cancellation_reconciliation_required"
     assert org.db.get_task("TASK-child") == child
+    assert queued(org) == []
+
+
+@pytest.mark.parametrize('boundary', ['discovery', 'mixed', 'selected', 'ancestor', 'coding'])
+async def test_cancel_reconciliation_logs_cause(
+    org_client: OrgClient, caplog: pytest.LogCaptureFixture, boundary: str,
+) -> None:
+    org, client = org_client
+    seed(org, child_status=TaskStatus.CANCELLED if boundary == 'selected' else TaskStatus.PENDING)
+    before = org.db.get_task('TASK-child')
+    targets = {
+        'discovery': 'runtime.workflows.sequential_mixed_cancel.has_sequential_descendant',
+        'mixed': 'runtime.workflows.sequential_mixed_cancel.cancel_mixed',
+        'selected': 'runtime.workflows.sequential_cancel.cancel_selected',
+        'ancestor': 'runtime.workflows.sequential_cancel.guard_ordinary_ancestor',
+    }
+    with ExitStack() as stack:
+        if boundary == 'selected':
+            stack.enter_context(patch('runtime.workflows.recovery.classify_task',
+                                      return_value=WorkflowTaskOwnership('seq_visit')))
+        elif boundary != 'discovery':
+            stack.enter_context(patch('runtime.workflows.sequential_mixed_cancel.has_sequential_descendant',
+                                      return_value=boundary == 'mixed'))
+        if boundary == 'coding':
+            stack.enter_context(patch.object(org.workflow_coding_start, 'guard_cancellation',
+                                            side_effect=ValueError('synthetic_schema_refusal')))
+        else:
+            stack.enter_context(patch(targets[boundary], side_effect=ValueError('synthetic_schema_refusal')))
+        response = await client.post(f'{PREFIX}/tasks/TASK-child/cancel', json={})
+    code = ('coding' if boundary == 'coding' else 'sequential') + '_cancellation_reconciliation_required'
+    assert response.status_code == 409 and response.json()['detail'] == {'code': code}
+    records = [record for record in caplog.records if code in record.getMessage()]
+    assert len(records) == 1
+    assert 'TASK-child' in records[0].getMessage()
+    assert records[0].exc_info and str(records[0].exc_info[1]) == 'synthetic_schema_refusal'
+    assert org.db.get_task('TASK-child') == before
     assert queued(org) == []
