@@ -188,6 +188,9 @@
     "GET /api/v1/orgs/{slug}/workflows/sequential/runs",
     "GET /api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}",
     "GET /api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflow",
+    "GET /api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflows",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/views/v2/runs",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/views/v2/runs/{run_id}",
     "PUT /api/v1/orgs/{slug}/workflows/sequential/settings",
     "GET /api/v1/orgs/{slug}/workflows/sequential/settings/operations",
     "GET /api/v1/runtime/workflow-setup/orgs/{slug}"

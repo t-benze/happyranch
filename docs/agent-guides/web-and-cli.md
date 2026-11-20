@@ -5150,6 +5150,35 @@ ACCESS-1/shared-OS-user/gh limitations,
 original Pause/receipt uncertainty/cancellation and historical families remain.
 
 
+## S7a generic read API (UI adoption belongs to S7b)
+
+Three additive existing-Founder-bearer GETs under `/api/v1/orgs/{slug}` expose
+`/workflows/sequential/views/v2/runs`, its `/{run_id}` detail, and
+`/tasks/{task_id}/sequential-workflows`. The plural response preserves every
+initiator run link. Generic records explicitly identify @2/current_v2 and expose
+Running/Held (original finite cause)/Finished (completed, failed or cancelled),
+internal progress including cancelling, immutable per-visit assignment/model/
+effort origins and ordered control actors/original IDs. Native cancellation
+origins stay distinct from result-owned controls. Detail includes the admitted
+definition text. Agent output/findings remain agent_reported; authenticated
+native identity/settlement never verifies a reported merge. @1 history uses an
+explicit historical_v1 wrapper and retains the original detail/redaction.
+Existing @1 routes, settings operations and Start@1 context remain readable;
+there is no browser start/control or @2 mutation route.
+
+Absent storage yields an explicitly absent empty collection. Failed evidence,
+coherence, budget or authority yields non-success HTTP and a finite unavailable
+body; the TS client retains that body, never substitutes no runs. Additive hooks
+in `hooks/workflows.ts` key by org and selection, abort/evict on change, and
+reject stale/out-of-order responses (`late_org_response`) with active-owner,
+sequence, signal and response-org checks. Existing @1 provider reads and
+original-save recovery retain their own custody. S7a helpers use enums/keys,
+with no new display strings. S7b supplies UI/providers and locales. See the
+[S7a contract](contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2)
+for wire formats, budgets and focused shell selectors. Web lint/typecheck is
+static API evidence; hook behavior is NOT RUN without a supported runtime venue
+(Vitest retired, Product E2E scheduled-only).
+
 ## U8a Workflows read journey (TASK-15582)
 
 `/orgs/:slug/workflows` (Definitions), `workflows/runs`, `workflows/definitions/:definitionId`

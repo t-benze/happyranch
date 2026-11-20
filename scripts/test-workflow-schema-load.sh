@@ -56,6 +56,12 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable')
+s7a_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
+    s7a_case = sys.argv[1].split('=', 1)[1]
+    assert s7a_case in ('all', *S7A_CASES)
+    sys.argv[1:] = ['--assignments']
 S6B_CASES = ('cancel_vs_retry', 'cancel_source_all_runs', 'source_failed',
     'initiator_unavailable', 'pause_resume', 'unknown_effect_kept')
 s6b_case = None
@@ -2139,7 +2145,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2251,10 +2257,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -2824,7 +2830,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case or s6b_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -5245,7 +5251,273 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
                 assert owners and owners[0].incomplete, case + ': prepared aggregate gained clearance'
         print('PASS S6b', case, 'real private writers/persisted assertions; provider FORBIDDEN', flush=True)
 
-    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case:
+    # S7a extends the existing private S3/S4/S5 venue and drives the served GETs.
+    async def s7read(f, path, *, expected=200, headers=None, **kwargs):
+        import httpx
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+        state.orgs['scratch'] = f.org
+        state.profile_coordinator = f.coordinator
+        home = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])
+        (home / 'daemon.token').write_text('synthetic-s7-founder')
+        app = create_app(state)
+        before, changes, statements = tuple(f.conn.iterdump()), f.conn.total_changes, []
+        f.conn.set_trace_callback(statements.append)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                response = await client.request('GET', '/api/v1/orgs/scratch' + path,
+                    headers={'authorization': 'Bearer synthetic-s7-founder'} if headers is None else headers, **kwargs)
+        finally:
+            f.conn.set_trace_callback(None)
+            state.metrics_store.close()
+            state.direct_connect_authority_store.close()
+        assert response.status_code == expected, ('S7a route status', path, expected, response.status_code, response.text)
+        assert changes == f.conn.total_changes and tuple(f.conn.iterdump()) == before, 'S7a GET changed rows/schema'
+        assert not any(sql.lstrip().split(' ', 1)[0].upper() in
+            ('INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'COMMIT', 'END', 'CREATE', 'DROP', 'ALTER') for sql in statements), 'S7a GET executed write SQL'
+        if expected == 200:
+            assert response.headers.get('cache-control') == 'no-store'
+        return response.json()
+
+    def s7legacy(f):
+        from runtime.workflows.sequential_definition import compile_definition
+        from runtime.workflows.sequential_contracts import Limits
+        limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
+        definition = dict(format='workflow-sequential-definition@1', identity='release/synthetic/history', version=1,
+            description='Private retained history', required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
+            entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write retained report'],
+                inputs=[dict(name='request', source='run.request', required=True)],
+                output_contract=dict(slot='document', type='immutable-document@1'), completion_checks=['immutable-document@1'],
+                outcomes=dict(produced=dict(action='terminal', condition='done'), BLOCK=dict(action='fail', code='blocked')))],
+            limits=limits, terminal_conditions=dict(done=dict(output='document', requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1'])))
+        raw = s4bytes(definition)
+        compiled = compile_definition(raw, source_digest=hashlib.sha256(raw).hexdigest())
+        pin = compiled.pin
+        bindings = [dict(role='author', principal='s3_author')]
+        saved = s4bytes(dict(format='workflow-sequential-settings-storage@1', definition=pin.model_dump(mode='json'),
+            bindings=bindings, limits=limits, admission='Allowed'))
+        digest = hashlib.sha256(saved).hexdigest()
+        request = s4bytes(dict(format='workflow-sequential-settings-operation-storage@1', operation_key='s7-save',
+            principal='founder', settings_id='s7-settings', expected_generation=0, snapshot_digest=digest))
+        receipt = s4bytes(dict(format='workflow-sequential-settings-receipt-storage@1', operation_id='s7-operation',
+            settings_id='s7-settings', generation=1, snapshot_digest=digest))
+        f.conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('s7-definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
+             pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+        f.conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+            ('s7-settings', 'scratch', 's7-definition', pin.identity, 1, saved, digest))
+        f.conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+            ('s7-operation', 'scratch', 'founder', 's7-save', request, hashlib.sha256(request).hexdigest(), 's7-settings', receipt, hashlib.sha256(receipt).hexdigest()))
+        f.conn.commit()
+        source = TaskRecord(id='s7-source', assigned_agent='s3_manager', team='engineering', task_type='task',
+            status='in_progress', current_session_id='s7-session', brief='Retained source')
+        f.db.insert_task(source)
+        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+            (source.id, source.assigned_agent, source.current_session_id, 'completed', source.created_at.isoformat())).lastrowid
+        f.conn.commit()
+        start = s4bytes(dict(format='workflow-sequential-start@1', operation_key='s7-start', definition=pin.model_dump(mode='json'),
+            settings=dict(generation=1, snapshot_digest=digest), request='Retained request', inputs=[], bindings=bindings, lower_limits=limits))
+        capture = f.org.workflow_authority.capture_admission()
+        setting = dict(f.conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s7-settings'").fetchone())
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            ids = admit_uncommitted(writer, f.db, org_slug='scratch', compiled=compiled, settings_row=setting, start=start,
+                source=RetryClaim.from_task(source, result_row_id=result), original_limits=Limits(**limits),
+                carrier_task=TaskRecord(id='s7-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
+                    team='engineering', task_type='subtask', brief='Retained carrier'),
+                visit_task=TaskRecord(id='s7-task', parent_task_id='s7-carrier', assigned_agent='s3_author',
+                    team='engineering', task_type='subtask', brief='Retained visit'),
+                authority=f.org.workflow_authority, capture=capture)
+        return ids
+
+    for case in (S7A_CASES if s7a_case or not sys.argv[1:] else ()):
+        if s7a_case not in (None, 'all', case):
+            continue
+        import asyncio
+        path = '/workflows/sequential/views/v2/runs'
+        if case == 'plural_links':
+            with s5fixture() as f:
+                body = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows'))
+                expected = {ids.run_id for ids in f.batch_ids}
+                assert body['format'] == 'workflow-sequential-task-runs@2'
+                assert {run['id'] for run in body['runs']} == expected and len(body['runs']) == 2, 'plural_links: source runs collapsed'
+                assert {run['id'] for run in asyncio.run(s7read(f, path))['runs']} == expected
+                for ids in f.batch_ids:
+                    for task in (ids.carrier_task_id, ids.visit_task_id):
+                        linked = asyncio.run(s7read(f, '/tasks/' + task + '/sequential-workflows'))
+                        assert [run['id'] for run in linked['runs']] == [ids.run_id], 'plural_links: foreign member/task link'
+                    detail = asyncio.run(s7read(f, path + '/' + ids.run_id))
+                    visit, assignment = detail['visits'][0], next(a for a in detail['assignments'] if a['id'] == detail['visits'][0]['assignment_id'])
+                    assert assignment['principal'] == 's3_author' and assignment['principal_source'] == 'bundled'
+                    assert assignment['origins'] == dict(model='agent_default', reasoning_effort='agent_default')
+                    assert assignment['effective'] == dict(model='target-model', reasoning_effort='high')
+                    assert visit['native']['kind'] == 'engine_authenticated' and visit['content_provenance'] == 'agent_reported'
+                asyncio.run(s7read(f, path, expected=401, headers={}))
+                asyncio.run(s7read(f, path, expected=422, params={'unexpected': 'query'}))
+                asyncio.run(s7read(f, path, expected=422, content=b'x'))
+                asyncio.run(s7read(f, '/tasks/missing/sequential-workflows', expected=404))
+                unrelated = asyncio.run(s7read(f, '/tasks/s5-parent/sequential-workflows'))
+                assert unrelated['storage'] == 'readable' and unrelated['runs'] == []
+                s5release(f)
+                s5hold(f, 0)
+                f.ids = f.batch_ids[1]
+                s4closed(f, f.ids.visit_id, summary=s4bsummary(outcome='finish'), terminal='success')
+                s4baccept(f)
+                s6badditional(f)
+                mixed = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows'))
+                assert len(mixed['runs']) == 3 and {item['state'] for item in mixed['runs']} == {'running', 'held', 'finished'}, 'plural_links: later source result or mixed state lost'
+                assert [item['id'] for item in mixed['runs']] == sorted(item['id'] for item in mixed['runs'])
+        elif case == 'held_cause':
+            with s4fixture(recovery=True) as f:
+                event = s4held(f)
+                held = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert held['run']['state'] == 'held' and held['run']['hold'] == dict(event_id=event, node_id='develop', visit_id=f.ids.visit_id, cause='task_timed_out_without_result'), 'held_cause: missing or inferred cause'
+                assert held['run']['progress'] is None and held['run']['active_visit_id'] is None
+                for action in ('retry', 'rebrief', 'reassign'):
+                    command = s4command(f, action, **({'model': 'changed-model', 'reasoning_effort': None} if action == 'retry' else {}))
+                    receipt = json.loads(s4apply(f, command))
+                    detail = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                    control = detail['controls'][-1]
+                    assert control['action'] == action and control['new_visit_id'] == receipt['new_visit_id']
+                    assert (control['actor_task_id'], control['actor_principal'], control['actor_session_id'], control['actor_result_id']) == (f.actor.task_id, f.actor.assigned_agent, f.actor.current_session_id, f.actor.result_row_id)
+                    assert control['expected_held_event_id'] == command['expected_held_event_id']
+                    latest = detail['visits'][-1]
+                    assignment = next(item for item in detail['assignments'] if item['id'] == latest['assignment_id'])
+                    assert assignment['predecessor_id'] == detail['visits'][-2]['assignment_id'] and assignment['principal_source'] == 'control'
+                    assert assignment['origins'] == dict(model='run', reasoning_effort='clear')
+                    assert assignment['effective'] == dict(model='changed-model', reasoning_effort='high')
+                    assert assignment['principal'] == ('s3_alt' if action == 'reassign' else 's3_author')
+                    s4closed(f, receipt['new_visit_id'])
+                    s4hold(f)
+                s4apply(f, s4command(f, 'cancel'))
+                finished = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert finished['run']['state'] == 'finished' and finished['run']['terminal_outcome'] == 'cancelled'
+                assert [item['action'] for item in finished['controls']] == ['retry', 'rebrief', 'reassign', 'cancel']
+            # Actual accepted content may report a merge; native provenance authenticates identity only.
+            with s4fixture() as f:
+                s4closed(f, f.ids.visit_id, summary=s4bsummary(content=b'{"merged":true}'), terminal='success')
+                s4baccept(f)
+                detail = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert detail['outputs'][0]['content_utf8'] == '{"merged":true}'
+                assert detail['outputs'][0]['content_provenance'] == 'agent_reported', 'held_cause: reported merge promoted to verified'
+                assert detail['visits'][0]['native']['terminal_digest'] and detail['visits'][0]['native']['outer_digest']
+                for ordinal in (2, 3):
+                    visit = dict(f.conn.execute('SELECT * FROM workflow_seq_visits WHERE ordinal=?', (ordinal,)).fetchone())
+                    s4closed(f, visit['id'], summary=s4bsummary(), terminal='success')
+                    s4baccept(f, visit['id'])
+                terminal = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert terminal['run']['state'] == 'finished' and terminal['run']['terminal_outcome'] == 'completed'
+            with s4fixture() as f:
+                queued = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert queued['run']['state'] == 'running' and queued['run']['progress'] == 'queued'
+                s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success', positive=False)
+                pending = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert pending['run']['state'] == 'running' and pending['run']['progress'] == 'result_pending_settlement'
+                s4apply(f, s4command(f, 'cancel'))
+                cancelling = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert cancelling['run']['state'] == 'running' and cancelling['run']['progress'] == 'cancelling'
+                assert cancelling['run']['active_visit_id'] == f.ids.visit_id and cancelling['run']['terminal_outcome'] is None
+                s4outer(f, f.ids.visit_id)
+                s4finish(f)
+                assert asyncio.run(s7read(f, path + '/' + f.ids.run_id))['run']['terminal_outcome'] == 'cancelled'
+            with s5fixture() as f:
+                s5release(f)
+                for index, outcome in enumerate(('pause', 'reject')):
+                    f.ids = f.batch_ids[index]
+                    s4closed(f, f.ids.visit_id, summary=s4bsummary(outcome=outcome), terminal='success')
+                    s4baccept(f)
+                    detail = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                    if outcome == 'pause':
+                        assert detail['run']['state'] == 'held' and detail['run']['hold']['cause'] == 'declared_edge'
+                    else:
+                        assert detail['run']['state'] == 'finished' and detail['run']['terminal_outcome'] == 'failed'
+            with s4fixture() as f:
+                changed = replace(f.agents['s3_author'], executor='opencode', model='provider/model', reasoning_effort=None)
+                (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(changed))
+                f.coordinator.synchronize_all_dependencies()
+                f.org.workflow_authority.publish_current(publisher='private-s7a-drift')
+                s4hold(f, unavailable=True)
+                detail = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                assert detail['run']['hold']['cause'] == 'assignee_unavailable' and detail['visits'][0]['native']['result_id'] is None
+            with s4fixture() as f:
+                s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='failure', native_status='failed', classification='unknown')
+                s4baccept(f)
+                detail = asyncio.run(s7read(f, path + '/' + f.ids.run_id))
+                visit = detail['visits'][0]
+                native_result = f.conn.execute('SELECT id FROM task_results WHERE task_id=?', (f.ids.visit_task_id,)).fetchone()[0]
+                assert visit['native']['result_id'] == native_result and visit['accepted_result_id'] is None, 'held_cause: native callback and accepted result collapsed'
+                assert detail['run']['hold']['cause'] == 'task_failed_after_result' and detail['outputs'] == []
+        elif case == 'history_label':
+            with s4fixture() as f:
+                ids = s7legacy(f)
+                old = asyncio.run(s7read(f, '/workflows/sequential/runs/' + ids.run_id))
+                detail = asyncio.run(s7read(f, path + '/' + ids.run_id))
+                assert detail['abi'] == '@1' and detail['history_label'] == 'historical_v1', 'history_label: @1 presented as current @2'
+                assert detail['detail'] == old and old['format'] == 'workflow-sequential-run-view@1'
+                legacy_list = asyncio.run(s7read(f, '/workflows/sequential/runs'))
+                assert legacy_list['runs'] == [old['run']], 'history_label: @1 list lost retained history in mixed storage'
+                body = asyncio.run(s7read(f, path))
+                assert {item['abi'] for item in body['runs']} == {'@1', '@2'}
+                historical = next(item for item in body['runs'] if item['abi'] == '@1')
+                assert historical['history_label'] == 'historical_v1' and historical['run'] == old['run']
+                linked = asyncio.run(s7read(f, '/tasks/s7-source/sequential-workflows'))
+                assert linked['runs'] == [historical]
+                singular = asyncio.run(s7read(f, '/tasks/s7-source/sequential-workflow'))
+                assert singular == dict(format='workflow-sequential-task-link@1', task_id='s7-source', run=old['run'])
+        elif case == 'unavailable':
+            with s4fixture() as f:
+                from runtime.workflows import sequential_views
+                real = sequential_views._ReadBudget
+                for injected in (dict(deadline=time.monotonic()-1), dict(sql_limit=0), dict(consumed=64*1048576), dict(traversed=65536)):
+                    with patch.object(sequential_views, '_ReadBudget', lambda **kw: real(**dict(kw, **injected))):
+                        value = asyncio.run(s7read(f, path, expected=409))
+                        assert value['detail']['state'] == 'unavailable' and value['detail']['code'] == 'read_budget_exhausted', 'unavailable: budget refusal became empty runs'
+                        assert 'runs' not in value['detail']
+                cache = dict(f.org.workflow_authority._cache)
+                f.org.workflow_authority._cache.clear()
+                try:
+                    value = asyncio.run(s7read(f, path, expected=409))
+                    assert value['detail']['code'] == 'authority_unverified'
+                finally:
+                    f.org.workflow_authority._cache.update(cache)
+                f.conn.execute('CREATE VIEW workflow_seq_incoherent AS SELECT 1')
+                f.conn.commit()
+                value = asyncio.run(s7read(f, path, expected=409))
+                assert value['detail']['state'] == 'unavailable' and value['detail']['code'] == 'history_unverified'
+                f.conn.execute('DROP VIEW workflow_seq_incoherent')
+                f.conn.commit()
+                assert len(asyncio.run(s7read(f, path))['runs']) == 1
+                async def bounded_lock_wait():
+                    async with f.org.db_lock:
+                        with patch.object(sequential_views, '_ReadBudget', lambda **kw: real(**dict(kw, deadline=time.monotonic()+0.05))):
+                            value = await s7read(f, path, expected=409)
+                            assert value['detail']['code'] == 'read_budget_exhausted', 'unavailable: lock deadline classified as authority failure'
+                asyncio.run(bounded_lock_wait())
+            # Genuine absent storage, no fake successful history-reader response.
+            with s3_fixture() as f:
+                from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+                ownership = [dict(row) for row in f.conn.execute('SELECT * FROM workflow_task_ownership')]
+                f.conn.execute('DROP VIEW workflow_task_owner_bindings')
+                for kind, name in f.conn.execute("SELECT type,name FROM sqlite_schema WHERE name GLOB 'workflow_seq_*' AND type IN ('view','trigger')").fetchall():
+                    f.conn.execute('DROP ' + kind + ' "' + name + '"')
+                f.conn.execute('PRAGMA foreign_keys=OFF')
+                for name, in f.conn.execute("SELECT name FROM sqlite_schema WHERE name GLOB 'workflow_seq_*' AND type='table'").fetchall():
+                    f.conn.execute('DROP TABLE "' + name + '"')
+                f.conn.execute('DROP TABLE workflow_task_ownership')
+                f.conn.execute(OWNERSHIP_DDL)
+                for row in ownership:
+                    assert row['kind'] == 'legacy' and row['owner_id'] is None
+                    row['version'] = 1
+                    f.conn.execute('INSERT INTO workflow_task_ownership (' + ','.join(row) + ') VALUES (' + ','.join('?' for _ in row) + ')', tuple(row.values()))
+                f.conn.execute(binding_view_ddl('J', coding_extension=True))
+                f.conn.commit()
+                f.conn.execute('PRAGMA foreign_keys=ON')
+                value = asyncio.run(s7read(f, path))
+                assert value['storage'] == 'absent' and value['runs'] == [], 'unavailable: genuine absence misclassified'
+        print('PASS S7a', case, 'served route/private fixtures; SELECT-only inventory + SQL evidence', flush=True)
+
+    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case:
         raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

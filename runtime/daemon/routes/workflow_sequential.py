@@ -17,6 +17,8 @@ from runtime.workflows.sequential_settings import (
 from runtime.workflows.sequential_views import (
     DefinitionList, DefinitionView, ProjectionRefusal, RunDetail, RunList,
     SettingsView, TaskWorkflowView, read_projection,
+    GenericRunDetail, HistoricalRunDetail, ProjectionFailure, ProjectionRuns, ProjectionUnavailable,
+    TaskRunsView, read_projection_v2,
 )
 
 router = APIRouter(dependencies=[require_token()])
@@ -158,3 +160,62 @@ async def put_settings(request: Request, response: Response, org: OrgDep) -> obj
 async def original_settings_operation(request: Request, response: Response, org: OrgDep,
                                       operation_key: Annotated[str, Query(min_length=1, max_length=128)]) -> object:
     return await _settings_operation(request, response, org, operation_key)
+
+
+# S7a additive read-only surface. No Start@2/control/wait mutation is mounted.
+_V2_RESPONSES = {**_RESPONSES,
+    403: {'model': ProjectionFailure, 'description': 'Current authority denied'},
+    409: {'model': ProjectionFailure, 'description': 'Explicit unavailable projection; never an empty run list'},
+}
+
+
+def _unavailable(org: OrgDep, code: str, status: int = 409) -> HTTPException:
+    return HTTPException(status, detail=ProjectionUnavailable(org_slug=org.slug, code=code).model_dump(mode='json'),
+                         headers={'Cache-Control': 'no-store'})
+
+
+async def _read_v2(request: Request, response: Response, org: OrgDep, kind: str,
+                   selected: str | None = None) -> object:
+    response.headers['Cache-Control'] = 'no-store'
+    if request.query_params:
+        raise HTTPException(422, detail={'code': 'sequential_read_invalid'})
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(422, detail={'code': 'sequential_read_invalid'})
+    if kind == 'task' and org.db.get_task(selected) is None:
+        raise HTTPException(404, detail={'code': 'task_not_found'})
+    try:
+        return await read_projection_v2(org, kind=kind, selected=selected)
+    except ProjectionRefusal as exc:
+        if exc.status == 404:
+            raise HTTPException(404, detail={'code': exc.code}) from None
+        raise _unavailable(org, 'authority_denied' if exc.status == 403 else 'history_unverified', exc.status) from None
+    except TimeoutError:
+        raise _unavailable(org, 'read_budget_exhausted') from None
+    except (WorkflowAuthorityError, ProfileCoordinatorError, OSError):
+        raise _unavailable(org, 'authority_unverified') from None
+    except (sqlite3.Error, ValueError, TypeError, KeyError, IndexError, StopIteration, RecursionError) as exc:
+        from runtime.workflows._read_exhaustion import ReadExhaustion
+        causal, seen = exc, set()
+        while causal is not None and id(causal) not in seen:
+            seen.add(id(causal))
+            if isinstance(causal, ReadExhaustion):
+                raise _unavailable(org, 'read_budget_exhausted') from None
+            causal = causal.__cause__
+        raise _unavailable(org, 'history_unverified') from None
+
+
+@router.get('/workflows/sequential/views/v2/runs', response_model=ProjectionRuns, responses=_V2_RESPONSES)
+async def runs_v2(request: Request, response: Response, org: OrgDep) -> object:
+    return await _read_v2(request, response, org, 'runs')
+
+
+@router.get('/workflows/sequential/views/v2/runs/{run_id}',
+    response_model=GenericRunDetail | HistoricalRunDetail, responses=_V2_RESPONSES)
+async def run_v2(request: Request, response: Response, org: OrgDep, run_id: Identifier) -> object:
+    return await _read_v2(request, response, org, 'run', run_id)
+
+
+@router.get('/tasks/{task_id}/sequential-workflows', response_model=TaskRunsView, responses=_V2_RESPONSES)
+async def task_workflows(request: Request, response: Response, org: OrgDep, task_id: Identifier) -> object:
+    return await _read_v2(request, response, org, 'task', task_id)
