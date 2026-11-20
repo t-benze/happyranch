@@ -49,11 +49,14 @@ function isOperationAbsent(error: unknown): boolean {
  * refusal or generation change throws the fixed fence refusal; its own 403/404
  * (other than the caller's exact positive-absence code) refuses the whole org.
  */
-async function admittedSequentialRead<T>(qc: QueryClient, slug: string, absent: (error: unknown) => boolean,
-  load: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function admittedSequentialRead<T>(qc: QueryClient, slug: string, absent: (error: unknown) => boolean,
+  load: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
   const store = admissionStore(qc);
   const generation = store.generation.get(slug) ?? 0;
   const controller = new AbortController();
+  const relay = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener('abort', relay);
   const inflight = store.inflight.get(slug) ?? new Set<AbortController>();
   store.inflight.set(slug, inflight.add(controller));
   const fenced = () => (store.generation.get(slug) ?? 0) !== generation;
@@ -68,10 +71,11 @@ async function admittedSequentialRead<T>(qc: QueryClient, slug: string, absent: 
     throw error;
   } finally {
     inflight.delete(controller);
+    signal?.removeEventListener('abort', relay);
   }
 }
 /** PRD F6: only a transport failure (no HTTP status) is a network refresh failure. */
-function isNetworkFailure(error: unknown): boolean {
+export function isNetworkFailure(error: unknown): boolean {
   return !!error && status(error) === undefined && (error as { name?: string }).name !== 'AbortError';
 }
 /**

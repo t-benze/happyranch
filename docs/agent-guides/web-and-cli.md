@@ -5168,11 +5168,18 @@ there is no browser start/control or @2 mutation route.
 
 Absent storage yields an explicitly absent empty collection. Failed evidence,
 coherence, budget or authority yields non-success HTTP and a finite unavailable
-body; the TS client retains that body, never substitutes no runs. Additive hooks
+body; the TS client retains finite 409 bodies and throws 403/404 for shared
+access fencing, never substitutes no runs. Additive hooks
 in `hooks/workflows.ts` key by org and selection, abort/evict on change, and
 reject stale/out-of-order responses (`late_org_response`) with active-owner,
-sequence, signal and response-org checks. Existing @1 provider reads and
-original-save recovery retain their own custody. S7a helpers use enums/keys,
+sequence, signal and response-org checks. They join the same per-QueryClient/org
+admission generation and abort set as @1 reads and original-save recovery:
+403/404 bumps that generation, aborts siblings, blanks every sequential cache
+entry and rejects older responses/receipts. Only post-refusal reads can succeed;
+finite 409 unavailable bodies do not advance admission. Positive absent storage,
+settings-not-saved and original-operation-absent exceptions stay unchanged.
+Transport-only refresh failures retain this mount's data with freshness flags.
+S7a helpers use enums/keys,
 with no new display strings. S7b supplies UI/providers and locales. See the
 [S7a contract](contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2)
 for wire formats, budgets and focused shell selectors. Web lint/typecheck is

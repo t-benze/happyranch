@@ -200,11 +200,11 @@ export interface HistoricalSequentialRunDetail {
 export type SequentialRunDetailV2 = GenericSequentialRunDetail | HistoricalSequentialRunDetail;
 export type SequentialProjection<T> = T | SequentialProjectionUnavailable;
 
-/** Preserve the explicit unavailable body from the non-success HTTP response. */
+/** Preserve finite 409 evidence failures; 403/404 must reach shared access fencing. */
 async function projectionV2<T>(path: string, slug: string, signal?: AbortSignal): Promise<SequentialProjection<T>> {
   try { return await request<T>(path, { signal }); }
   catch (error) {
-    if (error instanceof ApiError && (error.status === 409 || error.status === 403)) {
+    if (error instanceof ApiError && error.status === 409) {
       const value = error.detail as Partial<SequentialProjectionUnavailable> | null;
       if (value?.format === 'workflow-sequential-unavailable@2' && value.state === 'unavailable'
         && value.org_slug === slug && ['history_unverified', 'read_budget_exhausted', 'authority_unverified', 'authority_denied'].includes(value.code ?? '')) {
