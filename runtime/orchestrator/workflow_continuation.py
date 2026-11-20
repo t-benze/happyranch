@@ -93,9 +93,8 @@ def ordinary_children(orch: Any, task: Any) -> list | None:
     try:
         with orch._db.coherent_read_view():
             value = observation(orch._db, task.id)
-            excluded = set(value['carrier_task_ids']) if value is not None else set()
-            return [orch._db.get_task(task_id) for task_id in orch._db.get_children(task.id)
-                if task_id not in excluded]
+            ids = value['ordinary_task_ids'] if value is not None else orch._db.get_children(task.id)
+            return [orch._db.get_task(task_id) for task_id in ids]
     except (ValueError, TypeError, sqlite3.Error):
         return None
 
@@ -106,10 +105,11 @@ class WorkflowContinuation:
         self.db = org.db
 
     @asynccontextmanager
-    async def callback_admission(self, task_id: str, decision: dict | None) -> AsyncIterator[None]:
+    async def callback_admission(self, task_id: str, decision: dict | None,
+                                 *, status: str = 'completed') -> AsyncIterator[None]:
         """File-backed control discovery happens before the native write fence."""
         capture = None
-        if decision and decision.get('action') == 'workflow_control':
+        if status == 'completed' and decision and decision.get('action') == 'workflow_control':
             from runtime.workflows.sequential_control import prepare_control
             from runtime.workflows.sequential_definition import compile_generic_definition
             command = decision['workflow']
@@ -140,25 +140,38 @@ class WorkflowContinuation:
                              result_id: int) -> bool:
         """Result + effects + consumption share Database's BEGIN/COMMIT."""
         from runtime.infrastructure.db.tasks import RetryClaim
-        from runtime.models import NextStep, TaskRecord
+        from runtime.models import TaskRecord
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
         from runtime.workflows.sequential_initiator import consume_decision_uncommitted, observe_dependencies, delivered_page
         conn = self.db._conn
         _require(conn.in_transaction and type(result_id) is int, 'workflow_result_identity_invalid')
-        row = conn.execute('SELECT decision_json,status FROM task_results WHERE id=? AND task_id=? '
+        row = conn.execute('SELECT * FROM task_results WHERE id=? AND task_id=? '
             'AND agent=? AND session_id=?', (result_id, task_id, agent, session_id)).fetchone()
-        _require(row is not None and row[1] == 'completed' and type(row[0]) is str,
-                 'workflow_decision_required')
-        value = json.loads(row[0])
-        parsed = NextStep.model_validate({key: item for key, item in value.items()
-            if key not in ('_manager_self_evaluation', '_authority_v2_admission')})
+        _require(row is not None, 'workflow_result_identity_invalid')
+        if row['status'] != 'completed':
+            return True  # Native blocked/jobs/failed causes and branches survive.
+        report = completion_report_from_result_row(task_id, dict(row), fallback_agent=agent)
+        parsed = self.org.orchestrator._parse_next_step(report)
+        if parsed.action not in ('workflow_start', 'workflow_control', 'workflow_wait'):
+            # Ordinary decisions never acknowledge the stored delivery page.
+            # Done and new dispatch still recheck dependencies under this fence.
+            if parsed.action in ('done', 'delegate', 'fanout', 'parallel'):
+                state = observe_dependencies(conn, self.db, task_id)
+                _require(state is not None, 'workflow_dependencies_unavailable')
+                if parsed.action == 'done':
+                    _require(not state['unfinished_runs'] and not state['ordinary_outstanding'],
+                             'workflow_done_outstanding')
+                else:
+                    _require(not state['ordinary_join_outstanding'],
+                        'workflow_dispatch_join_outstanding')
+            return True
+        _require(type(row['decision_json']) is str, 'workflow_decision_required')
+        value = json.loads(row['decision_json'])
 
         def apply() -> dict:
             state = observe_dependencies(conn, self.db, task_id)
             _require(state is not None, 'workflow_dependencies_unavailable')
-            if parsed.action == 'done':
-                _require(not state['unfinished_runs'] and not state['ordinary_outstanding'],
-                         'workflow_done_outstanding')
-            elif parsed.action == 'workflow_wait':
+            if parsed.action == 'workflow_wait':
                 _require(set(parsed.run_ids) <= set(state['run_ids']), 'workflow_run_not_owned')
                 page = delivered_page(conn, task_id, agent, session_id)
                 consumed = value.get('consume_notifications', [item['notification_id'] for item in page['notifications']])
@@ -207,7 +220,7 @@ class WorkflowContinuation:
                      runs=state['runs'], ordinary_outstanding=state['ordinary_outstanding']), ensure_ascii=False, sort_keys=True)
 
     def admitted_result(self, task: Any, result_id: int, report: Any) -> bool:
-        """Every wait-set decision, including ordinary done, uses its receipt."""
+        """Authenticate completed workflow decisions against their receipt."""
         with self.db.coherent_read_view() as conn:
             receipt = conn.execute('SELECT result_id FROM workflow_seq_consumption_receipts '
                 'WHERE result_id=? AND initiator_task_id=? AND principal=? AND session_id=?',

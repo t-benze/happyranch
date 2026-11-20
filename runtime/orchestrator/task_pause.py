@@ -68,10 +68,10 @@ def eligible(orch: Any, task: TaskRecord) -> bool:
         return False
     if task.block_kind == BlockKind.DELEGATED:
         from runtime.orchestrator.workflow_continuation import ordinary_children
-        from runtime.workflows.recovery import classify_task
         children = ordinary_children(orch, task)
-        if children is None or (not children and classify_task(orch._db, task.id,
-                org_slug=orch._slug).kind == 'seq_source_wait_set'):
+        # An empty active set is a clear ordinary barrier. Historical settled
+        # children must neither supply nor veto admission of a queued join.
+        if children is None:
             return False
         return all(c is not None and (c.status in TERMINAL_STATES or _child_has_landed_terminal_result(orch, c))
                    for c in children)

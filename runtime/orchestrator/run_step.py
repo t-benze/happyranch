@@ -1458,7 +1458,7 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         children = ordinary_children(orch, task)
         event_entry = continuation_task and (workflow_ready(orch, task)
             or retained_invocation is not None and retained_invocation.admitted)
-        if children is None or (continuation_task and not children and not event_entry):
+        if children is None:
             return
         # THR-211: a child whose current session has durably landed a
         # structured terminal report counts as terminal for parent admission
@@ -2857,21 +2857,23 @@ def _consume_completion_report(
     # production owner refuses missing downstream readiness with zero mutation.
     decision = orch._parse_next_step(report) if task.task_type == "task" else None
     continuation = getattr(orch, '_workflow_continuation', None)
-    if ownership.kind == 'seq_source_wait_set' and (
+    workflow_result = report is not None and report.status == 'completed' and decision is not None and decision.action in (
+        'workflow_start', 'workflow_control', 'workflow_wait')
+    if ownership.kind == 'seq_source_wait_set' and workflow_result and (
             continuation is None or not continuation.admitted_result(task, resolved_row_id, report)):
         return
-    if decision is not None and decision.action in ('workflow_control', 'workflow_wait'):
+    if workflow_result and decision.action in ('workflow_control', 'workflow_wait'):
         if continuation is not None and ownership.kind == 'seq_source_wait_set':
             continuation.publish_result(resolved_row_id, task_id)
         else:
             _feedback_and_reenqueue(orch, RetryClaim.from_task(task, result_row_id=resolved_row_id),
                 'workflow_run_not_owned: control/wait requires an admitted owned @2 run; no workflow effect applied')
         return
-    if decision is not None and decision.action == 'workflow_start' and decision.workflows is not None:
+    if workflow_result and decision.action == 'workflow_start' and decision.workflows is not None:
         # Internal @2 parser/retained admissions exist; public start is still
         # unmounted. A historical batch is never reinterpreted as a @1 start.
         return
-    if decision is not None and decision.action == "workflow_start":
+    if workflow_result and decision.action == "workflow_start":
         if decision.workflow.get('format') == 'workflow-sequential-start@1':
             from runtime.workflows.sequential_engine import SequentialRefusal
             from runtime.workflows.sequential_start import consume_start

@@ -59,7 +59,8 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refused', 'fanout_not_joined',
     'chain_preserved', 'manager_event_race', 'control_live_chain_child', 'wait_live_fanout_child',
     'sibling_finishes_run_B_live', 'pause_live_initiator', 'read_waiting_children',
-    'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain')
+    'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain',
+    'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused')
 s6a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     s6a_case = sys.argv[1].split('=', 1)[1]
@@ -4014,25 +4015,27 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
         f.conn.commit()
         return f.db.get_task(f.source.id)
 
-    def s6callback(f, sid, decision):
+    def s6callback(f, sid, decision, *, status='completed', waiting_on_job_ids=None):
         kwargs = dict(task_id=f.source.id, agent=f.source.assigned_agent,
             session_id=sid, output_summary='Private S6a callback', confidence_score=80,
-            decision_json=s4bytes(decision).decode())
+            status=status, waiting_on_job_ids=waiting_on_job_ids,
+            decision_json=s4bytes(decision).decode() if decision is not None else None)
         binding = f.db.get_authority_policy_v2_session_binding(root_task_id=f.source.id,
             manager_agent=f.source.assigned_agent, manager_session_id=sid)
         if binding is not None:
             from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
             from runtime.orchestrator.active_authority_policy import load_session_policy_binding
-            body = CompletionBody(session_id=sid, agent=f.source.assigned_agent, status='completed',
-                confidence=80, output_summary=kwargs['output_summary'], decision=decision)
+            body = CompletionBody(session_id=sid, agent=f.source.assigned_agent, status=status,
+                confidence=80, output_summary=kwargs['output_summary'], decision=decision,
+                waiting_on_job_ids=waiting_on_job_ids or [])
             selected = load_session_policy_binding(db=f.db, task_id=f.source.id, session_id=sid,
                 agent_name=f.source.assigned_agent)
             carrier, admission = _completion_v2_evidence(org=f.org, body=body, binding=selected, task_id=f.source.id)
             kwargs.update(v2_admission=admission,
-                decision_json=s4bytes(dict(decision, _manager_self_evaluation=carrier)).decode())
+                decision_json=s4bytes(dict(decision or {}, _manager_self_evaluation=carrier)).decode())
         f.s6_last_kwargs = kwargs
         async def admit():
-            async with f.db._workflow_continuation.callback_admission(f.source.id, decision):
+            async with f.db._workflow_continuation.callback_admission(f.source.id, decision, status=status):
                 return f.db.admit_task_completion_callback(**kwargs)
         import asyncio
         assert asyncio.run(admit()), 'S6a native callback refused'
@@ -4499,6 +4502,121 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
                     status='completed', output_summary='Historical legacy done', confidence_score=80, verdict='APPROVE')
                 _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
                 assert len(f.db.get_children(p.id)) == 2 and len(s6queue(f)) == 1
+        elif case == 'blocked_job_wait_passthrough':
+            from runtime.models import JobRecord
+            # Native outcomes must reach the ordinary consumer even with an
+            # unconsumed, delivered Held event and unfinished workflow runs.
+            for status, jobs, decision in (
+                    ('blocked', ['JOB-901'], None),
+                    ('blocked', [], None),
+                    ('failed', [], None),
+                    ('completed', [], dict(action='delegate', agent='s3_author', prompt='ordinary work'))):
+                with s6fixture() as f:
+                    sid = 's6-native-' + status + ('-jobs' if jobs else '-ordinary')
+                    (f.root / 'workspaces' / 's3_author').mkdir(parents=True, exist_ok=True)
+                    s6sid(f, sid)
+                    page = s5page(f, sid, write=True)
+                    assert page['notifications'], 'passthrough did not have a delivered pending event'
+                    if jobs:
+                        f.db.insert_job(JobRecord(id=jobs[0], task_id=f.source.id,
+                            agent_name=f.source.assigned_agent, title='Private unlaunched job',
+                            rationale='Synthetic row only; never execute', script_text='exit 0',
+                            interpreter='bash', status='running', created_at='2026-11-20T00:00:00+00:00'))
+                    before = s5snap(f)
+                    row = s6callback(f, sid, decision, status=status, waiting_on_job_ids=jobs or None)
+                    assert row['status'] == status and row['output_summary'] == 'Private S6a callback'
+                    assert f.db.admit_task_completion_callback(**f.s6_last_kwargs), 'ordinary exact replay refused'
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumption_receipts').fetchone()[0] == 0
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumed_notifications').fetchone()[0] == 0
+                    assert s5snap(f)['workflow_seq_inbox_deliveries'] == before['workflow_seq_inbox_deliveries']
+                    if status == 'failed':
+                        # Native cause is retained, rather than replaced by a
+                        # workflow-decision prerequisite.
+                        assert row['decision_json'] is None
+                        continue
+                    source = f.db.get_task(f.source.id)
+                    report = completion_report_from_result_row(source.id, row, fallback_agent=source.assigned_agent)
+                    _consume_completion_report(f.org.orchestrator, source.id, report, result_row_id=row['id'])
+                    source = f.db.get_task(source.id)
+                    if jobs:
+                        assert (source.status, source.block_kind) == ('in_progress', 'blocked_on_job'), 'native job wait did not park'
+                        assert json.loads(source.blocked_on_job_ids) == jobs
+                        assert f.db.get_job(jobs[0]).task_id == source.id
+                    elif status == 'blocked':
+                        assert source.status == 'failed', 'native ordinary blocked path did not run'
+                        assert source.note == 'self-blocked: Private S6a callback'
+                    else:
+                        children = [f.db.get_task(key) for key in f.db.get_children(source.id)
+                            if key not in {ids.carrier_task_id for ids in f.batch_ids}]
+                        assert len(children) == 1 and children[0].brief == 'ordinary work', 'native ordinary dispatch did not run'
+                        assert children[0].id in s6queue(f)
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumed_notifications').fetchone()[0] == 0
+        elif case == 'settled_history_not_veto':
+            from runtime.orchestrator.workflow_continuation import ordinary_children
+            with s6fixture(hold=False) as f:
+                for index in range(260):
+                    s6ordinary(f, parent=f.source.id, task_id='s6-history-' + str(index),
+                        status=('completed', 'failed', 'cancelled', 'superseded')[index % 4])
+                for ids in f.batch_ids:
+                    f.ids = ids
+                    s4closed(f, ids.visit_id, summary=s4bsummary('finish'), terminal='success')
+                    s4baccept(f)
+                assert len(f.db.get_children(f.source.id)) == 262
+                history = tuple(tuple(row) for row in f.conn.execute(
+                    "SELECT * FROM tasks WHERE parent_task_id=? AND id LIKE 's6-history-%' ORDER BY id", (f.source.id,)))
+                assert all(s4row(f, 'workflow_seq_runs', ids.run_id)['state'] == 'finished' for ids in f.batch_ids)
+                source = f.db.get_task(f.source.id)
+                assert ready(f.org.orchestrator, source), 'settled history vetoed readiness'
+                assert ordinary_children(f.org.orchestrator, source) == [], 'settled history entered the active barrier'
+                assert eligible(f.org.orchestrator, source), 'settled history vetoed session eligibility'
+                f.db._workflow_continuation.rediscover()
+                assert s6queue(f).count(source.id) == 1, 'startup lost drained source behind settled history'
+                inv = TaskInvocation(f.org.orchestrator, source, source.assigned_agent, 's6-history-admission')
+                inv.prepare()
+                assert inv.commit(), 'settled history vetoed genuine SID admission'
+                row = s6callback(f, inv.session_id, dict(action='done', summary='Settled history is retained'))
+                report = completion_report_from_result_row(source.id, row, fallback_agent=source.assigned_agent)
+                _consume_completion_report(f.org.orchestrator, source.id, report, result_row_id=row['id'])
+                assert f.db.get_task(source.id).status == 'completed', 'settled history vetoed final done'
+                assert s6queue(f).count('s5-parent') == 1
+                assert tuple(tuple(row) for row in f.conn.execute(
+                    "SELECT * FROM tasks WHERE parent_task_id=? AND id LIKE 's6-history-%' ORDER BY id", (source.id,))) == history
+                assert len(f.db.get_children(source.id)) == 262, 'history was deleted or hidden'
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumed_notifications').fetchone()[0] == 0
+        elif case == 'event_session_dispatch_refused':
+            for join in ('chain', 'fanout'):
+                for decision in (
+                        dict(action='delegate', agent='s3_author', prompt='replacement'),
+                        dict(action='delegate', agent='s3_author', prompt='replacement',
+                            then=[dict(agent='s3_review', prompt='replacement next leg')]),
+                        dict(action='fanout', children=[dict(agent='s3_author', prompt='replacement')]),
+                        dict(action='parallel', children=[dict(agent='s3_author', prompt='replacement')])):
+                    with s6fixture() as f:
+                        child = s6ordinary(f, parent=f.source.id)
+                        for agent in ('s3_author', 's3_review'):
+                            (f.root / 'workspaces' / agent).mkdir(parents=True, exist_ok=True)
+                        native = (s4bytes(dict(legs=[dict(agent='s3_review', prompt='original next leg')],
+                            step_index=0, step_audit_id=1)).decode() if join == 'chain' else
+                            s4bytes(dict(children_ids=[child.id], children_details=[], width=1,
+                                manager_agent=f.source.assigned_agent, status='spawned')).decode())
+                        f.conn.execute('UPDATE tasks SET active_' + join + '=? WHERE id=?', (native, f.source.id))
+                        f.conn.commit()
+                        inv = TaskInvocation(f.org.orchestrator, f.db.get_task(f.source.id),
+                            f.source.assigned_agent, 's6-dispatch-admission')
+                        inv.prepare()
+                        assert inv.commit(), 'event did not admit the genuine initiator SID'
+                        before = s5snap(f)
+                        try:
+                            s6callback(f, inv.session_id, decision)
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_seq_workflow_dispatch_join_outstanding', str(exc)
+                        else:
+                            raise AssertionError('event-session dispatch replaced an unfinished join')
+                        assert s5snap(f) == before, 'dispatch refusal committed result, join mutation or event acknowledgement'
+                        assert getattr(f.db.get_task(f.source.id), 'active_' + join) == native
+                        assert f.db.get_task(child.id) == child
+                        assert f.db.get_latest_task_result(f.source.id, f.source.assigned_agent, inv.session_id) is None
+                        assert s6queue(f) == []
         elif case == 'final_done_after_drain':
             with s6fixture(hold=False) as f:
                 for ids in f.batch_ids:

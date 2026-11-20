@@ -913,3 +913,13 @@ and fingerprint-absence-only legacy fallback. Inbox readiness admits only its
 addressed initiator, preserving unfinished ordinary joins. See the S6a section
 of [reusable workflows](reusable-workflows.md) for internal decision wire fields
 and the native callback transaction boundary.
+
+Only active ordinary dependencies enter the bounded join observation; settled
+historical children and structural workflow carriers never impose a lifetime
+continuation/completion limit. Active-set overflow stays unavailable until it
+settles. Native blocked/job waits, failed results and ordinary decisions do not
+require a workflow receipt or consume pending events. Final ordinary done still
+rechecks outstanding work under native admission. Event-session ordinary
+delegate/fanout/parallel/then dispatch refuses under that same fence while a
+native join is unfinished, rolling back the result and retaining its exact
+chain/fanout bytes. With no unfinished join, ordinary dispatch is unchanged.

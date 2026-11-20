@@ -1615,7 +1615,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' else None
     try:
         admission_context = (coding_owner.callback_admission(task_id) if coding_owner is not None else
-            continuation.callback_admission(task_id, body.decision) if continuation is not None else nullcontext(None))
+            continuation.callback_admission(task_id, body.decision, status=body.status)
+            if continuation is not None else nullcontext(None))
         async with admission_context as coding_capture:
             async with org.db_lock if coding_owner is None else nullcontext():
                 current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))

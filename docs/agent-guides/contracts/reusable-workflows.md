@@ -78,9 +78,11 @@ On first processing it invokes the internal result consumer's effect writer on
 the SAME transaction, then records its effects and consumption receipt. Any
 exception rolls back result/effects/consumption together. Exact receipt replay
 returns original recorded effects without invoking the writer, even after later
-run/source-session transitions. Existing ordinary decisions consume their stored
-delivered page without extra historical decision keys. S6a owns the run_step
-call site and genuine result/transaction ownership; S5 does not mount it.
+run/source-session transitions. This S5 primitive also supports ordinary decision
+bytes without extra historical keys; the mounted S6a seam restricts consumption
+to completed workflow decisions and leaves ordinary native callbacks unacknowledged.
+S6a owns the run_step call site and genuine result/transaction ownership; S5
+does not mount it.
 
 Complete readers authenticate normalized membership, source outer proofs,
 causal inbox bytes, actual delivery membership and receipt/native-result equality
@@ -2619,6 +2621,12 @@ the initiating task. Native close/release retries its pending wake; startup
 reconstructs pending visit outboxes and initiator receipts. A drained control/wait
 receipt admits one further ordinary final-decision session without completing it. Unfinished ordinary chain/fanout state survives event entry.
 
+Dependency observations fetch a bounded active set: unfinished ordinary children
+and retained native join members, excluding workflow carriers. Settled children
+outside the current join remain in history and cannot veto readiness, startup
+rediscovery or final done. Active-set overflow is unavailable/nonterminal; it
+ceases to block once that work settles.
+
 The internal closed decisions are `workflow_control` with `workflow` containing
 the existing `workflow-sequential-control@2` command, and `workflow_wait` with
 `run_ids` listing known owned runs. Both accept optional `consume_notifications`
@@ -2632,7 +2640,15 @@ replay and v2 attempt/omission behavior. Its single attached continuation seam
 receives the actual INTEGER result after result/attempt insertion, before native
 COMMIT. Result, S4a effects and S5 consumption roll back together on refusal or
 error; absence of the seam refuses wait-set callbacks. Exact replay invokes no
-effects. Ordinary final done rechecks dependencies inside that same writer.
+effects. Only completed start/control/wait decisions require workflow consumption.
+Blocked results (including waits on the initiator's own jobs), failed results and
+ordinary decisions pass through to unchanged native handling without acknowledging
+pending events. Their original native causes remain intact. Ordinary final done
+still rechecks dependencies inside that same writer. An ordinary delegate,
+fanout/parallel or then-chain dispatch while a retained native join is unfinished
+refuses with `workflow_seq_workflow_dispatch_join_outstanding` before COMMIT:
+the result and all effects roll back, the join bytes remain unchanged and no
+event is acknowledged. Ordinary dispatch without an unfinished join is unchanged.
 Workflow callbacks never mark the task completed. Shared terminal readers exclude
 start/control/wait even after drain; owned live work or unavailable evidence
 prevents early parent release. Ordinary final-done status lag remains THR-211.

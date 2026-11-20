@@ -3975,7 +3975,12 @@ and the same command with `3.14`, or `--s6a=CASE`. Cases are
 `control_live_chain_child`, `wait_live_fanout_child`,
 `sibling_finishes_run_B_live`, `pause_live_initiator`, `read_waiting_children`,
 `initiator_event_run_B_live`, `ordinary_done_lag`, `modern_missing_no_fallback`,
-and `final_done_after_drain`. These private direct boundaries forbid provider
+`final_done_after_drain`, `blocked_job_wait_passthrough`,
+`settled_history_not_veto`, and `event_session_dispatch_refused`.
+The correction cases observe native blocked/job and ordinary passthrough without
+event acknowledgement, readiness/final done with 262 retained settled
+children/carriers, and pre-COMMIT dispatch refusal preserving an unfinished join.
+These private direct boundaries forbid provider
 launch and observe actual native results, persisted dependencies, receipts and
 queue IDs. They do not establish live provider or deployment acceptance. Run
 required long selections through durable jobs and inspect their actual receipts.

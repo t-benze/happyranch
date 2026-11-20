@@ -54,8 +54,27 @@ def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dic
                      'initiator_membership_conflict')
             runs.extend(selected)
         carriers = {run['carrier_task_id'] for run in runs}
-        children = _rows(conn, 'tasks', budget, 'parent_task_id=?', (task_id,))
+        # Native joins retain only their current members. Historical settled
+        # children and structural carriers are never a lifetime veto.
+        join_ids = []
+        if task['active_fanout'] is not None:
+            join_ids = _decode(task['active_fanout'].encode('utf8'), budget)['children_ids']
+        elif task['active_chain'] is not None:
+            join_ids = [row[0] for row in conn.execute(
+                'SELECT id FROM tasks WHERE parent_task_id=? AND NOT EXISTS '
+                '(SELECT 1 FROM workflow_seq_runs r WHERE r.carrier_task_id=tasks.id) '
+                'ORDER BY created_at DESC,rowid DESC LIMIT 1', (task_id,))]
+        # Fetch bounded cells for cap+1 active rows only. Overflow is
+        # unavailable until work settles, never a permanent history veto.
+        placeholders = ','.join('?' for _ in join_ids) or 'NULL'
+        children = _rows(conn, 'tasks', budget, 'id IN (SELECT id FROM tasks WHERE '
+            "parent_task_id=? AND (status NOT IN ('completed','failed','cancelled','superseded') "
+            f'OR id IN ({placeholders})) AND NOT EXISTS '
+            '(SELECT 1 FROM workflow_seq_runs r WHERE r.carrier_task_id=tasks.id) LIMIT 257)',
+            (task_id, *join_ids))
         _require(len(children) <= 256, 'initiator_dependency_bounds')
+        _require(set(join_ids) <= {child['id'] for child in children}, 'initiator_dependency_missing')
+        children.sort(key=lambda child: child['created_at'])
         terminal = {'completed', 'failed', 'cancelled', 'superseded'}
         ordinary = [child['id'] for child in children if child['id'] not in carriers
             and child['status'] not in terminal]
@@ -79,7 +98,10 @@ def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dic
                     final_result = results[0]['id']
         return dict(run_ids=[run['id'] for run in runs], unfinished_runs=unfinished,
             ordinary_outstanding=ordinary, pending=bool(inbox) or final_result is not None,
+            ordinary_join_outstanding=task['active_chain'] is not None or any(
+                child['id'] in join_ids and child['status'] not in terminal for child in children),
             continuation_result_id=final_result, carrier_task_ids=sorted(carriers),
+            ordinary_task_ids=[child['id'] for child in children],
             runs=[dict(run_id=run['id'], state=run['state'], progress=run['progress'],
                 cas=run['cas'], held_event_id=run['held_event_id'], terminal_outcome=run['terminal_outcome'])
                 for run in runs])

@@ -66,7 +66,7 @@ def _owns_passive_chain(orch: "Orchestrator", task: "TaskRecord") -> bool:
     if task.task_type == 'task' and ready(orch, task):
         return False
     return task.active_chain is not None or (
-        bool(orch._db.get_children(task.id)) and _is_carrier(orch, task)
+        _is_carrier(orch, task) and bool(orch._db.get_children(task.id))
     )
 
 
