@@ -75,6 +75,20 @@ _STATE_DIRS = ("var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar
 _DEB_PREFIX = "opt/happyranch-desktop"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+_RUNTIME_DIAGNOSTIC_LIMIT = 8
+_RUNTIME_DIAGNOSTIC_BYTES = 65536
+
+
+def _runtime_diagnostic(name: str, info: os.stat_result, owner: tuple[int, int] | None) -> bool:
+    """H1's content-free metadata predicate, shared by inventory and B6."""
+    modes = ((0o644,) if name == "health.json" else
+             (0o600, 0o644) if re.fullmatch(r"\.health-[0-9]+", name) else ())
+    return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+            and (info.st_uid, info.st_gid) == owner
+            and stat.S_IMODE(info.st_mode) in modes
+            and info.st_size <= _RUNTIME_DIAGNOSTIC_BYTES)
+
+
 HOME_ISSUER = headscale.INSTALLER_STATE + "/home-issuer"
 _ISSUER_RECEIPT = "home-issuer-publication.json"
 _HOME_MINTER = headscale.INSTALLER_STATE + "/home-minter"
@@ -234,10 +248,11 @@ class ManagedInstaller:
 
     def _inventory_files(
         self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int | tuple[int, ...], bool | None]],
-        *, directories: set[str] | None = None,
+        *, directories: set[str] | None = None, runtime_diagnostics: bool = False,
     ) -> dict[str, bytes]:
         """Bounded, shallow inventory of one fixed directory; no unknown reads."""
         files: dict[str, bytes] = {}
+        diagnostics = 0
         try:
             with self._directory(relative) as parent:
                 with os.scandir(parent) as entries:
@@ -246,6 +261,17 @@ class ManagedInstaller:
                         if index < 64 and entry.name in (directories or set()):
                             with self._directory(relative + "/" + entry.name):
                                 pass
+                            continue
+                        if index < 64 and runtime_diagnostics and entry.name != "observe.sock":
+                            try:
+                                info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                            except OSError:
+                                raise InstallerError(path) from None
+                            if (diagnostics >= _RUNTIME_DIAGNOSTIC_LIMIT
+                                    or not _runtime_diagnostic(entry.name, info, self._service_owner)):
+                                raise InstallerError(path)
+                            diagnostics += 1
+                            files[entry.name] = b""
                             continue
                         if index >= 64 or entry.name not in allowed:
                             raise InstallerError(path if index < 64 else str(self.root / relative))
@@ -554,7 +580,8 @@ class ManagedInstaller:
                     None if service is None else (self.root_owner[0], service[1]), 0o660, True)}),
             ):
                 location = str(self.root / relative)
-                runtime = self._inventory_files(relative, entries)
+                runtime = self._inventory_files(relative, entries,
+                    runtime_diagnostics=relative == "run/happyranch-tsnet-sidecar")
                 paths.extend(str(self.root / relative / name) for name in runtime)
             location = str(self.root / _CREDSTORE / _CREDENTIAL_NAME)
             self._check_enrollment()
@@ -2516,13 +2543,8 @@ class ManagedInstaller:
                             if allow_observer and item.name == "observe.sock":
                                 continue
                             info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
-                            modes = ((0o644,) if item.name == "health.json" else
-                                     (0o600, 0o644) if re.fullmatch(r"\.health-[0-9]+", item.name) else ())
-                            if (len(diagnostics) >= 8 or not stat.S_ISREG(info.st_mode)
-                                    or info.st_nlink != 1
-                                    or (info.st_uid, info.st_gid) != self._service_owner
-                                    or stat.S_IMODE(info.st_mode) not in modes
-                                    or info.st_size > 65536):
+                            if (len(diagnostics) >= _RUNTIME_DIAGNOSTIC_LIMIT
+                                    or not _runtime_diagnostic(item.name, info, self._service_owner)):
                                 raise InstallerError("custody not empty")
                             diagnostics.append((item.name, activation._signature(info)))
                     return diagnostics

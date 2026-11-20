@@ -1986,6 +1986,60 @@ def test_fixed_inventory_never_reads_release_source_or_opaque_state(fixture: Fix
     assert lock.name not in reads
 
 
+@pytest.mark.parametrize("bad", ["symlink", "hardlink", "uid", "gid", "mode-0666", "mode-0700",
+                                 "oversize", "nine", "non-numeric", "unknown", "directory", "fifo"])
+def test_pre_stop_unsafe_diagnostics_refuse_without_effects(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager = lifecycle_fixture(fixture)
+    generated_bundle(fixture)
+    inventory_units(fixture, modern=True)
+    runtime = fixture.root / "run/happyranch-tsnet-sidecar"
+    healthy = runtime / "health.json"
+    healthy.write_bytes(b"synthetic diagnostic")
+    healthy.chmod(0o644)
+    path = runtime / ".health-123"
+    fixture.write(path, b"synthetic interrupted diagnostic")
+    if bad == "symlink":
+        path.unlink()
+        path.symlink_to(healthy.name)
+    if bad == "hardlink": os.link(path, fixture.root / "held-diagnostic")
+    if bad.startswith("mode-"): path.chmod(int(bad.removeprefix("mode-"), 8))
+    if bad == "oversize": path.write_bytes(b"x" * 65537)
+    if bad == "nine":
+        for index in range(7):
+            fixture.write(runtime / f".health-{index}", b"synthetic diagnostic")
+    if bad == "non-numeric": path = path.rename(runtime / ".health-x")
+    if bad == "unknown": path = path.rename(runtime / "unknown.json")
+    if bad in {"directory", "fifo"}:
+        path.unlink()
+        if bad == "directory": path.mkdir(mode=0o600)
+        else: os.mkfifo(path, 0o600)
+    if bad in {"uid", "gid"}:
+        original = os.stat
+        identity = path.lstat().st_ino
+        def metadata(*args: object, **kwargs: object) -> object:
+            info = original(*args, **kwargs)
+            if info.st_ino != identity: return info
+            value = SimpleNamespace(**{key: getattr(info, key) for key in dir(info) if key.startswith("st_")})
+            field = "st_" + bad
+            setattr(value, field, getattr(value, field) + 1)
+            return value
+        monkeypatch.setattr(os, "stat", metadata)
+    before = staged_inventory(fixture)
+    result = fixture.installer.inventory()
+    assert (result.state, result.detail) == ("manual-install-conflict", "unsafe-or-unrecognized")
+    if bad == "nine":
+        # scandir ordering is unspecified; whichever entry crosses the bound is named.
+        assert len(result.paths) == 1 and result.paths[0] in {str(child) for child in runtime.iterdir()}
+    else:
+        assert result.paths == (str(path),)
+    with pytest.raises(module.InstallerError, match="^manual-install-conflict: "):
+        fixture.installer.stop_and_confirm()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" for call in manager.calls)
+
+
 @pytest.mark.parametrize("case", ["success", "stop-error", "still-active", "pid", "control-pid", "cgroup", "job"])
 def test_fixed_quiescence_proves_all_units_before_return(fixture: Fixture, case: str) -> None:
     manager = lifecycle_fixture(fixture)
