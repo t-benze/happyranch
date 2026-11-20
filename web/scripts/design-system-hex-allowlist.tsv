@@ -6,10 +6,9 @@ features/settings/sections/OrganizationSection.tsx	775	59	bg-white	Existing chec
 features/work-hours-config/OverviewPage.tsx	127	65	bg-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/TierEditorDialog.tsx	425	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
 design-system/patterns/Composer.tsx	321	97	bg-transparent	legacy default Tailwind special colour utility
-design-system/patterns/MessageBubble.tsx	86	170	bg-transparent	legacy default Tailwind special colour utility
+design-system/patterns/MessageBubble.tsx	88	170	bg-transparent	legacy default Tailwind special colour utility
 design-system/patterns/Sparkline.tsx	55	24	stroke-current	legacy default Tailwind special colour utility
 design-system/patterns/StatusBadge.tsx	131	65	bg-current	legacy default Tailwind special colour utility
-design-system/patterns/TypingBubble.tsx	91	57	bg-current	legacy default Tailwind special colour utility
 design-system/patterns/semanticTone.ts	34	63	bg-transparent	legacy default Tailwind special colour utility
 design-system/primitives/Button.tsx	29	47	border-transparent	legacy default Tailwind special colour utility
 design-system/primitives/Button.tsx	31	55	border-transparent	legacy default Tailwind special colour utility

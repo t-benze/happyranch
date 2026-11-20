@@ -17,6 +17,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { Archive, CircleCheck, CircleX, Info, RotateCcw, Send, TriangleAlert, UserMinus, UserPlus, type LucideIcon } from 'lucide-react';
 import { Avatar } from '@/design-system/primitives/Avatar';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
@@ -151,21 +152,14 @@ function localeTimestamp(locale: Locale, iso: string): string {
 }
 
 /**
- * THR-376 Tt3 short message time (explicit locale, host timezone): time only
- * for today, month/day + time for earlier days, plus the year when it differs.
- * The full `localeTimestamp` stays available as the hover title.
+ * Transcript message time (explicit locale, host timezone). Time only: the
+ * THR-376 day separators carry the date. The full `localeTimestamp` stays
+ * available as the hover title.
  */
-function shortLocaleTimestamp(locale: Locale, iso: string, now: Date = new Date()): string {
+function messageTime(locale: Locale, iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const time: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(locale, time);
-  return d.toLocaleString(locale, {
-    ...time,
-    month: 'short',
-    day: 'numeric',
-    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
-  });
+  return d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
 }
 
 /**
@@ -1678,152 +1672,427 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     );
   }
 
+  const rows = buildTranscriptRows(messages);
+  const formatTime = (iso: string) => messageTime(locale, iso);
+  const formatTitle = (iso: string) => localeTimestamp(locale, iso);
+
   return (
-    <div className="flex h-full flex-col gap-2 overflow-auto px-4 py-3">
-      {messages.map((m) => {
-        const variant = messageVariant(m);
-        return (
-          <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System rows — full-width separator above an inline, wrapping
-                event description and trailing metadata, not a chat bubble.
-                Terminal responder history (incl. a system-row-anchored REPLY
-                range that settled) renders as the same light strip below the
-                divider (TASK-5553): ResponderStatusStrip filters to terminal
-                states only, so in-flight rows never duplicate the tail
-                TypingBubbles. */}
-            {variant === 'system' ? (
-              <>
-                <SystemDivider
-                  timestamp={m.created_at}
-                  systemPayload={m.system_payload}
-                  slug={slug}
-                />
-                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
-              </>
-            ) : (
-              // Turn = per-sender avatar square + chat-bubble body column
-              // (THR-061 a-thread-detail .turn). The responder strip aligns
-              // under the bubble because it lives inside the body column.
-              <div className="flex gap-3">
-                <TurnAvatar name={m.speaker} />
-                <div className="min-w-0 flex-1">
-                  <MessageBubble
-                    variant={variant}
-                    seq={m.seq}
-                    speaker={m.speaker}
-                    speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
-                    speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+    // THR-376 mockup .stream / .stream-inner: a centred column (nearest
+    // token max-w-3xl = 768px; mockup 780px) with 18px between turns. The
+    // padding follows the COLUMN width (container query), not the viewport:
+    // with both rails open at 768-800px the column is only ~250px wide.
+    <div className="@container h-full overflow-auto">
+      <div className="px-3.5 pt-1 pb-5 @xl:px-7 @xl:pt-2 @xl:pb-7">
+      <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col">
+        {rows.map((row, i) => {
+          if (row.type === 'day') {
+            return <DaySeparator key={`day-${row.key}`} iso={row.iso} />;
+          }
+          const m = row.message;
+          const variant = messageVariant(m);
+          const prev = rows[i - 1];
+          const prevIsEvent = prev?.type === 'message' && isEventRow(prev.message);
+          const key = `${m.seq}-${m.speaker}-${m.kind}`;
+          if (variant === 'system' || variant === 'decline') {
+            // System events and declines are quiet centred chips (mockup
+            // .evt); consecutive events sit 6px apart, otherwise 16px.
+            // Terminal/working responder receipts stay under the event.
+            return (
+              <div key={key} className={prevIsEvent ? 'mt-1.5' : 'mt-4'}>
+                {variant === 'decline' ? (
+                  <DeclineEvent message={m} formatTime={formatTime} formatTitle={formatTitle} />
+                ) : (
+                  <SystemEvent
                     timestamp={m.created_at}
-                    body={m.body_markdown}
-                    declineReason={m.decline_reason}
-                    attachments={m.attachments}
-                    labels={{
-                      declined: t('threads.page.message.declined'),
-                      mermaidLoading: t('common.mermaidLoading'),
-                      systemEvent: t('threads.page.system.event'),
-                    }}
-                    formatTimestamp={(iso) => shortLocaleTimestamp(locale, iso)}
-                    formatTimestampTitle={(iso) => localeTimestamp(locale, iso)}
-                    onAttachmentDownload={slug && threadId ? (attachment) => {
-                      if (attachment.thread_attachment_id) {
-                        artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
-                      } else {
-                        artifactsApi.downloadArtifact(slug, attachment.artifact_name);
-                      }
-                    } : undefined}
+                    systemPayload={m.system_payload}
+                    slug={slug}
+                    formatTime={formatTime}
+                    formatTitle={formatTitle}
                   />
-                  {m.kind === 'message' && (
-                    <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
-                  )}
-                </div>
+                )}
+                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} align="center" />
               </div>
-            )}
-          </div>
-        );
-      })}
-      {pairLive.map((e) => (
-        // Same avatar-indented turn structure as real messages above so the
-        // in-flight bubble's left edge lines up with the message bubbles
-        // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-pair-${e.agent_name}`} className="flex gap-3">
-          <TurnAvatar name={e.agent_name} />
-          <div className="min-w-0 flex-1">
-            <TypingBubble
-              agentName={e.agent_name}
-              agentLabel={<IdentityName canonicalId={e.agent_name} />}
-              status={e.state === 'running' ? 'working' : 'queued'}
-              startedAt={e.started_at}
-              nowMs={nowMs}
-              // Honest store-projected caption: queued carries the coalesced
-              // count + inclusive range (never an active-subprocess claim),
-              // running carries the claimed immutable range.
-              caption={replyDeliveryCaption(e, t, nowMs)}
-              ariaLabel={typingAria(e.agent_name, e.state === 'running')}
-              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
-              // founder seq57). The generic `trailing` slot is intentionally left
-              // unused here — no abort control renders beside the replying row.
+            );
+          }
+          const bubble = (
+            <MessageBubble
+              variant={variant}
+              seq={m.seq}
+              speaker={m.speaker}
+              speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
+              speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+              timestamp={m.created_at}
+              body={m.body_markdown}
+              declineReason={m.decline_reason}
+              attachments={m.attachments}
+              labels={{
+                declined: t('threads.page.message.declined'),
+                mermaidLoading: t('common.mermaidLoading'),
+                systemEvent: t('threads.page.system.event'),
+              }}
+              formatTimestamp={formatTime}
+              formatTimestampTitle={formatTitle}
+              onAttachmentDownload={slug && threadId ? (attachment) => {
+                if (attachment.thread_attachment_id) {
+                  artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
+                } else {
+                  artifactsApi.downloadArtifact(slug, attachment.artifact_name);
+                }
+              } : undefined}
             />
-          </div>
-        </div>
-      ))}
-      {inferredInFlight.map((s) => (
-        // Same avatar-indented turn structure as real messages above so the
-        // in-flight bubble's left edge lines up with the message bubbles
-        // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="flex gap-3">
-          <TurnAvatar name={s.agent_name} />
-          <div className="min-w-0 flex-1">
-            <TypingBubble
-              agentName={s.agent_name}
-              agentLabel={<IdentityName canonicalId={s.agent_name} />}
-              status={s.status as 'queued' | 'working'}
-              startedAt={s.started_at}
+          );
+          const receipts = m.kind === 'message' && (
+            <ResponderStatusStrip
+              statuses={m.responder_status ?? []}
               nowMs={nowMs}
-              caption={
-                s.status === 'working'
-                  ? t('threads.page.typing.replying', {
-                      elapsed: formatElapsed(s.started_at, nowMs ?? Date.now()),
-                    }).trimEnd()
-                  : t('threads.page.typing.queued')
-              }
-              ariaLabel={typingAria(s.agent_name, s.status === 'working')}
-              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
-              // founder seq57). The generic `trailing` slot is intentionally left
-              // unused here — no abort control renders beside the replying row.
+              align={variant === 'founder' ? 'end' : 'start'}
             />
+          );
+          if (variant === 'founder') {
+            // Founder turn (mockup .mine): right-aligned, no avatar, receipt
+            // pills right-aligned under the bubble.
+            return (
+              <div key={key} className="mt-4.5 min-w-0">
+                {bubble}
+                {receipts}
+              </div>
+            );
+          }
+          // Agent turn (mockup .msg): avatar + card column; the receipt
+          // strip lives inside the column so it aligns under the card.
+          return (
+            <div key={key} className="mt-4.5 flex min-w-0 gap-3">
+              <TurnAvatar name={m.speaker} />
+              <div className="min-w-0 flex-1">
+                {bubble}
+                {receipts}
+              </div>
+            </div>
+          );
+        })}
+        {pairLive.map((e) => (
+          // Same avatar-indented turn structure as agent turns above so the
+          // in-flight bubble lines up with the agent cards.
+          <div key={`typing-pair-${e.agent_name}`} className="mt-4.5 flex min-w-0 gap-3">
+            <TurnAvatar name={e.agent_name} />
+            <div className="min-w-0 flex-1">
+              <TypingBubble
+                agentName={e.agent_name}
+                agentLabel={<IdentityName canonicalId={e.agent_name} />}
+                status={e.state === 'running' ? 'working' : 'queued'}
+                startedAt={e.started_at}
+                nowMs={nowMs}
+                // Honest store-projected caption: queued carries the coalesced
+                // count + inclusive range (never an active-subprocess claim),
+                // running carries the claimed immutable range.
+                caption={replyDeliveryCaption(e, t, nowMs)}
+                ariaLabel={typingAria(e.agent_name, e.state === 'running')}
+                // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+                // founder seq57). The generic `trailing` slot is intentionally left
+                // unused here — no abort control renders beside the replying row.
+              />
+            </div>
           </div>
-        </div>
-      ))}
-      <div ref={endRef} />
+        ))}
+        {inferredInFlight.map((s) => (
+          <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="mt-4.5 flex min-w-0 gap-3">
+            <TurnAvatar name={s.agent_name} />
+            <div className="min-w-0 flex-1">
+              <TypingBubble
+                agentName={s.agent_name}
+                agentLabel={<IdentityName canonicalId={s.agent_name} />}
+                status={s.status as 'queued' | 'working'}
+                startedAt={s.started_at}
+                nowMs={nowMs}
+                caption={
+                  s.status === 'working'
+                    ? t('threads.page.typing.replying', {
+                        elapsed: formatElapsed(s.started_at, nowMs ?? Date.now()),
+                      }).trimEnd()
+                    : t('threads.page.typing.queued')
+                }
+                ariaLabel={typingAria(s.agent_name, s.status === 'working')}
+                // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+                // founder seq57). The generic `trailing` slot is intentionally left
+                // unused here — no abort control renders beside the replying row.
+              />
+            </div>
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      </div>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  System divider — full-width rule above wrapping event text      */
+/*  Day separators (THR-376 mockup .day)                               */
 /* ------------------------------------------------------------------ */
 
-interface SystemDividerProps {
+type TranscriptRow =
+  | { type: 'day'; key: string; iso: string }
+  | { type: 'message'; message: ThreadMessage };
+
+/** Host-local calendar-day key for a timestamp ('' when unparseable). */
+function localDayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/**
+ * Interleave a day separator before the first message of every host-local
+ * calendar day, computed client-side from created_at. Messages with an
+ * unparseable timestamp never open a new day.
+ */
+function buildTranscriptRows(messages: ThreadMessage[]): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  let lastDay = '';
+  for (const m of messages) {
+    const day = localDayKey(m.created_at);
+    if (day && day !== lastDay) {
+      rows.push({ type: 'day', key: day, iso: m.created_at });
+      lastDay = day;
+    }
+    rows.push({ type: 'message', message: m });
+  }
+  return rows;
+}
+
+function DaySeparator({ iso }: { iso: string }): JSX.Element {
+  const { t, locale } = useTranslation();
+  const d = new Date(iso);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const date = d.toLocaleDateString(locale, {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
+  const label =
+    d.toDateString() === now.toDateString()
+      ? t('threads.page.day.today', { date })
+      : d.toDateString() === yesterday.toDateString()
+        ? t('threads.page.day.yesterday', { date })
+        : date;
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      className="text-caption text-text-secondary mt-5.5 mb-1.5 flex items-center gap-3 font-semibold"
+    >
+      <span aria-hidden="true" className="bg-border-default h-px flex-1" />
+      <span aria-hidden="true" className="shrink-0">{label}</span>
+      <span aria-hidden="true" className="bg-border-default h-px flex-1" />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  System events — centred chips (THR-376 mockup .evt / .chip-evt)    */
+/* ------------------------------------------------------------------ */
+
+function isEventRow(m: ThreadMessage): boolean {
+  return m.kind === 'system' || m.kind === 'decline';
+}
+
+const EVENT_CHIP =
+  'text-caption text-text-secondary bg-surface-sunken border-border-default inline-flex max-w-full min-w-0 items-center gap-1.75 rounded-lg border py-0.75 pr-2.75 pl-2.25';
+const EVENT_TIME = 'text-mono-sm text-text-secondary shrink-0 font-mono';
+const EVENT_AGENT = 'text-mono-sm text-text-primary font-mono font-semibold';
+
+interface SystemEventProps {
   timestamp: string;
   systemPayload: Record<string, unknown> | null;
   slug?: string;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
 }
 
-function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
-  const { t, render, locale } = useTranslation();
+function SystemEvent({ timestamp, systemPayload, slug, formatTime, formatTitle }: SystemEventProps): JSX.Element {
+  const { t, render } = useTranslation();
+  const tag = String(systemPayload?.kind_tag ?? systemPayload?.event ?? '');
+  if (tag === 'task_escalated' && systemPayload) {
+    return (
+      <EscalationCard
+        payload={systemPayload}
+        slug={slug}
+        timestamp={timestamp}
+        formatTime={formatTime}
+        formatTitle={formatTitle}
+      />
+    );
+  }
   const description = describeSystem(systemPayload, slug, t, render);
+  const Icon = SYSTEM_EVENT_ICON[tag] ?? Info;
   return (
-    <div className="my-1 w-full min-w-0" title={localeTimestamp(locale, timestamp)}>
-      <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
-      <div className="text-text-muted text-mono-sm break-words font-mono">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
-          <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
-          <circle cx="9" cy="7" r="3" />
-          <path d="M22 21v-2a4 4 0 00-3-3.9" />
-        </svg>
-        <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
-        <span className="text-text-muted">{t('threads.page.system.suffix')}</span>
+    <div className="flex justify-center">
+      <span className={EVENT_CHIP}>
+        <Icon aria-hidden="true" className="text-text-muted size-3.25 shrink-0" />
+        <span className="min-w-0 break-words">
+          <span className="sr-only">{t('threads.page.system.event')}: </span>
+          {description}
+        </span>
+        <time dateTime={timestamp} title={formatTitle(timestamp)} className={EVENT_TIME}>
+          {formatTime(timestamp)}
+        </time>
+      </span>
+    </div>
+  );
+}
+
+const SYSTEM_EVENT_ICON: Record<string, LucideIcon> = {
+  invited: UserPlus,
+  participant_added: UserPlus,
+  participant_removed: UserMinus,
+  archive_requested: Archive,
+  archived: Archive,
+  resumed: RotateCcw,
+  task_dispatched: Send,
+  task_completed: CircleCheck,
+  task_failed: CircleX,
+};
+
+/**
+ * Decline (kind=decline) as an attention chip (mockup .chip-evt.attn) with a
+ * "Why?" expander. The expander shows the decline_reason the client already
+ * has, verbatim; it is omitted when there is no reason.
+ */
+function DeclineEvent({
+  message,
+  formatTime,
+  formatTitle,
+}: {
+  message: ThreadMessage;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
+}): JSX.Element {
+  const { t, render } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const detailId = `decline-why-${message.seq}`;
+  const reason = message.decline_reason?.trim() || null;
+  return (
+    <>
+      <div className="flex justify-center">
+        <span className={EVENT_CHIP}>
+          <TriangleAlert aria-hidden="true" className="text-attention-text size-3.25 shrink-0" />
+          <span className="min-w-0 break-words">
+            {render('threads.page.decline.chip', {
+              agent: <span className={EVENT_AGENT}><IdentityName canonicalId={message.speaker} founderNameOnly /></span>,
+            })}
+          </span>
+          <time dateTime={message.created_at} title={formatTitle(message.created_at)} className={EVENT_TIME}>
+            {formatTime(message.created_at)}
+          </time>
+          {reason && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={detailId}
+              onClick={() => setOpen((v) => !v)}
+              className="text-info shrink-0 cursor-pointer font-semibold hover:underline"
+            >
+              {open ? t('threads.page.decline.hide') : t('threads.page.decline.why')}
+            </button>
+          )}
+        </span>
       </div>
+      {reason && (
+        <p
+          id={detailId}
+          hidden={!open}
+          className="text-caption text-text-secondary mx-auto mt-1.5 max-w-lg text-center leading-relaxed break-words whitespace-pre-wrap"
+        >
+          {reason}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * task_escalated as a card (mockup .esc): 3px attention left border, the
+ * payload reason clamped to two lines with Show more / Show less, and an
+ * Open task link. Built only from the task_escalated payload (task_id,
+ * reason); a missing field simply drops its part.
+ */
+function EscalationCard({
+  payload,
+  slug,
+  timestamp,
+  formatTime,
+  formatTitle,
+}: {
+  payload: Record<string, unknown>;
+  slug?: string;
+  timestamp: string;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
+}): JSX.Element {
+  const { t, render } = useTranslation();
+  const taskId = String(payload.task_id ?? '');
+  const reason = payload.reason ? String(payload.reason) : null;
+  const [open, setOpen] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const bodyRef = useRef<HTMLParagraphElement>(null);
+  const bodyId = `esc-body-${taskId || 'unknown'}-${timestamp}`;
+
+  // Show more only when the 2-line clamp actually hides text.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || open) return;
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [reason, open]);
+
+  return (
+    <div className="bg-surface-raised border-border-default border-l-attention mx-auto w-full max-w-xl rounded-md border border-l-3 px-3.5 py-2.75">
+      <div className="text-caption flex min-w-0 items-center gap-2">
+        <TriangleAlert aria-hidden="true" className="text-attention-text size-3.5 shrink-0" />
+        <span className="min-w-0 font-semibold break-words">
+          {render('threads.page.system.taskEscalated', {
+            task: <span className="font-mono">{taskId}</span>,
+          })}
+        </span>
+        <time dateTime={timestamp} title={formatTitle(timestamp)} className={`${EVENT_TIME} ml-auto`}>
+          {formatTime(timestamp)}
+        </time>
+      </div>
+      {reason && (
+        <p
+          ref={bodyRef}
+          id={bodyId}
+          className={`text-caption text-text-secondary mt-1.25 leading-relaxed break-words whitespace-pre-wrap ${open ? '' : 'line-clamp-2'}`}
+        >
+          {reason}
+        </p>
+      )}
+      {((reason && (clamped || open)) || (slug && taskId)) && (
+        <div className="text-caption mt-2 flex items-center gap-3">
+          {reason && (clamped || open) && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={bodyId}
+              onClick={() => setOpen((v) => !v)}
+              className="text-info cursor-pointer font-semibold hover:underline"
+            >
+              {open ? t('threads.page.escalation.showLess') : t('threads.page.escalation.showMore')}
+            </button>
+          )}
+          {slug && taskId && (
+            <Link to={`/orgs/${slug}/tasks/${taskId}`} className="text-info font-semibold hover:underline">
+              {t('threads.page.escalation.openTask')}
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1859,13 +2128,17 @@ function describeSystem(
     slug && taskId
       ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
       : taskId;
+  // Agent names in event chips: mono 600 ink (mockup .chip-evt b), verbatim.
+  const agentFor = (value: unknown): React.ReactNode => (
+    <span className={EVENT_AGENT}>{String(value)}</span>
+  );
   switch (tag) {
     case 'invited':
-      return t('threads.page.system.invited', { agent: String(payload.agent) });
+      return render('threads.page.system.invited', { agent: agentFor(payload.agent) });
     case 'participant_added':
-      return t('threads.page.system.participantAdded', { agent: String(payload.agent_name) });
+      return render('threads.page.system.participantAdded', { agent: agentFor(payload.agent_name) });
     case 'participant_removed':
-      return t('threads.page.system.participantRemoved', { agent: String(payload.agent_name) });
+      return render('threads.page.system.participantRemoved', { agent: agentFor(payload.agent_name) });
     case 'archive_requested':
       return t('threads.page.system.archiveRequested');
     case 'archived':
