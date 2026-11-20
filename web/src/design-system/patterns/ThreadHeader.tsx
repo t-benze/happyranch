@@ -14,6 +14,14 @@
  * caller keeping `renaming` true). The header stays presentational: edit
  * state lives in the page so the overflow-menu Rename item shares it.
  *
+ * THR-376 thread-detail (mockup .td-head): an optional `crumb` slot renders
+ * the back link inside the header block; the title uses the mockup .h1 size
+ * (22px display, weight 500); and when `messageCount` is passed the sub-line
+ * reads `thread id · N messages` instead of the participant list (the
+ * participants live in the page's rail). Passing `messageCount={null}` means
+ * the count is still loading: the sub-line shows the thread id alone and
+ * never falls back to raw participant ids.
+ *
  * Pure prop-driven. Actions are handed in as a slot so the composition can
  * compose Button primitives with its own onClick wiring.
  */
@@ -49,6 +57,13 @@ interface ThreadHeaderProps {
   /** When true, renders a crescent-moon badge (dream-originated marker, A4). */
   dreamOriginated?: boolean;
   actions?: ReactNode;
+  /** Back link rendered at the top of the header block (mockup .crumb). */
+  crumb?: ReactNode;
+  /** Localized "N messages" sub-line text; when set it replaces the
+   *  participant list in the sub-line. `null` = count still loading: the
+   *  sub-line shows only the thread id (no participant fallback). Omitted
+   *  (undefined) keeps the participant list. */
+  messageCount?: string | null;
   /* ---- THR-209 inline rename (controlled by the page) ---- */
   /** When true the subject renders as a prefilled input with Save/Cancel. */
   renaming?: boolean;
@@ -73,6 +88,8 @@ export function ThreadHeader({
   archiveSummary,
   dreamOriginated,
   actions,
+  crumb,
+  messageCount,
   renaming = false,
   renameDraft = '',
   onRenameDraftChange,
@@ -93,8 +110,8 @@ export function ThreadHeader({
   };
   const statusPillCls =
     status === 'open'
-      ? 'bg-accent-soft text-accent-text'
-      : 'bg-surface-sunken border border-border-default text-text-muted';
+      ? 'bg-accent-soft text-accent-text border-accent-soft'
+      : 'bg-surface-sunken border-border-default text-text-muted';
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (renaming) inputRef.current?.focus();
@@ -133,11 +150,11 @@ export function ThreadHeader({
       )}
     </div>
   ) : (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex max-w-full items-center gap-2.5">
       {dreamOriginated && <CrescentMoonBadge label={labels?.dreamBadge} />}
-      <span className="font-display truncate font-medium tracking-tight">{subject}</span>
+      <span className="font-display text-h1 truncate font-medium tracking-tight">{subject}</span>
       <span
-        className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+        className={`text-overline inline-flex shrink-0 items-center rounded-full border px-2.25 py-0.5 font-semibold ${statusPillCls}`}
       >
         {status === 'open' ? L.statusOpen : L.statusArchived}
       </span>
@@ -145,20 +162,28 @@ export function ThreadHeader({
   );
 
   return (
-    <header className="border-border-default bg-surface-sunken border-b px-4 py-2">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-h2 text-text-primary truncate">{title}</h2>
-          <div className="text-caption text-text-muted mt-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <IdBadge id={threadId} kind="thread" />
-              <span aria-hidden="true">·</span>
-              <span>{participantLabels ?? (participants.join(', ') || L.noParticipants)}</span>
-            </div>
+    <header className="border-border-default @container shrink-0 border-b px-3.5 pt-4 pb-3.5 sm:px-7">
+      {crumb && <div className="mb-2.5">{crumb}</div>}
+      {/* Actions stack under the title until the HEADER itself is >= 28rem
+          wide (container query, not viewport): beside the 244px app rail and
+          the 300px properties rail the conversation column can be ~224px at a
+          768px viewport, where a viewport `sm:flex-row` squeezed the title to
+          0px. Stacked, the title keeps the full column width (truncates). */}
+      <div className="flex flex-col items-start gap-3 @md:flex-row @md:items-center @md:justify-between">
+        <div className="w-full min-w-0 flex-1">
+          <h2 className="text-text-primary truncate">{title}</h2>
+          <div className="text-caption text-text-secondary mt-1 flex flex-wrap items-center gap-2">
+            <IdBadge id={threadId} kind="thread" />
+            {messageCount !== null && (
+              <>
+                <span aria-hidden="true" className="text-text-muted">·</span>
+                <span>{messageCount ?? (participantLabels ?? (participants.join(', ') || L.noParticipants))}</span>
+              </>
+            )}
           </div>
         </div>
         {actions && (
-          <div className="flex shrink-0 items-center gap-1">{actions}</div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1">{actions}</div>
         )}
       </div>
       {archiveSummary && (

@@ -29,6 +29,8 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { StatValue } from '@/design-system/patterns/StatValue';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
+import { StatusBadge, STATUS_TONE, type TaskStatus } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi } from '@/lib/api';
@@ -219,33 +221,24 @@ function isActiveTaskStatus(status: string): boolean {
   return ACTIVE_TASK_STATUSES.has(status);
 }
 
-/**
- * Tint token pair for a linked-task chip (THR-061 a-thread-detail). Mirrors the
- * shared StatusBadge status→token mapping so the two surfaces read the same,
- * but packs the status word + id into ONE compact chip (which StatusBadge can't
- * express). Active states get a colored fill; settled terminals stay muted.
- */
-function taskChipClass(status: string): string {
-  switch (status) {
-    case 'in_progress':
-    case 'completed':
-      return 'bg-tier-green-tint text-status-open';
-    case 'pending':
-      return 'bg-tier-yellow-tint text-status-archiving';
-    case 'escalated':
-    case 'blocked':
-      return 'bg-tier-red-tint text-status-escalated';
-    case 'failed':
-      return 'bg-tier-red-tint text-status-abandoned';
-    default: // cancelled, superseded, archived, unknown
-      return 'border-border-default text-status-archived border';
-  }
-}
+// THR-376 rail section pattern (mockup .rail-lbl / .rail-link / .rail-row).
+// .rail-lbl: 11px/600 uppercase ink-2 — the shared eyebrow recipe.
+const RAIL_LABEL = 'text-eyebrow text-text-secondary mb-2 uppercase';
+const RAIL_LINK =
+  'border-border-default text-caption flex items-center gap-2 rounded-sm border px-2.5 py-1.75 transition-colors';
+const RAIL_ROW = 'text-body-sm flex items-center justify-between gap-2 py-1.25';
 
-// Chip status word — renders the stored status verbatim so the
-// founder sees the REAL stored status, not a paraphrase.
-function taskStatusLabel(status: string): string {
-  return status;
+/**
+ * Linked-task status pill: the shared StatusBadge (status → tone map), so the
+ * rail reads the same as Tasks/Jobs. A status outside the known task
+ * vocabulary renders verbatim in the neutral tone rather than guessing.
+ */
+function LinkedTaskStatus({ status }: { status: string }): JSX.Element {
+  return status in STATUS_TONE ? (
+    <StatusBadge status={status as TaskStatus} />
+  ) : (
+    <StatusBadge tone="neutral" label={status} />
+  );
 }
 
 /**
@@ -1220,16 +1213,20 @@ function DetailColumn({
   const freshTokens = useThreadFreshTokens(threadId);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
-  const backNav = (
-    <div className="bg-surface-sunken px-4 pt-3">
-      <Link
-        to={backHref}
-        className="text-text-muted hover:text-text-primary text-xs transition-colors"
-      >
-        {t('threads.page.detail.back')}
-      </Link>
-    </div>
+  // THR-376: mockup .crumb — chevron + "All threads", rendered inside the
+  // header block when the thread is loaded and on its own row otherwise.
+  const crumb = (
+    <Link
+      to={backHref}
+      className="text-caption text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 font-medium transition-colors"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+      {t('threads.page.detail.back')}
+    </Link>
   );
+  const backNav = <div className="px-3.5 pt-4 sm:px-7">{crumb}</div>;
 
   // Loading skeleton
   if (loading) {
@@ -1290,65 +1287,76 @@ function DetailColumn({
           stream and rail keep their own overflow-auto; nothing functional
           changes — presentational cap only. */}
       <div className="max-w-content mx-auto flex min-h-0 w-full flex-1 flex-col">
-      {backNav}
-      <ThreadHeader
-        threadId={thread.thread_id}
-        subject={thread.subject}
-        status={threadStatusOrFallback(thread.status)}
-        participants={thread.participants}
-        participantLabels={thread.participants.map((id, index) => <span key={id}>{index > 0 && ", "}<IdentityName canonicalId={id} founderNameOnly /></span>)}
-        archiveSummary={thread.summary}
-        dreamOriginated={isDreamOriginated}
-        renaming={renaming}
-        renameDraft={renameDraft}
-        onRenameDraftChange={onRenameDraftChange}
-        onRenameSave={onRenameSave}
-        onRenameCancel={onRenameCancel}
-        renameError={renameError}
-        renameSaving={renameSaving}
-        labels={{
-          statusOpen: t('threads.page.header.statusOpen'),
-          statusArchived: t('threads.page.header.statusArchived'),
-          noParticipants: t('threads.page.header.noParticipants'),
-          archiveSummary: t('threads.page.header.archiveSummary'),
-          titleInput: t('threads.page.header.titleInput'),
-          save: t('threads.page.header.save'),
-          cancel: t('threads.page.header.cancel'),
-          dreamBadge: t('threads.page.dreamBadge'),
-        }}
-        actions={
-          <div className="flex flex-wrap items-center gap-1">
-            {/* Invite moved into the Participants rail (a-thread-detail);
-                the header carries only Archive + archived-thread affordances.
-                THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
-                routing directly without duplicating actions in a menu. */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onRenameStart}
-              disabled={renaming}
-              title={t('threads.page.action.renameTitle')}
-            >
-              {t('threads.page.action.rename')}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onTogglePin(!thread.pinned)}
-              disabled={pinPending}
-              aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-              title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-            >
-              {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>{t('threads.page.action.archive')}</Button>
-            {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
-          </div>
-        }
-      />
-      <PinErrorBanner message={pinError} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
         <div className="flex min-h-64 min-w-0 shrink-0 flex-col md:min-h-0 md:flex-1">
+          {/* THR-376 mockup .td-grid: the header (.td-head) sits at the top of
+              the conversation column, so the rail runs the full height. */}
+          <ThreadHeader
+            threadId={thread.thread_id}
+            subject={thread.subject}
+            status={threadStatusOrFallback(thread.status)}
+            participants={thread.participants}
+            crumb={crumb}
+            // Count of the messages loaded for this thread (THR-376 .td-sub).
+            // null while the transcript is still loading: the sub-line shows
+            // the thread id alone, never the raw participant-id fallback.
+            messageCount={messagesLoading ? null : t('threads.page.header.messageCount', { count: messages.length })}
+            archiveSummary={thread.summary}
+            dreamOriginated={isDreamOriginated}
+            renaming={renaming}
+            renameDraft={renameDraft}
+            onRenameDraftChange={onRenameDraftChange}
+            onRenameSave={onRenameSave}
+            onRenameCancel={onRenameCancel}
+            renameError={renameError}
+            renameSaving={renameSaving}
+            labels={{
+              statusOpen: t('threads.page.header.statusOpen'),
+              statusArchived: t('threads.page.header.statusArchived'),
+              noParticipants: t('threads.page.header.noParticipants'),
+              archiveSummary: t('threads.page.header.archiveSummary'),
+              titleInput: t('threads.page.header.titleInput'),
+              save: t('threads.page.header.save'),
+              cancel: t('threads.page.header.cancel'),
+              dreamBadge: t('threads.page.dreamBadge'),
+            }}
+            actions={
+              <div className="flex flex-wrap items-center gap-1">
+                {/* Invite moved into the Participants rail (a-thread-detail);
+                    the header carries only Archive + archived-thread affordances.
+                    THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
+                    routing directly without duplicating actions in a menu. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onRenameStart}
+                  disabled={renaming}
+                  title={t('threads.page.action.renameTitle')}
+                >
+                  {t('threads.page.action.rename')}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onTogglePin(!thread.pinned)}
+                  disabled={pinPending}
+                  aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                  title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                >
+                  {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                </Button>
+                {/* Mockup .btn.btn-sm: outlined small button with the archive icon. */}
+                <Button variant="outline" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+                    <path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4" />
+                  </svg>
+                  {t('threads.page.action.archive')}
+                </Button>
+                {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
+              </div>
+            }
+          />
+          <PinErrorBanner message={pinError} />
           <div className="max-h-96 min-h-32 flex-1 overflow-auto md:max-h-none md:min-h-0">
             <ThreadDetailTranscript
               messages={messages}
@@ -1364,62 +1372,74 @@ function DetailColumn({
           </footer>
         </div>
         {/* Stack properties below the conversation on narrow screens; md restores
-            the 244px rail. Both panes stay mounted with every control. */}
+            the 300px rail (THR-376 mockup .td-grid `1fr 300px`, .rail padding 20,
+            sections 22px apart). Both panes stay mounted with every control. */}
         <aside
           aria-label={t('threads.page.rail.aria')}
-          className="border-border-default bg-surface-sunken flex w-full min-w-0 shrink-0 flex-col gap-3 overflow-auto border-t p-4 md:w-rail md:border-t-0 md:border-l"
+          className="border-border-default md:w-rail-wide flex w-full min-w-0 shrink-0 flex-col gap-5.5 overflow-auto border-t p-5 md:border-t-0 md:border-l"
         >
-          {/* Participants — LED + mono name + latest-response status (THR-061
-              a-thread-detail .prow). Status is derived from responder_status
-              (honest); the founder row shows the current name alone. Remove ✕ preserved. */}
+          {/* Participants — mockup .prow: 7px LED + mono 12px name + 11.5px
+              latest-response status. Status is derived from responder_status
+              (honest); the founder row carries a "founder" label because the
+              client knows the canonical `founder` id. No idle fallback. The
+              remove control is a 22px icon button revealed on row hover or
+              keyboard focus at md+ (always visible when the rail stacks); it
+              stays in the tab order and keeps its accessible name. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.participants')}</h3>
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.participants')}</h3>
             {thread.participants.length > 0 ? (
-              <ul className="space-y-0.5">
+              <ul>
                 {thread.participants.map((p) => {
                   // Latest responder state drives BOTH the LED color and the
                   // status label (honest, derived — no fabrication). The
-                  // founder shows their current name alone (canonical ID when
-                  // unnamed/unavailable) with no redundant role label.
+                  // founder shows their current name (canonical ID when
+                  // unnamed/unavailable).
                   const respStatus = statusByAgent.get(p) ?? null;
                   const led = participantLed(p, respStatus);
-                  const statusLabel = p !== 'founder' && respStatus ? responderStatusLabel(respStatus, t) : null;
+                  const statusLabel =
+                    p === 'founder'
+                      ? t('threads.page.rail.founderRole')
+                      : respStatus
+                        ? responderStatusLabel(respStatus, t)
+                        : null;
                   const displayName = <IdentityName canonicalId={p} founderNameOnly />;
                   return (
-                    <li key={p} className="flex items-center gap-2 py-1">
-                      <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
-                      <span className="text-text-primary truncate text-xs font-medium">{displayName}</span>
-                      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                        {statusLabel && <span className="text-text-muted text-caption">{statusLabel}</span>}
-                        {open && p !== 'founder' && (
-                          <button
-                            type="button"
-                            aria-label={t('threads.page.rail.removeParticipant', { name: p })}
-                            title={t('threads.page.rail.removeParticipant', { name: p })}
-                            onClick={() => onRemoveParticipant(p)}
-                            className="text-text-muted hover:text-feedback-danger rounded-sm px-1 text-xs leading-none transition-colors"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </span>
+                    <li key={p} className="group text-body-sm flex items-center gap-2.25 py-1.5">
+                      <span aria-hidden="true" className={`size-1.75 shrink-0 rounded-full ${led}`} />
+                      <span className="text-text-primary text-caption min-w-0 truncate font-mono">{displayName}</span>
+                      {statusLabel && (
+                        <span className="text-text-secondary text-task-meta ml-auto shrink-0">{statusLabel}</span>
+                      )}
+                      {open && p !== 'founder' && (
+                        <button
+                          type="button"
+                          aria-label={t('threads.page.rail.removeParticipant', { name: p })}
+                          title={t('threads.page.rail.removeParticipant', { name: p })}
+                          onClick={() => onRemoveParticipant(p)}
+                          className={`${statusLabel ? 'ml-1.5' : 'ml-auto'} text-text-secondary hover:bg-danger-soft hover:text-feedback-danger focus-visible:ring-ring inline-flex size-5.5 shrink-0 items-center justify-center rounded-sm transition-opacity focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none md:opacity-0 md:group-hover:opacity-100`}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="size-3.25">
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
                     </li>
                   );
                 })}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.none')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.none')}</p>
             )}
-            {/* Invite participant — moved from the header into the rail to
-                match a-thread-detail. Open-thread only; opens the InviteDialog. */}
+            {/* Invite participant — mockup .rail-btn (dashed, full-width,
+                left-aligned). Open-thread only; opens the InviteDialog. */}
             {open && (
               <button
                 type="button"
                 onClick={onInvite}
                 title={t('threads.page.rail.inviteTitle')}
-                className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors"
+                className="border-border-strong text-caption text-text-secondary hover:border-accent-default hover:bg-accent-soft hover:text-accent-text focus-visible:ring-ring mt-1.5 flex w-full items-center justify-start gap-1.75 rounded-sm border border-dashed px-2.5 py-1.75 font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="size-3.5 shrink-0">
                   <circle cx="9" cy="8" r="3" />
                   <path d="M3.5 20a5.5 5.5 0 0110 0M18 8v6M15 11h6" />
                 </svg>
@@ -1436,98 +1456,92 @@ function DetailColumn({
               responder strips keep terminal history. */}
           {replyDelivery.length > 0 && (
             <div aria-label={t('threads.page.rail.replyDelivery')}>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
-                {t('threads.page.rail.replyDelivery')}
-              </h3>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.replyDelivery')}</h3>
               <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
             </div>
           )}
 
-          {/* Linked tasks — compact COLORED CHIPS (status word + id in one
-              pill), THR-061 a-thread-detail. ACTIVE tasks
-              (in_progress/pending/escalated/blocked) sort to the top so the
-              head of the rail matches the design; server order is preserved
-              within each group (stable sort). ALL real linked tasks are shown —
-              nothing is dropped (honesty fence; the design sample has 2, real
-              threads have ~42). The chip list is capped to a bounded height with
-              an INTERNAL scroll so a busy thread's task list cannot push the
-              "This thread / Fresh tokens" panel below the fold — every chip stays
-              rendered and reachable by scrolling within the cap (LAYOUT bound, not
-              a data cull). The header count signals when there are more than fit.
-              Whether to collapse to active-only behind a "show all" expander
-              remains a product question flagged in the PR. */}
+          {/* Linked tasks — mockup .rail-link: bordered rows carrying the
+              shared StatusBadge + task EntityId (IdBadge), linking to the task
+              as before. No task title (not on the payload). ACTIVE tasks
+              (in_progress/pending/escalated/blocked) sort to the top; server
+              order is preserved within each group (stable sort). ALL real
+              linked tasks are shown — nothing is dropped. The list is capped to
+              a bounded height with an INTERNAL scroll so a busy thread's task
+              list cannot push "This thread" below the fold (layout bound, not
+              a data cull); the header count signals when there are more. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+            <h3 className={RAIL_LABEL}>
               {t('threads.page.rail.linkedTasks')}
               {threadTasks.data && threadTasks.data.length > 0 && (
                 <span className="text-text-disabled ml-1 tabular-nums normal-case">({formatCountFor(locale, threadTasks.data.length)})</span>
               )}
             </h3>
             {threadTasks.isLoading ? (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksLoading')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.tasksLoading')}</p>
             ) : threadTasks.isError ? (
-              <p className="text-feedback-danger text-xs">{t('threads.page.rail.tasksError')}</p>
+              <p className="text-feedback-danger text-body-sm">{t('threads.page.rail.tasksError')}</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              <ul className="flex max-h-24 flex-col gap-1.5 overflow-y-auto pr-1">
+              <ul className="flex max-h-44 flex-col gap-1.5 overflow-y-auto">
                 {[...threadTasks.data]
                   .sort(
                     (a, b) =>
                       (isActiveTaskStatus(a.status) ? 0 : 1) -
                       (isActiveTaskStatus(b.status) ? 0 : 1),
                   )
-                  .map((t) => (
-                    // Compact "status - current task ID" pill (founder THR-324):
-                    // no secondary chain-origin line; full status and ID wrap
-                    // rather than truncate in a narrow rail.
-                    <li
-                      key={t.id}
-                      className={`text-mono-sm flex w-full flex-wrap items-center gap-x-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
-                    >
-                      {isActiveTaskStatus(t.status) && (
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
-                      )}
-                      <span className="font-semibold">{taskStatusLabel(t.status)}</span>
-                      <span className="opacity-80">-</span>
-                      {slug ? (
-                        <Link to={`/orgs/${slug}/tasks/${t.id}`} className="font-mono opacity-80 hover:underline">
-                          {t.id}
-                        </Link>
-                      ) : (
-                        <span className="font-mono opacity-80">{t.id}</span>
-                      )}
-                    </li>
-                  ))}
+                  .map((t) => {
+                    const row = (
+                      <>
+                        <LinkedTaskStatus status={t.status} />
+                        <IdBadge id={t.id} kind="task" />
+                      </>
+                    );
+                    return (
+                      <li key={t.id}>
+                        {slug ? (
+                          <Link
+                            to={`/orgs/${slug}/tasks/${t.id}`}
+                            className={`${RAIL_LINK} hover:bg-surface-sunken focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none`}
+                          >
+                            {row}
+                          </Link>
+                        ) : (
+                          <div className={RAIL_LINK}>{row}</div>
+                        )}
+                      </li>
+                    );
+                  })}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksEmpty')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.tasksEmpty')}</p>
             )}
           </div>
 
-          {/* This thread — meta card (THR-061 a-thread-detail). Fresh tokens ·
-              Cost · Opened. "Fresh tokens" is the REAL per-thread fresh/uncached
-              input total, wired over the existing tokens rollup and OMITTED when
-              the thread has no recorded usage (never a fabricated figure). Cost
-              stays a static honest "not metered" fence — no dollar meter exists
-              on main, so no number is invented. Status is shown in the header
+          {/* This thread — mockup .rail-row (13px, tabular numerals). Fresh
+              tokens · Cost · Opened. "Fresh tokens" is the REAL per-thread
+              fresh/uncached input total, wired over the existing tokens rollup
+              and OMITTED when the thread has no recorded usage (never a
+              fabricated figure). Cost stays a static honest "not metered" fence
+              — no dollar meter exists on main. Status is shown in the header
               pill, so it is not duplicated here. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.thisThread')}</h3>
-            <dl className="space-y-1">
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.thisThread')}</h3>
+            <dl>
               {typeof freshTokens.data === 'number' && (
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-text-muted text-xs">{t('threads.page.rail.freshTokens')}</dt>
-                  <dd className="text-text-secondary text-xs">
+                <div className={RAIL_ROW}>
+                  <dt className="text-text-secondary">{t('threads.page.rail.freshTokens')}</dt>
+                  <dd className="text-text-primary tabular-nums">
                     <StatValue value={freshTokens.data} align="inline" locale={locale} />
                   </dd>
                 </div>
               )}
-              <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">{t('threads.page.rail.cost')}</dt>
-                <dd className="text-text-disabled text-xs">{t('threads.page.rail.notMetered')}</dd>
+              <div className={RAIL_ROW}>
+                <dt className="text-text-secondary">{t('threads.page.rail.cost')}</dt>
+                <dd className="text-text-primary tabular-nums">{t('threads.page.rail.notMetered')}</dd>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">{t('threads.page.rail.opened')}</dt>
-                <dd className="text-text-secondary text-xs">
+              <div className={RAIL_ROW}>
+                <dt className="text-text-secondary">{t('threads.page.rail.opened')}</dt>
+                <dd className="text-text-primary tabular-nums">
                   {new Date(thread.started_at).toLocaleDateString(locale, { month: 'short', day: 'numeric' })}
                 </dd>
               </div>
@@ -1539,12 +1553,12 @@ function DetailColumn({
               text entries (the transcript bubbles carry the download links). */}
           {artifacts.length > 0 && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.artifacts')}</h3>
-              <ul className="space-y-1">
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.artifacts')}</h3>
+              <ul>
                 {artifacts.map((a) => (
                   <li
                     key={a.thread_attachment_id ?? a.artifact_name}
-                    className="text-text-secondary block truncate text-xs"
+                    className="text-text-secondary text-body-sm block truncate py-0.5"
                     title={a.display_name}
                   >
                     {a.display_name}
@@ -1556,14 +1570,14 @@ function DetailColumn({
 
           {/* Thread ID */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.id')}</h3>
-            <p className="text-text-secondary font-mono text-xs">{thread.thread_id}</p>
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.id')}</h3>
+            <p className="text-text-secondary text-caption font-mono">{thread.thread_id}</p>
           </div>
 
           {/* Dream marker */}
           {isDreamOriginated && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.origin')}</h3>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.origin')}</h3>
               <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold">
                 <CrescentMoonBadge className="h-3 w-3" label={t('threads.page.dreamBadge')} />
                 {t('threads.page.rail.dream')}
@@ -1574,8 +1588,8 @@ function DetailColumn({
           {/* Archive summary */}
           {thread.summary && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.summary')}</h3>
-              <p className="text-text-secondary text-xs leading-relaxed">{thread.summary}</p>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.summary')}</h3>
+              <p className="text-text-secondary text-body-sm leading-relaxed">{thread.summary}</p>
             </div>
           )}
         </aside>
