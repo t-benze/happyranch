@@ -3,7 +3,7 @@
  * Excluded (agent-subprocess-only): POST /tasks/{id}/completion,
  * POST /tasks/{id}/progress. See spec §2.
  */
-import { API_PREFIX, nativeRecoveryErrorFor, request } from './client';
+import { API_PREFIX, fencedText, nativeRecoveryErrorFor, request, schemeFetch } from './client';
 import { prepareMultipartUpload } from './multipart';
 import type {
   TaskAttachmentRecord,
@@ -187,7 +187,7 @@ export const uploadTaskAttachment = async (
     form,
     Object.assign(new Error('Upload failed: 413'), { status: 413 }),
   );
-  const res = await fetch(
+  const fenced = await schemeFetch(
     `${API_PREFIX}/orgs/${slug}/tasks/attachments?${params.toString()}`,
     {
       method: 'POST',
@@ -200,8 +200,15 @@ export const uploadTaskAttachment = async (
       credentials: 'same-origin',
     },
   );
+  const res = fenced.res;
+  const text = await fencedText(fenced, false);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
     const recovery = nativeRecoveryErrorFor(res.status, body);
     if (recovery) throw recovery;
     const code = (body as Record<string, unknown> | null)?.code;
@@ -211,7 +218,7 @@ export const uploadTaskAttachment = async (
     );
     throw err;
   }
-  return res.json();
+  return JSON.parse(text);
 };
 
 export const listTaskAttachments = (

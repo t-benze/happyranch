@@ -56,7 +56,10 @@ never an auth failure: it never clears or re-acquires the bearer and never
 logs out; the 401 clear/re-bootstrap/replay path is unchanged. A stream that
 opens to a recovery answer stops (no retry), like other non-OK opens; network
 errors still retry. Streams are not resubscribed after Retry; a remount
-(navigation) reopens them.
+(navigation) reopens them. Since S5-W1 (next section), `busy` is a
+non-blocking notice and never this page state (W-1), any successful forwarded
+response clears the state (W-2a), and in the desktop app a 409
+`target_changed` re-reads `app.status` instead of setting the state.
 
 While a state is active, `NativeRecoveryFence` (in
 `shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
@@ -107,6 +110,69 @@ missing or invalid metadata is incompatible. Bump rules mirror
 `node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
 (Node 24, repository root; transform-types is needed for TS parameter
 properties).
+
+## Native bridge v2 target generation (THR-387 S5-W1)
+
+Web side of spec `docs/specs/2026-11-17-web-native-bridge.md` §12. The desktop
+app is detected only by origin `happyranch-app://app` with the
+`window.happyranchConnection` facade; every other page (daemon-served
+`happyranch web`, Mac) is browser mode: the generation is the constant
+`browser`, no header is sent and none of the logic below runs.
+
+- **Store** (`web/src/lib/native/target.ts`): seeded from `app.status` and
+  updated from `app.stateChanged` (closed v2 `appState`, parsed by
+  `native/appStatus.ts`; invalid payloads are ignored). A status reply is
+  applied only if no event arrived meanwhile. The store also drives the page
+  recovery state: `ready` clears it; `no_target`, `target_starting`,
+  `unreachable` and `incompatible` set the matching state; `busy` is a notice.
+- **Header**: `schemeFetch` in `lib/api/client.ts` (used by `request()`, the
+  artifacts and task-attachment direct fetches) and both SSE helpers capture
+  the generation at request start and send `X-HappyRanch-Target` with that
+  native-issued value; `GET /api/v1/auth/bootstrap` is exempt. Until native
+  has reported a generation, requests wait for the first `app.status`; if
+  none is available nothing is sent (reads show the `target_changed` state,
+  changes fail as Not sent).
+- **Stale drop**: a GET whose captured generation is no longer current is
+  rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
+  a state): no cache write, toast or draft update. A change (non-GET) that is
+  stale, answered 499 `cancelled`, or whose body read fails is
+  `ResultUnknownError` with the Result unknown notice; it is never retried.
+- **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
+  hashes include the generation of the last switch; a change cancels queries,
+  moves each mounted observer to its new-generation key (one fetch under the
+  new generation), removes all old-generation queries, retries latched read
+  owners (as an explicit Retry) and aborts old-generation streams. Feature
+  query keys are unchanged and nothing remounts, so open drafts survive.
+  `subscribeSSE` resubscribes in place once the new generation is known;
+  `useJobEventStream` re-runs its stream effect for the new generation.
+- **409 `target_changed`** (desktop): re-read `app.status`. A GET refetches
+  once when the generation is unchanged (a changed generation is dropped as
+  stale and refetched by its new owners); a change is `NotSentError` with the
+  Not sent notice and is never retried. A stream waits for the new generation
+  before resubscribing. Browser mode keeps the S1b behavior.
+- **429 `too_many_requests`** (native per-view cap) is `ThrottledError` /
+  the Throttled notice, distinct from **503 `busy`** (host busy, W-1). Both
+  are non-blocking: GETs and stream opens retry with backoff (0.5/1/2 s; 3
+  GET retries, streams capped at 5 s), changes fail at once and are never
+  retried. The next successful forwarded response clears busy/throttled and
+  the page recovery state (W-2a); a stale response clears nothing.
+- **Notice** (`shared/connection/NativeNotice.tsx`, mounted once above the
+  routed page): busy/throttled ("retrying") clear themselves; Not sent ("your
+  changes are still here") and Result unknown ("check the result before
+  trying again") stay until dismissed. It never hides the page and never
+  resends anything; owner-specific Check result reconciliation is S6-W2.
+- **Menu state and prompt URL**: `deriveConnectionMenuState` /
+  `useConnectionMenuState` expose the app.status-derived target, state,
+  candidate phase, local running state and Access-not-saved badge for the S6
+  dialogs (no UI here). Copy-paste CLI prompts in `shared/connect` use
+  `getPromptBaseUrl()`: the page origin in browser mode, otherwise
+  `local.prompt_base_url`; when that is null (remote target or not yet
+  known) no token is minted and the flow shows that prompts are available
+  only while using HappyRanch on this computer.
+
+Focused checks (Node 24, repository root):
+`node --experimental-transform-types --test web/scripts/native-bridge-v2.test.mjs`.
+Live WebKitGTK/native behavior is not covered by these checks.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 

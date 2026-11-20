@@ -73,10 +73,12 @@ function shQuote(s: string): string {
 export function buildConnectPrompt(
   name: string,
   token: string,
-  origin: string,
+  apiBase: string,
   target: ConnectTarget,
 ): string {
-  const base = `${origin}/api/v1`;
+  // `apiBase` is the verified daemon API base (`…/api/v1`): the page origin in
+  // browser mode, or native's app.status local.prompt_base_url on desktop.
+  const base = apiBase;
   if (target === 'binary') {
     // THR-107 seq352: strictly sequential, copy-pasteable, failure-visible.
     // Every curl uses --fail-with-body -sS so HTTP errors abort the script
@@ -284,11 +286,11 @@ export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
 export function buildDirectConnectPrompt(
   name: string,
   token: string,
-  origin: string,
+  apiBase: string,
   wrapperDestination: string,
   locale: Locale = 'en',
 ): string {
-  const base = `${origin}/api/v1`;
+  const base = apiBase;
   const TOKEN = shQuote(token);
   const BASE = shQuote(base);
   const WRAPPER = shQuote(wrapperDestination);

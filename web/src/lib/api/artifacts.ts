@@ -1,5 +1,14 @@
 import { clearToken, getToken } from '../auth';
-import { API_PREFIX, ApiError, nativeRecoveryErrorFor } from './client';
+import {
+  API_PREFIX,
+  ApiError,
+  fencedText,
+  nativeRecoveryErrorFor,
+  schemeFetch,
+  staleOutcome,
+  type Fenced,
+} from './client';
+import { isStaleTarget } from '../native/target';
 import { MAX_UPLOAD_FILE_BYTES, prepareMultipartUpload } from './multipart';
 
 /**
@@ -24,6 +33,19 @@ export interface UploadArtifactArgs {
 
 export interface ListArtifactsResponse {
   artifacts: ArtifactInfo[];
+}
+
+/** Read a fenced download body; a read finishing after a switch is stale. */
+async function fencedBlob(fenced: Fenced): Promise<Blob> {
+  let blob: Blob;
+  try {
+    blob = await fenced.res.blob();
+  } catch (error) {
+    if (isStaleTarget(fenced.captured)) throw staleOutcome(true);
+    throw error;
+  }
+  if (isStaleTarget(fenced.captured)) throw staleOutcome(true);
+  return blob;
 }
 
 function parseArtifactError(status: number, body: unknown): ApiError {
@@ -54,7 +76,7 @@ async function uploadWithToken(
   slug: string,
   args: UploadArtifactArgs,
   token: string,
-): Promise<Response> {
+): Promise<Fenced> {
   const params = new URLSearchParams({ agent: args.agent });
   if (args.name) params.set('name', args.name);
   const form = new FormData();
@@ -67,7 +89,7 @@ async function uploadWithToken(
       size_bytes: args.file.size,
     }),
   );
-  return fetch(`${API_PREFIX}/orgs/${slug}/artifacts?${params.toString()}`, {
+  return schemeFetch(`${API_PREFIX}/orgs/${slug}/artifacts?${params.toString()}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -84,15 +106,15 @@ export async function uploadArtifact(
   args: UploadArtifactArgs,
 ): Promise<ArtifactInfo> {
   let token = await getToken();
-  let res = await uploadWithToken(slug, args, token);
-  if (res.status === 401) {
+  let fenced = await uploadWithToken(slug, args, token);
+  if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await uploadWithToken(slug, args, token);
+    fenced = await uploadWithToken(slug, args, token);
   }
 
   let body: unknown = null;
-  const text = await res.text();
+  const text = await fencedText(fenced, false);
   if (text) {
     try {
       body = JSON.parse(text);
@@ -100,12 +122,12 @@ export async function uploadArtifact(
       body = text;
     }
   }
-  if (!res.ok) throw parseArtifactError(res.status, body);
+  if (!fenced.res.ok) throw parseArtifactError(fenced.res.status, body);
   return body as ArtifactInfo;
 }
 
-async function listWithToken(slug: string, token: string): Promise<Response> {
-  return fetch(`${API_PREFIX}/orgs/${slug}/artifacts`, {
+async function listWithToken(slug: string, token: string): Promise<Fenced> {
+  return schemeFetch(`${API_PREFIX}/orgs/${slug}/artifacts`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -117,15 +139,15 @@ async function listWithToken(slug: string, token: string): Promise<Response> {
 
 export async function listArtifacts(slug: string): Promise<ListArtifactsResponse> {
   let token = await getToken();
-  let res = await listWithToken(slug, token);
-  if (res.status === 401) {
+  let fenced = await listWithToken(slug, token);
+  if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await listWithToken(slug, token);
+    fenced = await listWithToken(slug, token);
   }
 
   let body: unknown = null;
-  const text = await res.text();
+  const text = await fencedText(fenced, true);
   if (text) {
     try {
       body = JSON.parse(text);
@@ -133,7 +155,7 @@ export async function listArtifacts(slug: string): Promise<ListArtifactsResponse
       body = text;
     }
   }
-  if (!res.ok) throw parseArtifactError(res.status, body);
+  if (!fenced.res.ok) throw parseArtifactError(fenced.res.status, body);
   return body as ListArtifactsResponse;
 }
 
@@ -141,8 +163,8 @@ export function artifactDownloadPath(slug: string, artifactName: string): string
   return `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(artifactName)}`;
 }
 
-async function downloadWithToken(path: string, token: string): Promise<Response> {
-  return fetch(path, {
+async function downloadWithToken(path: string, token: string): Promise<Fenced> {
+  return schemeFetch(path, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -161,16 +183,16 @@ async function downloadWithToken(path: string, token: string): Promise<Response>
 export async function downloadArtifact(slug: string, name: string): Promise<void> {
   let token = await getToken();
   const path = `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`;
-  let res = await downloadWithToken(path, token);
-  if (res.status === 401) {
+  let fenced = await downloadWithToken(path, token);
+  if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await downloadWithToken(path, token);
+    fenced = await downloadWithToken(path, token);
   }
 
-  if (!res.ok) {
+  if (!fenced.res.ok) {
     let body: unknown = null;
-    const text = await res.text();
+    const text = await fencedText(fenced, true);
     if (text) {
       try {
         body = JSON.parse(text);
@@ -178,10 +200,10 @@ export async function downloadArtifact(slug: string, name: string): Promise<void
         body = text;
       }
     }
-    throw parseArtifactError(res.status, body);
+    throw parseArtifactError(fenced.res.status, body);
   }
 
-  const blob = await res.blob();
+  const blob = await fencedBlob(fenced);
   const objectUrl = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
@@ -207,16 +229,16 @@ export async function downloadThreadAttachment(
   let token = await getToken();
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
   const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}?${params.toString()}`;
-  let res = await downloadWithToken(path, token);
-  if (res.status === 401) {
+  let fenced = await downloadWithToken(path, token);
+  if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await downloadWithToken(path, token);
+    fenced = await downloadWithToken(path, token);
   }
 
-  if (!res.ok) {
+  if (!fenced.res.ok) {
     let body: unknown = null;
-    const text = await res.text();
+    const text = await fencedText(fenced, true);
     if (text) {
       try {
         body = JSON.parse(text);
@@ -224,10 +246,10 @@ export async function downloadThreadAttachment(
         body = text;
       }
     }
-    throw parseArtifactError(res.status, body);
+    throw parseArtifactError(fenced.res.status, body);
   }
 
-  const blob = await res.blob();
+  const blob = await fencedBlob(fenced);
   const objectUrl = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
@@ -239,9 +261,9 @@ export async function downloadThreadAttachment(
   }
 }
 
-async function deleteWithToken(slug: string, name: string, token: string): Promise<Response> {
+async function deleteWithToken(slug: string, name: string, token: string): Promise<Fenced> {
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
-  return fetch(
+  return schemeFetch(
     `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}?${params.toString()}`,
     {
       method: 'DELETE',
@@ -256,16 +278,16 @@ async function deleteWithToken(slug: string, name: string, token: string): Promi
 
 export async function deleteArtifact(slug: string, name: string): Promise<void> {
   let token = await getToken();
-  let res = await deleteWithToken(slug, name, token);
-  if (res.status === 401) {
+  let fenced = await deleteWithToken(slug, name, token);
+  if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await deleteWithToken(slug, name, token);
+    fenced = await deleteWithToken(slug, name, token);
   }
 
-  if (!res.ok) {
+  if (!fenced.res.ok) {
     let body: unknown = null;
-    const text = await res.text();
+    const text = await fencedText(fenced, false);
     if (text) {
       try {
         body = JSON.parse(text);
@@ -273,6 +295,6 @@ export async function deleteArtifact(slug: string, name: string): Promise<void> 
         body = text;
       }
     }
-    throw parseArtifactError(res.status, body);
+    throw parseArtifactError(fenced.res.status, body);
   }
 }

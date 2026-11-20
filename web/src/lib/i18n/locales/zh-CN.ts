@@ -3469,6 +3469,17 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "recovery.incompatible.unknown.title": "无法确认兼容性",
   "recovery.incompatible.unknown.body": "此应用无法确认能否与所选电脑上的 HappyRanch 配合使用。请重新检查，或在“连接”中选择其他电脑。",
   "recovery.incompatible.otherComputer": "也可以在“连接”中选择其他电脑。",
+  // --- THR-387 S5-W1: native bridge v2 request notices + prompt URL ---
+  "nativeNotice.dismiss": "关闭",
+  "nativeNotice.busy.title": "所选电脑正忙。",
+  "nativeNotice.busy.body": "正在自动重试。正在保存的内容未发送，草稿仍未保存。",
+  "nativeNotice.throttled.title": "同时发出的请求过多。",
+  "nativeNotice.throttled.body": "正在自动重试。正在保存的内容未发送，草稿仍未保存。请稍后再试。",
+  "nativeNotice.notSent.title": "未发送。",
+  "nativeNotice.notSent.body": "连接在你的更改发送前发生了变化。你的更改仍在这里，尚未保存。",
+  "nativeNotice.resultUnknown.title": "结果未知。",
+  "nativeNotice.resultUnknown.body": "连接在你的更改发送期间发生了变化，因此可能已保存，也可能未保存。请先检查结果，再重试。",
+  "onboarding.connect.promptUnavailable": "只有在此应用使用此电脑上的 HappyRanch 时，才能提供连接提示。请在运行 HappyRanch 的电脑上连接 CLI。",
 };
 
 export default zhCN;

@@ -6,6 +6,7 @@
  * ``sessionStorage``. Subsequent requests read from cache.
  */
 
+import { reportNativeNotice } from './native/notices';
 import { parseNativeRecovery, reportNativeRecovery } from './nativeRecovery';
 
 const STORAGE_KEY = 'happyranch.token';
@@ -36,8 +37,10 @@ export async function getToken(): Promise<string> {
         }
         // A native recovery answer (desktop: no target selected, target
         // starting, ...) is recorded as a recovery state, not an auth failure.
+        // Host busy is transient and never page-blocking (THR-387 W-1).
         const recovery = parseNativeRecovery(r.status, detail);
-        if (recovery) reportNativeRecovery(recovery);
+        if (recovery?.code === 'busy') reportNativeNotice('busy');
+        else if (recovery) reportNativeRecovery(recovery);
         throw new BootstrapError(r.status, detail);
       }
       const body = (await r.json()) as { token: string };

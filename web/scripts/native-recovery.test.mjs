@@ -259,7 +259,9 @@ test('bootstrap: native code recorded as recovery state, still BootstrapError', 
 // --- artifacts direct fetch paths -------------------------------------------
 test('artifacts: list/download/delete/upload/thread download recognize native codes', async () => {
   const cases = [
-    ['list', () => artifacts.listArtifacts('demo'), json(503, { detail: { code: 'busy' } })],
+    // 503 busy is transient since S5-W1 (W-1: retried, never page-blocking);
+    // see native-bridge-v2.test.mjs. This row keeps list-path recognition.
+    ['list', () => artifacts.listArtifacts('demo'), json(503, { detail: { code: 'target_starting' } })],
     ['download', () => artifacts.downloadArtifact('demo', 'a.txt'), json(503, { detail: { code: 'incompatible', side: 'app' } })],
     ['thread', () => artifacts.downloadThreadAttachment('demo', 'THR-1', 'att', 'a.txt'), json(503, { detail: { code: 'target_unreachable' } })],
     ['delete', () => artifacts.deleteArtifact('demo', 'a.txt'), json(409, { detail: { code: 'target_changed' } })],

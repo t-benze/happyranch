@@ -16,6 +16,7 @@ import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlot
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeNotice } from '@/shared/connection/NativeNotice';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
@@ -114,6 +115,8 @@ function AppShell(): JSX.Element {
       <TopbarSlotsProvider>
         <div className="flex min-w-0 flex-1 flex-col">
           <AppBar />
+          {/* THR-387 S5-W1: non-blocking busy/throttled/not-sent/unknown notice. */}
+          <NativeNotice />
           <main className="flex-1 overflow-hidden">
             {/* THR-387 S1b: a native recovery state replaces the visible page
                 but keeps it mounted (hidden) so drafts and page state survive. */}
