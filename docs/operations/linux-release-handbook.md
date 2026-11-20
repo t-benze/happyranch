@@ -653,7 +653,7 @@ the loopback proxy's authority-header stripping, injects the device credential,
 and reconstructs Content-Length from bounded payload bytes/streams. Response
 Content-Length/chunk framing is decoded incrementally, including SSE. Existing
 remote windows/listeners stay unchanged until S7; candidate/commit ownership
-remains S5. No enrollment, compatibility gate or daemon authentication changes.
+remains S5. No enrollment or daemon authentication changes.
 
 Every scheme transfer captures its target before worker dispatch. Native
 selection cancels old transfers instead of rerouting them. Pre-header selection
@@ -661,9 +661,49 @@ cancellation returns `409 {"detail":{"code":"target_changed"}}`; no selected
 target, a connecting remote target, and unavailable transport return `503`
 with exactly `{"detail":{"code":"no_target"}}`, `target_starting`, or
 `target_unreachable` in the same envelope. Concurrency refusal uses `503 busy`.
-Compatibility gating remains PR-B. Browser authorization, cookies and native/
+S4b-Linux PR-B gates every API transfer, including the page's dummy bootstrap,
+on native health admission. Browser authorization, cookies and native/
 forwarded identity headers are stripped before native injection. Only safe
 response headers reach WebKit; exception text and real credentials never do.
+
+S4b-Linux compatibility admission runs `GET /api/v1/health` on the selected
+instance before it can forward API traffic. The local request uses only the
+verified loopback port, **before bearer bootstrap**: the daemon health route is
+unauthenticated (`runtime/daemon/routes/health.py`, mounted without authentication
+dependencies in `runtime/daemon/app.py`). Remote health uses `RemoteCall` and the
+same pinned `ClientSession.dial/release/_credential` callbacks as ordinary
+traffic; the existing home connector still requires its device credential.
+There is no remote bearer-bootstrap fetch or alternate credential path.
+
+The app contracts are `CLIENT=1`, `MIN_DAEMON=1`. `api_contract` must be an
+object with actual integer `current` and `min_client` (Booleans fail). Admission
+requires `min_client <= 1 <= current` and `current >= 1`. Missing/invalid fields,
+unparseable/non-200/truncated health, or a reachable peer exceeding the 64 KiB
+body cap or the **five-second total health deadline** yield
+`503 {"detail":{"code":"incompatible","side":"host"}}`. Valid integer
+`min_client > 1` uses `side:"app"`. No current case uses `unknown`. Failure to
+connect/dial the target remains `503 target_unreachable`, is not cached as
+incompatible, and can be retried. Redirects are not followed. Health response
+bytes, upstream diagnostics, bearer and device credential are never returned
+as native errors or logged. Only the normal compatible health API response may
+be forwarded in answer to a page request for health.
+
+The health result (including incompatibility) is cached on that target instance.
+`AppScheme.select_target` cancels captured transfers and resets both old and new
+targets, even on reselection of the same object. `load-changed STARTED`,
+`web-process-terminated` and `close` invalidate admission; close also clears the
+local bearer. `RemoteDaemon.ready` transitions reset admission before the native
+owner publishes the new transport state. In the launcher, `message` closes the
+scheme before Restart; `show_web` closes any previous scheme and constructs a
+fresh `LocalDaemon` after service restart, initial attach, retry or child attach.
+A new instance always checks again at its next API bootstrap. There is currently
+no same-instance remote reconnect callback in this opt-in launcher: its future
+native owner must reselect the target or transition `ready` on reconnect. This
+is an integration assumption, not an automatic reconnect or S5 candidate switch.
+Cancellation during admission interrupts dial/headers/body and returns 499
+`cancelled`; native selection/reset returns 409 `target_changed`. Concurrent
+admission wait is bounded and may return 503 `busy`. An incompatible cached
+instance performs no subsequent API forwarding or bearer-bootstrap fetch.
 
 The document-start fetch adapter serializes request bodies into bytes before
 calling WebKit, including Blob/FormData and S1a's byte multipart bodies.
@@ -706,6 +746,7 @@ omits Content-Length, distinguishing TCP reset from a short orderly EOF.
 The quiet-stream case waits 31 seconds, exceeding the former 30-second cap:
 
 ```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_compatibility.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_response.py -v
 ```

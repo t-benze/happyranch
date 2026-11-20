@@ -4,13 +4,15 @@ Status: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19
 
 This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. **Linux: 16/19 commands implemented; Mac: 11/19 commands implemented.** Events are counted separately: Linux 2/2, Mac 1/2. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
 
-Linux Settings S2b PR-A transport inventory (TASK-18097):
+Linux Settings S2b PR-A / S4b PR-B transport inventory (TASK-18097 / TASK-18122):
 
 | Linux surface | Native implementation | Boundary / remaining owner |
 | --- | --- | --- |
 | Opt-in app scheme API target | `app_scheme_webkit.AppScheme.select_target`, `app_scheme.LocalDaemon` / `RemoteDaemon` | Native selects local, connecting/ready active remote, or none; the existing launcher still selects local. No bridge command added. |
 | Listener-free remote HTTP | `client_runtime.RemoteCall` / `RemoteResponse`, shared `remote_headers` | Existing `ClientSession.dial/release/_credential`; binary request, decoded streaming response, cancellation releases dial. Home connector unchanged. |
-| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Compatibility PR-B, candidates S5, remote window/default cutover and listener retirement S7. |
+| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Compatibility is gated before every API transfer; candidates S5, remote window/default cutover and listener retirement S7. |
+| Host compatibility admission | `app_scheme._Target.bootstrap/reset`, `LocalDaemon`, `RemoteDaemon` | Health before local bearer bootstrap; remote through existing pinned adapter. 64 KiB / five seconds. Integer contract 1/1; invalid/missing/failed reachable health → 503 incompatible side host; min_client > 1 → side app; unreachable stays target_unreachable. No unknown case. |
+| Admission invalidation | `AppScheme.select_target/load_changed/close`, web-process loss, `RemoteDaemon.ready` | Reset on reselection, navigation, process loss, close and readiness transition. Launcher Restart/retry/reattach closes and creates a fresh local target. Same-instance remote reconnect owner must reselect or transition readiness; no such launcher callback yet. No S5 candidate switch. |
 
 ## Facade and closed v1 list
 

@@ -32,9 +32,35 @@ callbacks; the loopback proxy shares the header policy and remains available.
 Transfers bind their target and are cancelled on native selection. Shared
 pre-header errors use `{"detail":{"code":C}}`: 503 `no_target`,
 `target_starting`, `target_unreachable`, `busy`; 409 `target_changed`.
-Compatibility gating belongs to PR-B, candidate switching to S5 and remote
-window/default cutover to S7. This adds no page control command or daemon
-security change. The current opt-in launcher still chooses local.
+S4b-Linux PR-B adds the compatibility gate below; candidate switching belongs
+to S5 and remote window/default cutover to S7. This adds no page control command
+or daemon security change. The current opt-in launcher still chooses local.
+
+**Linux Settings S4b PR-B (TASK-18122):** before any API transfer (including
+native's dummy page bootstrap), the selected target performs a bounded native
+`GET /api/v1/health`. Local health precedes bearer bootstrap on the verified
+loopback port; runtime health is unauthenticated. Remote health uses the existing
+listener-free `RemoteCall` / pinned `ClientSession` and its device credential,
+without remote bearer bootstrap. `CLIENT=1`, `MIN_DAEMON=1`: `api_contract` must
+be an object with integer (not Boolean) `current` and `min_client`, with
+`min_client <= 1 <= current` and `current >= 1`. Missing/invalid metadata,
+unparseable/non-200/truncated/oversized health or a reachable peer exceeding the
+five-second health deadline yields exactly 503
+`{"detail":{"code":"incompatible","side":"host"}}`; valid integer
+`min_client > 1` yields `side:"app"`. `unknown` is unused. Connect/pinned-dial
+failure stays `target_unreachable` and is retryable. The 64 KiB cap and original
+health deadline span headers/body; stop/reset interrupts the probe with the
+existing 499/409 cancellation contract. No credential/health diagnostics enter
+native errors or logs; incompatible instances forward no API or token fetch.
+
+Results are cached per target and reset by native `select_target` (including
+same-instance reselection), navigation STARTED, web-process loss, close, and
+remote `ready` transitions. The launcher's `message`/`show_web` close/recreate
+sequence gives Restart, retry and reattachment a new local target. There is no
+same-instance remote reconnect callback in the current opt-in launcher; a future
+remote owner must reselect or transition readiness to invalidate its gate. This
+assumes existing active-session ownership; no candidate policy is added. See
+the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
 
 Move connection presentation into shared web components while retaining native custody, permission prompts and exact-device approval. Use the selected in-process script-message bridge in a **separate, locally packaged connection web view**. Never attach this bridge to the runtime SPA web view, including the Mac's loopback proxy of a remote runtime. The connection view can work before connection and during daemon failure. It reuses the web build/design system; it is not fetched from the computer being connected to.
 

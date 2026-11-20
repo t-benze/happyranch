@@ -193,8 +193,9 @@ class RemoteCall:
     cancel = close
 
     def send(self, method: str, target: str, headers: dict[str, str],
-             body: bytes | io.BufferedIOBase) -> RemoteResponse:
-        deadline = time.monotonic() + 10
+             body: bytes | io.BufferedIOBase, *, deadline: float | None = None) -> RemoteResponse:
+        bounded = deadline is not None
+        deadline = min(deadline, time.monotonic() + 10) if bounded else time.monotonic() + 10
         if (not re.fullmatch(r"[A-Z]+", method) or not target.startswith("/")
                 or target.startswith("//") or "#" in target
                 or any(ord(c) < 33 or ord(c) > 126 for c in target)):
@@ -261,7 +262,7 @@ class RemoteCall:
                     break
             else:
                 raise ClientError("protocol")
-            wire.deadline = time.monotonic() + 3600
+            wire.deadline = deadline if bounded else time.monotonic() + 3600
             events = response_headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream"
             wire.idle_timeout = None if events else 30
             return RemoteResponse(self, wire, status, response_headers, method)

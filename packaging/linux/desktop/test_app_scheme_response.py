@@ -23,8 +23,9 @@ class ResponseTests(unittest.TestCase):
                 pass
 
             def do_GET(self) -> None:
-                if self.path == "/api/v1/auth/bootstrap":
-                    data = b'{"token":"synthetic-response-test"}'
+                if self.path in ("/api/v1/health", "/api/v1/auth/bootstrap"):
+                    data = (b'{"api_contract":{"current":1,"min_client":1}}' if self.path.endswith("health")
+                            else b'{"token":"synthetic-response-test"}')
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
