@@ -42,7 +42,7 @@ import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
-import { SettingsPage } from '@/features/settings/SettingsPage';
+import { RecoverySettingsPage, SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -101,8 +101,11 @@ function OrgLayout(): JSX.Element {
 function AppShell(): JSX.Element {
   const location = useLocation();
   // Settings fences only its target-backed sections itself, so local
-  // Settings -> Preferences stays usable during a recovery state.
-  const settingsRoute = useMatch('/orgs/:slug/settings/*') !== null;
+  // Settings -> Preferences stays usable during a recovery state. The
+  // org-less /settings/* is the recovery-only Settings for startup on `/`.
+  const orgSettingsRoute = useMatch('/orgs/:slug/settings/*') !== null;
+  const recoverySettingsRoute = useMatch('/settings/*') !== null;
+  const settingsRoute = orgSettingsRoute || recoverySettingsRoute;
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
@@ -192,6 +195,10 @@ export function AppRoutes(): JSX.Element {
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="settings/*" element={<SettingsPage />} />
         </Route>
+        {/* THR-387 S1b: recovery-only org-less Settings (Preferences reachable
+            during a startup recovery state with no known org). Outside
+            recovery it renders NotFound, as this URL did before. */}
+        <Route path="settings/*" element={<RecoverySettingsPage notFound={<NotFound />} />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

@@ -66,6 +66,19 @@ fences only its target-backed sections (Capacity, Organization, Executors,
 Coding) inside the page, so the Settings sub-nav and the client-only
 Preferences section stay visible and usable. Sidebar and the AppBar Language
 selector stay reachable, and the index route does not redirect to onboarding.
+A recovery state met before any org is known (startup on `/`) has no org for
+the Sidebar's Settings link, so only while a state is active AND no org is
+active, Sidebar Settings opens the org-less recovery-only Settings at
+`/settings/*` (`RecoverySettingsPage` in `features/settings/SettingsPage.tsx`;
+the AppShell fence is bypassed there too). It shows the same sub-nav; its index
+opens Preferences, which is client-only (reaching it and switching language
+send no request), and the target-backed sections show only the recovery panel
+and mount no panel or query. The AppBar titles it Settings only during
+recovery. Outside a recovery state nothing changes: Sidebar Settings stays
+disabled without an org, and a page entered at `/settings/*` without a state
+renders the ordinary not-found page and title as before. When Retry/Recheck
+clears the state from inside that page it navigates to `/`, which routes to
+the first org or shows the panel again.
 The panel content centers when it fits and otherwise starts at the scroll
 origin (short viewports or page zoom), keeping the action reachable by scroll. Copy (EN and
 zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update
