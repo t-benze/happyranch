@@ -898,6 +898,64 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
         with patch.object(instance, '_input_parent', side_effect=parent):
             yield inputs | dict(data_home=home)
 
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux hosted-runner ACL fixture')
+    def test_m1_runner_dbus_custody(self):
+        from scripts.ci import m1_home_checks as checks
+
+        def missing_account(name: str) -> None:
+            raise KeyError(name)
+
+        with self.host() as (root, _, _, manager, options):
+            instance = installer.ManagedInstaller(**(options | dict(
+                lookup_user=missing_account, lookup_group=missing_account)))
+            manager.show_properties.side_effect = lambda *_: dict(
+                FragmentPath='', DropInPaths='', NeedDaemonReload='no',
+                LoadState='not-found', ActiveState='inactive')
+            paths = [root / name for name in (
+                'usr/share', 'usr/share/dbus-1', 'usr/share/dbus-1/system-services')]
+            paths[-1].mkdir(parents=True)
+            (root / 'usr').chmod(0o755)
+            for path in paths:
+                path.chmod(0o777)
+                subprocess.run(['setfacl', '-m', 'd:u::rwx,d:g::rwx,d:o::rwx', str(path)], check=True)
+            unrelated = paths[0] / 'unrelated'
+            unrelated.mkdir(mode=0o777)
+            service = paths[-1] / 'unrelated.service'
+            service.write_bytes(b'[D-BUS Service]\nName=org.example.Fixture\n')
+            service.chmod(0o644)
+            before = service.read_bytes(), service.stat().st_ino, service.stat().st_mode
+            self.assertEqual(instance.inventory().state, 'manual-install-conflict')
+            with patch.object(checks, 'ManagedInstaller', return_value=instance):
+                checks.runner_custody()
+            self.assertEqual(instance.inventory().state, 'clean')
+            for path in paths:
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
+                acl = subprocess.run(['getfacl', '-cp', str(path)], check=True, capture_output=True, text=True).stdout
+                self.assertEqual(acl.strip(), 'user::rwx\ngroup::r-x\nother::r-x')
+            self.assertEqual(stat.S_IMODE(unrelated.stat().st_mode), 0o777)
+            self.assertEqual((service.read_bytes(), service.stat().st_ino, service.stat().st_mode), before)
+            self.assertEqual({call[0] for call in manager.mock_calls}, {'show_properties'})
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux hosted-runner ACL fixture')
+    def test_m1_runner_dbus_redirect_refuses_before_changes(self):
+        from scripts.ci import m1_home_checks as checks
+
+        with self.host() as (root, instance, _, manager, _):
+            parent = root / 'usr/share/dbus-1'
+            parent.mkdir(parents=True)
+            target = root / 'redirect-target'
+            target.mkdir(mode=0o777)
+            target.chmod(0o777)
+            (parent / 'system-services').symlink_to(target, target_is_directory=True)
+            for path in (parent, parent.parent):
+                path.chmod(0o777)
+            with patch.object(checks, 'ManagedInstaller', return_value=instance):
+                with self.assertRaisesRegex(AssertionError, 'unsafe runner D-Bus directory owner/type'):
+                    checks.runner_custody()
+            for path in (parent, parent.parent, target):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o777)
+            self.assertEqual(manager.mock_calls, [])
+
     def test_linux_provision_hidden_data_home_refusal(self):
         for spelling in ('/tmp', '/var/tmp', '/tmp/release', '/var/tmp/release',
                          '//tmp/release', '//var/tmp/release'):

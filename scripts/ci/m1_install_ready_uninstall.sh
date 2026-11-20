@@ -33,6 +33,7 @@ install_package() {
   local packages=("$M1_BUILD"/*.deb)
   [[ ${#packages[@]} == 1 && -f ${packages[0]} ]] || fail 'expected one deb'
   sudo apt-get install -y "${packages[0]}"
+  inspect runner-custody
   sudo install -d -m 0700 "$M1_WORK"
   sudo systemctl daemon-reload
   # Runner-only authentication simulation. Production policy is unchanged.

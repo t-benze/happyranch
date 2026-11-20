@@ -97,6 +97,28 @@ def inventory_message(value: object) -> str:
     return f'inventory (state, detail)=({value.state}, {value.detail}); first_member={member}'
 
 
+def runner_custody() -> None:
+    # GitHub's disposable image makes /usr/share writable and supplies default
+    # ACLs. This is fixture preparation, never a product custody exception.
+    io = ManagedInstaller(layout='deb')
+    paths = ('usr/share', 'usr/share/dbus-1', 'usr/share/dbus-1/system-services')
+    # Validate every literal parent before changing any directory. Never repair
+    # ownership or follow a redirected fixture path.
+    for relative in ('', 'usr', *paths):
+        info = (io.root / relative).lstat()
+        assert stat.S_ISDIR(info.st_mode) and (info.st_uid, info.st_gid) == io.root_owner, \
+            'unsafe runner D-Bus directory owner/type: /' + relative
+    for relative in paths:
+        path = io.root / relative
+        print('Runner D-Bus custody before:', '/' + relative,
+              f'{stat.S_IMODE(path.lstat().st_mode):04o}', flush=True)
+        # Nonrecursive: leave service files and every unrelated image path alone.
+        command('setfacl', '--remove-all', '--remove-default', '--', str(path))
+        path.chmod(0o755)
+        print('Runner D-Bus custody after:', '/' + relative,
+              f'{stat.S_IMODE(path.lstat().st_mode):04o}', flush=True)
+
+
 def ready() -> None:
     assert HomeActivationStore().current().phase == 'ready', 'home activation phase must be ready'
     candidate = ManagedInstaller(layout='deb').inventory()
@@ -490,7 +512,8 @@ def main() -> None:
     parser.add_argument('action')
     parser.add_argument('pid', nargs='?', type=int)
     args = parser.parse_args()
-    actions = {'ready': ready, 'off': off, 'uninstall-refusal': uninstall_refusal,
+    actions = {'runner-custody': runner_custody,
+               'ready': ready, 'off': off, 'uninstall-refusal': uninstall_refusal,
                'health-diagnostics': health_diagnostics,
                'archive-off': archive_off, 'failed-fixture': failed_fixture,
                'replacement-off': replacement_off, 'replacement-progress': replacement_progress,

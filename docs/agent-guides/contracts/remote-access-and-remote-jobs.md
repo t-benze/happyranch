@@ -389,6 +389,16 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   and failing predicates. It never reads configuration contents or emits other
   exception values, arbitrary locals or native service output; the temporary
   trace is restored before asserting the unchanged inventory result.
+  GitHub's disposable image makes `/usr/share` and its D-Bus descendants writable
+  with default ACLs. After package install, the harness validates real root:root
+  literal parents, then removes extended/default ACLs and sets exactly
+  `/usr/share`, `/usr/share/dbus-1` and `/usr/share/dbus-1/system-services` to 0755,
+  nonrecursively. A redirected or wrongly owned path refuses before changes.
+  Service files and unrelated directories remain untouched. This test-only
+  preparation retains every product ownership/mode check; ordinary hosts with
+  writable ancestors still refuse. The retained temporary-root installer venue
+  covers this fixture repair and its redirected-path refusal with
+  `python -B -m unittest scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_custody scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_redirect_refuses_before_changes -v`.
   These messages do not change case predicates, U1's exact
   Off residue or the documented home-profile uninstall refusal.
 
