@@ -1,6 +1,7 @@
 """Focused native packaging checks through the real dpkg-deb boundary."""
 from __future__ import annotations
 
+import ast
 import gzip
 import hashlib
 import io
@@ -510,6 +511,23 @@ class DebPackageTests(unittest.TestCase):
             'ReadWritePaths=-/opt/happyranch',
         ])
 
+    @staticmethod
+    def helper_unit_reference() -> bytes:
+        # Packaging's stdlib-only venue reads the trusted source literal without
+        # importing application dependencies or any scanned filesystem value.
+        source = BUILDER.parents[2] / 'runtime/remote_access/installer.py'
+        assignment, = (node for node in ast.parse(source.read_bytes()).body
+                       if isinstance(node, ast.Assign) and any(
+                           isinstance(target, ast.Name) and target.id == 'PACKAGED_HELPER_UNIT_BYTES'
+                           for target in node.targets))
+        value = ast.literal_eval(assignment.value)
+        assert isinstance(value, bytes)
+        return value
+
+    def test_helper_unit_reference_matches_shipped_bytes(self) -> None:
+        self.assertEqual((BUILDER.parent / 'systemd/happyranch-remote-access-helper.service').read_bytes(),
+                         self.helper_unit_reference())
+
     def test_packaged_user_unit_directives(self) -> None:
         self.assertEqual(UNIT.read_text().splitlines(), [
             '[Unit]',
@@ -621,6 +639,8 @@ class DebPackageTests(unittest.TestCase):
                 subprocess.run(['md5sum', '--quiet', '-c', control / 'md5sums'], cwd=installed, check=True)
                 self.assertFalse((installed / 'opt/happyranch').exists())
                 self.assertFalse((installed / 'etc').exists())
+                self.assertEqual((installed / 'usr/lib/systemd/system/happyranch-remote-access-helper.service').read_bytes(),
+                                 self.helper_unit_reference())
                 data = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', deb])
                 with tarfile.open(fileobj=io.BytesIO(data)) as archive:
                     units = [member for member in archive.getmembers()

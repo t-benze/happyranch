@@ -1,5 +1,15 @@
 # Sequential engine U3e-2: bounded caller return consumer
 
+## S5 version boundary
+
+S5 adds carrier-only generic @2 terminal closure and an immutable initiator inbox
+wake in the same result/event transaction. A member return preserves its source,
+ordinary parent and sibling runs. The @1 return/outbox/parent/thread-tail contract
+below is unchanged. S5 supplies durable snapshot and result/consumption receipt
+primitives; S6a owns their live queue/session/run_step integration. An empty SID
+snapshot is write-once by the single admission call-site contract, and all later
+reads use stored delivery rows, including after connection reopen.
+
 Source base: 43d33e8384460a27d0377fb71b7a4eed75c692fa. Authority: ROOT TASK-14640,
 Founder THR-336 msg85 (TASK-14461 rev3) and msg102; TASK-14730 design sections
 6/8/9/10.1, accepted D2/D4 and queue handoff/addendum 1. This append-only source

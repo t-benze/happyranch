@@ -538,8 +538,12 @@ def source_outer_settled(dispatcher: Any, invocation: Any, *, failed: bool, clea
            and invocation.orch is org.orchestrator)
     with dispatcher._reader() as conn:
         kind, run_id, _ = selected_owner(conn, invocation.task.id, org.slug)
-        if kind != 'seq_source_waiting':
+        if kind not in ('seq_source_waiting', 'seq_source_wait_set'):
             return  # Ordinary non-sequential sources remain excluded.
+    if kind == 'seq_source_wait_set':
+        from runtime.workflows.sequential_initiator import settle_source_runs
+        return settle_source_runs(dispatcher, invocation, failed=failed, cleanup=cleanup,
+            native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition)
     if not _source_outer_positive(dispatcher, invocation, failed=failed, cleanup=cleanup,
             native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition):
         return
@@ -572,11 +576,11 @@ def source_outer_settled(dispatcher: Any, invocation: Any, *, failed: bool, clea
 
 
 def _generic_selection(conn: sqlite3.Connection, *, org_slug: str, command: Any,
-                       budget: _ReadBudget) -> tuple[Any, dict, Any]:
+                       budget: _ReadBudget, metadata: dict | None = None) -> tuple[Any, dict, Any]:
     """Internal S3 @2 pin selection. Public Start@1 adapters never call this."""
     from runtime.workflows.sequential_definition import generic_limits, validate_generic_start
     from runtime.workflows.sequential_history import GenericStorageSettings
-    metadata = _selected_layout(conn, budget)
+    metadata = _selected_layout(conn, budget) if metadata is None else metadata
     _check('workflow_seq_assignments' in metadata, 'sequential_schema2_required')
     definitions = list(_bounded_rows(conn, 'workflow_seq_definitions', ('id',), (('text',),), budget,
         where='identity=? AND version=?', args=(command.definition.identity, command.definition.version), maximum=1))
@@ -633,3 +637,187 @@ def prepare_generic_start(org: Any, *, start: bytes, source: Any) -> Any:
     budget.reserve(48 * len(raw) + 512)
     budget.check()
     return AssignmentCapture(capture, start, raw)
+
+
+def _batch_decision(raw: bytes, budget: _ReadBudget) -> dict:
+    """Internal closed @2 branch; never advertised through the @1 adapter."""
+    from runtime.workflows.sequential_assignments import parse_assignment_start
+    _check(type(raw) is bytes and 0 < len(raw) <= 1048576, 'workflow_seq_batch_shape')
+    value = _decode(raw, budget)
+    _check(_bytes(value) == raw and set(value) in ({'action', 'workflows'},
+        {'action', 'workflows', 'consume_notifications'}) and value['action'] == 'workflow_start'
+        and type(value['workflows']) is list and 1 <= len(value['workflows']) <= 8, 'workflow_seq_batch_shape')
+    keys = set()
+    for item in value['workflows']:
+        command = _parse(_bytes(item), parse_assignment_start, budget)
+        _check(command.operation_key not in keys, 'workflow_seq_batch_duplicate_key')
+        keys.add(command.operation_key)
+    ids = value.get('consume_notifications', [])
+    _check(type(ids) is list and len(ids) <= 32 and all(type(key) is str and key and '\x00' not in key for key in ids)
+        and len(set(ids)) == len(ids), 'workflow_seq_batch_shape')
+    return value
+
+
+def prepare_generic_batch(org: Any, *, decision: bytes, source: RetryClaim) -> tuple:
+    """Resolve every member outside the authority writer; no task allocation."""
+    value = _batch_decision(decision, _ReadBudget())
+    captures = []
+    for item in value['workflows']:
+        try:
+            captures.append(prepare_generic_start(org, start=_bytes(item), source=source))
+        except ValueError as exc:
+            if str(exc) == 'workflow_seq_admission_replay_incomplete':
+                raise SequentialRefusal('workflow_seq_admission_replay_incomplete') from exc
+            raise
+    _check(all(item.authority == captures[0].authority for item in captures), 'workflow_seq_batch_authority_changed')
+    return tuple(captures)
+
+
+def _ordinary_dependencies(task: dict, budget: _ReadBudget) -> None:
+    """Validate retained native dependency metadata without advancing its join."""
+    from runtime.models import ChainLeg
+    from runtime.orchestrator.fanout import MAX_FANOUT_WIDTH
+    from runtime.workflows.sequential_start_metadata import _json
+
+    code = 'workflow_seq_batch_source_conflict'
+    chain, fanout = task['active_chain'], task['active_fanout']
+    _check(chain is None or fanout is None, code)
+    if chain is not None:
+        value = _json(chain, budget)
+        legs = value.get('legs', [])
+        _check(type(legs) is list and type(value.get('step_index')) is int
+            and 0 <= value['step_index'] <= len(legs)
+            and type(value.get('step_audit_id')) is int and value['step_audit_id'] >= 0
+            and (value.get('first_leg_expect_verdict') is None
+                or type(value['first_leg_expect_verdict']) is str), code)
+        for leg in legs:
+            _check(type(leg) is dict, code)
+            ChainLeg.model_validate(leg)
+    if fanout is not None:
+        value = _json(fanout, budget)
+        ids, details = value.get('children_ids'), value.get('children_details', [])
+        _check(type(ids) is list and type(details) is list
+            and type(value.get('width')) is int and 1 <= value['width'] <= MAX_FANOUT_WIDTH
+            and len(ids) == value['width'] and len(details) in (0, value['width'])
+            and all(type(key) is str and key and '\x00' not in key for key in ids)
+            and len(set(ids)) == len(ids) and value.get('manager_agent') == task['assigned_agent']
+            and value.get('status', 'spawned') == 'spawned'
+            and (value.get('join_summary') is None or type(value['join_summary']) is str)
+            and all(type(item) is dict and type(item.get('agent')) is str
+                and type(item.get('prompt')) is str for item in details), code)
+
+
+def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str, source: RetryClaim,
+                            decision: bytes, captures: tuple, authority: Any, remaining: Any) -> tuple[AdmissionIds, ...]:
+    """All-or-none S5 writer; S6a supplies genuine invocation and goal allowance.
+
+    No session/run_step/public mount is attached. Remaining is the original
+    wider-goal allowance captured by the caller, never a new per-batch budget.
+    """
+    from runtime.infrastructure.workflow_task_ownership import adopt_sequential_wait_set_uncommitted
+    from runtime.workflows.sequential_assignments import parse_assignment_start
+    from runtime.workflows.sequential_definition import generic_limits
+    from runtime.workflows.sequential_engine import _prepare_generic_admission, _write_generic_admission
+    from runtime.workflows.sequential_history import _reserve_generic_cancellation, _result
+    budget = _ReadBudget()
+    value = _batch_decision(decision, budget)
+    _check(conn is db._conn and conn.in_transaction and authority._db is db
+        and authority._org_slug == org_slug and getattr(db, '_task_ownership_org', None) == org_slug
+        and conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1, 'workflow_seq_batch_writer_required')
+    _check(type(captures) is tuple and len(captures) == len(value['workflows']), 'workflow_seq_batch_capture_conflict')
+    for item in captures:
+        authority._validate_admission_uncommitted(conn, item.authority)
+    _check(all(item.authority == captures[0].authority for item in captures), 'workflow_seq_batch_capture_conflict')
+    with _sql_budget(conn, budget):
+        _result(conn, source.result_row_id, source.task_id, source.assigned_agent, source.current_session_id, budget)
+        results = _engine_rows(conn, 'task_results', budget, 'id=?', (source.result_row_id,), omit=('estimated_cost',))
+        _check(len(results) == 1 and type(results[0]['decision_json']) is str and results[0]['status'] == 'completed'
+            and results[0]['waiting_on_job_ids'] is None, 'workflow_seq_batch_result_conflict')
+        from runtime.workflows.sequential_initiator import native_decision
+        saved = native_decision(results[0]['decision_json'].encode('utf8'), budget)
+        saved.pop('_manager_self_evaluation', None)
+        _check(saved == value, 'workflow_seq_batch_result_conflict')
+        memberships = _engine_rows(conn, 'workflow_seq_source_memberships', budget,
+            'source_task_id=? AND source_result_id=?', (source.task_id, source.result_row_id))
+        if memberships:
+            _check(len(memberships) == len(captures), 'workflow_seq_start_operation_conflict')
+            by_key = {row['start_operation_key']: row for row in memberships}
+            replay = []
+            for command_value in value['workflows']:
+                command = _parse(_bytes(command_value), parse_assignment_start, budget)
+                member = by_key.get(command.operation_key)
+                _check(member is not None, 'workflow_seq_start_operation_conflict')
+                run = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (member['run_id'],))[0]
+                _check((run['start_bytes'], run['source_session_id'], run['source_result_id']) ==
+                    (_bytes(command_value), source.current_session_id, source.result_row_id), 'workflow_seq_start_operation_conflict')
+                validate_selected_run_uncommitted(conn, org_slug=org_slug, run_id=run['id'], scope='admission')
+                visit = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run['id'],))[0]
+                outbox = _engine_rows(conn, 'workflow_seq_outbox', budget, 'run_id=?', (run['id'],))[0]
+                replay.append(AdmissionIds(run['id'], run['carrier_task_id'], visit['id'], visit['task_id'], run['last_event_id'], outbox['id']))
+            return tuple(replay)
+        # No same-key partial admission is a fresh batch.
+        wait_id = _identity('wait-set', org_slug, source.task_id)
+        owner = selected_owner(conn, source.task_id, org_slug)
+        _check(owner in (('legacy', None, None), ('seq_source_wait_set', wait_id, None)), 'workflow_seq_batch_source_conflict')
+        source_rows = _engine_rows(conn, 'tasks', budget, 'id=?', (source.task_id,))
+        _check(len(source_rows) == 1 and db._retry_claim_matches(source), 'workflow_seq_batch_source_conflict')
+        task = source_rows[0]
+        _check(task['status'] == 'in_progress' and task['task_type'] == 'task' and task['cancelled_at'] is None
+            and task['completed_at'] is None
+            and task['blocked_on_job_ids'] is None, 'workflow_seq_batch_source_conflict')
+        _ordinary_dependencies(task, budget)
+        snapshot = json.loads(captures[0].authority.ready.snapshot_bytes)
+        _check(any(agent['name'] == source.assigned_agent and agent['team'] == source.team and agent['role'] == 'manager'
+            and agent['status'] == 'active' and agent['executor'] for agent in snapshot['agents'])
+            and any(team['name'] == source.team and team['manager'] == dict(kind='agent', principal=source.assigned_agent)
+                for team in snapshot['teams']), 'workflow_seq_batch_source_ineligible')
+        prepared, total = [], dict(max_visits=0, max_events=0, max_recoveries=0)
+        metadata = _selected_layout(conn, budget)
+        for command_value, capture in zip(value['workflows'], captures, strict=True):
+            raw = _bytes(command_value)
+            command = _parse(raw, parse_assignment_start, budget)
+            _check(not _engine_rows(conn, 'workflow_seq_runs', budget,
+                'org_slug=? AND source_task_id=? AND source_principal=? AND start_operation_key=?',
+                (org_slug, source.task_id, source.assigned_agent, command.operation_key)), 'workflow_seq_start_operation_conflict')
+            compiled, setting, storage = _generic_selection(conn, org_slug=org_slug, command=command, budget=budget, metadata=metadata)
+            resolved = _decode(capture.snapshot_bytes, budget)
+            entry = next(node for node in resolved['nodes'] if node['node'] == compiled.definition.entry_node)
+            run_id = _identity('run', org_slug, source.assigned_agent, source.task_id, command.operation_key)
+            carrier = TaskRecord(id='TASK-SEQ-' + _identity('carrier', run_id), parent_task_id=source.task_id,
+                assigned_agent=source.assigned_agent, team=source.team, task_type='subtask',
+                brief='Sequential structural carrier; no host execution.')
+            visit = TaskRecord(id='TASK-SEQ-' + _identity('first-task', run_id), parent_task_id=carrier.id,
+                assigned_agent=entry['principal'], team=source.team, task_type='subtask', brief='Follow the bound generic node brief.')
+            prepared.append(_prepare_generic_admission(conn, db, org_slug=org_slug, compiled=compiled,
+                settings_row=setting, start=raw, source=source, carrier_task=carrier, visit_task=visit,
+                original_limits=storage.limits, authority=authority, capture=capture.authority,
+                assignments=capture, budget=budget, wait_set_id=wait_id, pins=(compiled, setting, storage)))
+            limits = generic_limits(compiled, storage.limits, command.lower_limits)
+            for key in total:
+                total[key] += getattr(limits, key)
+        _check(all(total[key] <= getattr(remaining, key) for key in total), 'workflow_seq_batch_allowance_exhausted')
+        # Preserve the existing shared reservation before allocating any member;
+        # the complete resulting reader repeats its original full-ledger check.
+        all_runs = _engine_rows(conn, 'workflow_seq_runs', budget, '1', ())
+        all_visits = _engine_rows(conn, 'workflow_seq_visits', budget, '1', ())
+        for item in prepared:
+            all_runs.append(dict(engine_version=2, state='running', id=item['run_id'], source_task_id=source.task_id,
+                source_principal=source.assigned_agent, source_session_id=source.current_session_id,
+                carrier_task_id=item['carrier_task'].id, active_visit_id=item['ids'].visit_id))
+            all_visits.append(dict(id=item['ids'].visit_id, task_id=item['visit_task'].id,
+                principal=item['visit_task'].assigned_agent, session_id=None))
+        _reserve_generic_cancellation(dict(workflow_seq_runs=all_runs, workflow_seq_visits=all_visits), budget)
+        if owner[0] == 'legacy':
+            conn.execute('INSERT INTO workflow_seq_source_wait_sets VALUES (?,?,?,?)',
+                (wait_id, org_slug, source.task_id, source.assigned_agent))
+            adopt_sequential_wait_set_uncommitted(db, source.task_id, wait_id)
+        ids = []
+        for item in prepared:
+            admission = _write_generic_admission(conn, db, item)
+            conn.execute('INSERT INTO workflow_seq_source_memberships VALUES (?,?,?,?,?)',
+                (wait_id, source.task_id, admission.run_id, source.result_row_id, item['command'].operation_key))
+            ids.append(admission)
+        conn.execute("UPDATE tasks SET block_kind='delegated' WHERE id=?", (source.task_id,))
+    for admission in ids:
+        validate_selected_run_uncommitted(conn, org_slug=org_slug, run_id=admission.run_id, scope='admission')
+    return tuple(ids)

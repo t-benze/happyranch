@@ -1553,7 +1553,15 @@ directories. Every regular unit file and drop-in `.conf` is read as bounded
 bytes: a literal `happyranch-headscale` reference refuses, regardless of directive
 (Wants/Requires/BindsTo/Upholds/PartOf/OnFailure/OnSuccess/Triggers/Unit/Also or
 otherwise). The installer's exact owned fragment is excluded from that content
-check. Every regular file under `/usr/share/dbus-1/system-services`,
+check. One package-owned helper unit is also excluded, only at
+`/usr/lib/systemd/system/happyranch-remote-access-helper.service`, only as a
+regular single-link root:root 0644 file with bytes exactly equal to the trusted
+in-code `installer.PACKAGED_HELPER_UNIT_BYTES`. Both inventory consumers use the
+same predicate after their bounded no-follow read and signature checks; expected
+bytes never come from the scanned filesystem. Native packaging tests bind the
+shipped unit and build-deb's installed copy to that constant. Changed bytes,
+metadata or type, same-name `/etc` or `/run` copies and helper drop-ins gain no
+exclusion. Every regular file under `/usr/share/dbus-1/system-services`,
 `/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
 present, receives the same literal-byte check with no link following. The
 bounded no-follow reader uses the existing 64 KiB per-file limit; read failure,
@@ -1563,8 +1571,9 @@ unchanged. Cleanup uses this same admission before stop/disable; A–E identity,
 receipt authority, partial-cleanup uncertainty and explicit retry are unchanged.
 
 For future home activation, [B5 below](#home-network-engineering-settlements-b1-b18-thr-327-seq577)
-keeps the single owned-fragment content exclusion, binds home bytes to the current
-activation receipt, and admits only its one receipted enablement link; without
+keeps the owned-fragment and exact package-helper content exclusions above,
+binds home bytes to the current activation receipt, and admits only its one
+receipted enablement link; without
 that receipt the existing literal-reference/no-link gates apply unchanged.
 
 This is sampled admission in the fixed default roots under a **cooperative
@@ -3115,9 +3124,14 @@ Headscale; Turn off explicitly stops sidecar → connector → Headscale. No
 Requires/RequiredBy coupling: Headscale outage leaves sidecar retrying and B15
 reports runtime availability.
 
-The literal-reference content exclusion remains only the exact owned
-`/etc/systemd/system/happyranch-headscale.service` fragment. Without a valid
-current-generation activation receipt only its inert rendering is admitted;
+The literal-reference content exclusions are the exact owned
+`/etc/systemd/system/happyranch-headscale.service` fragment and the single
+package helper at `/usr/lib/systemd/system/happyranch-remote-access-helper.service`
+under the exact bytes/root:root 0644/regular/single-link rule above (K1/K2).
+The helper exclusion requires no activation receipt and grants no exclusion to
+helper drop-ins, changed files or same-name copies under other roots.
+Without a valid current-generation activation receipt only the Headscale
+fragment's inert rendering is admitted;
 home bytes require SHA-256 equality to the receipt-bound unit digest. No other
 unit/drop-in gains an exclusion. Exactly one new link is admitted:
 `/etc/systemd/system/happyranch-managed.target.wants/happyranch-headscale.service`
