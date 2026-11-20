@@ -2620,6 +2620,10 @@ events remain pending. Queue coalescing does not consume an event or complete
 the initiating task. Native close/release retries its pending wake; startup
 reconstructs pending visit outboxes and initiator receipts. A drained control/wait
 receipt admits one further ordinary final-decision session without completing it. Unfinished ordinary chain/fanout state survives event entry.
+Resume and the existing Pause discovery sweep publish ready wait-set initiators
+through that same continuation owner and coalescing queue. A wake consumed during
+Pause remains pending for Resume; native generation/current-ownership and
+TaskInvocation fences still decide session admission.
 
 Dependency observations fetch a bounded active set: unfinished ordinary children
 and retained native join members, excluding workflow carriers. Settled children
@@ -2650,5 +2654,7 @@ refuses with `workflow_seq_workflow_dispatch_join_outstanding` before COMMIT:
 the result and all effects roll back, the join bytes remain unchanged and no
 event is acknowledged. Ordinary dispatch without an unfinished join is unchanged.
 Workflow callbacks never mark the task completed. Shared terminal readers exclude
-start/control/wait even after drain; owned live work or unavailable evidence
+start/control/wait even after drain, using the ordinary consumer's parser for
+structured decisions and legacy JSON in `output_summary` when `decision_json`
+is absent; owned live work or unavailable evidence
 prevents early parent release. Ordinary final-done status lag remains THR-211.

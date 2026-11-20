@@ -60,7 +60,8 @@ S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refuse
     'chain_preserved', 'manager_event_race', 'control_live_chain_child', 'wait_live_fanout_child',
     'sibling_finishes_run_B_live', 'pause_live_initiator', 'read_waiting_children',
     'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain',
-    'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused')
+    'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused',
+    'legacy_summary_workflow_not_terminal', 'resume_publishes_ready_initiator')
 s6a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     s6a_case = sys.argv[1].split('=', 1)[1]
@@ -4454,6 +4455,81 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
                 assert not f.db.set_task_executor_pid_if_current(task_id=source.id, agent=source.assigned_agent,
                     session_id='stale', pid=54321)
                 assert f.db.get_task(source.id).executor_pid == 12345
+        elif case == 'legacy_summary_workflow_not_terminal':
+            from runtime.workflows.sequential_definition import compile_definition
+            with s6fixture() as f:
+                raw = Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes()
+                compiled = compile_definition(raw[:-1], source_digest=hashlib.sha256(raw).hexdigest())
+                start = dict(format='workflow-sequential-start@1', operation_key='legacy-summary-start',
+                    definition=compiled.pin.model_dump(mode='json'), settings=dict(generation=1, snapshot_digest='c' * 64),
+                    request='Private legacy summary start', inputs=[],
+                    bindings=[dict(role=role, principal='s3_manager') for role, _ in compiled.definition.roles],
+                    lower_limits=dict(content_returns=2, max_content_epochs=3, max_visits=64, max_events=4096))
+                for decision in (dict(action='workflow_start', workflow=start),
+                        dict(action='workflow_control', workflow=s4command(f, 'cancel')),
+                        dict(action='workflow_wait', run_ids=[f.batch_ids[1].run_id])):
+                    action = decision['action']
+                    parent = TaskRecord(id='legacy-parent-' + action, assigned_agent='s3_manager', team='engineering',
+                        task_type='task', status='in_progress', block_kind='delegated', brief='Private legacy barrier')
+                    f.db.insert_task(parent)
+                    child = s6ordinary(f, parent=parent.id, task_id='legacy-child-' + action, agent='s3_manager')
+                    assert f.db.admit_task_completion_callback(task_id=child.id, agent=child.assigned_agent,
+                        session_id=child.current_session_id, status='completed', confidence_score=80,
+                        output_summary=s4bytes(decision).decode(), decision_json=None)
+                    row = f.db.get_latest_task_result(child.id, child.assigned_agent, child.current_session_id)
+                    assert type(row['id']) is int and row['decision_json'] is None
+                    report = completion_report_from_result_row(child.id, row, fallback_agent=child.assigned_agent)
+                    assert report.decision is None and f.org.orchestrator._parse_next_step(report).action == action
+                    assert f.db.get_task(child.id).status == 'in_progress'
+                    before = s5snap(f)
+                    terminal = _child_landed_terminal_report(f.org.orchestrator, child)
+                    _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
+                    assert terminal is None and parent.id not in s6queue(f), 'LEGACY_WORKFLOW_CALLBACK_RELEASED_PARENT: ' + action
+                    assert not eligible(f.org.orchestrator, parent), 'legacy workflow callback released Pause barrier'
+                    assert derive_child_wait(f.db, parent, ChildWaitBudget())['state'] == 'waiting_children'
+                    assert s5snap(f) == before, 'legacy workflow terminality read mutated persisted state'
+        elif case == 'resume_publishes_ready_initiator':
+            from runtime.orchestrator.task_pause import discover_root_pause_work
+            from runtime.orchestrator.run_step import _run_step_owned
+            from runtime.workflows.recovery import classify_task
+            import asyncio
+            with s6fixture() as f:
+                root_id = 's5-parent'
+                source = f.db.get_task(f.source.id)
+                store = f.db._task_pause_store
+                assert ready(f.org.orchestrator, source)
+                assert store.control(root_id, held=True, expected_generation=0, actor='founder', sessions=f.org.sessions)
+                assert f.db._workflow_continuation.wake(source.id)
+                assert s6queue(f) == [source.id]
+                f.queue._queue.get_nowait()  # Actual claim consumed while held.
+                before = s5snap(f)
+                _run_step_owned(f.org.orchestrator, source.id)
+                assert f.db.get_task(source.id).current_session_id == source.current_session_id
+                assert s5snap(f) == before and s6queue(f) == [], 'Pause admitted an initiator invocation'
+                assert store.control(root_id, held=False, expected_generation=1, actor='founder', sessions=f.org.sessions)
+                # The same Resume also republishes B's pending visit through
+                # its own existing owner; both actual IDs must appear once.
+                expected_queue = [source.id, f.batch_ids[1].visit_task_id]
+                for _ in range(2):
+                    assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 2))
+                    current = f.db.get_task(source.id)
+                    assert classify_task(f.db, source.id, org_slug='scratch').kind == 'seq_source_wait_set'
+                    assert ready(f.org.orchestrator, current) and eligible(f.org.orchestrator, current)
+                    assert s6queue(f) == expected_queue, ('RESUME_LOST_READY_INITIATOR: expected one queued initiator', s6queue(f))
+                    # A's nonpublishing held carrier still owns release work;
+                    # publishing I must not acknowledge the whole root early.
+                    assert f.conn.execute('SELECT release_pending_generation FROM task_pause_controls WHERE root_task_id=?',
+                        (root_id,)).fetchone()[0] == 2, 'Resume acknowledged unrelated retained owner work'
+                assert s5snap(f) == before, 'Resume publication consumed workflow events'
+                f.queue._queue.get_nowait()
+                inv = TaskInvocation(f.org.orchestrator, current, current.assigned_agent, 's6-resumed-initiator')
+                inv.prepare()
+                assert inv.commit()
+                assert f.db.get_task(source.id).current_session_id == inv.session_id
+                assert not f.db._workflow_continuation.wake(source.id), 'Resume created duplicate live ownership'
+                assert asyncio.run(discover_root_pause_work(f.org, f.queue, root_id, 2))
+                assert s6queue(f) == [f.batch_ids[1].visit_task_id]
+                assert classify_task(f.db, source.id, org_slug='scratch').kind == 'seq_source_wait_set'
         elif case == 'ordinary_done_lag':
             with s6fixture() as f:
                 # Separate ordinary barrier, without I as its child.
