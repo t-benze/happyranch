@@ -6,14 +6,23 @@ The internal version-selected dispatcher supports generic queue admission,
 prelaunch, session/PID binding, callbacks, terminal/outer closure and addressed
 node briefs. Public @2 admission remains unavailable and Coding stays Disabled.
 Before native launch reservation, `recheck_launch_assignment` checks the saved
-selection against current executor/options. Drift calls the existing S4a writer
-to persist Held/`assignee_unavailable`, without a session or replacement task.
+selection against current executor/options. Executor/options drift and current
+active-target team/role eligibility refusals call the existing S4a writer to persist
+Held/`assignee_unavailable`, without a session, successor or disclosure. Only
+recognised target eligibility refusals map to Held; unrelated integrity and
+authority failures propagate.
 Prelaunch, briefs and acceptance validate the active visit's exact assignment
 principal/generation against current role authority. Other nodes sharing that
 role cannot override this occurrence. Recovery assignments and selections apply
 only to explicitly selected replacement visits; a fresh graph occurrence uses
 the original pinned generation-1 node assignment. Complete history validation
-rejects a graph successor carrying a recovery generation.
+rejects a graph successor carrying a recovery generation. The S4b control-owner
+amendment includes occurrence-local selection in `sequential_control.prepare_control`
+and predecessor/generation allocation in `apply_control_uncommitted` only. A
+recovery carries the held visit's principal and selection unless explicitly edited,
+preserves selected inputs and remaining allowances, and uses that visit's assignment
+as predecessor. Its generation is exactly the node's prior maximum plus one;
+complete and selected readers authenticate both predecessor and generation.
 
 A callback commits only its native result. Generic acceptance waits for original
 positive terminal and outer closure, current assignment authority and exact

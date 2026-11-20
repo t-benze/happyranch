@@ -2232,7 +2232,7 @@ if s4a_case or s4b_case or not sys.argv[1:]:
         definition = s3_definition()
         if recovery:
             definition['nodes'][2]['role'] = 'developer'
-            definition['nodes'][0]['limits']['revisions'] = 1
+            definition['nodes'][0]['limits']['revisions'] = 2
             definition['nodes'][1]['outcomes']['revise'] = dict(action='next', node='develop',
                 consume_counter='node_revisions', invalidate_dependents=True)
         if document:
@@ -3034,6 +3034,65 @@ if s4a_case or s4b_case or not sys.argv[1:]:
                         f.conn.commit()
                     assert f.conn.execute("SELECT sql FROM sqlite_schema WHERE name='workflow_seq_visits_pins_immutable'").fetchone()[0] == trigger
                     assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    # The fresh ordinal-4 occurrence must itself remain recoverable
+                    # after an earlier occurrence allocated generation 2.
+                    for action, edits, effort in (('retry', {}, None),
+                        ('reassign', dict(target_agent_id='s3_author'), None),
+                        ('rebrief', dict(reasoning_effort='low'), 'low')):
+                        s4closed(f, later['id'], terminal='timeout')
+                        s4hold(f, visit_id=later['id'])
+                        prior_max = f.conn.execute('SELECT max(generation) FROM workflow_seq_assignments WHERE run_id=? AND node_id=?',
+                            (f.ids.run_id, later['node_id'])).fetchone()[0]
+                        recovered = json.loads(s4apply(f, s4command(f, action, **edits)))
+                        current = s4row(f, 'workflow_seq_visits', recovered['new_visit_id'])
+                        assignment = s4row(f, 'workflow_seq_assignments', current['assignment_id'])
+                        assert (current['principal'], current['assignment_generation'], assignment['generation'], assignment['predecessor_id']) == (
+                            's3_author', prior_max + 1, prior_max + 1, later['assignment_id']), case + ': later recovery lineage/principal drifted: ' + action
+                        assert (current['input_selection_bytes'], current['input_selection_digest']) == (
+                            later['input_selection_bytes'], later['input_selection_digest']), case + ': recovery changed selected inputs'
+                        native = f.db.get_task(recovered['new_task_id'])
+                        assert (native.assigned_agent, native.model_override, native.reasoning_effort_override, native.override_source) == (
+                            's3_author', None, effort, 'manager' if effort else None), case + ': later recovery inherited earlier selection: ' + action
+                        assert json.loads(assignment['snapshot_bytes'])['selection'] == dict(
+                            model_override=None, reasoning_effort_override=effort, override_source='manager' if effort else None)
+                        assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        with f.org.workflow_authority.admission_writer(f.org.workflow_authority.capture_admission()) as writer:
+                            validate_selected_run_uncommitted(writer, org_slug='scratch', run_id=f.ids.run_id, scope='session')
+                        print('PASS S4a reassign_eligible later Held ' + action + ' principal/selection/predecessor/node-max generation; complete+selected history', flush=True)
+                        later = current
+                    # Keep both resulting-history constraints exact, including a
+                    # coherent generation jump that a mere greater-than accepts.
+                    guards = {name: f.conn.execute('SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone()[0]
+                        for name in ('workflow_seq_assignments_no_update', 'workflow_seq_visits_pins_immutable')}
+                    for field, bad in (('generation', assignment['generation'] + 1),
+                                       ('predecessor_id', original['assignment_id'])):
+                        try:
+                            for name in guards:
+                                f.conn.execute('DROP TRIGGER ' + name)
+                            f.conn.execute('UPDATE workflow_seq_assignments SET ' + field + '=? WHERE id=?', (bad, assignment['id']))
+                            if field == 'generation':
+                                f.conn.execute('UPDATE workflow_seq_visits SET assignment_generation=? WHERE id=?', (bad, current['id']))
+                            for sql in guards.values():
+                                f.conn.execute(sql)
+                            f.conn.commit()
+                            s4refuses(f, lambda: read_sequential_history(f.conn, expected_org_slug='scratch'), 'workflow_seq_control_assignment_conflict')
+                            with f.org.workflow_authority.admission_writer(f.org.workflow_authority.capture_admission()) as writer:
+                                s4refuses(f, lambda: validate_selected_run_uncommitted(writer, org_slug='scratch',
+                                    run_id=f.ids.run_id, scope='session'), 'workflow_seq_control_assignment_conflict')
+                        finally:
+                            for name in guards:
+                                f.conn.execute('DROP TRIGGER ' + name)
+                            f.conn.execute('UPDATE workflow_seq_assignments SET generation=?,predecessor_id=? WHERE id=?',
+                                (assignment['generation'], assignment['predecessor_id'], assignment['id']))
+                            f.conn.execute('UPDATE workflow_seq_visits SET assignment_generation=? WHERE id=?',
+                                (current['assignment_generation'], current['id']))
+                            for sql in guards.values():
+                                f.conn.execute(sql)
+                            f.conn.commit()
+                        assert all(f.conn.execute('SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone()[0] == sql
+                            for name, sql in guards.items())
+                        assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        print('PASS S4a reassign_eligible complete+selected reject recovery ' + field + ' corruption', flush=True)
                     print('PASS S4a reassign_eligible repeated-role native prelaunch/brief/acceptance; correction original principal/selection; tampered recovery successor rejected', flush=True)
                 elif case == 'control_cas_race':
                     # Both operations capture the same real held cursor before
@@ -3318,20 +3377,43 @@ if s4a_case or s4b_case or not sys.argv[1:]:
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
                 assert s4baccept(f)
         elif case == 'launch_assignment_drift':
-            with s4fixture() as f:
-                current = replace(f.agents['s3_author'], executor='claude')
-                (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(current))
-                f.coordinator.synchronize_all_dependencies()
-                f.org.workflow_authority.publish_current(publisher='private-s4b-drift')
-                capture = f.org.workflow_authority.capture_admission()
-                with f.org.workflow_authority.admission_writer(capture) as writer:
-                    allowed = SequentialDispatcher(f.org)._generic_prelaunch_uncommitted(writer,
-                        s4row(f, 'workflow_seq_runs', f.ids.run_id), s4row(f, 'workflow_seq_visits', f.ids.visit_id), f.compiled, capture)
-                assert allowed is False
-                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
-                assert run['state'] == 'held' and run['visit_count'] == 1 and run['event_count'] == 2
-                assert json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])['cause'] == 'assignee_unavailable'
-                assert f.db.get_task(f.ids.visit_task_id).current_session_id is None
+            for drift in ('executor', 'team'):
+                with s4fixture() as f:
+                    current = replace(f.agents['s3_author'], **(dict(executor='claude') if drift == 'executor' else dict(team='other')))
+                    (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(current))
+                    if drift == 'team':
+                        from runtime.orchestrator.teams import TeamsRegistry
+                        teams_path = f.root / 'org/teams.yaml'
+                        teams = teams_path.read_text().replace('workers: [s3_author, s3_alt, s3_review]',
+                            'workers: [s3_alt, s3_review]').replace('workers: [s3_other]', 'workers: [s3_other, s3_author]')
+                        teams_path.write_text(teams)
+                        f.org.teams.adopt_canonical(TeamsRegistry.load(f.root))
+                    f.coordinator.synchronize_all_dependencies()
+                    f.org.workflow_authority.publish_current(publisher='private-s4b-drift')
+                    capture = f.org.workflow_authority.capture_admission()
+                    with f.org.workflow_authority.admission_writer(capture) as writer:
+                        allowed = SequentialDispatcher(f.org)._generic_prelaunch_uncommitted(writer,
+                            s4row(f, 'workflow_seq_runs', f.ids.run_id), s4row(f, 'workflow_seq_visits', f.ids.visit_id), f.compiled, capture)
+                    assert allowed is False
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert run['state'] == 'held' and run['visit_count'] == 1 and run['event_count'] == 2
+                    assert json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])['cause'] == 'assignee_unavailable'
+                    assert f.db.get_task(f.ids.visit_task_id).current_session_id is None
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 1
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+                    assert not SequentialDispatcher(f.org).queue_admission_allowed(f.ids.visit_task_id)
+                    before = s4snap(f)
+                    try:
+                        SequentialDispatcher(f.org)._generic_node_instruction(f.conn, run,
+                            s4row(f, 'workflow_seq_visits', f.ids.visit_id), f.compiled,
+                            's3_author', 'unbound-session', capture, seq_history._ReadBudget())
+                    except ValueError as exc:
+                        assert str(exc) == 'sequential_carrier_identity_conflict', (case, str(exc))
+                    else:
+                        raise AssertionError(case + ': unavailable assignee received a node brief: ' + drift)
+                    assert s4snap(f) == before
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    print('PASS S4b launch_assignment_drift ' + drift + ' Held/assignee_unavailable; no session/successor/disclosure', flush=True)
         else:
             with s4fixture() as f:
                 if case == 'failed_session_closed':

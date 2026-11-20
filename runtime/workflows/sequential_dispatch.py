@@ -1264,7 +1264,7 @@ class SequentialDispatcher:
     def _generic_prelaunch_uncommitted(self, conn: sqlite3.Connection, run: dict, visit: dict,
                                        compiled: Any, capture: Any) -> bool:
         from runtime.workflows.authority import generic_assignment_authority
-        from runtime.workflows.sequential_assignments import recheck_launch_assignment, selection_agent
+        from runtime.workflows.sequential_assignments import AssignmentRefusal, recheck_launch_assignment, selection_agent
         from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
         budget = _ReadBudget()
         current = generic_assignment_authority(capture, org_slug=self.org.slug)
@@ -1272,13 +1272,21 @@ class SequentialDispatcher:
         _check(len(rows) == 1)
         value = _json(rows[0]['snapshot_bytes'], 49152)
         target = next((item for item in current['agents'] if item['name'] == visit['principal']), None)
-        if target is None or target['status'] != 'active' or recheck_launch_assignment(value, selection_agent(target)) is not None:
+        unavailable = target is None or target['status'] != 'active' or recheck_launch_assignment(value, selection_agent(target)) is not None
+        if not unavailable:
+            from runtime.workflows.sequential_document_access import generic_binding_context
+            try:
+                generic_binding_context(conn, run, visit, compiled, capture, budget)
+            except AssignmentRefusal as exc:
+                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                if exc.role != node.role or exc.cause not in ('principal_unavailable', 'team_scope', 'role_ineligible'):
+                    raise
+                unavailable = True
+        if unavailable:
             hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run['id'],
                 visit_id=visit['id'], expected_cas=run['cas'], compiled=compiled,
                 authority=self.org.workflow_authority, capture=capture, unavailable=True)
             return False
-        from runtime.workflows.sequential_document_access import generic_binding_context
-        generic_binding_context(conn, run, visit, compiled, capture, budget)
         return True
 
     def _generic_outer_settled(self, invocation: Any, run: dict, visit: dict, compiled: Any,

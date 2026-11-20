@@ -879,7 +879,8 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                     _require(assignment is not None and _hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']) ==
                         _bytes(body['assignment']['value']) and new_visit['principal'] == assignment['principal']
                         and assignment['predecessor_id'] == previous['assignment_id']
-                        and assignment['generation'] == previous['assignment_generation'] + 1, 'control_assignment_conflict')
+                        and assignment['generation'] == max(prior['assignment_generation'] for prior in seen_visits
+                            if prior['node_id'] == previous['node_id']) + 1, 'control_assignment_conflict')
                     predecessor = assignments[previous['assignment_id']]
                     _validate_control_assignment(command, compiled=compiled,
                         previous=_decode(_hashed(predecessor['snapshot_bytes'], predecessor['snapshot_digest']), budget),

@@ -112,9 +112,16 @@ def prepare_control(org: object, *, command_bytes: bytes, compiled: object) -> C
                               (command.run_id, command.operation_key))
         assignment = None
         if command.action != 'cancel' and not replay and run['state'] == 'held':
-            assignments = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=? AND node_id=?',
-                                       (run['id'], run['held_node_id']))
-            previous = max(assignments, key=lambda item: item['generation'])
+            held = _engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND id=?',
+                                (run['id'], run['held_event_id']))
+            _require(len(held) == 1, 'control_assignment_conflict')
+            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=? AND id=? AND node_id=?',
+                                  (run['id'], held[0]['source_visit_id'], run['held_node_id']))
+            _require(len(visits) == 1, 'control_assignment_conflict')
+            assignments = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=? AND id=?',
+                                       (run['id'], visits[0]['assignment_id']))
+            _require(len(assignments) == 1, 'control_assignment_conflict')
+            previous = assignments[0]
             assignment = json.loads(_hashed(previous['snapshot_bytes'], previous['snapshot_digest']))
         start = parse_generic_start(run['start_bytes'])
         resolved = json.loads(run['assignment_snapshot_bytes'])
@@ -277,8 +284,8 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
         if disposition == 'replace':
             assignment_rows = _engine_rows(conn, 'workflow_seq_assignments', budget,
                 'run_id=? AND node_id=?', (run['id'], run['held_node_id']))
-            predecessor = max(assignment_rows, key=lambda row: row['generation'])
-            generation = predecessor['generation'] + 1
+            predecessor = previous_assignment
+            generation = max(row['generation'] for row in assignment_rows) + 1
             assignment_id = _identity('assignment', run['id'], run['held_node_id'], str(generation))
             raw = _bytes(capture.assignment)
             conn.execute('INSERT INTO workflow_seq_assignments VALUES (?,?,?,?,?,?,?,?)',
