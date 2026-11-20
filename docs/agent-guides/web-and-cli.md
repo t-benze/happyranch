@@ -8,6 +8,12 @@ Native loading is packaged separately. Slice 5a adds the Linux host fallback:
 `connection client --help` with terminal consent, foreground ownership and honest
 `runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). I5b delivers the seven Linux host lifecycle/invite CLI mappings with terminal-only invites and replacement confirmation; address refresh remains B13-deferred. Native/live acceptance remains pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
+Settings S2a adds an explicit Linux local-main-view opt-in,
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1`, to serve packaged `web/dist` at
+`happyranch-app://app` and forward API/stream requests natively to the verified
+local daemon. The default HTTP path, remote path and separate connection
+bridge remain unchanged. See [loading, limits and native checks](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

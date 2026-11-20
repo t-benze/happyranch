@@ -4,6 +4,14 @@
 
 ## 1. Scope, evidence and assumptions
 
+**Settings S2a additive exception (TASK-18081 / THR-387 seq86):** Linux's
+local main view can explicitly opt into packaged `web/dist` serving and
+local API forwarding at `happyranch-app://app` with
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1`. It installs a byte-fetch adapter and an
+abort-only message handler, **no connection command bridge**. The default
+daemon-served runtime, remote proxy and separate connection view below are
+unchanged. S7 owns default cutover. See the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+
 Move connection presentation into shared web components while retaining native custody, permission prompts and exact-device approval. Use the selected in-process script-message bridge in a **separate, locally packaged connection web view**. Never attach this bridge to the runtime SPA web view, including the Mac's loopback proxy of a remote runtime. The connection view can work before connection and during daemon failure. It reuses the web build/design system; it is not fetched from the computer being connected to.
 
 The original spec PR #1643 updated this document only. Slice 1a now adds the web-only shell/build and closed v1 schema (§7), under its separate implementation brief. Slice 1b-LINUX adds the separate Linux loader and packaging boundary (§2). Slice 1b-MAC adds the isolated Mac client read-only loader and bundle packaging; native qualification remains pending. Slice 3a-T adds the unprivileged memory-only Linux client helper transport described below; slice 3a.1 now supplies native session/pairing/runtime modules, while GTK integration and public client capabilities remain pending 3a.2. Authentication decisions, permissions, dependencies, existing native connection screens, TASK-16779, installations and deployments remain unchanged. Source inspection and synthetic facade evidence are not native or cross-device acceptance.
