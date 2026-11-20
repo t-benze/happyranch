@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useI18n, useTranslation } from '@/hooks/i18n';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
 import { useTheme } from '@/hooks/theme';
 import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/design-system/primitives/Select';
@@ -81,7 +82,13 @@ export interface AppBarProps {
 export function AppBar({ status, actions }: AppBarProps): JSX.Element {
   const location = useLocation();
   const { locale, setLocale, t } = useI18n();
-  const title = pageTitleFromPath(location.pathname, locale);
+  // THR-387 S1b: the org-less recovery Settings (/settings/*) exists only
+  // during a native recovery state; outside it the URL keeps today's title.
+  const recovery = useNativeRecovery();
+  const title =
+    recovery && /^\/settings(\/|$)/.test(location.pathname)
+      ? t('shell.title.settings')
+      : pageTitleFromPath(location.pathname, locale);
   const { statusRef, actionsRef } = useTopbarSlotRefs();
 
   return (

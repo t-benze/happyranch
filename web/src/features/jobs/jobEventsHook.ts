@@ -5,7 +5,7 @@ import {
 } from '@microsoft/fetch-event-source';
 import { getToken } from '@/lib/auth';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes API_PREFIX; routed direct per THR-011 founder ruling (option 3), pending a future hook
-import { API_PREFIX } from '@/lib/api/client';
+import { API_PREFIX, nativeRecoveryErrorFor } from '@/lib/api/client';
 
 export interface JobEvent {
   kind: 'stdout' | 'stderr' | 'terminal';
@@ -54,6 +54,13 @@ export function useJobEventStream(
               resp.headers.get('content-type')?.includes(EventStreamContentType)
             ) {
               return;
+            }
+            if (resp.status === 503 || resp.status === 409) {
+              // Native recovery answer: record the state; the throw below
+              // already stops the retry loop exactly as for other failures.
+              const body: unknown = await resp.json().catch(() => null);
+              const recovery = nativeRecoveryErrorFor(resp.status, body);
+              if (recovery) throw recovery;
             }
             throw new Error(`SSE failed: ${resp.status}`);
           },

@@ -3447,6 +3447,28 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "knowledge.instill.found.body": "其响应丢失，但该智能体的导入记录显示同一确认 ID 对应操作 {operation}。未再次发送任何内容。",
   "knowledge.instill.history.view": "查看导入",
   "knowledge.instill.history.note": "导入的笔记会通过常规记忆进入此智能体的下一次新会话。正在运行的会话不受影响。",
+  // --- THR-387 S1b: native recovery states + compatibility page ---
+  "recovery.retry": "重试",
+  "recovery.recheck": "重新检查",
+  "recovery.kept": "此页面和未保存的编辑会保持原样。",
+  "recovery.details": "详细信息：{code}",
+  "recovery.noTarget.title": "尚未选择连接",
+  "recovery.noTarget.body": "请在“连接”中选择一台电脑，然后重试。",
+  "recovery.targetStarting.title": "HappyRanch 正在启动",
+  "recovery.targetStarting.body": "所选电脑上的 HappyRanch 正在启动。就绪后请重试。",
+  "recovery.targetUnreachable.title": "无法连接所选电脑",
+  "recovery.targetUnreachable.body": "所选电脑上的 HappyRanch 没有响应。请确认它正在运行且可以访问，然后重试。",
+  "recovery.busy.title": "连接繁忙",
+  "recovery.busy.body": "所选电脑暂时无法处理此请求。请稍后重试。",
+  "recovery.targetChanged.title": "所选电脑已更改",
+  "recovery.targetChanged.body": "此页面是为另一台电脑加载的。请重试以加载当前电脑的内容。",
+  "recovery.incompatible.host.title": "请更新所选电脑上的 HappyRanch",
+  "recovery.incompatible.host.body": "所选电脑上的 HappyRanch 与此应用不匹配。请在该电脑上更新 HappyRanch，然后重新检查。此应用无需更新。",
+  "recovery.incompatible.app.title": "请更新此应用",
+  "recovery.incompatible.app.body": "此应用版本过旧，无法使用所选电脑上的 HappyRanch。请更新桌面应用。所选电脑无需更新。",
+  "recovery.incompatible.unknown.title": "无法确认兼容性",
+  "recovery.incompatible.unknown.body": "此应用无法确认能否与所选电脑上的 HappyRanch 配合使用。请重新检查，或在“连接”中选择其他电脑。",
+  "recovery.incompatible.otherComputer": "也可以在“连接”中选择其他电脑。",
 };
 
 export default zhCN;

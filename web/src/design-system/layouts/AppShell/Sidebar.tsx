@@ -35,6 +35,7 @@ import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hook
 import { Avatar } from '@/design-system/primitives/Avatar';
 
 import { useOrgsList } from '@/hooks/orgs';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { features } from '@/config/features';
@@ -70,6 +71,11 @@ export function Sidebar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
   const routes = useThreadRoutes();
+  // THR-387 S1b: a native recovery state met before any org is known (startup
+  // on `/`) would leave Settings disabled. Only then, Settings opens the
+  // org-less recovery Settings so client-only Preferences stays reachable.
+  // Ordinary browser mode never has a recovery state, so it is unchanged.
+  const recovery = useNativeRecovery();
 
   // BUG-08: Day-N comes from the SAME dashboard-summary query DashboardPage
   // consumes — React Query dedupes by key, so this is not a new data path.
@@ -245,7 +251,12 @@ export function Sidebar(): JSX.Element {
       {/* Footer — Settings + account row (BUG-07). */}
       {/* Pasture `.side-foot`: padding 10px 12px, gap 4px. */}
       <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-2.5">
-        <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
+        <SidebarNavItem
+          {...(!activeSlug && recovery
+            ? { to: '/settings', enabled: !isPrototype }
+            : sidebarLink('settings', true))}
+          icon={Settings}
+        >
           {t('shell.nav.settings')}
         </SidebarNavItem>
         {/* Account row — avatar + the human Founder's current name. */}

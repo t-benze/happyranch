@@ -12,7 +12,7 @@ import {
 } from '@microsoft/fetch-event-source';
 
 import { clearToken, getToken } from '../auth';
-import { API_PREFIX } from './client';
+import { API_PREFIX, NativeRecoveryError, nativeRecoveryErrorFor } from './client';
 
 export interface SSEOptions<T> {
   /** Called once per ``data: <json>`` frame, parsed to T. */
@@ -67,6 +67,19 @@ export async function subscribeSSE<T = unknown>(
         // single-shot, so throw FatalSSEError to propagate up.
         throw new FatalSSEError('token expired');
       }
+      if (response.status === 503 || response.status === 409) {
+        // Native recovery answer: surface the state and stop retrying. Any
+        // other 503/409 keeps the existing single-shot failure below.
+        const text = await response.text().catch(() => '');
+        let body: unknown = null;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+        const recovery = nativeRecoveryErrorFor(response.status, body);
+        if (recovery) throw recovery;
+      }
       throw new FatalSSEError(`SSE open failed (${response.status})`);
     },
     onmessage(ev) {
@@ -79,7 +92,7 @@ export async function subscribeSSE<T = unknown>(
       }
     },
     onerror(err) {
-      if (err instanceof FatalSSEError) throw err;
+      if (err instanceof FatalSSEError || err instanceof NativeRecoveryError) throw err;
       // For transient errors fetch-event-source auto-retries unless we throw.
       // Default behavior is what we want (re-connect with backoff).
     },

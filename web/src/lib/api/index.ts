@@ -23,7 +23,7 @@ export * as usage from './usage';
 export * as schedules from './schedules';
 export * as workHours from './work-hours';
 export * as workflowTemplates from './workflowTemplates';
-export { ApiError, request, type RequestOptions } from './client';
+export { ApiError, NativeRecoveryError, request, type RequestOptions } from './client';
 export { subscribeSSE, type SSEOptions } from './sse';
 export type * from './types';
 export * as workflowCutover from './workflowCutover';

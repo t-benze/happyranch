@@ -6,6 +6,8 @@
  * ``sessionStorage``. Subsequent requests read from cache.
  */
 
+import { parseNativeRecovery, reportNativeRecovery } from './nativeRecovery';
+
 const STORAGE_KEY = 'happyranch.token';
 const BOOTSTRAP_URL = '/api/v1/auth/bootstrap';
 
@@ -32,6 +34,10 @@ export async function getToken(): Promise<string> {
         } catch {
           detail = await r.text().catch(() => null);
         }
+        // A native recovery answer (desktop: no target selected, target
+        // starting, ...) is recorded as a recovery state, not an auth failure.
+        const recovery = parseNativeRecovery(r.status, detail);
+        if (recovery) reportNativeRecovery(recovery);
         throw new BootstrapError(r.status, detail);
       }
       const body = (await r.json()) as { token: string };

@@ -5,6 +5,11 @@
  * ``fetch`` directly — see ``web/ARCHITECTURE.md``.
  */
 import { clearToken, getToken } from '../auth';
+import {
+  parseNativeRecovery,
+  reportNativeRecovery,
+  type NativeRecoveryState,
+} from '../nativeRecovery';
 
 export const API_PREFIX = '/api/v1';
 
@@ -40,6 +45,30 @@ export class ApiError extends Error {
   ) {
     super(`API ${status}${code ? ` (${code})` : ''}`);
   }
+}
+
+/**
+ * A native (desktop) recovery answer: exact `{"detail":{"code":C}}` with 503
+ * for no_target/target_starting/target_unreachable/incompatible/busy or 409
+ * for target_changed. It is still an `ApiError` (same status/code/detail) so
+ * existing per-feature error handling is unchanged; it is never an auth
+ * failure and never clears the bearer. See `lib/nativeRecovery.ts`.
+ */
+export class NativeRecoveryError extends ApiError {
+  constructor(public readonly recovery: NativeRecoveryState, detail: unknown) {
+    super(recovery.code === 'target_changed' ? 409 : 503, recovery.code, detail);
+  }
+}
+
+/**
+ * If `status`/`body` is exactly a native recovery answer, record it in the
+ * app-wide recovery store and return the typed error; otherwise null.
+ */
+export function nativeRecoveryErrorFor(status: number, body: unknown): NativeRecoveryError | null {
+  const recovery = parseNativeRecovery(status, body);
+  if (!recovery) return null;
+  reportNativeRecovery(recovery);
+  return new NativeRecoveryError(recovery, (body as { detail: unknown }).detail);
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -139,7 +168,7 @@ export async function request<T = unknown>(
   }
 
   if (!res.ok) {
-    throw parseError(res.status, body);
+    throw nativeRecoveryErrorFor(res.status, body) ?? parseError(res.status, body);
   }
   return body as T;
 }
