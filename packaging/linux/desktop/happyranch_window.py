@@ -1050,7 +1050,7 @@ def run_gui(prefix: Path, home: Path) -> int:
             GLib.idle_add(render_controls, "off", str(exc), False, False)
 
     def show_web(url: str, fallback: bool = False) -> bool:
-        nonlocal controls, app_scheme
+        nonlocal controls, app_scheme, client_ui
         if closing:
             return False
         if app_scheme is not None:
@@ -1072,6 +1072,12 @@ def run_gui(prefix: Path, home: Path) -> int:
                 spec.loader.exec_module(module)
                 app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
                                               local_mode="foreground" if fallback else "service")
+                if client_ui is None:
+                    client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
+                    client_module = importlib.util.module_from_spec(client_spec)
+                    client_spec.loader.exec_module(client_module)
+                    client_ui = client_module.ClientUI(app, window, prefix, tr)
+                client_ui.attach_main(app_scheme, module)
                 view, url = app_scheme.view, module.ORIGIN + "/"
             except (OSError, ValueError, ImportError):
                 show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))

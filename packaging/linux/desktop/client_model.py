@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import threading
 import time
+import uuid
 
 _spec = importlib.util.spec_from_file_location("client_session", Path(__file__).with_name("client_session.py"))
 _native = importlib.util.module_from_spec(_spec)
@@ -58,6 +59,126 @@ class ClientModel:
         self.save_intent = False
         self.saving, self.save_stop = False, None
         self.storage_busy = False
+        self.main = self.bridge_types = None
+        self.active_session = self.active_target = None
+        self.active_unsaved = False
+        self.switch_candidate = self.candidate_target = self.candidate_error = None
+        self.candidate_stop = threading.Event()
+        self.owner_snapshot = lambda: None
+
+    def attach_main(self, main: object, bridge_types: object) -> None:
+        """Attach the same native owner before a fresh Main document is loaded."""
+        if self.main is not None and self.main is not main:
+            if self.switch_candidate and self.switch_candidate["phase"] not in ("failed", "cancelled"):
+                self.stop()
+            self.main.client_dispatch = None
+        self.main, self.bridge_types = main, bridge_types
+        # Recreating Main is initial attachment of the SAME committed target.
+        # No document or transfers exist in the new view yet. Voluntary target
+        # changes below always use select_target and its owner/non-GET gate.
+        if self.active_target is not None:
+            main.daemon = bridge_types.RemoteDaemon(self.active_session, ready=True,
+                target_id=self.active_target.target_id, name=self.active_target.name)
+            self.active_target = main.daemon
+        main.client_dispatch = self.dispatch
+        self.publish_candidate()
+
+    def publish_candidate(self) -> None:
+        if self.main is None or self.main.closed:
+            return
+        if self.switch_candidate is not None:
+            phase = {"validating": "signing_in", "joining": "signing_in", "pairing": "awaiting_approval",
+                     "waitingApproval": "awaiting_approval", "failed": "failed"}.get(self.stage)
+            if phase:
+                self.switch_candidate["phase"] = phase
+            if self.expiry is not None:
+                self.switch_candidate["deadline"] = timestamp(self.expiry)
+        self.main.candidate = dict(self.switch_candidate) if self.switch_candidate else None
+        self.main.access_unsaved = self.active_unsaved
+        self.main.emit_state()
+
+    def dispatch(self, command: str, document: object, finish: object, *, computerRef: str = "") -> None:
+        """Only AppScheme's admitted Main-document hook calls this dispatcher."""
+        if command == "client.status":
+            finish(self.snapshot())
+        elif command == "client.savedComputers":
+            self.discover(finish)
+        elif command in ("client.acceptInvite", "client.retry", "client.connectSaved"):
+            if (self.session or self.saving or self.storage_busy or self.hold or self.ui.prompt
+                    or self.host_prompt_document is not None or self.stage not in ("idle", "failed", "connected")
+                    or self.cleanup == "incomplete"):
+                finish(None, "busy")
+                return
+            if command == "client.connectSaved" and computerRef not in self.records:
+                finish(None, "stateChanged")
+                return
+            self.switch_candidate = {"kind": "remote", "id": uuid.uuid4().hex,
+                "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
+                "phase": "signing_in", "deadline": None}
+            self.candidate_target = self.candidate_error = None
+            self.candidate_stop = threading.Event()
+            if command == "client.connectSaved":
+                self.connect_saved(computerRef, document, finish)
+            else:
+                self.accept(document)
+                finish(self.action())
+        elif command == "client.cancelAttempt":
+            if self.switch_candidate is None or self.switch_candidate["phase"] in ("failed", "cancelled"):
+                finish(None, "stateChanged")
+            else:
+                self.confirm_stop(finish, document)
+        elif command == "client.disconnect":
+            if self.active_session is None or self.session is not None:
+                finish(None, "stateChanged")
+            else:
+                self.confirm_stop(finish, document)
+        elif command == "client.commitSwitch":
+            self.commit_switch(finish)
+        else:
+            finish(None, "unsupportedCommand")
+
+    def commit_switch(self, finish: object) -> None:
+        if not self.valid(self.token):
+            finish(None, "documentChanged")
+            return
+        if self.candidate_error:
+            finish(None, self.candidate_error)
+            return
+        if (not self.switch_candidate or self.switch_candidate["phase"] != "ready_to_switch"
+                or self.candidate_target is None or self.session is None or self.saving or self.hold):
+            finish(None, "target_starting")
+            return
+        previous = self.main.candidate, self.main.access_unsaved
+        self.main.candidate, self.main.access_unsaved = None, self.saved_access != "saved"
+        reason = self.main.select_target(self.candidate_target, owner_saves=self.owner_saves())
+        if reason:
+            self.main.candidate, self.main.access_unsaved = previous
+            finish(None, reason)
+            return
+        old = self.active_session
+        if old is not None:
+            self.cleanup = "unknown"
+        self.active_session, self.active_target = self.session, self.candidate_target
+        self.active_unsaved = self.saved_access != "saved"
+        self.session = self.candidate_target = self.switch_candidate = None
+        self.document = None
+        self.runtime, self.access = "available", "allowed"
+        self.changed("connected")
+        # Swap/cancellation/event already occurred. Cleanup is independent and
+        # cannot roll back an admitted target or claim atomic cleanup success.
+        if old is not None and old is not self.active_session:
+            def stopped(_result: object, error: str | None) -> None:
+                self.cleanup = "incomplete" if error else "confirmed"
+                self.changed()
+            self.work(self.token, old.stop, stopped, settle=True)
+        finish(self.action("confirmed"))
+
+    def owner_saves(self) -> tuple[str, ...] | None:
+        try:
+            owners = self.owner_snapshot()
+        except Exception:
+            return None  # Unsupported/unavailable owner evidence fails closed.
+        return owners if type(owners) is tuple and all(type(state) is str for state in owners) else None
 
     def snapshot(self) -> dict:
         return dict(stage=self.stage, runtime=self.runtime, savedAccess=self.saved_access,
@@ -74,9 +195,15 @@ class ClientModel:
         if stage:
             self.stage = stage
         self.observed = timestamp()
+        self.publish_candidate()
         self.ui.changed()
 
     def valid(self, token: int) -> bool:
+        if (token == self.token and self.main is not None and type(self.document) is int
+                and (self.main.closed or self.document != self.main.document)):
+            self.document = None
+            self.stop()
+            return False
         return token == self.token
 
     def work(self, token: int, operation: object, done: object, *, settle: bool = False) -> None:
@@ -264,6 +391,38 @@ class ClientModel:
 
     def open(self, token: int) -> None:
         self.changed("opening")
+        if self.main is not None:
+            session = self.session
+            candidate = self.switch_candidate
+            if candidate is None:
+                # Legacy native controls share the same owner, never a second
+                # runtime window once Main owns routing.
+                self.switch_candidate = candidate = {"kind": "remote", "id": uuid.uuid4().hex,
+                    "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
+                    "phase": "signing_in", "deadline": None}
+            target = self.bridge_types.RemoteDaemon(session, ready=True,
+                target_id=candidate["id"], name=candidate["name"])
+            stop = self.candidate_stop
+            def prepare() -> object:
+                try:
+                    target.bootstrap(stop)
+                    return target, None
+                except self.bridge_types.SchemeError as error:
+                    detail = {"code": error.code}
+                    if error.code == "incompatible":
+                        detail["side"] = error.side
+                    return None, detail
+            def prepared(result: object, error: str | None) -> None:
+                target, detail = result if not error else (None, {"code": "target_unreachable"})
+                if detail:
+                    self.candidate_error = detail
+                    self.fail("runtimeUnavailable")
+                else:
+                    self.candidate_target = target
+                    self.switch_candidate["phase"] = "ready_to_switch"
+                    self.changed()
+            self.work(token, prepare, prepared)
+            return
         self.work(token, self.session.open_runtime, lambda url, e: self.opened(token, url, e))
 
     def computers(self) -> list | None:
@@ -289,14 +448,14 @@ class ClientModel:
         self.work(self.token, self.store.list, found, settle=True)
 
     def save(self, token: int, *, opening: bool = False, finish: object = None) -> None:
-        if self.saving or self.storage_busy or self.hold or not self.session or not self.save_intent:
+        session = self.session or self.active_session
+        if self.saving or self.storage_busy or self.hold or not session or not self.save_intent:
             if finish:
                 finish(None, "stateChanged", "none")
             return
         self.saving = True
         previous_stage = self.stage
         self.changed("saving")
-        session = self.session
         def write() -> object:
             record = session.saved_record()
             self.store.save(record)
@@ -309,6 +468,8 @@ class ClientModel:
                 self.active_ref = _store.reference(record)
                 self.records[self.active_ref] = record
                 self.saved_observation = "known"
+                if session is self.active_session:
+                    self.active_unsaved = False
             if self.save_stop is not None:
                 stop_finish, failed = self.save_stop
                 self.save_stop = None
@@ -327,7 +488,8 @@ class ClientModel:
 
     def connect_saved(self, ref: str, document: object, finish: object) -> None:
         if (self.session or self.storage_busy or self.hold or self.ui.prompt
-                or self.stage not in ("idle", "failed") or self.cleanup == "incomplete"):
+                or self.stage not in (("idle", "failed", "connected") if self.main else ("idle", "failed"))
+                or self.cleanup == "incomplete"):
             finish(None, "busy", "none")
             return
         record = self.records.get(ref)
@@ -461,7 +623,21 @@ class ClientModel:
         self.stop(failed=code)
 
     def stop(self, finish: object = None, failed: str | None = None) -> None:
+        if (self.main is not None and self.session is None and self.active_session is not None
+                and (self.switch_candidate is None or self.switch_candidate["phase"] in ("failed", "cancelled"))):
+            reason = self.main.select_target(None, owner_saves=self.owner_saves())
+            if reason:
+                if finish:
+                    finish(None, reason, "none")
+                return
+            self.session, self.active_session = self.active_session, None
+            self.active_target, self.active_unsaved = None, False
+            self.switch_candidate = self.candidate_error = None
         self.confirming_target = False
+        self.candidate_stop.set()
+        if self.switch_candidate is not None:
+            self.switch_candidate["phase"] = "failed" if failed else "cancelled"
+        self.candidate_target = None
         if self.saving:
             if self.save_stop is None:
                 self.token += 1
@@ -472,6 +648,7 @@ class ClientModel:
                 self.changed("stopping")  # storage write/readback safe point
             return
         self.token += 1  # Invalidate before stop dispatch, including late approval/load.
+        self.document = None
         token = self.token
         session, self.session = self.session, None
         if self.health_finish:
@@ -518,6 +695,11 @@ class ClientModel:
         self.reading = True
         self.health_finish = finish
         token = self.token
+        session = self.session or self.active_session
+        if session is None:
+            self.reading, self.health_finish = False, None
+            finish(None, "stateChanged", "none")
+            return
         def observed(_result: object, error: str | None) -> None:
             self.reading = False
             self.health_finish = None
@@ -525,7 +707,14 @@ class ClientModel:
             self.observation = "unavailable" if error else "known"
             if error:
                 self.runtime = "offline" if error == "daemonUnavailable" else "unknown"
-                session, self.session = self.session, None
+                if session is self.active_session:
+                    # Transport loss preserves target identity. Seal native
+                    # authority as before; do not silently switch to local.
+                    self.active_target.reset()
+                    with self.active_target._state:
+                        self.active_target.state = "unreachable"
+                else:
+                    self.session = None
                 self.token += 1
                 self.changed("stopping")
                 self.ui.close_runtime()
@@ -537,4 +726,4 @@ class ClientModel:
                 self.changed()
             finish(dict(access=self.access, runtime=self.runtime, route="unknown", observedAt=self.observed,
                         observation=self.observation), None, "none")
-        self.work(token, self.session.health, observed)
+        self.work(token, session.health, observed)

@@ -943,6 +943,41 @@ shows a plain failure message and keeps the worker, window and desktop lock.
 Closing again requests one more bounded stop attempt; only successful shutdown
 permits exit and lock release. No process is signaled directly in service mode.
 
+### Linux active and candidate switching (Settings S5-L2)
+
+With the existing app-scheme opt-in, Main and the native Connection window now
+share one ClientUI/model owner. Main's admitted document can start an invitation
+or saved-computer attempt while its current target continues serving. Native
+dialogs retain invitation, approval and credential custody. The candidate uses
+the existing listener-free RemoteDaemon health/compatibility admission; it does
+not open a second runtime window or a loopback proxy. Its public identity is a
+generic name and opaque id, with phase and optional deadline only.
+
+`client.commitSwitch` requires a `ready_to_switch` candidate and uses the existing
+`select_target` gate. Refusals retain both targets and generation, with
+`owner_save_unknown`, `owner_save_pending` or `non_get_pending`. Candidate
+compatibility failures retain the active target and report `incompatible` with
+the existing host/app side. Cancel fences late completion and stops only the
+candidate. Success swaps target/generation, errors old-generation streams, then
+publishes status; old native-session cleanup is separately unknown until observed.
+
+Assumption/dependency: section 12 requires pending/unknown owner saves to refuse,
+but the current v2 schema defines no `app.owners` payload. Until S6-W2 supplies
+owner evidence, the injected native snapshot provider returns unknown and every
+voluntary commit/disconnect refuses. No owner wire format is added. Main view
+recreation reattaches the same committed session before navigation, with a fresh
+transport admission; it cancels an unfinished candidate. This is initial attachment
+of the same target, not a voluntary switch. Earlier S5-L2-pending descriptions in
+this handbook describe the preceding source epoch; native/live acceptance remains
+separate from this source implementation.
+
+Focused switch and admitted-document checks use the existing standalone venues:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py SwitchTests ClientDispatchTests -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py GTKTests.test_main_bridge_status_event_and_frame_navigation_refusal -v
+```
+
 ### Keep running after logout
 
 The native controls sit above the web view with 12px margins and a separator.

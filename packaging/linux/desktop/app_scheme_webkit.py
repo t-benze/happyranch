@@ -28,6 +28,9 @@ _spec = importlib.util.spec_from_file_location("connection_contract", Path(__fil
 _contract = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_contract)
 WORLD = "happyranch.app.v2"
+CLIENT_COMMANDS = frozenset({"client.status", "client.acceptInvite", "client.retry",
+                             "client.savedComputers", "client.connectSaved", "client.cancelAttempt",
+                             "client.commitSwitch", "client.disconnect"})
 # The launcher loads installed siblings afresh after Restart. Keep this native
 # counter in the process module registry, rather than reusing module-local IDs.
 _generation_state = ModuleType("_happyranch_app_generations")
@@ -133,7 +136,13 @@ APP_PAGE = r"""(() => {
   });
   const call = (command, data) => new Promise((resolve, reject) => {
     if (!active) return reject(fail('documentChanged'));
-    if (command !== 'app.status' || data !== '{}') return reject(fail('unsupportedCommand'));
+    const empty = ['app.status','client.status','client.acceptInvite','client.retry',
+      'client.savedComputers','client.cancelAttempt','client.commitSwitch','client.disconnect'];
+    let args;
+    try { args = JSON.parse(data); } catch { return reject(fail('unsupportedCommand')); }
+    const saved = command === 'client.connectSaved' && args && !Array.isArray(args)
+      && Object.keys(args).length === 1 && typeof args.computerRef === 'string';
+    if (!(empty.includes(command) && data === '{}') && !saved) return reject(fail('unsupportedCommand'));
     if (pending.size >= 8) return reject(fail('busy'));
     const id = 'r' + (++sequence);
     pending.set(id, {resolve, reject});
@@ -200,11 +209,23 @@ APP_RELAY = r"""(() => {
     if (item?.channel === 'hr-app-cancel' && typeof item.id === 'string') {
       send({cancel:item.id}).catch(() => {}); return;
     }
-    if (item?.channel !== 'hr-app-call' || item.command !== 'app.status' || item.data !== '{}'
+    if (item?.channel !== 'hr-app-call' || !['app.status','client.status','client.acceptInvite',
+        'client.retry','client.savedComputers','client.connectSaved','client.cancelAttempt',
+        'client.commitSwitch','client.disconnect'].includes(item.command) || typeof item.data !== 'string'
         || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
     let raw, ok = true;
     try { raw = await send({command:item.command, data:item.data}); }
-    catch { ok = false; raw = JSON.stringify({code:'invalidRequest', effect:'none', recovery:'refresh'}); }
+    catch (error) {
+      ok = false;
+      let detail;
+      try { detail = JSON.parse(error.message); } catch {}
+      const codes = ['owner_save_unknown','owner_save_pending','non_get_pending','incompatible',
+        'target_starting','target_unreachable','busy','stateChanged','documentChanged','unsupportedCommand'];
+      const result = {code:codes.includes(detail?.code) ? detail.code : 'invalidRequest',
+        effect:'none', recovery:'refresh'};
+      if (result.code === 'incompatible' && ['host','app','unknown'].includes(detail.side)) result.side = detail.side;
+      raw = JSON.stringify(result);
+    }
     if (active && typeof raw === 'string' && new TextEncoder().encode(raw).length <= 32768)
       window.postMessage({channel:'hr-app-reply', id:item.id, raw, ok}, location.origin);
   });
@@ -324,6 +345,7 @@ class AppScheme:
                       "running": "running" if self.daemon is not None else "unknown",
                       "prompt_base_url": None}
         self.candidate = None
+        self.client_dispatch = None
         self.access_unsaved = False
         self.locale = {"current": "zh-CN" if os.environ.get("LANG", "").lower().startswith("zh") else "en",
                        "persisted": False}
@@ -436,6 +458,29 @@ class AppScheme:
             if set(item) == {"token", "command", "data"} and item["command"] == "app.status" and item["data"] == "{}":
                 self.refresh_status()
                 result = self.status()
+            elif (set(item) == {"token", "command", "data"} and item["command"] in CLIENT_COMMANDS
+                  and callable(self.client_dispatch) and type(item["data"]) is str):
+                args = _contract.parse_json(item["data"], 1024)
+                if item["command"] == "client.connectSaved":
+                    if (type(args) is not dict or set(args) != {"computerRef"}
+                            or type(args["computerRef"]) is not str or not 0 < len(args["computerRef"]) <= 256):
+                        raise ValueError("invalid saved reference")
+                elif args != {} or item["data"] != "{}":
+                    raise ValueError("unexpected arguments")
+                document, token = self.document, self.bridge_token
+                def finish(result: object = None, error: str | dict | None = None, _effect: str = "none") -> None:
+                    if self.closed or document != self.document or token != self.bridge_token:
+                        reply.return_error_message('{"code":"documentChanged","effect":"none","recovery":"refresh"}')
+                    elif error:
+                        detail = error if type(error) is dict else {"code": error}
+                        reply.return_error_message(json.dumps({**detail, "effect": "none", "recovery": "refresh"}))
+                    else:
+                        reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
+                if args:
+                    self.client_dispatch(item["command"], document, finish, **args)
+                else:
+                    self.client_dispatch(item["command"], document, finish)
+                return True
             elif set(item) == {"token", "event", "enabled"} and item["event"] == "app.stateChanged" and type(item["enabled"]) is bool:
                 self.subscribed = item["enabled"]
                 result = {}
