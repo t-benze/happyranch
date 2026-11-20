@@ -930,11 +930,162 @@ class SwitchTests(PeerFixture):
         self.candidate._bearer = ""
         del self.ui.consent
         self.start()
-        self.ui.pump(lambda: self.model.stage == "failed")
+        self.ui.pump(lambda: self.main.candidate["phase"] == "failed" and not self.model.workers)
+        while not self.ui.queue.empty():
+            self.ui.queue.get_nowait()()
+        self.assertEqual(self.model.stage, "connected")
         self.assertFalse(active._closed)
         self.assertIs(self.main.daemon.session, active)
         self.assertEqual(self.main.generation, generation)
         self.assertEqual(self.forward(self.main)["body"], b"native-peer-ok")
+
+    def check_cleanup_ownership(self, retired_fails: bool) -> None:
+        self.ready()
+        self.command("commitSwitch")
+        retired = self.candidate
+        release = threading.Event()
+        entered = threading.Event()
+        original_stop = retired.stop
+        def stop_retired() -> None:
+            entered.set()
+            if not release.wait(2):
+                raise self.owner._native.ClientError("cleanupIncomplete")
+            if retired_fails:
+                raise self.owner._native.ClientError("cleanupIncomplete")
+            original_stop()
+        self.addCleanup(release.set)
+        retired.stop = stop_retired
+        self.new_candidate()
+        del self.ui.consent
+        self.ready()
+        self.command("commitSwitch")
+        self.ui.pump(entered.is_set)
+        active = self.candidate
+        self.new_candidate()
+        del self.ui.consent
+        # The existing native owner entry exercises overlapping cleanup even
+        # when Main's command admission serializes pending cleanup results.
+        self.model.accept(self.main.document)
+        self.ui.pasted("synthetic-overlap-invite")
+        self.ui.pump(lambda: hasattr(self.ui, "consent"))
+        self.ui.consent(True)
+        self.ui.pump(lambda: self.main.candidate["phase"] == "ready_to_switch")
+        if retired_fails:
+            release.set()
+            self.ui.pump(lambda: self.model.cleanup == "incomplete")
+        else:
+            def stop_candidate() -> None:
+                raise self.owner._native.ClientError("cleanupIncomplete")
+            self.candidate.stop = stop_candidate
+        self.command("cancelAttempt")
+        self.ui.confirmed(True)
+        self.ui.pump(lambda: self.model.stage in ("idle", "failed", "connected"))
+        if not retired_fails:
+            self.assertEqual(self.model.cleanup, "incomplete")
+            release.set()
+        self.ui.pump(lambda: not self.model.workers)
+        while not self.ui.queue.empty():
+            self.ui.queue.get_nowait()()
+        self.assertEqual(retired._closed, not retired_fails)
+        self.assertEqual(self.candidate._closed, retired_fails)
+        self.assertEqual(self.model.action()["localCleanup"], "incomplete",
+                         "another session's success cannot clear failed cleanup")
+        self.assertEqual(self.command("acceptInvite")[1:], ("busy",))
+        self.assertIs(self.main.daemon.session, active)
+        self.assertEqual(self.forward(self.main)["status"], 200)
+
+    def test_retired_failure_survives_later_candidate_cleanup_success(self) -> None:
+        self.check_cleanup_ownership(True)
+
+    def test_candidate_failure_survives_later_retired_cleanup_success(self) -> None:
+        self.check_cleanup_ownership(False)
+
+    def check_active_projection(self, cancel: bool) -> None:
+        from test_client_store import record
+        from connection_window import ConnectionWindow, ENTRY
+        from connection_contract import Protocol, Requests
+        writes = []
+        self.model.store.save = writes.append
+        for saved in (False, True):
+            with self.subTest(saved=saved):
+                if hasattr(self.ui, "consent"):
+                    self.new_candidate()
+                    del self.ui.consent
+                active = self.candidate
+                if saved:
+                    active.saved_record = record
+                result = self.command("acceptInvite")
+                self.assertEqual(result[0]["effect"], "none")
+                self.ui.pasted("synthetic-active-save-intent")
+                self.ui.pump(lambda: hasattr(self.ui, "consent"))
+                self.ui.consent(True, True)
+                self.ui.pump(lambda: self.main.candidate["phase"] == "ready_to_switch")
+                self.assertEqual(self.command("commitSwitch")[0]["effect"], "confirmed")
+                self.ui.pump(lambda: not self.model.workers)
+                while not self.ui.queue.empty():
+                    self.ui.queue.get_nowait()()
+                projection = self.model.snapshot()
+                self.assertEqual(projection["savedAccess"], "saved" if saved else "notSaved")
+                if saved:
+                    self.assertIsNotNone(projection["activeComputerRef"])
+                generation = self.main.generation
+                self.new_candidate()
+                del self.ui.consent
+                if cancel:
+                    self.ready()
+                    self.command("cancelAttempt")
+                    self.ui.confirmed(True)
+                else:
+                    self.candidate._bearer = ""
+                    self.start()
+                    self.ui.pump(lambda: self.main.candidate["phase"] == "failed")
+                self.ui.pump(lambda: not self.model.workers)
+                while not self.ui.queue.empty():
+                    self.ui.queue.get_nowait()()
+                self.assertEqual(self.model.stage, "connected")
+                self.assertEqual(self.main.candidate["phase"], "cancelled" if cancel else "failed")
+                self.assertTrue(self.model.save_intent)
+                for field in ("savedAccess", "activeComputerRef", "runtime", "observation"):
+                    self.assertEqual(self.model.snapshot()[field], projection[field], field)
+                self.assertEqual(self.main.access_unsaved, not saved)
+                self.assertEqual(self.main.generation, generation)
+                self.assertIs(self.model.active_session, active)
+                self.assertFalse(active._closed)
+                self.assertEqual(self.forward(self.main)["status"], 200)
+                if saved:
+                    continue
+                active.saved_record = record
+                # Exercise the unchanged ConnectionWindow.message retrySave
+                # dispatcher with its real protocol and mutation admission.
+                window = ConnectionWindow.__new__(ConnectionWindow)
+                window.manager, window.active, window.closed = object(), True, False
+                window.generation, window.unavailable_reason = 1, None
+                window.view = SimpleNamespace(get_uri=lambda: ENTRY)
+                window.JSC = SimpleNamespace(Value=SimpleNamespace(new_string=lambda _context, raw: raw))
+                window.protocol = Protocol(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json")
+                window.requests = Requests()
+                window.client = SimpleNamespace(model=self.model)
+                window.client_document = object()
+                replies = []
+                raw = json.dumps(dict(protocol="happyranch.connection", version=1,
+                    requestId="retry-active", command="client.retrySave", args={}))
+                value = SimpleNamespace(is_string=lambda: True, to_string=lambda: raw, get_context=lambda: None)
+                reply = SimpleNamespace(return_value=lambda raw: replies.append(json.loads(raw)),
+                    return_error_message=lambda raw: self.fail(raw))
+                window.message(window.manager, value, reply)
+                self.ui.pump(lambda: bool(replies))
+                self.assertTrue(replies[0]["ok"], replies[0])
+                self.assertEqual(replies[0]["result"]["effect"], "confirmed")
+                self.assertEqual(self.model.stage, "connected")
+                self.assertEqual(self.model.saved_access, "saved")
+                self.assertFalse(self.main.access_unsaved)
+                self.assertEqual(writes, [record()])
+
+    def test_cancel_candidate_restores_active_save_intent_and_retry_save(self) -> None:
+        self.check_active_projection(True)
+
+    def test_failed_candidate_restores_active_save_intent_and_retry_save(self) -> None:
+        self.check_active_projection(False)
 
     def test_native_entry_retry_after_cancel_gets_fresh_candidate_admission(self) -> None:
         generation = self.main.generation

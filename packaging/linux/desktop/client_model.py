@@ -43,7 +43,8 @@ class ClientModel:
         self.deadline = 0.0
         self.target = ""
         self.hold, self.deferred = False, []
-        self.cleanup = "notApplicable"
+        self._cleanup = "notApplicable"
+        self.session_cleanups = {}
         self.reading = False
         self.health_finish = None
         self.confirmation = 0
@@ -62,9 +63,25 @@ class ClientModel:
         self.main = self.bridge_types = None
         self.active_session = self.active_target = None
         self.active_unsaved = False
+        self.active_projection = None
         self.switch_candidate = self.candidate_target = self.candidate_error = None
         self.candidate_stop = threading.Event()
         self.owner_snapshot = lambda: None
+
+    @property
+    def cleanup(self) -> str:
+        # Only this session's successful stop may settle its owned result.
+        outcomes = self.session_cleanups.values()
+        if self._cleanup == "incomplete" or "incomplete" in outcomes:
+            return "incomplete"
+        return "unknown" if "unknown" in outcomes else self._cleanup
+
+    def cleanup_finished(self, session: object, error: str | None) -> None:
+        if session is not None:
+            if error:
+                self.session_cleanups[session] = "incomplete"
+            else:
+                self.session_cleanups.pop(session, None)
 
     def attach_main(self, main: object, bridge_types: object) -> None:
         """Attach the same native owner before a fresh Main document is loaded."""
@@ -106,7 +123,7 @@ class ClientModel:
         elif command in ("client.acceptInvite", "client.retry", "client.connectSaved"):
             if (self.session or self.saving or self.storage_busy or self.reading or self.hold or self.ui.prompt
                     or self.host_prompt_document is not None or self.stage not in ("idle", "failed", "connected")
-                    or self.cleanup == "incomplete"):
+                    or self.cleanup in ("unknown", "incomplete")):
                 finish(None, "busy")
                 return
             if command == "client.connectSaved" and computerRef not in self.records:
@@ -134,6 +151,9 @@ class ClientModel:
 
     def begin_candidate(self) -> None:
         if self.main is not None:
+            if self.active_session is not None and self.active_projection is None:
+                self.active_projection = (self.save_intent, self.active_ref, self.saved_access,
+                    self.stage, self.runtime, self.access, self.observation, self.load_succeeded, self.target)
             self.switch_candidate = {"kind": "remote", "id": uuid.uuid4().hex,
                 "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
                 "phase": "signing_in", "deadline": None}
@@ -159,10 +179,11 @@ class ClientModel:
             finish(None, reason)
             return
         old = self.active_session
-        if old is not None:
-            self.cleanup = "unknown"
+        if old is not None and old is not self.session:
+            self.session_cleanups[old] = "unknown"
         self.active_session, self.active_target = self.session, self.candidate_target
         self.active_unsaved = self.saved_access != "saved"
+        self.active_projection = None
         self.session = self.candidate_target = self.switch_candidate = None
         self.document = None
         self.runtime, self.access = "available", "allowed"
@@ -171,7 +192,7 @@ class ClientModel:
         # cannot roll back an admitted target or claim atomic cleanup success.
         if old is not None and old is not self.active_session:
             def stopped(_result: object, error: str | None) -> None:
-                self.cleanup = "incomplete" if error else "confirmed"
+                self.cleanup_finished(old, error)
                 self.changed()
             self.work(self.token, old.stop, stopped, settle=True)
         finish(self.action("confirmed"))
@@ -242,7 +263,7 @@ class ClientModel:
         token = self.token
         self.document = document
         self.load_succeeded = False
-        self.expiry, self.cleanup = None, "notApplicable"
+        self.expiry, self._cleanup = None, "notApplicable"
         self.observation = "known"
         self.active_ref, self.save_intent = None, False
         self.saved_access = "notSaved"
@@ -493,7 +514,7 @@ class ClientModel:
     def connect_saved(self, ref: str, document: object, finish: object) -> None:
         if (self.session or self.storage_busy or self.reading or self.hold or self.ui.prompt
                 or self.stage not in (("idle", "failed", "connected") if self.main else ("idle", "failed"))
-                or self.cleanup == "incomplete"):
+                or self.cleanup in ("unknown", "incomplete")):
             finish(None, "busy", "none")
             return
         record = self.records.get(ref)
@@ -554,13 +575,13 @@ class ClientModel:
             def removed(_r: object, error: str | None) -> None:
                 self.storage_busy = False
                 if error:
-                    self.saved_access, self.cleanup = "removalIncomplete", "incomplete"
+                    self.saved_access, self._cleanup = "removalIncomplete", "incomplete"
                 else:
                     self.records.pop(ref, None)
                     if self.active_ref == ref:
                         self.active_ref = None
                     self.saved_access = "saved" if self.records else "none"
-                    self.cleanup = "confirmed"
+                    self._cleanup = "confirmed"
                 self.changed()
                 finish(self.action("unknown" if error else "confirmed"),
                        "removalIncomplete" if error else None, "unknown" if error else "confirmed")
@@ -663,18 +684,29 @@ class ClientModel:
         self.confirmation_document = None
         self.expiry, self.target = None, ""
         self.runtime, self.access = "unknown", "unknown"
+        self._cleanup = "unknown"
+        if session is not None:
+            self.session_cleanups[session] = "unknown"
         self.ui.dismiss()
         self.ui.close_runtime()
         self.changed("stopping")
         def stopped(_result: object, error: str | None) -> None:
-            self.cleanup = "incomplete" if error else "confirmed"
-            self.changed("failed" if failed or error else "idle")
-            if failed or error:
-                self.ui.error(failed or "outcomeUnknown")
+            self.cleanup_finished(session, error)
+            if self.valid(token):
+                self._cleanup = "incomplete" if error else "confirmed"
+                if self.active_session is not None and self.active_projection is not None:
+                    (self.save_intent, self.active_ref, self.saved_access, self.stage, self.runtime, self.access,
+                     self.observation, self.load_succeeded, self.target) = self.active_projection
+                    self.active_projection = None
+                    self.changed()
+                else:
+                    self.changed("failed" if failed or error else "idle")
+                if failed or error:
+                    self.ui.error(failed or "outcomeUnknown")
             if finish:
                 finish(self.action("unknown" if error else "confirmed"),
                        "outcomeUnknown" if error else None, "unknown" if error else "confirmed")
-        self.work(token, session.stop if session else lambda: None, stopped)
+        self.work(token, session.stop if session else lambda: None, stopped, settle=True)
 
     def detach(self, document: object) -> None:
         if self.document == document or (self.hold and self.confirmation_document == document):
@@ -721,12 +753,16 @@ class ClientModel:
                 else:
                     self.session = None
                 self.token += 1
+                cleanup_token = self.token
                 self.changed("stopping")
                 self.ui.close_runtime()
+                self.session_cleanups[session] = "unknown"
                 def stopped(_r: object, cleanup_error: str | None) -> None:
-                    self.cleanup = "incomplete" if cleanup_error else "confirmed"
-                    self.changed("failed")
-                self.work(self.token, session.stop, stopped)
+                    self.cleanup_finished(session, cleanup_error)
+                    if self.valid(cleanup_token):
+                        self._cleanup = "incomplete" if cleanup_error else "confirmed"
+                        self.changed("failed")
+                self.work(cleanup_token, session.stop, stopped, settle=True)
             else:
                 self.changed()
             finish(dict(access=self.access, runtime=self.runtime, route="unknown", observedAt=self.observed,

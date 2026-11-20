@@ -960,6 +960,12 @@ compatibility failures retain the active target and report `incompatible` with
 the existing host/app side. Cancel fences late completion and stops only the
 candidate. Success swaps target/generation, errors old-generation streams, then
 publishes status; old native-session cleanup is separately unknown until observed.
+Cleanup outcomes belong to each native session. A successful cleanup cannot clear
+another session's pending or failed cleanup; new Main attempts refuse while any
+owned cleanup is unknown or incomplete. Cancelling or failing a candidate restores
+the still-connected active projection, including its saved-computer reference and
+save intent. Session-only access keeps `access_unsaved` and the native Retry save
+action; a saved active connection keeps its saved-access metadata.
 
 Assumption/dependency: section 12 requires pending/unknown owner saves to refuse,
 but the current v2 schema defines no `app.owners` payload. Until S6-W2 supplies
