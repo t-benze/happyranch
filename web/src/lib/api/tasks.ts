@@ -3,7 +3,7 @@
  * Excluded (agent-subprocess-only): POST /tasks/{id}/completion,
  * POST /tasks/{id}/progress. See spec §2.
  */
-import { API_PREFIX, request } from './client';
+import { API_PREFIX, nativeRecoveryErrorFor, request } from './client';
 import { prepareMultipartUpload } from './multipart';
 import type {
   TaskAttachmentRecord,
@@ -202,6 +202,8 @@ export const uploadTaskAttachment = async (
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
+    const recovery = nativeRecoveryErrorFor(res.status, body);
+    if (recovery) throw recovery;
     const code = (body as Record<string, unknown> | null)?.code;
     const err: Error & { status: number } = Object.assign(
       new Error(`Upload failed: ${res.status}${code ? ` (${code})` : ''}`),

@@ -14,6 +14,8 @@ import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
+import { useNativeRecovery, useRetryNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeRecoveryPanel } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
@@ -47,7 +49,11 @@ import { features } from '@/config/features';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
+  const recovery = useNativeRecovery();
   const { t } = useTranslation();
+  // A native recovery state (desktop: no target, starting, incompatible, ...)
+  // is shown by the AppShell; it is not "no orgs", so never route to onboarding.
+  if (recovery) return <></>;
   if (orgsQuery.isLoading) {
     return <div className="text-text-secondary p-8">{t('shell.loading')}</div>;
   }
@@ -93,6 +99,8 @@ function OrgLayout(): JSX.Element {
 
 function AppShell(): JSX.Element {
   const location = useLocation();
+  const recovery = useNativeRecovery();
+  const retryRecovery = useRetryNativeRecovery();
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
@@ -102,9 +110,14 @@ function AppShell(): JSX.Element {
         <div className="flex min-w-0 flex-1 flex-col">
           <AppBar />
           <main className="flex-1 overflow-hidden">
-            <AppShellErrorBoundary resetKey={location.pathname}>
-              <Outlet />
-            </AppShellErrorBoundary>
+            {/* THR-387 S1b: a native recovery state replaces the visible page
+                but keeps it mounted (hidden) so drafts and page state survive. */}
+            {recovery && <NativeRecoveryPanel state={recovery} onRetry={retryRecovery} />}
+            <div hidden={recovery !== null} className="contents">
+              <AppShellErrorBoundary resetKey={location.pathname}>
+                <Outlet />
+              </AppShellErrorBoundary>
+            </div>
           </main>
         </div>
       </TopbarSlotsProvider>

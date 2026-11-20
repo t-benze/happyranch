@@ -32,6 +32,54 @@ Settings S2a adds an explicit Linux local-main-view opt-in,
 local daemon. The default HTTP path, remote path and separate connection
 bridge remain unchanged. See [loading, limits and native checks](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
 
+## Native recovery states and compatibility page (THR-387 S1b-A)
+
+In the desktop app the native shell answers API/stream requests it does not
+forward with exactly `{"detail":{"code":C}}`: status 503 for `no_target`,
+`target_starting`, `target_unreachable`, `incompatible` (optional
+`detail.side` = `host`|`app`|`unknown`) and `busy`; status 409 for
+`target_changed`. `web/src/lib/nativeRecovery.ts` owns the parser and one
+app-wide recovery store. Only that exact shape is recognized: the body's only
+key is `detail`, whose only key is `code` (plus `side` for `incompatible`);
+any other 503/409, including daemon errors that share a status, behaves as
+before. An `incompatible` side outside the three values is treated as
+`unknown`. The daemon emits none of these codes, so daemon-served browser mode
+is unchanged.
+
+`request()` throws `NativeRecoveryError` (a subclass of `ApiError` with the
+same status/code/detail plus `recovery`), so existing per-feature handling
+still applies. The direct-fetch artifacts calls (upload, list, download,
+thread-attachment download, delete), `tasks.uploadTaskAttachment`, the bearer
+bootstrap and both SSE helpers (`subscribeSSE` and
+`features/jobs/jobEventsHook.ts`) record the same state. A recovery answer is
+never an auth failure: it never clears or re-acquires the bearer and never
+logs out; the 401 clear/re-bootstrap/replay path is unchanged. A stream that
+opens to a recovery answer stops (no retry), like other non-OK opens; network
+errors still retry. Streams are not resubscribed after Retry; a remount
+(navigation) reopens them.
+
+While a state is active, the AppShell shows `shared/connection/NativeRecoveryPanel`
+in place of the routed page, which stays mounted but hidden so drafts and page
+state survive; Sidebar, Settings and the AppBar Language selector stay
+reachable, and the index route does not redirect to onboarding. Copy (EN and
+zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update
+HappyRanch on the selected computer (this app needs no update), `app` →
+update this app (the computer needs no update), `unknown` → compatibility
+unavailable with no guessed component. The machine code is shown verbatim as
+details. Retry/Recheck clears the state and refetches active queries; a request
+that still meets the answer shows it again. Connection/Settings dialogs (S6)
+do not exist yet, so the panel names Connection in copy only.
+
+`web/src/lib/apiContract.ts` is the web owner of `CLIENT_CONTRACT = 1`,
+`MIN_DAEMON = 1` and the pure `isCompatible(health)`: compatible iff
+`health.api_contract` exists with integer fields and
+`min_client <= CLIENT_CONTRACT <= current` and `current >= MIN_DAEMON`;
+missing or invalid metadata is incompatible. Bump rules mirror
+`runtime/daemon/api_contract.py`. Focused checks:
+`node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
+(Node 24, repository root; transform-types is needed for TS parameter
+properties).
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

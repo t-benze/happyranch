@@ -1,5 +1,5 @@
 import { clearToken, getToken } from '../auth';
-import { API_PREFIX, ApiError } from './client';
+import { API_PREFIX, ApiError, nativeRecoveryErrorFor } from './client';
 import { MAX_UPLOAD_FILE_BYTES, prepareMultipartUpload } from './multipart';
 
 /**
@@ -27,6 +27,8 @@ export interface ListArtifactsResponse {
 }
 
 function parseArtifactError(status: number, body: unknown): ApiError {
+  const recovery = nativeRecoveryErrorFor(status, body);
+  if (recovery) return recovery;
   let code: string | null = null;
   let detail: unknown = body;
   if (

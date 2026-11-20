@@ -3637,6 +3637,28 @@ export const en = {
   "knowledge.instill.found.body": "Its response was lost, but this agent’s import history shows operation {operation} for the same confirmation ID. Nothing was sent again.",
   "knowledge.instill.history.view": "View import",
   "knowledge.instill.history.note": "Imported notes reach this agent’s next fresh session through normal memory. Running sessions are unchanged.",
+  // --- THR-387 S1b: native recovery states + compatibility page ---
+  "recovery.retry": "Retry",
+  "recovery.recheck": "Recheck",
+  "recovery.kept": "This page and any unsaved edits stay as they were.",
+  "recovery.details": "Details: {code}",
+  "recovery.noTarget.title": "No connection selected",
+  "recovery.noTarget.body": "Choose a computer in Connection, then retry.",
+  "recovery.targetStarting.title": "HappyRanch is starting",
+  "recovery.targetStarting.body": "HappyRanch on the selected computer is starting. Retry when it is ready.",
+  "recovery.targetUnreachable.title": "Can’t reach the selected computer",
+  "recovery.targetUnreachable.body": "HappyRanch on the selected computer isn’t responding. Check that it is running and reachable, then retry.",
+  "recovery.busy.title": "Connection busy",
+  "recovery.busy.body": "The selected computer can’t take this request right now. Retry in a moment.",
+  "recovery.targetChanged.title": "The selected computer changed",
+  "recovery.targetChanged.body": "This page was loaded for a different computer. Retry to load the current one.",
+  "recovery.incompatible.host.title": "Update HappyRanch on the selected computer",
+  "recovery.incompatible.host.body": "HappyRanch on the selected computer doesn’t match this app. Update HappyRanch on that computer, then recheck. This app doesn’t need an update.",
+  "recovery.incompatible.app.title": "Update this app",
+  "recovery.incompatible.app.body": "This app is too old for HappyRanch on the selected computer. Update the desktop app. The selected computer doesn’t need an update.",
+  "recovery.incompatible.unknown.title": "Compatibility unavailable",
+  "recovery.incompatible.unknown.body": "This app couldn’t confirm that it works with HappyRanch on the selected computer. Recheck, or choose another computer in Connection.",
+  "recovery.incompatible.otherComputer": "You can also choose another computer in Connection.",
 } as const satisfies Catalog;
 
 export default en;
