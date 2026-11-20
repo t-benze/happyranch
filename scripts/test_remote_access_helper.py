@@ -1310,12 +1310,8 @@ def test_idle_exit_after_sixty_idle_seconds(venue: Any) -> None:
     now[0] = 59.999
     assert helper._idle(loop) is True
     loop.quit.assert_not_called()
-    now[0] = 60.0
-    assert helper._idle(loop) is True
-    loop.quit.assert_called_once_with()
-    loop.quit.reset_mock()
     Call(client, 'Status').finish()  # real dispatch resets the idle clock
-    now[0] = 119.999
+    now[0] = 119.998
     helper._idle(loop)
     loop.quit.assert_not_called()
     helper.inflight = object()  # an outstanding authorization is never idle
@@ -1330,6 +1326,25 @@ def test_idle_exit_after_sixty_idle_seconds(venue: Any) -> None:
     now[0] = 240.0
     helper._idle(loop)
     loop.quit.assert_called_once_with()
+
+
+def test_exit_releases_name_before_quit_and_refuses_unique_name_race(venue: Any) -> None:
+    helper, authority, operations, client, _ = venue
+    def quit() -> None:
+        owned = client.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', GLib.Variant('(s)', (BUS_NAME,)),
+            GLib.VariantType.new('(b)'), Gio.DBusCallFlags.NONE, 2000, None)
+        assert owned.unpack() == (False,)
+    loop = SimpleNamespace(quit=Mock(side_effect=quit))
+    helper.exit_requested = True
+    helper._idle(loop)
+    loop.quit.assert_called_once_with()
+    # A caller that already resolved the old unique owner can still reach the
+    # registered object until close; it must get an existing non-success error.
+    with pytest.raises(GLib.Error, match='unavailable'):
+        client.call_sync(helper.connection.get_unique_name(), OBJECT_PATH, INTERFACE,
+            'Status', None, GLib.VariantType.new('(s)'), Gio.DBusCallFlags.NONE, 2000, None)
+    assert not authority.calls and not operations.effects
 
 
 @pytest.mark.parametrize('phase,expected', [('prepared', 'in_progress'), ('ready', 'ready'),

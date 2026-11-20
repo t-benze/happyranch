@@ -60,6 +60,8 @@ LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Dis
                      'RetryPolicyRenewal': 'retry-policy-renewal',
                      **_helper_invite.METHODS}
 IDLE_SECONDS = 60.0
+SERVICE_PATHS = tuple('/' + parent + '/happyranch-' + service
+    for parent in ('var/lib', 'run') for service in ('headscale', 'connector', 'tsnet-sidecar'))
 METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS, *LIFECYCLE_ACTIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
@@ -91,6 +93,8 @@ class RemoteAccessHelper:
         self.control = ControlClient(control_path)
         self.clock, self.deadline = clock, deadline
         self.last_activity = self.clock()
+        self.exit_requested = False
+        self.name_owned = False
         self.lock = threading.RLock()
         self.cursors: dict[str, str] = {}
         self.inflight: Capture | LifecycleCapture | None = None
@@ -119,13 +123,14 @@ class RemoteAccessHelper:
         if result.unpack()[0] != 1:
             self.close()
             raise Refused('unavailable')
+        self.name_owned = True
 
     def try_claim(self, capture: LifecycleCapture) -> bool:
         """Inert lifecycle adapter to the existing global slot; never queues."""
         if not self.lock.acquire(blocking=False):
             return False
         try:
-            if self.inflight is not None:
+            if self.exit_requested or self.inflight is not None:
                 return False
             self.inflight = capture
             self.last_activity = self.clock()
@@ -147,18 +152,42 @@ class RemoteAccessHelper:
     def release(self, capture: LifecycleCapture) -> None:
         with self.lock:
             if self.inflight is capture:
+                if capture.method in LIFECYCLE_ACTIONS:
+                    self.exit_requested = True
                 self.inflight = None
                 self.last_activity = self.clock()
 
     def _idle(self, loop: GLib.MainLoop) -> bool:
-        if (self.inflight is None and self.status_worker is None
-                and self.clock() - self.last_activity >= IDLE_SECONDS):
-            loop.quit()
+        # A worker can hold the mutation lock through a blocking effect. Never
+        # hold the main context waiting for it, or exit before its settlement.
+        if not self.lock.acquire(blocking=False):
+            return True
+        try:
+            with self.status_lock:
+                if (self.inflight is None and self.status_worker is None
+                        and (self.exit_requested or self.clock() - self.last_activity >= IDLE_SECONDS)):
+                    self.exit_requested = True
+                    try:
+                        self._release_name()
+                    except Exception:
+                        return True  # Stay sealed; retry release on the next tick.
+                    loop.quit()
+        finally:
+            self.lock.release()
         return True  # serve removes the source even on the idle-exit path
 
+    def _release_name(self) -> None:
+        if self.name_owned:
+            self.connection.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus',
+                'org.freedesktop.DBus', 'ReleaseName', GLib.Variant('(s)', (BUS_NAME,)),
+                GLib.VariantType.new('(u)'), Gio.DBusCallFlags.NONE, 2000, None)
+            self.name_owned = False
+
     def close(self) -> None:
+        self.exit_requested = True
         if isinstance(self.inflight, (Capture, _helper_lifecycle.LifecycleCapture)):
             self._cancel('unavailable')
+        self._release_name()
         self.connection.remove_filter(self.filter_id)
         self.connection.signal_unsubscribe(self.subscription)
         self.connection.unregister_object(self.registration)
@@ -198,6 +227,8 @@ class RemoteAccessHelper:
         # reads cannot hold the main context beyond the 2s response deadline.
         token = object()
         with self.status_lock:
+            if self.exit_requested:
+                raise Refused('unavailable')
             if self.status_worker is not None:
                 raise Refused('busy')
             self.status_worker = token
@@ -326,6 +357,8 @@ class RemoteAccessHelper:
     def _dispatch(self, message: Gio.DBusMessage, busy_on_arrival: bool = False) -> bool:
         self.last_activity = self.clock()
         try:
+            if self.exit_requested:
+                raise Refused('unavailable')
             fds = message.get_unix_fd_list()
             if message.get_signature() or (fds is not None and fds.get_length()):
                 raise Refused('invalid-request')
@@ -346,6 +379,8 @@ class RemoteAccessHelper:
             if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                 raise Refused('busy')
             with self.lock:
+                if self.exit_requested:
+                    raise Refused('unavailable')
                 uid = self._uid(sender)
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
@@ -388,11 +423,15 @@ class RemoteAccessHelper:
                 self._cancel('unavailable')
             else:
                 self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
+            if message.get_member() in LIFECYCLE_ACTIONS and self.inflight is None:
+                self.exit_requested = True
         return False
 
     def _clear(self) -> None:
         if self.timer:
             GLib.source_remove(self.timer)
+        if isinstance(self.inflight, _helper_lifecycle.LifecycleCapture):
+            self.exit_requested = True
         self.timer, self.inflight = 0, None
         self.authorization_terminal = False
         self.last_activity = self.clock()
@@ -406,8 +445,23 @@ class RemoteAccessHelper:
             raise Refused('invalid-request')
         if self.inflight is not None:
             raise Refused('busy')
+        if self.exit_requested:
+            raise Refused('unavailable')
         budget = _helper_lifecycle.OperationBudget.lifecycle(method, self.clock)
         admission = budget.bounded(_helper_lifecycle.CALL_SECONDS)
+        # Optional ReadWritePaths absent at helper start are not mounted RW.
+        # Observe each path before capture/polkit/B16; absence needs no cleanup.
+        try:
+            for path in SERVICE_PATHS:
+                try:
+                    readonly = os.statvfs(path).f_flag & os.ST_RDONLY
+                except FileNotFoundError:
+                    continue
+                if readonly:
+                    raise Refused('unavailable')
+        except Exception:
+            self.exit_requested = True
+            raise Refused('unavailable') from None
         uid = self._uid(sender)
         client = _helper_generation.HomeLifecycleClient(method, uid)
         capture = _helper_lifecycle.LifecycleCapture.take(method, sender, self, client, admission)

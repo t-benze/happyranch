@@ -3401,7 +3401,9 @@ remain G2-E; home_transport remains false.
 Package the system D-Bus service for fixed BusName `ai.happyranch.RemoteAccess1`, User=root,
 SystemdService=`happyranch-remote-access-helper.service`, Type=dbus, with
 `NoNewPrivileges=yes`, `ProtectHome=read-only`, `ProtectSystem=strict`,
-`PrivateTmp=yes`, and 60-second idle exit. Its exact `ReadWritePaths=` list is:
+`PrivateTmp=yes`, and 60-second idle exit for status/device activity. Each settled
+lifecycle operation renews the helper namespace as described in B9. Its exact
+`ReadWritePaths=` list is:
 
 ```text
 /etc
@@ -3431,6 +3433,11 @@ created paths for the composed provision → prepare_headscale → publish_home_
 → publish_invite_config → forward Enable path, comparing
 them to the shipped B8 list; optional entries count only when present before
 the sequence. This is source/temporary-root evidence, not a live sandbox proof.
+Before lifecycle capture, polkit or B16 intent, the helper checks `statvfs`
+on the six optional service state/runtime paths above. Absent paths are allowed;
+an existing read-only path or an unavailable observation refuses `unavailable`
+with zero authorization/effects/B16 intent and schedules helper exit. This
+fail-closed guard does not pre-create service directories or change the unit.
 `/etc` permits shadow-utils' lock/temp/rename for passwd,
 group, shadow and gshadow, and includes the existing happyranch, credstore and
 systemd paths. System accounts skip lastlog/faillog, so `/var/log` stays
@@ -3490,6 +3497,18 @@ passed to every step and no late success. Disable has a 300-second budget;
 status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
+After each Enable, ReplaceFailed, Disable, RetryPolicyRenewal, IssueInvite,
+CancelInvite or RecoverInvite operation settles, including terminal refusal,
+the helper seals admission and exits through its idle/close path after the
+accepted/terminal reply and B16 settlement attempts finish. It waits for any
+inflight authorization/effect and StatusV2 worker; unresolved ownership keeps
+the slot sealed. The well-known bus name is released before loop exit, so the
+next call auto-activates a fresh Type=dbus instance and mount namespace. Calls
+racing the old instance receive an existing non-success error, never success.
+Status/StatusV2 and device methods otherwise retain the 60-second idle behavior.
+In particular, service directories first created during Enable are available
+to an immediate Disable in the new namespace. Installed/native confirmation
+remains I6a's managed-M1 acceptance, separate from temporary-root evidence.
 Why no founder: supports the approved progress/ready/failure screens unchanged.
 
 B9 implementation: `helper_lifecycle.py` supplies connector-independent capture,
