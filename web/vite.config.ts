@@ -1,9 +1,10 @@
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeResourceManifest } from './connection/resource-manifest';
 
 // ------------------------------------------------------------ build-time UI feature flags
 //
@@ -365,6 +366,20 @@ function i18nEvidenceInstrumentation() {
   };
 }
 
+function resourceManifest(): Plugin {
+  let outDir: string;
+  return {
+    name: 'resource-manifest',
+    apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    writeBundle() {
+      writeResourceManifest(outDir);
+    },
+  };
+}
+
 export default defineConfig(async ({ command, mode, isPreview }) => {
   const selection = selectFeatureProfile({ command, isPreview });
   let featureAlias: Record<string, string> = {};
@@ -376,7 +391,7 @@ export default defineConfig(async ({ command, mode, isPreview }) => {
     featureAlias = { [FEATURE_FLAGS_MODULE]: resolved.aliasTarget };
   }
   return {
-    plugins: [i18nEvidenceInstrumentation(), react(), (await import('@tailwindcss/vite')).default()],
+    plugins: [i18nEvidenceInstrumentation(), react(), (await import('@tailwindcss/vite')).default(), resourceManifest()],
     resolve: {
       alias: { ...featureAlias, '@': path.resolve(__dirname, 'src') },
     },

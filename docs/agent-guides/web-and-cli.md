@@ -80,6 +80,30 @@ missing or invalid metadata is incompatible. Bump rules mirror
 (Node 24, repository root; transform-types is needed for TS parameter
 properties).
 
+## Packaged main build: theme boot and resource manifest (Settings S1b-B)
+
+The main `npm run build` writes `web/dist/resource-manifest.json` with the
+same v1 format as the separate connection build: `version: 1`,
+`entry: "index.html"`, and path-sorted `resources` containing each emitted
+file's `path`, `bytes` and SHA-256 `sha256`. Public assets and source maps are
+included; the manifest excludes itself. Both Vite configs use
+`web/connection/resource-manifest.ts`. The main plugin uses Vite's resolved
+output directory, including an explicit `--outDir`.
+
+`index.html` loads `/theme-boot.js` as a blocking classic script in the head,
+before the app and styles can paint. It preserves the existing theme behavior:
+only saved `happyranch.theme=dark` sets `data-theme=dark`; missing, other or
+unreadable storage leaves the bootstrap's light default. There is no inline script or event
+handler in the built entry, so boot works with `script-src 'self'` without
+`unsafe-inline` or `unsafe-eval`. Styles still require the native main loader's
+`style-src 'self' 'unsafe-inline'`; the separate connection CSP is unchanged.
+
+Daemon browser serving already returns existing root-level dist files through
+its GET fallback, including the new script. Linux's opt-in `app_scheme.Bundle`
+currently inventories dist independently and serves the manifest as another
+listed file. Packaging adoption of this manifest belongs to the later cutover;
+emitting it does not switch loaders, admit a command bridge or alter API access.
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST
