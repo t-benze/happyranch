@@ -29,6 +29,7 @@ this wave; web is pending S5-W1. No native/live v2 acceptance is claimed.
 | --- | --- | --- | --- |
 | `app.status` | Implemented S5-L1 (this PR), shared closed appState: `app_scheme_webkit.py:331–351` (`status`); trusted Main-document admission: `app_scheme_webkit.py:457–486` (`probe_document`). | Pending | Pending S5-W1 |
 | `app.stateChanged` | Implemented S5-L1 (this PR), same full status payload: `app_scheme_webkit.py:417–424` (`emit_state`). | Pending | Pending S5-W1 |
+| `app.dialogRequested` | Spec only S5-0b: closed `{schema:2, dialog:"settings"\|"connection"}`; Main-only, subscribed delivery, drop without replay when unavailable; no target authority. S6-L must add named-event admission/routing and header emission. See [dialog event contract](2026-11-17-web-native-bridge.md#v2-dialog-request-event). | Pending; menu emission follows the same contract, no Mac work this wave | Pending S6-W1: strict payload validation, single-dialog owner gate and recovery entry; no open/closed notice |
 | `X-HappyRanch-Target` | Implemented S5-L1 (this PR): missing/stale generation refuses pre-forward; GET bootstrap exempt. Existing local/remote stripping retained: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:75–81` (`request_headers`), `client_runtime.py:139–151`. | Pending | Pending S5-W1 on every other scheme API request |
 | `503 no_target` | Emitted (`app_scheme_webkit.py:632–634`). | Pending | Pending S5-W1 |
 | `503 target_starting` | Emitted (`app_scheme.py:369–374,463–466`). | Pending | Pending S5-W1 |

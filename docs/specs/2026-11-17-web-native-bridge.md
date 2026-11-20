@@ -776,3 +776,152 @@ must not revive recovery, and mutations never auto-retry on 409. Merged S1b-A
 PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec slice itself changes no implementation, tests, required checks or
 CI triggers. Live Linux, Mac and web v2 behavior is
 **NOT RUN** by this specification change.
+
+### v2 dialog request event
+
+THR-387 S5-0b / TASK-18165 adds **`app.dialogRequested`**, a one-way
+native-to-web event for the v2.4 Main-window dialogs. Linux native header
+Connection/Settings actions and Mac Settings… (Cmd+,) / Connection… menu
+actions request the corresponding dialog through this event. It uses the
+existing `on(event, handler(string))` facade: the handler receives a JSON string
+whose value is exactly `{"schema":2,"dialog":"settings"}` or
+`{"schema":2,"dialog":"connection"}`. There is no call, request id, response,
+reply or acknowledgement. Delivery does not prove that a dialog opened: its
+owner gate may retain the current presentation.
+
+`#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
+requires both keys and rejects extra keys. In addition to the status/error
+payload kinds above, the root `oneOf` now accepts this third kind. Adapters
+select the definition by event name; a dialog request is never an `appState`
+update. Unknown dialog values, missing/wrong schema or keys, malformed JSON and
+extra keys are invalid: native never sends them; web ignores the entire event
+and opens nothing, without changing the current dialog or owner state.
+
+**Admission and authority.** Deliver only to the current admitted Main
+top-level packaged document at `happyranch-app://app`, under the same document
+probe, named-world relay and invalidation rules as `app.stateChanged`. No
+iframe, auxiliary connection document, daemon/remote HTML or ordinary browser
+receives it. Navigation, document revocation or WebKit process loss retires
+the subscription; never deliver to a replaced document. The payload carries no
+target, generation, page, organization or capability authority. Opening or
+reopening either dialog must never start the local daemon, select/change a
+target, commit a candidate, reconnect, cancel an attempt or replay an operation.
+Each later action still uses its existing capability, owner and consent gates.
+
+**One dialog and one owner gate.** Native entry, in-dialog cross-actions and
+web entry use the same Main-document transition handler:
+
+- With neither dialog open, request the named dialog without disturbing an
+  unaffected Main editor or its exact owner state.
+- If that dialog is already open, focus its existing presentation (or no-op
+  if already focused); retain its page, drafts, operation/results and state.
+- If the other dialog is open with affected unsent edits, run the single
+  contextual **Keep editing** (safe default) / **Discard changes and open
+  [requested dialog]** prompt. Name the original page/computer/org and exact
+  unsent loss. Keep editing cancels the transition and presents the original
+  owner. Discard covers only the named unsent generations; recheck all
+  affected owners/current context before switching. Never silently discard,
+  reset the editor, infer discard consent from the event or add Save and switch.
+- With no affected unsaved edits or unresolved owners, switch the visible
+  dialog. Pending saves and unknown results still hold any transition that
+  would hide/retire their owner, using the same-document waiting / Check result
+  UI; they are never discardable. Serialize all entry requests through this
+  one gate: a repeated entry while it is active focuses the gate, without a
+  second prompt or overwriting its pending transition.
+
+Preserve Connection's existing attempt/phase/deadline/result when switching;
+closing its presentation is not Cancel or Disconnect. On opening/switching,
+announce the destination once and focus its heading/appropriate first control;
+contain focus in the active dialog (or owner gate), with underlying Main web
+content inert. Preserve the meaningful invoking Main/native entry as the focus
+return destination for final close. Same-dialog focus must not reset state.
+Use the current live web locale. These are v2.4 §3 presentation/ownership rules,
+not new lifecycle or target-switch authority.
+
+**Readiness and recovery: drop, never queue.** Native emits only while that
+admitted Main document has an active `app.dialogRequested` subscription. If
+the shell is still loading/not subscribed, has navigated away, or native
+recovery has replaced the usable web document, drop the request. Keep no
+pending/latest request and never replay it on subscription, reload or recovery.
+Unavailable entry follows v2.4's named-destination failure/Retry behavior;
+the native entry remains available for an explicit retry when the shell is
+usable. Existing supported recovery stays available, without a new daemon
+start, target selection or fallback connection screen.
+
+An admitted, subscribed web shell showing **native target recovery** is still
+ready for this event: `no_target`, stopped/unreachable local service, denied or
+incompatible remote, `target_starting` and `busy` must not block dialog entry.
+Settings keeps local Language/applicable local recovery reachable and names
+target-backed sections unavailable, preserving selected identity and drafts;
+Connection remains reachable. This preserves S1b-A / PR #1764's recovery
+Settings entry, including the org-less startup case. Subscription readiness is
+independent of target/API readiness. Dropping only when there is no admitted
+subscriber is the simplest safe rule: it needs no queue/acknowledgement and
+prevents stale clicks opening a dialog after document or owner context changes.
+
+**No web-to-native visibility notice.** V2.4 §2 requires labelled native
+entry actions, status and the access-unsaved warning, but no pressed, toggled
+or dialog-visibility-disabled button state. Header/menu actions therefore remain
+entry actions even while a dialog is open; web owns same-dialog focus and the
+single-dialog gate. No `dialog open/closed` notice is needed or added. Native
+status/badge state continues to come from its existing state owner, not dialog
+visibility. The subscription says only that a handler exists, never that a
+dialog is open or that an owner/effect is resolved.
+
+**Implementation status and follow-up.** This subsection/schema are spec only.
+At base `5cc7b295156fb33aaf1d2703ca84016755ec3763`, Linux
+`app_scheme_webkit.py` admits only `app.stateChanged` in page `on` (line 143),
+hard-codes it in the subscribe relay (line 198), and accepts only that event in
+native `bridge_message` (line 439). Existing emission has an unlabelled raw
+status payload. This additive schema change alone breaks no current consumer
+and implements no new delivery. **S6-L must add closed named-event subscription
+and routing end to end**, keeping dialog and status listeners separate, then
+emit the exact dialog payload from header actions under the admission and drop
+rules above. Merely adding a header callback cannot deliver it today. **S6-W1
+must subscribe at the Main shell (including recovery), validate against
+`dialogRequested`, and route valid events through the single-dialog owner gate**;
+it must ignore invalid payloads and unsubscribe on document teardown. Mac menu
+emission follows this contract when separately authorized; no Mac build/work is
+claimed here. No open/closed notice or target/generation authority is added.
+
+#### Valid: request Settings
+
+```json
+{"schema":2,"dialog":"settings"}
+```
+
+#### Valid: request Connection
+
+```json
+{"schema":2,"dialog":"connection"}
+```
+
+#### Invalid: unknown dialog
+
+```json
+{"schema":2,"dialog":"preferences"}
+```
+
+#### Invalid: extra target authority
+
+```json
+{"schema":2,"dialog":"settings","target":"local"}
+```
+
+#### Invalid: extra generation authority
+
+```json
+{"schema":2,"dialog":"connection","generation":"g12"}
+```
+
+#### Invalid: wrong schema
+
+```json
+{"schema":1,"dialog":"settings"}
+```
+
+#### Invalid: missing dialog
+
+```json
+{"schema":2}
+```
