@@ -4,6 +4,7 @@ import {
   ApiError,
   fencedText,
   nativeRecoveryErrorFor,
+  pinTarget,
   schemeFetch,
   staleOutcome,
   type Fenced,
@@ -76,6 +77,7 @@ async function uploadWithToken(
   slug: string,
   args: UploadArtifactArgs,
   token: string,
+  pinned: string,
 ): Promise<Fenced> {
   const params = new URLSearchParams({ agent: args.agent });
   if (args.name) params.set('name', args.name);
@@ -98,19 +100,22 @@ async function uploadWithToken(
     },
     body: upload.body,
     credentials: 'same-origin',
-  });
+  }, pinned);
 }
 
 export async function uploadArtifact(
   slug: string,
   args: UploadArtifactArgs,
 ): Promise<ArtifactInfo> {
+  // F1: one generation per logical operation, pinned before any preparatory
+  // await and kept across the 401 re-send (a change never moves targets).
+  const pinned = await pinTarget(false);
   let token = await getToken();
-  let fenced = await uploadWithToken(slug, args, token);
+  let fenced = await uploadWithToken(slug, args, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    fenced = await uploadWithToken(slug, args, token);
+    fenced = await uploadWithToken(slug, args, token, fenced.captured);
   }
 
   let body: unknown = null;
@@ -126,7 +131,7 @@ export async function uploadArtifact(
   return body as ArtifactInfo;
 }
 
-async function listWithToken(slug: string, token: string): Promise<Fenced> {
+async function listWithToken(slug: string, token: string, pinned: string): Promise<Fenced> {
   return schemeFetch(`${API_PREFIX}/orgs/${slug}/artifacts`, {
     method: 'GET',
     headers: {
@@ -134,16 +139,17 @@ async function listWithToken(slug: string, token: string): Promise<Fenced> {
       Accept: 'application/json',
     },
     credentials: 'same-origin',
-  });
+  }, pinned);
 }
 
 export async function listArtifacts(slug: string): Promise<ListArtifactsResponse> {
+  const pinned = await pinTarget(true);
   let token = await getToken();
-  let fenced = await listWithToken(slug, token);
+  let fenced = await listWithToken(slug, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    fenced = await listWithToken(slug, token);
+    fenced = await listWithToken(slug, token, fenced.captured);
   }
 
   let body: unknown = null;
@@ -163,14 +169,14 @@ export function artifactDownloadPath(slug: string, artifactName: string): string
   return `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(artifactName)}`;
 }
 
-async function downloadWithToken(path: string, token: string): Promise<Fenced> {
+async function downloadWithToken(path: string, token: string, pinned: string): Promise<Fenced> {
   return schemeFetch(path, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
     },
     credentials: 'same-origin',
-  });
+  }, pinned);
 }
 
 /**
@@ -181,13 +187,14 @@ async function downloadWithToken(path: string, token: string): Promise<Fenced> {
  * text.
  */
 export async function downloadArtifact(slug: string, name: string): Promise<void> {
+  const pinned = await pinTarget(true);
   let token = await getToken();
   const path = `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`;
-  let fenced = await downloadWithToken(path, token);
+  let fenced = await downloadWithToken(path, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    fenced = await downloadWithToken(path, token);
+    fenced = await downloadWithToken(path, token, fenced.captured);
   }
 
   if (!fenced.res.ok) {
@@ -226,14 +233,15 @@ export async function downloadThreadAttachment(
   attachmentId: string,
   displayName: string,
 ): Promise<void> {
+  const pinned = await pinTarget(true);
   let token = await getToken();
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
   const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}?${params.toString()}`;
-  let fenced = await downloadWithToken(path, token);
+  let fenced = await downloadWithToken(path, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    fenced = await downloadWithToken(path, token);
+    fenced = await downloadWithToken(path, token, fenced.captured);
   }
 
   if (!fenced.res.ok) {
@@ -261,7 +269,7 @@ export async function downloadThreadAttachment(
   }
 }
 
-async function deleteWithToken(slug: string, name: string, token: string): Promise<Fenced> {
+async function deleteWithToken(slug: string, name: string, token: string, pinned: string): Promise<Fenced> {
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
   return schemeFetch(
     `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}?${params.toString()}`,
@@ -273,16 +281,18 @@ async function deleteWithToken(slug: string, name: string, token: string): Promi
       },
       credentials: 'same-origin',
     },
+    pinned,
   );
 }
 
 export async function deleteArtifact(slug: string, name: string): Promise<void> {
+  const pinned = await pinTarget(false);
   let token = await getToken();
-  let fenced = await deleteWithToken(slug, name, token);
+  let fenced = await deleteWithToken(slug, name, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
     token = await getToken();
-    fenced = await deleteWithToken(slug, name, token);
+    fenced = await deleteWithToken(slug, name, token, fenced.captured);
   }
 
   if (!fenced.res.ok) {

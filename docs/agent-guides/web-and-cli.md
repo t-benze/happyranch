@@ -126,25 +126,61 @@ app is detected only by origin `happyranch-app://app` with the
   recovery state: `ready` clears it; `no_target`, `target_starting`,
   `unreachable` and `incompatible` set the matching state; `busy` is a notice.
 - **Header**: `schemeFetch` in `lib/api/client.ts` (used by `request()`, the
-  artifacts and task-attachment direct fetches) and both SSE helpers capture
-  the generation at request start and send `X-HappyRanch-Target` with that
-  native-issued value; `GET /api/v1/auth/bootstrap` is exempt. Until native
-  has reported a generation, requests wait for the first `app.status`; if
-  none is available nothing is sent (reads show the `target_changed` state,
-  changes fail as Not sent).
+  artifacts and task-attachment direct fetches) and both SSE helpers send
+  `X-HappyRanch-Target` with the native-issued generation;
+  `GET /api/v1/auth/bootstrap` is exempt. Until native has reported a
+  generation, requests wait for the first `app.status`; if none is available
+  nothing is sent (reads show the `target_changed` state, changes fail as Not
+  sent).
+- **Pinning** (`pinTarget`/`repinBeforeSend`): `request()`, the artifacts
+  helpers and the task-attachment upload pin the generation once per logical
+  operation, before any preparatory await (bearer bootstrap, multipart
+  preparation), and keep it across the 401 clear/re-bootstrap/re-send. If the
+  generation changed before a send, a change is never sent to the new target:
+  `NotSentError` / Not sent (that send never left the page; a 401 is a
+  definite refusal, so nothing was applied). A GET re-pins once and is sent
+  under the new generation. Browser mode keeps the unchanged single 401
+  re-send.
 - **Stale drop**: a GET whose captured generation is no longer current is
   rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
-  a state): no cache write, toast or draft update. A change (non-GET) that is
-  stale, answered 499 `cancelled`, or whose body read fails is
-  `ResultUnknownError` with the Result unknown notice; it is never retried.
+  a state): no cache write, toast or draft update. The generation is
+  rechecked after every asynchronous error-body read (client and both SSE
+  open handlers), so an old body never publishes a notice or recovery state
+  for the new target. A change (non-GET) that is stale, answered 499
+  `cancelled`, whose fetch rejects (transport loss, even with no generation
+  event: upstream bytes may already have been forwarded) or whose body read
+  fails is `ResultUnknownError` with the Result unknown notice; it is never
+  retried. A caller's own abort keeps its `AbortError`; explicit pre-forward
+  refusals (409 `target_changed` Not sent, 503 codes, 429 Throttled) stay
+  distinct.
 - **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
   hashes include the generation of the last switch; a change cancels queries,
   moves each mounted observer to its new-generation key (one fetch under the
   new generation), removes all old-generation queries, retries latched read
   owners (as an explicit Retry) and aborts old-generation streams. Feature
-  query keys are unchanged and nothing remounts, so open drafts survive.
-  `subscribeSSE` resubscribes in place once the new generation is known;
-  `useJobEventStream` re-runs its stream effect for the new generation.
+  query keys are unchanged and nothing remounts. `subscribeSSE` resubscribes
+  in place once the new generation is known; `useJobEventStream` re-runs its
+  stream effect for the new generation.
+- **Editor custody** (`custody` key prefixes; `AppProvider` passes
+  `['settings']`): a mounted observer of a custody key that already shows
+  data is NOT moved. It stays suspended on its older-target entry with the
+  same data object (no fetch, refetch or invalidation refetch, and no
+  new-target data ever lands in it), so data-gated editors such as the
+  Settings Organization form stay mounted and keep their drafts; old data is
+  never used as the new target's entry. While any custody hold exists, no
+  change (non-GET `schemeFetch`) is sent to the current target: Not sent,
+  draft kept. The hold ends when its last observer leaves (navigation or an
+  owner re-key); a new mount reads the new target. A custody read still
+  loading at the switch moves like any other. Owner UI for the held state
+  (re-key, carry or discard the draft) is S6-W1.
+- **Transient recovery**: when busy/throttled clears (a native `ready`
+  status or a later successful forwarded response), active queries that
+  failed with a transient native error (503 `busy`, 429 `too_many_requests`,
+  including the bearer bootstrap) are refetched once. Mutations are never
+  retried. `RootRedirect` routes only on a successful (possibly empty) org
+  list; a pending read shows Loading and a failed one the shell error copy, so
+  an existing install is never sent to onboarding on failure (browser mode
+  too).
 - **409 `target_changed`** (desktop): re-read `app.status`. A GET refetches
   once when the generation is unchanged (a changed generation is dropped as
   stale and refetched by its new owners); a change is `NotSentError` with the
@@ -172,7 +208,10 @@ app is detected only by origin `happyranch-app://app` with the
 
 Focused checks (Node 24, repository root):
 `node --experimental-transform-types --test web/scripts/native-bridge-v2.test.mjs`.
-Live WebKitGTK/native behavior is not covered by these checks.
+They exercise the real transport/query modules with fetch, bridge and
+QueryObserver stubs (module coverage). `AppProvider`/`routes.tsx` wiring and
+rendered editors are not executed by them (JSX); live WebKitGTK/native
+behavior is not covered either.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 

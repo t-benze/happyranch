@@ -244,6 +244,26 @@ export function subscribeAppStatus(listener: () => void): () => void {
   };
 }
 
+// F2 editor custody. While an editor's query is held on an older target's
+// data (lib/native/queryClient.ts), no change is sent to the current target.
+let custodyHolds = 0;
+
+/** Hold custody (one per suspended query); returns its idempotent release. */
+export function holdTargetCustody(): () => void {
+  custodyHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    custodyHolds -= 1;
+  };
+}
+
+/** True while any editor is held on an older target's data (desktop only). */
+export function targetCustodyHeld(): boolean {
+  return custodyHolds > 0;
+}
+
 /** Resolve once the current generation is known and differs from `from`. */
 export function waitForTargetChange(from: string, signal: AbortSignal): Promise<string | null> {
   return new Promise((resolve) => {
@@ -263,9 +283,16 @@ export function waitForTargetChange(from: string, signal: AbortSignal): Promise<
   });
 }
 
-/** Test-only: install a bridge (or none) and reset all state. */
+/**
+ * Test-only (focused Node checks in web/scripts/*.test.mjs): install a fake
+ * bridge (or none) and reset all module state. Production never calls it:
+ * the bridge is detected from the app origin and `window.happyranchConnection`
+ * only. ESLint/TypeScript cannot enforce test-only use; the `__…ForTests`
+ * name follows the existing auth/notices/recovery reset convention.
+ */
 export function __setNativeBridgeForTests(next: NativeBridge | null): void {
   unsubscribe?.();
+  custodyHolds = 0;
   bridge = next;
   status = null;
   keyGeneration = null;

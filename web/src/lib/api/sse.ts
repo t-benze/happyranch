@@ -148,6 +148,13 @@ async function connectOnce<T>(
         }
         if (response.status === 503 || response.status === 409 || response.status === 429) {
           const text = await response.text().catch(() => '');
+          // F4: the body may finish after a switch; an old body never
+          // publishes a notice or recovery for the new target.
+          if (isStaleTarget(captured)) {
+            changed = true;
+            controller.abort();
+            return;
+          }
           let body: unknown = null;
           try {
             body = JSON.parse(text);

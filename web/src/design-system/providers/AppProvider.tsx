@@ -60,8 +60,10 @@ export function makeQueryClient(): QueryClient {
     },
   });
   // THR-387 S5-W1: desktop target-generation keys and switch cleanup; a no-op
-  // in browser mode (no native bridge).
-  attachNativeQueryClient(client);
+  // in browser mode (no native bridge). Settings reads keep editor custody
+  // across a switch (their open drafts stay; no change is sent to the new
+  // target until the editor re-mounts), see lib/native/queryClient.ts.
+  attachNativeQueryClient(client, { custody: [['settings']] });
   return client;
 }
 

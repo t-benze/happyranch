@@ -80,6 +80,12 @@ export function useJobEventStream(
               // already stops the retry loop exactly as for other failures.
               // Busy / too_many_requests are transient (backoff retry).
               const body: unknown = await resp.json().catch(() => null);
+              // F4: an old body never publishes for the new target.
+              if (isStaleTarget(captured)) {
+                intentionalEnd = true;
+                controller.abort();
+                return;
+              }
               if (resp.status === 429) {
                 const detail = (body as { detail?: unknown } | null)?.detail;
                 if (

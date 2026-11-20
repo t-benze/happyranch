@@ -42,9 +42,25 @@ export function reportNativeNotice(kind: NativeNoticeKind): void {
   publish(kind);
 }
 
-/** A successful forwarded response clears busy/throttled (not outcomes). */
+const recoveryListeners = new Set<() => void>();
+
+/**
+ * A successful forwarded response or a native `ready` status clears
+ * busy/throttled (not outcomes) and signals transient recovery, so failed
+ * reads can be refetched (F3). The signal fires even when an outcome notice
+ * hides the transient one.
+ */
 export function clearTransientNativeNotice(): void {
   if (isTransientNotice(current)) publish(null);
+  for (const listener of [...recoveryListeners]) listener();
+}
+
+/** Subscribe to transient recovery (see clearTransientNativeNotice). */
+export function subscribeTransientRecovery(listener: () => void): () => void {
+  recoveryListeners.add(listener);
+  return () => {
+    recoveryListeners.delete(listener);
+  };
 }
 
 /** Explicit user dismissal. */
@@ -67,4 +83,5 @@ export function subscribeNativeNotice(listener: () => void): () => void {
 export function __resetNativeNoticeForTests(): void {
   current = null;
   listeners.clear();
+  recoveryListeners.clear();
 }

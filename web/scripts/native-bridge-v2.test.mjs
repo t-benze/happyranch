@@ -531,3 +531,378 @@ test('ApiError subclasses keep existing per-feature handling (status/code)', () 
     assert.ok(e instanceof ApiError && e.status === 409 && e.code === 'target_changed');
   }
 });
+
+// --- TASK-18178 review round 1 (TASK-18175 F1-F5) ------------------------------------------
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+function bootstrapThen(effect, token = 'tok-2') {
+  return () => {
+    effect();
+    return json(200, { token })();
+  };
+}
+
+// F1 — one generation per logical operation, kept across the bearer re-send.
+test('F1 request: a mutation 401 under g1, switch to g2 during re-auth -> Not sent, never written under g2', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(401, { detail: 'expired' }));
+  queue.push(bootstrapThen(() => bridge.emit(state('g2'))));
+  const err = await request('/orgs/demo/tasks/TASK-1/cancel', { method: 'POST' }).catch((e) => e);
+  assert.ok(err instanceof NotSentError, String(err));
+  assert.deepEqual(calls.map((c) => [new URL(c.url, 'http://h').pathname, c.target]), [
+    ['/api/v1/orgs/demo/tasks/TASK-1/cancel', 'g1'],
+    ['/api/v1/auth/bootstrap', null],
+  ]);
+  assert.equal(calls.filter((c) => c.target === 'g2').length, 0, 'no write under the second target');
+  assert.equal(notices.getNativeNotice(), 'not_sent');
+});
+
+test('F1 request: a switch during the FIRST bootstrap (pinned before it) never sends the mutation', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  sessionStorage.removeItem('happyranch.token');
+  queue.push(bootstrapThen(() => bridge.emit(state('g2'))));
+  const err = await request('/x', { method: 'PATCH', body: { a: 1 } }).catch((e) => e);
+  assert.ok(err instanceof NotSentError, String(err));
+  assert.deepEqual(PATHS(), ['/api/v1/auth/bootstrap']);
+});
+
+test('F1 request: a GET 401 then switch refetches once under the new generation', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(401, { detail: 'expired' }));
+  queue.push(bootstrapThen(() => bridge.emit(state('g2'))));
+  queue.push(json(200, { orgs: [] }));
+  assert.deepEqual(await request('/orgs'), { orgs: [] });
+  assert.deepEqual(calls.map((c) => c.target), ['g1', null, 'g2']);
+});
+
+test('F1 request: unchanged generation keeps the existing single 401 re-send under the same pin', async () => {
+  desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(401, { detail: 'expired' }));
+  queue.push(json(200, { token: 'tok-2' }));
+  queue.push(json(200, { ok: 1 }));
+  assert.deepEqual(await request('/x', { method: 'POST', body: {} }), { ok: 1 });
+  assert.deepEqual(calls.map((c) => c.target), ['g1', null, 'g1']);
+});
+
+test('F1 browser: 401 re-send behavior unchanged (two sends, no header)', async () => {
+  queue.push(json(401, { detail: 'expired' }));
+  queue.push(json(200, { token: 'tok-2' }));
+  queue.push(json(200, { ok: 1 }));
+  assert.deepEqual(await request('/x', { method: 'POST', body: {} }), { ok: 1 });
+  assert.deepEqual(calls.map((c) => c.target), [null, null, null]);
+  assert.equal(PATHS()[1], '/api/v1/auth/bootstrap');
+});
+
+test('F1 artifacts: upload and delete 401 then switch during re-auth -> Not sent, no g2 write', async () => {
+  for (const run of [
+    () => artifacts.uploadArtifact('demo', { file: new File(['x'], 'a.txt'), agent: 'founder' }),
+    () => artifacts.deleteArtifact('demo', 'a.txt'),
+  ]) {
+    calls = [];
+    target.__setNativeBridgeForTests(null);
+    notices.__resetNativeNoticeForTests();
+    sessionStorage.setItem('happyranch.token', 'tok-1');
+    const bridge = desktop(state('g1'));
+    await target.captureTarget();
+    queue.push(json(401, { detail: 'expired' }));
+    queue.push(bootstrapThen(() => bridge.emit(state('g2'))));
+    const err = await run().catch((e) => e);
+    assert.ok(err instanceof NotSentError, String(err));
+    assert.deepEqual(calls.map((c) => c.target), ['g1', null]);
+    assert.equal(notices.getNativeNotice(), 'not_sent');
+  }
+});
+
+test('F1 artifacts: list (GET) 401 then switch refetches once under g2', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(401, { detail: 'expired' }));
+  queue.push(bootstrapThen(() => bridge.emit(state('g2'))));
+  queue.push(json(200, { artifacts: [] }));
+  assert.deepEqual(await artifacts.listArtifacts('demo'), { artifacts: [] });
+  assert.deepEqual(calls.map((c) => c.target), ['g1', null, 'g2']);
+});
+
+// F4 — an old error body never publishes for the new target.
+function deferredBody(status) {
+  let controller;
+  const respond = () => new Response(new ReadableStream({ start(c) { controller = c; } }), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
+  const deliver = (body) => {
+    controller.enqueue(new TextEncoder().encode(JSON.stringify(body)));
+    controller.close();
+  };
+  return { respond, deliver };
+}
+
+test('F4 GET: generation changes before a deferred 503 busy body -> StaleTargetError, no notice, single send', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  const body = deferredBody(503);
+  queue.push(body.respond);
+  const pending = request('/orgs');
+  await tick(10);
+  bridge.emit(state('g2'));
+  body.deliver({ detail: { code: 'busy' } });
+  const err = await pending.catch((e) => e);
+  assert.ok(err instanceof StaleTargetError, String(err));
+  assert.equal(notices.getNativeNotice(), null);
+  assert.equal(recovery.getNativeRecoveryState(), null);
+  assert.equal(calls.length, 1);
+});
+
+test('F4 SSE: generation changes before a deferred 503 busy open body -> no notice, resubscribes under g2', async () => {
+  const bridge = desktop(state('g1'));
+  const body = deferredBody(503);
+  queue.push(body.respond);
+  queue.push(sseOpen());
+  const published = [];
+  notices.subscribeNativeNotice(() => published.push(notices.getNativeNotice()));
+  const ctl = new AbortController();
+  const done = subscribeSSE('/x', { signal: ctl.signal, onMessage() {} });
+  await tick(10);
+  bridge.emit(state('g2'));
+  body.deliver({ detail: { code: 'busy' } });
+  await tick(30);
+  assert.deepEqual(published.filter((n) => n === 'busy'), [], 'old body never published busy (not even transiently)');
+  assert.deepEqual(calls.map((c) => c.target), ['g1', 'g2']);
+  ctl.abort();
+  await done;
+});
+
+// F5 — native mutation transport loss is Result unknown, never a raw failure or replay.
+test('F5: a rejected native mutation fetch WITHOUT a generation event -> ResultUnknownError + notice, single send', async () => {
+  desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(() => { throw new TypeError('synthetic transfer failure after forwarding'); });
+  const err = await request('/orgs/demo/tasks', { method: 'POST', body: { brief: 'synthetic' } }).catch((e) => e);
+  assert.ok(err instanceof ResultUnknownError, String(err));
+  assert.equal(target.currentGeneration(), 'g1', 'no switch happened');
+  assert.equal(calls.length, 1, 'never replayed');
+  assert.equal(notices.getNativeNotice(), 'result_unknown');
+});
+
+test('F5: pre-forward refusals stay distinguishable; GET transport errors, caller aborts and browser unchanged', async () => {
+  desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(409, { detail: { code: 'target_changed' } }));
+  assert.ok((await request('/x', { method: 'POST', body: {} }).catch((e) => e)) instanceof NotSentError);
+  queue.push(json(429, { detail: { code: 'too_many_requests' } }));
+  assert.ok((await request('/x', { method: 'POST', body: {} }).catch((e) => e)) instanceof ThrottledError);
+  queue.push(json(503, { detail: { code: 'busy' } }));
+  const busy = await request('/x', { method: 'POST', body: {} }).catch((e) => e);
+  assert.ok(busy instanceof NativeRecoveryError && !(busy instanceof NotSentError) && busy.code === 'busy');
+  queue.push(() => { throw new TypeError('read transport'); });
+  assert.equal((await request('/orgs').catch((e) => e)).constructor, TypeError, 'GET keeps its raw error');
+  const ctl = new AbortController();
+  queue.push(() => { ctl.abort(); throw new DOMException('Aborted', 'AbortError'); });
+  const aborted = await request('/x', { method: 'POST', body: {}, signal: ctl.signal }).catch((e) => e);
+  assert.equal(aborted.name, 'AbortError', "the caller's own abort keeps its error");
+  target.__setNativeBridgeForTests(null);
+  globalThis.location = BROWSER_LOCATION;
+  queue.push(() => { throw new TypeError('browser transport'); });
+  assert.equal((await request('/x', { method: 'POST', body: {} }).catch((e) => e)).constructor, TypeError, 'browser unchanged');
+});
+
+// F3 — failed reads recover when busy/throttled clears; mutations never auto-retry.
+function orgsClient() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 30_000, gcTime: Infinity } } });
+  const detach = attachNativeQueryClient(qc);
+  const observer = new QueryObserver(qc, { queryKey: ['orgs'], queryFn: () => request('/orgs') });
+  const unsubscribe = observer.subscribe(() => {});
+  return { qc, observer, close: () => { unsubscribe(); detach(); qc.clear(); } };
+}
+
+test('F3: bootstrap busy -> native ready -> org data loaded (the failed read is refetched once)', async () => {
+  const bridge = desktop(state('g1', { state: 'busy' }));
+  await target.captureTarget();
+  sessionStorage.removeItem('happyranch.token');
+  queue.push(json(503, { detail: { code: 'busy' } })); // bootstrap
+  const { observer, close } = orgsClient();
+  await tick(10);
+  assert.equal(observer.getCurrentResult().status, 'error');
+  queue.push(json(200, { token: 'tok-3' }));
+  queue.push(json(200, { orgs: [{ slug: 'demo' }] }));
+  bridge.emit(state('g1')); // same generation, ready
+  await tick(20);
+  assert.deepEqual(observer.getCurrentResult().data, { orgs: [{ slug: 'demo' }] });
+  assert.deepEqual(PATHS(), ['/api/v1/auth/bootstrap', '/api/v1/auth/bootstrap', '/api/v1/orgs']);
+  close();
+});
+
+test('F3: exhausted GET busy backoff -> recovery (ready) -> org data loaded', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  for (let i = 0; i < 4; i += 1) queue.push(json(503, { detail: { code: 'busy' } }));
+  const { observer, close } = orgsClient();
+  await tick(3650);
+  assert.equal(calls.length, 4);
+  assert.equal(observer.getCurrentResult().status, 'error');
+  queue.push(json(200, { orgs: [{ slug: 'demo' }] }));
+  bridge.emit(state('g1'));
+  await tick(20);
+  assert.equal(calls.length, 5);
+  assert.deepEqual(observer.getCurrentResult().data, { orgs: [{ slug: 'demo' }] });
+  close();
+});
+
+test('F3: a later forwarded success also recovers; non-transient failures and mutations are not retried', async () => {
+  desktop(state('g1'));
+  await target.captureTarget();
+  queue.push(json(429, { detail: { code: 'too_many_requests' } }));
+  const err = await request('/x', { method: 'POST', body: {} }).catch((e) => e);
+  assert.ok(err instanceof ThrottledError);
+  for (let i = 0; i < 4; i += 1) queue.push(json(429, { detail: { code: 'too_many_requests' } }));
+  const { qc, observer, close } = orgsClient();
+  await tick(3650);
+  assert.equal(observer.getCurrentResult().status, 'error');
+  queue.push(json(500, { detail: 'boom' }));
+  const other = new QueryObserver(qc, { queryKey: ['plain-failure'], queryFn: () => request('/broken') });
+  const offOther = other.subscribe(() => {});
+  await tick(10);
+  assert.equal(other.getCurrentResult().status, 'error');
+  const before = calls.length;
+  queue.push(json(200, { ok: 1 }));
+  queue.push(json(200, { orgs: [] }));
+  await request('/ping'); // a later forwarded success
+  await tick(20);
+  assert.equal(calls.length, before + 2, 'ping + one org refetch; no mutation replay, no plain-failure refetch');
+  assert.deepEqual(observer.getCurrentResult().data, { orgs: [] });
+  assert.equal(other.getCurrentResult().status, 'error');
+  offOther();
+  close();
+});
+
+// F2 — editor custody: a loaded Settings editor keeps its data object (and so
+// its draft) across a switch, with no new-target fetch, and no change is sent
+// to the new target while it is held.
+test('F2: custody observer keeps the same data object across the switch and later renders; no reread', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, gcTime: Infinity } } });
+  const detach = attachNativeQueryClient(qc, { custody: [['settings']] });
+  const fetchedWith = [];
+  const options = {
+    queryKey: ['settings', 'demo'],
+    queryFn: () => { fetchedWith.push(target.currentGeneration()); return Promise.resolve({ org: { name: `org-${target.currentGeneration()}` } }); },
+  };
+  const observer = new QueryObserver(qc, options);
+  const unsubscribe = observer.subscribe(() => {});
+  await tick(0);
+  const loaded = observer.getCurrentResult().data;
+  assert.deepEqual(loaded, { org: { name: 'org-g1' } });
+  // Model of the Settings editor: mounted while data exists; its local draft
+  // resets only when the `org` object identity changes (OrganizationSection).
+  const editor = { org: loaded.org, draft: 'edited name' };
+  const render = () => {
+    // Exactly what useQuery does on every render: re-default the options
+    // (new-generation hash) and ask the observer for its optimistic result.
+    const defaulted = qc.defaultQueryOptions(options);
+    const result = observer.getOptimisticResult(defaulted);
+    observer.setOptions(defaulted);
+    assert.ok(result.data, 'data gate stays open: the editor stays mounted');
+    if (result.data.org !== editor.org) editor.draft = null; // external reset
+    editor.org = result.data.org;
+  };
+
+  bridge.emit(state('g2'));
+  await tick(0);
+  render();
+  await qc.invalidateQueries({ queryKey: ['settings'] });
+  await observer.refetch();
+  await tick(0);
+  render();
+  render();
+  assert.equal(observer.getCurrentResult().data, loaded, 'same object: no reread, no reset');
+  assert.equal(editor.draft, 'edited name', 'draft survives');
+  assert.deepEqual(fetchedWith, ['g1'], 'no new-target fetch into the held editor');
+  assert.equal(qc.getQueryData(['settings', 'demo']), undefined, 'the new target has no entry from old data');
+
+  // While held, no change is sent to the new target.
+  const err = await request('/orgs/demo/settings', { method: 'PATCH', body: { name: 'edited name' } }).catch((e) => e);
+  assert.ok(err instanceof NotSentError, String(err));
+  assert.equal(calls.length, 0, 'nothing sent');
+  assert.equal(notices.getNativeNotice(), 'not_sent');
+
+  // The owner re-keys (unmount + new mount): hold released, new target read.
+  unsubscribe();
+  assert.equal(target.targetCustodyHeld(), false);
+  assert.equal(qc.getQueryCache().getAll().length, 0, 'older-target entry removed');
+  const fresh = new QueryObserver(qc, options);
+  const offFresh = fresh.subscribe(() => {});
+  await tick(0);
+  assert.deepEqual(fresh.getCurrentResult().data, { org: { name: 'org-g2' } });
+  assert.deepEqual(fetchedWith, ['g1', 'g2']);
+  queue.push(json(200, { ok: 1 }));
+  await request('/orgs/demo/settings', { method: 'PATCH', body: {} });
+  assert.deepEqual(calls.map((c) => c.target), ['g2']);
+  offFresh();
+  detach();
+  qc.clear();
+});
+
+test('F2: non-custody and not-yet-loaded custody observers still move; browser never holds', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, gcTime: Infinity } } });
+  const detach = attachNativeQueryClient(qc, { custody: [['settings']] });
+  const fetchedWith = [];
+  const tasksObserver = new QueryObserver(qc, { queryKey: ['tasks'], queryFn: () => { fetchedWith.push(['tasks', target.currentGeneration()]); return Promise.resolve(target.currentGeneration()); } });
+  let releaseSettings;
+  const pendingSettings = new QueryObserver(qc, {
+    queryKey: ['settings', 'demo'],
+    queryFn: () => {
+      fetchedWith.push(['settings', target.currentGeneration()]);
+      if (target.currentGeneration() === 'g1') return new Promise((r) => { releaseSettings = r; });
+      return Promise.resolve('settings-g2');
+    },
+  });
+  const off1 = tasksObserver.subscribe(() => {});
+  const off2 = pendingSettings.subscribe(() => {});
+  await tick(0);
+  bridge.emit(state('g2'));
+  await tick(0);
+  releaseSettings?.('settings-g1');
+  await tick(0);
+  assert.equal(tasksObserver.getCurrentResult().data, 'g2');
+  assert.equal(pendingSettings.getCurrentResult().data, 'settings-g2', 'an unloaded custody read is not held');
+  assert.equal(target.targetCustodyHeld(), false);
+  off1();
+  off2();
+  detach();
+  qc.clear();
+});
+
+test('F4 mutation: switch before a deferred pre-forward 409 body -> Not sent (provably not forwarded), single send', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  const body = deferredBody(409);
+  queue.push(body.respond);
+  const pending = request('/x', { method: 'POST', body: {} });
+  await tick(10);
+  bridge.emit(state('g2'));
+  body.deliver({ detail: { code: 'target_changed' } });
+  const err = await pending.catch((e) => e);
+  assert.ok(err instanceof NotSentError, String(err));
+  assert.equal(notices.getNativeNotice(), 'not_sent');
+  assert.equal(calls.length, 1);
+});
+
+test('F4 mutation: switch before a deferred ordinary error body -> Result unknown, single send', async () => {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  const body = deferredBody(409);
+  queue.push(body.respond);
+  const pending = request('/x', { method: 'POST', body: {} });
+  await tick(10);
+  bridge.emit(state('g2'));
+  body.deliver({ detail: { code: 'conflict' } });
+  const err = await pending.catch((e) => e);
+  assert.ok(err instanceof ResultUnknownError, String(err));
+  assert.equal(notices.getNativeNotice(), 'result_unknown');
+  assert.equal(calls.length, 1);
+});

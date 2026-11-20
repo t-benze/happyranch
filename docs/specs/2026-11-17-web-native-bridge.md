@@ -779,7 +779,10 @@ stale drop, query/stream cleanup on change (`web/src/lib/native/queryClient.ts`)
 transient notice and clears on successful forwarding), W-2a (recovery clears on a
 later successful forwarded response; stale responses neither clear nor revive it)
 and W-2b (mutations never auto-retry on 409) are implemented with focused checks in
-`web/scripts/native-bridge-v2.test.mjs`. This is source/unit evidence only. Merged
+`web/scripts/native-bridge-v2.test.mjs`. Review round 1 (TASK-18178) added
+per-operation generation pinning across the 401 re-send, error-body generation
+rechecks, Result unknown for native mutation transport loss, Settings editor
+custody across a switch and transient read recovery. This is source/unit evidence only. Merged
 S1b-A PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec
 slice itself changed no implementation, tests, required checks or CI triggers.
 Live Linux, Mac and web v2 behavior is **NOT RUN** by these changes.
