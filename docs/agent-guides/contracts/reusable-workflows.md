@@ -1,5 +1,74 @@
 # Reusable workflow contracts
 
+## S6b: source cancellation and terminal initiators @2
+
+The existing Founder task-cancel route recognises `seq_source_wait_set` and uses
+its mixed cancellation owner. The complete history and every membership are
+re-read in the same authority writer, including runs admitted by earlier source
+results/SIDs and already finished members. Cancelling a source or ordinary
+ancestor fences every unfinished owned run. Finished history stays unchanged.
+A result-owned S4a cancel of one run leaves the source and sibling runs alive.
+Its original member-scoped opaque Stop controls and native-owner aggregation
+are captured with the control transaction and delivered after COMMIT. Exact
+control replay never issues another Stop; lost originals remain unsettled.
+Callback exit also drains the committed handoff, so a result consumer that
+runs before callback-context exit cannot strand it. Both publishers take the
+same one-shot handoff under the Database lock and call Stop outside locks and
+transactions; rollback discards the original capture.
+Missing/malformed membership, hidden live work and native drift refuse the whole
+mutation with `sequential_cancellation_reconciliation_required` (409).
+
+The internal native first fence records `founder_cancel` or `source_terminal`
+and the original source task/status using existing event kinds. It has no
+control row, actor result or RetryClaim. Result-owned control authentication,
+request/receipt bytes and S4a's finish writer are unchanged. Held/pristine
+members finish in one slot; launched or prepared members retain
+Running/cancelling and their outstanding visit. A prepared journal/control is
+not pristine merely because no SID/PID is bound. Native overlays retain a
+visit's completion timestamp until original terminal observation supplies it.
+No fresh callback acceptance, output selection, graph successor, recovery
+replacement or launch crosses the fence. A precommitted exact step callback may
+replay unchanged; changed bytes refuse. Original positive native terminal and
+outer closure precede the existing finish writer, with cancellation-only digest
+validation even for empty/malformed business output. Member finish and its
+addressed inbox obligation commit together; full resulting-history validation
+uses the original complete-reader budgets and operation deadline.
+
+Existing source settlement, continuation rediscovery and native member tails
+observe failed/cancelled/superseded sources and use that same mixed writer.
+They never revive the source or infer another manager. Already-cancelling
+members with committed original terminal and outer proofs
+are revisited under the authority writer and finished by the existing finish
+owner. This drains an outer-before-fence race without accepting output or
+allocating a visit. Missing proofs retain the outstanding original owner.
+This drain uses the complete layout reader before reading @2 columns; retained
+schema1 and absent sequential storage keep ordinary settlement unchanged and
+are never installed or migrated. Invalid supported @2 storage still refuses.
+Unconsumed inbox and stored delivery rows remain immutable. Dependency observations derive
+`initiator_terminal` for a terminal source, or `unavailable` with
+`initiator_agent_unavailable` when the recorded agent is no longer an active,
+eligible manager. Addressed events stay pending; ordinary admission cannot
+turn an unavailable workflow observation into an empty child barrier.
+Eligibility restoration republishes only the original addressed source.
+
+Opaque native Stop runs after COMMIT outside locks. Original controls, trackers,
+journals, reservations and uncertainty are retained. Actual original owners
+supply closure; a Stop return, missing PID, ended SID or launcher exit cannot
+settle an aggregate. U6 Option B's ordinary/document UNSETTLED fallback remains.
+Pause delays new visit/initiator sessions while allowing committed cancellation
+and native closure; Resume preserves original limits and never revives a
+terminal source. No new founder/thread message, schema, public @2 admission or
+Coding activation is added; Coding remains Disabled and PR1252 stays held.
+
+Focused private verification is selected with
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s6b=all`
+(and `3.14`, or `--s6b=CASE`). The six cases are `cancel_vs_retry`,
+`cancel_source_all_runs`, `source_failed`, `initiator_unavailable`,
+`pause_resume` and `unknown_effect_kept`. They use real private SQL/cancel
+writers, the Founder route, persisted/reopened histories and test-side commit
+faults; provider launch is forbidden. Native host/provider acceptance remains a
+separate venue, never inferred from these synthetic native observations.
+
 ## S5: internal initiator inbox and plural admission @2
 
 The internal `prepare_generic_batch` / `admit_batch_uncommitted` boundary accepts
@@ -52,8 +121,8 @@ declared cause. It never
 completes the source or the ordinary parent. The inbox addresses the original
 source task/principal; queue insertion is never consumption. The @1 event,
 return, parent-wake and terminal thread-tail behavior is retained unchanged.
-Live initiator queue/session continuation belongs to S6a; owned-run cancellation
-belongs to S6b. Coding remains Disabled and PR1252 remains held.
+S6a supplies live initiator queue/session continuation; S6b above supplies
+owned-run cancellation. Coding remains Disabled and PR1252 remains held.
 
 `snapshot_delivery(conn, initiator_task_id, principal, session_id, cursor=...)`
 is called exactly once per genuinely admitted SID, inside its admission
@@ -166,7 +235,7 @@ under the unchanged ledgers and cancellation reservation.
 (and 3.14, or `--s4b=CASE`) exercises private production writers/readers and
 rendered node data. It does not establish genuine provider/process containment or
 live admission. S5 supplies durable initiator wakes and inbox/wait sets; live source continuation
-belongs to S6a and cancellation delivery belongs to S6b. No live operations follow from
+is supplied by S6a and cancellation delivery by S6b above. No live operations follow from
 this source unit.
 
 ## S4a: Held and controls @2 (inactive consumer)
@@ -263,7 +332,7 @@ on their resulting uncommitted state with unchanged budgets and the operation's
 original deadline; cancellation omits only the future headroom reservation.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
-only positive closure permits its completion. Native cancellation delivery belongs to S6b;
+only positive closure permits its completion. S6b above supplies native cancellation delivery;
 S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
 S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
 Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -60,7 +60,24 @@ def observation(db: Any, task_id: str) -> dict | None:
     """One coherent, read-only observation; absence alone retains legacy rules."""
     from runtime.workflows.sequential_initiator import observe_dependencies
     with db.coherent_read_view() as conn:
-        return observe_dependencies(conn, db, task_id)
+        value = observe_dependencies(conn, db, task_id)
+        task = db.get_task(task_id) if value is not None else None
+    if value is not None:
+        value['disposition'] = 'initiator_terminal' if task.status in ('completed', 'failed', 'cancelled', 'superseded') else 'pending'
+        value['unavailable_reason'] = None
+        if value['disposition'] == 'pending':
+            continuation = getattr(db, '_workflow_continuation', None)
+            if continuation is not None:
+                from runtime.orchestrator.prompt_loader import load_agent
+                try:
+                    agent = load_agent(continuation.org.orchestrator._paths, task.assigned_agent)
+                    available = (agent is not None and agent.role == 'manager' and agent.team == task.team
+                        and continuation.org.teams.executable_manager_for_team(task.team) == task.assigned_agent)
+                except (OSError, ValueError, TypeError, KeyError):
+                    available = False
+                if not available:
+                    value.update(disposition='unavailable', unavailable_reason='initiator_agent_unavailable')
+    return value
 
 
 def ready(orch: Any, task: Any) -> bool:
@@ -68,7 +85,7 @@ def ready(orch: Any, task: Any) -> bool:
     import sqlite3
     try:
         value = observation(orch._db, task.id)
-        return bool(value and value['pending'] and task.task_type == 'task'
+        return bool(value and value['pending'] and value['disposition'] == 'pending' and task.task_type == 'task'
             and task.status == 'in_progress' and task.block_kind == 'delegated'
             and task.cancelled_at is None)
     except (ValueError, TypeError, sqlite3.Error):
@@ -93,6 +110,8 @@ def ordinary_children(orch: Any, task: Any) -> list | None:
     try:
         with orch._db.coherent_read_view():
             value = observation(orch._db, task.id)
+            if value is not None and value['disposition'] == 'unavailable':
+                return None
             ids = value['ordinary_task_ids'] if value is not None else orch._db.get_children(task.id)
             return [orch._db.get_task(task_id) for task_id in ids]
     except (ValueError, TypeError, sqlite3.Error):
@@ -103,6 +122,12 @@ class WorkflowContinuation:
     def __init__(self, org: Any) -> None:
         self.org = org
         self.db = org.db
+        # OrgState attaches separate callback and orchestrator bridge objects.
+        # Their ephemeral original-owner handoff belongs to the shared DB.
+        with self.db._lock:
+            if not hasattr(self.db, '_workflow_cancel_publications'):
+                self.db._workflow_cancel_publications = {}
+            self._cancel_publications = self.db._workflow_cancel_publications
 
     @asynccontextmanager
     async def callback_admission(self, task_id: str, decision: dict | None,
@@ -125,11 +150,26 @@ class WorkflowContinuation:
                 capture = (compiled, prepare_control(self.org, command_bytes=_bytes(command), compiled=compiled))
             except WorkflowAuthorityError:
                 raise ValueError('workflow_seq_workflow_authority_unavailable') from None
-        token = _control_capture.set(capture)
-        try:
-            yield
-        finally:
-            _control_capture.reset(token)
+        # Originals are attached inside the callback transaction and rolled
+        # back on refusal. Only its successful COMMIT publishes this handoff.
+        with ExitStack() as captures:
+            cancellations = {}
+            token = _control_capture.set((capture, captures, cancellations))
+            try:
+                yield
+                with self.db._lock:
+                    for result_id, handoff in cancellations.items():
+                        committed = self.db._conn.execute('SELECT 1 FROM workflow_seq_consumption_receipts WHERE result_id=?', (result_id,)).fetchone()
+                        if committed is not None:
+                            handoff['owners'].committed = True
+                            self._cancel_publications[result_id] = handoff
+                # A result consumer can run after native COMMIT but before
+                # this context resumes. Complete its pending Stop here too;
+                # the shared locked pop lets only one publisher take it.
+                for result_id in cancellations:
+                    self._publish_cancellation(result_id)
+            finally:
+                _control_capture.reset(token)
 
     def admitted_uncommitted(self, invocation: Any) -> None:
         """The single snapshot call site, after a genuinely new SID is bound."""
@@ -180,8 +220,9 @@ class WorkflowContinuation:
             elif parsed.action == 'workflow_control':
                 from runtime.workflows.sequential_control import apply_control_uncommitted
                 _require(parsed.workflow['run_id'] in state['run_ids'], 'workflow_run_not_owned')
-                prepared = _control_capture.get()
-                _require(prepared is not None, 'workflow_control_capture_missing')
+                context = _control_capture.get()
+                _require(context is not None and context[0] is not None, 'workflow_control_capture_missing')
+                prepared, captures, cancellations = context
                 compiled, capture = prepared
                 task = self.db.get_task(task_id)
                 replacement = None
@@ -194,6 +235,9 @@ class WorkflowContinuation:
                     actor=RetryClaim.from_task(task, result_row_id=result_id), capture=capture,
                     authority=self.org.workflow_authority, replacement_task=replacement)
                 effects = json.loads(receipt)
+                if parsed.workflow['action'] == 'cancel':
+                    from runtime.workflows.sequential_cancel_owners import capture_member_cancel
+                    cancellations[result_id] = capture_member_cancel(self.org, conn, parsed.workflow['run_id'], captures)
                 conn.execute("UPDATE tasks SET block_kind='delegated' WHERE id=?", (task_id,))
                 return effects
             elif parsed.action == 'workflow_start':
@@ -241,7 +285,7 @@ class WorkflowContinuation:
                 return
             with _sql_budget(conn, budget):
                 ids = [row['source_task_id'] for row in _rows(conn, 'workflow_seq_source_wait_sets', budget,
-                    "source_task_id IN (SELECT id FROM tasks WHERE status='in_progress' AND block_kind='delegated')", ())]
+                    '1', ())]
                 visits = _rows(conn, 'workflow_seq_outbox', budget,
                     "kind='visit_queued' AND task_id IN (SELECT id FROM tasks WHERE status='pending')", ())
         if selected is not None:
@@ -250,6 +294,21 @@ class WorkflowContinuation:
         for task_id in ids:
             self.wake(task_id, queue=queue)
 
+    def _publish_cancellation(self, result_id: int) -> None:
+        """Take one committed member handoff, then Stop outside the DB lock."""
+        with self.db._lock:
+            cancellation = self._cancel_publications.pop(result_id, None)
+        if cancellation is not None:
+            failed = False
+            try:
+                for _, _, control in cancellation['controls']:
+                    control()
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                cancellation['owners'].seal(failed=failed)
+
     def publish_result(self, result_id: int, task_id: str) -> None:
         """Postcommit publication uses only the exact recorded effect receipt."""
         with self.db.coherent_read_view() as conn:
@@ -257,6 +316,7 @@ class WorkflowContinuation:
                 'WHERE result_id=? AND initiator_task_id=?', (result_id, task_id)).fetchone()
             _require(row is not None, 'initiator_receipt_missing')
             effects = json.loads(row[0])['effects']
+        self._publish_cancellation(result_id)
         selected = getattr(self.org.orchestrator, '_queue', None)
         if selected is not None and effects.get('new_task_id') is not None:
             self.org.workflow_sequential_dispatch.notify_queued(effects['new_task_id'], selected)
@@ -290,6 +350,12 @@ class WorkflowContinuation:
 
     def wake(self, task_id: str, *, queue: Any = None) -> bool | None:
         """Return delivery, refusal, or None when no publication is needed."""
+        from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+        from runtime.workflows.sequential_cancellation_tail import drain_source_cancellations
+        terminal = fence_terminal_source(self.org, task_id)
+        drain_source_cancellations(self.org, task_id)
+        if terminal:
+            return None
         task = self.db.get_task(task_id)
         if task is None or not ready(self.org.orchestrator, task):
             return None

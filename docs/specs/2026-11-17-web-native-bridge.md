@@ -12,6 +12,18 @@ abort-only message handler, **no connection command bridge**. The default
 daemon-served runtime, remote proxy and separate connection view below are
 unchanged. S7 owns default cutover. See the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
 
+**Settings S1b-B build preparation (TASK-18101 / THR-387):** the main build
+also emits the v1 `resource-manifest.json` (sorted path/bytes/SHA-256 inventory,
+entry `index.html`, manifest excluded), using the same helper as the separate
+connection build. Its theme bootstrap is a same-origin blocking classic
+`/theme-boot.js`, leaving the built entry free of inline scripts and event
+handlers. This supports the opt-in main loader's `script-src 'self'`;
+its `style-src 'self' 'unsafe-inline'`, `connect-src 'self'`,
+`img-src 'self' data: blob:` and `font-src 'self'` are unchanged. The existing
+Linux main loader inventories the manifest as a normal dist file; manifest
+consumption by packaging is future cutover work. This preparation changes
+neither the separate connection bundle's bytes/CSP nor native bridge admission.
+
 **Linux Settings S2b PR-A (TASK-18097):** the opt-in loader additionally accepts
 a native-selected local daemon, one active remote `ClientSession` with an
 explicit connecting/ready state, or no target. Remote requests use a

@@ -13,8 +13,44 @@ from typing import Any
 from runtime.infrastructure.task_pause_controls import decode_journal
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_engine import _engine_rows
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_history
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_history, read_sequential_layout
 from runtime.workflows.sequential_mixed_history import MixedSequentialHistory
+
+
+def drain_source_cancellations(org: Any, source_task_id: str) -> None:
+    """Rediscover committed original closure after a cancellation won the tail.
+
+    Missing proofs retain the outstanding owner. The existing finish writer
+    authenticates both proofs and the complete resulting history; no acceptance
+    or allocation is reachable from this path.
+    """
+    from runtime.workflows.sequential_definition import compile_generic_definition
+    from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
+
+    budget = _ReadBudget()
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        layout = read_sequential_layout(conn)
+        if not layout.sequential or layout.schema_version != 2:
+            return
+        runs = _engine_rows(conn, 'workflow_seq_runs', budget,
+            "source_task_id=? AND engine_version=2 AND state='running' AND progress='cancelling'", (source_task_id,))
+    if not runs:
+        return
+    capture = org.workflow_authority.capture_admission()
+    with org.workflow_authority.admission_writer(capture) as conn, _sql_budget(conn, budget):
+        for observed in runs:
+            run = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (observed['id'],))[0]
+            if run['state'] != 'running' or run['progress'] != 'cancelling':
+                continue
+            proofs = _engine_rows(conn, 'workflow_seq_evidence', budget,
+                "run_id=? AND visit_id=? AND kind IN ('terminal','outer')", (run['id'], run['active_visit_id']))
+            if len(proofs) != 2:
+                continue
+            pin = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))[0]
+            compiled = compile_generic_definition(pin['definition_bytes'], source_digest=pin['source_digest'])
+            finish_cancel_and_wake_uncommitted(conn, org.db, org_slug=org.slug, run=run,
+                compiled=compiled, authority=org.workflow_authority, capture=capture)
+        budget.check()
 
 
 @dataclass(frozen=True)
@@ -42,7 +78,10 @@ def _selected(conn: sqlite3.Connection, org: Any, invocation: Any, budget: _Read
     _, kind, owner_id, run_id = owners[0]
     with _sql_budget(conn, budget):
         runs = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
-        _require(len(runs) == 1 and runs[0]['state'] == 'cancelled', 'cancelled_owner_stop_required')
+        _require(len(runs) == 1 and (runs[0]['state'] == 'cancelled' or
+            (runs[0].get('engine_version', 1) == 2 and (runs[0]['progress'] == 'cancelling' or
+             (runs[0]['state'], runs[0]['terminal_outcome']) == ('finished', 'cancelled')))),
+            'cancelled_owner_stop_required')
         run = runs[0]
         if kind == 'seq_source_waiting':
             expected = (run['source_task_id'], run['source_principal'], run['source_session_id'])

@@ -844,6 +844,40 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             _require((body['cause'], body['closure'], event['source_visit_id'], event['source_result_id']) ==
                 (cause, proof, visit['id'], proof['result_id']), 'generic_hold_proof_conflict')
             current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'], held_event_id=event['id'], hold_cause=cause)
+        elif event['kind'] in ('cancelled', 'cancellation_finished') and 'origin' in body:
+            _require(body.keys() == {'format', 'kind', 'run_id', 'sequence', 'operation_key', 'prior_digest',
+                'origin', 'before_cas', 'visit_id', 'held_event_id'}
+                and event['source_visit_id'] is None and event['source_result_id'] is None
+                and not any(row['event_id'] == event['id'] for row in controls), 'native_cancel_origin_invalid')
+            origin = body['origin']
+            _require(type(origin) is dict and origin.keys() == {'kind', 'source_task_id', 'source_status'}
+                and origin['kind'] in ('founder_cancel', 'source_terminal')
+                and origin['source_task_id'] == run['source_task_id']
+                and origin['source_status'] in ('pending', 'in_progress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded')
+                and (origin['kind'] != 'source_terminal' or origin['source_status'] in ('failed', 'cancelled', 'superseded'))
+                and type(body['before_cas']) is int and body['before_cas'] == current['cas']
+                and event['operation_key'] == 'native-cancel-' + str(current['cas'])
+                and body['held_event_id'] == current['held_event_id']
+                and current['state'] in ('running', 'held') and current['progress'] != 'cancelling',
+                'native_cancel_state_conflict')
+            if origin['kind'] == 'source_terminal':
+                _require(_native_rows(conn, 'tasks', ('status',), (('text',),), run['source_task_id'], budget)
+                    == [(origin['source_status'],)], 'native_cancel_source_conflict')
+            visit = next((row for row in seen_visits if row['id'] == body['visit_id']), None)
+            _require(visit is not None and visit['id'] == (current['active_visit_id'] or seen_visits[-1]['id']),
+                     'native_cancel_visit_conflict')
+            cancel_append = True
+            if event['kind'] == 'cancellation_finished':
+                _require(current['state'] == 'held' or (visit['session_id'] is None
+                    and visit['state'] == 'cancelled' and visit['selected'] == 0), 'native_cancel_state_conflict')
+                generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
+                closed_visits.add(visit['id'])
+                current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
+                    held_node_id=None, held_event_id=None, progress=None)
+            else:
+                _require(current['state'] == 'running' and current['active_visit_id'] == visit['id'],
+                         'native_cancel_state_conflict')
+                current['progress'] = 'cancelling'
         elif event['kind'] in ('control', 'cancellation_finished'):
             rows = [row for row in controls if row['event_id'] == event['id']]
             if rows:
@@ -1017,7 +1051,9 @@ def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[di
         'current_session_id'), (('text',), ('text',), ('text',), ('text',), ('text',), ('null',)), run['carrier_task_id'], budget)
     member = conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE run_id=?', (run['id'],)).fetchone()
     carrier_status = ('failed' if run['terminal_outcome'] == 'failed' else 'completed') if member and run['state'] == 'finished' and run['terminal_outcome'] != 'cancelled' else 'pending'
-    _require(carrier == [(run['source_task_id'], run['source_principal'], resolved['team'], 'subtask', carrier_status, None)],
+    carrier_statuses = (carrier_status, 'cancelled') if run['progress'] == 'cancelling' or run['terminal_outcome'] == 'cancelled' else (carrier_status,)
+    _require(carrier in [[(run['source_task_id'], run['source_principal'], resolved['team'], 'subtask', status, None)]
+                         for status in carrier_statuses],
              'generic_native_selection_conflict')
     validate_source_outer(conn, run, [row for row in evidence if row['visit_id'] is None], budget)
     for row in evidence:
