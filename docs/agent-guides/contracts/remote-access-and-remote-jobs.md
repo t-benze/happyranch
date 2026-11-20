@@ -13,7 +13,9 @@
 describe host compatibility without changing the endpoint set or access policy.
 Existing fields and conditional `host_sessions` remain; see the
 [health response and contract-bump rule](../web-and-cli.md#host-compatibility-health-metadata).
-Native readiness/reconnect/Restart checks belong to a later slice.
+Native readiness/reconnect/Restart compatibility checks are implemented on Linux
+in PR #1767 (merged `921f126e`); Mac checks remain pending. See the
+[Linux admission/reset boundaries](../../specs/2026-11-17-web-native-bridge.md#v2-compatibility-rule).
 
 ## macOS connector lifecycle slice (THR-360, C1+C2)
 

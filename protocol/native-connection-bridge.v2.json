@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HappyRanch native connection bridge v2 payloads",
+  "description": "Target contract: app.status result / app.stateChanged data, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/appState" },
+    { "$ref": "#/$defs/nativeErrorBody" }
+  ],
+  "$defs": {
+    "generation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[\u0000-\u007f]+$",
+      "description": "Opaque native-owned ASCII value; compare only for equality. Native emits HTTP-field-safe values, new on every target commit/disconnect and never reused within the app process."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name"],
+      "properties": {
+        "kind": { "enum": ["local", "remote"] },
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "allOf": [{
+        "if": { "properties": { "kind": { "const": "local" } } },
+        "then": { "properties": { "id": { "const": "local" } } }
+      }]
+    },
+    "hostContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "min_client"],
+      "properties": {
+        "current": { "type": "integer" },
+        "min_client": { "type": "integer" }
+      }
+    },
+    "incompatible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["side", "host_contract", "client_contract", "min_daemon"],
+      "properties": {
+        "side": { "enum": ["host", "app", "unknown"] },
+        "host_contract": {
+          "oneOf": [{ "$ref": "#/$defs/hostContract" }, { "type": "null" }]
+        },
+        "client_contract": { "const": 1 },
+        "min_daemon": { "const": 1 }
+      },
+      "allOf": [{
+        "if": { "properties": { "host_contract": { "type": "null" } } },
+        "then": { "properties": { "side": { "const": "host" } } }
+      }]
+    },
+    "local": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported", "mode", "running", "prompt_base_url"],
+      "properties": {
+        "supported": { "type": "boolean" },
+        "mode": { "enum": ["service", "foreground", "unsupported"] },
+        "running": { "enum": ["running", "starting", "stopped", "unknown"] },
+        "prompt_base_url": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Verified local daemon base URL only, never a remote host address. Null when the selected target is remote."
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name", "phase", "deadline"],
+      "properties": {
+        "kind": { "enum": ["local", "remote"] },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phase": {
+          "enum": ["signing_in", "awaiting_approval", "ready_to_switch", "failed", "cancelled"]
+        },
+        "deadline": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "locale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "persisted"],
+      "properties": {
+        "current": { "type": "string", "minLength": 1 },
+        "persisted": { "type": "boolean" }
+      }
+    },
+    "appState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "generation", "target", "state", "incompatible", "local", "candidate", "access_unsaved", "locale"],
+      "properties": {
+        "schema": { "const": 2 },
+        "generation": { "$ref": "#/$defs/generation" },
+        "target": { "oneOf": [{ "$ref": "#/$defs/target" }, { "type": "null" }] },
+        "state": { "enum": ["no_target", "target_starting", "ready", "unreachable", "incompatible", "busy"] },
+        "incompatible": { "oneOf": [{ "$ref": "#/$defs/incompatible" }, { "type": "null" }] },
+        "local": { "$ref": "#/$defs/local" },
+        "candidate": { "oneOf": [{ "$ref": "#/$defs/candidate" }, { "type": "null" }] },
+        "access_unsaved": { "type": "boolean" },
+        "locale": { "$ref": "#/$defs/locale" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "incompatible" } } },
+          "then": { "properties": { "incompatible": { "$ref": "#/$defs/incompatible" } } },
+          "else": { "properties": { "incompatible": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "no_target" } } },
+          "then": { "properties": { "target": { "type": "null" } } },
+          "else": { "properties": { "target": { "$ref": "#/$defs/target" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "target": { "type": "object", "properties": { "kind": { "const": "remote" } } }
+            }
+          },
+          "then": {
+            "properties": { "local": { "properties": { "prompt_base_url": { "type": "null" } } } }
+          }
+        }
+      ]
+    },
+    "nativeErrorBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detail"],
+      "properties": {
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "description": "HTTP code mapping is normative in the spec. Ordinary request/transport error codes remain outside the recovery set."
+            },
+            "side": { "enum": ["host", "app", "unknown"] }
+          },
+          "allOf": [{
+            "if": { "properties": { "code": { "const": "incompatible" } } },
+            "else": { "not": { "required": ["side"] } }
+          }]
+        }
+      }
+    }
+  }
+}
