@@ -812,6 +812,14 @@ historical receipts do not qualify them. Disposable authentication simulation
 does not prove a real desktop dialog. The workflow stays manual-only and adds
 no required check or Product E2E trigger.
 
+Before this home M1 dispatch, real package extraction must classify installer
+`(clean, absent)` and pass `HomeUnitGate` with zero native effects, including
+I5h's exact packaged-helper byte/custody recognition; a conflict stops dispatch.
+All fixture assertions have nonsecret messages using owner enums/allowlisted
+fixed members and environment presence/equality only. These diagnostics preserve
+U1's exact Turn off residue and post-Off uninstall refusal; home-profile
+uninstall remains deferred.
+
 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86` (short `455c9c5b`) in [hosted run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282), completed 2026-11-11. This is an exact-source receipt, not a claim that later heads were rerun.
 
 At that historical source, `.github/workflows/managed-m1.yml` was manual `workflow_dispatch` only on a disposable Ubuntu 24.04 hosted runner. `scripts/ci/m1_install_ready_uninstall.sh` provisioned the binaries/configuration, a disposable Headscale cell and expected peer, and a synthetic loopback HTTP backend. The passing run exercised the product installer with a fresh single-use ten-minute file key, both `Type=notify` services active/running after READY, post-start drift checks, pairing and an authenticated connector-loopback request returning the expected HTTP 200 body, then product `uninstall --purge` and every residue assertion in the same run. Removed residue includes the units/target enablement, enrollment source/link/operator input, persistent service state and both runtime directories. Payload, configuration, logs and the service account are documented retained items; runner disposal removes the fixture.

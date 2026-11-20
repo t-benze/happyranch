@@ -45,15 +45,15 @@ def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
 
 
 def absent(path: str | Path) -> None:
-    assert not os.path.lexists(path), f'unexpected fixed residue: {path}'
+    assert not os.path.lexists(path), 'unexpected fixed residue'
 
 
 def fixed_file(path: Path, mode: int, expected: bytes | None = None) -> None:
     value = path.lstat()
-    assert stat.S_ISREG(value.st_mode) and value.st_nlink == 1
-    assert (value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode)) == (0, 0, mode), str(path)
+    assert stat.S_ISREG(value.st_mode) and value.st_nlink == 1, 'fixed member must be a single-link regular file'
+    assert (value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode)) == (0, 0, mode), 'fixed member custody mismatch'
     if expected is not None:
-        assert path.read_bytes() == expected, f'renderer drift: {path.name}'
+        assert path.read_bytes() == expected, 'fixed member renderer drift'
 
 
 def units() -> dict[str, str]:
@@ -77,9 +77,27 @@ def fragments() -> None:
             'NeedDaemonReload': 'no', 'LoadState': 'loaded'}, name
 
 
+def inventory_message(value: object) -> str:
+    # Closed owner enums and fixed member names only; never arbitrary filenames.
+    fixed = {'/etc/happyranch', '/etc/systemd/system',
+             '/var/lib/happyranch-remote-access', '/etc/credstore/happyranch-tsnet-enrollment',
+             '/usr/lib/systemd/system/happyranch-remote-access-helper.service'}
+    fixed.update('/etc/happyranch/' + name for name in (
+        'connector.json', 'sidecar.json', 'policy.json', 'release-daemon.json',
+        'provision.json', 'daemon.token', 'enrollment.key', 'install-transaction.json'))
+    fixed.update('/' + base + '/' + name for base in (
+        'etc/systemd/system', 'run/systemd/system', 'usr/local/lib/systemd/system',
+        'usr/lib/systemd/system') for name in REMOTE)
+    member = value.paths[0] if value.paths else 'absent'
+    if member != 'absent' and member not in fixed:
+        member = 'unrecognized-member'
+    return f'inventory (state, detail)=({value.state}, {value.detail}); first_member={member}'
+
+
 def ready() -> None:
-    assert HomeActivationStore().current().phase == 'ready'
-    assert ManagedInstaller(layout='deb').inventory().state == 'owned-activated'
+    assert HomeActivationStore().current().phase == 'ready', 'home activation phase must be ready'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.state == 'owned-activated', inventory_message(candidate)
     fragments()
     hardening = dict(NoNewPrivileges='yes', ProtectSystem='strict', ProtectHome='yes',
                      PrivateTmp='yes', PrivateDevices='yes', ProtectKernelTunables='yes',
@@ -95,8 +113,8 @@ def ready() -> None:
                         StartLimitBurst='5', StartLimitIntervalUSec='5min')
         assert properties(name, tuple(expected)) == expected, 'notify READY: ' + name
         families = set(properties(name, ('RestrictAddressFamilies',))['RestrictAddressFamilies'].split())
-        assert families == {'AF_INET', 'AF_INET6', 'AF_UNIX'} | ({'AF_NETLINK'} if name == UNITS[1] else set())
-        assert int(properties(name, ('MainPID',))['MainPID']) > 0
+        assert families == {'AF_INET', 'AF_INET6', 'AF_UNIX'} | ({'AF_NETLINK'} if name == UNITS[1] else set()), 'loaded address families: ' + name
+        assert int(properties(name, ('MainPID',))['MainPID']) > 0, 'running MainPID required: ' + name
     # Nonsecret retained config signatures; no configuration bytes are exported.
     (WORK / 'retained.json').write_text(json.dumps({name: hashlib.sha256(
         Path('/etc/happyranch', name).read_bytes()).hexdigest()
@@ -127,11 +145,12 @@ def health_diagnostics() -> None:
 
 def off() -> None:
     io = ManagedInstaller(layout='deb')
-    assert io.inventory().detail == 'post-disable', 'complete protected post-Off inventory required'
+    candidate = io.inventory()
+    assert candidate.detail == 'post-disable', inventory_message(candidate)
     fragments()
     for unit in REMOTE:
         value = properties(unit, ('ActiveState', 'MainPID', 'ControlPID', 'Job', 'UnitFileState'))
-        assert value['ActiveState'] in ('inactive', 'failed') and value.get('MainPID', '0') == '0'
+        assert value['ActiveState'] in ('inactive', 'failed') and value.get('MainPID', '0') == '0', 'post-Off state/MainPID: ' + unit
         assert value.get('ControlPID', '0') == '0' and not value.get('Job', ''), unit
         assert value['UnitFileState'] in ('disabled', 'static', ''), unit
     # All B6 fixed-file members, including the public CA/config copies and
@@ -166,7 +185,7 @@ def off() -> None:
         absent(path)
     retained = json.loads((WORK / 'retained.json').read_text())
     for name, digest in retained.items():
-        assert hashlib.sha256(Path('/etc/happyranch', name).read_bytes()).hexdigest() == digest, name
+        assert hashlib.sha256(Path('/etc/happyranch', name).read_bytes()).hexdigest() == digest, 'retained release/policy/provision bytes changed'
     fixed_file(Path('/etc/happyranch/release-daemon.json'), 0o644)
     fixed_file(Path('/etc/happyranch/provision.json'), 0o600)
     try:
@@ -226,10 +245,10 @@ def uninstall_refusal() -> None:
         observed, errors = monitor.communicate(timeout=5)
     assert not errors and b'member=NameAcquired' in observed and b'member=NameLost' in observed, \
         'native bus monitor did not establish monitoring'
-    assert result.returncode != 0 and not result.stdout
-    assert result.stderr.strip() == 'error: home control binding not provisioned; requires slice 3b-2'
+    assert result.returncode != 0 and not result.stdout, 'uninstall must refuse with nonzero exit and empty stdout'
+    assert result.stderr.strip() == 'error: home control binding not provisioned; requires slice 3b-2', 'uninstall must return the fixed home-profile deferral'
     assert inventory() == before, 'uninstall refusal changed inventory'
-    assert states == {name: properties(name, tuple(states[name])) for name in REMOTE}
+    assert states == {name: properties(name, tuple(states[name])) for name in REMOTE}, 'uninstall refusal changed native unit state'
     assert not re.search(MUTATORS, observed.decode(errors='replace')), 'service mutation during uninstall refusal'
     print('UNINSTALL DEFERRED: fixed nonzero refusal; unchanged byte/inode inventory; no manager mutation')
 
@@ -245,12 +264,14 @@ def archive_off() -> None:
         shutil.move(str(path), str(archive / path.name))
     Path('/var/lib/happyranch-remote-access').mkdir(mode=0o700)
     command('systemctl', 'daemon-reload')
-    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.state == 'clean', inventory_message(candidate)
     print('Independent fixture cell: proven Off retained files archived root-only (no product cleanup claim)')
 
 
 def failed_fixture() -> None:
-    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.state == 'clean', inventory_message(candidate)
     # Recognized incomplete manual install: exact legacy fragments but no
     # operator JSON, enrollment input or pre-staging calls. Real starts fail.
     for name, value in managed_units('deb').items():
@@ -261,19 +282,20 @@ def failed_fixture() -> None:
     command('systemctl', 'daemon-reload')
     command('systemctl', 'start', UNITS[2], check=False)
     candidate = ManagedInstaller(layout='deb').replacement_inventory()
-    assert candidate.installation.state == 'known-failed-or-partial'
-    assert candidate.inventory_generation is not None
+    assert candidate.installation.state == 'known-failed-or-partial', inventory_message(candidate.installation)
+    assert candidate.inventory_generation is not None, 'replacement inventory generation required; ' + inventory_message(candidate.installation)
     print('FAILED-manual fixture: protected replacement inventory recognized exact incomplete fragments')
 
 
 def replacement_off() -> None:
-    assert ManagedInstaller(layout='deb').inventory().detail == 'staged-inert'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.detail == 'staged-inert', inventory_message(candidate)
     print('ReplaceFailed closure: staged-inert Off; next Enable owns all home preparation')
 
 
 def replacement_progress() -> None:
     candidate = ManagedInstaller(layout='deb').replacement_inventory()
-    assert candidate.installation.state == 'known-failed-or-partial' and candidate.journal_generation
+    assert candidate.installation.state == 'known-failed-or-partial' and candidate.journal_generation, 'replacement journal generation required; ' + inventory_message(candidate.installation)
     marker = WORK / 'replacement-phase'
     phase = candidate.installation.detail
     assert not marker.exists() or marker.read_text() != phase, 'replacement made no progress'
@@ -291,13 +313,13 @@ def interrupt(pid: int) -> None:
     fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
     assert fd >= 0, 'inotify unavailable'
     watch = False
-    assert libc.inotify_add_watch(fd, b'/etc', 0x00000100 | 0x00000080) >= 0
+    assert libc.inotify_add_watch(fd, b'/etc', 0x00000100 | 0x00000080) >= 0, 'inotify watch failed: /etc'
     child = None
     print('ARMED', flush=True)
     try:
         while time.monotonic() < deadline:
             if not watch and Path('/etc/happyranch').is_dir():
-                assert libc.inotify_add_watch(fd, b'/etc/happyranch', 0x00000080) >= 0
+                assert libc.inotify_add_watch(fd, b'/etc/happyranch', 0x00000080) >= 0, 'inotify watch failed: /etc/happyranch'
                 watch = True
             try:
                 os.read(fd, 65536)  # Names only; never read configuration contents here.
@@ -328,7 +350,7 @@ def interrupt(pid: int) -> None:
             # pending/torn/advanced boundary instead of treating it as coverage.
             io = ManagedInstaller(layout='deb')
             candidate = io.inventory()
-            assert candidate.state == 'modern' and candidate.detail == 'staged-inert', 'missed provision boundary'
+            assert candidate.state == 'modern' and candidate.detail == 'staged-inert', 'missed provision boundary; ' + inventory_message(candidate)
             absent('/var/lib/happyranch-remote-access/' + hs.PUBLICATION)
             absent('/etc/happyranch/invite-issuer.json')
             absent(ACTIVATION_PATH)
@@ -343,7 +365,7 @@ def interrupt(pid: int) -> None:
 def policy_fault() -> None:
     command('systemctl', 'stop', renewal.TIMER_NAME)
     command('systemctl', 'stop', renewal.SERVICE_NAME)
-    assert properties(renewal.TIMER_NAME, ('ActiveState',))['ActiveState'] == 'inactive'
+    assert properties(renewal.TIMER_NAME, ('ActiveState',))['ActiveState'] == 'inactive', 'policy renewal timer must be inactive'
     ready()
     policy = Path('/etc/happyranch/policy.json')
     (WORK / 'policy-before').write_bytes(policy.read_bytes())
@@ -355,9 +377,9 @@ def policy_fault() -> None:
 
 
 def policy_refused() -> None:
-    assert Path('/etc/happyranch/policy.json').read_bytes() == (WORK / 'policy-before').read_bytes()
-    assert stat.S_IMODE(Path('/etc/happyranch/policy.json').stat().st_mode) == 0o600
-    assert Path('/etc/happyranch/provision.json').read_bytes() == (WORK / 'provision-before').read_bytes()
+    assert Path('/etc/happyranch/policy.json').read_bytes() == (WORK / 'policy-before').read_bytes(), 'failed renewal changed policy bytes'
+    assert stat.S_IMODE(Path('/etc/happyranch/policy.json').stat().st_mode) == 0o600, 'failed renewal changed policy fixture mode'
+    assert Path('/etc/happyranch/provision.json').read_bytes() == (WORK / 'provision-before').read_bytes(), 'failed renewal changed provision bytes'
     absent('/etc/happyranch/install-transaction.json')
     previous = set(json.loads((WORK / 'audit-before').read_text()))
     rows = audit_records()
@@ -414,14 +436,14 @@ def process_identity(pid: int) -> list | None:
 
 def clock_expire() -> None:
     # Disposable-runner wall clock only; never edit issued_at, TTL or digests.
-    assert not (WORK / 'clock-before').exists()
+    assert not (WORK / 'clock-before').exists(), 'clock fixture already has restoration evidence'
     before = {'wall': time.time(), 'mono': time.monotonic(),
               'ntp': command('timedatectl', 'show', '--property=NTP', '--value').stdout.strip()}
     (WORK / 'clock-before').write_text(json.dumps(before))
     command('timedatectl', 'set-ntp', 'false')
     command('date', '--set=@' + str(int(before['wall'] + 7200)))
     policy = json.loads((WORK / 'policy-before').read_bytes())
-    assert time.time() > datetime.fromisoformat(policy['issued_at']).timestamp() + policy['max_age_seconds']
+    assert time.time() > datetime.fromisoformat(policy['issued_at']).timestamp() + policy['max_age_seconds'], 'disposable clock did not cross cached policy expiry'
     print('Disposable clock advanced beyond unchanged cached-policy expiry')
 
 
@@ -439,9 +461,10 @@ def clock_restore() -> None:
 def policy_renewed() -> None:
     before = json.loads((WORK / 'policy-before').read_bytes())
     after = json.loads(Path('/etc/happyranch/policy.json').read_bytes())
-    assert after['revision'] > before['revision'] and after['issued_at'] != before['issued_at']
+    assert after['revision'] > before['revision'] and after['issued_at'] != before['issued_at'], 'successful renewal must advance revision and issuance'
     absent('/etc/happyranch/install-transaction.json')
-    assert ManagedInstaller(layout='deb').inventory().state == 'owned-activated'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.state == 'owned-activated', inventory_message(candidate)
     print('Public RetryPolicyRenewal restored the protected policy after custody/clock restoration')
 
 
@@ -457,8 +480,9 @@ def recovered_ready() -> None:
 
 
 def main() -> None:
-    assert os.geteuid() == 0 and os.environ.get('GITHUB_ACTIONS') == 'true'
-    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+    assert os.geteuid() == 0, 'M1 collector requires euid=0'
+    assert os.environ.get('GITHUB_ACTIONS') == 'true', f'GITHUB_ACTIONS present={"GITHUB_ACTIONS" in os.environ}; equals true={os.environ.get("GITHUB_ACTIONS") == "true"}'
+    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', f'RUNNER_ENVIRONMENT present={"RUNNER_ENVIRONMENT" in os.environ}; equals github-hosted={os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"}'
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action')
     parser.add_argument('pid', nargs='?', type=int)
@@ -473,19 +497,21 @@ def main() -> None:
                'policy-restore': lambda: Path('/etc/happyranch/policy.json').chmod(0o640),
                'clean': lambda: assert_clean(), 'interrupted': lambda: assert_staged(),
                'interrupt': lambda: interrupt(args.pid)}
-    assert args.action in actions
+    assert args.action in actions, 'unsupported fixed M1 action'
     actions[args.action]()
 
 
 def assert_clean() -> None:
-    assert ManagedInstaller(layout='deb').inventory().state == 'clean'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.state == 'clean', inventory_message(candidate)
     absent('/etc/happyranch/invite-issuer.json')
     absent(ACTIVATION_PATH)
     print('Clean package: no home config, activation, enrollment or managed fragments')
 
 
 def assert_staged() -> None:
-    assert ManagedInstaller(layout='deb').inventory().detail == 'staged-inert'
+    candidate = ManagedInstaller(layout='deb').inventory()
+    assert candidate.detail == 'staged-inert', inventory_message(candidate)
     absent(ACTIVATION_PATH)
     print('Interrupted complete generated staging is resumable by the next public Enable')
 

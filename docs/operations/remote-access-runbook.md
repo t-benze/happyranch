@@ -55,6 +55,15 @@ properties, never config, state, tokens or raw service journals. Historical M1
 receipts do not establish these home cases; native acceptance requires a run at
 the exact new head. M2/M3/M4, Product E2E and deployment are separate.
 
+Before hosted dispatch, a real `build-deb.sh`/`dpkg-deb --extract` temp-root
+check must return installer `(clean, absent)` and pass `HomeUnitGate` without
+native effects. The package-owned helper unit is admitted only by I5h's exact
+bytes/custody rule. Every M1 assertion has a nonsecret message; inventory
+failures report owner state/detail enums and an allowlisted fixed member (or
+`unrecognized-member`), never private values. Environment failures report only
+presence/equality. These diagnostics preserve all six case predicates and U1's
+post-Off uninstall refusal; a non-clean fresh package stops hosted dispatch.
+
 ---
 
 ## Daemon stop budget

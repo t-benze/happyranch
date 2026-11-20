@@ -21,13 +21,14 @@ BUDGETS = {'Enable': 480, 'ReplaceFailed': 480, 'Disable': 300, 'RetryPolicyRene
 
 
 def main() -> None:
-    assert os.getuid() >= 1000 and os.environ.get('GITHUB_ACTIONS') == 'true'
-    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+    assert os.getuid() >= 1000, 'M1 caller requires uid>=1000'
+    assert os.environ.get('GITHUB_ACTIONS') == 'true', f'GITHUB_ACTIONS present={"GITHUB_ACTIONS" in os.environ}; equals true={os.environ.get("GITHUB_ACTIONS") == "true"}'
+    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', f'RUNNER_ENVIRONMENT present={"RUNNER_ENVIRONMENT" in os.environ}; equals github-hosted={os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"}'
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('method', choices=BUDGETS)
     parser.add_argument('--interrupt', action='store_true')
     args = parser.parse_args()
-    assert not args.interrupt or args.method == 'Enable'
+    assert not args.interrupt or args.method == 'Enable', 'interruption fixture requires Enable'
     connection = Gio.DBusConnection.new_for_address_sync(
         Gio.dbus_address_get_for_bus_sync(Gio.BusType.SYSTEM, None),
         Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
@@ -80,7 +81,7 @@ def main() -> None:
                 end = time.monotonic() + 5
                 while bus('NameHasOwner', '(s)', (NAME,), '(b)') and time.monotonic() < end:
                     time.sleep(.05)
-                assert not bus('NameHasOwner', '(s)', (NAME,), '(b)')
+                assert not bus('NameHasOwner', '(s)', (NAME,), '(b)'), 'refused helper did not release its bus name'
         assert owner, 'public reply omitted helper identity'
         pid = bus('GetConnectionUnixProcessID', '(s)', (owner,), '(u)')
         marker = Path(os.environ['M1_BUILD']) / 'previous-helper-owner'

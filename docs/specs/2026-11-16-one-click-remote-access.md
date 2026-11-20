@@ -1043,6 +1043,15 @@ product cleanup. Uploaded evidence excludes config/state/keys/raw journals.
 These cases require new exact-head hosted evidence; historical M1 receipts do
 not qualify them, and no trigger, required check or Product E2E run is added.
 
+The pre-dispatch real deb build/extraction in the existing temp-root venue must
+return installer `(clean, absent)` and pass `HomeUnitGate` without native
+effects, under I5h's exact packaged-helper byte/custody recognition. Otherwise
+dispatch stops. Every assertion has a fixed nonsecret message; inventory
+messages expose only owner state/detail enums and allowlisted fixed members
+(unknown members become `unrecognized-member`). Environment messages expose
+presence/equality only. The six case predicates, exact Off residue and fixed
+post-Off uninstall refusal remain unchanged; home-profile uninstall is deferred.
+
 **Round-7 B falsifiable transport/admission matrix.** Required separately on Linux 1b and the
 native unsigned Mac home-bridge 5b; client logs alone are not refusal evidence. Use synthetic
 certificates/secrets, fresh subprocesses per root profile, loopback fake control/embedded DERP

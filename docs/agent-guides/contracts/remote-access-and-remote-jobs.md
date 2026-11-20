@@ -373,6 +373,14 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   at `455c9c5b689fa25f625e2df8cae1b551c2a1de86` passed the earlier operator-profile
   initial READY/paired-loopback/uninstall journey only; it does not qualify I6a.
   M2/M3/M4, Product E2E, native desktop dialogs and deployment remain separate.
+  Before dispatch, real package build/extraction in the retained temp-root venue
+  must classify `(clean, absent)` and pass `HomeUnitGate` with no native effects;
+  I5h recognizes only the exact package-owned helper bytes/custody. A non-clean
+  result stops dispatch. All fixture assertions carry nonsecret messages;
+  inventory diagnostics contain owner state/detail enums and allowlisted fixed
+  paths (otherwise `unrecognized-member`), and environment diagnostics only
+  presence/equality. These messages do not change case predicates, U1's exact
+  Off residue or the documented home-profile uninstall refusal.
 
 - **Manual managed M3 same-boot recovery (THR-327): UNEXECUTED.** Acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains unexecuted until the main-only manual workflow passes. The harness reuses M2 provisioning, READY, paired real-daemon tailnet request, logs, teardown and purge residue checks. It tests connector SIGKILL, sidecar SIGKILL with the same Headscale node ID/IP/count and consumed enrollment (no new preauthkey), connector SIGSTOP/watchdog, intentional stop/start, shipped start-limit exhaustion/reset/start, daemon-fixture restart without reinstall, then uninstall/purge. Each recovery requires both notify services active/running and a paired tailnet HTTP 200, with per-step MainPID, NRestarts, Result and journal evidence. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; `BindsTo=` leaving the sidecar stopped is a failure. Both units’ rate accounting is reset at the start of steps 1–4 and 6 to isolate faults. Reboot is outside M3 and remains **UNEXECUTED**.
 
