@@ -154,7 +154,7 @@ class AppScheme:
                                                      WebKit2.UserScriptInjectionTime.START, None, None))
         self.view = WebKit2.WebView(web_context=self.context, user_content_manager=controller)
         self.view.connect("destroy", lambda *_: self.close())
-        self.view.connect("web-process-terminated", lambda *_: self.cancel_all())
+        self.view.connect("web-process-terminated", lambda *_: self.select_target(self.daemon))
         self.view.connect("load-changed", self.load_changed)
         self.view.connect("decide-policy", self.policy)
         self.context.connect("download-started", self.download_started)
@@ -164,6 +164,10 @@ class AppScheme:
         """Native/UI-thread selection only. S5 owns candidate/commit policy."""
         for transfer in self.transfers.values():
             transfer.cancel("target_changed")
+        if self.daemon is not None:
+            self.daemon.reset()
+        if target is not None and target is not self.daemon:
+            target.reset()
         self.daemon = target
 
     def cancel_all(self) -> None:
@@ -176,13 +180,13 @@ class AppScheme:
         self.closed = True
         self.cancel_all()
         self.GLib.source_remove(self.timer)
-        if isinstance(self.daemon, LocalDaemon):
-            self.daemon._bearer = None
+        if self.daemon is not None:
+            self.daemon.reset()
         self.daemon = None
 
     def load_changed(self, _view: object, event: object) -> None:
         if event == self.W.LoadEvent.STARTED:
-            self.cancel_all()
+            self.select_target(self.daemon)
 
     def cancel_request(self, _controller: object, message: object) -> None:
         key = message.get_js_value().to_string()
@@ -218,7 +222,10 @@ class AppScheme:
         self.finish(request, status, source, len(data), {"content-type": mime})
 
     def error(self, request: object, error: SchemeError) -> None:
-        self.reply(request, error.status, json.dumps({"detail": {"code": error.code}}).encode())
+        detail = {"code": error.code}
+        if error.side is not None:
+            detail["side"] = error.side
+        self.reply(request, error.status, json.dumps({"detail": detail}).encode())
 
     def finish(self, request: object, status: int, source: object, length: int,
                headers: dict[str, str]) -> None:
@@ -251,9 +258,6 @@ class AppScheme:
             if path.rstrip("/") == "/api/v1/auth/bootstrap":
                 if method != "GET":
                     raise SchemeError(405, "method_not_allowed")
-                # Never relay the real bootstrap JSON into the page.
-                self.reply(request, 200, b'{"token":"hr_native_session","user":"founder","role":"admin"}')
-                return
             headers: dict[str, str] = {}
             request.get_http_headers().foreach(lambda k, v, *_: headers.__setitem__(k.lower(), v), None)
             if sum(len(k) + len(v) for k, v in headers.items()) > 65536:
@@ -292,6 +296,19 @@ class AppScheme:
         writer = None
         complete = False
         try:
+            if transfer.stop.is_set():
+                raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+            daemon = transfer.target
+            if daemon is None:
+                raise SchemeError(503, "no_target")
+            daemon.bootstrap(transfer.stop)
+            if route(ORIGIN + target)[0].rstrip("/") == "/api/v1/auth/bootstrap":
+                # The dummy session is page-visible only after native admission.
+                data = b'{"token":"hr_native_session","user":"founder","role":"admin"}'
+                source = self.Gio.MemoryInputStream.new_from_bytes(self.GLib.Bytes.new(data))
+                self.GLib.idle_add(self.deliver, request, transfer, 200, source,
+                                  {"content-type": "application/json", "content-length": str(len(data))})
+                return
             body = bytearray()
             began = time.monotonic()
             if body_stream is not None:
@@ -308,10 +325,6 @@ class AppScheme:
                         raise SchemeError(413, "body_too_large")
             if transfer.stop.is_set():
                 raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
-            daemon = transfer.target
-            if daemon is None:
-                raise SchemeError(503, "no_target")
-            daemon.bootstrap(transfer.stop)
             connection = daemon.connection()
             transfer.connection = connection
             with closing(connection):

@@ -34,6 +34,10 @@ class PeerFixture(unittest.TestCase):
         self.observed = []
         self.next_event = threading.Event()
         self.peer_closed = threading.Event()
+        self.health_body = b'{"api_contract":{"current":1,"min_client":1}}'
+        self.health_status = 200
+        self.health_mode = "normal"
+        self.health_entered = threading.Event()
         fixture = self
 
         class Peer(BaseHTTPRequestHandler):
@@ -44,7 +48,26 @@ class PeerFixture(unittest.TestCase):
 
             def do_GET(self) -> None:
                 fixture.observed.append((self.path, dict(self.headers), b""))
-                if self.path == "/api/v1/auth/bootstrap":
+                if self.path == "/api/v1/health":
+                    fixture.health_entered.set()
+                    if fixture.health_mode != "slow_headers":
+                        self.send_response(fixture.health_status)
+                        self.send_header("Content-Length", str(len(fixture.health_body) + (10 if fixture.health_mode == "short" else 0)))
+                        self.end_headers()
+                    if fixture.health_mode.startswith("slow_"):
+                        self.connection.settimeout(7)
+                        try:
+                            self.connection.recv(1)
+                        except OSError:
+                            pass
+                        self.close_connection = True
+                    else:
+                        try:
+                            self.wfile.write(fixture.health_body)
+                        except OSError:
+                            pass
+                    self.close_connection = True
+                elif self.path == "/api/v1/auth/bootstrap":
                     self.reply(b'{"token":"synthetic-local-bearer"}')
                 elif self.path == "/api/v1/header-stall":
                     self.connection.settimeout(12)
@@ -159,6 +182,10 @@ class PeerFixture(unittest.TestCase):
 
 class AdapterTests(PeerFixture):
     def test_native_authority_and_reconstructed_framing(self) -> None:
+        self.remote.bootstrap()
+        self.observed.clear()
+        self.dials.clear()
+        self.releases.clear()
         headers = {"Authorization": "page-bearer", "Cookie": "page-cookie", "Host": "page-host",
                    "Proxy-Authorization": "page-proxy", "Forwarded": "page-forwarded", "Via": "page-via",
                    "X-Real-IP": "page-ip", "X-HappyRanch-Device-Credential": "page-device",
@@ -266,7 +293,7 @@ class SchemeTests(PeerFixture):
         app.Gio, app.GLib = Gio, GLib
         return app
 
-    def forward(self, app: object, transfer: object | None = None) -> dict:
+    def forward(self, app: object, transfer: object | None = None, path: str = "/api/v1/probe") -> dict:
         result = {}
         transfer = transfer or Transfer(app.daemon)
         app.transfers["test"] = transfer
@@ -281,7 +308,7 @@ class SchemeTests(PeerFixture):
             result.update(status=status, body=bytes(data), headers=headers)
         app.finish = finish
         # Small finite response: producer completes before dispatching GLib delivery.
-        app.forward(object(), transfer, "GET", "/api/v1/health", {}, None)
+        app.forward(object(), transfer, "GET", path, {}, None)
         context = GLib.MainContext.default()
         while context.pending():
             context.iteration(False)
@@ -372,9 +399,10 @@ class DialCancellationTests(unittest.TestCase):
             def do_GET(self) -> None:
                 observed.append((self.path, dict(self.headers)))
                 self.send_response(200)
-                self.send_header("Content-Length", "2")
+                body = b'{"api_contract":{"current":1,"min_client":1}}' if self.path == "/api/v1/health" else b"ok"
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(b"ok")
+                self.wfile.write(body)
 
         class HelperServer(socketserver.ThreadingUnixStreamServer):
             request_queue_size = 64
@@ -397,6 +425,11 @@ class DialCancellationTests(unittest.TestCase):
 
             session.release = released
             remote = RemoteDaemon(session, ready=True)
+            stall.clear()
+            remote.bootstrap()
+            observed.clear()
+            releases.clear()
+            stall.set()
             app = SchemeTests.app(self, remote)
             app.view = object()
             replies = {}
@@ -420,7 +453,7 @@ class DialCancellationTests(unittest.TestCase):
 
             def request(key: str) -> object:
                 headers = SimpleNamespace(foreach=lambda callback, _data: callback("X-HappyRanch-Request-ID", key))
-                return SimpleNamespace(get_web_view=lambda: app.view, get_uri=lambda: "happyranch-app://app/api/v1/health",
+                return SimpleNamespace(get_web_view=lambda: app.view, get_uri=lambda: "happyranch-app://app/api/v1/probe",
                                        get_http_method=lambda: "GET", get_http_headers=lambda: headers)
 
             logs = io.StringIO()
@@ -430,7 +463,7 @@ class DialCancellationTests(unittest.TestCase):
                         transfer = Transfer(remote)
                         app.transfers[key] = transfer
                         transfers.append(transfer)
-                        worker = threading.Thread(target=app.forward, args=(key, transfer, "GET", "/api/v1/health", {}, None))
+                        worker = threading.Thread(target=app.forward, args=(key, transfer, "GET", "/api/v1/probe", {}, None))
                         workers.append(worker)
                         worker.start()
                     with entered:
@@ -481,10 +514,11 @@ class DialCancellationTests(unittest.TestCase):
                         dispatch()
                         time.sleep(0.005)
                     self.assertEqual(replies.get(fresh_key), (200, b"ok"))
-                    self.assertEqual(len(observed), 1)
-                    self.assertEqual(observed[0][1]["x-happyranch-device-credential"], "synthetic-device-credential")
-                    self.assertEqual(len(releases), 33)
-                    self.assertEqual(len(set(releases)), 33)
+                    self.assertEqual([path for path, _ in observed], ["/api/v1/health", "/api/v1/probe"])
+                    self.assertTrue(all(headers["x-happyranch-device-credential"] == "synthetic-device-credential"
+                                        for _, headers in observed))
+                    self.assertEqual(len(releases), 34)
+                    self.assertEqual(len(set(releases)), 34)
                     self.assertFalse(session._streams)
                     for secret in ("synthetic-device-credential", "synthetic-local-bearer"):
                         self.assertNotIn(secret, repr(replies))

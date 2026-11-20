@@ -76,7 +76,9 @@ class LocalTransportTests(unittest.TestCase):
             def do_GET(self) -> None:
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 seen.append((self.command, self.path, dict(self.headers), body))
-                if self.path == "/api/v1/auth/bootstrap":
+                if self.path == "/api/v1/health":
+                    data, status = b'{"api_contract":{"current":1,"min_client":1}}', 200
+                elif self.path == "/api/v1/auth/bootstrap":
                     data = b'{"token":"synthetic-native-bearer"}'
                     status = 200
                 elif self.path == "/api/v1/redirect":

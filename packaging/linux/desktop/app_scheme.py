@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-from contextlib import closing
 import http.client
 import json
 import mimetypes
@@ -11,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import socket
 import threading
 import time
 from urllib.parse import unquote, urlsplit
@@ -22,6 +22,9 @@ _spec.loader.exec_module(_runtime)
 RemoteError = _runtime.ClientError
 
 ORIGIN = "happyranch-app://app"
+CLIENT = MIN_DAEMON = 1
+MAX_HEALTH = 64 * 1024
+HEALTH_TIMEOUT = 5
 MAX_BODY = 64 * 1024 * 1024
 BODY_HEADER = "X-HappyRanch-Body-Bytes"
 CSP = ("default-src 'none'; script-src 'self'; connect-src 'self'; "
@@ -38,9 +41,12 @@ METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 class SchemeError(Exception):
     """Closed diagnostic; never include an upstream exception or request data."""
 
-    def __init__(self, status: int, code: str) -> None:
+    def __init__(self, status: int, code: str, side: str | None = None) -> None:
         super().__init__(code)
         self.status, self.code = status, code
+        if side is not None and (code != "incompatible" or side not in {"host", "app", "unknown"}):
+            raise ValueError("invalid error side")
+        self.side = side
 
 
 def route(uri: str) -> tuple[str, str]:
@@ -150,7 +156,169 @@ class Bundle:
         return data, mime
 
 
-class LocalDaemon:
+class _Target:
+    """Serialize admission per native target; reset invalidates in-flight probes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._state = threading.Lock()
+        self._epoch = threading.Event()
+        self._compatibility: str | None = None  # None unchecked, empty compatible, else side
+        self._bearer: str | None = None
+
+    def reset(self) -> None:
+        with self._state:
+            self._epoch.set()
+            self._epoch = threading.Event()
+            self._compatibility = None
+            self._bearer = None
+
+    @staticmethod
+    def _check(stop: threading.Event | None, epoch: threading.Event) -> None:
+        if stop is not None and stop.is_set():
+            raise SchemeError(499, "cancelled")
+        if epoch.is_set():
+            raise SchemeError(409, "target_changed")
+
+    def _json(self, path: str, limit: int, deadline: float, stop: threading.Event | None,
+              epoch: threading.Event, *, health: bool = False) -> object:
+        connection = self.connection()
+        response = None
+        reached = False
+        done = threading.Event()
+
+        def interrupt() -> None:
+            # Wake blocked headers/body/dial on cancellation AND the original
+            # deadline. HTTPConnection may relinquish its socket after headers.
+            while not done.wait(0.02):
+                if (epoch.is_set() or stop is not None and stop.is_set()
+                        or time.monotonic() >= deadline):
+                    stream = getattr(connection, "sock", None)
+                    if response is not None:
+                        stream = (getattr(response, "socket", None)
+                                  or getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", stream))
+                    if stream is not None:
+                        try:
+                            stream.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                    # HTTPResponse owns its file wrapper while read1 runs;
+                    # concurrent HTTPConnection.close can close it twice.
+                    # Shutdown wakes the reader; its owner closes in finally.
+                    if not isinstance(connection, http.client.HTTPConnection):
+                        connection.close()
+                    return
+
+        watcher = threading.Thread(target=interrupt, daemon=True, name="app-scheme-admission")
+        watcher.start()
+        try:
+            self._check(stop, epoch)
+            if time.monotonic() >= deadline:
+                raise ValueError
+            if isinstance(connection, http.client.HTTPConnection):
+                connection.timeout = max(0.001, deadline - time.monotonic())
+                connection.connect()
+                reached = True
+                self._check(stop, epoch)
+                connection.request("GET", path, headers={"Connection": "close", "Accept-Encoding": "identity"})
+                response = connection.getresponse()
+            else:
+                try:
+                    response = connection.send("GET", path, {}, b"", deadline=deadline)
+                except RemoteError as error:
+                    # Dial/credential failures are translated by RemoteCall;
+                    # framing/deadline errors occur after the pinned dial.
+                    reached = str(error) != "unavailable"
+                    raise
+                except OSError:
+                    reached = True
+                    raise
+                reached = True
+            if response.status != 200 or response.length is not None and response.length > limit:
+                raise ValueError
+            expected = response.length
+            data = bytearray()
+            while True:
+                self._check(stop, epoch)
+                if time.monotonic() >= deadline:
+                    raise ValueError
+                chunk = response.read1(min(16384, limit + 1 - len(data)))
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise ValueError
+                if not chunk:
+                    break
+            if expected is not None and len(data) != expected:
+                raise ValueError
+            value = json.loads(data)
+            self._check(stop, epoch)
+            if time.monotonic() >= deadline:
+                raise ValueError
+            return value
+        except (OSError, ValueError, TypeError, RecursionError, http.client.HTTPException, RemoteError):
+            self._check(stop, epoch)
+            if health and reached:
+                raise SchemeError(503, "incompatible", "host") from None
+            raise SchemeError(503, "target_unreachable") from None
+        finally:
+            done.set()
+            watcher.join()
+            if response is not None:
+                response.close()
+            connection.close()
+
+    def bootstrap(self, stop: threading.Event | None = None) -> None:
+        with self._state:
+            epoch = self._epoch
+        deadline = time.monotonic() + HEALTH_TIMEOUT
+        self._check(stop, epoch)
+        while not self._lock.acquire(timeout=0.02):
+            self._check(stop, epoch)
+            if time.monotonic() >= deadline:
+                raise SchemeError(503, "busy")
+        try:
+            self._check(stop, epoch)
+            with self._state:
+                side = self._compatibility
+            if side is None:
+                try:
+                    value = self._json("/api/v1/health", MAX_HEALTH, deadline, stop, epoch, health=True)
+                    contract = value.get("api_contract") if isinstance(value, dict) else None
+                    if (not isinstance(contract, dict) or type(contract.get("current")) is not int
+                            or type(contract.get("min_client")) is not int):
+                        side = "host"
+                    elif contract["min_client"] > CLIENT:
+                        side = "app"
+                    elif contract["current"] < MIN_DAEMON or not contract["min_client"] <= CLIENT <= contract["current"]:
+                        side = "host"
+                    else:
+                        side = ""
+                except SchemeError as error:
+                    if error.code != "incompatible":
+                        raise
+                    side = error.side
+                with self._state:
+                    self._check(stop, epoch)
+                    self._compatibility = side
+            if side:
+                raise SchemeError(503, "incompatible", side)
+            self._prepare(stop, epoch)
+            self._check(stop, epoch)
+        finally:
+            self._lock.release()
+
+    def _prepare(self, stop: threading.Event | None, epoch: threading.Event) -> None:
+        pass
+
+    def _admitted(self) -> None:
+        with self._state:
+            if self._compatibility is None:
+                raise SchemeError(503, "target_starting")
+            if self._compatibility:
+                raise SchemeError(503, "incompatible", self._compatibility)
+
+
+class LocalDaemon(_Target):
     """Native bootstrap and single-hop HTTP to an already verified local port.
 
     No proxy environment, redirect following, retries, token persistence or
@@ -160,47 +328,28 @@ class LocalDaemon:
     def __init__(self, port: int) -> None:
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("invalid verified port")
+        super().__init__()
         self.port = port
-        self._bearer: str | None = None
-        self._lock = threading.Lock()
 
     def connection(self) -> http.client.HTTPConnection:
         return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
 
-    def bootstrap(self, stop: threading.Event | None = None) -> None:
-        deadline = time.monotonic() + 10
-        while not self._lock.acquire(timeout=0.1):
-            if time.monotonic() >= deadline or stop is not None and stop.is_set():
-                raise SchemeError(503, "target_unreachable")
-        try:
+    def _prepare(self, stop: threading.Event | None, epoch: threading.Event) -> None:
+        with self._state:
             if self._bearer is not None:
                 return
-            try:
-                with closing(self.connection()) as connection:
-                    connection.request("GET", "/api/v1/auth/bootstrap", headers={"Connection": "close"})
-                    response = connection.getresponse()
-                    data = bytearray()
-                    while True:
-                        if time.monotonic() >= deadline or stop is not None and stop.is_set():
-                            raise ValueError
-                        chunk = response.read1(16385 - len(data))
-                        data.extend(chunk)
-                        if not chunk or len(data) >= 16385:
-                            break
-                    if response.status != 200 or len(data) > 16384:
-                        raise ValueError
-                    token = json.loads(data)["token"]
-                    if (not isinstance(token, str) or not token or len(token) > 4096
-                            or not token.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in token)):
-                        raise ValueError
-                    self._bearer = token
-            except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
-                raise SchemeError(503, "target_unreachable") from None
-        finally:
-            self._lock.release()
+        value = self._json("/api/v1/auth/bootstrap", 16384, time.monotonic() + 10, stop, epoch)
+        token = value.get("token") if isinstance(value, dict) else None
+        if (not isinstance(token, str) or not token or len(token) > 4096
+                or not token.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in token)):
+            raise SchemeError(503, "target_unreachable")
+        with self._state:
+            self._check(stop, epoch)
+            self._bearer = token
 
     def send(self, connection: http.client.HTTPConnection, method: str, target: str,
              headers: dict[str, str], body: bytes) -> http.client.HTTPResponse:
+        self._admitted()
         path, checked_target = route(ORIGIN + target)
         if not path.startswith("/api/v1/") or method not in METHODS:
             raise SchemeError(400, "invalid_request")
@@ -222,7 +371,7 @@ class LocalDaemon:
         return response
 
 
-class RemoteDaemon:
+class RemoteDaemon(_Target):
     """One explicitly selected native session; no enrollment or candidate switch.
 
     Connecting sessions remain selected but cannot dial until the native owner
@@ -230,19 +379,30 @@ class RemoteDaemon:
     """
 
     def __init__(self, session: object, *, ready: bool = False) -> None:
-        self.session, self.ready = session, ready
+        super().__init__()
+        self.session, self._ready = session, ready
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @ready.setter
+    def ready(self, value: bool) -> None:
+        if value != self._ready:
+            self.reset()
+        self._ready = value
 
     def bootstrap(self, stop: threading.Event | None = None) -> None:
         if not self.ready:
             raise SchemeError(503, "target_starting")
-        if stop is not None and stop.is_set():
-            raise SchemeError(499, "cancelled")
+        super().bootstrap(stop)
 
     def connection(self) -> object:
         return _runtime.RemoteCall(self.session.dial, self.session.release, self.session._credential)
 
     def send(self, connection: object, method: str, target: str,
              headers: dict[str, str], body: bytes) -> object:
+        self._admitted()
         path, checked = route(ORIGIN + target)
         if not path.startswith("/api/v1/") or method not in METHODS:
             raise SchemeError(400, "invalid_request")
