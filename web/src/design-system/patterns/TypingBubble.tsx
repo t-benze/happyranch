@@ -2,7 +2,7 @@
  * TypingBubble — an inline placeholder shown at the end of a conversation
  * transcript while an agent is composing (or queued to compose) its reply.
  *
- * Styled like a `worker` MessageBubble so it sits where the real reply will
+ * Styled like a `worker` MessageBubble card (THR-376) so it sits where the real reply will
  * land, with an animated three-dot "typing" indicator. Two states:
  *   - `working` — dots bounce, caption shows live elapsed (`replying… 5s`)
  *   - `queued`  — dots dimmed + static, caption `queued`
@@ -57,22 +57,21 @@ export function TypingBubble({
   const shownCaption = caption ?? defaultCaption;
 
   return (
-    // Compact inline indicator (a-thread-detail `.replying`): a bold name row
-    // with the "replying…" caption + an optional generic trailing control, above
-    // a small chat-bubble that holds only the animated dots. No heavy card — the
-    // sender avatar already carries identity beside it.
+    // THR-376 mockup .msg.live: the same meta row as an agent turn (name
+    // 13/600 + an info "replying…" caption) above a small card-styled bubble
+    // (surface, border, 4/16/16/16 radius, shadow-sm) holding only the dots.
     <article
       className="min-w-0"
       aria-label={ariaLabel ?? `${agentName} is ${working ? 'replying' : 'queued'}`}
     >
-      <div className="flex items-center gap-2">
-        <span className="text-text-primary truncate text-sm font-semibold">{agentLabel ?? agentName}</span>
-        <span className={`text-caption ${working ? 'text-info' : 'text-text-muted'}`}>
+      <div className="text-caption mb-1.25 flex min-w-0 items-baseline gap-2">
+        <span className="text-body-sm text-text-primary min-w-0 truncate font-semibold">{agentLabel ?? agentName}</span>
+        <span className={`min-w-0 ${working ? 'text-info font-semibold' : 'text-text-muted'}`}>
           {shownCaption}
         </span>
         {trailing ? <span className="ml-auto shrink-0">{trailing}</span> : null}
       </div>
-      <div className="border-border-default bg-surface-sunken mt-2 inline-flex w-fit items-center rounded-lg border px-3.5 py-2.5">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm inline-flex w-fit items-center rounded-lg rounded-tl-sm border px-3.75 py-2.75">
         <TypingDots animate={working} />
       </div>
     </article>
@@ -82,13 +81,13 @@ export function TypingBubble({
 function TypingDots({ animate }: { animate: boolean }): JSX.Element {
   return (
     <div
-      className={`text-text-muted flex items-center gap-1 ${animate ? '' : 'opacity-50'}`}
+      className={`flex items-center gap-1 ${animate ? '' : 'opacity-50'}`}
       aria-hidden="true"
     >
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className={`inline-block h-2 w-2 rounded-full bg-current ${animate ? 'typing-dot' : ''}`}
+          className={`inline-block size-1.5 rounded-full bg-text-muted ${animate ? 'typing-dot' : ''}`}
         />
       ))}
     </div>

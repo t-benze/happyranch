@@ -1943,16 +1943,44 @@ reason text; their behavior is unchanged.
 
 ### Thread-detail system rows
 
-The live `ThreadDetailTranscript` renders system events through its local
-`SystemDivider`: one separator above a monospaced description, inline icon
-and task links, then trailing system-event metadata. Short and long rows use
-the transcript content width inside the existing padding. Text and unbroken
-identifiers wrap; the timestamp remains available in the row tooltip.
+The live `ThreadDetailTranscript` (THR-376 PR2) renders a centred stream
+(`max-w-3xl`) with 18px between turns:
+
+- **Day separators.** A separator precedes the first message of each
+  host-local calendar day, computed client-side from `created_at`: "Today ·
+  date", "Yesterday · date" or a localized date (year shown only outside the
+  current year). Messages with an unparseable timestamp never open a day.
+  Turn times are time-only; the full local timestamp stays in the tooltip.
+  The labels advance at local midnight without reply activity or reload: one
+  timer is armed for the next local midnight and re-armed after it fires, and
+  a tab returning to `visible` re-checks immediately. It makes no request.
+- **Founder turn.** A right-aligned accent-soft bubble with no avatar and the
+  meta on the right; the founder's current name (IdentityName, canonical
+  `founder`) remains as screen-reader text.
+- **Agent turn.** A `md` Avatar, a meta row (current name, `#seq`, time) and a
+  card body (surface, border, small shadow, `max-w-prose`). Markdown, mentions
+  and attachments keep their existing rendering.
+- **Responder receipts.** Pills under the founder message, from the existing
+  `responder_status` only: replied, declined, failed, founder-aborted and
+  **working**. Working receipts now show alongside the tail typing row
+  (restyled as an agent meta row plus a card-styled dots bubble); queued stays
+  off the strip.
+- **System events.** Centred chips with an inline icon, task links and the
+  time (`participant_added` reads "{agent} joined the thread"); a screen-reader
+  "system event" prefix replaces the old trailing metadata. Text and unbroken
+  identifiers wrap inside the chip.
+- **Declines.** `kind=decline` is an attention chip. A Why?/Hide expander shows
+  `decline_reason` verbatim and is omitted when there is no reason.
+- **Escalations.** `task_escalated` is a card with a 3px attention left
+  border, built only from the payload's `task_id` and `reason`. The reason is
+  clamped to two lines with Show more/Show less only when it actually
+  overflows, and Open task links to the task.
+
 `describeSystem` displays the complete supplied task-completion summary and
-escalation reason without a character limit, preserving line breaks and safely
-rendering HTML-like content as literal text. It does not expose additional
-payload fields. Ordinary message bubbles and terminal responder strips retain
-their separate rendering paths. CLI transcript formatting is unchanged.
+escalation reason without a character limit, preserving line breaks and
+paragraphs (`whitespace-pre-wrap`) and safely rendering HTML-like content as
+literal text. It does not expose additional payload fields. CLI transcript
+formatting is unchanged.
 
 ### Sidebar height and scrolling
 

@@ -1,39 +1,77 @@
+import { Ban, Check, TriangleAlert } from 'lucide-react';
 import { IdentityName } from '@/shared/identities/IdentityName';
 import type { ResponderStatusEntry } from '@/lib/api/types';
 import { useTranslation } from '@/hooks/i18n';
 import { localizedElapsed, type DeliveryTranslator } from './ReplyDeliveryStrip';
 
+export type ResponderStripAlign = 'start' | 'center' | 'end';
+
+const ALIGN_CLASS: Record<ResponderStripAlign, string> = {
+  start: 'justify-start',
+  center: 'justify-center',
+  end: 'justify-end',
+};
+
 export function ResponderStatusStrip({
   statuses,
   nowMs,
+  align = 'start',
 }: {
   statuses: ResponderStatusEntry[];
   nowMs?: number;
+  /** Row alignment: `end` under a founder bubble, `center` under a system
+   *  event, `start` under an agent card (THR-376 mockup .rcpt). */
+  align?: ResponderStripAlign;
 }): JSX.Element | null {
   const { t } = useTranslation();
-  // In-flight states (queued/working) are surfaced by the inline TypingBubble
-  // at the transcript tail; this strip is the per-message terminal record only.
-  const terminal = statuses.filter(
-    (s) => s.status === 'replied' || s.status === 'declined' || s.status === 'failed',
+  // THR-376 receipt pills (mockup .rc): replied / working / declined / failed
+  // (plus the neutral founder-abort). Queued stays off the strip: the tail
+  // TypingBubble is its only surface. Working is shown here as a receipt pill
+  // beside the tail TypingBubble, as the mockup's live state does; both read
+  // the same existing responder_status data.
+  const shown = statuses.filter(
+    (s) =>
+      s.status === 'replied' ||
+      s.status === 'working' ||
+      s.status === 'declined' ||
+      s.status === 'failed',
   );
-  if (terminal.length === 0) return null;
+  if (shown.length === 0) return null;
   const now = nowMs ?? Date.now();
-  // Light inline terminal record (THR-061 a-thread-detail — the founder found
-  // the old carded "Responders · this dispatch" panel too heavy). No card, no
-  // uppercase header: just a wrapped row of "· <agent> <state>" with a small
-  // color-coded dot + colored state label per agent. The in-flight
-  // working/queued states stay on the tail TypingBubble (no dup here).
   return (
-    <div className="text-caption mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-      {terminal.map((s) => (
-        <span key={s.agent_name} className="inline-flex items-center gap-1.5">
-          <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s)}`} />
-          <span className="text-text-secondary font-mono"><IdentityName canonicalId={s.agent_name} /></span>
-          <span className={stateClass(s)}>{statusLabel(s, now, t)}</span>
+    <div className={`mt-1.5 flex flex-wrap items-center gap-1.5 ${ALIGN_CLASS[align]}`}>
+      {shown.map((s) => (
+        <span
+          key={s.agent_name}
+          data-receipt={isAborted(s) ? 'aborted' : s.status}
+          className={`text-caption inline-flex max-w-full min-w-0 items-center gap-1.25 rounded-pill py-px pr-2 ${pillClass(s)}`}
+        >
+          <ReceiptIcon s={s} />
+          <span className="text-mono-sm min-w-0 truncate font-mono"><IdentityName canonicalId={s.agent_name} /></span>
+          <span className="shrink-0">{statusLabel(s, now, t)}</span>
         </span>
       ))}
     </div>
   );
+}
+
+function ReceiptIcon({ s }: { s: ResponderStatusEntry }): JSX.Element {
+  if (isAborted(s)) return <Ban aria-hidden="true" className="size-2.75 shrink-0" />;
+  switch (s.status) {
+    case 'working':
+      return (
+        <span
+          aria-hidden="true"
+          className="border-info-soft border-t-info size-2.25 shrink-0 animate-spin rounded-full border-2"
+        />
+      );
+    case 'replied':
+      return <Check aria-hidden="true" className="size-2.75 shrink-0" />;
+    case 'declined':
+      return <Ban aria-hidden="true" className="size-2.75 shrink-0" />;
+    default:
+      return <TriangleAlert aria-hidden="true" className="size-2.75 shrink-0" />;
+  }
 }
 
 // A founder-initiated abort is persisted as a `failed` invocation with
@@ -93,38 +131,21 @@ function terminalLabel(s: ResponderStatusEntry, t: DeliveryTranslator): string |
   }
 }
 
-// Colored state LABEL token per terminal state (a-thread-detail). The replied
-// (accent) and failed (danger) tokens are asserted by ResponderStatusStrip
-// tests, so keep those class names stable.
-function stateClass(s: ResponderStatusEntry): string {
-  if (isAborted(s)) return 'text-text-muted';
+// Receipt pill tone per state (THR-376 mockup .rc.ok / .work / .declined /
+// .failed). The replied (accent-text) and failed (danger) tokens keep the
+// historical class names. A founder abort stays neutral, never danger.
+function pillClass(s: ResponderStatusEntry): string {
+  if (isAborted(s)) return 'border-border-default bg-surface-raised text-text-secondary border pl-1.5';
   switch (s.status) {
-    case 'queued':
-      return 'text-text-muted';
     case 'working':
-      return 'text-info';
+      return 'bg-info-soft text-info pl-1.5';
     case 'replied':
-      return 'text-accent-text';
+      return 'text-accent-text pl-0';
     case 'declined':
-      return 'text-attention-text';
+      return 'bg-attention-soft text-attention-text pl-1.5';
     case 'failed':
-      return 'text-danger';
-  }
-}
-
-// Small leading dot color per terminal state (background token).
-function dotClass(s: ResponderStatusEntry): string {
-  if (isAborted(s)) return 'bg-border-default';
-  switch (s.status) {
-    case 'queued':
-      return 'bg-border-default';
-    case 'working':
-      return 'bg-info';
-    case 'replied':
-      return 'bg-accent-default';
-    case 'declined':
-      return 'bg-attention';
-    case 'failed':
-      return 'bg-danger';
+      return 'bg-danger-soft text-danger pl-1.5';
+    default:
+      return 'border-border-default bg-surface-raised text-text-secondary border pl-1.5';
   }
 }
