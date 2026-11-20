@@ -1,12 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "HappyRanch native connection bridge v2 payloads",
-  "description": "Target contract: app.status result / app.stateChanged data, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
+  "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested data, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
   "oneOf": [
     { "$ref": "#/$defs/appState" },
+    { "$ref": "#/$defs/dialogRequested" },
     { "$ref": "#/$defs/nativeErrorBody" }
   ],
   "$defs": {
+    "dialogRequested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "dialog"],
+      "properties": {
+        "schema": { "const": 2 },
+        "dialog": { "enum": ["settings", "connection"] }
+      }
+    },
     "generation": {
       "type": "string",
       "minLength": 1,
