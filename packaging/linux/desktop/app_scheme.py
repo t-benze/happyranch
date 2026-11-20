@@ -1,7 +1,8 @@
-"""Local-only transport for the opt-in packaged UI. No GTK or daemon imports."""
+"""Native-selected local/remote transport for the opt-in packaged UI. No GTK or daemon imports."""
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 from contextlib import closing
 import http.client
 import json
@@ -13,6 +14,12 @@ import stat
 import threading
 import time
 from urllib.parse import unquote, urlsplit
+
+# Installed system Python uses isolated imports; resolve this pure sibling.
+_spec = importlib.util.spec_from_file_location("client_runtime", Path(__file__).with_name("client_runtime.py"))
+_runtime = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_runtime)
+RemoteError = _runtime.ClientError
 
 ORIGIN = "happyranch-app://app"
 MAX_BODY = 64 * 1024 * 1024
@@ -212,4 +219,42 @@ class LocalDaemon:
         if 300 <= response.status < 400 and response.status != 304:
             response.close()
             raise SchemeError(502, "upstream_redirect")
+        return response
+
+
+class RemoteDaemon:
+    """One explicitly selected native session; no enrollment or candidate switch.
+
+    Connecting sessions remain selected but cannot dial until the native owner
+    publishes ready. The session remains the sole pinned-peer/credential owner.
+    """
+
+    def __init__(self, session: object, *, ready: bool = False) -> None:
+        self.session, self.ready = session, ready
+
+    def bootstrap(self, stop: threading.Event | None = None) -> None:
+        if not self.ready:
+            raise SchemeError(503, "target_starting")
+        if stop is not None and stop.is_set():
+            raise SchemeError(499, "cancelled")
+
+    def connection(self) -> object:
+        return _runtime.RemoteCall(self.session.dial, self.session.release, self.session._credential)
+
+    def send(self, connection: object, method: str, target: str,
+             headers: dict[str, str], body: bytes) -> object:
+        path, checked = route(ORIGIN + target)
+        if not path.startswith("/api/v1/") or method not in METHODS:
+            raise SchemeError(400, "invalid_request")
+        if path.rstrip("/") == "/api/v1/auth/bootstrap":
+            raise SchemeError(400, "native_bootstrap_only")
+        if len(body) > MAX_BODY:
+            raise SchemeError(413, "body_too_large")
+        try:
+            response = connection.send(method, checked, headers, body)
+        except (OSError, ValueError, RemoteError):
+            raise SchemeError(503, "target_unreachable") from None
+        if 300 <= response.status < 400 and response.status != 304:
+            response.close()
+            raise SchemeError(503, "target_unreachable")
         return response

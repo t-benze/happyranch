@@ -636,10 +636,34 @@ traversal, symlinks, directory listing and `/api` fallback are refused. The
 build-manifest/cutover work remains in S1a/S7.
 
 Native bootstraps the verified loopback daemon and keeps its bearer only in
-memory. The page's bootstrap receives a dummy token. API forwarding allows
-only safe content/concurrency headers, reconstructs framing, injects the
-native bearer and refuses redirects; cookies and page-supplied authority or
-forwarded identity never reach the daemon. Daemon authentication is unchanged.
+memory. The page's bootstrap receives a dummy token. Local API forwarding
+allows only safe content/concurrency headers, reconstructs framing, injects
+the native bearer and refuses redirects.
+
+S2b PR-A also supplies a listener-free remote adapter (`client_runtime.RemoteCall`)
+and native target selection (`AppScheme.select_target`). The existing opt-in
+launcher still selects its verified local daemon. A native owner may select
+`LocalDaemon(port)`, `RemoteDaemon(active_session, ready=False/True)`, or `None`;
+passing `None` as the loader's verified port starts with no target. Selection
+is a native/UI-thread operation, never a page command. `ready=False` denotes
+a selected remote session still connecting; only its owner publishes readiness.
+The adapter calls that session's existing pinned-peer `dial`, `release` and
+native `_credential` callbacks, without constructing a proxy/listener. It shares
+the loopback proxy's authority-header stripping, injects the device credential,
+and reconstructs Content-Length from bounded payload bytes/streams. Response
+Content-Length/chunk framing is decoded incrementally, including SSE. Existing
+remote windows/listeners stay unchanged until S7; candidate/commit ownership
+remains S5. No enrollment, compatibility gate or daemon authentication changes.
+
+Every scheme transfer captures its target before worker dispatch. Native
+selection cancels old transfers instead of rerouting them. Pre-header selection
+cancellation returns `409 {"detail":{"code":"target_changed"}}`; no selected
+target, a connecting remote target, and unavailable transport return `503`
+with exactly `{"detail":{"code":"no_target"}}`, `target_starting`, or
+`target_unreachable` in the same envelope. Concurrency refusal uses `503 busy`.
+Compatibility gating remains PR-B. Browser authorization, cookies and native/
+forwarded identity headers are stripped before native injection. Only safe
+response headers reach WebKit; exception text and real credentials never do.
 
 The document-start fetch adapter serializes request bodies into bytes before
 calling WebKit, including Blob/FormData and S1a's byte multipart bodies.
@@ -649,8 +673,9 @@ local to the opted-in view after S1a: S1a serializes multipart, while native
 JSON byte conversion/admission, request IDs and explicit abort messages still
 use this adapter; no web source changes are needed here. Body cap:
 64 MiB/10 seconds, at most two body transfers and 32 total API transfers.
-Native setup has a 15-second deadline; upstream socket operations time out
-after 5 seconds before headers and 30 seconds during non-event response reads.
+Native setup has a 15-second deadline; local upstream socket operations time out
+after 5 seconds before headers (remote request upload/headers share 10 seconds),
+and after 30 seconds during non-event response reads.
 Quiet `text/event-stream` reads have no idle timeout and deliver later events.
 Streams are incremental, capped at one hour, with a 10-second slow-reader limit.
 Abort, document navigation, process termination and view destruction cancel
@@ -675,10 +700,13 @@ Focused standalone native checks (no GI/display/retired Python suite):
 /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme.py -v
 ```
 
-Response-body checks use real loopback HTTP and system GIO/GLib (no display).
+Remote adapter and response-body checks use real loopback HTTP and system
+GIO/GLib (no display). The reset fixture closes directly without SHUT_WR and
+omits Content-Length, distinguishing TCP reset from a short orderly EOF.
 The quiet-stream case waits 31 seconds, exceeding the former 30-second cap:
 
 ```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_response.py -v
 ```
 

@@ -58,15 +58,23 @@ class ResponseTests(unittest.TestCase):
                     self.end_headers()
                     self.wfile.write(b"3\r\nabc\r\ninvalid\r\n")
                 else:
-                    self.send_header("Content-Length", "3" if self.path == "/api/v1/complete" else "4096")
+                    if self.path != "/api/v1/reset":
+                        self.send_header("Content-Length", "3" if self.path == "/api/v1/complete" else "4096")
                     self.end_headers()
                     self.wfile.write(b"abc")
                     self.wfile.flush()
                     if self.path == "/api/v1/reset":
+                        time.sleep(0.1)  # Deliver headers before the genuine reset.
                         self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 self.close_connection = True
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class Server(ThreadingHTTPServer):
+            def shutdown_request(self, request: socket.socket) -> None:
+                # Inherited SHUT_WR can mask SO_LINGER's reset as orderly EOF.
+                # Close directly so the unknown-length case proves TCP reset.
+                self.close_request(request)
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         self.addCleanup(self.cleanup_server)
@@ -83,7 +91,7 @@ class ResponseTests(unittest.TestCase):
 
     def consume(self, path: str, cancel: str = "") -> dict:
         result = {"body": bytearray(), "error": None, "early_error": None}
-        transfer = Transfer()
+        transfer = Transfer(self.app.daemon)
         transfer.cancellable = Gio.Cancellable()
         self.app.transfers["test"] = transfer
         loop = GLib.MainLoop()
@@ -154,6 +162,8 @@ class ResponseTests(unittest.TestCase):
                 result = self.consume("/api/v1/" + path)
                 self.assertEqual(result["status"], 200)
                 self.assertIsInstance(result["error"], GLib.Error, "body must error, not successful EOF")
+                if path == "reset":
+                    self.assertEqual(result["length"], -1, "reset must not rely on Content-Length truncation")
                 if path == "short":
                     self.assertEqual(result["body"], b"abc")
                     self.assertEqual(result["length"], 4096)
