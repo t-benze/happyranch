@@ -4,6 +4,7 @@
  * POST /tasks/{id}/progress. See spec §2.
  */
 import { API_PREFIX, request } from './client';
+import { prepareMultipartUpload } from './multipart';
 import type {
   TaskAttachmentRecord,
   TaskAttachmentRef,
@@ -182,6 +183,10 @@ export const uploadTaskAttachment = async (
   const params = new URLSearchParams({ agent });
   const form = new FormData();
   form.set('file', file, file.name);
+  const upload = await prepareMultipartUpload(
+    form,
+    Object.assign(new Error('Upload failed: 413'), { status: 413 }),
+  );
   const res = await fetch(
     `${API_PREFIX}/orgs/${slug}/tasks/attachments?${params.toString()}`,
     {
@@ -189,8 +194,9 @@ export const uploadTaskAttachment = async (
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
+        ...upload.headers,
       },
-      body: form,
+      body: upload.body,
       credentials: 'same-origin',
     },
   );

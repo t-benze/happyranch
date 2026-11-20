@@ -1,5 +1,23 @@
 # Web And CLI
 
+## Multipart uploads in the native app scheme
+
+The artifacts and task-attachment API clients use same-origin `/api/v1` paths.
+On `happyranch-app:` they encode FormData inside JavaScript with the platform
+multipart encoder, then send a Uint8Array and its explicit boundary-bearing
+Content-Type. This avoids WebKitGTK's Blob-backed scheme-request crash. Ordinary
+daemon-served browser uploads still send native FormData with browser-set headers.
+Both scheme uploads mirror the daemon's 10 MiB per-file limit before encoding,
+preserving the existing artifact/task upload error contracts. Serialization adds
+a multipart-sized byte buffer alongside the File and encoder buffers; the file
+cap bounds this extra allocation, not total process memory or concurrent uploads.
+No daemon security or native packaging behavior changes in this web slice.
+
+Focused serializer checks use the existing standalone Node test venue:
+`node --test web/scripts/multipart.test.mjs` (Node 24, repository root).
+They inspect exact framing and decode with the platform multipart parser;
+the retired Vitest suite remains retired.
+
 The separate, daemon-independent native connection shell is built with
 `cd web && npm run build:connection`; see [its boundary/import audit](../../web/connection/README.md).
 It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.

@@ -1,5 +1,6 @@
 import { clearToken, getToken } from '../auth';
 import { API_PREFIX, ApiError } from './client';
+import { MAX_UPLOAD_FILE_BYTES, prepareMultipartUpload } from './multipart';
 
 /**
  * The agent identity attributed to browser-driven artifact writes (upload +
@@ -56,13 +57,22 @@ async function uploadWithToken(
   if (args.name) params.set('name', args.name);
   const form = new FormData();
   form.set('file', args.file, args.name ?? args.file.name);
+  const upload = await prepareMultipartUpload(
+    form,
+    new ApiError(413, 'artifact_too_large', {
+      code: 'artifact_too_large',
+      max_bytes: MAX_UPLOAD_FILE_BYTES,
+      size_bytes: args.file.size,
+    }),
+  );
   return fetch(`${API_PREFIX}/orgs/${slug}/artifacts?${params.toString()}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
+      ...upload.headers,
     },
-    body: form,
+    body: upload.body,
     credentials: 'same-origin',
   });
 }
