@@ -431,7 +431,9 @@ new route, no dependency, no config change:
   format, untouched by this slice; legacy rows stay readable).
 - `GET /api/v1/health` (unauthenticated liveness) gains a **bounded,
   non-sensitive** `host_sessions` block only when the supervisor is wired
-  (idle states keep the pre-existing exact two-key contract): receipt
+  (idle states omit `host_sessions`; all states include `status`,
+  `active_runtime`, `update_busy`, `api_contract` and `release` per the
+  [current health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata)): receipt
   aggregates and admission/backpressure counts yes; the per-receipt recent
   window, censused survivor identities (PIDs / start identities), and the
   backend probe evidence string (a failed probe can embed raw exception

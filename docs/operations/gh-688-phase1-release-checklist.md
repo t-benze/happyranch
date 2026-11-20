@@ -42,7 +42,7 @@
 | --- | --- |
 | Restart timestamp (UTC, ISO-8601) | `DEPLOY_EPOCH = <YYYY-MM-DDTHH:MM:SSZ>` |
 | Deployed/served version + commit | `git -C <runtime>/repos/happyranch rev-parse HEAD` + `git log -1 --format=%h` |
-| Daemon status/health evidence | `ps -o pid,lstart,etime,command -p <PID>` and `GET /api/v1/health` (`{"status":"ok","active_runtime":...}`) |
+| Daemon status/health evidence | `ps -o pid,lstart,etime,command -p <PID>` and `GET /api/v1/health` (`status: ok`, `active_runtime`, `update_busy`, `api_contract`, `release`, optional `host_sessions`; [health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata)) |
 | Served `web/dist` evidence | the SPA bundle served from the restarted daemon's `web/dist` (path in the daemon command line / active runtime) |
 | Deployment epoch recorded in this release record | §6 template |
 

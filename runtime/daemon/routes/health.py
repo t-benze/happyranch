@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from runtime.config import Settings, settings as _settings
+from runtime.daemon import api_contract
+from runtime.daemon.build_info import RELEASE
 from runtime.daemon.host_session_store import compose_host_sessions_block
 from runtime.daemon.update_busy import UpdateBusy, compose_update_busy
 from runtime.orchestrator.executor_binary_registry import (
@@ -105,11 +107,18 @@ class PrereqsResponse(BaseModel):
     prereqs: list[ExecutorPrereq]
 
 
+class ApiContract(BaseModel):
+    current: int
+    min_client: int
+
+
 class HealthResponse(BaseModel):
     status: str
     active_runtime: str | None
     host_sessions: dict | None = None
     update_busy: UpdateBusy
+    api_contract: ApiContract
+    release: str
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +132,8 @@ async def health(request: Request) -> dict:
     body: dict = {
         "status": "ok",
         "active_runtime": str(state.runtime.root) if state.runtime else None,
+        "api_contract": {"current": api_contract.CURRENT, "min_client": api_contract.MIN_CLIENT},
+        "release": RELEASE,
     }
     # THR-207 observability slice: when the daemon-wide HostSessionSupervisor
     # is wired (runtime-backed states), surface a BOUNDED, NON-SENSITIVE

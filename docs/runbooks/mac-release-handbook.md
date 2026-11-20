@@ -31,6 +31,9 @@ The new field covers logical/native owners, queues and indexed nonterminal
 producer rows, including retained running jobs with unknown native liveness.
 An old daemon, missing/invalid data or an unavailable producer stays BUSY.
 See the [health contract](../agent-guides/web-and-cli.md#update-readiness-health-field).
+Health also includes additive `api_contract` and `release` metadata; current
+frozen Mac builds report `release: "unreleased"` until build identity is supplied
+([identity contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata)).
 
 An idle snapshot only presents Restart now / Later, with an explicit warning
 that work starting before the stop will be interrupted. Update when they

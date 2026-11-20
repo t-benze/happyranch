@@ -3399,9 +3399,36 @@ contract test is retired; Web/Swift still consume the snapshot and route
 classification. This operator does not run tests.
 
 
+### Host compatibility health metadata
+
+Unauthenticated `GET /api/v1/health` returns `status`, nullable `active_runtime`,
+`update_busy`, `api_contract: {current: 1, min_client: 1}` and `release`.
+`host_sessions` remains conditional on a wired supervisor; the route retains
+`response_model_exclude_unset=True`. Existing fields keep their meanings.
+The endpoint is already remote-allowed; these additive fields change no routes,
+authentication, bind, CORS or remote allowlist.
+
+`runtime/daemon/api_contract.py` owns both contract numbers. Only breaking API
+changes raise `current`; additive fields/routes do not. Raise `min_client` only
+to cut off old clients. Native compatibility checks (a later slice) use
+`min_client <= client contract <= current` and `current >= client min_daemon`;
+missing metadata means incompatible / Update Host. Metadata alone grants no access.
+
+`release` is `<installed distribution version>+<40-character lowercase source_sha>`
+(currently version `0.1.0`). Linux `build-payload.sh` writes the existing
+`build-info.json` beside the bundled `python/` prefix, located through
+`sys.prefix`, independently of cwd and daemon home. The daemon reads it once at
+module import, rejecting symlinks, non-regular files, files over 64 KiB, malformed
+JSON and invalid/all-zero SHAs. Only the validated version and SHA are public.
+Requests use the cached string without file, subprocess or Git work. Missing,
+unreadable or invalid identity, unavailable distribution version, and current
+frozen Mac builds (which supply no such build-info file) return exactly
+`"unreleased"`. This sentinel is never a release identifier. Changing build
+identity requires a new daemon process.
+
 ### Update readiness health field
 
-Public `GET /api/v1/health` adds exactly one read-only field, `update_busy`:
+Public `GET /api/v1/health` includes the read-only field `update_busy`:
 `{busy: boolean, unknown: boolean, counts: {host_active, host_queued,
 jobs_inflight, jobs_nonterminal, invocations_nonterminal}}`. Each count is
 an integer capped at 1000, or null when unavailable; counts may overlap and
