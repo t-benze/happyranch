@@ -292,6 +292,23 @@ class GTKTests(unittest.TestCase):
                 self.assertEqual(evaluate("return window.early.schema;"), 2)
                 status = evaluate("return JSON.parse(await happyranchConnection.call('app.status','{}'));")
                 self.assertEqual((status["schema"], status["state"], status["target"]), (2, "no_target", None))
+                calls = []
+                def dispatch(command: str, document: object, finish: object, **args: object) -> None:
+                    calls.append((command, document, args))
+                    finish(None, {"code": "incompatible", "side": "host"} if command == "client.commitSwitch"
+                           else "owner_save_unknown")
+                scheme.client_dispatch = dispatch
+                self.assertEqual(evaluate("try {await happyranchConnection.call('client.commitSwitch','{}');return null;}"
+                    " catch(raw) {return JSON.parse(raw);}"),
+                    {"code": "incompatible", "side": "host", "effect": "none", "recovery": "refresh"})
+                self.assertEqual(evaluate("try {await happyranchConnection.call('client.connectSaved',"
+                    "'{\"computerRef\":\"opaque-saved-ref\"}');return null;} catch(raw) {return JSON.parse(raw).code;}"),
+                    "owner_save_unknown")
+                self.assertEqual(calls, [("client.commitSwitch", scheme.document, {}),
+                    ("client.connectSaved", scheme.document, {"computerRef": "opaque-saved-ref"})])
+                self.assertEqual(evaluate("try {await happyranchConnection.call('client.commitSwitch','{\"invite\":\"synthetic\"}');"
+                    "return null;} catch(raw) {return JSON.parse(raw).code;}"), "unsupportedCommand")
+                self.assertEqual(len(calls), 2)
                 evaluate("window.events=[];window.unsubscribe=happyranchConnection.on('app.stateChanged', raw=>events.push(JSON.parse(raw)));return null;")
                 self.pump(lambda: scheme.subscribed)
                 scheme.select_target(None, owner_saves=())
@@ -301,6 +318,9 @@ class GTKTests(unittest.TestCase):
                 self.pump(lambda: scheme.bridge_token is None)
                 self.assertFalse(scheme.subscribed)
                 self.assertEqual(evaluate("try {await happyranchConnection.call('app.status','{}');return 'admitted';} catch (raw) {return JSON.parse(raw).code;}"), "documentChanged")
+                self.assertEqual(evaluate("try {await happyranchConnection.call('client.commitSwitch','{}');return 'admitted';}"
+                    " catch(raw) {return JSON.parse(raw).code;}"), "documentChanged")
+                self.assertEqual(len(calls), 2)
                 scheme.view.load_uri(ORIGIN + "/")
                 self.pump(lambda: scheme.bridge_token is not None)
                 scheme.view.load_uri("about:blank")
