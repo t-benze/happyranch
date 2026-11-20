@@ -90,6 +90,45 @@ function useNowMs(active: boolean): number {
   return now;
 }
 
+/**
+ * Host-local calendar-day key ('YYYY-M-D') that advances at local midnight
+ * without any reply activity (THR-376 PR2 review R1). One timer is armed for
+ * the next local midnight and re-armed after it fires; a tab returning from
+ * the background/suspend re-checks immediately. No polling, no requests.
+ */
+function useLocalDayKey(): string {
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  const [key, setKey] = useState(today);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      // +50ms so the callback lands strictly after the local day boundary.
+      timer = setTimeout(() => {
+        setKey(today());
+        arm();
+      }, next.getTime() - now.getTime() + 50);
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      setKey(today());
+      if (timer !== undefined) clearTimeout(timer);
+      arm();
+    };
+    arm();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  return key;
+}
+
 // Segmented inbox filter (THREADS-02). 'done' = archived; 'all' = both, derived
 // client-side by merging the two per-status fetches (the list payload carries no
 // finer waiting/active split, so no other bucket is honestly derivable here).
@@ -1610,6 +1649,8 @@ interface TranscriptProps {
 function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
   const { t, locale } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
+  // Re-renders the day separators when the local date rolls over.
+  const todayKey = useLocalDayKey();
 
   // Live pair-level obligations from the STORE projection (queued/running).
   // These replace inferred per-message invocation rows for conversational
@@ -1686,7 +1727,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
       <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col">
         {rows.map((row, i) => {
           if (row.type === 'day') {
-            return <DaySeparator key={`day-${row.key}`} iso={row.iso} />;
+            return <DaySeparator key={`day-${row.key}`} iso={row.iso} todayKey={todayKey} />;
           }
           const m = row.message;
           const variant = messageVariant(m);
@@ -1860,7 +1901,9 @@ function buildTranscriptRows(messages: ThreadMessage[]): TranscriptRow[] {
   return rows;
 }
 
-function DaySeparator({ iso }: { iso: string }): JSX.Element {
+function DaySeparator({ iso }: { iso: string; todayKey: string }): JSX.Element {
+  // todayKey (from useLocalDayKey) changes at local midnight; the new prop
+  // re-renders this separator so the label is recomputed against the clock.
   const { t, locale } = useTranslation();
   const d = new Date(iso);
   const now = new Date();
@@ -1931,7 +1974,9 @@ function SystemEvent({ timestamp, systemPayload, slug, formatTime, formatTitle }
     <div className="flex justify-center">
       <span className={EVENT_CHIP}>
         <Icon aria-hidden="true" className="text-text-muted size-3.25 shrink-0" />
-        <span className="min-w-0 break-words">
+        {/* pre-wrap keeps authored line breaks/paragraphs (e.g. a
+            task_completed final_output_summary), as before the restyle. */}
+        <span className="min-w-0 break-words whitespace-pre-wrap">
           <span className="sr-only">{t('threads.page.system.event')}: </span>
           {description}
         </span>
