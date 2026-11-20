@@ -43,6 +43,13 @@ import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-con
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { RecoverySettingsPage, SettingsPage } from '@/features/settings/SettingsPage';
+import { SettingsDialogBody } from '@/features/settings/SettingsDialogBody';
+import {
+  DesktopDialogsProvider,
+  DesktopSettingsRoute,
+  MAIN_CONTENT_ID,
+} from '@/features/desktop-dialogs/DesktopDialogs';
+import { isDesktopShell } from '@/features/desktop-dialogs/desktopShell';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -114,7 +121,7 @@ function AppShell(): JSX.Element {
       <TopbarSlotsProvider>
         <div className="flex min-w-0 flex-1 flex-col">
           <AppBar />
-          <main className="flex-1 overflow-hidden">
+          <main id={MAIN_CONTENT_ID} tabIndex={-1} className="flex-1 overflow-hidden focus:outline-none">
             {/* THR-387 S1b: a native recovery state replaces the visible page
                 but keeps it mounted (hidden) so drafts and page state survive. */}
             <NativeRecoveryFence bypass={settingsRoute}>
@@ -130,78 +137,86 @@ function AppShell(): JSX.Element {
 }
 
 export function AppRoutes(): JSX.Element {
+  // THR-387 S6-W1: in the desktop app, Main Settings routes open the one
+  // Settings dialog at that page; browser mode keeps the full-page routes.
+  const desktop = isDesktopShell();
   return (
-    <Routes>
-      {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
-          `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
-          and OrgSlugContext — keeping mock-only behaviour fully isolated
-          from the daemon-backed routes. */}
-      {!PROTOTYPES_DISABLED && prototypeRoutes()}
-      <Route element={<AppShell />}>
-        <Route index element={<RootRedirect />} />
-        {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
-            shell drives the container-level /orgs list + create routes, so a
-            slug is not yet chosen. Mounted in AppShell like the org-less index. */}
-        <Route path="onboarding" element={<OnboardingPage />} />
-        <Route path="/orgs/:slug" element={<OrgLayout />}>
-          <Route index element={<NavigateToHome />} />
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="threads" element={<ThreadsPage />} />
-          <Route path="threads/:thread_id" element={<ThreadsPage />} />
-          <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
-          <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
-          <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
-          <Route path="workflows/definitions/:definitionId" element={<SequentialWorkflowsPage view="definition" />} />
-          <Route path="workflows/runs/:runId" element={<SequentialWorkflowsPage view="run" />} />
-          <Route path="tasks" element={<TasksPage />} />
-          <Route path="tasks/:task_id" element={<TaskDetailPage />} />
-          <Route path="todos" element={<TodosPage />} />
-          <Route path="todos/:scheduleId" element={<TodosPage />} />
-          <Route path="kb" element={<KbPage />} />
-          <Route path="kb/:entrySlug/*" element={<KbPage />} />
+    <DesktopDialogsProvider renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}>
+      <Routes>
+        {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
+            `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
+            and OrgSlugContext — keeping mock-only behaviour fully isolated
+            from the daemon-backed routes. */}
+        {!PROTOTYPES_DISABLED && prototypeRoutes()}
+        <Route element={<AppShell />}>
+          <Route index element={<RootRedirect />} />
+          {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
+              shell drives the container-level /orgs list + create routes, so a
+              slug is not yet chosen. Mounted in AppShell like the org-less index. */}
+          <Route path="onboarding" element={<OnboardingPage />} />
+          <Route path="/orgs/:slug" element={<OrgLayout />}>
+            <Route index element={<NavigateToHome />} />
+            <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="threads" element={<ThreadsPage />} />
+            <Route path="threads/:thread_id" element={<ThreadsPage />} />
+            <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
+            <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
+            <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
+            <Route path="workflows/definitions/:definitionId" element={<SequentialWorkflowsPage view="definition" />} />
+            <Route path="workflows/runs/:runId" element={<SequentialWorkflowsPage view="run" />} />
+            <Route path="tasks" element={<TasksPage />} />
+            <Route path="tasks/:task_id" element={<TaskDetailPage />} />
+            <Route path="todos" element={<TodosPage />} />
+            <Route path="todos/:scheduleId" element={<TodosPage />} />
+            <Route path="kb" element={<KbPage />} />
+            <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
-          <Route path="audit" element={<AuditPage />} />
-          <Route path="skills" element={<SkillsPage />} />
-          {/* Static `new`/`validation` rank above the dynamic `:skillId` in
-              react-router v6, but keep them declared first for readability. */}
-          <Route path="skills/validation" element={<SkillValidationPage />} />
-          <Route path="skills/custom" element={<CustomSkillsPage />} />
-          <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
-          <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
-          <Route path="skills/:skillId" element={<SkillDetailPage />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="agents/:agent_name" element={<AgentsPage />} />
-          <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
-          <Route path="jobs" element={<JobsPage />} />
-          <Route path="jobs/:job_id" element={<JobDetailPage />} />
-          <Route path="health" element={<HealthPage />} />
-          <Route path="usage" element={<UsagePage />} />
-          {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
-              bookmark (and the dashboard deep-link) working via redirect. */}
-          <Route path="spend" element={<SpendRedirect />} />
-          <Route path="dreams" element={<DreamsPage />} />
-          {/* THR-035: the standalone Schedule surface folded into Work Hours.
-              Old bookmarks redirect to the Wakes view; the wake list now lives
-              as the `?view=wakes` tab of the Work Hours surface.
-              THR-305: with `work_hours_ui` off none of these routes exist, so
-              the direct and legacy URLs fall through to the not-found route. */}
-          {features.work_hours_ui && (
-            <>
-              <Route path="schedule" element={<ScheduleRedirect />} />
-              <Route path="work-hours" element={<WorkHoursSurface />} />
-              <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
-            </>
-          )}
-          <Route path="artifacts" element={<ArtifactsPage />} />
-          <Route path="settings/*" element={<SettingsPage />} />
+            <Route path="audit" element={<AuditPage />} />
+            <Route path="skills" element={<SkillsPage />} />
+            {/* Static `new`/`validation` rank above the dynamic `:skillId` in
+                react-router v6, but keep them declared first for readability. */}
+            <Route path="skills/validation" element={<SkillValidationPage />} />
+            <Route path="skills/custom" element={<CustomSkillsPage />} />
+            <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
+            <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
+            <Route path="skills/:skillId" element={<SkillDetailPage />} />
+            <Route path="agents" element={<AgentsPage />} />
+            <Route path="agents/:agent_name" element={<AgentsPage />} />
+            <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+            <Route path="jobs/:job_id" element={<JobDetailPage />} />
+            <Route path="health" element={<HealthPage />} />
+            <Route path="usage" element={<UsagePage />} />
+            {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
+                bookmark (and the dashboard deep-link) working via redirect. */}
+            <Route path="spend" element={<SpendRedirect />} />
+            <Route path="dreams" element={<DreamsPage />} />
+            {/* THR-035: the standalone Schedule surface folded into Work Hours.
+                Old bookmarks redirect to the Wakes view; the wake list now lives
+                as the `?view=wakes` tab of the Work Hours surface.
+                THR-305: with `work_hours_ui` off none of these routes exist, so
+                the direct and legacy URLs fall through to the not-found route. */}
+            {features.work_hours_ui && (
+              <>
+                <Route path="schedule" element={<ScheduleRedirect />} />
+                <Route path="work-hours" element={<WorkHoursSurface />} />
+                <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+              </>
+            )}
+            <Route path="artifacts" element={<ArtifactsPage />} />
+            <Route path="settings/*" element={desktop ? <DesktopSettingsRoute /> : <SettingsPage />} />
+          </Route>
+          {/* THR-387 S1b: recovery-only org-less Settings (Preferences reachable
+              during a startup recovery state with no known org). Outside
+              recovery it renders NotFound, as this URL did before. */}
+          <Route
+            path="settings/*"
+            element={desktop ? <DesktopSettingsRoute /> : <RecoverySettingsPage notFound={<NotFound />} />}
+          />
+          <Route path="*" element={<NotFound />} />
         </Route>
-        {/* THR-387 S1b: recovery-only org-less Settings (Preferences reachable
-            during a startup recovery state with no known org). Outside
-            recovery it renders NotFound, as this URL did before. */}
-        <Route path="settings/*" element={<RecoverySettingsPage notFound={<NotFound />} />} />
-        <Route path="*" element={<NotFound />} />
-      </Route>
-    </Routes>
+      </Routes>
+    </DesktopDialogsProvider>
   );
 }
 

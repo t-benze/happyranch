@@ -1082,7 +1082,7 @@ export function DaemonCapacitySection(): JSX.Element {
           )}
 
           <SectionLabel>{t('settings.capacity.table.title')}</SectionLabel>
-          <table className="border-border-default w-full border-collapse overflow-hidden rounded-md border text-sm">
+          <table className="border-border-default w-full border-collapse overflow-hidden rounded-md border text-sm wrap-anywhere">
             <thead>
               <tr className="text-text-secondary bg-surface-sunken text-left text-xs tracking-wide uppercase">
                 <th scope="col" className="border-border-default border-b p-3 font-semibold">{t('settings.capacity.table.setting')}</th>
