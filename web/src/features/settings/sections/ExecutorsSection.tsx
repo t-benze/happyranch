@@ -35,6 +35,7 @@ import { ConnectFlow } from '@/shared/connect/ConnectFlow';
 import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { useTranslation } from '@/hooks/i18n';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
 
@@ -51,6 +52,9 @@ function connectedSubtitleKey(
 
 export function ExecutorsSection(): JSX.Element {
   const { t, render } = useTranslation();
+  // Absolute, so the link also resolves inside the desktop Settings dialog,
+  // whose document URL is the Main page, not this Settings route.
+  const orgSlug = useOrgSlugOptional();
   // null = list; '' = new connect; a profile name = reconnect that existing
   // custom CLI (#701) through the same ConnectFlow.
   const [connecting, setConnecting] = useState<string | null>(null);
@@ -139,7 +143,7 @@ export function ExecutorsSection(): JSX.Element {
         <p className="text-text-secondary mt-1 text-sm">
           {render('settings.executors.assignment.body', {
             link: (
-              <a href="../agents" className="text-accent-default hover:underline">
+              <a href={orgSlug ? `/orgs/${orgSlug}/agents` : '../agents'} className="text-accent-default hover:underline">
                 {t('settings.executors.assignment.agentsPage')}
               </a>
             ),

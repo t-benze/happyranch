@@ -8,14 +8,20 @@
  * - The close button and Escape both send the same close request,
  *   `requestDesktopDialogClose`. Backdrop clicks do not dismiss.
  * - Focus is contained (Radix modal), moves to the dialog heading on open and
- *   on every switch, and returns to the invoker on close. Without an invoker
- *   (route/deep link, future native entry) it returns to the Main recovery
- *   control when one is shown, otherwise to the Main content landmark.
+ *   on every switch, and returns to the invoker on close. A Main link that
+ *   opened Settings (e.g. the Sidebar Settings link) is the invoker while it
+ *   is still in the document. Without one (cold deep link, native entry, a
+ *   removed invoker) focus returns to the Main recovery control when one is
+ *   shown, otherwise to the Main content landmark.
+ * - A same-document link inside a dialog pane (e.g. Coding > Open Coding
+ *   setup) goes through the same close request with that destination: the
+ *   dialog closes, Main shows the destination and gets focus.
+ * - Native `app.dialogRequested` (bridge spec "v2 dialog request event")
+ *   opens the named dialog through the same open request, with no invoker.
+ *   Invalid payloads are ignored.
  *
  * The internal API is `useDesktopDialogs()` →
- * `{ openDesktopDialog, requestDesktopDialogClose }`. Native
- * `app.dialogRequested` is NOT wired here: its protocol (S5-0b) was not
- * merged when this landed, so that listener is a follow-up.
+ * `{ openDesktopDialog, requestDesktopDialogClose }`.
  */
 import {
   createContext,
@@ -34,13 +40,17 @@ import { useTranslation } from '@/hooks/i18n';
 import {
   CLOSED,
   applyOpenRequest,
+  dialogLinkTarget,
   isSettingsPath,
+  nativeDialogRequest,
+  parseDialogRequested,
   settingsRequestFromPath,
   type DesktopDialogRequest,
   type DesktopDialogState,
   type DesktopSettingsSection,
 } from './dialogModel';
 import { ConnectionDialogBody } from './ConnectionDialogBody';
+import { isDesktopShell } from './desktopShell';
 
 /** Id of the Main content landmark: the focus-return fallback. */
 export const MAIN_CONTENT_ID = 'happyranch-main-content';
@@ -53,16 +63,28 @@ export interface DesktopDialogsApi {
    */
   openDesktopDialog: (request: DesktopDialogRequest, invoker?: HTMLElement | null) => void;
   /**
-   * The ONE close request (close button, Escape, future native close).
-   * S6-W2 seam: the owner registry / keep-discard gate decides here, before
-   * the dialog is closed. Today it closes immediately.
+   * The ONE close request (close button, Escape, an in-pane link, future
+   * native close). With `navigateTo`, Main then shows that in-app path and
+   * gets focus. S6-W2 seam: the owner registry / keep-discard gate decides
+   * here, before the dialog is closed or Main navigates. Today it closes
+   * immediately.
    */
-  requestDesktopDialogClose: () => void;
+  requestDesktopDialogClose: (options?: { navigateTo?: string }) => void;
 }
 
 interface DesktopDialogsContextValue extends DesktopDialogsApi {
   /** Last Main location outside Settings (background for a Settings route). */
   lastMainLocation: RefObject<Location | null>;
+  /**
+   * The Main link the user just activated to reach `pathname`, if it is still
+   * in the document; null for a deep link or any other entry. One-shot.
+   */
+  takeLinkInvoker: (pathname: string) => HTMLElement | null;
+}
+
+/** `window.happyranchConnection` as far as this host uses it (`on` only). */
+interface DialogEventFacade {
+  on?: (event: string, handler: (data: string) => void) => unknown;
 }
 
 /** What the host gives the Settings dialog body it is composed with. */
@@ -104,13 +126,40 @@ export function DesktopDialogsProvider({
 }): JSX.Element {
   const [state, setState] = useState<DesktopDialogState>(CLOSED);
   const returnTarget = useRef<HTMLElement | null>(null);
+  const focusMainOnClose = useRef(false);
   const isOpen = useRef(false);
+  const lastLinkActivation = useRef<HTMLAnchorElement | null>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const lastMainLocation = useRef<Location | null>(null);
 
   useEffect(() => {
     if (!isSettingsPath(location.pathname)) lastMainLocation.current = location;
   }, [location]);
+
+  // Remember the Main link a click (mouse or keyboard) activates, so a
+  // Settings route it leads to can return focus to it. Capture phase runs
+  // before the router handles the click.
+  useEffect(() => {
+    const onClick = (event: MouseEvent): void => {
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      lastLinkActivation.current =
+        link instanceof HTMLAnchorElement && !link.closest('[data-desktop-dialog]') ? link : null;
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, []);
+
+  const takeLinkInvoker = useCallback((pathname: string): HTMLElement | null => {
+    const link = lastLinkActivation.current;
+    lastLinkActivation.current = null;
+    if (!link || !link.isConnected) return null;
+    try {
+      return new URL(link.href).pathname === pathname ? link : null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const openDesktopDialog = useCallback(
     (request: DesktopDialogRequest, invoker?: HTMLElement | null) => {
@@ -121,15 +170,50 @@ export function DesktopDialogsProvider({
     [],
   );
 
-  const requestDesktopDialogClose = useCallback(() => {
-    // S6-W2 seam: consult affected owners here before closing.
-    isOpen.current = false;
-    setState(CLOSED);
-  }, []);
+  const requestDesktopDialogClose = useCallback(
+    (options?: { navigateTo?: string }) => {
+      // S6-W2 seam: consult affected owners here before closing or
+      // navigating; a kept owner cancels both.
+      isOpen.current = false;
+      focusMainOnClose.current = options?.navigateTo !== undefined;
+      setState(CLOSED);
+      if (options?.navigateTo !== undefined) navigate(options.navigateTo);
+    },
+    [navigate],
+  );
+
+  // Native entry (bridge spec "v2 dialog request event"): exactly
+  // {"schema":2,"dialog":"settings"|"connection"}; anything else is ignored.
+  // No invoker: focus returns to the Main fallback. A shell without this
+  // event (on() throws or is absent) simply has no native entry.
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    const facade = (window as { happyranchConnection?: DialogEventFacade }).happyranchConnection;
+    if (typeof facade?.on !== 'function') return;
+    let unsubscribe: unknown;
+    try {
+      unsubscribe = facade.on('app.dialogRequested', (data) => {
+        const dialog = parseDialogRequested(data);
+        if (!dialog) return;
+        openDesktopDialog(nativeDialogRequest(dialog, window.location.pathname), null);
+      });
+    } catch {
+      return;
+    }
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        try {
+          (unsubscribe as () => void)();
+        } catch {
+          // Teardown of an already retired subscription.
+        }
+      }
+    };
+  }, [openDesktopDialog]);
 
   const value = useMemo(
-    () => ({ openDesktopDialog, requestDesktopDialogClose, lastMainLocation }),
-    [openDesktopDialog, requestDesktopDialogClose],
+    () => ({ openDesktopDialog, requestDesktopDialogClose, lastMainLocation, takeLinkInvoker }),
+    [openDesktopDialog, requestDesktopDialogClose, takeLinkInvoker],
   );
 
   return (
@@ -138,6 +222,7 @@ export function DesktopDialogsProvider({
       <DesktopDialogHost
         state={state}
         returnTarget={returnTarget}
+        focusMainOnClose={focusMainOnClose}
         onSwitch={openDesktopDialog}
         onCloseRequest={requestDesktopDialogClose}
         renderSettingsBody={renderSettingsBody}
@@ -149,6 +234,7 @@ export function DesktopDialogsProvider({
 function DesktopDialogHost({
   state,
   returnTarget,
+  focusMainOnClose,
   onSwitch,
   onCloseRequest,
   renderSettingsBody,
@@ -156,8 +242,9 @@ function DesktopDialogHost({
   renderSettingsBody: (slot: DesktopSettingsBodySlot) => ReactNode;
   state: DesktopDialogState;
   returnTarget: RefObject<HTMLElement | null>;
+  focusMainOnClose: { current: boolean };
   onSwitch: (request: DesktopDialogRequest) => void;
-  onCloseRequest: () => void;
+  onCloseRequest: (options?: { navigateTo?: string }) => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -190,7 +277,29 @@ function DesktopDialogHost({
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          restoreFocus(returnTarget.current);
+          // After an in-pane link, Main shows a new page: focus Main itself.
+          const toMain = focusMainOnClose.current;
+          focusMainOnClose.current = false;
+          restoreFocus(toMain ? null : returnTarget.current);
+        }}
+        onClickCapture={(event) => {
+          // In-pane links (Coding setup, Executors > Agents, Organization >
+          // Work Hours, ...) leave Settings for a Main page: route them
+          // through the one close request instead of navigating behind the
+          // modal. Runs before the router's own link handler.
+          const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+          if (!(link instanceof HTMLAnchorElement)) return;
+          const path = dialogLinkTarget(
+            { href: link.href, target: link.target, hasDownload: link.hasAttribute('download') },
+            {
+              button: event.button,
+              modified: event.metaKey || event.ctrlKey || event.shiftKey || event.altKey,
+            },
+            window.location,
+          );
+          if (path === null) return;
+          event.preventDefault();
+          onCloseRequest({ navigateTo: path });
         }}
         onPointerDownOutside={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
@@ -232,12 +341,14 @@ export function DesktopSettingsRoute(): JSX.Element {
   const orgMatch = useMatch('/orgs/:slug/*');
   const context = useContext(DesktopDialogsContext);
   if (!context) throw new Error('DesktopSettingsRoute must be used inside <DesktopDialogsProvider>');
-  const { openDesktopDialog, lastMainLocation } = context;
+  const { openDesktopDialog, lastMainLocation, takeLinkInvoker } = context;
   const slug = orgMatch?.params.slug;
 
   useEffect(() => {
     const request = settingsRequestFromPath(location.pathname);
-    if (request) openDesktopDialog(request, null);
+    // The Main link that led here (Sidebar Settings) is the invoker; a cold
+    // deep link has none and uses the Main fallback on close.
+    if (request) openDesktopDialog(request, takeLinkInvoker(location.pathname));
     // Keep the previous Main page only when it shows the same org, so the
     // dialog's runtime pages name the org the request asked for.
     const background = lastMainLocation.current;

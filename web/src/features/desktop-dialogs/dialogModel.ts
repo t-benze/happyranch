@@ -23,7 +23,12 @@ export const DEFAULT_ORG_SETTINGS_SECTION: DesktopSettingsSection = 'daemon-capa
 export const DEFAULT_RECOVERY_SETTINGS_SECTION: DesktopSettingsSection = 'preferences';
 
 export type DesktopDialogRequest =
-  | { dialog: 'settings'; section?: DesktopSettingsSection }
+  | {
+      dialog: 'settings';
+      section?: DesktopSettingsSection;
+      /** Page for a fresh Settings open when `section` is absent. */
+      fallbackSection?: DesktopSettingsSection;
+    }
   | { dialog: 'connection' };
 
 export type DesktopDialogState =
@@ -49,7 +54,7 @@ export function applyOpenRequest(
   if (request.dialog === 'connection') return { dialog: 'connection' };
   if (request.section) return { dialog: 'settings', section: request.section };
   if (current.dialog === 'settings') return current;
-  return { dialog: 'settings', section: DEFAULT_ORG_SETTINGS_SECTION };
+  return { dialog: 'settings', section: request.fallbackSection ?? DEFAULT_ORG_SETTINGS_SECTION };
 }
 
 /**
@@ -78,4 +83,68 @@ export function settingsRequestFromPath(pathname: string): DesktopDialogRequest 
 /** True for a Main Settings route (org or org-less recovery). */
 export function isSettingsPath(pathname: string): boolean {
   return settingsRequestFromPath(pathname) !== null;
+}
+
+/**
+ * Validate a native `app.dialogRequested` event (protocol
+ * `native-connection-bridge.v2.json#/$defs/dialogRequested`; bridge spec
+ * "v2 dialog request event"). The data is a JSON string that must be exactly
+ * `{"schema":2,"dialog":"settings"|"connection"}`. Anything else (malformed
+ * JSON, a non-object, missing/extra keys, another schema or dialog) is
+ * invalid and returns null: the caller ignores the whole event.
+ */
+export function parseDialogRequested(data: unknown): 'settings' | 'connection' | null {
+  if (typeof data !== 'string') return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('schema') || !keys.includes('dialog')) return null;
+  const { schema, dialog } = value as { schema: unknown; dialog: unknown };
+  if (schema !== 2) return null;
+  return dialog === 'settings' || dialog === 'connection' ? dialog : null;
+}
+
+/**
+ * The Settings request for a native entry (no page named): keep the page
+ * already shown, otherwise Capacity when Main shows an organization and
+ * Language when it does not (as the org-less Settings route does).
+ */
+export function nativeDialogRequest(
+  dialog: 'settings' | 'connection',
+  mainPathname: string,
+): DesktopDialogRequest {
+  if (dialog === 'connection') return { dialog: 'connection' };
+  const inOrg = /^\/orgs\/[^/]+(?:\/|$)/.test(mainPathname);
+  return {
+    dialog: 'settings',
+    fallbackSection: inOrg ? DEFAULT_ORG_SETTINGS_SECTION : DEFAULT_RECOVERY_SETTINGS_SECTION,
+  };
+}
+
+/**
+ * The in-app path a link inside a dialog leads to, or null when the dialog
+ * must not handle it: another document/origin, a new tab or window, a
+ * download, a modified or non-primary click, or a same-page hash link.
+ */
+export function dialogLinkTarget(
+  link: { href: string; target: string; hasDownload: boolean },
+  click: { button: number; modified: boolean },
+  current: { protocol: string; host: string; pathname: string; search: string },
+): string | null {
+  if (click.button !== 0 || click.modified || link.hasDownload) return null;
+  if (link.target && link.target !== '_self') return null;
+  let url: URL;
+  try {
+    url = new URL(link.href);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== current.protocol || url.host !== current.host) return null;
+  if (url.pathname === current.pathname && url.search === current.search && url.hash) return null;
+  return `${url.pathname}${url.search}${url.hash}`;
 }

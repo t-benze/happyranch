@@ -84,6 +84,14 @@ arrives; until then it shows the not-found page. It adds no query observer,
 so this entry still sends no request. When Retry/Recheck clears the state
 from inside that page it navigates to `/`, which routes to the first org or
 shows the panel again.
+The full-page Settings descriptions in this paragraph (the in-page sub-nav,
+`RecoverySettingsPage`, its index and Retry navigation) are **browser mode**.
+In the desktop app (native mode, see the dialog section below) the same
+`/orgs/:slug/settings/*` and org-less `/settings/*` URLs, including the
+recovery-only Sidebar entry, open the Settings dialog at that page instead;
+its panes keep the same per-section recovery gates (Language stays usable,
+target-backed sections show the recovery panel), and runtime pages with no
+org in Main show the recovery panel.
 The panel content centers when it fits and otherwise starts at the scroll
 origin (short viewports or page zoom), keeping the action reachable by scroll. Copy (EN and
 zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update
@@ -116,15 +124,26 @@ owns the host: `DesktopDialogsProvider` (mounted around `AppRoutes` in
 `routes.tsx`) shows at most ONE top-level dialog; opening the other replaces it
 inside the same Radix root and never spawns a window. The one internal API is
 `useDesktopDialogs()` → `openDesktopDialog(request, invoker?)` /
-`requestDesktopDialogClose()`. The close button and Escape both go through
-`requestDesktopDialogClose`, the single seam where the S6-W2 owner registry /
-keep-discard gate will decide; today it closes immediately. Backdrop clicks do
-not dismiss. Focus stays inside the dialog (Main is inert), moves to the dialog
-heading on open and on every switch, and returns on final close to the
+`requestDesktopDialogClose({ navigateTo? })`. The close button, Escape and
+in-pane links all go through `requestDesktopDialogClose`, the single seam
+where the S6-W2 owner registry / keep-discard gate will decide (before both
+closing and any Main navigation); today it closes immediately. Backdrop clicks
+do not dismiss. Focus stays inside the dialog (Main is inert), moves to the
+dialog heading on open and on every switch, and returns on final close to the
 recorded invoker, else to the Main recovery control when a recovery panel is
-shown, else to the Main content landmark (`MAIN_CONTENT_ID`). Pure rules
-(one-at-a-time replacement, repeated entry, route-to-page mapping) live in
-`dialogModel.ts`; focused checks:
+shown, else to the Main content landmark (`MAIN_CONTENT_ID`). The invoker is
+the Main link the user activated to reach a Settings route (for example the
+Sidebar Settings link), recorded while it is still in the document; a cold
+deep link or native entry has none and uses the fallback, as does an invoker
+removed before close. A same-document link inside a dialog pane (Coding →
+Open Coding setup, Executors → Agents page, and with `work_hours_ui` the
+Organization → Work Hours link) is handled by the host: it sends the close
+request with that destination, so the dialog closes, Main shows the page and
+focus moves to the Main content landmark. Links to another origin, a new tab,
+a download or a modified click are left to the browser. Pure rules
+(one-at-a-time replacement, repeated entry, route-to-page mapping, native
+payload validation, in-pane link targets) live in `dialogModel.ts`; focused
+checks:
 `node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`.
 
 Native mode is `isDesktopShell()`: the `happyranch-app:` scheme or a
@@ -135,8 +154,19 @@ Settings dialog at exactly the requested page (bare, legacy
 `assistant`/`system`/`agents` and unknown org pages select Capacity, as the
 page route redirects; org-less defaults to Language), then replaces the URL
 with the previous Main page of the same org, else `/orgs/:slug/dashboard`
-(or `/`). Browser mode keeps both full-page routes unchanged. Native
-`app.dialogRequested` is not wired yet (follow-up once its protocol merges).
+(or `/`). Browser mode keeps both full-page routes unchanged.
+
+Native entry: in native mode the provider subscribes once, at the Main shell
+(including recovery states), to `app.dialogRequested` through the existing
+`window.happyranchConnection.on()` facade and unsubscribes on teardown. The
+data must be exactly `{"schema":2,"dialog":"settings"|"connection"}`
+(`protocol/native-connection-bridge.v2.json#/$defs/dialogRequested`, bridge
+spec “v2 dialog request event”); malformed JSON, missing or extra keys, another
+schema or an unknown dialog are ignored without changing the current dialog.
+A valid event opens the named dialog through `openDesktopDialog` with no
+invoker (focus returns to the Main fallback). Settings keeps the page already
+shown, else opens Capacity when Main shows an org and Language when it does
+not. A shell whose `on()` refuses the event name simply has no native entry.
 
 The Settings dialog body is `features/settings/SettingsDialogBody.tsx`,
 composed by `routes.tsx` so neither feature imports the other. Its nav follows
