@@ -75,10 +75,15 @@ opens Preferences, which is client-only (reaching it and switching language
 send no request), and the target-backed sections show only the recovery panel
 and mount no panel or query. The AppBar titles it Settings only during
 recovery. Outside a recovery state nothing changes: Sidebar Settings stays
-disabled without an org, and a page entered at `/settings/*` without a state
-renders the ordinary not-found page and title as before. When Retry/Recheck
-clears the state from inside that page it navigates to `/`, which routes to
-the first org or shows the panel again.
+disabled without an org, and `/settings/*` renders the ordinary not-found page
+and title as before. The page becomes the recovery Settings as soon as it
+observes a state while mounted, at mount or later, so a reload or direct URL
+at `/settings/preferences` (where the startup bootstrap meets the native
+answer only after the first render) opens Preferences once the answer
+arrives; until then it shows the not-found page. It adds no query observer,
+so this entry still sends no request. When Retry/Recheck clears the state
+from inside that page it navigates to `/`, which routes to the first org or
+shows the panel again.
 The panel content centers when it fits and otherwise starts at the scroll
 origin (short viewports or page zoom), keeping the action reachable by scroll. Copy (EN and
 zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update

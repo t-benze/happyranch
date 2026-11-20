@@ -164,10 +164,17 @@ export function SettingsPage(): JSX.Element {
 export function RecoverySettingsPage({ notFound }: { notFound: ReactNode }): JSX.Element {
   const recovery = useNativeRecovery();
   const { t } = useTranslation();
-  // Latched at mount: only a page entered during recovery is recovery-only.
-  const [enteredInRecovery] = useState(() => recovery !== null);
-  // Fenced like any other routed page (the AppShell fence is bypassed here).
-  if (!enteredInRecovery) return <NativeRecoveryFence>{notFound}</NativeRecoveryFence>;
+  // Latched once a recovery state is observed while mounted, at mount or
+  // later. On a cold start, reload or direct URL the startup bootstrap meets
+  // the native answer only after the first render, so a mount-time latch
+  // would stay not-found for good. Updating state during render (not in an
+  // effect) switches in the same commit. Observing nothing here (no query
+  // observer) keeps Preferences entry free of requests.
+  const [seenRecovery, setSeenRecovery] = useState(() => recovery !== null);
+  if (recovery && !seenRecovery) setSeenRecovery(true);
+  // Without a state it renders exactly as before: not found, fenced like any
+  // other routed page (the AppShell fence is bypassed here).
+  if (!seenRecovery) return <NativeRecoveryFence>{notFound}</NativeRecoveryFence>;
   if (!recovery) return <Navigate to="/" replace />;
 
   const base = '/settings';
