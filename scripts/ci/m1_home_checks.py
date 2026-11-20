@@ -19,7 +19,10 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
+from types import FrameType
+from typing import Any, Callable
 import pwd
 
 from runtime.remote_access import headscale_service as hs, home_audit
@@ -502,7 +505,36 @@ def main() -> None:
 
 
 def assert_clean() -> None:
-    candidate = ManagedInstaller(layout='deb').inventory()
+    # Inventory deliberately hides native exception text. Observe only its
+    # trusted source locations, never exception values, locals or native output.
+    origin = ''
+    inventory_code = ManagedInstaller._inventory.__code__
+
+    def trace_inventory(frame: FrameType, event: str, argument: Any) -> Callable | None:
+        nonlocal origin
+        if frame.f_code is not inventory_code:
+            return None
+        if event == 'exception':
+            locations = []
+            traceback = argument[2]
+            for _ in range(8):
+                if traceback is None:
+                    break
+                code = traceback.tb_frame.f_code
+                if code.co_filename == inventory_code.co_filename:
+                    locations.append(f'{code.co_name}:{traceback.tb_lineno}')
+                traceback = traceback.tb_next
+            origin = type(argument[1]).__name__ + ' ' + ' > '.join(locations)
+        return trace_inventory
+
+    previous_trace = sys.gettrace()
+    try:
+        sys.settrace(trace_inventory)
+        candidate = ManagedInstaller(layout='deb').inventory()
+    finally:
+        sys.settrace(previous_trace)
+    if candidate.state != 'clean':
+        print('M1 inventory refusal origin:', origin or 'unavailable')
     assert candidate.state == 'clean', inventory_message(candidate)
     absent('/etc/happyranch/invite-issuer.json')
     absent(ACTIVATION_PATH)
