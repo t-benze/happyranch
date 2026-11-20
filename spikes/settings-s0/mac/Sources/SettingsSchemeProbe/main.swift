@@ -123,7 +123,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
             } else {
                 let base = root.appendingPathComponent("web/dist").standardizedFileURL
                 var file = base.appendingPathComponent(String(path.dropFirst())).standardizedFileURL
-                guard file == base || file.path.hasPrefix(base.path + "/") else { throw NSError(domain: "S0", code: 3) }
+                guard file.path == base.path || file.path.hasPrefix(base.path + "/") else { throw NSError(domain: "S0", code: 3) }
                 var directory: ObjCBool = false
                 if !FileManager.default.fileExists(atPath: file.path, isDirectory: &directory) || directory.boolValue {
                     file = base.appendingPathComponent("index.html")
