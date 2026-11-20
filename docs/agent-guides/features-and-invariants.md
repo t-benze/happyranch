@@ -3358,7 +3358,7 @@ Traps:
   `web/src/lib/threadErrors.ts`, and a confirmed send failure is never labelled as the last file's upload
   failure.
 - Caps are unchanged: `MAX_THREAD_ATTACHMENTS = 5` (`runtime/daemon/routes/threads.py`) and the 10 MiB
-  artifact cap (`runtime/infrastructure/artifact_store.py`). No drag-and-drop or size/state chip was added.
+  artifact cap (`runtime/infrastructure/artifact_store.py`). No drag-and-drop or upload-progress/state indicator was added; each selected-attachment chip shows the local file name and its size (from the selected `File`, formatted by the shared `formatAttachmentSize` helper).
 
 ## Jobs
 

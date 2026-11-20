@@ -23,6 +23,7 @@ export const Coverage: Story = {
     threadId: 'THR-READY',
     orgSlug: 'storybook',
     onSend: () => { window.location.hash = 'composer-sent'; },
-    helper: 'Message the thread — all participants see it',
+    helper: 'Message the thread · @ to address an agent',
+    hint: 'Every participant sees messages in this thread.',
   },
 };
