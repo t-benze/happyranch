@@ -5334,11 +5334,51 @@ finite 409 unavailable bodies do not advance admission. Positive absent storage,
 settings-not-saved and original-operation-absent exceptions stay unchanged.
 Transport-only refresh failures retain this mount's data with freshness flags.
 S7a helpers use enums/keys,
-with no new display strings. S7b supplies UI/providers and locales. See the
+with no new display strings. S7b supplies UI/providers and locales (below). See the
 [S7a contract](contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2)
 for wire formats, budgets and focused shell selectors. Web lint/typecheck is
 static API evidence; hook behavior is NOT RUN without a supported runtime venue
 (Vitest retired, Product E2E scheduled-only).
+
+## S7b generic Workflows UI (read-only @2 adoption)
+
+The Runs tab, run detail and Task-detail workflow banner read only the S7a
+plural hooks (`useSequentialRunsV2`, `useSequentialRunV2`,
+`useTaskSequentialWorkflows`). Lists and the banner render every run link and
+every source/carrier/visit task link in projection order; an initiator with
+several runs shows several entries. Generic @2 runs show `running | held |
+finished` with separate progress (`queued`, `executing`, `result pending
+settlement`, `cancelling`) and `terminal_outcome` only when Finished. Held always
+shows the localized finite cause plus the raw code and the original hold event,
+node and visit; `declared_edge` reads "agent-declared hold". No cause is inferred.
+
+Generic detail shows the definition/settings pins and verbatim admitted
+definition, request and inputs, every assignment generation (agent, selection
+source bundled/org/run/control, predecessor, effective/requested model and
+effort with `agent_default | run | clear` origins, native override and its
+source, executor), visit-to-assignment mapping, ordered control history with
+actor task/principal/SID/result and IDs, and native cancellation events with
+their distinct founder/source-terminal origin. Every outcome, finding and output
+is labelled Agent-reported and shown as a raw token; the Engine-authenticated
+label appears only on native task/principal/SID/result identity and terminal/
+outer digests. A native callback result that differs from the nullable
+`accepted_result_id` is shown separately as not accepted. A reported head,
+review, QA or merge is never shown as verified, approved or merged.
+
+`abi=@1` runs carry an explicit Historical (@1) label. Their detail renders the
+unchanged U8a @1 view (and its R-M3-6 redaction as served) inside a history
+wrapper, and their banner entry keeps the original @1 banner. Setup and @1
+original-save custody/recovery are unchanged. `storage=absent` shows an empty
+state; each closed `workflow-sequential-unavailable@2` code
+(`history_unverified`, `read_budget_exhausted`, `authority_unverified`,
+`authority_denied`) shows its own localized message, never an empty list.
+403/404 keep the shared access-refusal handling and task 404 hides the banner.
+A `late_org_response` rejection shows a loading status and never another org's
+data. @2 definitions are not linked to the @1 definition page. There is no
+start, retry, rebrief, reassign, cancel or wait control. All strings ship in
+`en` and `zh-CN`. `_mock-workflows.ts` exports typed deterministic
+`sequentialV2MockStates` fixtures; because the @2 hooks bypass `WorkflowsApi`,
+screenshot evidence serves them as daemon responses through harness mode A.
 
 ## U8a Workflows read journey (TASK-15582)
 
