@@ -114,6 +114,9 @@ class HomeUnitGate:
                     if count > 65536:
                         raise HomeUnitGateError()
                     info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    if (f"{relative}/{entry.name}" == installer.PACKAGED_HELPER_UNIT
+                            and not stat.S_ISREG(info.st_mode)):
+                        raise HomeUnitGateError()
                     if ("/" + relative + "/" + entry.name == activation.OWNED_LINK
                             and not stat.S_ISLNK(info.st_mode)):
                         raise HomeUnitGateError()
@@ -155,7 +158,7 @@ class HomeUnitGate:
                     elif stat.S_ISREG(info.st_mode) and not managed and (
                             dbus or entry.name.endswith(_UNIT_SUFFIXES)
                             or (relative.endswith(".d") and entry.name.endswith(".conf"))):
-                        self._foreign_file(parent, entry.name, info)
+                        self._foreign_file(parent, entry.name, info, relative)
             if activation._signature(os.fstat(parent)) != before:
                 raise HomeUnitGateError()
 
@@ -204,8 +207,7 @@ class HomeUnitGate:
             raise HomeUnitGateError() from None
         return receipt, present
 
-    @staticmethod
-    def _foreign_file(parent: int, name: str, named: os.stat_result) -> None:
+    def _foreign_file(self, parent: int, name: str, named: os.stat_result, relative: str) -> None:
         # Foreign policy is observed, never adopted; keep the inert scanner's
         # file-size/signature checks without imposing managed-file modes.
         descriptor = os.open(name, installer._FILE_FLAGS, dir_fd=parent)
@@ -220,7 +222,9 @@ class HomeUnitGate:
             if (len(data) > 65536 or len(data) != opened.st_size
                     or signature(opened) != signature(os.fstat(descriptor))
                     or signature(opened) != signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
-                    or b"happyranch-headscale" in data):
+                    or ((b"happyranch-headscale" in data
+                         or f"{relative}/{name}" == installer.PACKAGED_HELPER_UNIT) and not installer._owned_helper_unit(
+                        f"{relative}/{name}", opened, data, self._io.root_owner))):
                 raise HomeUnitGateError()
         finally:
             os.close(descriptor)

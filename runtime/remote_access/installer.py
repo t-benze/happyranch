@@ -77,6 +77,39 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 _RUNTIME_DIAGNOSTIC_LIMIT = 8
 _RUNTIME_DIAGNOSTIC_BYTES = 65536
+PACKAGED_HELPER_UNIT = "usr/lib/systemd/system/happyranch-remote-access-helper.service"
+# Trusted package policy, never loaded from the filesystem being inventoried.
+# Native packaging checks bind both the shipped and installed unit to these bytes.
+PACKAGED_HELPER_UNIT_BYTES = b"""[Unit]
+Description=HappyRanch remote access helper
+
+[Service]
+Type=dbus
+BusName=ai.happyranch.RemoteAccess1
+User=root
+ExecStart=/usr/bin/python3 -I /opt/happyranch-desktop/bin/happyranch-remote-access-helper
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/etc
+ReadWritePaths=/var/lib/happyranch-remote-access
+ReadWritePaths=-/var/lib/happyranch-headscale
+ReadWritePaths=-/var/lib/happyranch-connector
+ReadWritePaths=-/var/lib/happyranch-tsnet-sidecar
+ReadWritePaths=-/run/happyranch-headscale
+ReadWritePaths=-/run/happyranch-connector
+ReadWritePaths=-/run/happyranch-tsnet-sidecar
+ReadWritePaths=-/opt/happyranch
+"""
+
+
+def _owned_helper_unit(path: str, info: os.stat_result, data: bytes,
+                       owner: tuple[int, int]) -> bool:
+    """K1/K2 exact package policy; owner maps root only in the existing temp-root venue."""
+    return (path == PACKAGED_HELPER_UNIT and stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1 and (info.st_uid, info.st_gid) == owner
+            and stat.S_IMODE(info.st_mode) == 0o644 and data == PACKAGED_HELPER_UNIT_BYTES)
 
 
 def _runtime_diagnostic(name: str, info: os.stat_result, owner: tuple[int, int] | None) -> bool:
@@ -1923,6 +1956,9 @@ class ManagedInstaller:
                     if count > 65536:
                         raise headscale.HeadscaleServiceError(category)
                     info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    if (f"{relative}/{entry.name}" == PACKAGED_HELPER_UNIT
+                            and not stat.S_ISREG(info.st_mode)):
+                        raise headscale.HeadscaleServiceError(category)
                     managed = relative == _UNIT_DIR and entry.name == headscale.UNIT
                     if not dbus and entry.name.startswith("happyranch-headscale."):
                         if not managed or self._read_unit(parent, entry.name) != render_headscale_unit().encode():
@@ -1960,7 +1996,9 @@ class ManagedInstaller:
                                     or signature(opened) != signature(os.stat(
                                         entry.name, dir_fd=parent, follow_symlinks=False))):
                                 raise InstallerError("uncertain activation policy")
-                            if b"happyranch-headscale" in data:
+                            if ((b"happyranch-headscale" in data
+                                 or f"{relative}/{entry.name}" == PACKAGED_HELPER_UNIT) and not _owned_helper_unit(
+                                    f"{relative}/{entry.name}", opened, data, self.root_owner)):
                                 raise headscale.HeadscaleServiceError(category)
                         finally:
                             os.close(descriptor)
