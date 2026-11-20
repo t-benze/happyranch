@@ -18,6 +18,11 @@ result and start operation key. Run IDs are never placed in tasks.note,
 active_chain, active_fanout or blocked_on_job_ids. The source stays delegated;
 each run has its own structural carrier and sequential visit stream. The retained
 unmounted singleton S3/S4 primitive still supports ordinary sources.
+Admission accepts and preserves an existing valid ordinary chain or fanout,
+including when earlier workflow batches remain outstanding. It validates native
+dependency metadata without advancing or clearing the ordinary join; malformed
+metadata, simultaneous chain/fanout state, job-wait conflicts and a changed native
+claim still refuse before allocation. Current authority checks remain required.
 
 Batch start replay authenticates the entire original admission membership and
 bytes. It returns the original ordered IDs without writes only when **every**
@@ -33,6 +38,11 @@ release the first visits. Negative or uncertain settlement retains the bounded
 `source_outer_unsettled` cause and releases none. Every proof commits before
 queue publication; outbox recovery may publish later. Exact settlement replay
 writes and publishes nothing. No singleton first-match selection releases a batch.
+Settlement authenticates the source wait set and member identities before selecting
+the invocation's SID. A SID with no admitted batch returns without writes or queue
+publication, including a later ordinary `done` whose native source is already
+completed. Positive release of an actual batch still requires its current,
+in-progress, uncancelled source with no completion timestamp.
 
 S5's member hold wrapper and generic terminal/result writer persist one immutable
 `workflow-sequential-initiator-wake@2` inbox obligation in the same transaction as
@@ -83,10 +93,14 @@ limitation remains the manager override; S5 does not repair it.
 
 Focused private verification uses
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=all`
-(and 3.14 or `--s5=CASE`). The seven named cases cover all-or-none admission,
+(and 3.14 or `--s5=CASE`). The nine named cases cover all-or-none admission,
 whole-batch replay, every-member source release, independent hold/return,
 duplicate wake, empty page/reopen/late arrival before ack, and receipt replay
-after ack, through real SQL transactions and TaskQueue insertion. These are
+after ack, through real SQL transactions and TaskQueue insertion.
+`source_with_ordinary_deps` also covers byte-preserved chain/fanout state across
+fresh/additional batches and malformed/conflicting dependency refusal;
+`later_sid_no_batch_settle` covers later ordinary terminal settlement after runs
+drain and retains the active-source refusal for a real batch. These are
 private source observations, not live host/provider or S6a acceptance evidence.
 
 ## S4b: generic dispatch and native closure @2

@@ -393,18 +393,26 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
     ready = []
     with dispatcher._writer() as conn, _sql_budget(conn, budget):
         wait = _audience(conn, invocation.task.id, invocation.agent, invocation.session_id, budget, current=False)
-        positive = _source_outer_positive(dispatcher, invocation, failed=failed, cleanup=cleanup,
-            native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition)
-        if positive:
-            _audience(conn, invocation.task.id, invocation.agent, invocation.session_id, budget, current=True)
         members = _rows(conn, 'workflow_seq_source_memberships', budget, 'wait_set_id=?', (wait['id'],))
         selected = []
         for member in members:
-            run = _rows(conn, 'workflow_seq_runs', budget, 'id=?', (member['run_id'],))[0]
+            runs = _rows(conn, 'workflow_seq_runs', budget, 'id=?', (member['run_id'],))
+            _require(len(runs) == 1, 'initiator_source_outer_conflict')
+            run = runs[0]
+            _require((run['org_slug'], run['source_task_id'], run['source_principal'],
+                run['source_result_id'], run['start_operation_key']) == (org.slug, invocation.task.id,
+                invocation.agent, member['source_result_id'], member['start_operation_key'])
+                and member['source_task_id'] == invocation.task.id, 'initiator_source_outer_conflict')
             if run['source_session_id'] != invocation.session_id:
                 continue  # Earlier batches keep their original settlement.
             _result(conn, run['source_result_id'], invocation.task.id, invocation.agent, invocation.session_id, budget)
             selected.append(run)
+        if not selected:
+            return  # A later ordinary SID has no source batch to release.
+        positive = _source_outer_positive(dispatcher, invocation, failed=failed, cleanup=cleanup,
+            native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition)
+        if positive:
+            _audience(conn, invocation.task.id, invocation.agent, invocation.session_id, budget, current=True)
         for run in selected:
             prior = _evidence(conn, run['id'], None, 'outer')
             body = dict(format='workflow-sequential-source-outer@2', invocation_id=invocation.identity,

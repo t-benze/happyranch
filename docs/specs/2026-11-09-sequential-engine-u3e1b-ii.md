@@ -5,7 +5,11 @@
 S5 adds the version-selected `seq_source_wait_set` branch: one genuine original
 source outer settlement authenticates and records every same-SID member before
 any first-visit queue publication. Negative/uncertain settlement records its cause
-and releases none; exact replay writes/publishes nothing. Source/null-visit proof
+and releases none; exact replay writes/publishes nothing. Member identities are
+authenticated before selecting the invocation's SID. A later SID with no admitted
+batch is a no-op, including after its ordinary terminal completion. Positive
+release of a real batch still requires the current active source.
+Source/null-visit proof
 retains source-settlement meaning. The original @1 producer below remains
 unchanged. Live initiator continuation and admission snapshots belong to S6a.
 

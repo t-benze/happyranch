@@ -5,7 +5,11 @@
 S5 adds a separate internal plural Start@2 batch boundary in sequential_start.py
 with normalized stable source wait-set membership, aggregate allowance checks
 before allocation and all-or-none COMMIT. Exact batch replay remains admission-only
-for every member through the unchanged S4a predicate. The public singular Start@1
+for every member through the unchanged S4a predicate. Admission preserves valid
+ordinary chain/fanout bytes, including alongside earlier run memberships; it
+refuses malformed/conflicting dependency metadata and retains native claim and
+current-authority checks. It does not advance or clear an ordinary join.
+The public singular Start@1
 adapter, source parking bytes and original proof requirements below are historical
 @1 contracts and remain unchanged. No public @2 or run_step mount is supplied.
 

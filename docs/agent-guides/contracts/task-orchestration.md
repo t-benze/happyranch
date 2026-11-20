@@ -5,7 +5,12 @@
 S5 provides an internal plural Start@2 writer with a stable version3
 `seq_source_wait_set` mark and normalized per-run source/result/start-key
 memberships. One positive original source settlement releases all of its admitted
-runs. Generic return closes only its carrier and writes a durable addressed inbox
+runs. Admission preserves valid ordinary chain/fanout bytes and earlier run
+memberships while retaining native claim/current-authority checks and refusing
+malformed/conflicting dependency metadata. Settlement authenticates members first;
+a later SID with no admitted batch does nothing, even after ordinary completion.
+Positive release of an actual batch still requires its current active source.
+Generic return closes only its carrier and writes a durable addressed inbox
 wake, keeping source/parent/siblings alive. Delivery is not ack: only the actual
 SID's stored page can be consumed with its genuine INTEGER result's decision
 receipt, atomically with recorded effects. Receipt replay never re-applies effects.

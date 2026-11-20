@@ -673,6 +673,40 @@ def prepare_generic_batch(org: Any, *, decision: bytes, source: RetryClaim) -> t
     return tuple(captures)
 
 
+def _ordinary_dependencies(task: dict, budget: _ReadBudget) -> None:
+    """Validate retained native dependency metadata without advancing its join."""
+    from runtime.models import ChainLeg
+    from runtime.orchestrator.fanout import MAX_FANOUT_WIDTH
+    from runtime.workflows.sequential_start_metadata import _json
+
+    code = 'workflow_seq_batch_source_conflict'
+    chain, fanout = task['active_chain'], task['active_fanout']
+    _check(chain is None or fanout is None, code)
+    if chain is not None:
+        value = _json(chain, budget)
+        legs = value.get('legs', [])
+        _check(type(legs) is list and type(value.get('step_index')) is int
+            and 0 <= value['step_index'] <= len(legs)
+            and type(value.get('step_audit_id')) is int and value['step_audit_id'] >= 0
+            and (value.get('first_leg_expect_verdict') is None
+                or type(value['first_leg_expect_verdict']) is str), code)
+        for leg in legs:
+            _check(type(leg) is dict, code)
+            ChainLeg.model_validate(leg)
+    if fanout is not None:
+        value = _json(fanout, budget)
+        ids, details = value.get('children_ids'), value.get('children_details', [])
+        _check(type(ids) is list and type(details) is list
+            and type(value.get('width')) is int and 1 <= value['width'] <= MAX_FANOUT_WIDTH
+            and len(ids) == value['width'] and len(details) in (0, value['width'])
+            and all(type(key) is str and key and '\x00' not in key for key in ids)
+            and len(set(ids)) == len(ids) and value.get('manager_agent') == task['assigned_agent']
+            and value.get('status', 'spawned') == 'spawned'
+            and (value.get('join_summary') is None or type(value['join_summary']) is str)
+            and all(type(item) is dict and type(item.get('agent')) is str
+                and type(item.get('prompt')) is str for item in details), code)
+
+
 def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str, source: RetryClaim,
                             decision: bytes, captures: tuple, authority: Any, remaining: Any) -> tuple[AdmissionIds, ...]:
     """All-or-none S5 writer; S6a supplies genuine invocation and goal allowance.
@@ -729,8 +763,9 @@ def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
         _check(len(source_rows) == 1 and db._retry_claim_matches(source), 'workflow_seq_batch_source_conflict')
         task = source_rows[0]
         _check(task['status'] == 'in_progress' and task['task_type'] == 'task' and task['cancelled_at'] is None
-            and task['completed_at'] is None and task['active_chain'] is None and task['active_fanout'] is None
+            and task['completed_at'] is None
             and task['blocked_on_job_ids'] is None, 'workflow_seq_batch_source_conflict')
+        _ordinary_dependencies(task, budget)
         snapshot = json.loads(captures[0].authority.ready.snapshot_bytes)
         _check(any(agent['name'] == source.assigned_agent and agent['team'] == source.team and agent['role'] == 'manager'
             and agent['status'] == 'active' and agent['executor'] for agent in snapshot['agents'])
