@@ -608,7 +608,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.nav.primaryItems': '主导航项',
   'shell.orgSwitcher': '组织切换器',
   'shell.activeOrg': '当前组织',
-  'shell.addOrgOption': '+ 添加组织…',
+  'shell.addOrgOption': '新建组织',
   'shell.noOrg': '无组织',
   'shell.dayCount': '第 {count} 天',
   'shell.account.label': '账户：{name}，{role}',
