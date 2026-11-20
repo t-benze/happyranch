@@ -1854,3 +1854,9 @@ export interface RetireAgentReceipt {
   team: string;
   team_retired: boolean;
 }
+
+/** S7a non-success projection body; absence is a successful empty collection. */
+export interface SequentialProjectionUnavailable {
+  format: 'workflow-sequential-unavailable@2'; state: 'unavailable'; org_slug: string;
+  code: 'history_unverified' | 'read_budget_exhausted' | 'authority_unverified' | 'authority_denied';
+}

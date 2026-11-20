@@ -164,3 +164,19 @@ export function taskLinks(run: SequentialRun): { source: string | null; carrier:
     activeTask: run.active_visit_id ? run.tasks.find(t => t.visit_id === run.active_visit_id)?.task_id ?? null : null,
   };
 }
+
+
+/** S7a enum-only facts for S7b. Never infer remote verification from report text. */
+export function pluralTaskLinks(value: import('./api/workflowSequential').SequentialTaskRuns) {
+  return value.runs.map(link => {
+    const run = link.abi === '@1' ? link.run : link;
+    return { id: run.id, abi: link.abi, historyLabel: link.history_label,
+      relationships: run.tasks.filter(task => task.task_id === value.task_id) };
+  });
+}
+
+/** One accepted detail snapshot owns its visits and assignments. */
+export function genericVisitAssignments(detail: import('./api/workflowSequential').GenericSequentialRunDetail) {
+  const assignments = new Map(detail.assignments.map(value => [value.id, value]));
+  return detail.visits.map(visit => ({ visit, assignment: assignments.get(visit.assignment_id) ?? null }));
+}

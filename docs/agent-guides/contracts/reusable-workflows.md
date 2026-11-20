@@ -1,5 +1,76 @@
 # Reusable workflow contracts
 
+## S7a: additive Founder read projections @2
+
+The existing @1 definition/settings/run/detail/singular-task-link APIs keep their
+original wire records, settings operations and R-M3-6 accepted Final redaction.
+They select @1 records in mixed storage; no generic record is cast into @1.
+The own-task start context remains Start@1. S7a adds only these Founder-bearer
+GETs under `/api/v1/orgs/{slug}`:
+
+| Route | Success format |
+| --- | --- |
+| `/workflows/sequential/views/v2/runs` | `workflow-sequential-runs-view@2` |
+| `/workflows/sequential/views/v2/runs/{run_id}` | `workflow-sequential-run-view@2` or historical wrapper |
+| `/tasks/{task_id}/sequential-workflows` | `workflow-sequential-task-runs@2` |
+
+Lists preserve every source/initiator, carrier or visit run link in stable run-ID
+order. An initiator owning several runs receives several entries. Generic entries
+carry `abi=@2`, `history_label=current_v2`, the immutable definition/settings pins,
+initiator IDs and recorded `running | held | finished` state. `terminal_outcome`
+is `completed | failed | cancelled` only for Finished; `progress` separately
+retains `queued | executing | result_pending_settlement | cancelling`. Held
+exposes its original event/node/visit and finite cause: native failed/timed-out
+before/after result, bad-shape/oversize/unknown outcome, unavailable assignee,
+revision limit, or the persisted generic reducer reason. `declared_edge` denotes
+a declared agent hold; the view does not infer a cause from content or counters.
+`result_events` counts result transitions; `stored_events` is the distinct storage sequence count.
+
+Generic detail includes the original admitted definition text, request/inputs,
+all immutable assignment generations and visit-to-assignment IDs, effective
+model/effort, requested values, field origins (`agent_default | run | clear`),
+native override source, executor and predecessor/digest. Agent selection source
+is `bundled | org | run` at admission or `control` for a replacement. Ordered
+retry/rebrief/reassign/cancel records retain original actor task/principal/SID/
+INTEGER result, operation/event IDs, held-event/CAS, new visit and request/receipt
+digests. Native source/founder cancellation events retain their distinct origin
+and source state without inventing a callback actor/result.
+
+Every generic output/outcome/finding is `agent_reported`. `engine_authenticated`
+labels only native task/principal/SID/result identity and original terminal/outer
+evidence digests authenticated by complete history. A rejected native callback
+keeps its native result ID separately from nullable `accepted_result_id`. It never verifies a reported
+repository head, review, QA or merge. Finished/completed means accepted generic
+terminal output and settlement. @1 entries are wrapped with `abi=@1` and
+`history_label=historical_v1`; detail uses `workflow-sequential-history-view@2`
+containing the unchanged `workflow-sequential-run-view@1`, including redaction.
+
+Reads authenticate complete S4a..S6b/retained history and current authority in a
+rollback-only snapshot on existing bounded readers, ledgers and one five-second
+deadline. No cap is raised. Positive absent storage returns `storage=absent` and
+an empty collection; valid installed storage returns `storage=readable`.
+Incoherent/budget/authority evidence returns non-success HTTP with closed
+`detail.format=workflow-sequential-unavailable@2`, `state=unavailable`, and
+`code=history_unverified | read_budget_exhausted | authority_unverified |
+authority_denied`. Native task404 precedes ownership classification. No read
+installs storage, acknowledges an inbox, enqueues work or mounts a public @2
+start/control/wait operation.
+
+TS mirrors and the OpenAPI/classification snapshots accompany the routes.
+Additive @2 hooks use org/selection query keys, abort/eviction on cleanup,
+request sequence and active-owner checks plus response org equality; stale
+successes/errors are rejected with `late_org_response`. The existing @1
+provider/settings original-save custody is unchanged. Helpers emit enums/keys
+only; UI adoption, strings and both locales belong to S7b.
+
+Focused private route checks use
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s7a=all`
+(and 3.14 or `--s7a=CASE`) for `plural_links`, `held_cause`, `history_label`,
+`unavailable`. These observe served responses and zero-write SQL/inventories,
+not live providers or UI. `late_org_response` runtime/proof is NOT RUN: Web
+Vitest is retired (THR-343), Product E2E is scheduled-only, and this unit adds no
+hook execution venue. Typecheck/source review is static evidence only.
+
 ## S6b: source cancellation and terminal initiators @2
 
 The existing Founder task-cancel route recognises `seq_source_wait_set` and uses

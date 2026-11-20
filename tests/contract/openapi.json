@@ -3780,6 +3780,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflows": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/teams": {
       "GET": {
         "params": [
@@ -5401,6 +5427,54 @@
         ],
         "responses": [
           "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/views/v2/runs": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/views/v2/runs/{run_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "run_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
           "403",
           "404",
           "409",
