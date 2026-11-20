@@ -3965,3 +3965,17 @@ Citations removed from the body, with the section they supported:
 - `THR-368` — Focused founder initial-name coverage (original line 3471).
 - `THR-327 slice 3a` — Fixed remote-access helper (original line 3521).
 - `THR-203 step 1A` — Focused skill-use observation checks (original line 3566).
+
+### S6a focused continuation cases
+
+Use `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s6a=all`
+and the same command with `3.14`, or `--s6a=CASE`. Cases are
+`control_result_binding`, `workflow_wait`, `done_outstanding_refused`,
+`fanout_not_joined`, `chain_preserved`, `manager_event_race`,
+`control_live_chain_child`, `wait_live_fanout_child`,
+`sibling_finishes_run_B_live`, `pause_live_initiator`, `read_waiting_children`,
+`initiator_event_run_B_live`, `ordinary_done_lag`, `modern_missing_no_fallback`,
+and `final_done_after_drain`. These private direct boundaries forbid provider
+launch and observe actual native results, persisted dependencies, receipts and
+queue IDs. They do not establish live provider or deployment acceptance. Run
+required long selections through durable jobs and inspect their actual receipts.

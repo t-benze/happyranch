@@ -1285,7 +1285,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     if task is None or task.cancelled_at is not None or task.status in TERMINAL_STATES:
         return
     from runtime.workflows.recovery import classify_task, route_owned_task
-    if classify_task(orch._db, task_id, org_slug=orch._slug).kind != "legacy":
+    if classify_task(orch._db, task_id, org_slug=orch._slug).kind not in ("legacy", "seq_source_wait_set"):
         route_owned_task(orch, task_id)
         return
     if _progress_passive_chain_owner(orch, task):
@@ -1429,7 +1429,9 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
     if retained_invocation is not None and retained_invocation.admitted:
         task = retained_invocation.task
     from runtime.workflows.recovery import route_owned_task
-    if route_owned_task(orch, task_id):
+    from runtime.workflows.recovery import classify_task
+    continuation_task = classify_task(db, task_id, org_slug=orch._slug).kind == 'seq_source_wait_set'
+    if not continuation_task and route_owned_task(orch, task_id):
         return
 
     # Cancellation short-circuit. Once /cancel marks a task FAILED + sets
@@ -1452,13 +1454,18 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
     if task.status == TaskStatus.PENDING:
         pass  # eligible
     elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.DELEGATED:
-        children = [db.get_task(cid) for cid in db.get_children(task_id)]
+        from runtime.orchestrator.workflow_continuation import ordinary_children, ready as workflow_ready
+        children = ordinary_children(orch, task)
+        event_entry = continuation_task and (workflow_ready(orch, task)
+            or retained_invocation is not None and retained_invocation.admitted)
+        if children is None or (continuation_task and not children and not event_entry):
+            return
         # THR-211: a child whose current session has durably landed a
         # structured terminal report counts as terminal for parent admission
         # even while its row reads in_progress (the status transition is
         # deferred to session finalization). A genuinely-running child with no
         # landed result still blocks the parent — never suppress live work.
-        if any(
+        if not event_entry and any(
             c is None or (
                 c.status not in TERMINAL_STATES
                 and not _child_has_landed_terminal_result(orch, c)
@@ -1614,7 +1621,8 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         # (all children terminal — inject join context).
         # pending_review removed — founder ruling THR-012 msg 129/131
         # removed the fan-out review gate entirely.
-        if task.active_fanout is not None:
+        from runtime.orchestrator.workflow_continuation import fanout_join_ready
+        if task.active_fanout is not None and fanout_join_ready(orch, task):
             from runtime.orchestrator.fanout import FanoutState as _FanoutState
             fanout_state = _FanoutState.deserialize(task.active_fanout)
             if fanout_state.status == "spawned":
@@ -2834,7 +2842,8 @@ def _consume_completion_report(
     if task is None:
         return
     from runtime.workflows.recovery import classify_task
-    if classify_task(db, task_id, org_slug=getattr(orch, "_slug", None)).kind != "legacy":
+    ownership = classify_task(db, task_id, org_slug=getattr(orch, "_slug", None))
+    if ownership.kind not in ("legacy", "seq_source_wait_set"):
         # A result is transport evidence only. The draft owner joins exact
         # accepted result and actual host quiescence; no manager decision tail.
         return
@@ -2847,6 +2856,21 @@ def _consume_completion_report(
     # K3a is selected before any existing v2 result-action spending. The
     # production owner refuses missing downstream readiness with zero mutation.
     decision = orch._parse_next_step(report) if task.task_type == "task" else None
+    continuation = getattr(orch, '_workflow_continuation', None)
+    if ownership.kind == 'seq_source_wait_set' and (
+            continuation is None or not continuation.admitted_result(task, resolved_row_id, report)):
+        return
+    if decision is not None and decision.action in ('workflow_control', 'workflow_wait'):
+        if continuation is not None and ownership.kind == 'seq_source_wait_set':
+            continuation.publish_result(resolved_row_id, task_id)
+        else:
+            _feedback_and_reenqueue(orch, RetryClaim.from_task(task, result_row_id=resolved_row_id),
+                'workflow_run_not_owned: control/wait requires an admitted owned @2 run; no workflow effect applied')
+        return
+    if decision is not None and decision.action == 'workflow_start' and decision.workflows is not None:
+        # Internal @2 parser/retained admissions exist; public start is still
+        # unmounted. A historical batch is never reinterpreted as a @1 start.
+        return
     if decision is not None and decision.action == "workflow_start":
         if decision.workflow.get('format') == 'workflow-sequential-start@1':
             from runtime.workflows.sequential_engine import SequentialRefusal
@@ -4611,6 +4635,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         missing_reviewer_agents=list(reviewers.missing_agents),
         name_metadata=orch.read_name_metadata(),
     )
+    continuation = getattr(orch, '_workflow_continuation', None)
+    if continuation is not None:
+        base += continuation.prompt_context(task)
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
     if revisit is not None:
@@ -5749,7 +5776,15 @@ def _enqueue_parent_if_waiting(
         return
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
-    if ownership.kind == 'seq_source_waiting':
+    if ownership.kind in ('seq_carrier', 'seq_visit'):
+        continuation = getattr(orch, '_workflow_continuation', None)
+        if continuation is not None:
+            continuation.member_event(task_id, queue=queue)
+        return
+    if ownership.kind == 'seq_source_wait_set':
+        if task.status not in TERMINAL_STATES and not _child_has_landed_terminal_result(orch, task):
+            return
+    elif ownership.kind == 'seq_source_waiting':
         from runtime.workflows.sequential_return import returned_source
         if not returned_source(orch._db, orch._slug, ownership.intent_id, task_id):
             return
@@ -5763,8 +5798,13 @@ def _enqueue_parent_if_waiting(
             entry = queued_storage(orch._db._conn, orch._slug).runs[ownership.intent_id]
             if not entry['native'].get('returned') or entry['source']['task_id'] != task_id:
                 return
-    if classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None)).kind != 'legacy':
+    parent_kind = classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None)).kind
+    if parent_kind not in ('legacy', 'seq_source_wait_set'):
         return
+    if parent_kind == 'seq_source_wait_set':
+        continuation = getattr(orch, '_workflow_continuation', None)
+        if continuation is not None:
+            continuation.wake(task.parent_task_id, queue=queue)
     parent = orch._db.get_task(task.parent_task_id)
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
@@ -5822,7 +5862,11 @@ def _enqueue_parent_if_waiting(
             )
         )
         if is_chain_trigger:
-            children_ids = orch._db.get_children(parent.id)
+            from runtime.orchestrator.workflow_continuation import ordinary_children
+            ordinary = ordinary_children(orch, parent)
+            if ordinary is None:
+                return
+            children_ids = [record.id for record in ordinary if record is not None]
             if children_ids and child.id == children_ids[-1]:
                 # THR-211: carry the EXACT authenticated report (the
                 # (task_id, assigned_agent, current_session_id) fingerprint
@@ -5881,7 +5925,10 @@ def _enqueue_parent_if_waiting(
             # Carrier fail-closed is applied at that point, not here.
             pass
 
-    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
+    from runtime.orchestrator.workflow_continuation import ordinary_children
+    siblings = ordinary_children(orch, parent)
+    if siblings is None:
+        return
     if any(
         s is None or (
             s.status not in TERMINAL_STATES

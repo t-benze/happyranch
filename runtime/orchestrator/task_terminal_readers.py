@@ -7,7 +7,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from runtime.models import TaskRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import CompletionReport, TaskRecord
     from runtime.orchestrator.orchestrator import Orchestrator
 
 
@@ -61,6 +62,9 @@ def _owns_passive_chain(orch: "Orchestrator", task: "TaskRecord") -> bool:
     same type/ancestry, but has no children and must run its first session.
     Pipeline allocation atomically inserts the carrier and its first child.
     """
+    from runtime.orchestrator.workflow_continuation import ready
+    if task.task_type == 'task' and ready(orch, task):
+        return False
     return task.active_chain is not None or (
         bool(orch._db.get_children(task.id)) and _is_carrier(orch, task)
     )
@@ -80,8 +84,9 @@ def _progress_passive_chain_owner(orch: "Orchestrator", task: "TaskRecord") -> b
 
     if (task.cancelled_at is None and task.status == TaskStatus.IN_PROGRESS
             and task.block_kind == BlockKind.DELEGATED):
-        children = orch._db.get_children(task.id)
-        newest = orch._db.get_task(children[-1]) if children else None
+        from runtime.orchestrator.workflow_continuation import ordinary_children
+        children = ordinary_children(orch, task)
+        newest = children[-1] if children else None
         if newest is not None and newest.status in TERMINAL_STATES:
             _enqueue_parent_if_waiting(orch, newest.id)
     return True
@@ -104,8 +109,9 @@ def _passive_parent_wake_handled(orch: "Orchestrator", parent: "TaskRecord") -> 
             or current.block_kind != BlockKind.DELEGATED):
         return True
     if current.active_chain is not None:
-        children = orch._db.get_children(current.id)
-        newest = orch._db.get_task(children[-1]) if children else None
+        from runtime.orchestrator.workflow_continuation import ordinary_children
+        children = ordinary_children(orch, current)
+        newest = children[-1] if children else None
         if (newest is None or newest.status not in TERMINAL_STATES
                 or newest.status == TaskStatus.COMPLETED):
             return True
@@ -132,7 +138,31 @@ def _child_has_modern_fingerprint(child: "TaskRecord") -> bool:
     )
 
 
-def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
+def workflow_dependency_state(db: "Database", task_id: str) -> str:
+    """Shared read-only dependency result; unavailable is never an empty set."""
+    import sqlite3
+    from runtime.orchestrator.workflow_continuation import observation
+    try:
+        value = observation(db, task_id)
+    except (ValueError, TypeError, sqlite3.Error):
+        return 'unavailable'
+    if value is None:
+        return 'legacy'
+    return 'waiting' if value['unfinished_runs'] or value['ordinary_outstanding'] else 'clear'
+
+
+def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord") -> "CompletionReport | None":
+    if child is None:
+        return None
+    with orch._db.coherent_read_view():
+        current = orch._db.get_task(child.id)
+        if current is None or (current.assigned_agent, current.current_session_id) != (
+                child.assigned_agent, child.current_session_id):
+            return None
+        return _child_landed_terminal_report_in_view(orch, current)
+
+
+def _child_landed_terminal_report_in_view(orch: "Orchestrator", child: "TaskRecord") -> "CompletionReport | None":
     """THR-211: return the exact authenticated CompletionReport for the
     child's CURRENT session, or None when it is not dispatch-terminal.
 
@@ -161,10 +191,30 @@ def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
     )
     if report is None or report.status != "completed":
         return None
-    if report.decision is not None and report.decision.action == 'workflow_start':
+    # The native legacy report projection intentionally omits decision_json.
+    # Read the SAME exact fingerprint here; never use a task-wide newest row.
+    import json
+    from runtime.models import NextStep
+    row = orch._db.get_latest_task_result(child.id, child.assigned_agent, child.current_session_id)
+    if row is None:
+        return None
+    raw = row.get('decision_json')
+    if raw:
+        try:
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                return None
+            value.pop('_manager_self_evaluation', None)
+            value.pop('_authority_v2_admission', None)
+            report = report.model_copy(update={'decision': NextStep.model_validate(value)})
+        except (ValueError, TypeError):
+            return None
+    if report.decision is not None and report.decision.action in ('workflow_start', 'workflow_control', 'workflow_wait'):
         # This genuine callback requests a coding start; it does not finish the
         # source task, including while readiness refuses allocation. Its own
         # waiting/closeout owner alone may release the source. Parent/Pause/
         # summary readers must not mistake the transport result for terminality.
+        return None
+    if workflow_dependency_state(orch._db, child.id) in ('waiting', 'unavailable'):
         return None
     return report

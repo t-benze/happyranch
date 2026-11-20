@@ -899,3 +899,17 @@ See the [current U7 source and evidence limits](../../specs/2026-11-11-sequentia
 U4c supersedes the earlier unmounted repository adapter checkpoint only: see
 [repository transport](../../specs/2026-11-12-sequential-coding-u4c.md).
 The callback and native settlement contracts above remain unchanged.
+
+## Workflow continuation terminality (S6a)
+
+A completed start/control/wait callback is not dispatch-terminal evidence. The
+shared reader serves parent chain/fanout release, delegated Pause eligibility
+and child-wait projection. A wait-set initiator's unfinished owned runs/ordinary
+dependencies also prevent early release; unavailable workflow evidence is
+nonterminal and projects unavailable. Readers do not acknowledge, enqueue or
+install storage. Absent workflow storage preserves ordinary THR-211 behavior,
+including exact current-session ordinary final done before native finalization
+and fingerprint-absence-only legacy fallback. Inbox readiness admits only its
+addressed initiator, preserving unfinished ordinary joins. See the S6a section
+of [reusable workflows](reusable-workflows.md) for internal decision wire fields
+and the native callback transaction boundary.

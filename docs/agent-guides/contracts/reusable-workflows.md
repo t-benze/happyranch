@@ -2607,3 +2607,32 @@ their original date; missing or unavailable evidence never means today's
 success. No raw integrity diagnostics cross the route. Setup/report evidence
 grants no workflow permission. English and Simplified Chinese share this
 behavior. No page, Audit UI, notification or required check is added.
+
+## S6a: internal decision continuations
+
+A version3 `seq_source_wait_set` initiator remains an ordinary native session
+owner. Pending addressed inbox events may admit that task while other runs and
+ordinary children continue. Native admission snapshots delivery once for each
+new SID; prompt reads use only its stored page, including an empty page. Late
+events remain pending. Queue coalescing does not consume an event or complete
+the initiating task. Native close/release retries its pending wake; startup
+reconstructs pending visit outboxes and initiator receipts. A drained control/wait
+receipt admits one further ordinary final-decision session without completing it. Unfinished ordinary chain/fanout state survives event entry.
+
+The internal closed decisions are `workflow_control` with `workflow` containing
+the existing `workflow-sequential-control@2` command, and `workflow_wait` with
+`run_ids` listing known owned runs. Both accept optional `consume_notifications`
+(maximum 32 distinct delivered IDs), retaining S5's stored-page consumption default
+and existing receipt validation. A wait requires a consumed event or an
+outstanding run/ordinary dependency. Public composition remains Start@1; @2
+start is unmounted and control/wait are not advertised as agent capabilities.
+
+Database retains ordinary callback authentication, cancellation/recovery, exact
+replay and v2 attempt/omission behavior. Its single attached continuation seam
+receives the actual INTEGER result after result/attempt insertion, before native
+COMMIT. Result, S4a effects and S5 consumption roll back together on refusal or
+error; absence of the seam refuses wait-set callbacks. Exact replay invokes no
+effects. Ordinary final done rechecks dependencies inside that same writer.
+Workflow callbacks never mark the task completed. Shared terminal readers exclude
+start/control/wait even after drain; owned live work or unavailable evidence
+prevents early parent release. Ordinary final-done status lag remains THR-211.

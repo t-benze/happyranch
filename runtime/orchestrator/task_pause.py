@@ -57,14 +57,22 @@ def eligible(orch: Any, task: TaskRecord) -> bool:
     """Ordinary session admission; chain owners and carriers stay passive."""
     from runtime.orchestrator.run_step import _child_has_landed_terminal_result, TERMINAL_STATES
     from runtime.orchestrator.task_terminal_readers import _owns_passive_chain
+    from runtime.orchestrator.workflow_continuation import ready
     if task.cancelled_at is not None or _owns_passive_chain(orch, task):
         return False
+    if ready(orch, task):
+        return True
     if task.status == TaskStatus.PENDING:
         return True
     if task.status != TaskStatus.IN_PROGRESS:
         return False
     if task.block_kind == BlockKind.DELEGATED:
-        children = [orch._db.get_task(cid) for cid in orch._db.get_children(task.id)]
+        from runtime.orchestrator.workflow_continuation import ordinary_children
+        from runtime.workflows.recovery import classify_task
+        children = ordinary_children(orch, task)
+        if children is None or (not children and classify_task(orch._db, task.id,
+                org_slug=orch._slug).kind == 'seq_source_wait_set'):
+            return False
         return all(c is not None and (c.status in TERMINAL_STATES or _child_has_landed_terminal_result(orch, c))
                    for c in children)
     if task.block_kind == BlockKind.BLOCKED_ON_JOB:
@@ -355,6 +363,12 @@ class TaskInvocation:
             raise PauseControlError("pause_control_unavailable")
         db._conn.execute("UPDATE tasks SET assigned_agent=?,current_session_id=? WHERE id=?",
                          (self.agent, self.session_id, self.task.id))
+        from runtime.workflows.recovery import classify_task
+        if classify_task(db, self.task.id, org_slug=self.orch._slug).kind == 'seq_source_wait_set':
+            continuation = getattr(self.orch, '_workflow_continuation', None)
+            if continuation is None:
+                raise DeferredRootPause('workflow_continuation_unavailable')
+            continuation.admitted_uncommitted(self)
         audit_ids: list[int] = []
         if self.task.block_kind == BlockKind.BLOCKED_ON_JOB:
             ids = json.loads(self.task.blocked_on_job_ids or "[]")
@@ -363,7 +377,8 @@ class TaskInvocation:
                 {"blocking_job_ids": ids, "trigger": self.metadata.get("trigger", "unknown"),
                  "triggering_job_id": self.metadata.get("triggering_job_id"),
                  "job_outcomes": {jid: db.get_job_status(jid) or "unknown" for jid in ids}}))
-        if self.task.active_fanout is not None:
+        from runtime.orchestrator.workflow_continuation import fanout_join_ready
+        if self.task.active_fanout is not None and fanout_join_ready(self.orch, self.task):
             from runtime.orchestrator.run_step import _prepare_fanout_join_payload
             payload = _prepare_fanout_join_payload(self.orch, self.task.id, self.task.active_fanout)
             if payload is not None:
@@ -966,6 +981,9 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
                     try:
                         sequential.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
                             close_disposition=close_disposition, release_disposition=release_disposition)
+                        continuation = getattr(invocation.orch, '_workflow_continuation', None)
+                        if continuation is not None:
+                            continuation.settled(invocation.task.id)
                     except BaseException as exc:
                         if active_error is None:
                             raise
