@@ -4356,6 +4356,10 @@ breakpoint. The transcript has bounded scrolling; all properties and participant
 controls remain reachable in the detail scroll area. At desktop widths the
 properties retain their fixed rail. Resize and locale changes preserve the mounted
 composer, draft, attachments and selection; neither action submits a message.
+The composer (THR-376) sits in the same 768px centred column as the transcript
+under a top border; it keeps the auto-growing textarea, attach, @mention, Stop
+(abort every in-flight reply, shown with visible "Stop" text) and send controls,
+and adds a localized hint line that hides when the composer is narrow.
 
 <!-- TASK11932 current-ancestor correction and owner support boundary -->
 **Historical TASK11932 checkpoint.** Seq640 removes this producer/worker path;

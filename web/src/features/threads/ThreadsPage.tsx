@@ -12,7 +12,8 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * States: Loading (skeleton), Empty (calm), Error-with-retry (§2.5.5).
  * NO persistent unread/read-state (B.3 deferred — no markRead/unread).
  *
- * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
+ * Composer: BROADCAST-ONLY ("Message the thread · @ to address an agent";
+ *   hint "Every participant sees messages in this thread.").
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -1093,13 +1094,15 @@ export function ThreadsPage(): JSX.Element {
               disabled={activeThread.data?.status !== 'open'}
               pending={submissionPending}
               errorMessage={composerError !== null ? renderThreadError(composerError, t) : null}
-              helper={t('threads.page.composer.helper')}
+              helper={t('threads.page.composer.placeholder')}
+              hint={t('threads.page.composer.hint')}
               labels={{
                 closedPlaceholder: t('threads.page.composer.closed'),
                 attachFiles: t('threads.page.composer.attach'),
                 textareaAria: t('threads.page.composer.textareaAria'),
                 send: t('threads.page.composer.send'),
                 sendTitle: t('threads.page.composer.sendTitle'),
+                stop: t('threads.page.composer.stop'),
                 abortReply: t('threads.page.composer.abort'),
                 aborting: t('threads.page.composer.aborting'),
                 removeAttachment: t('threads.page.composer.removeAttachment'),
@@ -1108,7 +1111,7 @@ export function ThreadsPage(): JSX.Element {
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}
-              // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
+              // "Stop" (abort replies) lives INSIDE the input box (THR-099 Phase A).
               // Renders only while replies are in flight; one click aborts EVERY
               // in-flight reply (thread-level mutation, unchanged).
               abortReplies={{
@@ -1400,8 +1403,13 @@ function DetailColumn({
               replyDelivery={replyDelivery}
             />
           </div>
-          <footer className="border-border-default bg-surface-sunken shrink-0 border-t p-3">
-            {composer}
+          {/* THR-376 .composer: border-top wrapper, padding 12/28/16 (14px sides
+              when narrow), content centred in the same 768px column as the
+              transcript (PR2 container-query padding, max-w-3xl). */}
+          <footer className="border-border-default @container shrink-0 border-t">
+            <div className="px-3.5 pt-3 pb-4 @xl:px-7">
+              <div className="mx-auto w-full max-w-3xl min-w-0">{composer}</div>
+            </div>
           </footer>
         </div>
         {/* Stack properties below the conversation on narrow screens; md restores
