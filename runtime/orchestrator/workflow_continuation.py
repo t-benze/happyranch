@@ -60,7 +60,24 @@ def observation(db: Any, task_id: str) -> dict | None:
     """One coherent, read-only observation; absence alone retains legacy rules."""
     from runtime.workflows.sequential_initiator import observe_dependencies
     with db.coherent_read_view() as conn:
-        return observe_dependencies(conn, db, task_id)
+        value = observe_dependencies(conn, db, task_id)
+        task = db.get_task(task_id) if value is not None else None
+    if value is not None:
+        value['disposition'] = 'initiator_terminal' if task.status in ('completed', 'failed', 'cancelled', 'superseded') else 'pending'
+        value['unavailable_reason'] = None
+        if value['disposition'] == 'pending':
+            continuation = getattr(db, '_workflow_continuation', None)
+            if continuation is not None:
+                from runtime.orchestrator.prompt_loader import load_agent
+                try:
+                    agent = load_agent(continuation.org.orchestrator._paths, task.assigned_agent)
+                    available = (agent is not None and agent.role == 'manager' and agent.team == task.team
+                        and continuation.org.teams.executable_manager_for_team(task.team) == task.assigned_agent)
+                except (OSError, ValueError, TypeError, KeyError):
+                    available = False
+                if not available:
+                    value.update(disposition='unavailable', unavailable_reason='initiator_agent_unavailable')
+    return value
 
 
 def ready(orch: Any, task: Any) -> bool:
@@ -68,7 +85,7 @@ def ready(orch: Any, task: Any) -> bool:
     import sqlite3
     try:
         value = observation(orch._db, task.id)
-        return bool(value and value['pending'] and task.task_type == 'task'
+        return bool(value and value['pending'] and value['disposition'] == 'pending' and task.task_type == 'task'
             and task.status == 'in_progress' and task.block_kind == 'delegated'
             and task.cancelled_at is None)
     except (ValueError, TypeError, sqlite3.Error):
@@ -93,6 +110,8 @@ def ordinary_children(orch: Any, task: Any) -> list | None:
     try:
         with orch._db.coherent_read_view():
             value = observation(orch._db, task.id)
+            if value is not None and value['disposition'] == 'unavailable':
+                return None
             ids = value['ordinary_task_ids'] if value is not None else orch._db.get_children(task.id)
             return [orch._db.get_task(task_id) for task_id in ids]
     except (ValueError, TypeError, sqlite3.Error):
@@ -241,7 +260,7 @@ class WorkflowContinuation:
                 return
             with _sql_budget(conn, budget):
                 ids = [row['source_task_id'] for row in _rows(conn, 'workflow_seq_source_wait_sets', budget,
-                    "source_task_id IN (SELECT id FROM tasks WHERE status='in_progress' AND block_kind='delegated')", ())]
+                    '1', ())]
                 visits = _rows(conn, 'workflow_seq_outbox', budget,
                     "kind='visit_queued' AND task_id IN (SELECT id FROM tasks WHERE status='pending')", ())
         if selected is not None:
@@ -290,6 +309,9 @@ class WorkflowContinuation:
 
     def wake(self, task_id: str, *, queue: Any = None) -> bool | None:
         """Return delivery, refusal, or None when no publication is needed."""
+        from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+        if fence_terminal_source(self.org, task_id):
+            return None
         task = self.db.get_task(task_id)
         if task is None or not ready(self.org.orchestrator, task):
             return None

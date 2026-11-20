@@ -56,6 +56,13 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+S6B_CASES = ('cancel_vs_retry', 'cancel_source_all_runs', 'source_failed',
+    'initiator_unavailable', 'pause_resume', 'unknown_effect_kept')
+s6b_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--s6b='):
+    s6b_case = sys.argv[1].split('=', 1)[1]
+    assert s6b_case in ('all', *S6B_CASES)
+    sys.argv[1:] = ['--assignments']
 S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refused', 'fanout_not_joined',
     'chain_preserved', 'manager_event_race', 'control_live_chain_child', 'wait_live_fanout_child',
     'sibling_finishes_run_B_live', 'pause_live_initiator', 'read_waiting_children',
@@ -2109,7 +2116,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2221,10 +2228,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -2794,7 +2801,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -4771,7 +4778,323 @@ if s4a_case or s4b_case or s5_case or s6a_case or not sys.argv[1:]:
                 assert s6queue(f).count('s5-parent') == 1
         print('PASS S6a', case, 'real native/result/dependency boundaries; provider FORBIDDEN', flush=True)
 
-    if s4a_case or s4b_case or s5_case or s6a_case:
+    # S6b reuses S5/S6a's private SQLite/native fixtures. Real production cancel
+    # writers and original source-result identities are exercised; no provider
+    # or external host effect is allowed. Faults wrap existing commit boundaries.
+    from runtime.daemon.routes.tasks import cancel_task as founder_cancel_task, CancelBody
+    from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
+
+    def s6bcancel(f, target=None):
+        import asyncio
+        return asyncio.run(founder_cancel_task(target or f.source.id, CancelBody(rationale='private S6b stop'), f.org))
+
+    def s6blaunch(f, index=1):
+        ids = f.batch_ids[index]
+        visit = s4row(f, 'workflow_seq_visits', ids.visit_id)
+        sid = 's6b-original-' + ids.visit_id
+        f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?", (sid, visit['id']))
+        f.conn.execute("UPDATE workflow_seq_runs SET progress='executing' WHERE id=?", (ids.run_id,))
+        f.conn.execute("UPDATE tasks SET current_session_id=?,status='in_progress' WHERE id=?", (sid, visit['task_id']))
+        f.conn.commit()
+        assert ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+        return ids
+
+    def s6badditional(f, count=1):
+        sid = 's6b-later-source'
+        s6sid(f, sid)
+        commands = [deepcopy(f.command) for _ in range(count)]
+        for index, command in enumerate(commands):
+            command['operation_key'] = 's6b-later-' + str(index)
+        f.value = dict(action='workflow_start', workflows=commands)
+        f.decision = s4bytes(f.value)
+        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) VALUES (?,?,?,?,?,?)',
+            (f.source.id, f.source.assigned_agent, sid, 'completed', f.decision.decode(), '2026-11-20T00:00:00+00:00')).lastrowid
+        f.conn.commit()
+        f.source = f.db.get_task(f.source.id)
+        f.actor = RetryClaim.from_task(f.source, result_row_id=result)
+        f.remaining = GenericLimits(max_visits=24, max_events=64, max_recoveries=0, node_revisions={})
+        f.captures = prepare_generic_batch(f.org, decision=f.decision, source=f.actor)
+        f.batch_ids = (*f.batch_ids, *f.batch())
+        f.source = f.db.get_task(f.source.id)
+        s5release(f)
+        while not f.queue._queue.empty():
+            f.queue._queue.get_nowait()
+
+    def s6bfinish(f, ids):
+        capture = f.org.workflow_authority.capture_admission()
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            return finish_cancel_and_wake_uncommitted(writer, f.db, org_slug='scratch',
+                run=s4row(f, 'workflow_seq_runs', ids.run_id), compiled=f.compiled,
+                authority=f.org.workflow_authority, capture=capture)
+
+    def s6bfenced(f, ids, *, launched=False):
+        run = s4row(f, 'workflow_seq_runs', ids.run_id)
+        expected = ('running', 'cancelling', None) if launched else ('finished', None, 'cancelled')
+        assert (run['state'], run['progress'], run['terminal_outcome']) == expected, 'S6b missing wait-set member fence: ' + ids.run_id
+        event = s4row(f, 'workflow_seq_events', run['last_event_id'])
+        body = json.loads(event['event_bytes'])
+        assert body['origin']['source_task_id'] == f.source.id and 'actor' not in body
+        assert event['source_result_id'] is None and event['source_visit_id'] is None
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_controls WHERE run_id=?', (ids.run_id,)).fetchone()[0] == 0
+        assert not f.dispatcher.queue_admission_allowed(ids.visit_task_id)
+        return run
+
+    for case in (S6B_CASES if s6b_case or not sys.argv[1:] else ()):
+        if s6b_case not in (None, 'all', case):
+            continue
+        if case == 'cancel_source_all_runs':
+            with s6fixture() as f:
+                sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
+                parent = f.db.get_task('s5-parent')
+                s6land(f, 's6b-one-run-cancel', dict(action='workflow_control', workflow=s4command(f, 'cancel')))
+                assert f.db.get_task(f.source.id).status == 'in_progress'
+                assert f.db.get_task('s5-parent') == parent
+                assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id) == sibling
+                assert f.dispatcher.queue_admission_allowed(f.batch_ids[1].visit_task_id)
+            for ancestor in (False, True):
+                with s6fixture(hold=False) as f:
+                    # An earlier finished member retains exact history. Three
+                    # unfinished members span original source results and SIDs.
+                    s4closed(f, f.ids.visit_id, summary=s4bsummary('finish'), terminal='success')
+                    s4baccept(f)
+                    finished_ids = f.ids
+                    finished = s4row(f, 'workflow_seq_runs', finished_ids.run_id)
+                    finished_events = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_events WHERE run_id=? ORDER BY sequence', (f.ids.run_id,)))
+                    s5hold(f, 1)
+                    s6badditional(f, 2)
+                    launched = s6blaunch(f, 2)
+                    live_visit = s4row(f, 'workflow_seq_visits', launched.visit_id)
+                    controls = []
+                    def observe_stop():
+                        assert not f.conn.in_transaction and not f.org.db_lock.locked()
+                        assert not f.org.db._lock._is_owned()
+                        s6bfenced(f, launched, launched=True)
+                        controls.append('original-stop')
+                    f.org.sessions.set_active(live_visit['task_id'], live_visit['principal'], live_visit['session_id'], org_slug='scratch')
+                    f.org.sessions.set_cancel_control(live_visit['task_id'], live_visit['principal'], live_visit['session_id'], observe_stop)
+                    target = 's5-parent' if ancestor else f.source.id
+                    before_visits = f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0]
+                    reply = s6bcancel(f, target)
+                    assert reply['ok'] and f.source.id in reply['cancelled']
+                    assert s4row(f, 'workflow_seq_runs', finished_ids.run_id) == finished, case + ': finished member changed'
+                    assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_events WHERE run_id=? ORDER BY sequence', (finished_ids.run_id,))) == finished_events
+                    for index, ids in enumerate(f.batch_ids[1:], 1):
+                        s6bfenced(f, ids, launched=index == 2)
+                    assert controls == ['original-stop']
+                    assert f.org.sessions.get_active(live_visit['task_id'], live_visit['principal']) == live_visit['session_id']
+                    assert f.org.sessions.get_cancel_control(live_visit['task_id'], live_visit['principal']) is observe_stop
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == before_visits
+                    assert f.db.get_task(f.source.id).status == 'cancelled'
+                    assert observation(f.db, f.source.id)['disposition'] == 'initiator_terminal'
+                    with s5reopen(f) as conn:
+                        assert len(read_sequential_history(conn, expected_org_slug='scratch').run_ids) == 4
+                    before = s5snap(f)
+                    f.org.orchestrator._workflow_continuation.rediscover(queue=f.queue)
+                    assert s5snap(f) == before and f.source.id not in s6queue(f), case + ': rediscovery revived source'
+            # Membership drift and failure after the real fence both roll back.
+            with s6fixture() as f:
+                before = s5snap(f)
+                import runtime.workflows.sequential_control as control_owner
+                real = control_owner.native_cancel_fence_uncommitted
+                def fail_after_fence(*args, **kwargs):
+                    real(*args, **kwargs)
+                    raise RuntimeError('S6b fault before fence COMMIT')
+                with patch.object(control_owner, 'native_cancel_fence_uncommitted', fail_after_fence):
+                    try:
+                        s6bcancel(f)
+                    except RuntimeError as exc:
+                        assert str(exc) == 'S6b fault before fence COMMIT'
+                    else:
+                        raise AssertionError(case + ': missed precommit fault')
+                assert s5snap(f) == before, case + ': partial fence escaped rollback'
+                assert not f.org.db_lock.locked()
+                # Persisted malformed membership must refuse the complete read,
+                # rather than treating the omitted member as an empty wait set.
+                f.conn.execute('PRAGMA foreign_keys=OFF')
+                member = tuple(f.conn.execute('SELECT * FROM workflow_seq_source_memberships LIMIT 1').fetchone())
+                triggers = list(f.conn.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_source_memberships'"))
+                for name, _ in triggers:
+                    f.conn.execute('DROP TRIGGER "' + name + '"')
+                f.conn.execute('UPDATE workflow_seq_source_memberships SET source_result_id=999999 WHERE run_id=?', (member[2],))
+                for _, sql in triggers: f.conn.execute(sql)
+                f.conn.commit(); f.conn.execute('PRAGMA foreign_keys=ON')
+                broken = s5snap(f)
+                from fastapi import HTTPException
+                try:
+                    s6bcancel(f)
+                except HTTPException as exc:
+                    assert exc.status_code == 409 and exc.detail['code'] == 'sequential_cancellation_reconciliation_required'
+                else:
+                    raise AssertionError(case + ': membership drift accepted')
+                assert s5snap(f) == broken, case + ': refused drift wrote rows'
+        elif case == 'cancel_vs_retry':
+            for cancel_first in (True, False):
+                with s6fixture(recoveries=1) as f:
+                    sid = 's6b-control-race'
+                    s6sid(f, sid)
+                    retry = dict(action='workflow_control', workflow=s4command(f, 'retry'))
+                    if cancel_first:
+                        s6bcancel(f)
+                        for ids in f.batch_ids: s6bfenced(f, ids)
+                        before = s5snap(f)
+                        try:
+                            s6callback(f, sid, retry)
+                        except AssertionError as exc:
+                            assert str(exc) == 'S6a native callback refused'
+                        else:
+                            raise AssertionError(case + ': cancelled source allocated a replacement')
+                        assert s5snap(f) == before, case + ': losing retry wrote result/control/task'
+                    else:
+                        result = s6callback(f, sid, retry)
+                        receipt = json.loads(f.conn.execute('SELECT receipt_bytes FROM workflow_seq_controls').fetchone()[0])
+                        assert receipt['new_task_id'] != f.batch_ids[0].visit_task_id
+                        s6bcancel(f)
+                        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        assert run['state'] == 'finished' and run['terminal_outcome'] == 'cancelled', case + ': native fence missing after replacement'
+                        s6bfenced(f, f.batch_ids[1])
+                        assert f.db.get_task(receipt['new_task_id']).status == 'cancelled'
+                        before = s5snap(f)
+                        saved = f.conn.execute('SELECT receipt_bytes FROM workflow_seq_consumption_receipts WHERE result_id=?', (result['id'],)).fetchone()[0]
+                        f.conn.execute('BEGIN')
+                        replay = consume_decision_uncommitted(f.conn, initiator_task_id=f.source.id,
+                            principal=f.source.assigned_agent, session_id=sid, result_id=result['id'],
+                            decision=f.s6_last_kwargs['decision_json'].encode(),
+                            apply=lambda: (_ for _ in ()).throw(AssertionError('S6b replay re-executed effects')))
+                        f.conn.commit()
+                        assert replay == saved and s5snap(f) == before, case + ': exact receipt replay advanced'
+        elif case == 'source_failed':
+            for status, before_release in product(('failed', 'cancelled', 'superseded'), (False, True)):
+                with s5fixture() as f, patch.object(f.org.orchestrator, '_run_agent', side_effect=AssertionError('provider launch forbidden')):
+                    if not before_release:
+                        s5release(f); s5hold(f)
+                        launched = s6blaunch(f)
+                    f.conn.execute('UPDATE tasks SET status=?,completed_at=?,cancelled_at=?,block_kind=NULL WHERE id=?',
+                        (status, '2026-11-20T00:00:00+00:00',
+                         '2026-11-20T00:00:00+00:00' if status == 'cancelled' else None, f.source.id))
+                    f.conn.commit()
+                    source = f.db.get_task(f.source.id)
+                    bridge = f.org.orchestrator._workflow_continuation
+                    bridge.rediscover(queue=f.queue)
+                    assert f.db.get_task(f.source.id) == source, case + ': terminal cause changed'
+                    for index, ids in enumerate(f.batch_ids):
+                        s6bfenced(f, ids, launched=not before_release and index == 1)
+                    state = observation(f.db, f.source.id)
+                    assert state['disposition'] == 'initiator_terminal' and state['pending']
+                    assert f.source.id not in s6queue(f) and 's5-parent' not in s6queue(f), case + ': terminal source woke a manager'
+                    before = s5snap(f)
+                    bridge.settled(f.source.id); bridge.rediscover(queue=f.queue)
+                    assert s5snap(f) == before, case + ': terminal rediscovery duplicated writes'
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumed_notifications').fetchone()[0] == 0
+        elif case == 'initiator_unavailable':
+            with s6fixture() as f:
+                from runtime.orchestrator import prompt_loader
+                real = prompt_loader.load_agent
+                before = s5snap(f)
+                def unavailable(paths, name):
+                    return None if name == f.source.assigned_agent else real(paths, name)
+                with patch.object(prompt_loader, 'load_agent', unavailable):
+                    value = observation(f.db, f.source.id)
+                    assert value['pending'] and value['disposition'] == 'unavailable', case + ': lost pending unavailable reason'
+                    assert value['unavailable_reason'] == 'initiator_agent_unavailable'
+                    assert not ready(f.org.orchestrator, f.db.get_task(f.source.id))
+                    assert not eligible(f.org.orchestrator, f.db.get_task(f.source.id))
+                    f.org.orchestrator._workflow_continuation.wake(f.source.id)
+                    assert f.source.id not in s6queue(f)
+                assert s5snap(f) == before, case + ': unavailability acknowledged/changed event'
+                bridge = f.org.orchestrator._workflow_continuation
+                bridge.wake(f.source.id); bridge.wake(f.source.id)
+                assert s6queue(f).count(f.source.id) == 1 and s5snap(f) == before
+        elif case == 'pause_resume':
+            with s6fixture() as f:
+                store = f.db._task_pause_store
+                source = f.db.get_task(f.source.id)
+                bridge = f.org.orchestrator._workflow_continuation
+                limits = tuple(tuple(row) for row in f.conn.execute('SELECT id,original_limits_bytes,visit_count,recovery_count FROM workflow_seq_runs ORDER BY id'))
+                assert store.control('s5-parent', held=True, expected_generation=0, actor='founder', sessions=f.org.sessions)
+                bridge.wake(source.id)
+                while not f.queue._queue.empty(): f.queue._queue.get_nowait()
+                invocation = TaskInvocation(f.org.orchestrator, source, source.assigned_agent, 's6b-paused')
+                try:
+                    invocation.prepare()
+                except PauseControlError as exc:
+                    assert exc.detail['code'] == 'root_paused'
+                else:
+                    raise AssertionError(case + ': Pause admitted a new session')
+                assert f.db.get_task(source.id).current_session_id != invocation.session_id
+                s6bcancel(f)
+                for ids in f.batch_ids: s6bfenced(f, ids)
+                assert store.control('s5-parent', held=False, expected_generation=1, actor='founder', sessions=f.org.sessions)
+                bridge.rediscover(queue=f.queue)
+                assert f.source.id not in s6queue(f)
+                assert tuple(tuple(row) for row in f.conn.execute('SELECT id,original_limits_bytes,visit_count,recovery_count FROM workflow_seq_runs ORDER BY id')) == limits
+                assert observation(f.db, source.id)['pending'], case + ': Pause/Resume lost obligation'
+        elif case == 'unknown_effect_kept':
+            with s6fixture(hold=False) as f:
+                ids = s6blaunch(f)
+                original_ids = f.ids; f.ids = ids
+                s4closed(f, ids.visit_id, summary='', terminal='cancelled', positive=False,
+                    native_status='failed', classification='unknown')
+                f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                f.conn.commit()
+                f.ids = original_ids
+                s6bcancel(f)
+                fence = s6bfenced(f, ids, launched=True)
+                s6bfenced(f, f.batch_ids[0])
+                before = s5snap(f)
+                try:
+                    s6bfinish(f, ids)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(case + ': absent PID/native proof settled cancellation')
+                assert s5snap(f) == before, case + ': refused finish lost fence'
+                # Committed original closure is sufficient even with malformed
+                # business output. A finish fault preserves the original fence.
+                visit = s4row(f, 'workflow_seq_visits', ids.visit_id)
+                before_replay = s5snap(f)
+                assert f.db.admit_task_completion_callback(task_id=visit['task_id'], agent=visit['principal'],
+                    session_id=visit['session_id'], output_summary='', confidence_score=80, status='completed')
+                assert s5snap(f) == before_replay, case + ': original committed result replay advanced'
+                assert not f.db.admit_task_completion_callback(task_id=visit['task_id'], agent=visit['principal'],
+                    session_id=visit['session_id'], output_summary='changed', confidence_score=80, status='completed')
+                f.ids = ids; s4outer(f, ids.visit_id); f.ids = original_ids
+                before = s5snap(f)
+                import runtime.workflows.sequential_control as control_owner
+                validate = control_owner.validate_control_write
+                def fail_finish(*args, **kwargs):
+                    validate(*args, **kwargs)
+                    raise RuntimeError('S6b fault before finish COMMIT')
+                with patch.object(control_owner, 'validate_control_write', fail_finish):
+                    try:
+                        s6bfinish(f, ids)
+                    except RuntimeError as exc:
+                        assert str(exc) == 'S6b fault before finish COMMIT'
+                    else:
+                        raise AssertionError(case + ': finish fault missing')
+                assert s5snap(f) == before and s4row(f, 'workflow_seq_runs', ids.run_id)['progress'] == 'cancelling'
+                s6bfinish(f, ids)
+                run = s4row(f, 'workflow_seq_runs', ids.run_id)
+                assert run['state'] == 'finished' and run['terminal_outcome'] == 'cancelled'
+                assert run['visit_count'] == fence['visit_count'] and run['recovery_count'] == fence['recovery_count']
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+                with s5reopen(f) as conn:
+                    assert ids.run_id in read_sequential_history(conn, expected_org_slug='scratch').run_ids
+            with s6fixture(hold=False) as f:
+                ids = f.batch_ids[1]
+                task = f.db.get_task(ids.visit_task_id)
+                inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent, 's6b-prepared', owner='sequential', workflow_dispatcher=f.dispatcher)
+                inv.prepare()
+                journal = f.db._task_pause_store.row_uncommitted('s5-parent')['journal']
+                reservation = inv.move_reservation
+                s6bcancel(f)
+                assert s4row(f, 'workflow_seq_runs', ids.run_id)['progress'] == 'cancelling', case + ': prepared owner treated pristine'
+                assert f.db._task_pause_store.row_uncommitted('s5-parent')['journal'] == journal
+                assert inv.store._live[inv.identity] is inv and inv.move_reservation is reservation
+                owners = inv._sequential_cancel_owners
+                assert owners and owners[0].incomplete, case + ': prepared aggregate gained clearance'
+        print('PASS S6b', case, 'real private writers/persisted assertions; provider FORBIDDEN', flush=True)
+
+    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case:
         raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

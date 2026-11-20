@@ -2620,7 +2620,7 @@ async def cancel_task(
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        sequential = ownership.kind in SEQUENTIAL_HELD_KINDS
+        sequential = ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind == 'seq_source_wait_set'
         if not sequential and ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
             if ownership.kind not in {"draft", "f5"}:
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
@@ -2656,7 +2656,7 @@ async def cancel_task(
         controls_to_invoke: list[tuple[str, str, Callable[[], None]]] = []
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
-        mixed = sequential and root.status != TaskStatus.CANCELLED
+        mixed = sequential and (root.status != TaskStatus.CANCELLED or ownership.kind == 'seq_source_wait_set')
         if not sequential:
             async with org.db_lock:
                 from runtime.workflows.sequential_mixed_cancel import has_sequential_descendant

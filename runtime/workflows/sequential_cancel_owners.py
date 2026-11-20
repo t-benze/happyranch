@@ -86,6 +86,13 @@ class CancelOwners:
                         "run_id=? AND visit_id IS ? AND kind='outer'",
                         (run, owner if kind == 'seq_visit' else None))
                     unknown |= not evidence
+            if kinds[key] == 'seq_source_wait_set' and key not in bound_tasks:
+                # A parked source is not proof that its original native owner
+                # closed. S5's positive original source evidence is the keeper.
+                members = _engine_rows(conn, 'workflow_seq_runs', budget, 'source_task_id=?', (key,))
+                current = [run for run in members if run['source_session_id'] == task['current_session_id']]
+                from runtime.workflows.sequential_initiator import source_released
+                unknown |= not current or any(not source_released(conn, run) for run in current)
             for agent, _ in (*controls, *pids):
                 unknown |= not any(inv.task.id == key and inv.agent == agent for _, inv in originals.values())
         # Retained cancellation has no durable positive sequential-cancellation

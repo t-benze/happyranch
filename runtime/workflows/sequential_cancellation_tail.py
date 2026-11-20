@@ -42,7 +42,10 @@ def _selected(conn: sqlite3.Connection, org: Any, invocation: Any, budget: _Read
     _, kind, owner_id, run_id = owners[0]
     with _sql_budget(conn, budget):
         runs = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
-        _require(len(runs) == 1 and runs[0]['state'] == 'cancelled', 'cancelled_owner_stop_required')
+        _require(len(runs) == 1 and (runs[0]['state'] == 'cancelled' or
+            (runs[0].get('engine_version', 1) == 2 and (runs[0]['progress'] == 'cancelling' or
+             (runs[0]['state'], runs[0]['terminal_outcome']) == ('finished', 'cancelled')))),
+            'cancelled_owner_stop_required')
         run = runs[0]
         if kind == 'seq_source_waiting':
             expected = (run['source_task_id'], run['source_principal'], run['source_session_id'])

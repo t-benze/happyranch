@@ -1557,3 +1557,24 @@ proof; Option B ordinary/document owners remain UNSETTLED.
 OrgState acquires SH before naming preflight and Database construction, binds that original descriptor to the actual attachment, and releases after local connection closure. Native JOB launch in `runtime/daemon/jobs_runner.py` passes the original locked description through `pass_fds`; its parent holder survives until the existing positive `confirm_job_processes_empty` result. Original registration, producer COMMIT, output attribution and terminal composition remain distinct.
 
 The host supervisor uses `OrgFenceGuardian` in `runtime/daemon/sessions.py` before native preparation. The guardian inherits the same description and retains it on EOF/parent loss. Only positive original native receipt/cleanup, or positively unlaunched/abandoned preparation, permits its close instruction. Missing receipts, uncertain prepare/spawn/cleanup and old/unknown original owners retain HOLD; PID disappearance supplies no clearance. This adds no platform transport field, native settlement, restart adoption or live operating authority.
+
+
+## S6b native cancellation of @2 wait sets
+
+The mixed cancellation writer authenticates complete wait-set membership before
+any native overlay, commits every first fence atomically, then returns original
+opaque Stop controls for delivery outside locks. Launched/prepared members keep
+their outstanding visit and Running/cancelling state; pristine/Held members need
+one event slot. A native overlay does not invent a visit completion timestamp.
+Original terminal/outer observation and the unchanged S4a finish writer close a
+launched member; cancellation-only closure does not parse business output.
+
+Source loss is observed through existing source settlement, member tails and
+continuation rediscovery. Source failure/cancellation/supersession remains
+terminal, with addressed unconsumed events reported as `initiator_terminal`.
+Missing PID/control, ended SID, Stop return, failed cleanup or unknown preparation
+never clears original journals, trackers or reservations. Original owner
+aggregation retains root protection and Option B's ordinary/document UNSETTLED
+fallback. Pause delays new sessions while committed fences/native closure
+remain; Resume creates no new allowance or terminal-source session. @1 and
+legacy cancellation event/audit bytes and standalone owner paths are retained.
