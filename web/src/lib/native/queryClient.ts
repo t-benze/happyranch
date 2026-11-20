@@ -12,19 +12,22 @@
  *         data object is unchanged, so data-gated editors stay mounted and
  *         keep their drafts. While any such hold exists no change is sent to
  *         the current target (Not sent, lib/api/client.ts). The hold ends when
- *         the last observer leaves (the owner re-keys or unmounts); a new
- *         mount reads the new target under its own key;
+ *         the last observer leaves (unmount, or the owner gives the same
+ *         observer a different logical key: R2-2); a new mount or new key
+ *         reads the new target;
  *       * every other mounted observer moves to its new-generation key (one
  *         fresh fetch under the new generation);
  *       * every unobserved or moved old-generation query is removed.
  *   - transient recovery (F3): when busy/throttled clears (native `ready` or a
  *     later forwarded success), failed reads whose cause was transient native
- *     load are refetched once. Mutations are never retried.
+ *     load are refetched once, including a read that was still pending when
+ *     the signal fired and failed afterwards (R2-1, recovery epoch). Mutations
+ *     are never retried.
  * Feature query keys are unchanged, so partial-key invalidation keeps working.
  */
 import { hashKey, partialMatchKey, type Query, type QueryClient, type QueryKey, type QueryObserver } from '@tanstack/react-query';
 import { isTransientNativeFailure, StaleTargetError } from '../api/client';
-import { subscribeTransientRecovery } from './notices';
+import { subscribeTransientRecovery, transientRecoveryEpoch } from './notices';
 import {
   ensureNativeTarget,
   holdTargetCustody,
@@ -47,21 +50,46 @@ type AnyOptions = AnyObserver['options'];
 
 const suspendedFetch = (): Promise<never> => Promise.reject(new StaleTargetError());
 
-/** Keep one observer on its current (older-target) query, without fetching. */
-function pinObserver(observer: AnyObserver, queryHash: string): void {
+/**
+ * Keep one observer on its current (older-target) query, without fetching,
+ * for as long as its owner keeps asking for the same logical query key.
+ * When the owner re-keys the same observer (R2-2: e.g. Settings following an
+ * org change), the pin is released (`onUnpin`) and the new key resolves and
+ * fetches under the current generation.
+ */
+function pinObserver(observer: AnyObserver, queryHash: string, onUnpin: () => void): void {
+  const logicalKey = hashKey(observer.options.queryKey);
+  const sameKey = (options: AnyOptions): boolean => hashKey(options.queryKey) === logicalKey;
   const pin = (options: AnyOptions): AnyOptions => ({
     ...options,
     queryHash,
     enabled: false,
     queryFn: suspendedFetch,
   });
+  const fresh = (options: AnyOptions): AnyOptions => {
+    // Re-resolve under the current generation's key.
+    const { queryHash: _staleHash, ...rest } = options;
+    return rest as AnyOptions;
+  };
   const setOptions = observer.setOptions.bind(observer);
   const getOptimisticResult = observer.getOptimisticResult.bind(observer);
+  const unpin = (): void => {
+    observer.setOptions = setOptions;
+    observer.getOptimisticResult = getOptimisticResult;
+    onUnpin();
+  };
   // React's useQuery re-supplies options (and a new-generation hash) on every
-  // render through these two calls; the pin keeps the original entry.
-  observer.setOptions = (options: AnyOptions) => setOptions(pin(options));
+  // render through these two calls; the pin keeps the original entry while the
+  // logical key is unchanged.
+  observer.setOptions = (options: AnyOptions) => {
+    if (sameKey(options)) return setOptions(pin(options));
+    unpin();
+    return setOptions(fresh(options));
+  };
   observer.getOptimisticResult = ((options: AnyOptions) =>
-    getOptimisticResult(pin(options) as Parameters<AnyObserver['getOptimisticResult']>[0])) as AnyObserver['getOptimisticResult'];
+    getOptimisticResult(
+      (sameKey(options) ? pin(options) : fresh(options)) as Parameters<AnyObserver['getOptimisticResult']>[0],
+    )) as AnyObserver['getOptimisticResult'];
   observer.setOptions(observer.options);
 }
 
@@ -85,7 +113,13 @@ export function attachNativeQueryClient(client: QueryClient, opts: NativeQueryCl
     holds.delete(query);
   };
 
+  // R2-1: the recovery epoch each query's current fetch started under.
+  const fetchEpochs = new WeakMap<Query, number>();
   const offCache = cache.subscribe((event) => {
+    if (event.type === 'updated') {
+      if (event.action.type === 'fetch') fetchEpochs.set(event.query, transientRecoveryEpoch());
+      else if (event.action.type === 'error') reconcileRecovery(event.query);
+    }
     if (!holds.has(event.query)) return;
     if (event.type === 'removed') release(event.query);
     else if (event.type === 'observerRemoved' && event.query.getObserversCount() === 0) {
@@ -93,6 +127,24 @@ export function attachNativeQueryClient(client: QueryClient, opts: NativeQueryCl
       cache.remove(event.query);
     }
   });
+
+  /**
+   * A transient failure that settles after a recovery signal fired while it
+   * was pending (bootstrap busy body, final backoff attempt) missed that
+   * signal: refetch it once, outside the cache notification. Queries only:
+   * mutations are never replayed.
+   */
+  function reconcileRecovery(query: Query): void {
+    const started = fetchEpochs.get(query);
+    if (started === undefined || started === transientRecoveryEpoch()) return;
+    if (!isTransientNativeFailure(query.state.error)) return;
+    fetchEpochs.delete(query);
+    setTimeout(() => {
+      if (cache.get(query.queryHash) !== query || !query.isActive()) return;
+      if (query.state.status !== 'error' || query.state.fetchStatus !== 'idle') return;
+      void client.refetchQueries({ predicate: (candidate) => candidate === query }, { cancelRefetch: false });
+    }, 0);
+  }
 
   const offChange = onTargetGenerationChange(() => {
     void client.cancelQueries();
@@ -104,7 +156,9 @@ export function attachNativeQueryClient(client: QueryClient, opts: NativeQueryCl
         for (const observer of observers) {
           if (pinned.has(observer)) continue;
           pinned.add(observer);
-          pinObserver(observer, query.queryHash);
+          // Leaving the held query drops it once no observer remains
+          // (observerRemoved below), which releases the hold.
+          pinObserver(observer, query.queryHash, () => pinned.delete(observer));
         }
         continue;
       }

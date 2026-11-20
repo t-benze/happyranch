@@ -43,6 +43,7 @@ export function reportNativeNotice(kind: NativeNoticeKind): void {
 }
 
 const recoveryListeners = new Set<() => void>();
+let recoveryEpoch = 0;
 
 /**
  * A successful forwarded response or a native `ready` status clears
@@ -51,8 +52,18 @@ const recoveryListeners = new Set<() => void>();
  * hides the transient one.
  */
 export function clearTransientNativeNotice(): void {
+  recoveryEpoch += 1;
   if (isTransientNotice(current)) publish(null);
   for (const listener of [...recoveryListeners]) listener();
+}
+
+/**
+ * Count of transient recovery signals so far. A read that was still pending
+ * when a signal fired compares the value at its start with the value when it
+ * settles (R2-1), so a signal is never lost across a pending-to-error race.
+ */
+export function transientRecoveryEpoch(): number {
+  return recoveryEpoch;
 }
 
 /** Subscribe to transient recovery (see clearTransientNativeNotice). */
@@ -84,4 +95,5 @@ export function __resetNativeNoticeForTests(): void {
   current = null;
   listeners.clear();
   recoveryListeners.clear();
+  recoveryEpoch = 0;
 }

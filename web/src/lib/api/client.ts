@@ -4,7 +4,7 @@
  * Every ``lib/api/*`` module composes this. Feature folders never call
  * ``fetch`` directly — see ``web/ARCHITECTURE.md``.
  */
-import { BootstrapError, clearToken, getToken } from '../auth';
+import { BootstrapError, BootstrapStaleError, clearToken, getToken } from '../auth';
 import {
   clearNativeRecovery,
   parseNativeRecovery,
@@ -227,6 +227,21 @@ export async function repinBeforeSend(pinned: string, read: boolean): Promise<st
 }
 
 /**
+ * The bearer for an operation pinned under the current generation. A failed
+ * bootstrap whose error body arrived after a target switch (R2-3) published
+ * nothing; it is stale for a read and Not sent for a change (nothing left the
+ * page for the operation itself).
+ */
+export async function pinnedToken(read: boolean): Promise<string> {
+  try {
+    return await getToken();
+  } catch (error) {
+    if (error instanceof BootstrapStaleError) throw read ? new StaleTargetError() : notSent();
+    throw error;
+  }
+}
+
+/**
  * A failed read whose cause is transient native load (503 busy, 429
  * too_many_requests, including the bearer bootstrap). The query client
  * refetches these once the condition clears (F3); mutations never retry.
@@ -426,14 +441,14 @@ export async function request<T = unknown>(
     // Scoped-token path: use the caller-supplied token.
     token = opts.auth.token;
   } else {
-    token = await getToken();
+    token = await pinnedToken(read);
   }
   let fenced = await doFetch(url, init, token, pinned);
 
   if (fenced.res.status === 401 && !opts.auth) {
     // Master-bearer retry (scoped tokens are single-use, so skip).
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(read);
     if (opts.replayOnUnauthorized !== false) {
       // A change is never re-sent to a different target (repinBeforeSend).
       fenced = await doFetch(url, init, token, fenced.captured);

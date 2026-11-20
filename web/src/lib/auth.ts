@@ -7,6 +7,7 @@
  */
 
 import { reportNativeNotice } from './native/notices';
+import { currentGeneration, isNativeTarget } from './native/target';
 import { parseNativeRecovery, reportNativeRecovery } from './nativeRecovery';
 
 const STORAGE_KEY = 'happyranch.token';
@@ -21,11 +22,29 @@ export class BootstrapError extends Error {
   }
 }
 
+/**
+ * Desktop: the native target generation changed while a failed bootstrap's
+ * error body was being read (R2-3). The body belongs to the older target, so
+ * nothing was published; callers classify it as stale (read) or not sent
+ * (change) via `pinnedToken` in lib/api/client.ts.
+ */
+export class BootstrapStaleError extends Error {
+  public override readonly name = 'BootstrapStaleError';
+  constructor() {
+    super('bootstrap answer belongs to an older native target');
+  }
+}
+
 export async function getToken(): Promise<string> {
   const cached = sessionStorage.getItem(STORAGE_KEY);
   if (cached) return cached;
   if (inflight) return inflight;
   inflight = (async () => {
+    // The bootstrap request carries no target header, but its error side
+    // effects are fenced like every other answer: one generation for the
+    // shared in-flight bootstrap, captured at its start (desktop only).
+    const native = isNativeTarget();
+    const captured = native ? currentGeneration() : null;
     try {
       const r = await fetch(BOOTSTRAP_URL, { credentials: 'same-origin' });
       if (!r.ok) {
@@ -35,6 +54,9 @@ export async function getToken(): Promise<string> {
         } catch {
           detail = await r.text().catch(() => null);
         }
+        // F4/R2-3: an old target's error body never publishes a notice or
+        // recovery state for the current target.
+        if (native && currentGeneration() !== captured) throw new BootstrapStaleError();
         // A native recovery answer (desktop: no target selected, target
         // starting, ...) is recorded as a recovery state, not an auth failure.
         // Host busy is transient and never page-blocking (THR-387 W-1).

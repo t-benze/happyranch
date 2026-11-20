@@ -144,9 +144,14 @@ app is detected only by origin `happyranch-app://app` with the
 - **Stale drop**: a GET whose captured generation is no longer current is
   rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
   a state): no cache write, toast or draft update. The generation is
-  rechecked after every asynchronous error-body read (client and both SSE
-  open handlers), so an old body never publishes a notice or recovery state
-  for the new target. A change (non-GET) that is stale, answered 499
+  rechecked after every asynchronous error-body read (client, both SSE
+  open handlers and the bearer bootstrap), so an old body never publishes a
+  notice or recovery state for the new target. The bootstrap is exempt from
+  the header only: one generation is captured when the shared in-flight
+  bootstrap starts, and a failed body that finishes after a switch publishes
+  nothing (`BootstrapStaleError`); `pinnedToken` turns it into
+  `StaleTargetError` for a read and Not sent for a change (browser mode and
+  the stored bearer are unchanged). A change (non-GET) that is stale, answered 499
   `cancelled`, whose fetch rejects (transport loss, even with no generation
   event: upstream bytes may already have been forwarded) or whose body read
   fails is `ResultUnknownError` with the Result unknown notice; it is never
@@ -169,15 +174,22 @@ app is detected only by origin `happyranch-app://app` with the
   Settings Organization form stay mounted and keep their drafts; old data is
   never used as the new target's entry. While any custody hold exists, no
   change (non-GET `schemeFetch`) is sent to the current target: Not sent,
-  draft kept. The hold ends when its last observer leaves (navigation or an
-  owner re-key); a new mount reads the new target. A custody read still
+  draft kept. The pin is scoped to the observer's original logical query
+  key: same-key rerenders keep it, but when the owner gives the SAME observer
+  a different key (for example Settings following an org change in the
+  sidebar) that observer is released and the new key resolves and fetches
+  under the current generation. The hold ends when its last observer leaves
+  (navigation, unmount or such a re-key); a new mount reads the new target. A custody read still
   loading at the switch moves like any other. Owner UI for the held state
   (re-key, carry or discard the draft) is S6-W1.
 - **Transient recovery**: when busy/throttled clears (a native `ready`
   status or a later successful forwarded response), active queries that
   failed with a transient native error (503 `busy`, 429 `too_many_requests`,
-  including the bearer bootstrap) are refetched once. Mutations are never
-  retried. `RootRedirect` routes only on a successful (possibly empty) org
+  including the bearer bootstrap) are refetched once. A read still pending
+  when the signal fires (a bootstrap busy body or the final GET backoff
+  attempt) is not missed: each query records the recovery epoch its fetch
+  started under, and a transient failure that settles after a newer signal
+  is refetched once. Mutations are never retried. `RootRedirect` routes only on a successful (possibly empty) org
   list; a pending read shows Loading and a failed one the shell error copy, so
   an existing install is never sent to onboarding on failure (browser mode
   too).

@@ -3,7 +3,7 @@
  * Excluded (agent-subprocess-only): POST /tasks/{id}/completion,
  * POST /tasks/{id}/progress. See spec §2.
  */
-import { API_PREFIX, fencedText, nativeRecoveryErrorFor, pinTarget, request, schemeFetch } from './client';
+import { API_PREFIX, fencedText, nativeRecoveryErrorFor, pinnedToken, pinTarget, request, schemeFetch } from './client';
 import { prepareMultipartUpload } from './multipart';
 import type {
   TaskAttachmentRecord,
@@ -180,8 +180,7 @@ export const uploadTaskAttachment = async (
 }> => {
   // F1: pin the target before the bearer and multipart preparation awaits.
   const pinned = await pinTarget(false);
-  const { getToken } = await import('../auth');
-  const token = await getToken();
+  const token = await pinnedToken(false);
   const params = new URLSearchParams({ agent });
   const form = new FormData();
   form.set('file', file, file.name);

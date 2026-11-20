@@ -1,9 +1,10 @@
-import { clearToken, getToken } from '../auth';
+import { clearToken } from '../auth';
 import {
   API_PREFIX,
   ApiError,
   fencedText,
   nativeRecoveryErrorFor,
+  pinnedToken,
   pinTarget,
   schemeFetch,
   staleOutcome,
@@ -110,11 +111,11 @@ export async function uploadArtifact(
   // F1: one generation per logical operation, pinned before any preparatory
   // await and kept across the 401 re-send (a change never moves targets).
   const pinned = await pinTarget(false);
-  let token = await getToken();
+  let token = await pinnedToken(false);
   let fenced = await uploadWithToken(slug, args, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(false);
     fenced = await uploadWithToken(slug, args, token, fenced.captured);
   }
 
@@ -144,11 +145,11 @@ async function listWithToken(slug: string, token: string, pinned: string): Promi
 
 export async function listArtifacts(slug: string): Promise<ListArtifactsResponse> {
   const pinned = await pinTarget(true);
-  let token = await getToken();
+  let token = await pinnedToken(true);
   let fenced = await listWithToken(slug, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(true);
     fenced = await listWithToken(slug, token, fenced.captured);
   }
 
@@ -188,12 +189,12 @@ async function downloadWithToken(path: string, token: string, pinned: string): P
  */
 export async function downloadArtifact(slug: string, name: string): Promise<void> {
   const pinned = await pinTarget(true);
-  let token = await getToken();
+  let token = await pinnedToken(true);
   const path = `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`;
   let fenced = await downloadWithToken(path, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(true);
     fenced = await downloadWithToken(path, token, fenced.captured);
   }
 
@@ -234,13 +235,13 @@ export async function downloadThreadAttachment(
   displayName: string,
 ): Promise<void> {
   const pinned = await pinTarget(true);
-  let token = await getToken();
+  let token = await pinnedToken(true);
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
   const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}?${params.toString()}`;
   let fenced = await downloadWithToken(path, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(true);
     fenced = await downloadWithToken(path, token, fenced.captured);
   }
 
@@ -287,11 +288,11 @@ async function deleteWithToken(slug: string, name: string, token: string, pinned
 
 export async function deleteArtifact(slug: string, name: string): Promise<void> {
   const pinned = await pinTarget(false);
-  let token = await getToken();
+  let token = await pinnedToken(false);
   let fenced = await deleteWithToken(slug, name, token, pinned);
   if (fenced.res.status === 401) {
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(false);
     fenced = await deleteWithToken(slug, name, token, fenced.captured);
   }
 
