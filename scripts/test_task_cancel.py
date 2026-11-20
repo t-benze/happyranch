@@ -225,6 +225,12 @@ async def test_cancel_reconciliation_logs_cause(
     org, client = org_client
     seed(org, child_status=TaskStatus.CANCELLED if boundary == 'selected' else TaskStatus.PENDING)
     before = org.db.get_task('TASK-child')
+    private = 'synthetic-private-cancellation-value'
+    error = ValueError(private)
+    if boundary in ('mixed', 'selected'):
+        from runtime.workflows.authority import WorkflowAuthorityError
+        error = WorkflowAuthorityError('synthetic_authority_refusal')
+    error.__cause__ = TypeError(private)
     targets = {
         'discovery': 'runtime.workflows.sequential_mixed_cancel.has_sequential_descendant',
         'mixed': 'runtime.workflows.sequential_mixed_cancel.cancel_mixed',
@@ -240,15 +246,19 @@ async def test_cancel_reconciliation_logs_cause(
                                       return_value=boundary == 'mixed'))
         if boundary == 'coding':
             stack.enter_context(patch.object(org.workflow_coding_start, 'guard_cancellation',
-                                            side_effect=ValueError('synthetic_schema_refusal')))
+                                            side_effect=error))
         else:
-            stack.enter_context(patch(targets[boundary], side_effect=ValueError('synthetic_schema_refusal')))
+            stack.enter_context(patch(targets[boundary], side_effect=error))
         response = await client.post(f'{PREFIX}/tasks/TASK-child/cancel', json={})
     code = ('coding' if boundary == 'coding' else 'sequential') + '_cancellation_reconciliation_required'
     assert response.status_code == 409 and response.json()['detail'] == {'code': code}
     records = [record for record in caplog.records if code in record.getMessage()]
     assert len(records) == 1
     assert 'TASK-child' in records[0].getMessage()
-    assert records[0].exc_info and str(records[0].exc_info[1]) == 'synthetic_schema_refusal'
+    assert private not in caplog.text
+    assert type(error).__name__ in caplog.text and 'TypeError' in caplog.text
+    if boundary in ('mixed', 'selected'):
+        assert 'synthetic_authority_refusal' in caplog.text
+    assert records[0].exc_info is None and records[0].stack_info is None
     assert org.db.get_task('TASK-child') == before
     assert queued(org) == []

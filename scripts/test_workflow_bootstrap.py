@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+import hashlib
 import json
 import os
 import stat
@@ -14,6 +15,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -664,6 +666,72 @@ async def test_installed_legacy_cancel(installed_org_client: tuple[OrgState, htt
     assert any(row['action'] == 'task_cancelled' for row in org.db.get_audit_logs('TASK-retained'))
 
 
+async def test_installed_legacy_cancel_private_validation(
+    installed_org_client: tuple[OrgState, httpx.AsyncClient], caplog: pytest.LogCaptureFixture,
+) -> None:
+    org, client = installed_org_client
+    conn = org.db._conn
+    private = 'synthetic-private-definition-value'
+    row = conn.execute('SELECT id,definition_bytes FROM workflow_seq_definitions').fetchone()
+    definition = json.loads(row['definition_bytes'])
+    definition['unexpected_private_field'] = private
+    raw = json.dumps(definition, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+    triggers = conn.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' "
+                            "AND tbl_name='workflow_seq_definitions'").fetchall()
+    # Corrupt only the disposable fixture's row; restore canonical guards before
+    # exercising the actual cancellation/complete-reader validation path.
+    for trigger in triggers:
+        conn.execute('DROP TRIGGER "' + trigger['name'].replace('"', '""') + '"')
+    conn.execute('UPDATE workflow_seq_definitions SET definition_bytes=?,definition_digest=? WHERE id=?',
+                 (raw, hashlib.sha256(raw).hexdigest(), row['id']))
+    for trigger in triggers:
+        conn.execute(trigger['sql'])
+    conn.commit()
+    before = tuple(conn.iterdump())
+    response = await client.post('/api/v1/orgs/scratch/tasks/TASK-retained/cancel', json={})
+    code = 'coding_cancellation_reconciliation_required'
+    assert response.status_code == 409 and response.json()['detail'] == {'code': code}
+    assert private not in caplog.text and 'input_value=' not in caplog.text
+    assert 'SequentialContractError' in caplog.text and 'ValidationError' in caplog.text
+    records = [record for record in caplog.records if code in record.getMessage()]
+    assert len(records) == 1 and records[0].exc_info is None and records[0].stack_info is None
+    assert 'TASK-retained' in records[0].getMessage()
+    assert org.db.get_task('TASK-retained').status.value == 'pending'
+    assert tuple(conn.iterdump()) == before
+
+
+def test_legacy_history_sql_budget(runtime: RuntimeDir, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.infrastructure import workflow_schema
+    from runtime.workflows._read_exhaustion import ReadExhaustion
+    from runtime.workflows.sequential_history import read_sequential_history
+
+    db = Database(runtime.orgs_dir / 'scratch/happyranch.db')
+    try:
+        # The real historical J fixture positively lacks sequential storage.
+        baseline = read_sequential_history(db._conn, expected_org_slug='scratch')
+        assert not baseline.layout.sequential and baseline.retained[0] == 'J'
+        original = workflow_schema._validate_source_data
+        entered: list[sqlite3.Connection] = []
+        def work(conn: sqlite3.Connection, **kwargs: Any) -> None:
+            entered.append(conn)
+            # Same injected VM work as the supported schema-load exhaustion
+            # checks, with the production 32M L limit and deadline unchanged.
+            conn.execute('WITH RECURSIVE load_work(n) AS '
+                         '(VALUES(0) UNION ALL SELECT n+1 FROM load_work WHERE n<4000000) '
+                         'SELECT sum(n) FROM load_work').fetchone()
+            return original(conn, **kwargs)
+        monkeypatch.setattr(workflow_schema, '_validate_source_data', work)
+        with pytest.raises(sqlite3.OperationalError, match='^interrupted$') as raised:
+            read_sequential_history(db._conn, expected_org_slug='scratch')
+        assert entered == [db._conn]
+        assert isinstance(raised.value.__cause__, ReadExhaustion)
+        assert raised.value.__cause__.dimension == 'sql'
+        assert raised.value.__cause__.allowance.sql_limit == 32000000
+        assert not db._conn.in_transaction
+    finally:
+        db.close()
+
+
 async def test_installed_legacy_writers(installed_org_client: tuple[OrgState, httpx.AsyncClient]) -> None:
     from runtime.infrastructure.workflow_schema import install_or_recover, _read_workflow_schema, _coding_document_exclusions
     from runtime.workflows.coding_start import queued_storage
@@ -742,6 +810,6 @@ async def test_installed_legacy_refuses_corruption(
     assert response.status_code == 409, response.text
     assert response.json()['detail']['code'] == 'coding_cancellation_reconciliation_required'
     records = [record for record in caplog.records if 'coding_cancellation_reconciliation_required' in record.getMessage()]
-    assert len(records) == 1 and records[0].exc_info
-    assert str(records[0].exc_info[1]) == cause
+    assert len(records) == 1 and records[0].exc_info is None
+    assert 'ValueError' in records[0].getMessage()
     assert tuple(conn.iterdump()) == before

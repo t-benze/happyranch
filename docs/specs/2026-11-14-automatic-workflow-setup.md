@@ -1039,8 +1039,9 @@ schema versions 1/2. It compares every reserved object and layout detail; partia
 foreign or altered `workflow_seq_*` families refuse. Sequential row, FK, ownership
 and history checks remain required, with their existing budgets and deadline.
 No installation, migration or missing-run cancellation shortcut is introduced.
-The task-cancel route logs the original exception with the reconciliation code
-and task ID before each opaque cancellation 409, without logging request bodies.
+The task-cancel route logs the reconciliation code, task ID, exception/cause
+class names and declared categorical authority code before each opaque
+cancellation 409. Exception text, tracebacks and stored input values are excluded.
 
 Standalone regression cases live in `scripts/test_workflow_bootstrap.py` and
 `scripts/test_task_cancel.py`; see the focused commands in

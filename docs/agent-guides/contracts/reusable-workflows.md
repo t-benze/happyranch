@@ -848,7 +848,8 @@ reservations, 65536 traversal/replay steps and two million SQLite progress units
 L permits 32 million SQL progress units only; its acquired rows/bytes/steps
 consume C. All four share one original cooperative five-second deadline and
 accumulate without reset between phases or runs. A is re-entered for native
-metadata. Progress handlers are sequential, never nested. Fixed source-literal
+metadata. Only one native progress handler is active at a time; nested layout
+selection restores the enclosing handler on exit. Fixed source-literal
 reference construction before the helper yields is unmetered SQL, bracketed only
 by B's deadline checks. Individual cells remain at most 1 MiB; existing
 definition/result limits also apply. Large hostile schema acquisition exhausts A;
@@ -891,10 +892,13 @@ rebuilds this companion while preserving every v1 mark; adoption belongs to U3.
 validates the entire sequential structure and data/ownership closure. It then
 enters a connection-bound read scope for the original complete document/Coding
 validators, whose recursive structure checks compare independently built complete
-combined references. Shared installed readers outside this scope still refuse
-the extension. The selected startup consumers below explicitly enter this
-complete read; there is no global recognition. Genuine native connections and
-exact retained budgets keep their guards.
+combined references. Plain `_read_workflow_schema` callers also select this
+complete read for installed sequential storage. Structural helpers recognize
+only the exact canonical combined layout; retained Coding/ownership data still
+requires the complete reader's authenticated rows. Genuine native connections
+and exact retained budgets keep their guards. Nested SQL-budget scopes restore
+the enclosing connection's progress handler, preserving its original meter and
+deadline during the historical no-sequential fallback.
 
 The Coding discriminator imports the closed `SEQUENTIAL_TABLES` names from their
 DDL owner. Only within the validated scope, it acquires and compares each enrolled
@@ -971,8 +975,11 @@ ROOT TASK-14640's three F-M1-REOPEN rulings and accepted TASK-15007 design rev3
 select only the org-load schema wrappers, cutover reads, final task-ownership
 installation read, naming installation target admission and builtin registration
 source/changed-target reads. `OrgState.load` retains its original order and
-failure-close owner. `install_or_recover` and shared legacy reader internals
-remain unchanged. Later Coding/document operational consumers gain no recognition.
+failure-close owner. The A4 installed-layout correction also routes plain
+`_read_workflow_schema` calls, including later Coding/document operational
+consumers, through this complete selector. Exact canonical structural recognition
+and full sequential row validation precede the retained readers; their original
+transactions, cumulative budgets and predicates remain in force.
 
 `workflow_schema_load.read_org_layout` examines every main/TEMP object's name
 and owner, independent of kind, under a bounded selector. A casefolded

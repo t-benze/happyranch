@@ -47,8 +47,12 @@ The `test_installed_legacy_*` cases run the actual A4 worker/registration on
 the private legacy DB before exercising ordinary point/cascade cancellation,
 Coding's retained writer COMMIT, compatibility/ownership reopens and settings
 reads. Partial, foreign, altered and row-corrupt sequential storage must refuse
-and roll back a changed target. The cancellation module also checks cause logging
-at all five opaque reconciliation conversions. These are standalone no-lifespan
+and roll back a changed target. A malformed installed definition checks that
+formatted cancellation warnings retain categorical exception classes without
+stored private inputs or tracebacks. The cancellation module checks categorical
+logging at all five opaque reconciliation conversions. The historical
+no-sequential branch checks SQL exhaustion under injected retained-reader work
+with the original L meter/deadline. These are standalone no-lifespan
 checks, outside retired units and general integration.
 
 `--bootstrap-owners=CASE` also checks carried-forward native histories/legacy,
