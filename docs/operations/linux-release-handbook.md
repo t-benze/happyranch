@@ -317,7 +317,15 @@ directories. Every regular unit file and drop-in `.conf` is read as bounded
 bytes: a literal `happyranch-headscale` reference refuses, regardless of directive
 (Wants/Requires/BindsTo/Upholds/PartOf/OnFailure/OnSuccess/Triggers/Unit/Also or
 otherwise). The installer's exact owned fragment is excluded from that content
-check. Every regular file under `/usr/share/dbus-1/system-services`,
+check. One package-owned helper unit is also excluded, only at
+`/usr/lib/systemd/system/happyranch-remote-access-helper.service`, only as a
+regular single-link root:root 0644 file with bytes exactly equal to the trusted
+in-code `installer.PACKAGED_HELPER_UNIT_BYTES`. Both inventory consumers use the
+same predicate after their bounded no-follow read and signature checks; expected
+bytes never come from the scanned filesystem. Native packaging tests bind the
+shipped unit and build-deb's installed copy to that constant. Changed bytes,
+metadata or type, same-name `/etc` or `/run` copies and helper drop-ins gain no
+exclusion. Every regular file under `/usr/share/dbus-1/system-services`,
 `/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
 present, receives the same literal-byte check with no link following. The
 bounded no-follow reader uses the existing 64 KiB per-file limit; read failure,

@@ -7,11 +7,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
+import subprocess
+import stat
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from runtime.remote_access import home_activation as activation
+from runtime.remote_access import installer
+from runtime.remote_access.headscale_service import HeadscaleServiceError
 from runtime.remote_access.home_unit_gate import HomeUnitGate, HomeUnitGateError
 from runtime.remote_access.systemd_unit import SidecarUnitSpec, render_headscale_unit, render_sidecar_unit
 from scripts.test_headscale_custody import EXPECTED_UNIT
@@ -70,6 +77,130 @@ def gate(tmp_path: Path) -> HomeUnitGate:
     return HomeUnitGate(root=tmp_path, root_owner=(os.getuid(), os.getgid()), expected_release_uid=1000,
                         expected_home_id="home", expected_control_plane_id="control", expected_connector_id="connector",
                         expected_generation=7)
+
+
+@pytest.mark.parametrize("consumer", ["installer", "gate"])
+def test_fresh_package_admits_inert_inventory(consumer: str) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    package_tests = runpy.run_path(str(repo / "packaging/linux/test_build_deb.py"))["DebPackageTests"]()
+    package_tests.setUp()
+    try:
+        result = package_tests.build(package_tests.payload())
+        assert result.returncode == 0, result.stderr
+        package = package_tests.work / "dist/happyranch_0.1.0-1_amd64.deb"
+        root = package_tests.work / "extracted"
+        subprocess.run(["dpkg-deb", "--extract", package, root], check=True)
+        assert (root / installer.PACKAGED_HELPER_UNIT).read_bytes() == installer.PACKAGED_HELPER_UNIT_BYTES
+        calls = []
+        def forbidden(*args: Any, **kwargs: Any) -> Any:
+            calls.append(args)
+            raise AssertionError("native effects forbidden in extracted package venue")
+        def absent(name: str) -> Any:
+            raise KeyError(name)
+        manager = SimpleNamespace(_run=forbidden, show_properties=lambda unit, names: dict(
+            FragmentPath="", DropInPaths="", NeedDaemonReload="no", LoadState="not-found", ActiveState="inactive"))
+        owner = installer.ManagedInstaller(root=root, root_owner=(os.getuid(), os.getgid()), layout="deb",
+                                           manager=manager, run=forbidden, lookup_user=absent, lookup_group=absent)
+        home_gate = HomeUnitGate(root=root, root_owner=owner.root_owner, expected_release_uid=1000,
+                                 expected_home_id="home", expected_control_plane_id="control",
+                                 expected_connector_id="connector", expected_generation=7)
+        before = filesystem_snapshot(root)
+        if consumer == "installer":
+            assert owner.inventory().state == "clean"
+        else:
+            home_gate.inspect()
+        assert calls == []
+        assert filesystem_snapshot(root) == before
+    finally:
+        package_tests.doCleanups()
+
+
+def filesystem_snapshot(root: Path) -> dict:
+    result = {}
+    for entry in root.rglob("*"):
+        info = entry.lstat()
+        content = (entry.read_bytes() if stat.S_ISREG(info.st_mode) else
+                   os.readlink(entry) if stat.S_ISLNK(info.st_mode) else None)
+        result[str(entry.relative_to(root))] = (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns, content)
+    return result
+
+
+@pytest.mark.parametrize("consumer", ["installer", "gate"])
+@pytest.mark.parametrize("case", ["one-byte", "no-literal", "wants", "mode", "uid", "gid", "hardlink", "symlink",
+                                  "etc-copy", "run-copy", "dropin", "directory", "fifo"])
+def test_package_helper_refusal_has_zero_effects(gate: HomeUnitGate, tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch,
+                                                consumer: str, case: str) -> None:
+    # Independent shipped bytes, not expected bytes read from the scanned tree.
+    shipped = Path(__file__).resolve().parents[1] / "packaging/linux/systemd/happyranch-remote-access-helper.service"
+    data = shipped.read_bytes()
+    path = put(tmp_path, "/usr/lib/systemd/system/happyranch-remote-access-helper.service", data)
+    calls = []
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        raise AssertionError("native effects forbidden in temp-root venue")
+    def absent(name: str) -> Any:
+        raise KeyError(name)
+    manager = SimpleNamespace(_run=forbidden, show_properties=lambda unit, names: dict(
+        FragmentPath="", DropInPaths="", NeedDaemonReload="no", LoadState="not-found", ActiveState="inactive"))
+    owner = installer.ManagedInstaller(root=tmp_path, root_owner=(os.getuid(), os.getgid()), layout="deb",
+                                       manager=manager, run=forbidden, lookup_user=absent, lookup_group=absent)
+    # Establish each case's clean precondition through both real consumers.
+    assert owner.inventory().state == "clean"
+    gate.inspect()
+    if case == "one-byte":
+        path.write_bytes(data.replace(b"Description=HappyRanch", b"Description=happyRanch", 1))
+    elif case == "no-literal":
+        path.write_bytes(data.replace(b"happyranch-headscale", b"unrelated-headscale"))
+    elif case == "wants":
+        path.write_bytes(data + b"\n[Unit]\nWants=happyranch-headscale.service\n")
+    elif case == "mode":
+        path.chmod(0o600)
+    elif case in {"uid", "gid"}:
+        inode = path.stat().st_ino
+        actual_stat, actual_fstat = os.stat, os.fstat
+        def metadata(info: os.stat_result) -> Any:
+            if info.st_ino != inode:
+                return info
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+            values["st_" + case] += 1
+            return SimpleNamespace(**values)
+        monkeypatch.setattr(os, "stat", lambda *args, **kwargs: metadata(actual_stat(*args, **kwargs)))
+        monkeypatch.setattr(os, "fstat", lambda fd: metadata(actual_fstat(fd)))
+    elif case == "hardlink":
+        os.link(path, tmp_path / "helper-alias")
+    elif case in {"symlink", "directory", "fifo"}:
+        path.unlink()
+        if case == "symlink":
+            target = tmp_path / "helper-target"
+            target.write_bytes(data)
+            path.symlink_to(target)
+        elif case == "directory":
+            path.mkdir(mode=0o755)
+        else:
+            os.mkfifo(path)
+    elif case in {"etc-copy", "run-copy"}:
+        put(tmp_path, "/" + case.split("-")[0] + "/systemd/system/" + path.name, data)
+    else:
+        put(tmp_path, "/usr/lib/systemd/system/" + path.name + ".d/override.conf",
+            b"[Unit]\nWants=happyranch-headscale.service\n")
+
+    before = filesystem_snapshot(tmp_path)
+    if consumer == "installer":
+        assert owner.inventory().state == "manual-install-conflict"
+        with pytest.raises(HeadscaleServiceError, match="^foreign-unit$"):
+            owner._headscale_inventory()
+        with pytest.raises(HeadscaleServiceError, match="^cleanup-uncertain$"):
+            owner._headscale_cleanup_links(installer._HEADSCALE_UNIT_DIRS)
+    else:
+        with pytest.raises(HomeUnitGateError, match="^home-unit-inventory$"):
+            gate.inspect()
+        with pytest.raises(HomeUnitGateError, match="^home-unit-inventory$"):
+            gate.disable_owned_link(lambda: calls.append("disable"))
+    assert calls == []
+    assert filesystem_snapshot(tmp_path) == before
 
 
 def test_exact_rendered_bytes() -> None:
@@ -276,8 +407,8 @@ def test_changed_receipt_during_inventory_refuses(gate: HomeUnitGate, tmp_path: 
     put(tmp_path, UNIT, render_headscale_unit(home_transport=True).encode())
     put(tmp_path, "/etc/systemd/system/other.service", b"[Unit]\nDescription=unrelated\n")
     original = gate._foreign_file
-    def changed(parent: int, name: str, named: os.stat_result) -> None:
-        original(parent, name, named)
+    def changed(parent: int, name: str, named: os.stat_result, relative: str) -> None:
+        original(parent, name, named, relative)
         record(tmp_path, activation_generation=8)
     monkeypatch.setattr(gate, "_foreign_file", changed)
     with pytest.raises(HomeUnitGateError):
