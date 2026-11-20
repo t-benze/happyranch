@@ -14,13 +14,13 @@ import socket
 import threading
 import time
 from urllib.parse import unquote, urlsplit
+from typing import Callable
 
 # Installed system Python uses isolated imports; resolve this pure sibling.
 _spec = importlib.util.spec_from_file_location("client_runtime", Path(__file__).with_name("client_runtime.py"))
 _runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_runtime)
 RemoteError = _runtime.ClientError
-
 ORIGIN = "happyranch-app://app"
 CLIENT = MIN_DAEMON = 1
 MAX_HEALTH = 64 * 1024
@@ -156,6 +156,32 @@ class Bundle:
         return data, mime
 
 
+class _SendSocket:
+    """Fence the first HTTP send after connection/dial, including partial sends."""
+
+    def __init__(self, stream: object, before_send: Callable[[], None]) -> None:
+        self.stream, self.before_send = stream, before_send
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.stream, name)
+
+    def sendall(self, data: bytes, *args: object) -> None:
+        self.before_send()
+        self.stream.sendall(data, *args)
+
+
+class _LocalConnection(http.client.HTTPConnection):
+    before_send: Callable[[], None] | None = None
+
+    def send(self, data: bytes) -> None:
+        # Connection refusal is pre-forward. Fence only after connect succeeds.
+        if self.sock is None:
+            self.connect()
+        if self.before_send is not None:
+            self.before_send()
+        super().send(data)
+
+
 class _Target:
     """Serialize admission per native target; reset invalidates in-flight probes."""
 
@@ -165,6 +191,9 @@ class _Target:
         self._epoch = threading.Event()
         self._compatibility: str | None = None  # None unchecked, empty compatible, else side
         self._bearer: str | None = None
+        self.host_contract: dict | None = None
+        self.busy = False
+        self.state = "target_starting"
 
     def reset(self) -> None:
         with self._state:
@@ -172,6 +201,9 @@ class _Target:
             self._epoch = threading.Event()
             self._compatibility = None
             self._bearer = None
+            self.host_contract = None
+            self.busy = False
+            self.state = "target_starting"
 
     @staticmethod
     def _check(stop: threading.Event | None, epoch: threading.Event) -> None:
@@ -275,15 +307,26 @@ class _Target:
         while not self._lock.acquire(timeout=0.02):
             self._check(stop, epoch)
             if time.monotonic() >= deadline:
-                raise SchemeError(503, "busy")
+                raise SchemeError(429, "too_many_requests")
         try:
             self._check(stop, epoch)
             with self._state:
                 side = self._compatibility
-            if side is None:
+                recheck = self.busy or self.state == "unreachable"
+            # Cached compatibility/bearer cannot establish recovery after an
+            # observed transport loss. Recheck health before publishing ready.
+            if side is None or recheck:
                 try:
                     value = self._json("/api/v1/health", MAX_HEALTH, deadline, stop, epoch, health=True)
                     contract = value.get("api_contract") if isinstance(value, dict) else None
+                    valid = (isinstance(contract, dict)
+                             and type(contract.get("current")) is int
+                             and type(contract.get("min_client")) is int)
+                    with self._state:
+                        self._check(stop, epoch)
+                        self.host_contract = ({k: contract[k] for k in ("current", "min_client")} if valid else None)
+                        update = value.get("update_busy") if isinstance(value, dict) else None
+                        self.busy = isinstance(update, dict) and update.get("busy") is True
                     if (not isinstance(contract, dict) or type(contract.get("current")) is not int
                             or type(contract.get("min_client")) is not int):
                         side = "host"
@@ -297,13 +340,26 @@ class _Target:
                     if error.code != "incompatible":
                         raise
                     side = error.side
+                    with self._state:
+                        self._check(stop, epoch)
+                        self.host_contract = None
                 with self._state:
                     self._check(stop, epoch)
                     self._compatibility = side
             if side:
                 raise SchemeError(503, "incompatible", side)
+            if self.busy:
+                raise SchemeError(503, "busy")
             self._prepare(stop, epoch)
-            self._check(stop, epoch)
+            with self._state:
+                self._check(stop, epoch)
+                self.state = "ready"
+        except SchemeError as error:
+            with self._state:
+                if not epoch.is_set():
+                    self.state = {"target_unreachable": "unreachable", "incompatible": "incompatible",
+                                  "busy": "busy"}.get(error.code, self.state)
+            raise
         finally:
             self._lock.release()
 
@@ -332,7 +388,7 @@ class LocalDaemon(_Target):
         self.port = port
 
     def connection(self) -> http.client.HTTPConnection:
-        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        return _LocalConnection("127.0.0.1", self.port, timeout=5)
 
     def _prepare(self, stop: threading.Event | None, epoch: threading.Event) -> None:
         with self._state:
@@ -349,6 +405,8 @@ class LocalDaemon(_Target):
 
     def send(self, connection: http.client.HTTPConnection, method: str, target: str,
              headers: dict[str, str], body: bytes) -> http.client.HTTPResponse:
+        with self._state:
+            epoch, bearer = self._epoch, self._bearer
         self._admitted()
         path, checked_target = route(ORIGIN + target)
         if not path.startswith("/api/v1/") or method not in METHODS:
@@ -357,13 +415,21 @@ class LocalDaemon(_Target):
             raise SchemeError(400, "native_bootstrap_only")
         if len(body) > MAX_BODY:
             raise SchemeError(413, "body_too_large")
-        if self._bearer is None:
+        if bearer is None:
             raise SchemeError(503, "target_unreachable")
         kept = request_headers({k.lower(): v for k, v in headers.items()})
-        kept.update({"Authorization": "Bearer " + self._bearer,
+        kept.update({"Authorization": "Bearer " + bearer,
                      "Connection": "close", "Accept-Encoding": "identity"})
         connection.request(method, checked_target, body=body, headers=kept)
         response = connection.getresponse()
+        if response.status == 401:
+            # Invalidate native admission for the NEXT request. Never replay a
+            # request (especially a mutation) whose bytes already reached host.
+            with self._state:
+                if self._epoch is epoch and self._bearer == bearer:
+                    self._bearer = None
+                    self._compatibility = None
+                    self.state = "target_starting"
         # Never let WebKit follow an upstream redirect with native authority.
         if 300 <= response.status < 400 and response.status != 304:
             response.close()
@@ -378,9 +444,11 @@ class RemoteDaemon(_Target):
     publishes ready. The session remains the sole pinned-peer/credential owner.
     """
 
-    def __init__(self, session: object, *, ready: bool = False) -> None:
+    def __init__(self, session: object, *, ready: bool = False,
+                 target_id: str = "", name: str = "") -> None:
         super().__init__()
         self.session, self._ready = session, ready
+        self.target_id, self.name = target_id, name
 
     @property
     def ready(self) -> bool:
@@ -398,7 +466,16 @@ class RemoteDaemon(_Target):
         super().bootstrap(stop)
 
     def connection(self) -> object:
-        return _runtime.RemoteCall(self.session.dial, self.session.release, self.session._credential)
+        call = None
+        def dial(deadline: float, acquire: object) -> object:
+            stream = self.session.dial(deadline, acquire)
+            # RemoteCall retains/releases the original socket through acquire;
+            # only its HTTP writer uses this transparent send fence.
+            before_send = call.before_send
+            return _SendSocket(stream, before_send) if before_send is not None else stream
+        call = _runtime.RemoteCall(dial, self.session.release, self.session._credential)
+        call.before_send = None
+        return call
 
     def send(self, connection: object, method: str, target: str,
              headers: dict[str, str], body: bytes) -> object:
@@ -410,11 +487,9 @@ class RemoteDaemon(_Target):
             raise SchemeError(400, "native_bootstrap_only")
         if len(body) > MAX_BODY:
             raise SchemeError(413, "body_too_large")
-        try:
-            response = connection.send(method, checked, headers, body)
-        except (OSError, ValueError, RemoteError):
-            raise SchemeError(503, "target_unreachable") from None
+        # The scheme owns pre/post-forward classification via its send fence.
+        response = connection.send(method, checked, headers, body)
         if 300 <= response.status < 400 and response.status != 304:
             response.close()
-            raise SchemeError(503, "target_unreachable")
+            raise SchemeError(502, "upstream_redirect")
         return response

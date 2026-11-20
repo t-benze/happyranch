@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import http.client
+import itertools
+import sys
+from types import ModuleType
 from contextlib import closing
 import importlib.util
 import json
@@ -21,6 +24,23 @@ BODY_HEADER, CSP, MAX_BODY = _transport.BODY_HEADER, _transport.CSP, _transport.
 METHODS, ORIGIN, RESPONSE_HEADERS = _transport.METHODS, _transport.ORIGIN, _transport.RESPONSE_HEADERS
 Bundle, LocalDaemon, SchemeError, route = _transport.Bundle, _transport.LocalDaemon, _transport.SchemeError, _transport.route
 RemoteDaemon, RemoteError = _transport.RemoteDaemon, _transport.RemoteError
+_spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
+_contract = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_contract)
+WORLD = "happyranch.app.v2"
+# The launcher loads installed siblings afresh after Restart. Keep this native
+# counter in the process module registry, rather than reusing module-local IDs.
+_generation_state = ModuleType("_happyranch_app_generations")
+_generation_state.values = itertools.count(1)
+_generations = sys.modules.setdefault("_happyranch_app_generations", _generation_state).values
+
+
+def new_generation() -> str:
+    value = format(next(_generations), "x")
+    if len(value) > 32:
+        raise ValueError("generation space exhausted")
+    return value
+
 
 # Document-start, top-frame fetch adaptation. Raw Blob/FormData must never reach
 # URISchemeRequest.get_http_body (S0: WebKitGTK 2.52.6 SIGSEGV). S1a handles
@@ -44,7 +64,7 @@ FETCH_BYTES = r"""
     let sent = false, reader;
     const cancel = () => {
       if (reader) reader.cancel().catch(() => {});
-      if (sent) window.webkit.messageHandlers.appSchemeCancel.postMessage(id);
+      if (sent) window.postMessage({channel:'hr-app-cancel', id}, location.origin);
     };
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     signal.addEventListener('abort', cancel, {once: true});
@@ -90,9 +110,114 @@ FETCH_BYTES = r"""
 """
 
 
+APP_PAGE = r"""(() => {
+  'use strict';
+  if (window !== top || location.origin !== 'happyranch-app://app') return;
+  let active = true, sequence = 0;
+  const pending = new Map(), listeners = new Set();
+  const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
+  addEventListener('message', event => {
+    if (!active || event.source !== window || event.origin !== location.origin) return;
+    const item = event.data;
+    if (item?.channel === 'hr-app-revoked') {
+      active = false; listeners.clear();
+      for (const callback of pending.values()) callback.reject(fail('documentChanged'));
+      pending.clear(); return;
+    }
+    if (item?.channel === 'hr-app-event' && typeof item.raw === 'string') {
+      for (const listener of listeners) listener(item.raw);
+    } else if (item?.channel === 'hr-app-reply' && pending.has(item.id) && typeof item.raw === 'string') {
+      const callback = pending.get(item.id); pending.delete(item.id);
+      if (item.ok === true) callback.resolve(item.raw); else callback.reject(item.raw);
+    }
+  });
+  const call = (command, data) => new Promise((resolve, reject) => {
+    if (!active) return reject(fail('documentChanged'));
+    if (command !== 'app.status' || data !== '{}') return reject(fail('unsupportedCommand'));
+    if (pending.size >= 8) return reject(fail('busy'));
+    const id = 'r' + (++sequence);
+    pending.set(id, {resolve, reject});
+    window.postMessage({channel:'hr-app-call', id, command, data}, location.origin);
+  });
+  const on = (event, handler) => {
+    if (!active || event !== 'app.stateChanged' || typeof handler !== 'function') throw fail('unsupportedCommand');
+    listeners.add(handler);
+    window.postMessage({channel:'hr-app-subscribe', enabled:true}, location.origin);
+    return () => {
+      listeners.delete(handler);
+      if (!listeners.size) window.postMessage({channel:'hr-app-subscribe', enabled:false}, location.origin);
+    };
+  };
+  addEventListener('pagehide', () => {
+    active = false; listeners.clear();
+    for (const callback of pending.values()) callback.reject(fail('documentChanged'));
+    pending.clear();
+  }, {once:true});
+  Object.defineProperty(window, 'happyranchConnection', {value:Object.freeze({call,on})});
+})();"""
+
+APP_RELAY = r"""(() => {
+  'use strict';
+  if (window !== top || location.origin !== 'happyranch-app://app') return;
+  const native = window.webkit.messageHandlers.appBridge, token = crypto.randomUUID();
+  let active = true, admitted = false;
+  const queued = [];
+  const send = item => {
+    if (admitted) return native.postMessage(JSON.stringify({token, ...item}));
+    if (queued.length >= 8) return Promise.reject();
+    return new Promise((resolve, reject) => queued.push({item, resolve, reject}));
+  };
+  globalThis.hrAppBridge = Object.freeze({get token() { return active ? token : ''; }, admit:value => {
+    if (!active || value !== token || admitted) return;
+    admitted = true;
+    for (const entry of queued.splice(0)) send(entry.item).then(entry.resolve, entry.reject);
+  }, emit:raw => {
+    if (active) window.postMessage({channel:'hr-app-event', raw}, location.origin);
+  }});
+  const revoke = () => {
+    if (!active) return;
+    active = false;
+    for (const entry of queued.splice(0)) entry.reject();
+    window.postMessage({channel:'hr-app-revoked'}, location.origin);
+    native.postMessage(JSON.stringify({token, revoke:true})).catch(() => {});
+  };
+  const embedded = node => node.nodeType === 1 &&
+    (node.matches('iframe,frame,object,embed') || node.querySelector('iframe,frame,object,embed'));
+  const observer = new MutationObserver(records => {
+    if (records.some(record => Array.from(record.addedNodes).some(embedded))) revoke();
+  });
+  observer.observe(document, {childList:true, subtree:true});
+  addEventListener('securitypolicyviolation', event => {
+    if (['frame-src','child-src'].includes(event.effectiveDirective)) revoke();
+  });
+  addEventListener('pagehide', () => { active = false; observer.disconnect(); }, {once:true});
+  addEventListener('message', async event => {
+    if (!active || event.source !== window || event.origin !== 'happyranch-app://app') return;
+    const item = event.data;
+    if (item?.channel === 'hr-app-subscribe' && typeof item.enabled === 'boolean') {
+      send({event:'app.stateChanged', enabled:item.enabled}).catch(() => {}); return;
+    }
+    if (item?.channel === 'hr-app-cancel' && typeof item.id === 'string') {
+      send({cancel:item.id}).catch(() => {}); return;
+    }
+    if (item?.channel !== 'hr-app-call' || item.command !== 'app.status' || item.data !== '{}'
+        || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
+    let raw, ok = true;
+    try { raw = await send({command:item.command, data:item.data}); }
+    catch { ok = false; raw = JSON.stringify({code:'invalidRequest', effect:'none', recovery:'refresh'}); }
+    if (active && typeof raw === 'string' && new TextEncoder().encode(raw).length <= 32768)
+      window.postMessage({channel:'hr-app-reply', id:item.id, raw, ok}, location.origin);
+  });
+})();"""
+
+
 class Transfer:
     def __init__(self, target: LocalDaemon | RemoteDaemon | None = None) -> None:
         self.stop = threading.Event()
+        self.forwarded = False
+        self.generation = None
+        self.method = "GET"
+        self.send_lock = threading.RLock()
         self.target = target
         self.cancel_code = "cancelled"
         self.cancellable = None
@@ -104,9 +229,10 @@ class Transfer:
         self.finished = False
 
     def cancel(self, code: str = "cancelled") -> None:
-        if code == "target_changed" or not self.stop.is_set():
-            self.cancel_code = code
-        self.stop.set()
+        with self.send_lock:
+            if code == "target_changed" or not self.stop.is_set():
+                self.cancel_code = "cancelled" if self.forwarded else code
+            self.stop.set()
         if self.cancellable is not None:
             self.cancellable.cancel()
         upstream = self.socket or (self.connection.sock if self.connection is not None else None)
@@ -119,23 +245,39 @@ class Transfer:
         if self.connection is not None and callable(getattr(self.connection, "cancel", None)):
             self.connection.cancel()
 
+    def interrupted(self) -> SchemeError:
+        changed = self.cancel_code == "target_changed" and not self.forwarded
+        return SchemeError(409 if changed else 499, "target_changed" if changed else "cancelled")
+
+    def before_send(self) -> None:
+        with self.send_lock:
+            if self.stop.is_set():
+                raise self.interrupted()
+            # Mark BEFORE attempting the first upstream write. A partial write
+            # or an error from sendall cannot prove that nothing was forwarded.
+            self.forwarded = True
+
 
 class AppScheme:
-    """One context/view and bounded transfers; no native connection bridge."""
+    """One trusted Main document, native status, and target-bound transfers."""
 
-    def __init__(self, bundle: Path, verified_port: int | None, data: Path) -> None:
+    def __init__(self, bundle: Path, verified_port: int | None, data: Path,
+                 *, local_mode: str = "service") -> None:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("WebKit2", "4.1")
         gi.require_version("Soup", "3.0")
-        from gi.repository import Gio, GLib, Gtk, Soup, WebKit2
+        gi.require_version("JavaScriptCore", "4.1")
+        from gi.repository import Gio, GLib, Gtk, Soup, WebKit2, JavaScriptCore
         if ((WebKit2.get_major_version(), WebKit2.get_minor_version()) < (2, 40)
                 or not callable(getattr(WebKit2.URISchemeRequest, "get_http_body", None))):
             raise ValueError("WebKitGTK 2.40 or newer is required")
         self.Gio, self.GLib, self.Gtk, self.Soup, self.W = Gio, GLib, Gtk, Soup, WebKit2
+        self.JSC = JavaScriptCore
         self.bundle = Bundle(bundle)
         self.daemon = LocalDaemon(verified_port) if verified_port is not None else None
         self.closed = False
+        self.initialize_state(local_mode)
         self.transfers: dict[str, Transfer] = {}
         self.cancelled: dict[str, float] = {}
         data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -148,27 +290,200 @@ class AppScheme:
         # No local-scheme privileges and no network listener.
         self.context.register_uri_scheme("happyranch-app", self.handle)
         controller = WebKit2.UserContentManager()
-        controller.register_script_message_handler("appSchemeCancel")
-        controller.connect("script-message-received::appSchemeCancel", self.cancel_request)
+        self.controller = controller
+        controller.connect("script-message-with-reply-received::appBridge", self.bridge_message)
+        if not controller.register_script_message_handler_with_reply("appBridge", WORLD):
+            raise ValueError("named-world bridge unavailable")
+        controller.add_script(WebKit2.UserScript.new_for_world(
+            APP_RELAY, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, WORLD, [ORIGIN + "/*"], None))
+        controller.add_script(WebKit2.UserScript.new(
+            APP_PAGE, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, [ORIGIN + "/*"], None))
         controller.add_script(WebKit2.UserScript.new(FETCH_BYTES, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                                                      WebKit2.UserScriptInjectionTime.START, None, None))
         self.view = WebKit2.WebView(web_context=self.context, user_content_manager=controller)
         self.view.connect("destroy", lambda *_: self.close())
-        self.view.connect("web-process-terminated", lambda *_: self.select_target(self.daemon))
+        self.view.connect("web-process-terminated", lambda *_: self.invalidate_document())
         self.view.connect("load-changed", self.load_changed)
         self.view.connect("decide-policy", self.policy)
+        self.view.connect("load-failed", lambda *_: (self.invalidate_document(), False)[1])
+        self.view.connect("create", lambda *_: None)
         self.context.connect("download-started", self.download_started)
         self.timer = GLib.timeout_add(100, self.monitor)
 
-    def select_target(self, target: LocalDaemon | RemoteDaemon | None) -> None:
-        """Native/UI-thread selection only. S5 owns candidate/commit policy."""
-        for transfer in self.transfers.values():
-            transfer.cancel("target_changed")
-        if self.daemon is not None:
-            self.daemon.reset()
-        if target is not None and target is not self.daemon:
-            target.reset()
-        self.daemon = target
+    def initialize_state(self, local_mode: str = "service") -> None:
+        self.target_lock = threading.RLock()
+        self.generation = new_generation()
+        self.document = 0
+        self.bridge_token = None
+        self.subscribed = False
+        self.status_refresh = None
+        self.status_stop = None
+        self.local = {"supported": local_mode == "service", "mode": local_mode,
+                      "running": "running" if self.daemon is not None else "unknown",
+                      "prompt_base_url": None}
+        self.candidate = None
+        self.access_unsaved = False
+        self.locale = {"current": "zh-CN" if os.environ.get("LANG", "").lower().startswith("zh") else "en",
+                       "persisted": False}
+
+    def status(self) -> dict:
+        with self.target_lock:
+            daemon = self.daemon
+            local = dict(self.local)
+            target, incompatible, state = None, None, "no_target"
+            if daemon is not None:
+                remote = isinstance(daemon, RemoteDaemon)
+                target = ({"kind": "remote", "id": daemon.target_id, "name": daemon.name} if remote else
+                          {"kind": "local", "id": "local", "name": "这台电脑" if self.locale["current"] == "zh-CN" else "This computer"})
+                with daemon._state:
+                    state = daemon.state
+                    if state == "incompatible":
+                        incompatible = {"side": daemon._compatibility or "host", "host_contract": daemon.host_contract,
+                                        "client_contract": _transport.CLIENT, "min_daemon": _transport.MIN_DAEMON}
+                if not remote and local["running"] == "stopped":
+                    state, incompatible = "unreachable", None
+                if not remote and local["running"] == "running":
+                    local["prompt_base_url"] = f"http://127.0.0.1:{daemon.port}/api/v1"
+            return {"schema": 2, "generation": self.generation, "target": target, "state": state,
+                    "incompatible": incompatible, "local": local, "candidate": self.candidate,
+                    "access_unsaved": self.access_unsaved, "locale": dict(self.locale)}
+
+    def select_target(self, target: LocalDaemon | RemoteDaemon | None,
+                      *, owner_saves: tuple[str, ...] | None = None) -> str | None:
+        """Native commit gate; S5-L2/S6 supply the captured owner-save snapshot.
+
+        Missing/unknown owner evidence refuses a voluntary switch. Navigation,
+        process loss and close invalidate transfers independently of this gate.
+        """
+        with self.target_lock:
+            if owner_saves is None or any(state == "unknown" for state in owner_saves):
+                return "owner_save_unknown"
+            if any(state == "pending" for state in owner_saves):
+                return "owner_save_pending"
+            if any(state not in {"idle", "saved", "failed"} for state in owner_saves):
+                return "owner_save_unknown"
+            if any(t.generation == self.generation and not t.finished and t.method != "GET"
+                   for t in self.transfers.values()):
+                return "non_get_pending"
+            self._replace_target(target)
+        return None
+
+    def _replace_target(self, target: LocalDaemon | RemoteDaemon | None) -> None:
+        # The same lock fences first-send admission against this atomic swap.
+        with self.target_lock:
+            old, generation = self.daemon, self.generation
+            self.daemon, self.generation = target, new_generation()
+            if self.status_stop is not None:
+                self.status_stop.set()
+            for transfer in self.transfers.values():
+                if transfer.generation == generation:
+                    transfer.cancel("target_changed")
+            if old is not None:
+                old.reset()
+            if target is not None and target is not old:
+                target.reset()
+            self.emit_state()
+            if self.bridge_token is not None:
+                self.refresh_status()
+
+    def refresh_status(self) -> None:
+        """Native admission progresses even while the page is in recovery."""
+        with self.target_lock:
+            daemon, generation, document = self.daemon, self.generation, self.document
+            if daemon is None or self.status_refresh == generation:
+                return
+            self.status_refresh = generation
+            stop = self.status_stop = threading.Event()
+        def work() -> None:
+            try:
+                daemon.bootstrap(stop)
+            except SchemeError:
+                pass
+            def done() -> bool:
+                if (not self.closed and generation == self.generation and document == self.document):
+                    self.status_refresh = None
+                    self.emit_state()
+                return False
+            self.GLib.idle_add(done)
+        threading.Thread(target=work, daemon=True, name="app-status-admission").start()
+
+    def invalidate_document(self) -> None:
+        self.document += 1
+        self.bridge_token, self.subscribed = None, False
+        self._replace_target(self.daemon)
+
+    def emit_state(self) -> None:
+        if not self.subscribed or self.bridge_token is None or self.closed:
+            return
+        args = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", json.dumps(self.status())),
+                                         "token": self.GLib.Variant("s", self.bridge_token)})
+        self.view.call_async_javascript_function(
+            "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(raw);",
+            -1, args, WORLD, ORIGIN + "/", None, None, None)
+
+    def bridge_message(self, manager: object, value: object, reply: object) -> bool:
+        try:
+            if manager != self.controller or self.closed or not self.bridge_token or not value.is_string():
+                raise ValueError("unavailable document")
+            path, _ = route(self.view.get_uri())
+            if path.startswith("/api/"):
+                raise ValueError("untrusted document")
+            item = _contract.parse_json(value.to_string(), 4096)
+            if type(item) is not dict or item.get("token") != self.bridge_token:
+                raise ValueError("stale document")
+            if set(item) == {"token", "command", "data"} and item["command"] == "app.status" and item["data"] == "{}":
+                self.refresh_status()
+                result = self.status()
+            elif set(item) == {"token", "event", "enabled"} and item["event"] == "app.stateChanged" and type(item["enabled"]) is bool:
+                self.subscribed = item["enabled"]
+                result = {}
+                if self.subscribed:
+                    self.emit_state()
+            elif set(item) == {"token", "cancel"} and type(item["cancel"]) is str:
+                self.cancel_id(item["cancel"])
+                result = {}
+            elif set(item) == {"token", "revoke"} and item["revoke"] is True:
+                self.invalidate_document()
+                raise ValueError("document integrity")
+            else:
+                raise ValueError("unsupported command")
+            reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
+        except (SchemeError, ValueError, TypeError, UnicodeError, RecursionError):
+            reply.return_error_message('{"code":"invalidRequest","effect":"none","recovery":"refresh"}')
+        return True
+
+    def probe_document(self) -> None:
+        document = self.document
+        def named_done(view: object, result: object, _data: object) -> None:
+            try:
+                raw = view.call_async_javascript_function_finish(result)
+                token = raw.to_string() if raw.is_string() else ""
+                if not token or len(token) > 64 or document != self.document or self.closed:
+                    return
+                def page_done(view: object, result: object, _data: object) -> None:
+                    try:
+                        checked = view.call_async_javascript_function_finish(result)
+                        if (document == self.document and not self.closed and checked.is_boolean()
+                                and checked.to_boolean()):
+                            self.bridge_token = token
+                            self.refresh_status()
+                            args = self.GLib.Variant("a{sv}", {"token": self.GLib.Variant("s", token)})
+                            view.call_async_javascript_function("globalThis.hrAppBridge?.admit(token);",
+                                -1, args, WORLD, ORIGIN + "/", None, None, None)
+                    except self.GLib.Error:
+                        self.invalidate_document()
+                view.call_async_javascript_function(
+                    "return window === top && window.frames.length === 0 && location.origin === 'happyranch-app://app'"
+                    " && typeof window.webkit?.messageHandlers?.appBridge === 'undefined';",
+                    -1, None, None, ORIGIN + "/", None, page_done, None)
+            except self.GLib.Error:
+                self.invalidate_document()
+        self.view.call_async_javascript_function(
+            "return window === top && window.frames.length === 0 && location.origin === 'happyranch-app://app'"
+            " ? globalThis.hrAppBridge?.token || '' : '';",
+            -1, None, WORLD, ORIGIN + "/", None, named_done, None)
 
     def cancel_all(self) -> None:
         for transfer in self.transfers.values():
@@ -178,6 +493,10 @@ class AppScheme:
         if self.closed:
             return
         self.closed = True
+        if self.status_stop is not None:
+            self.status_stop.set()
+        self.bridge_token, self.subscribed = None, False
+        self.generation = new_generation()
         self.cancel_all()
         self.GLib.source_remove(self.timer)
         if self.daemon is not None:
@@ -186,10 +505,11 @@ class AppScheme:
 
     def load_changed(self, _view: object, event: object) -> None:
         if event == self.W.LoadEvent.STARTED:
-            self.select_target(self.daemon)
+            self.invalidate_document()
+        elif event == self.W.LoadEvent.FINISHED:
+            self.probe_document()
 
-    def cancel_request(self, _controller: object, message: object) -> None:
-        key = message.get_js_value().to_string()
+    def cancel_id(self, key: str) -> None:
         if len(key) != 36:
             return
         transfer = self.transfers.get(key)
@@ -262,18 +582,23 @@ class AppScheme:
             request.get_http_headers().foreach(lambda k, v, *_: headers.__setitem__(k.lower(), v), None)
             if sum(len(k) + len(v) for k, v in headers.items()) > 65536:
                 raise SchemeError(431, "headers_too_large")
+            if not (method == "GET" and path.rstrip("/") == "/api/v1/auth/bootstrap"):
+                if headers.get("x-happyranch-target") != self.generation:
+                    raise SchemeError(409, "target_changed")
             key = headers.get("x-happyranch-request-id", "")
             if len(key) != 36 or key in self.transfers:
                 raise SchemeError(400, "invalid_request_id")
             if len(self.transfers) >= 32:
-                raise SchemeError(503, "busy")
+                raise SchemeError(429, "too_many_requests")
             if (headers.get(BODY_HEADER.lower()) == "1"
                     and sum(t.has_body and not t.finished for t in self.transfers.values()) >= 2):
-                raise SchemeError(503, "busy")
+                raise SchemeError(429, "too_many_requests")
             # Even a zero-byte POST must be adapted. Do not inspect a raw body.
             if method not in ("GET", "HEAD") and headers.get(BODY_HEADER.lower()) != "1":
                 raise SchemeError(415, "byte_body_required")
             transfer = Transfer(self.daemon)
+            transfer.generation, transfer.method = self.generation, method
+            transfer.send_lock = self.target_lock
             transfer.has_body = headers.get(BODY_HEADER.lower()) == "1"
             transfer.cancellable = self.Gio.Cancellable()
             self.transfers[key] = transfer
@@ -292,12 +617,18 @@ class AppScheme:
 
     def forward(self, request: object, transfer: Transfer, method: str, target: str,
                 headers: dict[str, str], body_stream: object) -> None:
-        sent = False
+        delivered_headers = False
         writer = None
         complete = False
         try:
+            with self.target_lock:
+                if transfer.generation is None:
+                    transfer.generation = self.generation
+                transfer.method, transfer.send_lock = method, self.target_lock
+                if transfer.generation != self.generation:
+                    transfer.cancel("target_changed")
             if transfer.stop.is_set():
-                raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                raise transfer.interrupted()
             daemon = transfer.target
             if daemon is None:
                 raise SchemeError(503, "no_target")
@@ -315,7 +646,7 @@ class AppScheme:
                 while True:
                     chunk = body_stream.read_bytes(65536, transfer.cancellable).get_data()
                     if transfer.stop.is_set():
-                        raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                        raise transfer.interrupted()
                     if time.monotonic() - began > 10:
                         raise SchemeError(408, "body_timeout")
                     if not chunk:
@@ -324,12 +655,13 @@ class AppScheme:
                     if len(body) > MAX_BODY:
                         raise SchemeError(413, "body_too_large")
             if transfer.stop.is_set():
-                raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                raise transfer.interrupted()
             connection = daemon.connection()
             transfer.connection = connection
+            connection.before_send = transfer.before_send
             with closing(connection):
                 if transfer.stop.is_set():
-                    raise SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
+                    raise transfer.interrupted()
                 response = daemon.send(connection, method, target, headers, bytes(body))
                 with response:
                     kept = {k.lower(): v for k, v in response.getheaders() if k.lower() in RESPONSE_HEADERS}
@@ -350,7 +682,7 @@ class AppScheme:
                         kept["content-length"] = str(length)
                     transfer.deadline = time.monotonic() + 3600
                     self.GLib.idle_add(self.deliver, request, transfer, response.status, source, kept)
-                    sent = True
+                    delivered_headers = True
                     # read1 delivers available bytes; read(n) can buffer SSE.
                     # HTTPConnection closes its socket reference on Connection:
                     # close responses, so retain the response socket for abort.
@@ -383,15 +715,21 @@ class AppScheme:
                             except BlockingIOError:
                                 continue
         except SchemeError as error:
-            if not sent:
-                if transfer.stop.is_set():
-                    error = SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
-                self.GLib.idle_add(self.error, request, error)
+            if not delivered_headers:
+                if transfer.stop.is_set() or error.code == "target_changed" and transfer.forwarded:
+                    error = transfer.interrupted()
+                self.GLib.idle_add(self.deliver_error, request, transfer, error)
         except (OSError, http.client.HTTPException, RemoteError, self.GLib.Error):
-            if not sent:
-                error = (SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code)
-                         if transfer.stop.is_set() else SchemeError(503, "target_unreachable"))
-                self.GLib.idle_add(self.error, request, error)
+            if not delivered_headers:
+                error = (transfer.interrupted() if transfer.stop.is_set() else
+                         SchemeError(502, "incomplete_body") if transfer.forwarded else
+                         SchemeError(503, "target_unreachable"))
+                with self.target_lock:
+                    if (error.code == "target_unreachable" and transfer.generation == self.generation
+                            and transfer.target is self.daemon and self.daemon is not None):
+                        with self.daemon._state:
+                            self.daemon.state = "unreachable"
+                self.GLib.idle_add(self.deliver_error, request, transfer, error)
         finally:
             if body_stream is not None:
                 try:
@@ -399,34 +737,53 @@ class AppScheme:
                 except self.GLib.Error:
                     pass
             transfer.write_fd = None
-            if writer is not None:
-                if complete and not transfer.stop.is_set():
-                    # Success consumes the marker, allowing normal EOF. Every
-                    # other path (timeout, abort, transport/framing failure)
-                    # leaves it unread and therefore errors the input stream.
-                    try:
-                        writer.recv(1)
-                    except OSError:
-                        pass
-                writer.close()
-            transfer.finished = True
+            with transfer.send_lock:
+                if writer is not None:
+                    if complete and not transfer.stop.is_set():
+                        # Serialize successful EOF with target cancellation.
+                        # Every interrupted transfer retains the error marker.
+                        try:
+                            writer.recv(1)
+                        except OSError:
+                            pass
+                    writer.close()
+                transfer.finished = True
+            document, generation = self.document, transfer.generation
+            def changed() -> bool:
+                if document == self.document and generation == self.generation:
+                    self.emit_state()
+                return False
+            self.GLib.idle_add(changed)
+
+    def deliver_error(self, request: object, transfer: Transfer, error: SchemeError) -> bool:
+        if transfer.generation != self.generation:
+            transfer.cancel("target_changed")
+        self.error(request, transfer.interrupted() if transfer.stop.is_set() else error)
+        return False
 
     def deliver(self, request: object, transfer: Transfer, status: int, source: object,
                 headers: dict[str, str]) -> bool:
+        if transfer.generation != self.generation:
+            transfer.cancel("target_changed")
         if transfer.stop.is_set() or self.closed:
             source.close(None)
-            self.error(request, SchemeError(409 if transfer.cancel_code == "target_changed" else 499, transfer.cancel_code))
+            self.error(request, transfer.interrupted())
         else:
             self.finish(request, status, source, int(headers.get("content-length", "-1")), headers)
         return False
 
     def policy(self, _view: object, decision: object, kind: object) -> bool:
+        if kind == self.W.PolicyDecisionType.NEW_WINDOW_ACTION:
+            self.invalidate_document()
+            decision.ignore()
+            return True
         if kind in (self.W.PolicyDecisionType.NAVIGATION_ACTION, self.W.PolicyDecisionType.NEW_WINDOW_ACTION):
             uri = decision.get_navigation_action().get_request().get_uri()
             url = urlsplit(uri)
             if url.scheme == "blob":
                 return False  # Existing fetch -> blob -> a.download route.
             if url.scheme != "happyranch-app" or url.netloc != "app":
+                self.invalidate_document()
                 decision.ignore()
                 if url.scheme in ("http", "https"):
                     self.Gio.AppInfo.launch_default_for_uri(uri, None)

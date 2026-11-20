@@ -727,49 +727,52 @@ and date-time values. The final two examples must be rejected.
 
 ### Current implementation status
 
-Evidence below is source inspection at Linux main `921f126e`, not live/native
-acceptance. `AS` = `packaging/linux/desktop/app_scheme.py`; `WK` =
-`packaging/linux/desktop/app_scheme_webkit.py`. File/line numbers in this table
-refer to that immutable base. For **every row**, Mac is **pending (no Mac work
-this wave)** and web is **pending S5-W1**. Existing v1 bridge result errors
+The historical Linux inventory baseline is main `921f126e14d6dd5befc869ae77278134b20985ab`
+(PRs #1762, #1765 and #1767). The table below describes the later **PR #1769
+source epoch** (S5-L1, including the round-2 recovery fix); every file/line
+citation in this table refers to that PR source tree, not the historical main
+baseline. This is source inspection, not live/native acceptance. `AS` =
+`packaging/linux/desktop/app_scheme.py`; `WK` =
+`packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
+**pending (no Mac work this wave)** and web is **pending S5-W1**. Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
-| Code / rule | Linux main 921f126e status and file:line evidence |
+| Code / rule | Linux PR #1769 status and file:line evidence |
 | --- | --- |
-| `no_target` → 503 | Emitted by `WK:301–303` when captured target is absent. |
-| `target_starting` → 503 | Emitted by `AS:313–318,395–398` for unchecked/not-ready targets. |
-| `target_unreachable` → 503 | **L-1 connect-refused already fixed**: `AS:258–262,341–345,413–419`, `WK:247,390–394`. The broad pre-page-delivery exception handler can also classify later failures this way; Linux: pending S5-L1 to preserve ordinary post-forward errors. |
-| `incompatible` → 503, optional side | Implemented by PR #1767: constants `AS:26`; metadata validation `AS:283–304`, envelope/side guard `AS:41–48`, `WK:224–228`. Host/app emitted; unknown reserved, not emitted. |
-| `busy` → 503, host-busy only | **L-4: Linux: pending S5-L1.** Main emits busy for native caps `WK:269,272` and lock timeout `AS:278`; `AS:283–304` reads api_contract but not update_busy. It does not implement the v2 host-busy meaning. |
-| `target_changed` → 409 only before forwarding | **L-3: Linux: pending S5-L1.** `WK:300,318,327,332` includes pre-forward checks, but `WK:333,352–353,385–394,414–420` can return 409 after sending upstream; sent tracks page delivery, not first upstream byte. `AS:176–181` also maps reset epochs to 409. |
-| `too_many_requests` → 429 | Not emitted. **Linux: pending S5-L1** replaces cap/lock busy at `WK:269,272`, `AS:278`. |
-| `cancelled` → 499 class / stream error | Existing non-switch cancellation at `AS:176–179`, `WK:300,388,392,418`; stream error marker at `WK:338–347,395–411`. **Linux: pending S5-L1 (L-3)** for every post-forward switch, including delayed page delivery. |
+| `no_target` → 503 | Emitted by `WK:632–634` when captured target is absent. |
+| `target_starting` → 503 | Emitted by `AS:369–374,463–466` for unchecked/not-ready targets. |
+| `target_unreachable` → 503 | **L-1 retained; S5-L1 implemented.** Connect/dial refusal stays 503; after the first HTTP send, transport loss is ordinary 502 incomplete_body, never a recovery code: `WK:618–756` (`forward`). |
+| `incompatible` → 503, optional side | Implemented by PR #1767: constants `AS:25`; metadata validation `AS:319–350`, envelope/side guard `AS:41–48`, `WK:544–548`. Host/app emitted; unknown reserved, not emitted. |
+| `busy` → 503, host-busy only | **L-4 implemented in S5-L1.** Only health update_busy.busy produces this code; busy is rechecked and clears on successful admission: `AS:302–364` (`bootstrap`). |
+| `target_changed` → 409 only before forwarding | **L-3 implemented in S5-L1.** A first-send fence records forwarding after connect/dial and before HTTP send; 409 is limited to requests not forwarded: `AS:173–182` (`_LocalConnection`), `AS:159–170` (`_SendSocket`), `WK:214–258` (`Transfer`). |
+| `too_many_requests` → 429 | **S5-L1 implemented.** Native view/body caps and admission lock timeout use 429: `WK:563–616` (`handle`), `AS:302–364` (`bootstrap`). |
+| `cancelled` → 499 class / stream error | **L-3 implemented in S5-L1.** Forwarded switches return 499 before page headers; established streams retain the GIO error marker. Successful EOF and cancellation share the send/swap lock: `WK:214–258` (`Transfer`), `WK:618–756` (`forward`), `WK:764–773` (`deliver`). |
 | `invalid_path` → 400 | Ordinary request error emitted at `AS:52–72`. |
 | `invalid_headers` → 400 | Ordinary request error emitted at `AS:75–81`. |
-| `invalid_request` → 400 | Ordinary request error emitted at `AS:353–355,406–408`. |
-| `invalid_request_id` → 400 | Ordinary request error emitted at `WK:265–267`. |
-| `native_bootstrap_only` → 400 | Internal forwarding guard at `AS:356–357,409–410`; page GET bootstrap is handled natively at `WK:305–311`. |
+| `invalid_request` → 400 | Ordinary request error emitted at `AS:411–413,483–485`. |
+| `invalid_request_id` → 400 | Ordinary request error emitted at `WK:588–590`. |
+| `native_bootstrap_only` → 400 | Internal forwarding guard at `AS:414–415,486–487`; page GET bootstrap is handled natively at `WK:635–642`. |
 | `not_found` → 404 | Ordinary asset error emitted at `AS:137–152`. |
-| `method_not_allowed` → 405 | Ordinary request error emitted at `WK:249–260`. |
-| `body_timeout` → 408 | Ordinary body-read error emitted at `WK:319–320`. |
-| `body_too_large` → 413 | Ordinary request error emitted at `AS:358–359,411–412`, `WK:324–325`. |
-| `byte_body_required` → 415 | Ordinary request error emitted at `WK:273–275`. |
-| `headers_too_large` → 431 | Ordinary request error emitted at `WK:263–264`. |
-| `bundle_unavailable` → 500 | Ordinary loader error emitted at `WK:288–291`. |
-| `upstream_redirect` → 502 | Ordinary local transport error emitted at `AS:367–370`. Remote redirect currently maps to target_unreachable at `AS:417–419`; Linux: pending S5-L1 to keep post-forward failures non-recovery. |
-| `incomplete_body` → 502 | Emitted at `WK:368–370`; after streaming starts it reaches the body-error marker, not a replacement HTTP response. |
-| `reader_timeout` → 504 | Emitted at `WK:376–378`; streaming body fails through the error marker. |
-| Closed error envelope / side restriction | Already present at `AS:41–48`, `WK:224–228`; no other detail keys emitted. |
-| app.status / app.stateChanged v2 | Not emitted: `connection_contract.py:20–27,236–240,303–310` still describes v1 commands/events; `WK:124,150–154` installs only the abort channel. **Linux: pending S5-L1.** |
-| Generation header admission and stripping | No comparison/enforcement in `WK:261–279,293–333`. Local allowlist `AS:34–36,75–81` already excludes it; remote `client_runtime.py:139–151` strips page X-HappyRanch-* before native authority. **Linux: pending S5-L1** for admission. |
-| Atomic target+generation swap → cancellation → event | `WK:163–171` cancels before replacing target; no generation/event. **Linux: pending S5-L1.** |
-| Non-GET / pending-unknown owner commit refusal | No client.commitSwitch/owner-registry gate in `connection_contract.py:20–27`, `WK:163–171`. **Linux: pending S5-L1** with S6-W2 owner integration. |
-| Compatibility before activation, reconnect/Restart | Linux health admission implemented in #1767 (`AS:270–306`); reset `AS:169–174`, remote.ready `AS:389–398`, reselection/navigation/process loss `WK:157,163–189`. Launcher reattachment recreates local target (`happyranch_window.py:959–962,1052–1074`). Same-instance remote reconnect requires its owner to reset/reselect; full v2 commit integration **Linux: pending S5-L1**. Mac pending. |
-| L-2 bearer refresh | `_Target.reset()` clears bearer at `AS:169–174`; `_prepare()` bootstraps if absent at `AS:337–348`. `LocalDaemon.send()` at `AS:350–371` has no re-bootstrap-on-401 branch. **Linux: pending S5-L1 verification/fix**; reset alone is not proof of 401 recovery. |
+| `method_not_allowed` → 405 | Ordinary request error emitted at `WK:569–580`. |
+| `body_timeout` → 408 | Ordinary body-read error emitted at `WK:650–651`. |
+| `body_too_large` → 413 | Ordinary request error emitted at `AS:416–417,488–489`, `WK:655–656`. |
+| `byte_body_required` → 415 | Ordinary request error emitted at `WK:596–598`. |
+| `headers_too_large` → 431 | Ordinary request error emitted at `WK:583–584`. |
+| `bundle_unavailable` → 500 | Ordinary loader error emitted at `WK:613–616`. |
+| `upstream_redirect` → 502 | **S5-L1 implemented.** Local and remote redirects are ordinary 502 errors after forwarding, never target_unreachable: `AS:406–437` (`LocalDaemon.send`) `AS:480–495` (`RemoteDaemon.send`). |
+| `incomplete_body` → 502 | Emitted at `WK:699–704,722–732`; after streaming starts it reaches the body-error marker, not a replacement HTTP response. |
+| `reader_timeout` → 504 | Emitted at `WK:707–710`; streaming body fails through the error marker. |
+| Closed error envelope / side restriction | Already present at `AS:41–48`, `WK:544–548`; no other detail keys emitted. |
+| app.status / app.stateChanged v2 | **S5-L1 implemented.** Shared closed status projection and event, admitted only through the probed Main document’s named world: `WK:331–351` (`status`), `WK:417–424` (`emit_state`), `WK:426–455` (`bridge_message`), `WK:457–486` (`probe_document`). |
+| Generation header admission and stripping | **S5-L1 implemented.** Missing/stale header refuses before forwarding (GET bootstrap exempt); process-owned generation counter survives loader reloads. Local allowlist and remote X-HappyRanch stripping remain: `WK:38–42` (`new_generation`), `WK:563–616` (`handle`), `AS:75–81` (`request_headers`), `client_runtime.py:139–151`. |
+| Atomic target+generation swap → cancellation → event | **S5-L1 implemented.** Swap under the first-send lock, cancel old generation, then emit full status: `WK:373–389` (`_replace_target`). |
+| Non-GET / pending-unknown owner commit refusal | **S5-L1 native gate implemented:** `WK:353–371` (`select_target`). Missing/unknown owner evidence and current-generation non-GET transfers refuse with named reasons. S5-L2 supplies client.commitSwitch; S6-W2 supplies owner integration. Neither is advertised here. |
+| Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
+| L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
 W-1/W-2 remain web-owner requirements: native 429 must stay an ordinary error;
 host busy must be transient and clear on successful forwarding; stale responses
-must not revive recovery, and mutations never auto-retry on 409. The open S1b-A
-PR #1764 is not counted as merged v2 web work. S5-0 changes no implementation,
-tests, required checks or CI triggers. Live Linux, Mac and web v2 behavior is
+must not revive recovery, and mutations never auto-retry on 409. Merged S1b-A
+PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec slice itself changes no implementation, tests, required checks or
+CI triggers. Live Linux, Mac and web v2 behavior is
 **NOT RUN** by this specification change.

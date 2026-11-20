@@ -68,6 +68,8 @@ class LocalTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.seen = []
         seen = self.seen
+        self.reject = False
+        fixture = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args: object) -> None:
@@ -83,6 +85,9 @@ class LocalTransportTests(unittest.TestCase):
                     status = 200
                 elif self.path == "/api/v1/redirect":
                     data, status = b"", 302
+                elif fixture.reject:
+                    fixture.reject = False
+                    data, status = b"", 401
                 else:
                     data, status = body or b'{"ok":true}', 200
                 self.send_response(status)
@@ -137,6 +142,23 @@ class LocalTransportTests(unittest.TestCase):
                 self.assertFalse(set(actual_headers) & {"cookie", "forwarded", "x-forwarded-for",
                     "x-happyranch-device-credential", "x-tailscale-user", "proxy-authorization"})
         self.assertEqual(sum(path == "/api/v1/auth/bootstrap" for _, path, _, _ in self.seen), 1)
+
+    def test_reset_and_401_rebootstrap_without_replaying_mutation(self) -> None:
+        self.daemon.reset()
+        self.assertIsNone(self.daemon._bearer)
+        self.daemon.bootstrap()
+        self.reject = True
+        with closing(self.daemon.connection()) as connection:
+            response = self.daemon.send(connection, "POST", "/api/v1/echo", {}, b"mutation")
+            self.assertEqual(response.status, 401)
+            response.close()
+        self.daemon.bootstrap()
+        with closing(self.daemon.connection()) as connection:
+            response = self.daemon.send(connection, "GET", "/api/v1/echo", {}, b"")
+            self.assertEqual(response.status, 200)
+            response.read()
+        self.assertEqual(sum(path == "/api/v1/auth/bootstrap" for _, path, _, _ in self.seen), 3)
+        self.assertEqual(sum(method == "POST" for method, *_ in self.seen), 1)
 
     def test_redirect_and_non_api_never_forward(self) -> None:
         with closing(self.daemon.connection()) as connection, self.assertRaises(SchemeError) as caught:

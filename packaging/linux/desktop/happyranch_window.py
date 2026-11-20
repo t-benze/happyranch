@@ -1070,7 +1070,8 @@ def run_gui(prefix: Path, home: Path) -> int:
                 spec = importlib.util.spec_from_file_location("app_scheme_webkit", path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web")
+                app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
+                                              local_mode="foreground" if fallback else "service")
                 view, url = app_scheme.view, module.ORIGIN + "/"
             except (OSError, ValueError, ImportError):
                 show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))

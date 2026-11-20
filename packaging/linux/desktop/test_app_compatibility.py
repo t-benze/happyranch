@@ -115,7 +115,7 @@ class CompatibilityTests(peers.PeerFixture):
                 self.assert_error(self.forward(app), "incompatible", "host")
                 self.health_body = b'{"api_contract":{"current":1,"min_client":1}}'
                 self.assert_error(self.forward(app), "incompatible", "host")
-                app.select_target(daemon)
+                app.select_target(daemon, owner_saves=())
                 self.assertEqual(self.forward(app)["status"], 200)
                 self.health_body = b'{"api_contract":{"current":2,"min_client":2}}'
                 self.assertEqual(self.forward(app)["status"], 200)
@@ -240,7 +240,7 @@ class CompatibilityTests(peers.PeerFixture):
                         time.sleep(0.05)
                         self.assertTrue(worker.is_alive())
                         if code == "target_changed":
-                            app.select_target(daemon)
+                            app.select_target(daemon, owner_saves=())
                         else:
                             transfer.cancel()
                         worker.join(1)
