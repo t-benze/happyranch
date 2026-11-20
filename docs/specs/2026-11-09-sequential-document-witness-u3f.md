@@ -1,5 +1,14 @@
 # U3f / U5a sequential document witnesses
 
+S4b version boundary: generic definition@2 uses current generic assignment and
+declared recipient checks for selected inputs, with no document/Coding capability
+witness or domain supplement. Rendered node data excludes unaddressed output;
+generic acceptance validates content/provenance, native closure and declared
+outcomes. The historical @1 document paths below retain their original bytes.
+Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+does not prove genuine provider/process execution. See the
+[S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
+
 Source record, 2026-11-09. ROOT engineering_manager TASK-14640 / THR-336,
 Founder msg85/102; accepted TASK-14892 revision2 design
 `bc7d2388e3edd1af652aeba64f703790a6301dff5e678546966410d8656cb86e`,

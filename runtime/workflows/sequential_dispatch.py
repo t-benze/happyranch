@@ -318,6 +318,11 @@ class SequentialDispatcher:
             definitions = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))
             _check(len(definitions) == 1)
             definition = definitions[0]
+            from runtime.workflows.sequential_definition import compile_generic_definition
+            if run.get('engine_version', 1) == 2:
+                compiled = compile_generic_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
+                _check(compiled.pin.definition_digest == definition['definition_digest'])
+                return run, visit, compiled
             compiled = compile_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
             _check(compiled.pin.definition_digest == definition['definition_digest'])
         return run, visit, compiled
@@ -351,6 +356,13 @@ class SequentialDispatcher:
             with self._reader() as conn:
                 run, visit, _ = self._entry(conn, task_id)
                 task = self.org.db.get_task(task_id)
+                if run.get('engine_version', 1) == 2:
+                    return (run['state'] == 'running' and run['progress'] == 'queued'
+                        and run['active_visit_id'] == visit['id'] and visit['state'] == 'queued'
+                        and visit['selected'] == 1 and visit['session_id'] is None and visit['result_id'] is None
+                        and task is not None and task.status.value == 'pending'
+                        and task.orchestration_step_count == 0 and task.block_kind is None
+                        and task.cancelled_at is None and task.current_session_id is None and not _cancelled(conn, run, visit))
                 outer = _evidence(conn, run['id'], None, 'outer')
                 return (run['state'] == 'active' and run['active_visit_id'] == visit['id']
                         and visit['state'] == 'queued' and visit['selected'] == 1
@@ -385,6 +397,9 @@ class SequentialDispatcher:
         if prior is not None:
             return ((prior['task_id'], prior['agent'], prior['session_id']) == (task_id, agent, session_id)
                     and completion_result_payload_matches(prior, **payload))
+        if run.get('engine_version', 1) == 2:
+            return self._generic_callback_uncommitted(conn, run, visit, compiled, task_id=task_id,
+                agent=agent, session_id=session_id, payload=payload, capture=capture)
         task = _native_task(conn, task_id)
         if ((run['state'], visit['state']) not in (('active', 'running'), ('held', 'held'))
                 or run['active_visit_id'] != visit['id'] or visit['selected'] != 1
@@ -469,6 +484,15 @@ class SequentialDispatcher:
             if existing is not None:
                 _check(existing == body)
                 return
+            if run.get('engine_version', 1) == 2:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?',
+                    ('completed' if classification == 'success' else 'failed', now, now, task_id))
+                conn.execute("UPDATE workflow_seq_runs SET progress='result_pending_settlement' WHERE id=?", (run['id'],))
+                _evidence(conn, run['id'], visit['id'], 'terminal', body)
+                validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                    evidence_ids=(_evidence_id(run['id'], visit['id'], 'terminal'),))
+                return
             repository_blocked = classification == 'blocked' and self._repository_held(conn, run, visit)
             if classification in ('success', 'failed') or repository_blocked:
                 # Native tasks have no terminal blocked status. Retain the actual
@@ -507,6 +531,11 @@ class SequentialDispatcher:
         _check(native_entry['id'] == invocation.identity and native_entry['task_id'] == invocation.task.id
                and native_entry['agent'] == invocation.agent and native_entry['session_id'] == invocation.session_id
                and native_entry['owner'] == invocation.owner)
+        with self._reader() as conn:
+            run, visit, compiled = self._entry(conn, invocation.task.id)
+        if run.get('engine_version', 1) == 2:
+            self._generic_outer_settled(invocation, run, visit, compiled, native_entry, tracker_clear)
+            return
         result_id = None
         with self._writer() as conn:
             run, visit, _ = self._entry(conn, invocation.task.id)
@@ -961,6 +990,12 @@ class SequentialDispatcher:
             async with self.org.teams_lock:
                 async with self.org.db_lock:
                     with self.org.workflow_authority._admission_ownership(capture):
+                        with self._reader() as conn:
+                            run, visit, compiled = self._entry(conn, invocation.task.id)
+                        if run.get('engine_version', 1) == 2:
+                            with self._writer() as conn:
+                                if not self._generic_prelaunch_uncommitted(conn, run, visit, compiled, capture):
+                                    return False
                         invocation.sequential_capture = capture
                         return invocation._commit_local(ctx)
 
@@ -971,6 +1006,13 @@ class SequentialDispatcher:
         _check(self.queue_admission_allowed(invocation.task.id), 'sequential_queue_unavailable')
         run, visit, compiled = self._entry(conn, invocation.task.id)
         self.org.workflow_authority._validate_admission_uncommitted(conn, invocation.sequential_capture)
+        if run.get('engine_version', 1) == 2:
+            from runtime.workflows.sequential_document_access import generic_binding_context
+            generic_binding_context(conn, run, visit, compiled, invocation.sequential_capture, _ReadBudget())
+            invocation.sequential_before = (run, visit, compiled)
+            before = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (invocation.task.id,)).fetchone())
+            self.org.db.claim_coding_step_uncommitted(task_id=invocation.task.id, before=before)
+            return
         start = parse_start(run['start_bytes'])
         agents = _bound_agents(compiled, start, invocation.sequential_capture)
         role = next(node.role for node in compiled.definition.nodes if node.id == visit['node_id'])
@@ -983,6 +1025,15 @@ class SequentialDispatcher:
     def _session_bound_uncommitted(self, invocation: Any) -> None:
         from runtime.workflows.sequential_engine import bind_session_uncommitted
         run, visit, compiled = invocation.sequential_before
+        if run.get('engine_version', 1) == 2:
+            conn = self.org.db._conn
+            _check(conn.in_transaction and visit['state'] == 'queued' and visit['session_id'] is None
+                and _native_task(conn, visit['task_id'])['current_session_id'] == invocation.session_id)
+            conn.execute("UPDATE workflow_seq_visits SET state='running',session_id=? WHERE id=? AND session_id IS NULL",
+                         (invocation.session_id, visit['id']))
+            conn.execute("UPDATE workflow_seq_runs SET progress='executing' WHERE id=?", (run['id'],))
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
+            return
         bind_session_uncommitted(self.org.db._conn, self.org.db, org_slug=self.org.slug,
             run_id=run['id'], visit_id=visit['id'], session_id=invocation.session_id,
             compiled=compiled, authority=self.org.workflow_authority, capture=invocation.sequential_capture)
@@ -992,6 +1043,11 @@ class SequentialDispatcher:
         _check(invocation.agent == agent and invocation.admitted, 'sequential_native_recovery_unavailable')
         with self._reader() as conn:
             run, visit, _ = self._entry(conn, task_id)
+            if run.get('engine_version', 1) == 2:
+                _check(run['state'] == 'running' and run['progress'] != 'cancelling'
+                    and run['active_visit_id'] == visit['id'] and visit['state'] == 'running' and visit['selected'] == 1
+                    and visit['session_id'] == session_id and not _cancelled(conn, run, visit))
+                return
             _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
                    and visit['state'] == 'running' and visit['selected'] == 1
                    and visit['session_id'] == session_id and not _cancelled(conn, run, visit))
@@ -1022,6 +1078,19 @@ class SequentialDispatcher:
             return False
         with self._writer() as conn:
             run, visit, _ = self._entry(conn, task_id)
+            if run.get('engine_version', 1) == 2:
+                allowed = (run['state'] == 'running' and run['progress'] != 'cancelling'
+                    and run['active_visit_id'] == visit['id'] and visit['state'] == 'running' and visit['selected'] == 1
+                    and (visit['principal'], visit['session_id']) == (agent, session_id)
+                    and not _cancelled(conn, run, visit))
+                if not allowed:
+                    return False
+                changed = conn.execute('UPDATE tasks SET executor_pid=? WHERE id=? AND assigned_agent=? '
+                    "AND current_session_id=? AND status='in_progress' AND cancelled_at IS NULL",
+                    (pid, task_id, agent, session_id))
+                _check(changed.rowcount == 1)
+                validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
+                return True
             if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
                     or visit['state'] != 'running' or visit['selected'] != 1
                     or (visit['principal'], visit['session_id']) != (agent, session_id)
@@ -1073,6 +1142,8 @@ class SequentialDispatcher:
                             with _sql_budget(conn, budget):
                                 _check(invocation is invocation.store._live.get(invocation.identity))
                                 run, visit, compiled = self._entry(conn, task_id, budget=budget)
+                                if run.get('engine_version', 1) == 2:
+                                    return self._generic_node_instruction(conn, run, visit, compiled, agent, sid, capture, budget)
                                 _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
                                        and visit['selected'] == 1 and visit['state'] in ('queued', 'running')
                                        and visit['session_id'] in (None, sid) and visit['principal'] == agent
@@ -1158,3 +1229,229 @@ class SequentialDispatcher:
         except (WorkflowAuthorityError, ProfileCoordinatorError):
             self._authority_unverified(task_id)
             raise
+
+    def _generic_callback_uncommitted(self, conn: sqlite3.Connection, run: dict, visit: dict, compiled: Any, *,
+                                      task_id: str, agent: str, session_id: str, payload: dict, capture: Any) -> bool:
+        from runtime.workflows.sequential_definition import parse_generic_callback
+        task = _native_task(conn, task_id)
+        if (run['state'] != 'running' or run['progress'] == 'cancelling'
+                or run['active_visit_id'] != visit['id'] or visit['state'] != 'running' or visit['selected'] != 1
+                or (visit['principal'], visit['session_id']) != (agent, session_id)
+                or task['status'] != 'in_progress'
+                or (task['assigned_agent'], task['current_session_id']) != (agent, session_id)
+                or _cancelled(conn, run, visit)
+                or payload['decision_json'] is not None or payload['waiting_on_job_ids'] is not None
+                or payload['status'] not in ('completed', 'failed', 'blocked')):
+            return False
+        store = getattr(self.org.db, '_task_pause_store', None)
+        live = [] if store is None else [inv for inv in store._live.values()
+            if inv.owner == 'sequential' and inv.workflow_dispatcher is self and inv.task.id == task_id
+            and inv.agent == agent and inv.session_id == session_id]
+        if len(live) != 1 or capture is None:
+            return False
+        self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
+        _native_metadata(task_id, agent, session_id, payload)
+        node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+        parse_generic_callback(payload['output_summary'].encode('utf8'), contract=node.output_contract.type)
+        _check(len(payload['output_summary'].encode('utf8')) + CARRIER_METADATA_LIMIT + 4096
+               <= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH), 'sequential_carrier_storage_unavailable')
+        self.org.db._insert_task_result(task_id=task_id, agent=agent, session_id=session_id, **payload)
+        result = _native_result(conn, conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+        _check((result['task_id'], result['agent'], result['session_id']) == (task_id, agent, session_id)
+            and completion_result_payload_matches(result, **payload))
+        return True  # Only the native callback lands; acceptance waits for original outer closure.
+
+    def _generic_prelaunch_uncommitted(self, conn: sqlite3.Connection, run: dict, visit: dict,
+                                       compiled: Any, capture: Any) -> bool:
+        from runtime.workflows.authority import generic_assignment_authority
+        from runtime.workflows.sequential_assignments import AssignmentRefusal, recheck_launch_assignment, selection_agent
+        from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
+        budget = _ReadBudget()
+        current = generic_assignment_authority(capture, org_slug=self.org.slug)
+        rows = _engine_rows(conn, 'workflow_seq_assignments', budget, 'id=?', (visit['assignment_id'],))
+        _check(len(rows) == 1)
+        value = _json(rows[0]['snapshot_bytes'], 49152)
+        target = next((item for item in current['agents'] if item['name'] == visit['principal']), None)
+        unavailable = target is None or target['status'] != 'active' or recheck_launch_assignment(value, selection_agent(target)) is not None
+        if not unavailable:
+            from runtime.workflows.sequential_document_access import generic_binding_context
+            try:
+                generic_binding_context(conn, run, visit, compiled, capture, budget)
+            except AssignmentRefusal as exc:
+                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                if exc.role != node.role or exc.cause not in ('principal_unavailable', 'team_scope', 'role_ineligible'):
+                    raise
+                unavailable = True
+        if unavailable:
+            hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run['id'],
+                visit_id=visit['id'], expected_cas=run['cas'], compiled=compiled,
+                authority=self.org.workflow_authority, capture=capture, unavailable=True)
+            return False
+        return True
+
+    def _generic_outer_settled(self, invocation: Any, run: dict, visit: dict, compiled: Any,
+                               native_entry: dict, tracker_clear: bool) -> None:
+        with self._writer() as conn:
+            run, visit, compiled = self._entry(conn, invocation.task.id)
+            if run['state'] != 'running' or run['progress'] == 'cancelling' or _cancelled(conn, run, visit):
+                return
+            terminal = _evidence(conn, run['id'], visit['id'], 'terminal')
+            if terminal is None:
+                return
+            _check(terminal['invocation_id'] == invocation.identity
+                and (terminal['task_id'], terminal['principal'], terminal['session_id']) ==
+                    (invocation.task.id, invocation.agent, invocation.session_id))
+            _evidence(conn, run['id'], visit['id'], 'outer', dict(format='workflow-sequential-outer@1',
+                invocation_id=invocation.identity, task_id=invocation.task.id, principal=invocation.agent,
+                session_id=invocation.session_id, callback=terminal['callback'], positive=True,
+                tracker_clear=tracker_clear, native_phase=native_entry['phase'], close_removed=True,
+                release_removed=True, release_owner=invocation.identity, execution_unknown=False))
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                evidence_ids=(_evidence_id(run['id'], visit['id'], 'outer'),))
+        # Positive outer COMMIT precedes capture and all accepted rows.
+        self._advance_generic(run['id'], visit_id=visit['id'])
+
+    def _advance_generic(self, run_id: str, *, visit_id: str) -> Any:
+        async def advance() -> None:
+            capture = self.org.workflow_authority.capture_admission()
+            async with self.org.workflow_authority._async_writer_lock, self.org.teams_lock, self.org.db_lock:
+                with self.org.workflow_authority.admission_writer(capture) as conn:
+                    result = self._accept_generic_uncommitted(conn, run_id=run_id, visit_id=visit_id, capture=capture)
+                if result is not None:
+                    self.notify_queued(result, self.org.orchestrator._queue)
+        return self._on_loop(advance())
+
+    def _accept_generic_uncommitted(self, conn: sqlite3.Connection, *, run_id: str, visit_id: str, capture: Any) -> str | None:
+        """Native closure -> bounded generic composition -> one persisted result transition."""
+        from runtime.workflows.sequential_business_hold import generic_closed_visit, hold_generic_uncommitted
+        from runtime.workflows.sequential_control import _append_event, _move, validate_control_write
+        from runtime.workflows.sequential_definition import parse_generic_callback, parse_generic_result
+        from runtime.workflows.sequential_document_access import document_recipients, generic_binding_context
+        from runtime.workflows.sequential_engine import _engine_context, _identity, _outbox
+        from runtime.workflows.sequential_reducer import GenericAuthenticatedResult, reduce_generic_result
+        from runtime.workflows.sequential_run_validation import generic_result_state
+        budget = _ReadBudget()
+        with _sql_budget(conn, budget):
+            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))
+            _check(len(visits) == 1 and visits[0]['run_id'] == run_id)
+            run, visit, compiled = self._entry(conn, visits[0]['task_id'], budget=budget)
+            _engine_context(conn, self.org.db, org_slug=self.org.slug, run_id=run_id, compiled=compiled,
+                authority=self.org.workflow_authority, capture=capture, budget=budget)
+            _check(run['engine_version'] == 2 and run['progress'] != 'cancelling' and not _cancelled(conn, run, visit))
+            if visit['result_id'] is not None:
+                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+                return None  # Authenticated result replay, no allocation or notification.
+            _check(run['state'] == 'running' and run['active_visit_id'] == visit_id and visit['selected'] == 1)
+            proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+            _check(proof['kind'] == 'settled')
+            terminal = _evidence(conn, run_id, visit_id, 'terminal')
+            native = None if proof['result_id'] is None else _native_result(conn, proof['result_id'])
+            node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+            if native is None or native['status'] != 'completed' or terminal['classification'] != 'success' or terminal['receipt']['terminal_reason'] != 'success':
+                hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run_id,
+                    visit_id=visit_id, expected_cas=run['cas'], compiled=compiled,
+                    authority=self.org.workflow_authority, capture=capture)
+                return None
+            from runtime.workflows.sequential_definition import SequentialContractError
+            try:
+                callback = parse_generic_callback(native['output_summary'].encode('utf8'), contract=node.output_contract.type)
+            except SequentialContractError:
+                hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run_id,
+                    visit_id=visit_id, expected_cas=run['cas'], compiled=compiled,
+                    authority=self.org.workflow_authority, capture=capture)
+                return None
+            if callback.outcome not in dict(node.outcomes):
+                hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run_id,
+                    visit_id=visit_id, expected_cas=run['cas'], compiled=compiled,
+                    authority=self.org.workflow_authority, capture=capture)
+                return None
+            generic_binding_context(conn, run, visit, compiled, capture, budget)
+            content = base64.b64decode(callback.content_base64, validate=True)
+            outputs = [] if not content else [dict(slot=node.output_contract.slot, contract=node.output_contract.type,
+                version=visit['ordinal'], producer_visit=visit_id, task_id=visit['task_id'], session_id=visit['session_id'],
+                result_id=native['id'], digest=hashlib.sha256(content).hexdigest())]
+            envelope_raw = _bytes(dict(format='workflow-sequential-result@2', run_id=run_id, visit_id=visit_id,
+                definition_digest=compiled.pin.definition_digest, input_selection_digest=visit['input_selection_digest'],
+                outcome=callback.outcome, outputs=outputs, findings=[dict(source_visit=visit_id,
+                    source_result=native['id'], text=text) for text in callback.findings]))
+            envelope = parse_generic_result(envelope_raw)
+            state = generic_result_state(conn, run, visit, compiled, budget)
+            decision = reduce_generic_result(compiled, state, GenericAuthenticatedResult(task_id=visit['task_id'],
+                session_id=visit['session_id'], result_id=native['id'], envelope=envelope, content=content, settled=True),
+                storage_event_count=run['event_count'])
+            resulting = 'running' if decision.activation else 'held' if decision.edge.action == 'hold' else 'finished'
+            conn.execute('PRAGMA defer_foreign_keys=ON')
+            event_id = _append_event(conn, run, kind='transition', operation_key='result-' + visit_id,
+                payload=dict(decision=decision.model_dump(mode='json')), budget=budget, resulting_state=resulting,
+                source_visit=visit_id, source_result=native['id'])
+            conn.execute('UPDATE workflow_seq_visits SET result_id=?,result_bytes=?,result_digest=?,generic_checks_bytes=?,state=?,selected=0 WHERE id=?',
+                (native['id'], envelope_raw, hashlib.sha256(envelope_raw).hexdigest(), _bytes(dict(settled=True)),
+                 'held' if resulting == 'held' else 'completed', visit_id))
+            if outputs:
+                recipients = document_recipients(compiled, node.output_contract.slot, budget)
+                conn.execute('INSERT INTO workflow_seq_outputs '
+                    '(id,run_id,engine_version,visit_id,slot,epoch,contract,task_id,session_id,result_id,content_bytes,content_digest,recipients_bytes) '
+                    'VALUES (?,?,2,?,?,NULL,?,?,?,?,?,?,?)', (_identity('output', visit_id, node.output_contract.slot),
+                    run_id, visit_id, node.output_contract.slot, node.output_contract.type, visit['task_id'], visit['session_id'],
+                    native['id'], content, outputs[0]['digest'], _bytes(dict(roles=list(recipients)))))
+            new_task = None
+            new_visit = None if decision.activation is None else _identity('visit', run_id, str(decision.activation.ordinal))
+            _move(conn, run, event_id, state=resulting, progress='queued' if new_visit else None,
+                active_visit_id=new_visit, held_node_id=visit['node_id'] if resulting == 'held' else None,
+                held_event_id=event_id if resulting == 'held' else None, visit_count=decision.after.visits,
+                terminal_outcome=('failed' if decision.edge.action == 'fail' else 'completed') if resulting == 'finished' else None)
+            if decision.activation:
+                target = decision.activation
+                assignments = _engine_rows(conn, 'workflow_seq_assignments', budget,
+                    'run_id=? AND node_id=? AND generation=1', (run_id, target.node))
+                _check(len(assignments) == 1)
+                assignment = assignments[0]
+                value = _json(assignment['snapshot_bytes'], 49152)
+                new_visit = _identity('visit', run_id, str(target.ordinal))
+                new_task = 'TASK-SEQ-' + new_visit
+                selection = _bytes(dict(outputs=[ref.model_dump(mode='json') for ref in target.inputs]))
+                conn.execute('INSERT INTO workflow_seq_visits '
+                    '(id,run_id,engine_version,node_id,ordinal,epoch,predecessor_event_id,task_id,principal,input_selection_bytes,input_selection_digest,state,selected,assignment_id,assignment_generation) '
+                    "VALUES (?,?,2,?,?,NULL,?,?,?,?,?,'queued',1,?,?)", (new_visit, run_id, target.node, target.ordinal,
+                    event_id, new_task, assignment['principal'], selection, hashlib.sha256(selection).hexdigest(), assignment['id'], assignment['generation']))
+                task = TaskRecord(id=new_task, parent_task_id=run['carrier_task_id'], assigned_agent=assignment['principal'],
+                    team=json.loads(run['assignment_snapshot_bytes'])['team'], task_type='subtask',
+                    brief='Sequential node ' + target.node + '; follow the bound generic node brief.', **value['selection'])
+                self.org.db._insert_task_row_uncommitted(task, ownership=('seq_visit', new_visit))
+                _outbox(conn, run, event_id, 'visit_queued', new_visit, new_task)
+            for key, counts in decision.after.nodes:
+                conn.execute('INSERT INTO workflow_seq_node_counters VALUES (?,?,?,?) ON CONFLICT(run_id,node_id) '
+                    'DO UPDATE SET visits=excluded.visits,revisions=excluded.revisions', (run_id, key, counts.attempts, counts.revisions))
+        validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+        return new_task
+
+    def _generic_node_instruction(self, conn: sqlite3.Connection, run: dict, visit: dict, compiled: Any,
+                                  agent: str, sid: str, capture: Any, budget: _ReadBudget) -> str:
+        from runtime.workflows.sequential_briefs import GenericBriefInputs, GenericRecipientInput, render_generic_node_brief
+        from runtime.workflows.sequential_document_access import authorize_generic_input, generic_binding_context
+        from runtime.workflows.sequential_engine import _identity
+        from runtime.workflows.sequential_run_validation import generic_result_state, generic_selection
+        _check(run['state'] == 'running' and run['progress'] != 'cancelling' and run['active_visit_id'] == visit['id']
+            and visit['state'] == 'running' and visit['selected'] == 1 and visit['session_id'] == sid
+            and visit['principal'] == agent and not _cancelled(conn, run, visit))
+        validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
+        start, _ = generic_binding_context(conn, run, visit, compiled, capture, budget)
+        node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+        values = [GenericRecipientInput(source='run.' + item.name, recipients=(node.role,), value=item.value)
+            for item in start.inputs if any(declared.source == 'run.' + item.name for declared in node.inputs)]
+        for ref in generic_selection(visit, budget):
+            if not any(item.source == 'current.' + ref.slot for item in node.inputs):
+                continue
+            rows = _engine_rows(conn, 'workflow_seq_outputs', budget, 'id=?', (_identity('output', ref.producer_visit, ref.slot),))
+            _check(len(rows) == 1 and rows[0]['run_id'] == run['id'])
+            output = rows[0]
+            recipients = _json(output['recipients_bytes'], 16384)
+            authorize_generic_input(compiled=compiled, node=node, ref=ref, output=output,
+                stored_recipients=recipients, principal=agent, visit=visit, budget=budget)
+            values.append(GenericRecipientInput(source='current.' + ref.slot, recipients=tuple(recipients['roles']),
+                value=output['content_bytes'].decode('utf8'), reference=ref))
+        state = generic_result_state(conn, run, visit, compiled, budget)
+        brief = render_generic_node_brief(compiled, state, original_request=start.request, inputs=GenericBriefInputs(values=values))
+        budget.reserve(8 * len(brief.node_data.encode('utf8')) + 65536)
+        budget.check()
+        return '\n\n' + brief.format + '\n' + brief.system_text + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data

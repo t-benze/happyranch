@@ -1,5 +1,16 @@
 # U3d-1 sequential callback and original-owner settlement consumer
 
+S4b supersession for generic definition@2 only: the internal dispatcher commits
+native callbacks separately from generic acceptance. Original positive terminal
+and outer closure gates every accepted output and successor; non-success native
+reasons hold even when a callback exists, retaining its ID only as closure
+evidence. Generic composition invokes no domain witness. Readers authenticate
+native prefixes and resulting histories under existing budgets. The historical
+@1 consumer below retains its original bytes.
+Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+does not prove genuine provider/process execution. See the
+[S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
+
 Source unit TASK-14721 under engineering_manager ROOT TASK-14640. Authority:
 Founder THR336 msg85 plan rev3 U1–U9 SOURCE and msg102 Decision1=B; manager
 step13 accepts TASK-14718 revision2 carrier design SHA256

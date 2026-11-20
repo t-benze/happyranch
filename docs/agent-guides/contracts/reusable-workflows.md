@@ -1,5 +1,69 @@
 # Reusable workflow contracts
 
+## S4b: generic dispatch and native closure @2
+
+The internal version-selected dispatcher supports generic queue admission,
+prelaunch, session/PID binding, callbacks, terminal/outer closure and addressed
+node briefs. Public @2 admission remains unavailable and Coding stays Disabled.
+Before native launch reservation, `recheck_launch_assignment` checks the saved
+selection against current executor/options. Executor/options drift and current
+active-target team/role eligibility refusals call the existing S4a writer to persist
+Held/`assignee_unavailable`, without a session, successor or disclosure. Only
+recognised target eligibility refusals map to Held; unrelated integrity and
+authority failures propagate.
+Prelaunch, briefs and acceptance validate the active visit's exact assignment
+principal/generation against current role authority. Other nodes sharing that
+role cannot override this occurrence. Recovery assignments and selections apply
+only to explicitly selected replacement visits; a fresh graph occurrence uses
+the original pinned generation-1 node assignment. Complete history validation
+rejects a graph successor carrying a recovery generation. The S4b control-owner
+amendment includes occurrence-local selection in `sequential_control.prepare_control`
+and predecessor/generation allocation in `apply_control_uncommitted` only. A
+recovery carries the held visit's principal and selection unless explicitly edited,
+preserves selected inputs and remaining allowances, and uses that visit's assignment
+as predecessor. Its generation is exactly the node's prior maximum plus one;
+complete and selected readers authenticate both predecessor and generation.
+
+A callback commits only its native result. Generic acceptance waits for original
+positive terminal and outer closure, current assignment authority and exact
+task/principal/SID/result identities. It composes generic output references,
+validates content and declared outcomes, and persists one result transition
+atomically with output, counters and any successor. It invokes no Coding or
+document capability witness. Complete resulting-history validation can refuse
+and roll back tentative rows under the existing read ledger and deadline.
+Result replay allocates and notifies nothing. Start replay remains admission-only.
+
+Native terminal failure takes precedence over callback payload parsing. Real
+`TerminalReason.TIMEOUT` maps to `task_timed_out_without_result` or
+`task_timed_out_after_result`; every other non-success enum value maps to
+`task_failed_without_result` or `task_failed_after_result`. The cause owner also
+accepts legacy `failed`/`error` spellings; unknown reasons fail closed. Receipts
+keep their original enum values without dispatcher aliases. An after-result hold
+keeps the callback only in `closure.result_id`: visit result stays NULL, no
+accepted output, successor or counters are spent. SUCCESS keeps payload validation.
+
+`max_events` counts result transitions only. Acceptance passes the original
+persisted count as `storage_event_count`; a result that would leave Running
+above 4094 instead persists one Held/exhausted transition at most 4095, without
+a successor. Storage remains capped at 4096. Readers authenticate generic native
+proof prefixes, progress, outputs and transitions; @1 interpretation and domain
+witness paths retain their original bytes. Node data includes only declared,
+addressed selected inputs under current authority; an unaddressed node receives
+no private output. Domain task transport refuses @2.
+
+Within one history read, native reconstruction authenticates each terminal/outer
+proof before auxiliary validation. Auxiliary passes reuse that authentication,
+and native validation reuses the already authenticated assignment snapshot;
+neither repeats those decode reservations. Separate reads authenticate afresh,
+under the unchanged ledgers and cancellation reservation.
+
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4b=all`
+(and 3.14, or `--s4b=CASE`) exercises private production writers/readers and
+rendered node data. It does not establish genuine provider/process containment or
+live admission. Initiator wakes, inbox/wait sets and source continuation belong
+to S5; cancellation delivery belongs to S6b. No live operations follow from
+this source unit.
+
 ## S4a: Held and controls @2 (inactive consumer)
 
 The closed `workflow-sequential-control@2` command requires run ID, stable
@@ -95,7 +159,7 @@ original deadline; cancellation omits only the future headroom reservation.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 only positive closure permits its completion. Native cancellation delivery belongs to S6b;
-native producers/dispatch mounting belong to S4b, and initiator wakes/inbox to
+S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
 S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
 Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
 
@@ -133,12 +197,12 @@ selected history readers additionally authenticate the inactive S4a holds and
 controls described above; inbox data remains unavailable. Historical @1 readers retain their original
 semantics, including when stored under schema2.
 
-`recheck_launch_assignment` is a pure, **unmounted** current-executor/options
+`recheck_launch_assignment` is a pure current-executor/options
 recheck using the real `task_selection` owner. It returns a finite refusal and
 never substitutes a model, mutates a task/row, launches, or writes Held.
-Mounting it into native prelaunch belongs to **S4b**; durable no-result Held and
-drift-to-Held behavior belong to **S4a/S4b**. Calling the helper is not proof of
-that native transition. @2 remains publicly unadmitted and Coding stays
+S4b mounts it into internal native prelaunch and calls the S4a writer for durable
+no-result Held on drift. Private writer evidence does not prove a genuine native
+launch. @2 remains publicly unadmitted and Coding stays
 Disabled. Provider availability is NOT RUN without an authorized native run.
 
 ## R1b1: own-task sequential start discovery
@@ -383,7 +447,7 @@ Callback@2 is a canonical UTF8 JSON string containing exactly `format`, `outcome
 `content_base64`, `findings`. Findings are own text, at most 32 strings; metadata
 with empty content is at most 16 KiB. Standard padded base64 must be canonical;
 encoded length is bounded before decoding. There are no capability claims or
-client-supplied native identities. A future trusted adapter composes result@2
+client-supplied native identities. The internal S4b trusted adapter composes result@2
 with run/visit IDs, definition/selection digests, outcome, at most one generic
 output reference and attributed findings. References fix slot/contract/version,
 producer visit/task/SID/positive INTEGER result and exact content SHA256. The
