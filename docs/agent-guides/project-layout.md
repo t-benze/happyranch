@@ -311,7 +311,7 @@ recorded in the historical decomposition plan (removed; see Git history).
 
 ## Source dependency boundary
 
-`python scripts/check_source_boundaries.py` recursively parses only `*.py` under
+The import-boundary rule in `python scripts/check_source_boundaries.py` inspects `*.py` under
 `runtime/infrastructure` and `runtime/orchestrator`. It rejects explicit
 `import runtime.daemon[.*]`, `from runtime.daemon import names/star`, and
 `from runtime.daemon.* import names` at module execution time, including class
@@ -321,6 +321,8 @@ true TYPE_CHECKING branches are ignored, their `else` branches are inspected.
 Function, async-function and lambda nodes are skipped, matching the historical
 rule. This does not resolve relative/dynamic imports or alias dataflow, inspect
 callable decorators/defaults/annotations, or prove dynamic dependency isolation.
+
+The same CLI's `AsyncioCalls` rule covers repository Python sources; see the checker for source-tree exclusions and syntactic import-resolution limits.
 
 The stdlib-only CLI imports no business modules. `--source-root <root>` selects
 an isolated repository-shaped root for validation. Both scan directories must

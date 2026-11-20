@@ -2001,7 +2001,7 @@ async def _run_invocation_owned(
             phase_suffix = "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
             prompt += phase_suffix
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             phase = await _await_invocation_worker(org_state, move_owner, lambda: _invoke(
                 prompt, resume_sid, run_messages=prompt_messages,
                 rebuild=lambda selected: _initial_prompt(selected) + phase_suffix))
