@@ -1108,6 +1108,7 @@ export function ThreadsPage(): JSX.Element {
                 removeAttachment: t('threads.page.composer.removeAttachment'),
                 mentionList: t('threads.newThread.mentionList'),
               }}
+              locale={locale}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}

@@ -30,6 +30,7 @@ import {
   MAX_THREAD_ATTACHMENTS,
   REMOVE_ATTACHMENT_LABEL,
   createSelectionIdFactory,
+  formatAttachmentSize,
 } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AddressOption } from './MentionAutocomplete';
@@ -167,6 +168,11 @@ interface ComposerProps {
   abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
   /** Optional localized product copy; omitted fields keep the English defaults. */
   labels?: ComposerLabels;
+  /**
+   * Locale for the attachment-chip file size (number formatting only, via the
+   * shared `formatAttachmentSize`). Omitted → unlocalized digits.
+   */
+  locale?: string;
 }
 
 export function Composer({
@@ -184,6 +190,7 @@ export function Composer({
   orgSlug,
   abortReplies,
   labels,
+  locale,
 }: ComposerProps): JSX.Element {
   const L = {
     closedPlaceholder: labels?.closedPlaceholder ?? 'Thread is closed.',
@@ -269,28 +276,37 @@ export function Composer({
     // `@container` lets the hint line respond to the composer's own width (the
     // detail column can be narrow at md while both side rails are visible).
     <div className="@container flex flex-col gap-2">
-      {/* Pending attachment chips — above the box so the input stays compact.
-          The mockup's .attach-row has no chip styling of its own, so the
-          existing token chip is kept. */}
+      {/* Pending attachment chips — THR-376 `.attach-row` / `.achip`, above the
+          box so the input stays compact. Chip: --radius-sm (rounded-sm 8px),
+          border-2 (border-strong), surface (surface-raised), 12px text on an
+          18px line, padding 5/8/5/10, gap 7, max-width 240px → 30px tall.
+          Name truncates; the File's size (already held client-side) follows in
+          ink-2. Remove: 2px padding, 12px X, danger-soft/danger on hover. */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {attachments.map((item) => (
-            <span
-              key={item.id}
-              className="border-border-subtle bg-surface-raised text-caption inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
-            >
-              <span className="max-w-64 truncate">{item.file.name}</span>
-              <button
-                type="button"
-                className="text-text-muted hover:text-text-primary"
-                aria-label={L.removeAttachment}
-                onClick={() => removeAttachment(item.id)}
-                disabled={disabled || pending}
+          {attachments.map((item) => {
+            const size = formatAttachmentSize(item.file.size, locale);
+            return (
+              <span
+                key={item.id}
+                className="border-border-strong bg-surface-raised text-caption inline-flex max-w-60 min-w-0 items-center gap-1.75 rounded-sm border py-1.25 pr-2 pl-2.5 leading-4.5"
               >
-                <X className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            </span>
-          ))}
+                <span className="min-w-0 truncate">{item.file.name}</span>
+                {size !== null && (
+                  <span className="text-text-secondary shrink-0">{size}</span>
+                )}
+                <button
+                  type="button"
+                  className="text-text-secondary hover:bg-danger-soft hover:text-danger inline-flex shrink-0 rounded-sm p-0.5 transition-colors"
+                  aria-label={L.removeAttachment}
+                  onClick={() => removeAttachment(item.id)}
+                  disabled={disabled || pending}
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 

@@ -228,6 +228,7 @@ Auto-scroll to bottom on message-count change. The scroll respects user-initiate
 
 - Sticky bottom bar with a `border.default` top border (no fill); its content is centred in the same 768px column as the transcript, with the transcript's container-query side padding (14px narrow, 28px wide) and 12px/16px top/bottom (THR-376).
 - One input box (`--radius-md`, `border.strong`, accent border + 3px `accent-soft` focus ring) holding, left to right: a 30px attach button, an auto-growing `textarea` (placeholder "Message the thread · @ to address an agent"; `Enter` sends and `Shift+Enter` inserts a newline), a 30px outlined "Stop" button while replies are in flight, and a 32px square primary Send button.
+- Above the box: one chip per pending attachment (`.achip`): `--radius-sm` (8px), `border.strong`, `surface.raised`, 12px text, 30px tall, max 240px wide. It shows the truncated file name, the file size in `text.secondary` (from the selected `File`, number formatted for the current locale, e.g. `12 KB`, `1.4 MB`) and a remove ✕ that turns `danger` on hover.
 - Below the box: an error message in `tier.red` when a send fails, then the hint "Every participant sees messages in this thread." (hidden when the composer is narrow).
 - Disabled when thread status ≠ "open" — placeholder changes to "Thread is closed."
 
