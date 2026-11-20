@@ -155,6 +155,7 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active'})
                     v.path('/var/lib/happyranch-tsnet-sidecar').mkdir(mode=0o700, parents=True, exist_ok=True)
                     v.path('/run/happyranch-tsnet-sidecar').mkdir(mode=0o755, parents=True, exist_ok=True)
+                    put(v.path('/run/happyranch-tsnet-sidecar/health.json'), b'{"backend":"Running"}\n', 0o644)
                     v.admin.key = replace(v.admin.key, used=True)
                     v.admin.nodes = (HeadscaleNode(1, HeadscaleUser(1, 'happyranch-node'), 'c' * 64, ('100.64.0.10',)),)
                     role = 'home-sidecar-' + v.receipts.current().home_id
@@ -211,6 +212,8 @@ def test_composed_disable_reenable(composition: Any, case: str) -> None:
         assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                     deadline=time.monotonic() + 480)['outcome'] == 'ready'
         ready = v.receipts.read(expected_generation=0)
+        health = v.path('/run/happyranch-tsnet-sidecar/health.json')
+        assert health.is_file() and health.stat().st_mode & 0o7777 == 0o644
         assert ready.ca_der_sha256 == hashlib.sha256(ssl.PEM_cert_to_DER_cert(v.head.ca_pem.decode())).hexdigest()
         assert len(v.mints) == cycle + 1 and len(set(v.mints)) == cycle + 1
         v.observers.close()
@@ -232,6 +235,7 @@ def test_composed_disable_reenable(composition: Any, case: str) -> None:
         assert v.receipts.current() is None and v.transactions.read_optional() is None
         assert not v.path('/var/lib/happyranch-headscale/db.sqlite').exists()
         assert not v.path('/etc/happyranch/invite-issuer.json').exists()
+        assert not health.parent.exists()
         v.admin.users, v.admin.nodes = (), ()
         v.head.ca_pem = ssl.DER_cert_to_PEM_cert(f'synthetic fresh public CA {cycle}'.encode()).encode()
 

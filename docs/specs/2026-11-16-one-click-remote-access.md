@@ -941,7 +941,20 @@ destroys the owned CA private key. I3a mounts revocation/stop/B6;
 I5a exposes public Disable; I5b delivers Linux CLI wiring, with bridge wiring following in I5c. I3c extends this same owner to the fixed
 root-only CA staging files and, only with trusted successful revoke-all, the
 fixed connector trust and persisted sidecar state. Failed revoke still retains
-that state and reports partial cleanup. B7/B11 transaction, uncertain journal
+that state and reports partial cleanup. I5f H1 retires nonsecret runtime diagnostics
+only in `/run/happyranch-tsnet-sidecar` after existing stop/quiescence proof and
+before empty-only rmdir: `health.json` (0644) or `^\.health-[0-9]+$` temps
+(0600/0644), at most eight entries, each regular single-link, existing service
+UID:GID, at most 65536 bytes. Validate the whole set by no-follow lstat through
+the pinned literal parent FD before the existing observe.sock unlink and again
+before diagnostic deletion; unknown names or unsafe metadata refuse with zero
+deletions in that directory. Never open/read contents. Recheck each activation
+signature before dirfd-relative unlink, fsync the parent, then existing rmdir/fsync.
+This applies on every B6 path reaching that pass, including failed revoke;
+persisted StateDirectory retention, strict post-Disable staging admission and
+legacy/uninstall preserve-across-stop behavior remain unchanged. The existing
+B16 retirement audit does not cover this pass; no audit vocabulary is added.
+B7/B11 transaction, uncertain journal
 and home-minter evidence retire only after B6 proves all five Headscale DB,
 WAL/SHM, Noise and DERP files gone in that same receipt-admitted operation, with
 B16 intent/outcome audit. Nonterminal/pending issuer evidence with an active
