@@ -379,8 +379,10 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   result stops dispatch. All fixture assertions carry nonsecret messages;
   inventory diagnostics contain owner state/detail enums and allowlisted fixed
   paths (otherwise `unrecognized-member`), and environment diagnostics only
-  presence/equality. A clean-package refusal also reports its exception class
-  and at most eight trusted installer function/line locations. Before the clean
+  presence/equality. Public admission refusals report only an allowlisted helper
+  or D-Bus error name (otherwise `unrecognized`), never an error body; refusal
+  and retry predicates are unchanged. A clean-package refusal also reports its
+  exception class and at most eight trusted installer function/line locations. Before the clean
   assertion, the test collector prints numeric UID/GID, full octal modes and
   available numeric ACLs for `/`, `/etc`, `/etc/happyranch` and its entries,
   and cleanup-links roots with their literal ancestors (including `/lib`).

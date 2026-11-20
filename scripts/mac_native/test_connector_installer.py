@@ -838,6 +838,49 @@ class ManagedDarwinInstaller(unittest.TestCase):
 class ManagedLinuxDebInstaller(unittest.TestCase):
     """The retained installer venue also drives Linux root= with fake commands."""
 
+    def test_m1_public_refusal_diagnostic(self):
+        import runpy
+
+        class NativeError(Exception):
+            pass
+
+        for remote, expected in (
+            ('ai.happyranch.RemoteAccess1.Error.denied', 'ai.happyranch.RemoteAccess1.Error.denied'),
+            ('ai.happyranch.RemoteAccess1.Error.release_home_invalid', 'ai.happyranch.RemoteAccess1.Error.release_home_invalid'),
+            ('org.freedesktop.DBus.Error.AccessDenied', 'org.freedesktop.DBus.Error.AccessDenied'),
+            ('private-error-canary', 'unrecognized'),
+            ('private-error-canary.Error.denied', 'unrecognized'),
+        ):
+            for transport_error in (False, True):
+                with self.subTest(remote=remote, transport_error=transport_error):
+                    connection, reply = Mock(), Mock()
+                    reply.get_message_type.return_value = 'error'
+                    reply.get_error_name.return_value = remote
+                    connection.send_message_with_reply_sync.return_value = (reply, None)
+                    if transport_error:
+                        connection.send_message_with_reply_sync.side_effect = NativeError('private-body-canary')
+                    gio = Mock()
+                    gio.DBusMessageType.ERROR = 'error'
+                    gio.DBusConnectionFlags = SimpleNamespace(AUTHENTICATION_CLIENT=1, MESSAGE_BUS_CONNECTION=2)
+                    gio.DBusConnection.new_for_address_sync.return_value = connection
+                    gio.DBusError.get_remote_error.return_value = remote
+                    glib = SimpleNamespace(Error=NativeError)
+                    output = io.StringIO()
+                    with patch.dict(sys.modules, {'gi.repository': SimpleNamespace(Gio=gio, GLib=glib)}), \
+                            patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted'), \
+                            patch.object(os, 'getuid', return_value=1001), \
+                            patch.object(sys, 'argv', ['m1_home_bus.py', 'Enable']), redirect_stdout(output):
+                        caller = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'ci/m1_home_bus.py'))
+                        with self.assertRaisesRegex(AssertionError, '^public lifecycle admission refused$'):
+                            caller['main']()
+                    self.assertEqual(json.loads(output.getvalue()), {
+                        'method': 'Enable', 'admission': 'refused', 'category': 'other',
+                        'error_name': expected, 'attempt': 1})
+                    self.assertNotIn('private-', output.getvalue())
+                    connection.send_message_with_reply_sync.assert_called_once()
+                    connection.close_sync.assert_called_once_with(None)
+                    reply.get_body.assert_not_called()
+
     @contextmanager
     def host(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as folder:

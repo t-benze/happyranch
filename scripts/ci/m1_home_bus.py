@@ -18,6 +18,15 @@ from gi.repository import Gio, GLib
 NAME = 'ai.happyranch.RemoteAccess1'
 PATH = '/ai/happyranch/RemoteAccess1'
 BUDGETS = {'Enable': 480, 'ReplaceFailed': 480, 'Disable': 300, 'RetryPolicyRenewal': 120}
+# Closed names only: a remote error body/name may contain arbitrary private data.
+KNOWN_ERRORS = frozenset(NAME + '.Error.' + value for value in (
+    'invalid_request', 'unknown_method', 'wrong_uid', 'unavailable', 'busy',
+    'denied', 'expired', 'changed', 'disconnected', 'owner_unknown',
+    'owner_ambiguous', 'owner_unsupported', 'owner_mismatch', 'release_home_invalid',
+)) | frozenset('org.freedesktop.DBus.Error.' + value for value in (
+    'AccessDenied', 'ServiceUnknown', 'NameHasNoOwner', 'NoReply', 'Timeout',
+    'Spawn.ChildExited', 'Failed', 'UnknownMethod', 'InvalidArgs', 'NotSupported',
+))
 
 
 def main() -> None:
@@ -73,6 +82,7 @@ def main() -> None:
                 remote = str(error) if isinstance(error, RuntimeError) else Gio.DBusError.get_remote_error(error) or ''
                 print(json.dumps({'method': args.method, 'admission': 'refused',
                                   'category': 'unavailable' if remote.endswith('.unavailable') else 'other',
+                                  'error_name': remote if remote in KNOWN_ERRORS else 'unrecognized',
                                   'attempt': attempt + 1}), flush=True)
                 if attempt or not remote.endswith('.unavailable'):
                     raise AssertionError('public lifecycle admission refused') from None
