@@ -380,9 +380,15 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   inventory diagnostics contain owner state/detail enums and allowlisted fixed
   paths (otherwise `unrecognized-member`), and environment diagnostics only
   presence/equality. A clean-package refusal also reports its exception class
-  and at most eight trusted installer function/line locations, never exception
-  values, local variables, native output or private paths; the temporary trace
-  is restored before asserting the unchanged inventory result.
+  and at most eight trusted installer function/line locations. Before the clean
+  assertion, the test collector prints numeric UID/GID, full octal modes and
+  available numeric ACLs for `/`, `/etc`, `/etc/happyranch` and its entries,
+  and cleanup-links roots with their literal ancestors (including `/lib`).
+  For the exact directory ownership/mode refusal only, it reports the fixed
+  InstallerError message, actual descriptor path, metadata, expected owner/modes
+  and failing predicates. It never reads configuration contents or emits other
+  exception values, arbitrary locals or native service output; the temporary
+  trace is restored before asserting the unchanged inventory result.
   These messages do not change case predicates, U1's exact
   Off residue or the documented home-profile uninstall refusal.
 

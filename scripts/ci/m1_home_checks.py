@@ -25,7 +25,7 @@ from types import FrameType
 from typing import Any, Callable
 import pwd
 
-from runtime.remote_access import headscale_service as hs, home_audit
+from runtime.remote_access import headscale_service as hs, home_audit, installer as installer_module
 from runtime.remote_access import policy_renew_units as renewal
 from runtime.remote_access.home_activation import ACTIVATION_PATH, LIVE_MEMBERS, MEMBER_PATHS, HomeActivationStore
 from runtime.remote_access.home_activation_txn import TRANSACTION_PATH
@@ -504,14 +504,73 @@ def main() -> None:
     actions[args.action]()
 
 
+def clean_path_metadata(io: ManagedInstaller) -> None:
+    # Pre-Enable metadata only: never read configuration or directory contents
+    # as bytes. Include literal ancestors because the first inventory member is
+    # not necessarily the directory that the cleanup-links walk rejects.
+    paths = {'etc', 'etc/happyranch', 'lib'}
+    paths.update((*installer_module._HEADSCALE_UNIT_DIRS,
+                  *installer_module._HEADSCALE_DBUS_DIRS, 'lib/systemd/system'))
+    for relative in tuple(paths):
+        paths.update(str(parent) for parent in Path(relative).parents if str(parent) != '.')
+    config = io.root / 'etc/happyranch'
+    if config.is_dir() and not config.is_symlink():
+        paths.update(str(path.relative_to(io.root)) for path in config.iterdir())
+    getfacl = shutil.which('getfacl')
+    print('M1 clean path metadata: uid/gid and octal mode include setgid/sticky; contents unread')
+    for relative in ('', *sorted(paths)):
+        path = io.root / relative
+        record: dict[str, Any] = {'path': '/' + relative}
+        try:
+            info = path.lstat()
+        except OSError as error:
+            record['errno'] = error.errno
+        else:
+            record.update(uid=info.st_uid, gid=info.st_gid,
+                          mode=f'{stat.S_IMODE(info.st_mode):04o}', type=stat.S_IFMT(info.st_mode))
+            if getfacl and not stat.S_ISLNK(info.st_mode):
+                acl = command(getfacl, '--numeric', '--omit-header', '--absolute-names',
+                              '--physical', '--', str(path), check=False)
+                record.update(acl_exit=acl.returncode, acl=acl.stdout[:16384],
+                              acl_truncated=len(acl.stdout) > 16384)
+            else:
+                record['acl'] = 'symlink-not-followed' if getfacl else 'getfacl-unavailable'
+        print(json.dumps(record, sort_keys=True))
+
+
 def assert_clean() -> None:
-    # Inventory deliberately hides native exception text. Observe only its
-    # trusted source locations, never exception values, locals or native output.
+    io = ManagedInstaller(layout='deb')
+    clean_path_metadata(io)
+    # Observe trusted source locations and only the directory predicate's fixed
+    # error/metadata. Never emit arbitrary exception text, config or native output.
     origin = ''
     inventory_code = ManagedInstaller._inventory.__code__
+    directory_code = ManagedInstaller._check_directory.__code__
 
     def trace_inventory(frame: FrameType, event: str, argument: Any) -> Callable | None:
         nonlocal origin
+        if frame.f_code is directory_code:
+            if event == 'exception' and isinstance(argument[1], installer_module.InstallerError):
+                values = frame.f_locals
+                path = values['path']
+                # Only this exact fixed directory error is exported. The
+                # descriptor identifies nested cleanup entries whose source
+                # label is merely "systemd config inventory".
+                if str(argument[1]) == 'unsafe directory ownership or mode: ' + path:
+                    info = values['info']
+                    actual = Path(os.readlink('/proc/self/fd/' + str(values['descriptor'])))
+                    relative = actual.relative_to(io.root)
+                    owner, modes = values['owner'], values['allowed_modes']
+                    print('M1 inventory directory refusal:', json.dumps(dict(
+                        message='unsafe directory ownership or mode: ' + ('/' if path == str(io.root) else path),
+                        path='/' + (str(relative) if str(relative) != '.' else ''),
+                        uid=info.st_uid, gid=info.st_gid, mode=f'{stat.S_IMODE(info.st_mode):04o}',
+                        expected_owner=owner, allowed_modes=[f'{mode:04o}' for mode in modes],
+                        owner_mismatch=owner is not None and (info.st_uid, info.st_gid) != owner,
+                        group_or_other_write=bool(info.st_mode & 0o022),
+                        mode_not_allowed=bool(values['expected'] and stat.S_IMODE(info.st_mode) not in modes)),
+                        sort_keys=True))
+            return trace_inventory
         if frame.f_code is not inventory_code:
             return None
         if event == 'exception':
@@ -530,7 +589,7 @@ def assert_clean() -> None:
     previous_trace = sys.gettrace()
     try:
         sys.settrace(trace_inventory)
-        candidate = ManagedInstaller(layout='deb').inventory()
+        candidate = io.inventory()
     finally:
         sys.settrace(previous_trace)
     if candidate.state != 'clean':
