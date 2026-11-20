@@ -497,6 +497,15 @@ def _outputs(data: dict[str, list[dict]], visits: dict[str, dict], runs: dict[st
         _require((row['task_id'], row['session_id'], row['result_id'], row['epoch']) ==
                  (visit['task_id'], visit['session_id'], visit['result_id'], visit['epoch']),
                  'output_result_conflict')
+        if run.get('engine_version', 1) == 2:
+            from runtime.workflows.sequential_definition import validate_generic_content
+            _require(row['engine_version'] == 2 and row['epoch'] is None, 'output_result_conflict')
+            budget.reserve(8 * len(row['content_bytes']) + 512)
+            validate_generic_content(row['contract'], row['content_bytes'])
+            selected.setdefault(visit['id'], []).append(dict(slot=row['slot'], contract=row['contract'],
+                version=visit['ordinal'], producer_visit=visit['id'], task_id=row['task_id'], session_id=row['session_id'],
+                result_id=row['result_id'], digest=row['content_digest']))
+            continue
         if row['contract'] == 'immutable-document@1':
             row['content_bytes'].decode('utf8')
         else:
@@ -736,6 +745,12 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
         _require(row['run_id'] in runs and (row['visit_id'] is None or
                  (row['visit_id'] in visits and visits[row['visit_id']]['run_id'] == row['run_id'])),
                  'evidence_owner_conflict')
+        if runs[row['run_id']].get('engine_version', 1) == 2:
+            # The generic native reconstruction has already authenticated all
+            # terminal/outer bindings, bytes, digests and payloads in this same
+            # snapshot. Avoid decoding those same proofs in each auxiliary pass.
+            _require(row['kind'] in ('terminal', 'outer'), 'generic_evidence_unavailable')
+            continue
         if row['kind'] == 'preflight':
             _require(type(row['evidence_bytes']) is bytes and 0 < len(row['evidence_bytes']) <= 16384,
                      'subject_bytes_invalid')
@@ -907,6 +922,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                              if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments',
                                               'workflow_seq_controls', 'workflow_seq_node_counters')),
                          'schema2_runtime_history_unavailable')
+            if layout.schema_version == 2 and not any(row['engine_version'] == 2 for row in data['workflow_seq_outputs']):
                 _require(all(row['engine_version'] == 1 for row in data['workflow_seq_outputs']),
                          'schema2_runtime_history_unavailable')
             for table in tables:

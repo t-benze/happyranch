@@ -130,6 +130,23 @@ original 480-second budget cover the whole composition. Complete staging and the
 proven post-Disable shape reuse their owners' exact rules; Ready stays inspect-only.
 Native/package/cross-device acceptance remains separate from the temp-root tests.
 
+I5e renews the helper mount namespace after every settled lifecycle operation
+(Enable, ReplaceFailed, Disable, RetryPolicyRenewal, IssueInvite, CancelInvite
+and RecoverInvite), including terminal refusal. Once the accepted/terminal reply
+and B16 settlement attempts are done, admission is sealed; the helper waits for
+inflight work and any StatusV2 worker, releases its well-known bus name, then
+exits through the idle/close path. Racing calls receive an existing non-success
+error. The next call auto-activates a fresh Type=dbus helper, so immediate Disable
+can clean service directories created after Enable's helper started. Status and
+device methods otherwise keep their 60-second idle behavior. Before lifecycle
+capture/polkit/effects/B16 intent, `statvfs` must show each existing optional
+Headscale/connector/sidecar state/runtime path writable in this namespace.
+Absence is allowed; read-only or unavailable observations refuse `unavailable`
+with zero authorization/effects/B16 intent and schedule exit. No service directory
+pre-creation, unit hardening, auth or budget changes follow. Temporary-root and
+private-bus checks do not claim installed namespace acceptance; I6a managed-M1
+owns the clean Enable → READY → immediate Disable → complete Off confirmation.
+
 I5b delivers the seven Linux CLI lifecycle/invite mappings above. Every mutation
 requires a desktop and fresh native authorization. CLI timeouts are 482 seconds
 for Enable/ReplaceFailed, 302 for Disable and 122 for invite/policy methods.

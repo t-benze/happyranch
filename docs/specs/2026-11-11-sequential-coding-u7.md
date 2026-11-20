@@ -1,5 +1,15 @@
 # Sequential Coding U7: common transport and agent initiation
 
+S4b adds internal generic definition@2 dispatch/closure, separate from the
+historical Coding release version numbers below. Generic visits invoke no Coding
+or document capability witness; domain task transport refuses them. Addressed
+generic node briefs and positive native closure gate output/advancement without
+Git/domain semantic guarantees. Historical @1 engine paths retain their bytes.
+No S5 source continuation or live Coding pilot is supplied.
+Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+does not prove genuine provider/process execution. See the
+[S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
+
 Current subject-binding transport: [U4c](2026-11-12-sequential-coding-u4c.md)
 supersedes historical unavailable/unmounted repository-adapter statements below.
 All other historical checkpoints retain their scope.

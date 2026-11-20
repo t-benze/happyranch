@@ -6,6 +6,7 @@ This incremental validator never acquires earlier result/output payloads.
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 from collections.abc import Iterator
 
 from runtime.infrastructure.workflow_schema import _candidate_reserve, _execute_ddl, _schema_snapshot, _structure_cells
@@ -444,6 +445,18 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
         runs = _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))
         _require(len(runs) == 1 and runs[0]['org_slug'] == org_slug, 'run_missing')
         run = runs[0]
+        if run.get('engine_version', 1) == 2:
+            compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
+                definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
+            data = {table: _read_selected(conn, metadata, table, budget, 'run_id=?', (run_id,))
+                for table in ('workflow_seq_assignments', 'workflow_seq_visits', 'workflow_seq_events',
+                              'workflow_seq_outbox', 'workflow_seq_outputs', 'workflow_seq_evidence',
+                              'workflow_seq_controls', 'workflow_seq_node_counters')}
+            _require(set(evidence_ids) <= {row['id'] for row in data['workflow_seq_evidence']}, 'evidence_missing')
+            _generic_admission_history(conn, org_slug=org_slug, run=run, compiled=compiled, settings=settings,
+                snapshot=snapshot, data=data, budget=budget)
+            budget.check()
+            return budget
         _require(run.get('engine_version', 1) == 1, 'schema2_runtime_history_unavailable')
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
@@ -632,7 +645,8 @@ def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: 
     resolved = _decode(raw, budget)
     _require(_bytes(resolved) == raw, 'assignment_snapshot_canonical')
     validate_assignment_snapshot(resolved, compiled, start, defaults=snapshot.bindings, org_slug=org_slug)
-    if run['event_count'] > 1:
+    if run['event_count'] > 1 or any(row['run_id'] == run['id'] and row['session_id'] is not None
+            for row in data['workflow_seq_visits']) or any(row['run_id'] == run['id'] for row in data['workflow_seq_evidence']):
         _generic_control_history(conn, org_slug=org_slug, run=run, compiled=compiled,
                                  data=data, resolved=resolved, budget=budget)
         return
@@ -704,7 +718,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
     """Authenticate immutable holds/controls and reconstruct their mutable projection."""
     import hashlib
     from runtime.infrastructure.workflow_task_ownership import selected_owner
-    from runtime.workflows.sequential_business_hold import generic_callback_bytes, generic_closed_visit, generic_hold_cause
+    from runtime.workflows.sequential_business_hold import _proof, generic_callback_bytes, generic_closed_visit, generic_hold_cause
     from runtime.workflows.sequential_control import _validate_control_assignment, parse_control, result_counters
     from runtime.workflows.sequential_contracts import GenericLimits
     from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
@@ -735,6 +749,9 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
     limits = generic_limits(compiled, GenericLimits.model_validate(_decode(run['original_limits_bytes'], budget)), start.lower_limits)
     seen_visits, seen_events, seen_controls = [first], [], []
     prior = '0' * 64
+    selections, findings, revision_rows = (), (), []
+    closed_visits = set()  # Proofs already authenticated in THIS reader snapshot.
+    current['progress'] = 'executing' if first['session_id'] else 'queued'
     for event in events:
         budget.step()
         cancel_append = event['kind'] == 'cancellation_finished'
@@ -750,9 +767,6 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 sequence=1, operation_key=start.operation_key, prior_digest='0' * 64,
                 assignment_snapshot_digest=run['assignment_snapshot_digest']), 'generic_admitted_event_invalid')
         elif event['kind'] == 'transition':
-            # S4a may encounter an already accepted declared-Hold result. It
-            # authenticates that result-only allowance without supplying S4b's
-            # acceptance/advancement producer or authorizing an output.
             from runtime.workflows.sequential_definition import parse_generic_callback, parse_generic_result
             from runtime.workflows.sequential_reducer import (
                 GenericActiveVisit, GenericAuthenticatedResult, GenericRunState, reduce_generic_result,
@@ -763,27 +777,61 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             envelope = _parse(_hashed(visit['result_bytes'], visit['result_digest']), parse_generic_result, budget)
             _result(conn, event['source_result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
             proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
-            _require(proof['result_id'] == visit['result_id'] == event['source_result_id'] and not envelope.outputs,
-                     'generic_result_conflict')
+            closed_visits.add(visit['id'])
+            _require(proof['result_id'] == visit['result_id'] == event['source_result_id'], 'generic_result_conflict')
             payload = generic_callback_bytes(conn, visit['result_id'], budget)
             _require(payload is not None, 'generic_result_conflict')
             node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
             callback = parse_generic_callback(payload[0], contract=node.output_contract.type)
-            _require(callback.outcome == envelope.outcome and not callback.content_base64
-                and list(callback.findings) == [finding.text for finding in envelope.findings], 'generic_result_conflict')
-            counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, [])
+            import base64
+            content = base64.b64decode(callback.content_base64, validate=True)
+            terminal, _ = _proof(
+                conn, run['id'], visit['id'], 'terminal', budget)
+            native_status = conn.execute('SELECT status FROM task_results WHERE id=?', (visit['result_id'],)).fetchone()[0]
+            _require(native_status == 'completed' and terminal['classification'] == 'success'
+                and terminal['receipt']['terminal_reason'] == 'success', 'generic_result_unsettled')
+            _require(callback.outcome == envelope.outcome
+                and list(callback.findings) == [finding.text for finding in envelope.findings]
+                and visit['generic_checks_bytes'] == _bytes(dict(settled=True)), 'generic_result_conflict')
+            counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, revision_rows)
             state = GenericRunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
                 original_limits=limits, lower_limits=limits, counters=counts,
                 active_visit=GenericActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=visit['task_id'],
                     session_id=visit['session_id'], ordinal=visit['ordinal'], input_selection_digest=visit['input_selection_digest']),
-                selections=(), findings=(), receipts=())
+                selections=selections, findings=findings, receipts=())
             decision = reduce_generic_result(compiled, state, GenericAuthenticatedResult(task_id=visit['task_id'],
-                session_id=visit['session_id'], result_id=visit['result_id'], envelope=envelope, content=b'', settled=True),
+                session_id=visit['session_id'], result_id=visit['result_id'], envelope=envelope, content=content, settled=True),
                 storage_event_count=current['event_count'])
-            _require(body['decision'] == decision.model_dump(mode='json') and decision.edge.action == 'hold'
-                and decision.activation is None and visit['state'] == 'held' and visit['selected'] == 0,
-                'generic_result_conflict')
-            current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'], held_event_id=event['id'], hold_cause=decision.reason)
+            _require(body['decision'] == decision.model_dump(mode='json') and visit['selected'] == 0
+                and visit['state'] == ('held' if decision.edge.action == 'hold' else 'completed'), 'generic_result_conflict')
+            rows = [row for row in selected['workflow_seq_outputs'] if row['visit_id'] == visit['id']]
+            _require(len(rows) == len(envelope.outputs), 'generic_output_conflict')
+            from runtime.workflows.sequential_document_access import document_recipients
+            for row, ref in zip(rows, envelope.outputs, strict=True):
+                _require(row['id'] == _identity('output', visit['id'], ref.slot) and row['engine_version'] == 2
+                    and row['content_bytes'] == content and row['epoch'] is None
+                    and (row['slot'], row['contract'], row['task_id'], row['session_id'], row['result_id'], row['content_digest']) ==
+                        (ref.slot, ref.contract, ref.task_id, ref.session_id, ref.result_id, ref.digest)
+                    and row['recipients_bytes'] == _bytes(dict(roles=list(document_recipients(compiled, ref.slot, budget)))),
+                    'generic_output_conflict')
+            selections, findings = decision.selections, decision.findings
+            revision_rows = [dict(node_id=key, revisions=count.revisions) for key, count in decision.after.nodes]
+            if decision.activation is not None:
+                activation = decision.activation
+                successor = next((row for row in visits if row['ordinal'] == activation.ordinal), None)
+                _require(successor is not None and successor['node_id'] == activation.node
+                    and successor['predecessor_event_id'] == event['id']
+                    and successor['assignment_id'] == _identity('assignment', run['id'], activation.node, '1')
+                    and successor['assignment_generation'] == 1
+                    and generic_selection(successor, budget) == activation.inputs, 'generic_successor_conflict')
+                current.update(state='running', progress='executing' if successor['session_id'] else 'queued',
+                    active_visit_id=successor['id'], visit_count=decision.after.visits)
+                seen_visits.append(successor)
+            elif decision.edge.action == 'hold':
+                current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'],
+                    held_event_id=event['id'], hold_cause=decision.reason)
+            else:
+                current.update(state='finished', progress=None, active_visit_id=None, terminal_outcome='failed' if decision.edge.action == 'fail' else 'completed')
         elif event['kind'] == 'held':
             visit = next((row for row in visits if row['id'] == body.get('visit_id')), None)
             _require(visit is not None and current['state'] == 'running' and current['progress'] != 'cancelling'
@@ -791,6 +839,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 and visit['selected'] == 0 and visit['state'] in ('held', 'cancelled'), 'generic_hold_state_conflict')
             cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled, budget=budget,
                                              unavailable=body['cause'] == 'assignee_unavailable')
+            closed_visits.add(visit['id'])
             _require((body['cause'], body['closure'], event['source_visit_id'], event['source_result_id']) ==
                 (cause, proof, visit['id'], proof['result_id']), 'generic_hold_proof_conflict')
             current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'], held_event_id=event['id'], hold_cause=cause)
@@ -811,7 +860,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                     and body['actor'] == dict(task_id=row['actor_task_id'], principal=row['actor_principal'],
                         session_id=row['actor_session_id'], result_id=row['actor_result_id'])
                     and body['command_digest'] == row['request_digest'], 'control_actor_conflict')
-                counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, [])
+                counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, revision_rows)
                 _require(body['before_counters'] == counts.model_dump(mode='json'), 'control_counter_conflict')
                 disposition = reduce_generic_control(compiled, command, run=current, counters=counts, limits=limits)
                 new_visit = next((visit for visit in visits if visit['id'] == row['new_visit_id']), None)
@@ -821,6 +870,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 if disposition == 'replace':
                     previous = next(visit for visit in seen_visits if visit['id'] == body['replaced_visit_id'])
                     generic_closed_visit(conn, run=run, visit=previous, budget=budget)
+                    closed_visits.add(previous['id'])
                     _require(new_visit is not None and new_visit['node_id'] == current['held_node_id']
                         and new_visit['predecessor_event_id'] == event['id'] and body['new_visit_id'] == new_visit['id']
                         and (new_visit['input_selection_bytes'], new_visit['input_selection_digest']) ==
@@ -829,7 +879,8 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                     _require(assignment is not None and _hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']) ==
                         _bytes(body['assignment']['value']) and new_visit['principal'] == assignment['principal']
                         and assignment['predecessor_id'] == previous['assignment_id']
-                        and assignment['generation'] == previous['assignment_generation'] + 1, 'control_assignment_conflict')
+                        and assignment['generation'] == max(prior['assignment_generation'] for prior in seen_visits
+                            if prior['node_id'] == previous['node_id']) + 1, 'control_assignment_conflict')
                     predecessor = assignments[previous['assignment_id']]
                     _validate_control_assignment(command, compiled=compiled,
                         previous=_decode(_hashed(predecessor['snapshot_bytes'], predecessor['snapshot_digest']), budget),
@@ -840,7 +891,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                     _require(old_native is not None and new_native is not None
                         and hashlib.sha256(old_native[0].encode('utf8')).hexdigest() == body['original_brief_digest']
                         and hashlib.sha256(new_native[0].encode('utf8')).hexdigest() == body['new_brief_digest'], 'control_brief_conflict')
-                    current.update(state='running', progress='queued', active_visit_id=new_visit['id'], held_node_id=None,
+                    current.update(state='running', progress='executing' if new_visit['session_id'] else 'queued', active_visit_id=new_visit['id'], held_node_id=None,
                         held_event_id=None, visit_count=current['visit_count'] + 1, recovery_count=current['recovery_count'] + 1,
                         assignment_generation=current['assignment_generation'] + 1)
                     seen_visits.append(new_visit)
@@ -848,6 +899,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                     if current['active_visit_id'] is not None:
                         visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
                         generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
+                        closed_visits.add(visit['id'])
                     current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
                                    held_node_id=None, held_event_id=None, progress=None)
                 else:
@@ -859,6 +911,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
                 _require(body['closure'] == generic_closed_visit(conn, run=run, visit=visit, budget=budget,
                     cancellation=True), 'control_cancel_proof')
+                closed_visits.add(visit['id'])
                 current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
                                held_node_id=None, held_event_id=None, progress=None)
         else:
@@ -867,6 +920,11 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             require_generic_event_capacity(current['event_count'], resulting_state=current['state'], cancel=cancel_append)
             current.update(cas=current['cas'] + 1, event_count=current['event_count'] + 1, last_event_id=event['id'])
         seen_events.append(event)
+    if current['state'] == 'running' and current['progress'] != 'cancelling':
+        active = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
+        terminal = any(row['visit_id'] == active['id'] and row['kind'] == 'terminal'
+            for row in selected['workflow_seq_evidence'])
+        current['progress'] = 'result_pending_settlement' if terminal else 'executing' if active['session_id'] else 'queued'
     _require(all(run[key] == current[key] for key in ('state', 'progress', 'active_visit_id', 'held_node_id', 'held_event_id',
         'terminal_outcome', 'cas', 'event_count', 'visit_count', 'recovery_count', 'assignment_generation', 'last_event_id'))
         and len(seen_visits) == len(visits) and len(seen_controls) == len(controls), 'generic_projection_conflict')
@@ -877,12 +935,12 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
     for row in selected['workflow_seq_node_counters']:
         _require(row['node_id'] in {node.id for node in compiled.definition.nodes}
             and row['visits'] == sum(visit['node_id'] == row['node_id'] for visit in visits)
-            and row['revisions'] == 0, 'control_counter_conflict')
+            and row['revisions'] == next((item['revisions'] for item in revision_rows if item['node_id'] == row['node_id']), 0), 'control_counter_conflict')
     for visit in visits:
         _require(visit['engine_version'] == 2 and visit['epoch'] is None
             and (visit['result_id'] is None or any(event['kind'] == 'transition' and event['source_visit_id'] == visit['id']
                                                  and event['source_result_id'] == visit['result_id'] for event in events))
-            and _hashed(visit['input_selection_bytes'], visit['input_selection_digest']) == first['input_selection_bytes'],
+            and len(generic_selection(visit, budget)) <= 32,
             'generic_visit_conflict')
         _require(selected_owner(conn, visit['task_id'], org_slug) == ('seq_visit', visit['id'], visit['state']), 'ownership_relation_conflict')
         assignment = assignments.get(visit['assignment_id'])
@@ -897,6 +955,138 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
         _require(native == [(run['carrier_task_id'], visit['principal'], resolved['team'], 'subtask', visit['session_id'],
             value['selection']['model_override'], value['selection']['reasoning_effort_override'], value['selection']['override_source'])],
             'generic_native_selection_conflict')
-    _require(not selected['workflow_seq_outputs'], 'generic_lifecycle_unavailable')
+    _require(all(any(visit['id'] == row['visit_id'] and visit['result_id'] is not None for visit in visits)
+        for row in selected['workflow_seq_outputs']), 'generic_output_conflict')
+    _generic_native_history(conn, run, visits, selected['workflow_seq_evidence'], budget, closed_visits, resolved)
     _auxiliary(conn, selected, {run['id']: run}, {visit['id']: visit for visit in visits},
                {event['id']: event for event in events}, budget, {run['definition_id']: compiled})
+
+
+def generic_selection(visit: dict, budget: _ReadBudget) -> tuple:
+    from runtime.workflows.sequential_contracts import GenericOutputRef
+    value = _record(visit['input_selection_bytes'], visit['input_selection_digest'], {'outputs'}, budget)
+    _require(type(value['outputs']) is list and len(value['outputs']) <= 32, 'input_selection_invalid')
+    result = tuple(GenericOutputRef.model_validate(item) for item in value['outputs'])
+    _require(len({item.slot for item in result}) == len(result), 'input_selection_duplicate')
+    return result
+
+
+def generic_result_state(conn: sqlite3.Connection, run: dict, visit: dict, compiled: Any, budget: _ReadBudget) -> Any:
+    """Reconstruct the original result counters and current generic selections."""
+    from runtime.workflows.sequential_contracts import GenericLimits
+    from runtime.workflows.sequential_control import result_counters
+    from runtime.workflows.sequential_definition import parse_generic_start
+    from runtime.workflows.sequential_engine import _engine_rows
+    from runtime.workflows.sequential_reducer import GenericActiveVisit, GenericDecision, GenericRunState
+    tables = {table: _engine_rows(conn, table, budget, 'run_id=?', (run['id'],)) for table in (
+        'workflow_seq_visits', 'workflow_seq_events', 'workflow_seq_controls', 'workflow_seq_node_counters')}
+    counts = result_counters(run, compiled, tables['workflow_seq_visits'], tables['workflow_seq_events'],
+        tables['workflow_seq_controls'], tables['workflow_seq_node_counters'])
+    previous = sorted((row for row in tables['workflow_seq_events'] if row['kind'] == 'transition'), key=lambda row: row['sequence'])
+    decision = None
+    for row in previous:
+        body = _decode(_hashed(row['event_bytes'], row['event_digest']), budget)
+        value = body['decision']
+        for key in ('before', 'after'):
+            value[key]['nodes'] = dict(value[key]['nodes'])
+        decision = GenericDecision.model_validate(value)
+    return GenericRunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
+        original_limits=GenericLimits.model_validate(_decode(run['original_limits_bytes'], budget)),
+        lower_limits=parse_generic_start(run['start_bytes']).lower_limits, counters=counts,
+        active_visit=GenericActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=visit['task_id'],
+            session_id=visit['session_id'], ordinal=visit['ordinal'], input_selection_digest=visit['input_selection_digest']),
+        selections=() if decision is None else decision.selections,
+        findings=() if decision is None else decision.findings, receipts=())
+
+
+def _generic_native_history(conn: sqlite3.Connection, run: dict, visits: list[dict],
+                            evidence: list[dict], budget: _ReadBudget, closed_visits: set[str], resolved: dict) -> None:
+    """Bound native sessions and original proof prefixes, including before outer."""
+    from runtime.infrastructure.workflow_task_ownership import selected_owner
+    from runtime.workflows.sequential_business_hold import _proof, generic_closed_visit
+    _result(conn, run['source_result_id'], run['source_task_id'], run['source_principal'], run['source_session_id'], budget)
+    _require(selected_owner(conn, run['source_task_id'], run['org_slug']) == ('legacy', None, None), 'generic_source_conflict')
+    _require(selected_owner(conn, run['carrier_task_id'], run['org_slug']) == ('seq_carrier', run['id'], run['state']),
+             'ownership_relation_conflict')
+    source = _native_rows(conn, 'tasks', ('assigned_agent', 'team'), (('text',), ('text',)), run['source_task_id'], budget)
+    # The caller authenticated this assignment snapshot in the same read.
+    _require(source == [(run['source_principal'], resolved['team'])], 'generic_source_conflict')
+    carrier = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'team', 'task_type', 'status',
+        'current_session_id'), (('text',), ('text',), ('text',), ('text',), ('text',), ('null',)), run['carrier_task_id'], budget)
+    _require(carrier == [(run['source_task_id'], run['source_principal'], resolved['team'], 'subtask', 'pending', None)],
+             'generic_native_selection_conflict')
+    for row in evidence:
+        _require(row['kind'] in ('terminal', 'outer') and row['visit_id'] in {visit['id'] for visit in visits},
+                 'generic_evidence_unavailable')
+    for visit in visits:
+        budget.step()
+        native = _native_rows(conn, 'tasks', ('assigned_agent', 'current_session_id', 'status', 'completed_at'),
+            (('text',), ('text', 'null'), ('text',), ('text', 'null')), visit['task_id'], budget)
+        _require(len(native) == 1 and native[0][:2] == (visit['principal'], visit['session_id']), 'generic_native_session_conflict')
+        proofs = [row for row in evidence if row['visit_id'] == visit['id']]
+        _require(len({row['kind'] for row in proofs}) == len(proofs), 'generic_evidence_conflict')
+        if visit['session_id'] is None:
+            generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+            _require(not proofs and visit['state'] in ('queued', 'held', 'cancelled'), 'generic_native_session_conflict')
+            continue
+        _require(visit['state'] != 'queued' and native[0][2] in ('in_progress', 'completed', 'failed', 'cancelled'),
+                 'generic_native_session_conflict')
+        terminal = next((row for row in proofs if row['kind'] == 'terminal'), None)
+        outer = next((row for row in proofs if row['kind'] == 'outer'), None)
+        _require(outer is None or terminal is not None, 'generic_evidence_conflict')
+        if terminal is None:
+            _require(visit['state'] in ('running', 'cancelled') and native[0][3] is None,
+                     'generic_native_session_conflict')
+        else:
+            from runtime.platform.session_backend import TerminalReason
+            from runtime.workflows.sequential_business_hold import generic_callback_bytes
+            value, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
+            common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'])
+            _require(value.keys() == {'format', 'invocation_id', 'task_id', 'principal', 'session_id',
+                'classification', 'request', 'handle_digest', 'receipt', 'callback'}
+                and value['format'] == 'workflow-sequential-terminal@1'
+                and type(value['invocation_id']) is str and bool(value['invocation_id'])
+                and all(value[key] == item for key, item in common.items())
+                and type(value['handle_digest']) is str and len(value['handle_digest']) == 64
+                and all(char in '0123456789abcdef' for char in value['handle_digest'])
+                and type(value['request']) is dict
+                and value['request'].keys() == {'org', 'logical_id', 'agent_id', 'retry_attempt'}
+                and value['request']['org'] == run['org_slug'] and value['request']['agent_id'] == visit['principal']
+                and type(value['request']['logical_id']) is str and bool(value['request']['logical_id'])
+                and type(value['request']['retry_attempt']) is int and value['request']['retry_attempt'] == 0,
+                'generic_terminal_conflict')
+            receipt = value['receipt']
+            _require(type(receipt) is dict and receipt.keys() == {'backend', 'terminal_reason', 'cleanup_status', 'quiescent', 'survivors'}
+                and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                and receipt['quiescent'] is True and receipt['survivors'] == []
+                and receipt['cleanup_status'] in ('clean', 'term', 'kill')
+                and native[0][2] in ('completed', 'failed', 'cancelled') and bool(native[0][3]),
+                'generic_terminal_conflict')
+            callback = value['callback']
+            if callback is None:
+                budget.step()
+                _require(conn.execute('SELECT 1 FROM task_results WHERE task_id=? AND session_id=? LIMIT 1',
+                    (visit['task_id'], visit['session_id'])).fetchone() is None
+                    and value['classification'] == 'unknown', 'generic_callback_conflict')
+            else:
+                _require(type(callback) is dict and callback.keys() == {'task_id', 'principal', 'session_id', 'result_id', 'status', 'carrier_digest'}
+                    and all(callback[key] == item for key, item in common.items()), 'generic_callback_conflict')
+                _result(conn, callback['result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
+                status = conn.execute('SELECT status FROM task_results WHERE id=?', (callback['result_id'],)).fetchone()[0]
+                classification = ('success' if receipt['terminal_reason'] == 'success' and status == 'completed'
+                    else 'failed' if status == 'failed' else 'blocked' if status == 'blocked' else 'unknown')
+                _require(status == callback['status'] and value['classification'] == classification, 'generic_callback_conflict')
+                # The event reconstruction already authenticates closed payloads.
+                # Charge an unclosed prefix once; outer validation owns the rest.
+                if visit['id'] not in closed_visits and outer is None:
+                    if run['progress'] == 'cancelling' or visit['state'] == 'cancelled':
+                        from runtime.workflows.sequential_business_hold import _generic_callback_digest
+                        digest = _generic_callback_digest(conn, callback['result_id'], budget)
+                    else:
+                        payload = generic_callback_bytes(conn, callback['result_id'], budget)
+                        digest = None if payload is None else payload[1]
+                    _require(digest is None or digest == callback['carrier_digest'], 'generic_callback_conflict')
+        if outer is not None and visit['id'] not in closed_visits:
+            generic_closed_visit(conn, run=run, visit=visit, budget=budget,
+                cancellation=run['progress'] == 'cancelling' or visit['state'] == 'cancelled')

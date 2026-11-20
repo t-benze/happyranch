@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
+import errno
 import fcntl
 import json
 import os
@@ -99,6 +101,7 @@ def test_public_lifecycle_introspection_and_fresh_auth(mount: Any, method: str, 
         ids.append(cancellation)
         v.helper._authorized(v.helper.authority, Variant('', ((False, False, {}),)), capture)
         assert v.helper.inflight is None
+        v.renew()
     assert ids[0] != ids[1] and v.helper.authority.call.call_count == 2
     assert not v.effects and not v.reader.effect.called and not v.helper.audit.path.exists()
     assert not v.helper._reply.called and v.helper._error.call_count == 2
@@ -170,6 +173,11 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     helper = h.RemoteAccessHelper.__new__(h.RemoteAccessHelper)
     helper.lock = threading.RLock()
     helper.inflight = None
+    helper.exit_requested = False
+    helper.name_owned = True
+    helper.status_lock, helper.status_worker = threading.Lock(), None
+    statvfs = os.statvfs
+    monkeypatch.setattr(h.os, 'statvfs', lambda path: statvfs(tmp_path / path.lstrip('/')))
     helper.clock = lambda: 100.0
     helper.last_activity = 0
     helper.cancelled = helper.authorization_terminal = False
@@ -207,7 +215,174 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
         helper._dispatch(message)
         capture = helper.inflight
         helper._authorized(helper.authority, Variant('', ((True, False, {}),)), capture)
-    return SimpleNamespace(h=h, helper=helper, reader=reader, effects=effects, admit=admit, message=message)
+    def renew() -> None:
+        # A distinct synthetic helper sharing external owners. Projection tests
+        # explicitly retain their captured invite observation as fixture input.
+        nonlocal helper
+        assert helper.inflight is None
+        helper = copy.copy(helper)
+        helper.lock, helper.status_lock = threading.RLock(), threading.Lock()
+        helper.exit_requested, helper.name_owned = False, True
+        helper.status_worker = None
+        helper.lifecycle_operation = helper.lifecycle_result = None
+        helper.cancelled = helper.authorization_terminal = False
+        helper.timer, helper.last_activity = 0, helper.clock()
+        v.helper = helper
+    v = SimpleNamespace(h=h, helper=helper, reader=reader, effects=effects, admit=admit,
+                        message=message, renew=renew, statvfs=statvfs)
+    return v
+
+
+@pytest.mark.parametrize('method', PUBLIC_LIFECYCLE)
+@pytest.mark.parametrize('granted', [False, True])
+def test_lifecycle_settlement_renews_namespace(mount: Any, method: str, granted: bool) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    events = []
+    def bus(*args: Any) -> Variant:
+        if args[3] == 'ReleaseName':
+            assert args[4].unpack() == (v.h.BUS_NAME,)
+            events.append('release')
+            return Variant('', (1,))
+        return Variant('', (1000,))
+    v.helper.connection.call_sync.side_effect = bus
+    loop = SimpleNamespace(quit=lambda: events.append('quit'))
+    audit_reads = []
+    for name in ('intent', 'outcome', 'uncertain'):
+        original = getattr(v.helper.audit, name)
+        def audit(*args: Any, original: Any = original, **kwargs: Any) -> Any:
+            assert v.helper.inflight is not None
+            audit_reads.append(True)
+            v.helper._idle(loop)
+            assert not events  # Neither effects nor B16 settlement have drained.
+            return original(*args, **kwargs)
+        setattr(v.helper.audit, name, audit)
+    v.helper._dispatch(v.message)
+    capture = v.helper.inflight
+    v.helper._idle(loop)
+    assert not events  # Authentication has not settled.
+    v.helper._authorized(v.helper.authority, Variant('', ((granted, False, {}),)), capture)
+    assert v.helper.inflight is None
+    assert bool(audit_reads) is granted
+    # Every worker (including refused/uncertain effects), or terminal denial,
+    # seals admission. A status worker must still finish before name release.
+    v.helper.status_worker = object()
+    v.helper._idle(loop)
+    assert not events
+    calls = v.helper.authority.call.call_count
+    reads = v.reader.current_generation.call_count
+    before = v.helper.audit.path.read_bytes() if v.helper.audit.path.exists() else None
+    v.helper._error.reset_mock()
+    for racing in ('Status', 'StatusV2', 'NextDevice', 'ApprovePending', *PUBLIC_LIFECYCLE):
+        v.message.get_member = lambda: racing
+        v.helper._dispatch(v.message)
+        assert v.helper._error.call_args.args == (v.message, 'unavailable')
+    assert v.helper.authority.call.call_count == calls
+    assert v.reader.current_generation.call_count == reads
+    assert (v.helper.audit.path.read_bytes() if v.helper.audit.path.exists() else None) == before
+    v.helper.status_worker = None
+    v.helper._idle(loop)
+    assert events == ['release', 'quit']
+
+
+SERVICE_PATHS = tuple('/' + parent + '/happyranch-' + service
+    for parent in ('var/lib', 'run') for service in ('headscale', 'connector', 'tsnet-sidecar'))
+
+
+@pytest.mark.parametrize('method', PUBLIC_LIFECYCLE)
+@pytest.mark.parametrize('path', SERVICE_PATHS)
+@pytest.mark.parametrize('observation', ['readonly', 'unavailable'])
+def test_namespace_guard_before_capture(mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                        method: str, path: str, observation: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    def statvfs(actual: str) -> Any:
+        if actual != path:
+            raise FileNotFoundError(actual)
+        if observation == 'unavailable':
+            raise PermissionError(actual)
+        return SimpleNamespace(f_flag=os.ST_RDONLY)
+    monkeypatch.setattr(v.h.os, 'statvfs', statvfs)
+    v.helper._dispatch(v.message)
+    v.helper._error.assert_called_once_with(v.message, 'unavailable')
+    assert not v.helper.connection.call_sync.called  # Before UID/capture reads too.
+    assert not v.reader.current_generation.called and not v.helper.authority.call.called
+    assert not v.effects and not v.reader.effect.called and not v.helper.audit.path.exists()
+    loop = SimpleNamespace(quit=Mock())
+    v.helper.connection.call_sync.return_value = Variant('', (1,))
+    v.helper._idle(loop)
+    loop.quit.assert_called_once_with()
+
+
+def test_late_service_custody_disable_requires_fresh_namespace(
+        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v, m = composition, mount
+    unit = Path(__file__).resolve().parents[1] / 'packaging/linux/systemd/happyranch-remote-access-helper.service'
+    entries = [line.split('=', 1)[1] for line in unit.read_text().splitlines()
+               if line.startswith('ReadWritePaths=')]
+    def projection() -> tuple[Path, ...]:
+        return tuple(v.path(entry.lstrip('-')) for entry in entries
+                     if not entry.startswith('-') or v.path(entry[1:]).is_dir())
+    writable = projection()
+    assert not v.path('/var/lib/happyranch-headscale').exists()
+    original_statvfs = m.statvfs
+    def statvfs(path: str) -> Any:
+        full = v.path(path)
+        result = original_statvfs(full)  # Absence is observed, not pre-created.
+        return SimpleNamespace(f_flag=result.f_flag if any(full.is_relative_to(p) for p in writable)
+                               else os.ST_RDONLY)
+    monkeypatch.setattr(m.h.os, 'statvfs', statvfs)
+    uid = os.getuid()
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture(m.message.get_member(), uid)
+    def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
+        return v.lifecycle.dispatch(m.message.get_member(), uid, step, expected,
+            deadline=time.monotonic() + remaining, **options)
+    m.reader.effect.side_effect = effect
+    m.message.get_member = lambda: 'Enable'
+    m.admit()
+    assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
+    db = v.path('/var/lib/happyranch-headscale/db.sqlite')
+    assert db.is_file()
+    v.observers.close()
+    m.message.get_member = lambda: 'Disable'
+    m.helper._error.reset_mock()
+    # First the settled Enable instance is sealed; even a racing call refuses.
+    m.helper._dispatch(m.message)
+    m.helper._error.assert_called_once_with(m.message, 'unavailable')
+    m.renew()
+    # A hypothetical stale namespace is independently caught before capture.
+    calls, reads = m.helper.authority.call.call_count, m.reader.current_generation.call_count
+    audit = m.helper.audit.path.read_bytes()
+    effects, inventory = m.reader.effect.call_count, staged_inventory(v.fixture)
+    m.helper._dispatch(m.message)
+    assert m.helper._error.call_args.args == (m.message, 'unavailable')
+    assert m.helper.authority.call.call_count == calls and m.reader.current_generation.call_count == reads
+    assert m.helper.audit.path.read_bytes() == audit and db.is_file()
+    assert m.reader.effect.call_count == effects and not m.helper.control.revoke_all.called
+    assert staged_inventory(v.fixture) == inventory
+    assert v.receipts.current() is not None and m.helper.inflight is None
+    # Model EROFS for unlink/rmdir outside each instance's initial RW projection,
+    # as in TASK-17944. The actual B6 cleanup owner executes unchanged.
+    writable = projection()
+    blocked = []
+    unlink, rmdir = os.unlink, os.rmdir
+    def remove(original: Any, name: Any, *, dir_fd: Any = None) -> Any:
+        parent = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) if dir_fd is not None else Path.cwd()
+        full = parent / name
+        if full.is_relative_to(v.root) and not any(full.is_relative_to(p) for p in writable):
+            blocked.append(full)
+            raise OSError(errno.EROFS, 'modeled helper namespace is read-only')
+        return original(name, dir_fd=dir_fd)
+    m.renew()
+    m.helper.control.revoke_all = Mock(side_effect=lambda generation, deadline, commit: commit())
+    with monkeypatch.context() as fault:
+        fault.setattr(os, 'unlink', lambda name, *, dir_fd=None: remove(unlink, name, dir_fd=dir_fd))
+        fault.setattr(os, 'rmdir', lambda name, *, dir_fd=None: remove(rmdir, name, dir_fd=dir_fd))
+        m.admit()
+    assert not blocked and m.helper.lifecycle_result == {'outcome': 'off', 'residue': []}
+    assert not db.exists() and v.receipts.current() is None
 
 
 @pytest.mark.parametrize('revoke', ['succeeded', 'unavailable', 'changed', 'expired', 'lost_reply'])
@@ -297,6 +472,7 @@ def test_lifecycle_public_mount_fresh_auth_and_audit(
         v.admit()
         assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
         assert v.helper.inflight is None
+        v.renew()
     assert [row['outcome'] for row in map(json.loads, v.helper.audit.path.read_text().splitlines())
             if row['stage'] == 'outcome'] == ['succeeded', 'succeeded']
     assert v.helper.authority.call.call_count == 2
@@ -844,6 +1020,7 @@ def test_invite_mount_current_operation_and_audit(invite_mount: Any, monkeypatch
         reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
         v.message.new_method_reply = lambda: reply
         v.helper.connection.send_message = Mock()
+        v.renew()  # Isolate projection with the captured observation on a fresh test helper.
         v.helper._status_v2(v.message, ':1.42')
         body = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
         status = json.loads(body)
@@ -927,6 +1104,7 @@ def test_invite_status_staleness_and_binding(invite_mount: Any, monkeypatch: pyt
     v = invite_mount
     v.message.get_member = lambda: method
     v.admit()
+    v.renew()  # Projection fixture retains the observation; public exit is tested separately.
     v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
     observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
     v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
@@ -1105,6 +1283,7 @@ def test_issue_invite_single_reply_and_secrecy(issue_mount: Any, monkeypatch: py
     status_reply = SimpleNamespace(set_body=lambda body: setattr(status_reply, 'body', body))
     v.message.new_method_reply = lambda: status_reply
     v.helper.connection.send_message = Mock()
+    v.renew()  # Projection fixture retains the observation on a fresh test helper.
     v.helper._status_v2(v.message, ':1.42')
     status_text = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
     assert frame['invite'] not in status_text
@@ -1264,6 +1443,7 @@ def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: s
         status_reply = SimpleNamespace(set_body=lambda body: setattr(status_reply, 'body', body))
         v.message.new_method_reply = lambda: status_reply
         v.helper.connection.send_message = Mock()
+        v.renew()  # Isolate the StatusV2 projection from public admission retirement.
         v.helper._status_v2(v.message, ':1.42')
         v.helper.connection.send_message.assert_called_once()
         status_text = status_reply.body.unpack()[0]
@@ -1282,6 +1462,7 @@ def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any) -> None:
     assert v.helper._reply.call_count == 1
     initial = v.journal.read_bytes()
     v.helper._reply.reset_mock()
+    v.renew()
     v.admit()
     assert v.helper.lifecycle_result['outcome'] == 'refused' and not v.helper._reply.called
     assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2

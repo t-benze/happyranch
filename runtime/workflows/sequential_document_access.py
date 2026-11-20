@@ -7,6 +7,8 @@ custody, repository access or evidence from an author's capability claims.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from typing import Any
 from dataclasses import dataclass
 
 from runtime.workflows.authority import AuthorityAdmissionCapture
@@ -174,3 +176,51 @@ def document_supplement(node: Node) -> str:
                          'REQUEST_CHANGES/BLOCK content is empty with your own findings. Preserve native failed/blocked causes. '
                          'Syntax and process success do not establish semantic truth.')
     return ''
+
+
+def generic_binding_context(conn: sqlite3.Connection, run: dict, visit: dict, compiled: Any,
+                            capture: AuthorityAdmissionCapture, budget: _ReadBudget) -> tuple[Any, dict]:
+    """Current role authority for @2; no repository or domain capability."""
+    from runtime.workflows.authority import generic_assignment_authority
+    from runtime.workflows.sequential_contracts import BindingClaim
+    from runtime.workflows.sequential_assignments import _roles
+    from runtime.workflows.sequential_definition import parse_generic_start
+    from runtime.workflows.sequential_engine import _engine_rows
+    from runtime.workflows.sequential_history import _decode, _hashed
+    start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_generic_start, budget)
+    resolved = _decode(_hashed(run['assignment_snapshot_bytes'], run['assignment_snapshot_digest']), budget)
+    rows = _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=? AND id=?',
+                        (run['id'], visit['assignment_id']))
+    _require(len(rows) == 1, 'sequential_output_access_unavailable')
+    assignment = rows[0]
+    node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+    _require((assignment['node_id'], assignment['principal'], assignment['generation']) ==
+        (node.id, visit['principal'], visit['assignment_generation']), 'sequential_output_access_unavailable')
+    value = _decode(_hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']), budget)
+    _require((value['node'], value['role'], value['principal']) == (node.id, node.role, visit['principal']),
+             'sequential_output_access_unavailable')
+    principals = {item['role']: item['principal'] for item in resolved['roles']}
+    principals[node.role] = assignment['principal']
+    command = start.model_copy(update={'role_overrides': tuple(
+        BindingClaim(role=role, principal=principal)
+        for role, principal in principals.items())})
+    budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+    current = generic_assignment_authority(capture, org_slug=run['org_slug'])
+    bound = _roles(compiled, command, (), current, resolved['team'])
+    _require(next(item['principal'] for item in bound if item['role'] == node.role) == visit['principal'],
+             'sequential_output_access_unavailable')
+    return start, {node.id: assignment}
+
+
+def authorize_generic_input(*, compiled: Any, node: Any, ref: Any, output: dict, stored_recipients: dict,
+                            principal: str, visit: dict, budget: _ReadBudget) -> None:
+    """Authenticate the exact addressed generic selection, never a latest slot."""
+    expected = document_recipients(compiled, ref.slot, budget)
+    _require(principal == visit['principal'] and node.id == visit['node_id'] and node.role in expected
+        and stored_recipients == dict(roles=list(expected))
+        and any(item.source == 'current.' + ref.slot for item in node.inputs), 'sequential_output_access_unavailable')
+    _require(output['engine_version'] == 2 and output['epoch'] is None
+        and (output['visit_id'], output['slot'], output['contract'], output['task_id'], output['session_id'],
+             output['result_id'], output['content_digest']) ==
+            (ref.producer_visit, ref.slot, ref.contract, ref.task_id, ref.session_id, ref.result_id, ref.digest)
+        and hashlib.sha256(output['content_bytes']).hexdigest() == ref.digest)

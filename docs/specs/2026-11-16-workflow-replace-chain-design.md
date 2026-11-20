@@ -47,7 +47,7 @@ Use the hold definition in msg230, confirmed by Founder msg231 (msg229 is the di
 > - **Finished:** completed, failed or cancelled.
 >
 > What causes a hold:
-> - the step task failed or timed out without a result
+> - the step task failed or timed out without a result, or failed or timed out after a result
 > - its result can't be accepted (wrong shape, too large, an outcome the definition doesn't list)
 > - the assigned agent is unavailable or no longer eligible
 > - the step's revision limit is used up
