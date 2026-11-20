@@ -3154,6 +3154,16 @@ ruling Addendum A); retaining fragments grants no active service or admission.
 Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
+The earlier stop-time `_inventory` also admits H1 diagnostics already present in
+`/run/happyranch-tsnet-sidecar` (I5g): only `health.json` (0644) and numeric
+`.health-` temps (0600/0644), regular files with nlink 1, exact existing service
+UID:GID, at most 65536 bytes each and eight diagnostics total (excluding the
+separately validated `observe.sock`). Inventory uses no-follow metadata through
+the literal parent FD and never opens/reads diagnostic contents. Every other
+inventory name, directory and custody refusal stays unchanged. Admission grants
+no deletion authority: confirmed stop/quiescence still precedes the existing B6
+retirement below; post-Disable staging and uninstall behavior stay unchanged.
+
 Only a valid current-generation `home-activation@1` receipt admits its enumerated
 fixed members plus the Headscale-written allowlist and I3c extensions below. Require full
 quiescence: all owned units inactive, no job/process/cgroup, and ruling C's

@@ -941,7 +941,14 @@ destroys the owned CA private key. I3a mounts revocation/stop/B6;
 I5a exposes public Disable; I5b delivers Linux CLI wiring, with bridge wiring following in I5c. I3c extends this same owner to the fixed
 root-only CA staging files and, only with trusted successful revoke-all, the
 fixed connector trust and persisted sidecar state. Failed revoke still retains
-that state and reports partial cleanup. I5f H1 retires nonsecret runtime diagnostics
+that state and reports partial cleanup. I5g admits pre-stop diagnostic residue in
+the existing stop-time inventory only for `/run/happyranch-tsnet-sidecar`, using
+the same H1 names, modes, exact service UID:GID, regular single-link type,
+65536-byte ceiling and eight-diagnostic bound below (`observe.sock` is separate).
+Inventory is metadata-only, no-follow through the literal parent FD; it never
+opens/reads diagnostic contents. All other inventory refusals stay unchanged.
+This permits the existing stop proof to reach B6; it grants no earlier deletion.
+I5f H1 retires nonsecret runtime diagnostics
 only in `/run/happyranch-tsnet-sidecar` after existing stop/quiescence proof and
 before empty-only rmdir: `health.json` (0644) or `^\.health-[0-9]+$` temps
 (0600/0644), at most eight entries, each regular single-link, existing service
