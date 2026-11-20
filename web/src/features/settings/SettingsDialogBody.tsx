@@ -33,6 +33,7 @@ import type { MessageKey } from '@/lib/i18n';
 import { OrgProvider } from '@/lib/orgSlug';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { OwnerScope } from '@/shared/owners';
 import { SettingsPane, type SettingsSection } from './SettingsPage';
 
 interface NavItem {
@@ -139,7 +140,12 @@ export function SettingsDialogBody({
                 path="/orgs/:slug/*"
                 element={
                   <OrgProvider>
-                    <SettingsPane section={section} />
+                    {/* S6-W2a: these editors are Settings-dialog owners of
+                        this page; keyed by org so an old-org draft is never
+                        shown under another org. */}
+                    <OwnerScope scope="settings" section={section}>
+                      <SettingsPane key={slug ?? ''} section={section} />
+                    </OwnerScope>
                   </OrgProvider>
                 }
               />

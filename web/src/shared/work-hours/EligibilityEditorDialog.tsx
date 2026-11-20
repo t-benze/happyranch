@@ -11,6 +11,8 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * owner of the existing `working_hours.agents` patch mutation.
  */
 import { useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +59,16 @@ export function EligibilityEditorDialog({
   const [errors, setErrors] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
 
+  // THR-387 S6-W2a: a Work Hours config owner while the editor holds edits.
+  const { slug } = useParams<{ slug: string }>();
+  const draft = { mode, include, exclude };
+  const owner = useConfigOwner({
+    page: 'settings.workHours',
+    org: slug ?? null,
+    dirty: open && JSON.stringify(draft) !== JSON.stringify({ mode: wh.agents.mode, include: wh.agents.include, exclude: wh.agents.exclude }),
+    draft,
+  });
+
   const resulting = useMemo(
     () => eligibleSet(allAgents, { mode, include, exclude }),
     [allAgents, mode, include, exclude],
@@ -68,16 +80,17 @@ export function EligibilityEditorDialog({
 
   async function doSave() {
     setErrors([]);
-    try {
-      await mutation.mutateAsync({
+    const result = await owner.track(() =>
+      mutation.mutateAsync({
         working_hours: { agents: { mode, include, exclude } },
-      });
-      setConfirming(false);
+      }),
+    );
+    setConfirming(false);
+    if (result.ok) {
       onSaved();
       onOpenChange(false);
-    } catch (err: unknown) {
-      setConfirming(false);
-      setErrors(extractServerErrors(err));
+    } else if (result.outcome === 'failed') {
+      setErrors(extractServerErrors(result.error));
     }
   }
 
@@ -89,6 +102,7 @@ export function EligibilityEditorDialog({
           <DialogDescription>{t('workHours.eligibilityEditor.description')}</DialogDescription>
         </DialogHeader>
 
+        <OwnerSaveNotice owner={owner} className="" />
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (

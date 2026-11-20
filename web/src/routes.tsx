@@ -50,6 +50,7 @@ import {
   MAIN_CONTENT_ID,
 } from '@/features/desktop-dialogs/DesktopDialogs';
 import { isDesktopShell } from '@/features/desktop-dialogs/desktopShell';
+import { OwnerGateProvider } from '@/shared/owners';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -140,7 +141,11 @@ export function AppRoutes(): JSX.Element {
   // THR-387 S6-W1: in the desktop app, Main Settings routes open the one
   // Settings dialog at that page; browser mode keeps the full-page routes.
   const desktop = isDesktopShell();
+  // THR-387 S6-W2a: one owner registry + contextual owner gate per document,
+  // in browser and desktop mode alike (it only acts on genuine unsaved edits
+  // and outstanding saves).
   return (
+    <OwnerGateProvider>
     <DesktopDialogsProvider renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}>
       <Routes>
         {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
@@ -217,6 +222,7 @@ export function AppRoutes(): JSX.Element {
         </Route>
       </Routes>
     </DesktopDialogsProvider>
+    </OwnerGateProvider>
   );
 }
 

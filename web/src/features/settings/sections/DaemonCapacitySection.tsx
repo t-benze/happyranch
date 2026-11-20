@@ -16,7 +16,8 @@
  * request; the following manual save does.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useBlocker } from 'react-router-dom';
+import { useBlocker, useParams } from 'react-router-dom';
+import { useConfigOwner } from '@/shared/owners';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import {
@@ -536,6 +537,27 @@ export function DaemonCapacitySection(): JSX.Element {
 
   const blocker = useBlocker(dirty);
 
+  // THR-387 S6-W2a: config owner `settings.capacity`. Its documented leave
+  // dialog stays the router guard while it is the only unsaved owner; the
+  // shared owner gate covers dialog close/switch, page and org changes.
+  const { slug: ownerOrg } = useParams<{ slug: string }>();
+  const owner = useConfigOwner({
+    page: 'settings.capacity',
+    org: ownerOrg ?? null,
+    dirty,
+    draft: { workersText, capText, reason, ack },
+    ownNavigationGuard: true,
+  });
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
+  // Only an operator reconciliation (or an accepted write) clears an
+  // unresolved publication; mirror that into the owner.
+  const wasUnresolved = useRef(false);
+  useEffect(() => {
+    if (wasUnresolved.current && unresolvedPublication === null) ownerRef.current.reconcile('saved');
+    wasUnresolved.current = unresolvedPublication !== null;
+  }, [unresolvedPublication]);
+
   // "Latest value" refs so the read-acceptance effect can consult the CURRENT
   // dirty/lock state without re-running whenever the operator types.
   const baseRef = useRef<CapacityBase | null>(null);
@@ -833,9 +855,17 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     ownWriteRef.current = { request, pending: true, observedDuring: null };
     let accepted = false;
+    const ticket = ownerRef.current.begin();
+    let settled = false;
+    const settle = (outcome: 'saved' | 'failed' | 'unknown'): void => {
+      if (settled) return;
+      settled = true;
+      ownerRef.current.settle(ticket, outcome);
+    };
     try {
       const result = await save.mutateAsync(request);
       const classified = classifySnapshot(result);
+      settle(classified.status === 'usable' ? 'saved' : 'unknown');
       if (classified.status !== 'usable') {
         // A 200 we cannot read — or one whose arithmetic contradicts itself —
         // is an UNKNOWN outcome, not a success, and it stays unresolved until
@@ -872,6 +902,7 @@ export function DaemonCapacitySection(): JSX.Element {
       if (newer !== null) acceptBase(newer);
     } catch (error) {
       if (error instanceof ApiError && error.code === 'stale_revision') {
+        settle('failed');
         const conflictBody = (error.detail as { latest?: unknown } | null)?.latest;
         const classifiedLatest = classifySnapshot(conflictBody);
         if (classifiedLatest.status !== 'usable') {
@@ -892,6 +923,7 @@ export function DaemonCapacitySection(): JSX.Element {
         return;
       }
       const classified = classifySaveError(error);
+      settle(classified.kind === 'uncertain' || classified.kind === 'unknown' ? 'unknown' : 'failed');
       if (classified.kind === 'uncertain' || classified.kind === 'unknown') {
         // R2: the unresolved fact is stored separately from the banner, so a
         // later refusal message cannot erase it and unlock the next write.
@@ -902,6 +934,7 @@ export function DaemonCapacitySection(): JSX.Element {
       setOutcome(classified);
       if (classified.kind === 'rejected' && classified.focus) focusField(classified.focus);
     } finally {
+      settle('unknown');
       // A request that produced no accepted settlement owns nothing: every
       // external observation it overlapped was already processed normally, so
       // releasing it loses nothing. An accepted one keeps identifying exactly

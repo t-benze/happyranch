@@ -12,6 +12,8 @@
  *
  * Impact preview: org/team saves first show "affects N agents" before writing.
  */
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useMemo, useState } from 'react';
 import {
   Dialog,
@@ -170,6 +172,26 @@ export function TierEditorDialog({
   const [errors, setErrors] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
 
+  // THR-387 S6-W2a: Main Work Hours config owner while the editor holds
+  // edits (the existing Main writer; no new editor).
+  const { slug } = useParams<{ slug: string }>();
+  const draft = { mode, start, end, timezone, interval, days, catchUp };
+  const initialDraft = {
+    mode: current?.mode ?? null,
+    start: current?.window.start ?? null,
+    end: current?.window.end ?? null,
+    timezone: current?.window.timezone ?? null,
+    interval: current?.interval ?? null,
+    days: current?.days ?? null,
+    catchUp: current?.catch_up_on_startup ?? null,
+  };
+  const owner = useConfigOwner({
+    page: 'workHours.tier',
+    org: slug ?? null,
+    dirty: open && JSON.stringify(draft) !== JSON.stringify(initialDraft),
+    draft,
+  });
+
   const effectiveMode = mode ?? inherited.mode;
   const isContinuous = effectiveMode === 'continuous';
 
@@ -210,14 +232,13 @@ export function TierEditorDialog({
 
   async function doSave() {
     setErrors([]);
-    try {
-      await mutation.mutateAsync({ working_hours: buildPatch() });
-      setConfirming(false);
+    const result = await owner.track(() => mutation.mutateAsync({ working_hours: buildPatch() }));
+    setConfirming(false);
+    if (result.ok) {
       onSaved();
       onOpenChange(false);
-    } catch (err: unknown) {
-      setConfirming(false);
-      setErrors(extractServerErrors(err));
+    } else if (result.outcome === 'failed') {
+      setErrors(extractServerErrors(result.error));
     }
   }
 
@@ -264,6 +285,7 @@ export function TierEditorDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <OwnerSaveNotice owner={owner} className="" />
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (

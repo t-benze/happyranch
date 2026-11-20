@@ -126,8 +126,8 @@ inside the same Radix root and never spawns a window. The one internal API is
 `useDesktopDialogs()` → `openDesktopDialog(request, invoker?)` /
 `requestDesktopDialogClose({ navigateTo? })`. The close button, Escape and
 in-pane links all go through `requestDesktopDialogClose`, the single seam
-where the S6-W2 owner registry / keep-discard gate will decide (before both
-closing and any Main navigation); today it closes immediately. Backdrop clicks
+where the S6-W2a contextual owner gate decides (before both closing and any
+Main navigation; see the next section). Backdrop clicks
 do not dismiss. Focus stays inside the dialog (Main is inert), moves to the
 dialog heading on open and on every switch, and returns on final close to the
 recorded invoker, else to the Main recovery control when a recovery panel is
@@ -184,7 +184,77 @@ with a Settings cross-action. Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
 one vertically scrolling column, and choosing a page scrolls it into view.
-Unsaved drafts are not yet protected on close/switch/page change (S6-W2).
+Unsaved drafts and sent saves are protected on close/switch/page change by
+the owner gate below.
+
+## Config owner registry and contextual owner gate (THR-387 S6-W2a)
+
+Handoff v2.4 §3 and corrections C1–C3. `web/src/lib/owners/ownerRegistry.ts`
+is a pure registry (one per app document, created by `OwnerGateProvider` in
+`routes.tsx`, browser and desktop mode alike). Every config editor that can
+hold unsent edits or a sent save registers an owner through
+`useConfigOwner()` (`web/src/shared/owners/`) while it is mounted, with
+`{scope: main|settings, page, subject?, org, computer, section?}`. `settings`
+owners are panes of the desktop Settings dialog (`<OwnerScope>` in
+`SettingsDialogBody`); everything else is `main`. `computer` is null for This
+computer (localized at render) until the S5 native status store supplies a
+selected remote name. Status is derived: `pending` (a sent save has no result)
+> `unknown` (transport/authority lost, 5xx, 408, `409 target_changed`, an
+unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
+`confirmed` > `clean`. A save is tagged with the draft revision it was sent
+for: a success for an older revision never marks a newer draft saved (the
+editor keeps the newer draft and the owner stays dirty); an older failure
+never marks a newer in-flight save failed; a sent save is never discardable.
+
+`selectOwnerBlocking(owners, affects?)` is the pure aggregate S6-W2b pushes to
+native (`app.owners`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
+is `hold` when an affected owner is pending/unknown, `prompt` when one is
+dirty/failed, else `none`, plus the affected non-clean owner list.
+
+The ONE gate (`OwnerGateProvider`) is asked before: the desktop dialog close
+request (affects every Settings owner, plus Main owners when an in-pane link
+changes Main's page), a switch to Connection (Settings owners), a Settings
+page change (owners of the page being left), and every in-app navigation
+through a router blocker that is mounted only while some owner is not clean
+(Main owners when the path or query changes; Settings owners too when the org
+changes, so an org switch gathers Main AND Settings owners into one prompt).
+Opening a dialog over a Main editor is not consent: while an owner is not
+clean, desktop Main navigation to a Settings route opens the dialog in place
+instead of unmounting Main's page. Outcomes: nothing affected → the
+transition runs; dirty/failed → one prompt naming each owner's page · computer
+· org, **Keep editing** (default focus, Escape and the close button) or
+**Discard changes and close / open Connection / change page / change
+organization / leave this page**, which rechecks all owners and discards only
+unsent edits; pending/unknown → a waiting panel that cannot be escaped or
+discarded (no close button, Escape does nothing), naming each owner, with
+**Check result** for unknown owners that can reconcile (a fresh same-context
+read) and **Back to {page}** to cancel the transition; when the results arrive
+the gate re-evaluates and runs the transition or shows the prompt. A repeated
+request while the gate is open focuses it; there is never a second prompt. The
+Settings dialog pane is keyed by org, so an old-org draft is never shown under
+another org. Capacity keeps its documented leave dialog as its router guard
+while it is the only unsaved owner (React Router honours one blocker: the
+shared blocker re-registers last and covers Capacity too whenever another
+owner is unsaved).
+
+Registered editors: Settings Organization form (`settings.organization`) and
+its Work Hours toggle and eligibility editor (`settings.workHours`, all
+`PUT /orgs/{slug}/settings/org`), Capacity, Executors binary registration and
+custom-profile removal, Main Agents detail (executor, model/reasoning effort
+via `PUT …/agents/{name}/model`, repos), Skills assignment, custom-skill
+create, and custom-skill metadata/version/eligibility/lifecycle writes, and
+the Main Work Hours tier editor (`work-hours-config/TierEditorDialog`, behind
+`work_hours_ui`). Coding has no writer on main (read-only original-save
+lookup). Save results use `OwnerSaveNotice` (C3): “Couldn't save {page} on
+{computer} · {org}. Your changes are still here and aren't saved.” / “无法保存
+{computer} · {org} 的{page}。你的更改仍保留在这里，尚未保存。”; unknown keeps Check
+result; connection-attempt errors keep their own copy. Capacity keeps its
+existing per-cause save copy and reconciliation. Browser mode: the only change
+is that genuine unsaved edits and outstanding saves are now gated on in-app
+navigation (previously only Capacity and the team escalation policy page
+prompted), the C3 copy replaces the Organization failure line, and a changed
+read no longer overwrites unsent Organization edits. Focused checks:
+`node --experimental-transform-types --test web/scripts/owner-registry.test.mjs`.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 
