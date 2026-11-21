@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Literal, NoReturn
 
-from runtime.workflows.sequential_contracts import DEFINITION_LIMIT, DefinitionPin
-from runtime.workflows.sequential_definition import CompiledDefinition, compile_definition
+from runtime.workflows.sequential_contracts import DEFINITION_LIMIT, DefinitionPin, GenericDefinitionPin
+from runtime.workflows.sequential_definition import (
+    CompiledDefinition, GenericCompiledDefinition, compile_definition, compile_generic_definition,
+)
 
 
 CODING_SOURCE_DIGEST = '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065'
@@ -36,6 +38,27 @@ MANIFEST = {
             interpreter='workflow-sequential-interpreter@1', capabilities='workflow-sequential-capabilities@1')),
 }
 _RETIRED = frozenset({('release/happyranch/coding', 1)})
+
+
+# Literal reviewed registration-only entries until S8b catalog cutover.
+# Never used by public discovery, fresh selection or the legacy compatibility view.
+@dataclass(frozen=True)
+class StagedGenericDefinition:
+    package: str
+    resource: tuple[str, ...]
+    size: int
+    pin: GenericDefinitionPin
+
+
+STAGED_GENERIC = {
+    ('release/happyranch/coding', 3): StagedGenericDefinition(
+        package='runtime', resource=('workflows', 'builtin_templates', 'coding.v3.json'), size=5327,
+        pin=GenericDefinitionPin(identity='release/happyranch/coding', version=3,
+            source_digest='ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
+            definition_digest='65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae',
+            compiler='workflow-sequential-compiler@2', validator='workflow-sequential-validator@2',
+            interpreter='workflow-sequential-interpreter@2', capabilities='workflow-sequential-capabilities@2')),
+}
 
 
 class SequentialReleaseUnavailable(ValueError):
@@ -92,6 +115,43 @@ def select_bundled_release(pin: DefinitionPin) -> CompiledDefinition:
         raise SequentialReleaseUnavailable('sequential_release_corrupt')
     try:
         compiled = compile_definition(raw[:-1], source_digest=entry.pin.source_digest)
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        raise SequentialReleaseUnavailable('sequential_release_corrupt') from None
+    if compiled.pin != entry.pin:
+        raise SequentialReleaseUnavailable('sequential_release_corrupt')
+    return compiled
+
+
+def staged_entry(pin: GenericDefinitionPin) -> StagedGenericDefinition:
+    """Validate staged @2 provenance without widening the public @1 manifest."""
+    if type(pin) is not GenericDefinitionPin or (pin.identity, pin.version) not in STAGED_GENERIC:
+        raise SequentialReleaseUnavailable('sequential_release_pin_mismatch')
+    entry = STAGED_GENERIC[(pin.identity, pin.version)]
+    if (entry.package != 'runtime' or len(entry.resource) != 3
+            or entry.resource[:2] != ('workflows', 'builtin_templates')
+            or not entry.resource[2].endswith('.json')
+            or any(part in ('', '.', '..') or '/' in part or '\\' in part for part in entry.resource)
+            or type(entry.size) is not int or not 0 < entry.size <= DEFINITION_LIMIT + 1
+            or entry.pin != pin):
+        raise SequentialReleaseUnavailable('sequential_release_pin_mismatch')
+    return entry
+
+
+def select_staged_release(pin: GenericDefinitionPin) -> GenericCompiledDefinition:
+    """Read/compile reviewed @2 registration data; grants no fresh-start route."""
+    entry = staged_entry(pin)
+    try:
+        resource = resources.files(entry.package).joinpath(*entry.resource)
+        with resource.open('rb') as stream:
+            raw = stream.read(entry.size + 1)
+    except (OSError, ImportError, NotImplementedError, TypeError, ValueError):
+        raise SequentialReleaseUnavailable('sequential_release_unavailable') from None
+    if (type(raw) is not bytes or len(raw) != entry.size
+            or hashlib.sha256(raw).hexdigest() != entry.pin.source_digest
+            or raw[-1:] != b'\n'):
+        raise SequentialReleaseUnavailable('sequential_release_corrupt')
+    try:
+        compiled = compile_generic_definition(raw[:-1], source_digest=entry.pin.source_digest)
     except (ValueError, TypeError, RecursionError, OverflowError):
         raise SequentialReleaseUnavailable('sequential_release_corrupt') from None
     if compiled.pin != entry.pin:

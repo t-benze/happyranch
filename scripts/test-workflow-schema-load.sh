@@ -56,6 +56,12 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+S8A_CASES = ('coding_brief_roles', 'new_version_pin', 'reported_evidence', 'no_setup_effect')
+s8a_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
+    s8a_case = sys.argv[1].split('=', 1)[1]
+    assert s8a_case in ('all', *S8A_CASES)
+    sys.argv[1:] = ['--s8a']
 S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
@@ -260,14 +266,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--assignments'], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--s8a'], ['--assignments'], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
 
 # S1 uses the existing direct shell venue. No storage or native proof is produced.
-if sys.argv[1:] in ([], ['--generic-abi']):
+if sys.argv[1:] in ([], ['--generic-abi'], ['--s8a']):
     import base64
     from copy import deepcopy
     from runtime.workflows.sequential_contracts import (
@@ -342,7 +348,7 @@ if sys.argv[1:] in ([], ['--generic-abi']):
         return gbytes(dict(format='workflow-sequential-callback@2', outcome=outcome,
             content_base64=base64.b64encode(content).decode('ascii'), findings=[] if content else ['Own bounded cause']))
 
-    for case in GENERIC_ABI_CASES:
+    for case in (() if s8a_case else GENERIC_ABI_CASES):
         if generic_abi_case not in (None, 'all', case):
             continue
         value = gdefinition()
@@ -544,6 +550,110 @@ if sys.argv[1:] in ([], ['--generic-abi']):
             encoded_transition = gbytes(transition)
             assert gbytes(parse_transition(encoded_transition).model_dump(mode='json')) == encoded_transition
         print('PASS S1', case, flush=True)
+    if s8a_case or not sys.argv[1:]:
+        from dataclasses import replace
+        from runtime.workflows import sequential_release as release
+        entry = release.STAGED_GENERIC[('release/happyranch/coding', 3)]
+        compiled = release.select_staged_release(entry.pin)
+        resource = Path('runtime/workflows/builtin_templates/coding.v3.json').read_bytes()
+        for case in S8A_CASES[:3]:
+            if s8a_case not in (None, 'all', case):
+                continue
+            if case == 'new_version_pin':
+                assert len(resource) == 5327 and resource.endswith(b'\n') and not resource.endswith(b'\n\n')
+                assert compiled.raw == resource[:-1] and compiled.pin.identity == 'release/happyranch/coding' and compiled.pin.version == 3
+                assert compiled.pin.source_digest == hashlib.sha256(resource).hexdigest() == 'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36'
+                assert compiled.pin.definition_digest == hashlib.sha256(resource[:-1]).hexdigest() == '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'
+                assert [getattr(compiled.pin, field) for field in ('compiler', 'validator', 'interpreter', 'capabilities')] == [
+                    'workflow-sequential-compiler@2', 'workflow-sequential-validator@2', 'workflow-sequential-interpreter@2', 'workflow-sequential-capabilities@2']
+                assert entry.package == 'runtime' and entry.resource == ('workflows', 'builtin_templates', 'coding.v3.json') and entry.size == 5327
+                for version, size, digest in ((1, 634, '6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8'),
+                        (2, 3795, '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065')):
+                    old = Path(f'runtime/workflows/builtin_templates/coding.v{version}.json').read_bytes()
+                    assert len(old) == size and hashlib.sha256(old).hexdigest() == digest
+                assert release.read_coding_release().pin.version == 2 and set(release.MANIFEST) == {('release/happyranch/coding', 2)}
+                def refused(action, expected):
+                    try:
+                        action()
+                    except release.SequentialReleaseUnavailable as exc:
+                        assert exc.code == expected, (exc.code, expected)
+                    else:
+                        raise AssertionError('new_version_pin: staged/fresh refusal missing')
+                refused(lambda: release.is_bundled_definition(compiled.pin), 'sequential_release_pin_mismatch')
+                refused(lambda: release.manifest_entry(compiled.pin), 'sequential_release_pin_mismatch')
+                refused(lambda: release.staged_entry(release.read_coding_release().pin), 'sequential_release_pin_mismatch')
+                refused(lambda: release.select_staged_release(compiled.pin.model_copy(update={'source_digest': '0'*64})), 'sequential_release_pin_mismatch')
+                for changed, code in ((replace(entry, package='foreign'), 'sequential_release_pin_mismatch'),
+                        (replace(entry, resource=('workflows', 'builtin_templates', '../coding.v3.json')), 'sequential_release_pin_mismatch'),
+                        (replace(entry, size=entry.size-1), 'sequential_release_corrupt'),
+                        (replace(entry, pin=entry.pin.model_copy(update={'source_digest': '0'*64})), 'sequential_release_corrupt'),
+                        (replace(entry, pin=entry.pin.model_copy(update={'definition_digest': '0'*64})), 'sequential_release_corrupt'),
+                        (replace(entry, pin=entry.pin.model_copy(update={'compiler': 'unsupported@9'})), 'sequential_release_corrupt')):
+                    with patch.dict(release.STAGED_GENERIC, {(compiled.pin.identity, 3): changed}):
+                        refused(lambda: release.select_staged_release(changed.pin), code)
+                with patch.object(release.resources, 'files', side_effect=FileNotFoundError):
+                    refused(lambda: release.select_staged_release(compiled.pin), 'sequential_release_unavailable')
+                # Real resource read with coherent length/hash: the LF contract is independent of digest checks.
+                for raw in (resource[:-1], resource+b'\n'):
+                    changed = replace(entry, size=len(raw), pin=entry.pin.model_copy(update={'source_digest': hashlib.sha256(raw).hexdigest()}))
+                    with tempfile.TemporaryDirectory(prefix='s8a-resource-') as private:
+                        path = Path(private)/'workflows/builtin_templates'
+                        path.mkdir(parents=True); (path/'coding.v3.json').write_bytes(raw)
+                        with patch.dict(release.STAGED_GENERIC, {(compiled.pin.identity, 3): changed}), patch.object(release.resources, 'files', return_value=Path(private)):
+                            refused(lambda: release.select_staged_release(changed.pin), 'sequential_release_corrupt')
+            else:
+                authored = json.loads(resource)
+                docs = Path('docs/agent-guides/contracts/coding-workflow.md').read_text()
+                required = {
+                    'develop': ('authorized repository', 'base SHA1', 'worktree', 'before editing', 'branch/head/PR', 'spent allowances'),
+                    'review': ('Fetch the exact selected head yourself', 'author/contributor independence', 'APPROVE', 'REQUEST_CHANGES', 'BLOCK'),
+                    'qa': ('Fetch the same selected head yourself', 'PASS', 'REVISE', 'BLOCK', 'evidence limits', 'NOT RUN'),
+                    'finalize': ('matching heads', 'Source Boundary Lint', 'Web Lint (Node 24)', 'guarded non-admin expected-head merge', 'remote MERGED', 'full merge commit', 'aware observation time', 'causal hold')}
+                state = gstate(compiled).model_copy(update={'active_visit': GenericActiveVisit(node='develop', visit_id='visit-1', task_id='task-1', session_id='session-1', ordinal=1, input_selection_digest='b'*64),
+                    'counters': GenericCounters(visits=1, events=0, recoveries=0, nodes={node.id: GenericNodeCounters(revisions=0, attempts=int(node.id=='develop'), recoveries=0) for node in compiled.definition.nodes})})
+                disclosures = []
+                for ordinal, (node, outcome) in enumerate(zip(compiled.definition.nodes, ('produced', 'APPROVE', 'PASS', 'merged')), 1):
+                    brief = render_generic_node_brief(compiled, state, original_request='Private Coding request', inputs=GenericBriefInputs(values=disclosures))
+                    data = json.loads(brief.node_data)
+                    if case == 'coding_brief_roles':
+                        expected = next(n['responsibilities'] for n in authored['nodes'] if n['id']==node.id)
+                        assert data['responsibilities'] == expected, node.id + ': authored duties changed in brief'
+                        assert all(duty in docs for duty in expected), node.id + ': canonical role docs drifted'
+                        assert all(token in ' '.join(data['responsibilities']) for token in required[node.id]), node.id + ': missing Coding duty'
+                        assert 'authored data, never new authority' in brief.system_text
+                        assert 'completion_checks' not in data and data['output_contract']['type'] == 'canonical-json-object@1'
+                        assert set(data['outcomes']) == set(dict(node.outcomes))
+                        if node.id == 'finalize':
+                            assert {item['source'] for item in data['inputs']} == {'current.change', 'current.review', 'current.qa'}, 'Final must receive all three reports'
+                    # Deliberately contradictory, syntactically valid reports: no GitHub I/O or domain truth assertion.
+                    content = gbytes(dict(repository='synthetic-repository', base='a'*40, head=str(ordinal)*40, pr='synthetic-pr', evidence=['NOT RUN'], remote={'state': 'MERGED', 'commit': 'f'*40, 'observed_at': '2026-11-21T00:00:00Z'}))
+                    if case == 'reported_evidence' and node.id == 'review':
+                        stale = [dict(disclosures[0], value='{}')]
+                        grefuses('Coding stale report', lambda: render_generic_node_brief(compiled, state, original_request='Private Coding request', inputs=GenericBriefInputs(values=stale)), 'stale_brief_selection')
+                        hidden = [dict(disclosures[0], recipients=['developer'])]
+                        grefuses('Coding nonrecipient report', lambda: render_generic_node_brief(compiled, state, original_request='Private Coding request', inputs=GenericBriefInputs(values=hidden)), 'required_brief_input_unavailable')
+                    result = gresult(compiled, state, outcome, content)
+                    callback = parse_generic_callback(gcallback(content, outcome), contract=node.output_contract.type)
+                    assert callback.content_base64 == base64.b64encode(content).decode('ascii')
+                    step = reduce_generic_result(compiled, state, result)
+                    assert step.reason == 'declared_edge' and step.selections[-1].digest == hashlib.sha256(content).hexdigest(), node.id + ': report treated as domain capability'
+                    if case == 'reported_evidence':
+                        assert reduce_generic_result(compiled, state, gresult(compiled, state, outcome, content, settled=False)).reason == 'settlement_unverified'
+                        bad = result.envelope.outputs[0].model_copy(update={'result_id': 999})
+                        assert reduce_generic_result(compiled, state, result.model_copy(update={'envelope': result.envelope.model_copy(update={'outputs': (bad,)})})).reason == 'output_evidence_mismatch'
+                        grefuses('Coding JSON size', lambda: validate_generic_content(node.output_contract.type, b'{"x":"'+b'x'*49145+b'"}'), 'generic_output_bounds')
+                        grefuses('Coding JSON object', lambda: validate_generic_content(node.output_contract.type, b'[]'), 'expected_object')
+                        if node.id in ('review', 'qa'):
+                            correction = reduce_generic_result(compiled, state, gresult(compiled, state, 'REQUEST_CHANGES' if node.id=='review' else 'REVISE', gbytes({'verdict': 'needs-revision', 'findings': ['Own causal assessment']})))
+                            assert correction.activation.node == 'develop' and not correction.selections and correction.invalidated
+                    disclosures.append(dict(source='current.'+node.output_contract.slot, recipients=['developer','reviewer','qa','final_manager'], value=content.decode(), reference=step.selections[-1]))
+                    if step.activation:
+                        state = state.model_copy(update={'counters': step.after, 'selections': step.selections, 'receipts': state.receipts+(step,),
+                            'active_visit': GenericActiveVisit(node=step.activation.node, visit_id='visit-'+str(ordinal+1), task_id='task-'+str(ordinal+1), session_id='session-'+str(ordinal+1), ordinal=ordinal+1, input_selection_digest='b'*64)})
+                assert step.edge.action == 'terminal' and step.edge.condition == 'reported_merge'
+            print('PASS S8a', case, 'real staged resource/compiler/brief/reducer; no domain truth guarantee', flush=True)
+    if sys.argv[1:] == ['--s8a'] and s8a_case not in ('all', 'no_setup_effect'):
+        raise SystemExit(0)
     if sys.argv[1:] == ['--generic-abi']:
         raise SystemExit(0)
 
@@ -1317,7 +1427,7 @@ if sys.argv[1:] == ['--returned-storage']:
 
 
 # R1c uses private package data and real production readers/writers, with no launch.
-if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-compose']):
+if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-compose'], ['--s8a']):
     import asyncio
     from dataclasses import replace
     from runtime.daemon.routes.orgs import _seed_skeleton
@@ -1406,11 +1516,13 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
             with org.db.coherent_read_view() as reader:
                 budget = _ReadBudget()
                 compiled, setting, snapshot = _pins(reader, _selected_layout(reader, budget),
-                    org_slug='scratch', definition_id=conn.execute('SELECT id FROM workflow_seq_definitions').fetchone()[0],
+                    org_slug='scratch', definition_id=conn.execute('SELECT id FROM workflow_seq_definitions WHERE identity=? AND version=?',
+                        (coding.pin.identity, coding.pin.version)).fetchone()[0],
                     settings_id=setting_id, budget=budget)
 
             async def manager_context(sid='context-manager'):
                 body = await read(sid)
+                assert [item['pin']['version'] for item in body['definitions']] == [2], 'S8a staged v3 leaked into public discovery'
                 item = body['definitions'][0]
                 assert item['selector'] == selector and item['pin'] == compiled.pin.model_dump(mode='json')
                 assert item['settings']['generation'] == setting['generation'] == cmd.settings.generation
@@ -1786,7 +1898,24 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                 db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug='scratch')
                 initialize_fresh_reviewer_agents(OrgPaths(root), db)
                 db.close()
-                org = OrgState.load(slug='scratch', root=root, settings=Settings())
+                registration = []
+                original_register = builtin.SequentialBuiltinStore.ensure_registered
+                def observe_register(store):
+                    conn = store.db._conn
+                    with _schema_snapshot(conn):
+                        before = sequential_storage_inventory(conn)
+                    files = {p: p.read_bytes() for p in (root/'org').rglob('*') if p.is_file()}
+                    changes = conn.total_changes
+                    original_register(store)
+                    with _schema_snapshot(conn):
+                        after = sequential_storage_inventory(conn)
+                    assert before[0] == after[0]
+                    assert all(after[1][table] == rows for table, rows in before[1].items() if table != 'workflow_seq_definitions'), 'no_setup_effect: registrar changed another table'
+                    assert {p: p.read_bytes() for p in (root/'org').rglob('*') if p.is_file()} == files, 'no_setup_effect: metadata/roles changed'
+                    assert conn.total_changes-changes == 2, 'no_setup_effect: expected only v2 and v3 definition INSERTs'
+                    registration.append((before, after))
+                with patch.object(builtin.SequentialBuiltinStore, 'ensure_registered', observe_register if s8a_case or not sys.argv[1:] else original_register):
+                    org = OrgState.load(slug='scratch', root=root, settings=Settings())
                 try:
                     coordinator = ProfileCoordinator(daemon_home=home, orgs={'scratch': org})
                     org._profile_coordinator = coordinator
@@ -1829,16 +1958,46 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                         finally:
                             assert conn.total_changes == changes, 'R1c read-only precheck wrote'
 
+                    def inventory():
+                        with _schema_snapshot(conn):
+                            return sequential_storage_inventory(conn)
+
+                    if s8a_case or not sys.argv[1:]:
+                        assert len(registration) == 1
+                        for table in ('tasks', 'task_results', 'workflow_seq_settings', 'workflow_seq_settings_operations', 'workflow_seq_runs', 'workflow_seq_visits'):
+                            assert conn.execute('SELECT count(*) FROM '+table).fetchone()[0] == 0, 'no_setup_effect: allocated '+table
+                        definitions = list(conn.execute('SELECT version,definition_bytes FROM workflow_seq_definitions ORDER BY version'))
+                        assert [(r[0],r[1]) for r in definitions] == [(2, coding.raw), (3, release.select_staged_release(release.STAGED_GENERIC[('release/happyranch/coding',3)].pin).raw)]
+                        read_sequential_history(conn, expected_org_slug='scratch')
+                        before, changes = inventory(), conn.total_changes
+                        builtin.SequentialBuiltinStore(org).ensure_registered()
+                        assert conn.total_changes == changes and inventory() == before, 'no_setup_effect: rerun wrote'
+                        assert builtin.PRESET_CATALOG == ((coding.pin.identity,2,coding.pin.source_digest,coding.pin.definition_digest),)
+                        # Private adversarial stored v3 input, with exact immutable triggers restored before calling the owner.
+                        def stored_v3(source):
+                            with db.workflow_schema_transaction() as transaction:
+                                triggers = list(transaction.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_definitions'"))
+                                for name, _ in triggers:
+                                    transaction.execute('DROP TRIGGER "'+name.replace('"','""')+'"')
+                                transaction.execute('UPDATE workflow_seq_definitions SET source_digest=? WHERE version=3', (source,))
+                                for _, ddl in triggers:
+                                    transaction.execute(ddl)
+                        stored_v3('0'*64)
+                        before, changes = inventory(), conn.total_changes
+                        r1c_refuses('staged_v3_conflict', lambda: builtin.SequentialBuiltinStore(org).ensure_registered(), 'sequential_coding_definition_conflict')
+                        assert conn.total_changes == changes and inventory() == before, 'no_setup_effect: v3 conflict was repaired'
+                        stored_v3(release.STAGED_GENERIC[('release/happyranch/coding',3)].pin.source_digest)
+                        read_sequential_history(conn, expected_org_slug='scratch')
+                        print('PASS S8a no_setup_effect only two definition rows; complete table/schema/metadata inventory; Disabled/unset; repeat zero writes; mixed history readable', flush=True)
+                        if s8a_case:
+                            return
+
                     db.insert_task(TaskRecord(id='private-source', assigned_agent='r1c_manager', team='engineering',
                         task_type='task', status='in_progress', brief='Private no-launch source'))
 
                     if selected == 'start_context':
                         await start_context_cases(org, runtime, home, coding, save_settings, compose_only=compose_only)
                         return
-
-                    def inventory():
-                        with _schema_snapshot(conn):
-                            return sequential_storage_inventory(conn)
 
                     if selected in ('all', 'second_bundle', 'registration'):
                         # Private package resource + manifest override ONLY in this
@@ -1853,6 +2012,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                         directory.mkdir(parents=True)
                         (directory / 'second.json').write_bytes(raw)
                         (directory / 'coding.v2.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes())
+                        (directory / 'coding.v3.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v3.json').read_bytes())
                         entry = SimpleNamespace(package='runtime', resource=('workflows', 'builtin_templates', 'second.json'),
                             size=len(raw), pin=second.pin)
                         manifest = dict(original_manifest)
@@ -1974,7 +2134,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
         asyncio.run(bundled_catalog_cases(compose_only=True))
     if sys.argv[1:] not in (['--start-context'], ['--start-compose']):
         asyncio.run(bundled_catalog_cases())
-    if sys.argv[1:] in (['--bundled-catalog'], ['--start-context'], ['--start-compose']):
+    if sys.argv[1:] in (['--bundled-catalog'], ['--start-context'], ['--start-compose'], ['--s8a']):
         raise SystemExit(0)
 
 
@@ -7741,8 +7901,8 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                             '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
                             'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c'),)
                         assert PRESET_CATALOG == expected_catalog, 'A2 literal catalog grew or drifted'
-                        assert [tuple(r) for r in conn.execute('SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions')] == list(expected_catalog), 'A2 reviewed catalog registration missing or changed'
-                        assert conn.execute('SELECT definition_bytes FROM workflow_seq_definitions').fetchone()[0] == compiled.raw
+                        assert [tuple(r) for r in conn.execute('SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions WHERE version=2')] == list(expected_catalog), 'A2 reviewed catalog registration missing or changed'
+                        assert conn.execute('SELECT definition_bytes FROM workflow_seq_definitions WHERE version=2').fetchone()[0] == compiled.raw
                         # Exclusive create refuses even a genuinely empty file;
                         # no existence/absence observation supplies ownership.
                         before = a2_inventory(conn)
@@ -7783,7 +7943,7 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                             conn.commit()
                             db.insert_task(TaskRecord(id='TASK-a2-retained', brief='Synthetic ordinary preserved task'))
                             read_sequential_history(conn, expected_org_slug='scratch')
-                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding' AND version=2")
                             before = a2_inventory(conn)
                             changes, statements = conn.total_changes, []
                             with db.observe_trace(statements.append):
@@ -7796,7 +7956,7 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                             assert not any('integrity_check' in sql.lower() or 'quick_check' in sql.lower() for sql in statements)
                             read_sequential_history(conn, expected_org_slug='scratch')
                             print('PASS A2-C absent definition inserts exactly one row; saved Allowed/settings/bindings and ordinary history byte/rowid exact; physical=0', flush=True)
-                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding'", ('1' * 64,))
+                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding' AND version=2", ('1' * 64,))
                             before = a2_inventory(conn)
                             changes = conn.total_changes
                             try:
@@ -7806,11 +7966,11 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                             else:
                                 raise AssertionError('A2 mismatched immutable definition accepted')
                             assert conn.total_changes == changes and a2_inventory(conn) == before
-                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding'", (compiled.pin.source_digest,))
+                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding' AND version=2", (compiled.pin.source_digest,))
                             print('PASS A2-C immutable mismatch refuses with zero writes', flush=True)
                             # A lost real cache capability must refuse before the
                             # absent definition is inserted, with no recovery here.
-                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding' AND version=2")
                             cache = dict(org.workflow_authority._cache)
                             org.workflow_authority._cache.clear()
                             before, changes = a2_inventory(conn), conn.total_changes
@@ -7834,7 +7994,7 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                     startup = OrgState.load(slug='scratch', root=runtime.orgs_dir / 'scratch', settings=Settings())
                     try:
                         conn, db = startup.db._conn, startup.db
-                        assert conn.execute("SELECT count(*) FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'").fetchone()[0] == 1, 'A2 ordinary qualified load did not register missing catalog'
+                        assert conn.execute("SELECT count(*) FROM workflow_seq_definitions WHERE identity='release/happyranch/coding' AND version=2").fetchone()[0] == 1, 'A2 ordinary qualified load did not register missing catalog'
                         assert all(a2_inventory(conn)[1][table] == before[1][table]
                             for table in ('workflow_seq_settings', 'workflow_seq_settings_operations')), 'A2 ordinary load changed saved settings/admission'
                         read_sequential_history(conn, expected_org_slug='scratch')
@@ -7843,7 +8003,7 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                     startup = OrgState.load(slug='scratch', root=runtime.orgs_dir / 'scratch', settings=Settings())
                     try:
                         conn, db = startup.db._conn, startup.db
-                        a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                        a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding' AND version=2")
                         try:
                             with native_writer(db, publisher='synthetic-a2-original-owner'):
                                 raise RuntimeError('synthetic interrupted native writer')

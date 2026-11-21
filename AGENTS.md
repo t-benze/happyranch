@@ -42,6 +42,8 @@ current-source and status conventions live in `docs/agent-guides/contracts/READM
 - Supported platforms are macOS and Linux; others fail closed. Executors run as the same OS user as the daemon, so there is no OS-level isolation. Skills are delivered from a hash-addressed canonical store through validated links under both `.claude/skills` and `.agents/skills`; integrity checks detect and refuse, they never repair automatically. See [executor contracts](docs/agent-guides/contracts/executors-and-platform.md).
 - Generic `Database` and the machine-global `runtime-audit.db` stay workflow-free; workflow, coding, naming, Pause and team-move storage are org-owned and installed by `OrgState.load` or explicit operator scripts.
 
+Coding v3 is registration-only in `STAGED_GENERIC` until S8b; public selection stays v2, Disabled/unset remains, and exact-head/merge duties are agent-owned. See [Coding role reports](docs/agent-guides/contracts/coding-workflow.md#coding-v3-role-reports--s8a-staged-registration).
+
 ## Task model rules
 
 - Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/specs/2026-11-13-task-model-reasoning-overrides.md).

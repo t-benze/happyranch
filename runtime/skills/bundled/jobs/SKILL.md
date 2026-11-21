@@ -125,6 +125,25 @@ the ordinary rules below.
 
 You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs an authorized daemon operation. Obtain any required authorization in an existing thread BEFORE submitting; job admission does not authorize contents or grant executor permissions.
 
+## Agent-owned Coding responsibilities (v3)
+
+Coding v3 is registration-only until S8b catalog cutover and remains Disabled;
+source registration grants no start, setup, roles, admission or Allow. If actually
+bound to a v3 generic node brief, repository preflight, independent exact-head
+review, same-head QA and Final matching-head/literal-lint/guarded expected-head
+non-admin merge/remote MERGED observation are agent responsibilities. Use the
+existing authorized tools in the genuine live task, with the generic callback@2
+and bounded JSON report convention in start-task and the Coding contract.
+Generic acceptance does not verify these reports' semantic or remote truth.
+
+This adds no job or credential authority. Never put Final merge, intent/action/
+receipt production or an uncertain-effect retry in a job, daemon or recovery
+runner. Retain the existing job prohibitions and original live-session boundary.
+Historical special Coding and sequential LOCAL finalize instructions below apply
+only to their actual old binding, never to v3. Separately authorized ordinary
+preparation/verification/publication jobs retain their existing rules; infer no
+such entitlement from a Coding role. Semantic adherence/pilot is NOT RUN.
+
 ## When to use
 
 Three signals you should reach for jobs instead of running the command inline:
