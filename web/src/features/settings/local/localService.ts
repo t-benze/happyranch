@@ -21,6 +21,7 @@
  *
  * Pure apart from the bridge accessor (no React/DOM).
  */
+import type { AppIncompatible } from '@/lib/native/appStatus';
 import { nativeBridge } from '@/lib/native/target';
 
 export type LocalRunning = 'running' | 'starting' | 'stopped' | 'unknown';
@@ -45,6 +46,20 @@ export type LocalMutation =
   | 'local.keepRunning.set';
 
 export type LocalCommand = LocalMutation | 'local.status' | 'local.update.status';
+
+/**
+ * This computer's post-effect readiness/compatibility after Start/Restart,
+ * independent of the selected target's `app.status` (C6 under a remote Host).
+ */
+export type LocalReadmission =
+  | { state: 'ready' | 'unreachable' | 'unknown'; incompatible: null }
+  | { state: 'incompatible'; incompatible: AppIncompatible };
+
+export interface LocalActionResult {
+  service: LocalServiceSnapshot;
+  /** Present for local.start / local.restart only. */
+  readmission: LocalReadmission | null;
+}
 
 export type LocalEffect = 'none' | 'confirmed' | 'unknown';
 
@@ -72,6 +87,7 @@ const MODES: readonly string[] = ['service', 'foreground', 'unsupported'];
 const UPDATES: readonly string[] = ['restart_required', 'not_detected', 'unknown', 'unsupported'];
 const EFFECTS: readonly string[] = ['none', 'confirmed', 'unknown'];
 const RECOVERIES: readonly string[] = ['refresh', 'explicitRetry', 'newInviteOnHost', 'nativePermission', 'nativeRecovery', 'operatorRecovery', 'none'];
+const READMISSIONS: readonly string[] = ['ready', 'unreachable', 'incompatible', 'unknown'];
 const MUTATIONS: readonly string[] = ['local.start', 'local.stop', 'local.restart', 'local.repair', 'local.turnOff', 'local.keepRunning.set'];
 
 function closed(value: unknown, keys: readonly string[]): value is Obj {
@@ -102,8 +118,8 @@ function isSnapshot(value: unknown): value is LocalServiceSnapshot {
   );
 }
 
-function isReadmission(value: unknown): boolean {
-  if (!closed(value, ['state', 'incompatible']) || !oneOf(value.state, ['ready', 'unreachable', 'incompatible', 'unknown'])) return false;
+function isReadmission(value: unknown): value is LocalReadmission {
+  if (!closed(value, ['state', 'incompatible']) || !oneOf(value.state, READMISSIONS)) return false;
   if (value.state !== 'incompatible') return value.incompatible === null;
   const mismatch = value.incompatible;
   if (!closed(mismatch, ['side', 'host_contract', 'client_contract', 'min_daemon'])) return false;
@@ -112,19 +128,24 @@ function isReadmission(value: unknown): boolean {
   return host === null || (closed(host, ['current', 'min_client']) && Number.isInteger(host.current) && Number.isInteger(host.min_client));
 }
 
-/** `local.status` result, or a mutation result (which also names its command). */
-export function parseLocalServiceResult(raw: unknown, command?: LocalMutation): LocalServiceSnapshot | null {
+/** `local.status` result. */
+export function parseLocalServiceResult(raw: unknown): LocalServiceSnapshot | null {
   const value = json(raw);
-  if (command) {
-    const readmission = command === 'local.start' || command === 'local.restart';
-    const keys = ['schema', 'service', 'command'];
-    // Accept both the existing shell and the new carrier until the page cutover.
-    if (readmission && value && typeof value === 'object' && 'readmission' in value) keys.push('readmission');
-    if (!closed(value, keys) || value.command !== command || (keys.length === 4 && !isReadmission(value.readmission))) return null;
-  } else if (!closed(value, ['schema', 'service'])) {
-    return null;
-  }
+  if (!closed(value, ['schema', 'service'])) return null;
   return value.schema === 2 && isSnapshot(value.service) ? value.service : null;
+}
+
+/**
+ * Mutation result: names its command; Start/Restart REQUIRE `readmission`
+ * and every other mutation forbids it (closed contract, bridge spec §12).
+ */
+export function parseLocalActionResult(raw: unknown, command: LocalMutation): LocalActionResult | null {
+  const value = json(raw);
+  const carries = command === 'local.start' || command === 'local.restart';
+  if (!closed(value, carries ? ['schema', 'service', 'command', 'readmission'] : ['schema', 'service', 'command'])) return null;
+  if (value.schema !== 2 || value.command !== command || !isSnapshot(value.service)) return null;
+  if (!carries) return { service: value.service, readmission: null };
+  return isReadmission(value.readmission) ? { service: value.service, readmission: value.readmission } : null;
 }
 
 /** `local.update.status` result. */

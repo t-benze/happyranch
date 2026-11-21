@@ -332,19 +332,25 @@ service only, never the app or this dialog. Native owns consent and the one
 mutation slot: a refusal shows its named copy (cancelled/busy/owner save/
 in-flight change) and changes nothing; an unknown effect shows Restart failed
 or the action's unknown result with Check again, and every mutation stays
-disabled until a fresh fully known `local.status`. After Start/Restart the page
-shows the C6 steps separately (service result, ready check, compatibility check
-from `app.status`) ending in Ready or a named mismatch (service older than the
-app: update the service and restart again; app too old: update the desktop
-app; compatibility unknown). Check again / Recheck only re-read `local.status`,
-`local.update.status` and `app.status`; nothing retries or replays a mutation.
-Native Start/Restart now additionally return this computer's closed `readmission`
-result (`ready|unreachable|incompatible|unknown`, with the existing incompatibility
-object only for `incompatible`, otherwise null), even with a remote selected.
-Other local mutations omit it. The local result never changes selected-target
-`app.status`, carries no URL/credential and is never an effect-retry signal.
-The local-result parser accepts the carrier; page consumption/recovery under a
-remote target is pending the following frontend leg on PR #1815.
+disabled until a fresh fully known `local.status`. Native Start/Restart return
+this computer's closed `readmission` result (`ready|unreachable|incompatible|unknown`,
+with the existing incompatibility object only for `incompatible`, otherwise null),
+even with a remote selected; other local mutations omit it, and a Start/Restart
+result without it is unreadable (unknown effect). The local result never changes
+selected-target `app.status`, carries no URL/credential and is never an
+effect-retry signal. After Start/Restart the page shows the C6 steps separately
+(service result, ready check, compatibility check) ending in Ready or a named
+mismatch (service older than the app: update the service and restart again; app
+too old: update the desktop app; compatibility unknown), unreachable, or not
+confirmed (`unknown`). Under a remote selection the steps come only from
+`readmission` (remote `app.status` is never read as local compatibility), the
+outcome adds "{host} is not affected" and the C5 note stays visible. Under local
+selection `app.status` drives the steps and a settled `readmission` that differs
+from it is shown as a named disagreement (both answers named, attention tone).
+Only a fully passed Ready uses the OK tone. Recheck / Check again only re-read:
+under remote selection `local.status` and `local.update.status` (the earlier
+readmission is kept); under local selection those plus `app.status`, whose fresh
+answer supersedes the readmission. Nothing retries or replays a mutation.
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see

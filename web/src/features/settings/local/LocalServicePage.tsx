@@ -14,10 +14,15 @@
  *   retried or replayed; Check again / Recheck only re-read.
  * - C5: whenever a remote target is selected the page stays available and
  *   says these controls affect this computer, not that Host.
- * - C6: after Start/Restart native rechecks readiness and compatibility and
- *   publishes `app.stateChanged`; the page shows the service result, the
- *   readiness check and the compatibility check separately, ending in Ready
- *   or a named mismatch. Recheck never repeats Restart.
+ * - C6: after Start/Restart native rechecks this computer's readiness and
+ *   compatibility and returns it as the result's `readmission`. The page shows
+ *   the service result, the readiness check and the compatibility check
+ *   separately, ending in Ready or a named mismatch/unreachable/unconfirmed.
+ *   Under a remote selection `readmission` is the only source (app.status
+ *   describes the remote Host and is never read as local compatibility).
+ *   Under local selection app.status stays the readiness source and a
+ *   disagreement with `readmission` is named, not silently resolved.
+ *   Recheck / Check again only re-read; they never repeat Restart.
  */
 import { RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
@@ -32,11 +37,13 @@ import { refreshAppStatus } from '@/lib/native/target';
 import {
   callLocal,
   localFailureOf,
+  parseLocalActionResult,
   parseLocalServiceResult,
   parseUpdateStatus,
   type KeepRunning,
   type LocalFailure,
   type LocalMutation,
+  type LocalReadmission,
   type LocalServiceSnapshot,
   type UpdateStatus,
 } from './localService';
@@ -45,7 +52,8 @@ import {
 const WRAP = 'h-auto max-w-full whitespace-normal text-left break-words';
 
 type Outcome =
-  | { kind: 'done'; command: LocalMutation }
+  /** `readmission`: Start/Restart only; null once superseded by a local Recheck. */
+  | { kind: 'done'; command: LocalMutation; readmission: LocalReadmission | null }
   | { kind: 'failed'; command: LocalMutation; failure: LocalFailure };
 
 interface LocalView {
@@ -93,6 +101,7 @@ function useLocalService(): {
   view: LocalView;
   refresh: () => Promise<void>;
   act: (command: LocalMutation, enabled?: boolean) => Promise<void>;
+  supersedeReadmission: () => void;
 } {
   const [view, setView] = useState<LocalView>(INITIAL);
   const mounted = useRef(true);
@@ -139,9 +148,10 @@ function useLocalService(): {
       let service: LocalServiceSnapshot | null = null;
       try {
         const raw = await callLocal(command, command === 'local.keepRunning.set' ? { enabled: enabled === true } : undefined);
-        service = parseLocalServiceResult(raw, command);
-        outcome = service
-          ? { kind: 'done', command }
+        const result = parseLocalActionResult(raw, command);
+        service = result?.service ?? null;
+        outcome = result
+          ? { kind: 'done', command, readmission: result.readmission }
           : { kind: 'failed', command, failure: { code: 'outcomeUnknown', effect: 'unknown', recovery: 'nativeRecovery' } };
       } catch (error) {
         outcome = { kind: 'failed', command, failure: localFailureOf(error) };
@@ -165,7 +175,13 @@ function useLocalService(): {
     [readUpdate],
   );
 
-  return { view, refresh, act };
+  // A local-selection Recheck re-reads app.status; that fresh read replaces
+  // the earlier readmission instead of being compared with it.
+  const supersedeReadmission = useCallback((): void => {
+    setView((prev) => (prev.outcome?.kind === 'done' && prev.outcome.readmission ? { ...prev, outcome: { ...prev.outcome, readmission: null } } : prev));
+  }, []);
+
+  return { view, refresh, act, supersedeReadmission };
 }
 
 /**
@@ -193,8 +209,9 @@ export function useLocalCommandsAdmitted(): boolean | null {
 export function LocalServicePage(): JSX.Element {
   const { t } = useTranslation();
   const app = useNativeAppStatus();
-  const { view, refresh, act } = useLocalService();
+  const { view, refresh, act, supersedeReadmission } = useLocalService();
   const remoteHost = app?.target?.kind === 'remote' ? app.target.name : null;
+  const localSelected = app?.target?.kind === 'local';
 
   // Read on open, and again whenever native reports a local running change
   // while no action of ours is waiting (e.g. a supervisor observation).
@@ -205,9 +222,16 @@ export function LocalServicePage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-read on native local change only
   }, [appRunning]);
 
+  // Re-read only. Under a remote selection app.status describes that Host,
+  // so only this computer's local.status / local.update.status are read.
   const recheck = useCallback(async () => {
+    if (!localSelected) {
+      await refresh();
+      return;
+    }
+    supersedeReadmission();
     await Promise.all([refresh(), refreshAppStatus()]);
-  }, [refresh]);
+  }, [refresh, localSelected, supersedeReadmission]);
 
   const service = view.service;
   const foreground = service?.mode === 'foreground';
@@ -384,33 +408,74 @@ function IncompatibleLocalNotice({ app }: { app: AppState | null }): JSX.Element
   );
 }
 
-type Step = 'done' | 'current' | 'failed' | 'todo';
+type Step = 'done' | 'current' | 'failed' | 'todo' | 'unknown';
+type NoticeTone = keyof typeof NOTICE_CLASS;
+/** One settled readiness/compatibility answer, from app.status or readmission. */
+type Verdict = 'ready' | 'unreachable' | 'incompatibleHost' | 'incompatibleApp' | 'incompatibleUnknown' | 'unknown';
+interface C6View {
+  ready: Step;
+  compatible: Step;
+  result: MessageKey;
+  /** Local selection only: the two settled answers that disagree. */
+  disagree?: { service: Verdict; app: Verdict };
+  tone: NoticeTone;
+}
 
-/** C6: service result, readiness and compatibility, each observed separately. */
-function restartSteps(app: AppState | null): { ready: Step; compatible: Step; result: MessageKey; tone: keyof typeof NOTICE_CLASS } {
-  if (!app || app.target?.kind !== 'local') {
-    return { ready: 'todo', compatible: 'todo', result: 'settings.local.c6.result.notSelected', tone: 'ok' };
-  }
+const VERDICT_KEY: Record<Verdict, MessageKey> = {
+  ready: 'settings.local.c6.verdict.ready',
+  unreachable: 'settings.local.c6.verdict.unreachable',
+  incompatibleHost: 'settings.local.c6.verdict.incompatibleHost',
+  incompatibleApp: 'settings.local.c6.verdict.incompatibleApp',
+  incompatibleUnknown: 'settings.local.c6.verdict.incompatibleUnknown',
+  unknown: 'settings.local.c6.verdict.unknown',
+};
+
+function incompatibleVerdict(side: 'host' | 'app' | 'unknown' | undefined): Verdict {
+  return side === 'host' ? 'incompatibleHost' : side === 'app' ? 'incompatibleApp' : 'incompatibleUnknown';
+}
+
+function readmissionVerdict(readmission: LocalReadmission | null): Verdict {
+  if (!readmission) return 'unknown';
+  return readmission.state === 'incompatible' ? incompatibleVerdict(readmission.incompatible.side) : readmission.state;
+}
+
+/** Settled local app.status verdict; null while native is still settling it. */
+function appVerdict(app: AppState): Verdict | null {
   switch (app.state) {
     case 'ready':
-      return { ready: 'done', compatible: 'done', result: 'settings.local.c6.result.ready', tone: 'ok' };
-    case 'incompatible':
-      return {
-        ready: 'done',
-        compatible: 'failed',
-        result:
-          app.incompatible?.side === 'host'
-            ? 'settings.local.c6.result.serviceOld'
-            : app.incompatible?.side === 'app'
-              ? 'settings.local.c6.result.appOld'
-              : 'settings.local.c6.result.compatUnknown',
-        tone: 'attention',
-      };
+      return 'ready';
     case 'unreachable':
-      return { ready: 'failed', compatible: 'todo', result: 'settings.local.c6.result.unreachable', tone: 'attention' };
+      return 'unreachable';
+    case 'incompatible':
+      return incompatibleVerdict(app.incompatible?.side);
     default:
-      return { ready: 'current', compatible: 'todo', result: 'settings.local.c6.result.checking', tone: 'progress' };
+      return null;
   }
+}
+
+const VERDICT_VIEW: Record<Verdict, C6View> = {
+  ready: { ready: 'done', compatible: 'done', result: 'settings.local.c6.result.ready', tone: 'ok' },
+  incompatibleHost: { ready: 'done', compatible: 'failed', result: 'settings.local.c6.result.serviceOld', tone: 'attention' },
+  incompatibleApp: { ready: 'done', compatible: 'failed', result: 'settings.local.c6.result.appOld', tone: 'attention' },
+  incompatibleUnknown: { ready: 'done', compatible: 'failed', result: 'settings.local.c6.result.compatUnknown', tone: 'attention' },
+  unreachable: { ready: 'failed', compatible: 'todo', result: 'settings.local.c6.result.unreachable', tone: 'attention' },
+  unknown: { ready: 'unknown', compatible: 'unknown', result: 'settings.local.c6.result.unconfirmed', tone: 'attention' },
+};
+
+/**
+ * C6: service result, readiness and compatibility, each observed separately.
+ * Local selection: app.status, with a named disagreement if the Start/Restart
+ * readmission settled differently. Otherwise: this computer's readmission only.
+ */
+function c6View(app: AppState | null, readmission: LocalReadmission | null): C6View {
+  if (app?.target?.kind !== 'local') return VERDICT_VIEW[readmissionVerdict(readmission)];
+  const fromApp = appVerdict(app);
+  if (!fromApp) return { ready: 'current', compatible: 'todo', result: 'settings.local.c6.result.checking', tone: 'progress' };
+  const fromLocal = readmissionVerdict(readmission);
+  if (readmission && fromLocal !== 'unknown' && fromLocal !== fromApp) {
+    return { ready: 'unknown', compatible: 'unknown', result: 'settings.local.c6.result.disagree', disagree: { service: fromLocal, app: fromApp }, tone: 'attention' };
+  }
+  return VERDICT_VIEW[fromApp];
 }
 
 const STEP_CLASS: Record<Step, string> = {
@@ -418,6 +483,7 @@ const STEP_CLASS: Record<Step, string> = {
   current: 'text-text-primary font-semibold',
   failed: 'text-attention-text font-semibold',
   todo: 'text-text-muted',
+  unknown: 'text-attention-text font-semibold',
 };
 
 const STEP_STATE_KEY: Record<Step, MessageKey> = {
@@ -425,6 +491,7 @@ const STEP_STATE_KEY: Record<Step, MessageKey> = {
   current: 'settings.local.c6.step.current',
   failed: 'settings.local.c6.step.failed',
   todo: 'settings.local.c6.step.todo',
+  unknown: 'settings.local.c6.step.unknown',
 };
 
 function OutcomeNotice({ outcome, app, remoteHost, onRecheck }: { outcome: Outcome; app: AppState | null; remoteHost: string | null; onRecheck: () => void }): JSX.Element | null {
@@ -459,7 +526,8 @@ function OutcomeNotice({ outcome, app, remoteHost, onRecheck }: { outcome: Outco
     );
   }
   if (outcome.command !== 'local.start' && outcome.command !== 'local.restart') return null;
-  const steps = restartSteps(app);
+  const steps = c6View(app, outcome.readmission);
+  const params = steps.disagree ? { service: t(VERDICT_KEY[steps.disagree.service]), app: t(VERDICT_KEY[steps.disagree.app]) } : undefined;
   const rows: [MessageKey, Step][] = [
     [outcome.command === 'local.restart' ? 'settings.local.c6.step.restarted' : 'settings.local.c6.step.started', 'done'],
     ['settings.local.c6.step.ready', steps.ready],
@@ -474,11 +542,15 @@ function OutcomeNotice({ outcome, app, remoteHost, onRecheck }: { outcome: Outco
           </li>
         ))}
       </ol>
-      <p className="mt-2">
-        {remoteHost
-          ? t('settings.local.c6.result.remote', { host: remoteHost })
-          : t(steps.result)}
+      <p className="mt-2" data-testid="local-c6-result">
+        {t(steps.result, params)}
       </p>
+      {remoteHost && (
+        <p className="mt-1" data-testid="local-c6-remote">
+          {t('settings.local.c6.remoteUnaffected', { host: remoteHost })}
+          {steps.tone !== 'ok' && <> {t('settings.local.c6.remoteRecheck')}</>}
+        </p>
+      )}
       {steps.tone !== 'ok' && (
         <div className="mt-2">
           <Button size="sm" variant="outline" className={WRAP} onClick={onRecheck}>
