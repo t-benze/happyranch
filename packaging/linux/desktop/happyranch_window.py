@@ -900,7 +900,7 @@ class RemoteAccessPanel:
 
 
 class MainHeader:
-    """Native presentation of app.status; dialog ownership stays in Main web."""
+    """Native presentation of app.status and Connection/Settings entry actions."""
 
     def __init__(self, Gtk: object, GLib: object, tr: Callable,
                  status: Callable, request: Callable) -> None:
@@ -1011,6 +1011,9 @@ def run_gui(prefix: Path, home: Path) -> int:
     app_scheme = None
 
     def request_dialog(dialog: str) -> bool:
+        if dialog == "connection":
+            open_connection(None)
+            return True
         if app_scheme is None or not app_scheme.request_dialog(dialog):
             return False
         app_scheme.view.grab_focus()

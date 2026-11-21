@@ -301,7 +301,11 @@ scope note (“These controls affect this computer, not {host}.”) and only whe
 a remote Host name is supplied; nothing supplies it until the S5-W1 status
 store lands, and the local controls page itself is S7-L2. The Connection
 dialog is a placeholder shell (S6-W3 moves the `web/connection` screens in)
-with a Settings cross-action. Layout (C4): at md and wider a large centered
+with a Settings cross-action. Until S7-L1, the Linux header Connection button
+and “Access wasn't saved” badge open/present the existing native Connection
+window in both default and app-scheme opt-in builds; Settings retains
+`app.dialogRequested` delivery and explicit Retry when unavailable.
+Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
 one vertically scrolling column, and choosing a page scrolls it into view.

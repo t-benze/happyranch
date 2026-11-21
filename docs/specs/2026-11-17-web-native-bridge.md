@@ -801,6 +801,11 @@ whose value is exactly `{"schema":2,"dialog":"settings"}` or
 reply or acknowledgement. Delivery does not prove that a dialog opened: its
 owner gate may retain the current presentation.
 
+Current Linux exception until S7-L1: the header Connection button and
+“Access wasn't saved” badge open/present the existing native Connection window
+in default and app-scheme opt-in builds while the SPA Connection pane is a
+placeholder. Only Settings uses header `app.dialogRequested` delivery and Retry.
+
 `#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
 requires both keys and rejects extra keys. In addition to the status/error
 payload kinds above, the root `oneOf` now accepts this third kind. Adapters
