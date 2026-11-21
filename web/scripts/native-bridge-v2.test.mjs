@@ -279,6 +279,16 @@ test('499 cancelled after forwarding on a mutation -> ResultUnknownError, single
   assert.equal(notices.getNativeNotice(), 'result_unknown');
 });
 
+test('C1: a 499 ResultUnknownError save is classified unknown by the owner registry (never discardable)', async () => {
+  const { classifySaveError } = await import('../src/lib/owners/ownerRegistry.ts');
+  desktop(state('g1'));
+  queue.push(json(499, { detail: { code: 'cancelled' } }));
+  const err = await request('/x', { method: 'PUT', body: {} }).catch((e) => e);
+  assert.ok(err instanceof ResultUnknownError);
+  assert.equal(classifySaveError(err), 'unknown');
+  assert.equal(classifySaveError(new ResultUnknownError()), 'unknown');
+});
+
 // --- 409 target_changed ---------------------------------------------------------------
 test('W-2b: 409 target_changed on a mutation is never auto-retried; re-reads app.status; Not sent', async () => {
   const bridge = desktop(state('g1'));

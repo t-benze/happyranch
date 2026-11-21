@@ -6,9 +6,20 @@ import type { OwnerRecord } from './ownerRegistry';
 
 /**
  * What the requested transition does, named in the Discard action. `quit` and
- * `relaunch` (with `close`) are native lifecycle requests (S6-W2b).
+ * `relaunch` (with `close`) are native lifecycle requests (S6-W2b);
+ * `switchTarget` and `disconnect` are the Connection dialog's target commits
+ * (S6-W3), which affect every owner.
  */
-export type OwnerGateEffect = 'close' | 'openConnection' | 'changePage' | 'changeOrg' | 'leave' | 'quit' | 'relaunch';
+export type OwnerGateEffect =
+  | 'close'
+  | 'openConnection'
+  | 'changePage'
+  | 'changeOrg'
+  | 'leave'
+  | 'quit'
+  | 'relaunch'
+  | 'switchTarget'
+  | 'disconnect';
 
 interface PathLike {
   pathname: string;

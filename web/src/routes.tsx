@@ -45,6 +45,7 @@ import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/Wa
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { RecoverySettingsPage, SettingsPage } from '@/features/settings/SettingsPage';
 import { SettingsDialogBody } from '@/features/settings/SettingsDialogBody';
+import { ConnectionDialogBody } from '@/features/connection/ConnectionDialogBody';
 import {
   DesktopDialogsProvider,
   DesktopSettingsRoute,
@@ -172,7 +173,10 @@ export function AppRoutes(): JSX.Element {
   // and outstanding saves).
   return (
     <OwnerGateProvider>
-    <DesktopDialogsProvider renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}>
+    <DesktopDialogsProvider
+      renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}
+      renderConnectionBody={(slot) => <ConnectionDialogBody {...slot} />}
+    >
       <Routes>
         {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
             `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
