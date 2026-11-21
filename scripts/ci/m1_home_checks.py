@@ -58,8 +58,9 @@ def enable_refusal_logs() -> None:
             '--output=json', '--output-fields=_SYSTEMD_UNIT,MESSAGE',
             *[argument for unit in units for argument in ('--unit', unit)], check=False)
         if result.returncode == 0:
-            status, truncated = 'ok', len(result.stdout) > 262144
-            for line in result.stdout[:262144].splitlines():
+            raw = result.stdout.encode('utf-8')
+            status, truncated = 'ok', len(raw) > 262144
+            for line in raw[:262144].decode('utf-8', errors='ignore').splitlines():
                 if len(line) > 8192:
                     continue
                 try:

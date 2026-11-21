@@ -85,6 +85,9 @@ def test_m1_enable_journal_exports_only_bounded_allowlist(
     args, kwargs = run.call_args
     assert '--lines=160' in args and '--output-fields=_SYSTEMD_UNIT,MESSAGE' in args
     assert kwargs == {'check': False}
+    run.return_value = SimpleNamespace(returncode=0, stdout='é' * 140000 + '\n' + json.dumps(records[-1]))
+    collector.enable_refusal_logs()
+    assert json.loads(capsys.readouterr().out) == dict(journal='ok', matched=0, truncated=True)
     run.return_value = SimpleNamespace(returncode=1, stdout='synthetic-secret')
     collector.enable_refusal_logs()
     assert json.loads(capsys.readouterr().out) == dict(journal='unavailable', matched=0, truncated=False)
