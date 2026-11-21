@@ -1,5 +1,76 @@
 # Coding workflow contracts
 
+## Coding v3 role reports — S8a staged registration
+
+Coding v3 (`release/happyranch/coding@3`) uses definition ABI @2 and generic
+bounded canonical JSON objects (at most 49152 UTF8 bytes). It is registration-only
+until S8b catalog cutover: `STAGED_GENERIC` pins its literal resource separately
+from the public @1 `MANIFEST`. The qualified registrar appends v2 and v3 definition
+rows only. `PRESET_CATALOG` keeps its v2 compatibility projection and omits staged
+v3. No settings, roles, admission, tasks, runs or Allow are created; missing
+settings mean Disabled/unset. Registration is not activation or start authority.
+
+Public start-context discovery, start-compose and fresh-start selection still
+use v2 only. V3 is absent from discovery and its fresh pin fails closed with
+`sequential_release_pin_mismatch`. S8b owns promotion into the public catalog and
+the ABI-aware transport/view cutover. V1/v2 bytes, pins and admitted histories
+retain their original contracts. Historical repository-resolve/bind/preflight,
+all-four-role duty evidence, typed Coding outputs and LOCAL finalize instructions
+below apply only to an actual old binding, never to the v3 role reports.
+
+The following authored responsibilities are carried verbatim into generic node
+briefs. Trusted instructions and actual authorization control every tool effect.
+No role default installs an agent or broadens tools, jobs or credential authority.
+
+### develop
+
+- Resolve the actual authorized repository, base SHA1, worktree and change scope before editing; perform the repository/base/worktree preflight yourself using authorized tools.
+- Produce the scoped change, actual branch/head/PR, supported verification evidence and spent allowances; address returned findings without resetting budgets.
+- Report a canonical JSON object with repository, base, head, pr, evidence and spent_allowances. Use produced for the change or BLOCK with your causal findings.
+
+### review
+
+- Fetch the exact selected head yourself and verify author/contributor independence before reviewing; record the reviewed head and findings.
+- Assess the scoped change and report an explicit APPROVE, REQUEST_CHANGES or BLOCK. Do not approve your own contribution or infer exact-head review from another agent report.
+- Report a canonical JSON object with repository, base, head, pr, verdict, contributors, independence, findings and evidence; identify evidence limits.
+
+### qa
+
+- Fetch the same selected head yourself and independently run the repository-supported verification against the request and acceptance cases.
+- Report PASS, REVISE or BLOCK at that head with actual commands, exits, evidence and evidence limits; label missing or unexecuted checks NOT RUN, never PASS.
+- Report a canonical JSON object with repository, base, head, pr, verdict, evidence and evidence_limits.
+
+### finalize
+
+- In your genuine authorized live Final task, compare the developer, reviewer and QA repository/base/head/PR reports; require matching heads, independent APPROVE and same-head PASS.
+- Require actual successful literal Source Boundary Lint and Web Lint (Node 24) at that exact head; pending, missing, skipped, neutral or ambiguous checks cause a hold.
+- Use the existing guarded non-admin expected-head merge under your actual authorization, then separately observe remote MERGED, full merge commit and aware observation time; otherwise report a causal hold.
+- Preserve the original command and receipt uncertainty; never reissue an uncertain merge or move it into a job, daemon adapter or recovery runner.
+- Report a canonical JSON object with repository, base, head, pr, evidence, heads, lints, command and remote. These are attributed agent reports, not engine-verified repository or merge capabilities.
+
+All four reports use `repository`, `base`, `head`, `pr` and `evidence`; the develop
+report also includes `spent_allowances`, review includes `verdict`, `contributors`,
+`independence` and `findings`, QA includes `verdict` and `evidence_limits`, and Final
+includes `heads`, `lints`, `command` and `remote` (MERGED state, full commit and
+aware `observed_at`). These fields are an agent convention, not a special runtime
+schema or capability. Keep reports within native task-result visibility; use
+synthetic data in fixtures. For BLOCK/held/uncertain, use empty content and own
+causal findings instead of inventing a successful report. Correction outcomes
+carry their own bounded JSON assessment and findings because they advance along
+a declared correction edge. Review REQUEST_CHANGES and QA REVISE return to
+develop, spend its finite node revision allowance and invalidate downstream
+selections; Final must assess new reports for the new head. Each node has two
+revisions, three attempts and one recovery, within 16 visits, 4096 events and four
+run recoveries; authored data cannot replenish them.
+
+The engine enforces generic JSON shape/size, declared outcomes, current selected
+references, genuine native provenance and positive settlement. It does not parse
+repository fields, compare Git heads, validate the semantic review/QA assessment,
+fetch GitHub or verify a remote merge. Generic Finished/completed means the
+settled declared output was accepted, not independently verified merge truth.
+Semantic role adherence is a genuine founder-reserved pilot: **NOT RUN**. No
+setup, role assignment, Allow, pilot, deployment or restart follows from S8a.
+
 The unpublished load composes its execution observer through
 `Database.observe_trace`. The audited sources and three unchanged target readers
 enter the owner before sequential selection. A complete result can be borrowed

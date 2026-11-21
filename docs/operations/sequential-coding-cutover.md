@@ -1,5 +1,27 @@
 # Sequential Coding cutover and backout — operator draft
 
+## S8a staged Coding v3 boundary (THR-336)
+
+Coding v3 is registration-only until S8b catalog cutover. The separate literal
+`STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
+immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
+v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
+v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
+Missing settings remain Disabled/unset; registration creates no settings, roles,
+admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.
+
+V3 repository/base/worktree preflight, independent exact-head review, same-head
+QA and guarded non-admin expected-head merge/remote observation are agent duties,
+not engine capabilities. The canonical responsibilities and generic JSON report
+convention are in `docs/agent-guides/contracts/coding-workflow.md`, “Coding v3 role
+reports”. Generic completion accepts a settled attributed report and does not
+independently verify repository heads or merge truth. The historical special
+repository/finalize adapters, typed Coding outputs and old guarantees in this
+document apply only to their actual v1/v2 or legacy binding; v3 does not inherit
+them. Original bytes, pins, replay and uncertain effects remain unchanged.
+Semantic role adherence/pilot is founder-reserved and NOT RUN; no live operation
+is authorized by this source delivery.
+
 Load instrumentation composes through `Database.observe_trace`; raw native trace
 replacement is unsupported. The load owner enters before sequential selection,
 requires FK ON/deferred FK OFF and binds complete facts to the exact connection,
