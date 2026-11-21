@@ -5,6 +5,6 @@ version: 1.0.0
 description: Operational self-reflection workflow — recent work report, learnings, optional KB capture, final thread reply.
 when_to_use: Use when asked mid-thread to reflect on your recent work.
 owner: engineering_manager
-source: runtime/skills/reflection
+source: runtime/skills/bundled/reflection
 policy_class: standard_operational
 status: enabled

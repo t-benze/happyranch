@@ -1,7 +1,9 @@
 """Skill registry loader.
 
-Reads skill packages from runtime/skills/<slug>/{skill.yaml, SKILL.md, references/, assets/}
-and builds an in-memory catalog of SkillEntry objects.
+Reads catalog manifests from runtime/skills/<slug>/skill.yaml and builds an
+in-memory catalog of SkillEntry objects. The three release catalog packages
+use instructions and supporting assets from runtime/skills/bundled/<slug>/.
+Generic packages keep their content beside the manifest.
 
 System-contract skills (policy_class=system_contract) are skipped — they are
 outside the toggleable catalog.
@@ -20,6 +22,19 @@ from runtime.skills.models import (
     SkillEntry,
     SkillStatus,
 )
+
+
+def resolve_skill_content_dir(skills_root: Path, slug: str, source: str) -> Path:
+    """Resolve the three declared bundled catalog sources within this root.
+
+    Source metadata is not an arbitrary filesystem path. Other packages,
+    including fixtures and user-authored entries, retain sibling content.
+    A missing bundled package never falls back to the manifest directory.
+    """
+    if (slug in ("manage-agent", "manage-repo", "reflection")
+            and source == f"runtime/skills/bundled/{slug}"):
+        return skills_root / "bundled" / slug
+    return skills_root / slug
 
 
 def _parse_optional_datetime(value: Any) -> Optional[datetime]:
@@ -60,11 +75,14 @@ def _parse_status(raw: str) -> SkillStatus:
 class SkillRegistry:
     """In-memory catalog of managed skills loaded from a directory tree.
 
-    Directory structure expected:
+    Generic directory structure expected:
         <skills_root>/<slug>/skill.yaml    (required)
         <skills_root>/<slug>/SKILL.md      (required)
         <skills_root>/<slug>/references/   (optional)
         <skills_root>/<slug>/assets/       (optional)
+
+    Release manage-agent/manage-repo/reflection manifests instead declare
+    runtime/skills/bundled/<slug> and use <skills_root>/bundled/<slug>/ content.
 
     System-contract skills are loaded but excluded from the catalog
     (they are not toggleable).
@@ -127,7 +145,8 @@ class SkillRegistry:
             return None  # not toggleable
 
         # --- Build entry ---
-        skill_md = slug_dir / "SKILL.md"
+        source = data.get("source", f"runtime/skills/{slug_dir.name}")
+        skill_md = resolve_skill_content_dir(self._skills_root, slug_dir.name, source) / "SKILL.md"
 
         return SkillEntry(
             id=data.get("id", f"hr:{slug_dir.name}"),
@@ -137,7 +156,7 @@ class SkillRegistry:
             description=data.get("description", ""),
             when_to_use=data.get("when_to_use", ""),
             owner=data.get("owner", ""),
-            source=data.get("source", f"runtime/skills/{slug_dir.name}"),
+            source=source,
             policy_class=policy_class,
             status=_parse_status(data.get("status", "enabled")),
             compatibility=data.get("compatibility"),

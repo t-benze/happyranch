@@ -1671,6 +1671,15 @@ There is no automatic source migration or canonical byte repair. Remove this
 compatibility field only in a separately versioned settings-contract change
 after deployed override inventory and client migration are complete.
 
+The release catalog keeps `manage-agent`, `manage-repo`, and `reflection`
+metadata in `runtime/skills/<slug>/skill.yaml`; their declared bundled sources
+resolve under that same skills root. Registry validation, both workspace build
+paths, and release recovery read `bundled/<slug>/`, without falling back to
+content beside the manifest. Publication hashes the bundled package using the
+unchanged tree-hash rules. Recovery still requires the current release's exact
+content hash; an old content hash is refused, with no migration or compatibility
+rebuild. Generic fixture and user-authored package resolution is unchanged.
+
 Operational settings are represented by `Settings` in `runtime/config.py`.
 
 Resolution order:
