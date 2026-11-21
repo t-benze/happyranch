@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "method": "DELETE",
+      "path_template": "/api/v1/executor-binaries/{kind}",
+      "class": "config"
+    },
+    {
+      "method": "DELETE",
+      "path_template": "/api/v1/executors/runtime/profiles/{name}",
+      "class": "config"
+    },
+    {
+      "method": "PATCH",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}",
+      "class": "config"
+    },
+    {
+      "method": "PATCH",
+      "path_template": "/api/v1/orgs/{slug}/schedules/{schedule_id}",
+      "class": "config"
+    },
+    {
+      "method": "PATCH",
+      "path_template": "/api/v1/orgs/{slug}/skills/{skill_id}",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/agents",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/agents/init",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}/restore",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}/retire",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}/versions",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/orgs/{slug}/skills",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/runtime",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/runtime/custom-cli/{operation_id}/forget",
+      "class": "config"
+    },
+    {
+      "method": "POST",
+      "path_template": "/api/v1/runtime/custom-cli/{operation_id}/retry",
+      "class": "config"
+    },
+    {
+      "method": "PUT",
+      "path_template": "/api/v1/orgs/{slug}/agents/{agent_name}/model",
+      "class": "config"
+    },
+    {
+      "method": "PUT",
+      "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility",
+      "class": "config"
+    },
+    {
+      "method": "PUT",
+      "path_template": "/api/v1/orgs/{slug}/settings/org",
+      "class": "config"
+    },
+    {
+      "method": "PUT",
+      "path_template": "/api/v1/orgs/{slug}/settings/teams",
+      "class": "config"
+    }
+  ]
+}

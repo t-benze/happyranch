@@ -1536,3 +1536,45 @@ or `appLocaleSetResult` as named, and the root schema.
 ```json
 {"schema":2,"locale":{"current":"en","persisted":false,"path":"synthetic"}}
 ```
+
+### S8 remote-client configuration policy
+
+**S8-2a is spec and policy only; UI and native-router enforcement is pending
+S8-2b.** Under founder THR-387 seq86 and the THR-388 seq2 classifications,
+[`protocol/remote-client-config-policy.v1.json`](../../protocol/remote-client-config-policy.v1.json)
+is the single source for both the native router and web read-only controls
+(imported at web build time). Its closed shape is exactly `version:1` and an
+`entries` array; each entry has exactly `method`, `path_template`, and
+`class:"config"`. Version is an integer; entries use exact uppercase write
+methods and templates copied from the daemon allowlist, without duplicate
+routes. Unlisted routes are **operation** by default for this classifier;
+that classification grants no route access or capability.
+
+For a **remote target**, the app must answer a matching config write with
+HTTP **403** and exactly `{"detail":{"code":"remote_read_only"}}` **before
+forwarding**: the request never reaches the Host. Native-router denial is
+required even when a caller bypasses a disabled web control. This rule is
+generation-independent: no current, stale or missing target-generation value
+grants permission to write remote config. Existing generation fences remain
+in force. The same config writes to a **local target are unaffected**.
+Remote config surfaces, including Main/history/deep links, show read-only
+authorized reads or a named unavailable state and “Change this on {Host}”.
+Handle `remote_read_only` as a not-sent read-only refusal, preserving drafts;
+never show failed-save copy or automatically retry the write.
+
+The policy covers Organization/team settings, executor/profile deletion,
+agent creation/init/model/skill assignment, skills/custom-skills configuration
+and versions/retire/restore/eligibility, org/runtime creation, custom-CLI
+retry/forget, and schedules PATCH. Executor validation, skill validation and
+eligibility preview POSTs, KB content writes/reindex, agent enrollment
+approve/reject, and schedule pause/cancel/renew remain operations. Local app
+preferences and `local.*` retain their existing this-computer scope.
+
+The daemon allowlist and its security/auth behavior are unchanged;
+`runtime/remote_access/route_policy.json` is read-only input and is never edited
+by S8-2a/S8-2b. The standalone static check
+`python scripts/check_remote_client_config_policy.py` validates the closed
+policy and exact membership of every entry in daemon `allow`, without importing
+runtime code or writing either file. It follows the existing `scripts/check_*`
+layout and remains outside required CI wiring. It checks shape/drift only;
+S8-2b must supply native pre-forward and web behavior evidence.
