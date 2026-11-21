@@ -152,7 +152,7 @@ export interface NativeLocaleView {
 export type NativeReportDecision =
   | { kind: 'ignore' }
   | { kind: 'adopt'; locale: Locale; persistence: 'durable' | 'session-only' }
-  | { kind: 'settle'; persistence: 'durable' };
+  | { kind: 'settle'; persistence: 'durable' | 'session-only' | 'failed' };
 
 /**
  * Decide what a native locale report does (THR-387 S8-1-W; bridge spec §12
@@ -161,19 +161,22 @@ export type NativeReportDecision =
  *   can never restore old copy or show Saved while a newer choice is pending);
  * - no local choice yet (late first `app.status`, startup/reopen): adopt the
  *   native locale with its saved / session-only state;
- * - a report for a different locale than the latest choice: ignore (no
- *   rollback of the live choice);
- * - the latest choice failed (lost/late reply) and native now reports it
- *   saved: settle to Saved. Every other report changes nothing.
+ * - otherwise the report is native's latest known state, and the persistence
+ *   claim for the latest choice follows it (the live choice is never rolled
+ *   back): the same locale with `persisted: true` is Saved, `persisted: false`
+ *   is session-only, and another locale is failed (native will not relaunch in
+ *   the shown language; Retry re-applies it). A report never needs to belong
+ *   to the latest attempt: an older attempt's late report is overridden by the
+ *   next one, so the end state follows native's final report.
  */
 export function reconcileNativeReport(view: NativeLocaleView, report: NativeLocaleReport): NativeReportDecision {
   if (!isLocale(report.current) || view.pending) return { kind: 'ignore' };
   if (view.choice === null) {
     return { kind: 'adopt', locale: report.current, persistence: report.persisted ? 'durable' : 'session-only' };
   }
-  if (report.current !== view.choice) return { kind: 'ignore' };
-  if (report.persisted && view.persistence === 'failed') return { kind: 'settle', persistence: 'durable' };
-  return { kind: 'ignore' };
+  const persistence =
+    report.current !== view.choice ? 'failed' : report.persisted ? 'durable' : 'session-only';
+  return persistence === view.persistence ? { kind: 'ignore' } : { kind: 'settle', persistence };
 }
 
 /**

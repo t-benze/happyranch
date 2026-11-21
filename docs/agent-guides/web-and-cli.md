@@ -2250,8 +2250,12 @@ bounded by the existing status timeout, so the first text uses
 `app.status`/`app.stateChanged` reports through `reconcileNativeReport`
 (`lib/i18n/locale.ts`). Before any local choice it adopts the native locale:
 `persisted:true` shows Saved and `persisted:false` shows session-only. It
-ignores every report while a choice is pending, and it ignores reports for a
-locale other than the latest choice, so the live choice is never rolled back.
+ignores every report while a choice is pending. After the latest choice
+settles, each report is native's latest known state: it never rolls back the
+live choice, but the persistence claim follows it (the same locale with
+`persisted:true` is Saved, `persisted:false` is session-only, another locale
+is failed with Retry). A late report from an older attempt is therefore
+overridden by the next one, and the end state follows native's final report.
 `setLocale` switches Main and both dialogs live (`<html lang>` included) and
 calls `app.locale.set` `{"schema":2,"locale":…}`. Only a matching reply with
 `persisted:true` shows **Saved**; `persisted:false` shows session-only. A

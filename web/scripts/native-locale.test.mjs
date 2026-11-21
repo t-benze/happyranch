@@ -4,8 +4,8 @@
 // refusal / lost / malformed / other-locale replies fail and re-read the
 // native snapshot without re-sending the setter), the native adapter's
 // snapshot and report subscription (never touching browser storage), the pure
-// report reconciler (newer choice wins, no rollback, late Saved after a lost
-// reply), adapter selection, and kind-based built-in name localization.
+// report reconciler (newer choice wins, no rollback, persistence follows
+// native's latest report, R/T FIFO regressions), adapter selection, and kind-based built-in name localization.
 // Request/reply fixtures are validated against
 // `protocol/native-connection-bridge.v2.json` `appLocaleSet` /
 // `appLocaleSetResult` (ajv 6 from web/node_modules, `$defs` rewritten to
@@ -243,7 +243,7 @@ test('adapter selection: browser adapter without the bridge, native adapter behi
   __setNativeBridgeForTests(null);
 });
 
-test('report reconciler: adopt before a choice, ignore while pending or for another locale, late Saved after a lost reply', () => {
+test('report reconciler: adopt before a choice, ignore while pending, then follow native\'s latest report', () => {
   const view = (choice, pending, persistence) => ({ choice, pending, persistence });
   const r = (current, persisted) => ({ current, persisted });
   // Before any local choice: the late first app.status / startup / reopen.
@@ -251,18 +251,125 @@ test('report reconciler: adopt before a choice, ignore while pending or for anot
   assert.deepEqual(reconcileNativeReport(view(null, false, 'idle'), r('en', false)), { kind: 'adopt', locale: 'en', persistence: 'session-only' });
   // Unsupported native value never applies.
   assert.deepEqual(reconcileNativeReport(view(null, false, 'idle'), r('fr', true)), { kind: 'ignore' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'durable'), r('fr', true)), { kind: 'ignore' });
   // A newer choice is pending: no older snapshot restores copy or shows Saved.
   assert.deepEqual(reconcileNativeReport(view('en', true, 'pending'), r('zh-CN', true)), { kind: 'ignore' });
   assert.deepEqual(reconcileNativeReport(view('en', true, 'pending'), r('en', true)), { kind: 'ignore' });
-  // Another locale than the latest choice: no rollback of the live choice.
+  // Another locale than the latest choice: never a rollback (no adopt), and
+  // never Saved: the claim becomes failed (Retry); already failed is unchanged.
   assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'failed'), r('en', true)), { kind: 'ignore' });
-  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'session-only'), r('en', false)), { kind: 'ignore' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'durable'), r('en', true)), { kind: 'settle', persistence: 'failed' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'session-only'), r('en', false)), { kind: 'settle', persistence: 'failed' });
   // Lost/late reply, then native reports the latest choice saved: Saved.
   assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'failed'), r('zh-CN', true)), { kind: 'settle', persistence: 'durable' });
-  // Not saved stays failed; session-only and Saved are not changed by echoes.
-  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'failed'), r('zh-CN', false)), { kind: 'ignore' });
-  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'session-only'), r('zh-CN', true)), { kind: 'ignore' });
-  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'durable'), r('zh-CN', false)), { kind: 'ignore' });
+  // Same locale, not saved: session-only, whatever was claimed before.
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'failed'), r('zh-CN', false)), { kind: 'settle', persistence: 'session-only' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'durable'), r('zh-CN', false)), { kind: 'settle', persistence: 'session-only' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'session-only'), r('zh-CN', true)), { kind: 'settle', persistence: 'durable' });
+  // Echoes of the claimed state change nothing.
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'durable'), r('zh-CN', true)), { kind: 'ignore' });
+  assert.deepEqual(reconcileNativeReport(view('zh-CN', false, 'session-only'), r('zh-CN', false)), { kind: 'ignore' });
+});
+
+// ---- F1 regressions (TASK-18505 R/T): adapter + reconciler under native FIFO ----
+
+/**
+ * Native facade double: `app.locale.set` writes are held in FIFO order (at
+ * most eight pending, like the native facade; the ninth is refused busy).
+ * `release(persisted)` completes the oldest: native state changes, the reply
+ * resolves, then `app.stateChanged` publishes the new state.
+ */
+function fifoNative(initial) {
+  let state = { ...initial };
+  const held = [];
+  const fake = fakeBridge({
+    status: () => appState(state.current, state.persisted),
+    onSet: (data) => {
+      if (held.length >= 8) return Promise.reject(JSON.stringify({ code: 'busy', effect: 'none', recovery: 'refresh' }));
+      return new Promise((resolve) => held.push({ locale: JSON.parse(data).locale, resolve }));
+    },
+  });
+  return {
+    fake,
+    state: () => state,
+    async release(persisted) {
+      const next = held.shift();
+      state = { current: next.locale, persisted };
+      next.resolve(reply(next.locale, persisted));
+      await flush();
+      fake.emit('app.stateChanged', appState(state.current, state.persisted));
+      await flush();
+    },
+  };
+}
+
+/**
+ * The provider's native contract (web/src/hooks/i18n.tsx) reduced to its
+ * state: setLocale applies at once, marks pending and only the latest write's
+ * outcome settles it; every report goes through reconcileNativeReport. The
+ * mounted provider is exercised by the Chromium ordering probe (R/T cases).
+ */
+function providerModel(adapter) {
+  const m = { locale: null, choice: null, pending: false, persistence: 'idle', seq: 0 };
+  adapter.subscribe((report) => {
+    const d = reconcileNativeReport({ choice: m.choice, pending: m.pending, persistence: m.persistence }, report);
+    if (d.kind === 'adopt') m.locale = d.locale;
+    if (d.kind !== 'ignore') m.persistence = d.persistence;
+  });
+  m.setLocale = (next) => {
+    const id = ++m.seq;
+    m.choice = next;
+    m.locale = next;
+    m.pending = true;
+    m.persistence = 'pending';
+    Promise.resolve(adapter.write(next)).then((outcome) => {
+      if (m.seq !== id) return;
+      m.pending = false;
+      m.persistence = outcome.status === 'durable' ? 'durable' : outcome.status === 'session-only' ? 'session-only' : 'failed';
+    });
+  };
+  return m;
+}
+
+test('F1 R: busy-refused latest choice never claims Saved after older FIFO writes finish in another locale', async () => {
+  const native = fifoNative({ current: 'en', persisted: true });
+  __setNativeBridgeForTests(native.fake.bridge);
+  const m = providerModel(nativeAdapter());
+  await flush();
+  assert.equal(m.locale, 'en');
+  for (let i = 0; i < 9; i++) m.setLocale(i % 2 === 0 ? 'zh-CN' : 'en');
+  await flush();
+  assert.equal(native.fake.sets().length, 9);
+  assert.equal(m.persistence, 'failed', 'ninth (zh-CN) refused busy');
+  for (let i = 0; i < 8; i++) await native.release(true);
+  assert.deepEqual(native.state(), { current: 'en', persisted: true }, 'native ends on the eighth accepted write');
+  assert.equal(m.locale, 'zh-CN', 'live choice kept (no rollback)');
+  assert.equal(m.persistence, 'failed', 'not Saved: native saved another locale; Retry stays available');
+  __setNativeBridgeForTests(null);
+});
+
+test('F1 T: timed-out zh,en,zh writes completing FIFO true,true,false end session-only, not Saved', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const native = fifoNative({ current: 'en', persisted: true });
+    __setNativeBridgeForTests(native.fake.bridge);
+    const m = providerModel(nativeAdapter());
+    await flush();
+    for (const locale of ['zh-CN', 'en', 'zh-CN']) m.setLocale(locale);
+    await flush();
+    mock.timers.tick(5000);
+    await flush();
+    await flush();
+    assert.equal(m.persistence, 'failed', 'latest write timed out');
+    for (const persisted of [true, true, false]) await native.release(persisted);
+    assert.deepEqual(native.state(), { current: 'zh-CN', persisted: false });
+    assert.equal(m.locale, 'zh-CN');
+    assert.equal(m.persistence, 'session-only', 'final persisted:false is honored');
+    assert.equal(native.fake.sets().length, 3, 'setter never re-sent');
+  } finally {
+    mock.timers.reset();
+    __setNativeBridgeForTests(null);
+  }
 });
 
 test('built-in local name follows the live locale by kind; remote names stay verbatim', () => {
