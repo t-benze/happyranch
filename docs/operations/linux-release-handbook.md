@@ -836,7 +836,7 @@ pending saves, or current-generation non-GET transfers return a named refusal
 without changing target/generation. An empty tuple means a captured empty
 owner registry; it must not substitute for unavailable owner evidence. The
 client.commitSwitch command/active-candidate owner remains S5-L2 and web owner
-registry integration remains S6-W2. `ready=False` denotes
+registry/summary push landed in S6-W2b (#1804). `ready=False` denotes
 a selected remote session still connecting; only its owner publishes readiness.
 The adapter calls that session's existing pinned-peer `dial`, `release` and
 native `_credential` callbacks, without constructing a proxy/listener. It shares
