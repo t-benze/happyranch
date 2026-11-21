@@ -319,6 +319,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                 task = org.db.get_task(task_id)
                 if task is None: _error("task_not_found", 422)
                 if task.assigned_agent != agent or task.current_session_id != session_id: _error("session_not_current", 403)
+                if not task.brief or not task.brief.strip(): _error("task_brief_empty", 422)
             validation_result = service.validate_package(
                 org, slug=skill_slug, name=body["name"], skill_md=skill_md, writer=writer,
             )
@@ -335,7 +336,8 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                 task = org.db.get_task(task_id)
                 if task is None: _error("task_not_found", 422)
                 brief = task.brief
-                digest = hashlib.sha256(brief.encode()).hexdigest() if brief else None
+                if not brief or not brief.strip(): _error("task_brief_empty", 422)
+                digest = hashlib.sha256(brief.encode()).hexdigest()
             conn.execute("BEGIN IMMEDIATE")
             try:
                 with writer.validation():
