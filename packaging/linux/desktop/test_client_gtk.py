@@ -538,7 +538,9 @@ class GTKTests(unittest.TestCase):
         self.assertIsNone(self.ui.runtime_view)
 
     def test_host_facade_dispatch_outcomes_events_and_fencing(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # Host/Client confirmation fencing does not depend on Secret Service activation.
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                self.ui.model.store, "list", return_value=({}, "none", "known")):
             prefix = Path(directory)
             root = prefix / "share/happyranch/desktop/connection"
             root.mkdir(parents=True)
