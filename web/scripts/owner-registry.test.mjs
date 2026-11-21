@@ -130,6 +130,25 @@ test('save error classification: only a 4xx refusal is a confirmed failure', () 
   assert.equal(classifySaveError(null), 'unknown');
 });
 
+test('save error classification: 499 cancelled (ResultUnknownError) is unknown and holds the gate', () => {
+  // Same fields as client.ts ResultUnknownError (499, 'cancelled'); the real
+  // instance is checked in native-bridge-v2.test.mjs, which has the alias hooks.
+  const resultUnknown = { status: 499, code: 'cancelled', detail: { code: 'cancelled' } };
+  assert.equal(classifySaveError(resultUnknown), 'unknown');
+  assert.equal(classifySaveError({ status: 499, code: null }), 'unknown');
+  assert.equal(classifySaveError({ status: 400, code: 'cancelled' }), 'unknown');
+  // A sent save whose result is unknown is never discardable: hold, not prompt.
+  const r = createOwnerRegistry();
+  r.register('main', ORG);
+  r.setDraft('main', { dirty: true, revision: 1 });
+  const ticket = r.beginSave('main');
+  r.settleSave(ticket, classifySaveError(resultUnknown));
+  const [owner] = r.getSnapshot();
+  assert.equal(owner.status, 'unknown');
+  assert.equal(selectOwnerBlocking(r.getSnapshot()).level, 'hold');
+  assert.equal(r.discard('main'), false);
+});
+
 test('navigation: page change affects Main owners; org change affects Main and Settings', () => {
   const r = createOwnerRegistry();
   r.register('s', ORG);

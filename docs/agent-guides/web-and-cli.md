@@ -420,8 +420,9 @@ owners are panes of the desktop Settings dialog (`<OwnerScope>` in
 `SettingsDialogBody`); everything else is `main`. `computer` is null for This
 computer (localized at render) until the S5 native status store supplies a
 selected remote name. Status is derived: `pending` (a sent save has no result)
-> `unknown` (transport/authority lost, 5xx, 408, `409 target_changed`, an
-unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
+> `unknown` (transport/authority lost, 5xx, 408, `409 target_changed`,
+`499 cancelled` / `ResultUnknownError` (a forwarded save interrupted by a
+target switch), an unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
 `confirmed` > `clean`. A save is tagged with the draft revision it was sent
 for: a success for an older revision never marks a newer draft saved (the
 registry reports `current: false` and the owner stays dirty); an older failure

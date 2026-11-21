@@ -428,14 +428,16 @@ export function createOwnerRegistry(): OwnerRegistry {
 /**
  * Classify a rejected save. Only an answer the daemon actually returned as a
  * client-side refusal (4xx other than 408/409 target_changed) is a CONFIRMED
- * failure. No response, a non-API error, 408, 409 target_changed after send
- * and any 5xx are UNKNOWN: the save may or may not have applied.
+ * failure. No response, a non-API error, 408, 409 target_changed after send,
+ * 499 / `cancelled` (the client's `ResultUnknownError`: a forwarded save
+ * interrupted by a target switch) and any 5xx are UNKNOWN: the save may or
+ * may not have applied. Matched by shape so this module stays import-free.
  */
 export function classifySaveError(error: unknown): 'failed' | 'unknown' {
   if (!error || typeof error !== 'object') return 'unknown';
   const { status, code } = error as { status?: unknown; code?: unknown };
   if (typeof status !== 'number') return 'unknown';
-  if (status === 408 || status >= 500) return 'unknown';
+  if (status === 408 || status === 499 || code === 'cancelled' || status >= 500) return 'unknown';
   if (status === 409 && code === 'target_changed') return 'unknown';
   if (status >= 400) return 'failed';
   return 'unknown';
