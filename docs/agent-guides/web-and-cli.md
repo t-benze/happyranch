@@ -3694,8 +3694,26 @@ local/global ignore settings.
 Add/update clone or pull failure returns 502 after saving frontmatter and
 refreshing metadata; the CLI exits 1 and displays that saved-state warning.
 Inspect `org/agents/<agent-id>.md` and `repos/<name>/.git` after a failed or
-ambiguous result, then deliberately correct the URL with update if needed.
-Re-add of a saved entry is 409; there is no automatic mutation retry.
+ambiguous result. Re-add returns 409 because the entry is already saved; there
+is no automatic mutation retry. After a 502 from a failed clone:
+
+1. Check that the leftover `repos/<name>/` folder has no `.git` and contains
+   nothing you need (normally it is empty).
+2. From the agent workspace, remove only that leftover folder with
+   `rmdir repos/<name>` (substitute the stored repo key). This refuses a
+   non-empty folder; inspect and preserve its contents if it refuses.
+3. Write the manage-repo JSON payload with `action` set to `update`, your
+   permanent `agent` ID, the same `repo_name` and the correct `url`, then invoke:
+
+   ```bash
+   happyranch manage-repo --org {ORG_SLUG} --from-file /absolute/workspace/output/<task_id>/manage-repo.json
+   ```
+
+While the leftover folder exists without `.git`, update and remove return 409
+`cannot verify linked worktrees`. Once it is gone, the worktree check passes,
+update saves the corrected URL and the clone runs. Remove also works after
+deleting that leftover folder: use the same command with `action` set to
+`remove` and the same `agent` and `repo_name` to remove the saved entry instead.
 
 Run focused in-process HTTP/CLI checks with real disposable Git clones:
 

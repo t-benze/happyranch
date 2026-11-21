@@ -69,9 +69,26 @@ failed/timed-out Git checks also refuse; no force override exists. Submodule
 edits count as dirty even when local/global Git configuration hides them.
 
 A failed clone/pull on add/update returns HTTP 502 after saving the frontmatter
-entry and refreshing workspace metadata. Inspect the saved entry and clone before
-acting again; fix a bad URL with **update**. Repeating **add** returns 409 because
-the entry already exists.
+entry and refreshing workspace metadata. Repeating **add** returns 409 because
+the entry is already saved. After a 502 from a failed clone, recover as follows:
+
+1. Inspect the saved entry and `repos/<name>/`. Check that the leftover folder
+   has no `.git` and contains nothing you need (normally it is empty).
+2. From your workspace, remove only that leftover folder with
+   `rmdir repos/<name>` (substitute the stored repo key). `rmdir` refuses a
+   non-empty folder; inspect and preserve its contents if it refuses.
+3. Write the payload shown above with `"action": "update"`, the same `agent`
+   and `repo_name`, and the correct `url`, then invoke:
+
+   ```bash
+   happyranch manage-repo --org {ORG_SLUG} --from-file /absolute/workspace/output/<task_id>/manage-repo.json
+   ```
+
+While the leftover folder exists without `.git`, **update** and **remove** return
+409 `cannot verify linked worktrees`. Once it is gone, the worktree check passes;
+**update** saves the corrected URL and clones the repo. To abandon the saved
+entry instead, **remove** also works after deleting that leftover folder, using
+the remove payload shown above and the same command form.
 
 Session spawn fast-forward-refreshes existing clones under a 30-second batch
 budget. If the prompt warns a repo is stale, fetch and read `origin/<branch>`
@@ -83,7 +100,9 @@ explicitly; never reset the primary checkout.
 - `404`: workspace not found, agent not found, or repo not found on remove/update.
 - `409`: duplicate repo on add, or remove/update refused by the linked-worktree
   safety check. The refusal lists offending paths and reasons; frontmatter and
-  clone remain unchanged. Existing writer/admission conflicts can also return 409.
+  clone remain unchanged. A failed-clone folder without `.git` also blocks
+  update/remove; follow the recovery steps above. Existing writer/admission
+  conflicts can also return 409.
 - `502`: the frontmatter entry WAS saved but clone/pull failed. The CLI displays
   the failure and exits non-zero; this is not a successful repository change.
 

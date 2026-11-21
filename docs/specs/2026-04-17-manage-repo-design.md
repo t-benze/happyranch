@@ -65,8 +65,23 @@ failure and exits 1. Existing init/enrollment/approval callers continue to mark
 
 After failed/ambiguous transport or a failure response, inspect canonical
 frontmatter and `repos/<name>/.git` before acting again. Never automatically
-retry the mutation. Correct a bad URL with update; re-add returns 409 because
-the saved entry already exists.
+retry the mutation. Re-add returns 409 because the entry is already saved.
+After a 502 from a failed clone, recover from a bad URL as follows:
+
+1. Check that the leftover `repos/<name>/` folder has no `.git` and contains
+   nothing you need (normally it is empty).
+2. From the agent workspace, remove only that leftover folder with
+   `rmdir repos/<name>` (substitute the stored repo key). This refuses a
+   non-empty folder; inspect and preserve its contents if it refuses.
+3. Use a CLI/skill payload with `action` set to `update`, the same
+   `agent` and `repo_name`, and the correct `url`, then run the single-line
+   `happyranch manage-repo --org {ORG_SLUG} --from-file /absolute/workspace/output/<task_id>/manage-repo.json`.
+
+While that folder exists without `.git`, update and remove return 409
+`cannot verify linked worktrees`. Once the folder is gone, the worktree check
+passes, update saves the corrected URL and the clone runs. Remove also works
+after deleting the leftover folder, if the intent is to remove the saved entry;
+use the same command form with a remove payload.
 
 ## CLI and skill
 
