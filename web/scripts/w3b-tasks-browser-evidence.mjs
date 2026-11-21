@@ -380,10 +380,11 @@ async function main() {
           await waitTrue(page, `${bodyHas('TASK-511')} && ${bodyHas('JOB-77')} && ${bodyHas(tr(locale, 'tasks.exec.heading'))}`, 'detail content');
           await sleep(400);
           check(`V detail ${locale} ${w} <html lang>`, await evaluate(page, langIs(locale)), true);
-          for (const key of ['tasks.detail.back', 'tasks.detail.revisit', 'tasks.detail.brief.heading', 'tasks.detail.lineage.heading', 'tasks.detail.subtasks.heading', 'tasks.detail.recall.heading', 'tasks.detail.activity.heading', 'tasks.detail.jobs.heading', 'tasks.rail.heading', 'tasks.exec.label.recentProgress', 'tasks.detail.chain.firstLeg']) {
+          for (const key of ['tasks.detail.back', 'tasks.detail.revisit', 'tasks.detail.brief.heading', 'tasks.detail.lineage.heading', 'tasks.detail.subtasks.heading', 'tasks.detail.recall.heading', 'tasks.detail.activity.heading', 'tasks.detail.jobs.heading', 'tasks.rail.heading', 'tasks.exec.label.recentProgress']) {
             check(`V detail ${locale} ${w} shows ${key}`, await evaluate(page, bodyHas(tr(locale, key))), true);
           }
-          check(`V detail ${locale} ${w} chain heading`, await evaluate(page, bodyHas(tr(locale, 'tasks.detail.chain.heading', { step: 2, total: 2 }))), true);
+          // THR-358: the 'Workflow chain — step N of M' timeline is removed; the fixture still carries active_chain.
+          check(`V detail ${locale} ${w} no workflow chain timeline`, await evaluate(page, `!${bodyHas(locale === 'en' ? 'Workflow chain' : '工作流链')}`), true);
           check(`V detail ${locale} ${w} authored values verbatim`, await evaluate(page, `${bodyHas('TASK-490')} && ${bodyHas(AUTH.job)} && ${bodyHas('Ported 3 of 5 tables (agent-authored)')} && ${bodyHas('Two rows mismatched (authored summary)')} && ${bodyHas('(running)')} && ${bodyHas('APPROVE')}`), true);
           check(`V detail ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
           await capture(page, `${short}-task-detail-${w}`, { viewport: `${w}x${h}`, locale, route: 'tasks/:task_id' });

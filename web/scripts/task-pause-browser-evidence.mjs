@@ -473,11 +473,8 @@ async function main(){
 
           }
           if(id==='UI-A01'||id==='UI-A04') {
-            const key=id==='UI-A01'?'tasks.waiting.continuationPending':'tasks.waiting.pendingChildren';
-            check(`${locale} ${id} timeline same observed reason`,await evaluate(page,`[...document.querySelectorAll('section')].some(e=>e.textContent.includes(${quote(tr(locale,'tasks.detail.blockedOn').split('{')[0])})&&e.textContent.includes(${quote(tr(locale,key))}))`));
-            await evaluate(page,`(()=>{const h=[...document.querySelectorAll('h3')].find(e=>e.textContent.includes(${quote(locale==='en'?'Workflow chain':'工作流链')}));h.scrollIntoView({block:'center'});return true;})()`);
-            await shot(page,`${name}-${id}-timeline`,{case:id,locale,width,height,theme,state:'real chain timeline with current read qualifier'});
-            await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
+            // THR-358: the workflow chain timeline is removed; assert its absence instead of reading its blocker line.
+            check(`${locale} ${id} no workflow chain timeline`,await evaluate(page,`![...document.querySelectorAll('h3')].some(e=>e.textContent.includes(${quote(locale==='en'?'Workflow chain':'工作流链')}))`));
           }
           if(id==='UI-A02')check(`${locale} A02 separate Paused`,actual.header?.includes(tr(locale,'tasks.pause.paused')));
           if(['UI-A08-empty','UI-A08-legacy','UI-A08-malformed'].includes(id))check(`${locale} ${id} no false subtasks`,!/waiting on subtasks|· 等待子任务$/.test(actual.header));
