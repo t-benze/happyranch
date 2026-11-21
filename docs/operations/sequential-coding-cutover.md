@@ -1,5 +1,22 @@
 # Sequential Coding cutover and backout — operator draft
 
+## S9 final source checkpoint
+
+The [final reader audit](../agent-guides/contracts/reusable-workflows.md#s9-final-reader-parity-and-naming-deferral)
+retains current generic and historical version-selected source paths. Shared
+acquisition naming is explicitly deferred because complete generic consumer
+migration exceeds S9's closed set. Coding authority/history, selected @1 replay,
+original Final journals and all cumulative charges stay with their original
+readers. No extraction, storage upgrade or historical rewrite is claimed.
+
+S8b's registration/transport boundary below remains current: public discovery
+and composition use Start@1/v2, public @2 start stays closed, and Coding remains
+Disabled/unset. R1/S1–S8b source delivery and S9 parity do not establish live
+replacement acceptance. Deployment/restart, actual Coding setup/roles/Allow,
+the genuine R2 four-role pilot/scratch merge, then/fanout retirement, live DB
+mutation and workflow thread notices remain founder-reserved. PR1252 stays held.
+No uncertain external effect may be reissued during cutover or backout.
+
 ## S8b registration and transport boundary (THR-336)
 
 Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible

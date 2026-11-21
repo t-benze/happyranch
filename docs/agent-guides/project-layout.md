@@ -1,5 +1,25 @@
 # Project Layout
 
+## S9 shared-reader ownership
+
+Shared bounded acquisition remains in
+`runtime/workflows/coding_authority_history.py`; the proposed
+`sequential_acquisition.py` naming extraction is deferred. `_ReadBudget` in
+`sequential_history.py` extends that retained ledger. `sequential_run_validation.py`
+owns selected reads; `workflow_schema_load.py` owns unpublished-load reuse and
+pins the original class/method/policy identities. Coding authority and history
+stay in their legacy owners. The [current/history source map](contracts/reusable-workflows.md#s9-final-reader-parity-and-naming-deferral)
+records the version boundary and unchanged proof limits.
+
+Direct generic consumers outside S9's closed set include
+`sequential_initiator.py`, `sequential_builtin.py`, `sequential_views.py`,
+`sequential_return.py`, `sequential_business_hold.py`, cancellation/mixed-history
+owners and `recovery.py`; infrastructure schema/Database and template consumers
+also share the primitives. Completing their migration requires a separately
+scoped change with original class/error/policy identities and cumulative charges
+preserved. No partial rename, duplicate reader or new compatibility layer is
+introduced in S9.
+
 ## S5 version boundary
 
 `runtime/workflows/sequential_initiator.py` owns internal @2 wait-set/inbox
