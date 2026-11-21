@@ -1,5 +1,42 @@
 # Linux release handbook
 
+## Native language preference store (S8-1-L-a)
+
+`packaging/linux/desktop/app_locale.py` supplies the unwired native preference
+store for the later Settings wiring slice. Its closed API is `load()`,
+`current()`, and `set(value)`, each returning a fresh
+`{"current": "en" | "zh-CN", "persisted": bool}` dictionary compatible with
+the shell locale snapshot. First access reads once; repeated loads preserve a
+session-only choice. Unsupported values (including non-strings) raise
+`ValueError` without changing state or disk.
+
+The installation-local file is `$XDG_CONFIG_HOME/happyranch/locale`, or
+`~/.config/happyranch/locale` when XDG is empty, unset or relative. Its content
+is ASCII `en` or `zh-CN`, optionally followed by one newline. Missing, corrupt,
+unknown, oversized (over 64 bytes), unreadable, symlinked or non-regular files
+fall back to the existing rule: `LANG.lower().startswith("zh")` selects
+`zh-CN`; everything else selects `en`, with `persisted: false`.
+
+The module copies the desktop lowercase `happyranch` directory and atomic
+write conventions locally, with descriptor-relative no-follow parent traversal
+and bounded nonblocking regular-file reads. A mode-0600 exclusive temporary
+file in the same directory is flushed, fsynced and atomically replaced; the
+directory is fsynced too (including parents after directory creation).
+`persisted: true` is returned only after these steps succeed. Write failure
+keeps the choice in memory with `persisted: false`; a failure after replacement
+may leave the new file visible without confirmed durability. One lock covers
+memory and disk throughout each call, ordering concurrent threads by lock
+acquisition. The assumption is one owning native process with stable
+environment; concurrent processes have no ordering guarantee.
+
+No shell or bridge wiring is included here. Later wiring will switch web
+content live; native menus and system dialogs follow the choice on next launch.
+For isolated verification, set `TMPDIR` and `XDG_CONFIG_HOME` to disposable
+directories outside real user config, then run from `packaging/linux/desktop`:
+`GSETTINGS_BACKEND=memory /usr/bin/python3 -B -m unittest test_app_locale -v`.
+Check a saved choice in a new process, a read-only config directory, corrupt
+files, and rapid threaded sets; no daemon or Product E2E is needed.
+
 ## Build the intermediate payload
 
 Founder authorizes one manual build workflow under THR-291.
