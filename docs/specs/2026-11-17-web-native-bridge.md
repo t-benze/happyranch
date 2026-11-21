@@ -937,3 +937,304 @@ claimed here. No open/closed notice or target/generation authority is added.
 ```json
 {"schema":2}
 ```
+
+### v2 local service commands
+
+THR-387 S7-0 / TASK-18220 specifies eight installation-local commands on the
+existing `call(command, data: string): Promise<string>` facade. This subsection
+follows S5-0c's **v2 owner summary and native lifecycle gate** when that stacked
+specification (#1777) lands; it changes none of its owner/lifecycle rules.
+These are contracts for later implementation, not newly callable commands.
+The [v2 schema](../../protocol/native-connection-bridge.v2.json) adds closed
+schema-2 payloads to its root `oneOf`; dispatch still selects the definition by
+command and direction. No third facade primitive, daemon route or v1 change
+is introduced. Like `app.status`, no-argument calls send the JSON string `"{}"`;
+that empty argument object is not a versioned result payload/root branch.
+
+| Command | Arguments (JSON inside facade string) | Resolved result definition | Existing Linux supervisor meaning |
+| --- | --- | --- | --- |
+| `local.status` | Exactly `{}` | `localStatusResult` | Read current local service/lifetime observations; never start or repair. |
+| `local.start` | Exactly `{}` | `localActionResult` with matching `command` | `ServiceMode.start(cancel)` and verified attachment, retaining existing unit/environment/ownership checks. |
+| `local.stop` | Exactly `{}` | `localActionResult` with matching `command` | Supervisor's existing owned-service stop/close path; validate provenance and observe stop. Keep-running unchanged. |
+| `local.restart` | Exactly `{}` | `localActionResult` with matching `command` | `ServiceMode.restart(cancel)`; service only, with fresh attachment and the compatibility/bootstrap steps below. |
+| `local.keepRunning.set` | `localKeepRunningSet`: exactly `{schema:2, enabled:boolean}` | `localActionResult` with matching `command` | Existing queue `on`/`off` → `set_keep_running(enabled)`. |
+| `local.repair` | Exactly `{}` | `localActionResult` with matching `command` | Same existing queue `on` as Repair → `set_keep_running(true)`; no generic installation repair. |
+| `local.turnOff` | Exactly `{}` | `localActionResult` with matching `command` | Same existing queue `off` as Turn off → `set_keep_running(false)`; does not stop the running service. |
+| `local.update.status` | Exactly `{}` | `localUpdateStatusResult` | Existing read-only `update_installed(prefix)` observation; never install, restart or relaunch. |
+
+**State vocabulary.** `service` is the closed `localServiceStatus` projection:
+`supported`, `mode`, `running`, `keepRunning`, `busy`. Only `mode:"service"`
+has `supported:true`; foreground fallback is `supported:false, mode:"foreground"`
+and local lifecycle/keep-running mutations are unsupported. Another unavailable
+mode is `"unsupported"`. Preserve the existing fallback's owned-child stop/reap
+on app exit; this bridge grants no fallback controls. `running` independently
+uses `running|starting|stopped|unknown`; it is not inferred from keep-running.
+
+| `keepRunning` | Presentation and evidence |
+| --- | --- |
+| `checking` | Checking / 正在检查; initial or fresh inspection in progress, controls noninteractive. |
+| `off` | Off / 已关闭; fresh inspection confirms both unit enablement and linger off. Default is opt-out; missing/failed evidence is not Off. |
+| `on` | Fully on / 完全开启; fresh inspection confirms both enablement and linger on. |
+| `partial` | Partly on / 部分开启; only one condition is on, mixed/noninteractive switch with explicit Repair and Turn off. |
+| `unknown` | Unknown / 状态未知; unavailable, refused, stale or failed inspection. Offer Check again/reason, never display an old state as current. |
+
+This maps `ServiceMode.lifetime_state()`'s `off|on|partial` exactly, adding
+`checking|unknown` for unavailable observations. Read both actual controls;
+`desktop.json` records undo custody, never the effective On state. Repair/Turn
+off preserve `set_keep_running`'s existing authorization, rollback and app-owned
+linger custody; never undo another actor's settings. Turn off uses the existing
+Cancel-default native confirmation: **“Turn off keep running? This turns off
+background running, but does not stop HappyRanch now.” / “关闭后台运行？这会关闭后台运行，
+但不会立即停止 HappyRanch。”** Start/Stop do not enable/disable keep-running.
+Manual Stop makes no promise about next login/reboot or resumed work.
+
+**One supervisor operation at a time.** Native validates the entire bounded,
+duplicate-free input and admitted Main-document identity before any effect,
+then rechecks fresh capability/ownership and existing native/system consent.
+Only the current admitted packaged top-level `happyranch-app://app` document
+can call; frames, remote/daemon HTML and ordinary browsers cannot. These calls
+remain reachable without a selected/ready target. A status read is observation,
+not effect admission. Retain the supervisor's single queue/owner, without a
+second worker or a queue of competing mutations. Atomically reserve its effect
+slot before prompting/enqueueing; another mutation rejects with the existing
+closed facade error `{"code":"busy","effect":"none","recovery":"refresh"}`.
+This named queue refusal is distinct from HTTP `503 busy` (host update-busy).
+Status reads remain available and report `busy:true` while an operation owns
+the slot. Release only after its outcome/reobservation; failed, partial or
+lost outcomes retain their operation owner/recovery and block competing effects
+until reconciled. Never infer no effect or replay a mutation after timeout,
+cancel, page loss or a lost reply. Existing owner/effect gates still apply.
+
+Malformed, missing/extra/wrong-type arguments reject atomically as existing
+`invalidRequest` (`effect:"none", recovery:"none"`). Unsupported mutations use
+existing `unavailable` (`effect:"none", recovery:"nativeRecovery"`) and a named
+unsupported-mode UI, never a foreground fallback effect. Existing permission,
+state-change, unavailable and `outcomeUnknown` error/effect/recovery semantics
+remain intact; a failed inspection is never a successful Off result. Each
+successful mutation resolves only after the supervisor result and fresh status
+observation; `command` must match its call. Success is not permission for the
+next effect. A partial observed lifetime state remains `partial`, not Fully on.
+
+**Restart is service-only and always presented when supported.** Keep Restart
+visible whenever local controls are supported, even without an installed-update
+hint; disable while checking/busy or when current ownership/consent cannot be
+established, with the reason. Native Cancel-default confirmation warns of local
+work interruption and names this computer. It restarts the local service, never
+the app: Main and its current dialog stay open, keep-running stays unchanged.
+Do not call the desktop Quit/relaunch path, reload away owners/drafts, or promise
+work resumption. Observe service attachment, API compatibility/readiness and page
+load separately; page Retry after service success is not another Restart.
+
+Before publishing local readiness after Start/Restart, native invalidates cached
+local compatibility and bearer, re-runs health compatibility admission and
+refreshes its cached local bearer through the **existing loopback bootstrap**.
+No credential is exposed to this payload or logged, and no bootstrap/auth policy
+changes. After Restart, C6's update → explicit service-only Restart → readiness/
+compatibility recheck ends in ready or the existing named host/app/unknown
+mismatch/unreachable state. Service restart success alone is not compatibility
+or page-load success. Publish refreshed `app.stateChanged` when its existing
+appState changes; its existing `local` projection is unchanged. Read the richer
+lifetime snapshot with `local.status`; this adds no local event or automatic
+effect retry. Remote-selected appState continues to describe that remote target.
+
+`local.update.status` returns `update:"restart_required"` for a positive existing
+installed-update hint, `"not_detected"` for no detected hint (including the
+best-effort helper's false result), `"unknown"` for an unavailable observation,
+or `"unsupported"` in unsupported mode. A negative hint is not proof of current
+assets or compatibility. This is no updater/download command; installed desktop
+assets and running service remain distinct. Normal app relaunch still requires
+the existing verified-compatible-assets and actual-effects Quit+launch rules.
+
+**This computer only (C5).** All eight names inspect/act on this installation,
+even while a remote target is active. Render **“These controls affect this
+computer, not Studio Host.” / “这些控制项作用于此电脑，而不是 Studio Host。”**, naming the
+actual local computer. No target/org/generation/path/host field is accepted;
+do not forward a local command to the selected target, switch targets, cancel a
+candidate, disconnect or grant remote lifecycle/config authority. Remote Host
+service, access and grants remain outside these commands. No daemon route,
+remote allowlist or security/auth change is needed or authorized.
+
+**Implementation status.** Spec only: S7-L2 wires the existing ServiceMode
+supervisor and the web Settings local page, with native consent and C5/C6 copy.
+Foreground/native/web execution, screenshots, service effects and Mac parity
+are NOT RUN here. Mac implementation remains pending separate authorization.
+The examples below are versioned payloads, each checked against its named
+definition and the root; no-argument `{}` is checked only as the empty call args.
+
+#### Valid: localStatusResult with Partly on
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"service","running":"running","keepRunning":"partial","busy":false}}
+```
+
+#### Valid: localStatusResult in unsupported foreground
+
+```json
+{"schema":2,"service":{"supported":false,"mode":"foreground","running":"running","keepRunning":"unknown","busy":false}}
+```
+
+#### Valid: localKeepRunningSet enables keep running
+
+```json
+{"schema":2,"enabled":true}
+```
+
+#### Valid: localActionResult after service-only restart
+
+```json
+{"schema":2,"command":"local.restart","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
+```
+
+#### Valid: localUpdateStatusResult requests service restart
+
+```json
+{"schema":2,"update":"restart_required"}
+```
+
+#### Invalid: localKeepRunningSet Boolean required
+
+```json
+{"schema":2,"enabled":"true"}
+```
+
+#### Invalid: localKeepRunningSet rejects remote target
+
+```json
+{"schema":2,"enabled":false,"target":"Studio Host"}
+```
+
+#### Invalid: localStatusResult cannot support foreground controls
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"foreground","running":"running","keepRunning":"on","busy":false}}
+```
+
+#### Invalid: localStatusResult missing busy observation
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"service","running":"running","keepRunning":"off"}}
+```
+
+#### Invalid: localActionResult cannot relaunch desktop app
+
+```json
+{"schema":2,"command":"app.relaunch","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
+```
+
+#### Invalid: localUpdateStatusResult cannot claim compatibility
+
+```json
+{"schema":2,"update":"compatible"}
+```
+
+### v2 app locale setter
+
+THR-387 S8-0 / TASK-18220 adds **`app.locale.set`** through the same admitted
+Main-document `call` primitive. Arguments are exactly `appLocaleSet`:
+`schema:2, locale:"en"|"zh-CN"`. Resolve with JSON-string `appLocaleSetResult`,
+exactly `schema:2, locale:{current:"en"|"zh-CN", persisted:boolean}`. No locale
+getter/event is added: existing `app.status` and full `app.stateChanged` carry
+the same current/persisted snapshot in their existing `locale` field. Unsupported
+names stay unavailable until implemented. Wrong/extra/missing fields, another
+locale or malformed/duplicate-key JSON reject atomically as `invalidRequest`
+(`effect:"none", recovery:"none"`), preserving both live and stored choices.
+
+**Acknowledge persistence before Saved.** Native owns one installation-local
+preference, independent of daemon, target, computer selection and organization.
+For an accepted choice, update native session state, attempt an atomic local
+write and acknowledge that write's actual outcome before resolving the call.
+`persisted:true` requires completed write/flush/fsync, atomic replacement and
+directory fsync. Only a matching acknowledged true result permits **Saved /
+已保存**. Write failure resolves with the chosen `current` and `persisted:false`:
+the live web switch remains **session-only**, never rolled back or labelled
+Saved. Even a post-replacement sync failure is false; bytes may be visible but
+durability is unconfirmed. A lost reply is not persistence confirmation; obtain
+the current native snapshot without automatically retrying the setter.
+
+The Linux S8-1-L-a store (`packaging/linux/desktop/app_locale.py`, TASK-18213)
+uses `$XDG_CONFIG_HOME/happyranch/locale` for an absolute XDG config home,
+otherwise `~/.config/happyranch/locale`; only `en` or `zh-CN` with an optional
+newline. Loading a valid saved preference reports true. Missing, invalid,
+unsafe or unreadable data falls back to the existing LANG-based `zh`/English
+choice with false. Repeated reads do not replace a session-only choice; a new
+process reads saved state anew. No shared config or credential store is added.
+
+**Newer choice wins.** Within one app process, admit choices in observed call
+order and serialize store writes, result delivery and locale publication in
+that order. The adapter must preserve this order before invoking the store
+(whose lock linearizes calls in lock-acquisition order). An older queued write,
+reply or event must never overwrite the newer choice. Web applies the live
+choice immediately across Main and either dialog and ignores stale setter
+acknowledgements using its local choice revision; those revisions are not wire
+fields. While a newer set is pending, an older snapshot cannot restore old web
+copy or show Saved. Publish the full `app.stateChanged` with the final snapshot
+after each persistence attempt, following the existing document/subscription
+rules. Reopening a dialog reads current native state; it does not reapply an
+old choice. No cross-process concurrent-writer ordering is promised.
+
+All web surfaces switch live, preserving mounted drafts, focus, selection and
+original actions. This preference call/event must trigger no daemon HTTP
+request, save, target/generation switch, transport restart or dialog navigation.
+Native menus and native dialogs take the preference **next launch**, with
+truthful **Menus change after restart / 菜单将在重启应用后更改** helper copy; a
+service-only `local.restart` is not that launch. No automatic app relaunch and
+no locale-triggered lifecycle/owner prompt. Session-only persistence failure
+does not promise that the next launch will retain the choice.
+
+**Implementation status.** Spec only. S8-1-L wires the native store into the
+bridge and next-launch native strings; S8-1-W wires the web's native locale
+authority and truthful pending/saved/session-only UI. TASK-18213's store at
+`870e34e62bd3a844abb0379be1f170dbb8d4cc48` matches atomic acknowledgement,
+failure=false and serialized writes; the adapter ordering above is later wiring,
+not a store mismatch. Browser-mode localStorage behavior stays as documented.
+No daemon route/auth/remote allowlist change, Mac edit/build or runtime/visual
+acceptance is claimed. The following examples validate against `appLocaleSet`
+or `appLocaleSetResult` as named, and the root schema.
+
+#### Valid: appLocaleSet chooses Simplified Chinese
+
+```json
+{"schema":2,"locale":"zh-CN"}
+```
+
+#### Valid: appLocaleSetResult acknowledged saved choice
+
+```json
+{"schema":2,"locale":{"current":"zh-CN","persisted":true}}
+```
+
+#### Valid: appLocaleSetResult session-only choice after write failure
+
+```json
+{"schema":2,"locale":{"current":"en","persisted":false}}
+```
+
+#### Invalid: appLocaleSet unsupported locale
+
+```json
+{"schema":2,"locale":"fr"}
+```
+
+#### Invalid: appLocaleSet wrong schema
+
+```json
+{"schema":1,"locale":"en"}
+```
+
+#### Invalid: appLocaleSet cannot supply persistence authority
+
+```json
+{"schema":2,"locale":"en","persisted":true}
+```
+
+#### Invalid: appLocaleSetResult missing persistence acknowledgement
+
+```json
+{"schema":2,"locale":{"current":"en"}}
+```
+
+#### Invalid: appLocaleSetResult nested extra field
+
+```json
+{"schema":2,"locale":{"current":"en","persisted":false,"path":"synthetic"}}
+```
