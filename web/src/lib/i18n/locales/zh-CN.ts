@@ -1537,8 +1537,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.rail.tasksEmpty': '此会话尚未派发任务',
   'threads.page.rail.thisThread': '此会话',
   'threads.page.rail.freshTokens': '新输入令牌',
-  'threads.page.rail.cost': '成本',
-  'threads.page.rail.notMetered': '未计量',
   'threads.page.rail.opened': '开启于',
   'threads.page.rail.artifacts': '产物',
   'threads.page.rail.id': 'ID',

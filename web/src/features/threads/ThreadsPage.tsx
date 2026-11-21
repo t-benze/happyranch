@@ -1560,12 +1560,11 @@ function DetailColumn({
           </div>
 
           {/* This thread — mockup .rail-row (13px, tabular numerals). Fresh
-              tokens · Cost · Opened. "Fresh tokens" is the REAL per-thread
+              tokens · Opened. "Fresh tokens" is the REAL per-thread
               fresh/uncached input total, wired over the existing tokens rollup
               and OMITTED when the thread has no recorded usage (never a
-              fabricated figure). Cost stays a static honest "not metered" fence
-              — no dollar meter exists on main. Status is shown in the header
-              pill, so it is not duplicated here. */}
+              fabricated figure). Status is shown in the header pill, so it is
+              not duplicated here. */}
           <div>
             <h3 className={RAIL_LABEL}>{t('threads.page.rail.thisThread')}</h3>
             <dl>
@@ -1577,10 +1576,6 @@ function DetailColumn({
                   </dd>
                 </div>
               )}
-              <div className={RAIL_ROW}>
-                <dt className="text-text-secondary">{t('threads.page.rail.cost')}</dt>
-                <dd className="text-text-primary tabular-nums">{t('threads.page.rail.notMetered')}</dd>
-              </div>
               <div className={RAIL_ROW}>
                 <dt className="text-text-secondary">{t('threads.page.rail.opened')}</dt>
                 <dd className="text-text-primary tabular-nums">

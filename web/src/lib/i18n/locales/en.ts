@@ -1613,8 +1613,6 @@ export const en = {
   'threads.page.rail.tasksEmpty': 'No tasks dispatched from this thread yet',
   'threads.page.rail.thisThread': 'This thread',
   'threads.page.rail.freshTokens': 'Fresh tokens',
-  'threads.page.rail.cost': 'Cost',
-  'threads.page.rail.notMetered': 'not metered',
   'threads.page.rail.opened': 'Opened',
   'threads.page.rail.artifacts': 'Artifacts',
   'threads.page.rail.id': 'ID',
