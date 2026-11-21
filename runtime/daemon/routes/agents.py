@@ -642,8 +642,6 @@ async def manage_repo(
         import time
 
         repo_dir = workspace / "repos" / body.repo_name
-        if not (repo_dir / ".git").exists():
-            return
         deadline = time.monotonic() + 30
 
         def git_at(path: Path, *args: str) -> str:
@@ -660,6 +658,13 @@ async def manage_repo(
 
         problems: list[str] = []
         try:
+            try:
+                repo_dir.lstat()
+            except FileNotFoundError:
+                return  # No clone directory remains to protect.
+            # Existing clones with missing/unreadable/cyclic metadata cannot
+            # establish safety. Path.exists() would hide these lookup errors.
+            (repo_dir / ".git").stat()
             records = git_at(repo_dir, "worktree", "list", "--porcelain", "-z").split("\0\0")
             entries = [record.split("\0") for record in records if record]
             if not entries or entries[0][0] != f"worktree {repo_dir.resolve()}":
@@ -678,7 +683,8 @@ async def manage_repo(
                 problems.append(f"{linked}: missing or prunable worktree; cannot verify safety")
                 continue
             for args, reason in (
-                (("status", "--porcelain", "--untracked-files=all"), "uncommitted or untracked changes"),
+                (("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"),
+                 "uncommitted or untracked changes"),
                 (("rev-list", "HEAD", "--not", "--remotes"), "commits not reachable from any remote-tracking ref"),
             ):
                 try:

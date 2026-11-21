@@ -5,6 +5,7 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager, nullcontext
 import io
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -124,17 +125,38 @@ class ManageRepoTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.active)
 
     async def test_dirty_linked_worktree_refused_before_config_write(self) -> None:
-        for leaf in ("file", "untracked"):
-            with self.subTest(leaf=leaf):
-                path = self.linked / leaf
-                path.write_text("unsaved\n")
-                for action in ("remove", "update"):
-                    with self.subTest(action=action):
-                        await self.refused(action, "uncommitted or untracked")
-                if leaf == "file":
-                    path.write_text("initial\n")
-                else:
-                    path.unlink()
+        for leaf in ("file", "untracked", "submodule-local", "submodule-global", "submodule-ignore"):
+            for action in ("remove", "update"):
+                with self.subTest(leaf=leaf, action=action):
+                    # Independent clones keep a destructive regression in one
+                    # subcase from masking the remaining preservation cases.
+                    case = ManageRepoTests()
+                    case.setUp()
+                    try:
+                        if leaf.startswith("submodule-"):
+                            git(case.linked, "-c", "protocol.file.allow=always", "submodule", "add",
+                                str(case.origin), "vendor")
+                            git(case.linked, "commit", "-am", "add submodule")
+                            git(case.linked, "push", "origin", "HEAD:refs/heads/task")
+                            if leaf == "submodule-global":
+                                global_config = case.root / "gitconfig"
+                                global_config.write_text("[diff]\n\tignoreSubmodules = all\n")
+                                case.enterContext(patch.dict("os.environ", {"GIT_CONFIG_GLOBAL": str(global_config)}))
+                            else:
+                                key = "submodule.vendor.ignore" if leaf == "submodule-ignore" else "diff.ignoreSubmodules"
+                                git(case.linked, "config", key, "all")
+                            path = case.linked / "vendor" / "file"
+                            path.write_text("unsaved\n")
+                            self.assertEqual(git(case.linked, "status", "--porcelain", "--untracked-files=all"), "")
+                            self.assertIn("M file", git(path.parent, "status", "--porcelain"))
+                            self.assertEqual(git(case.linked, "rev-list", "HEAD", "--not", "--remotes"), "")
+                        else:
+                            path = case.linked / leaf
+                            path.write_text("unsaved\n")
+                        await case.refused(action, "uncommitted or untracked")
+                        self.assertEqual(path.read_text(), "unsaved\n")
+                    finally:
+                        case.doCleanups()
 
     async def test_unpushed_linked_worktree_refused(self) -> None:
         for detached in (False, True):
@@ -163,6 +185,40 @@ class ManageRepoTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(self.interval.native_disposition.uncertain)
 
     async def test_git_failure_refuses_and_preserves_config(self) -> None:
+        for metadata in ("missing", "cyclic", "dangling", "lookup-error"):
+            for action in ("remove", "update"):
+                with self.subTest(metadata=metadata, action=action):
+                    case = ManageRepoTests()
+                    case.setUp()
+                    try:
+                        edited = case.linked / "file"
+                        edited.write_text("unsaved\n")
+                        gitdir = case.clone / ".git"
+                        if metadata != "lookup-error":
+                            gitdir.rename(case.clone / "saved-git-metadata")
+                            if metadata in ("cyclic", "dangling"):
+                                gitdir.symlink_to(".git" if metadata == "cyclic" else "absent-git-metadata")
+                        real_stat = os.stat
+
+                        def stat(path, *args, **kwargs):
+                            if metadata == "lookup-error" and Path(path) == gitdir:
+                                raise PermissionError("synthetic unreadable Git metadata")
+                            return real_stat(path, *args, **kwargs)
+
+                        before = case.canonical.read_bytes()
+                        with patch("os.stat", stat):
+                            result = await case.request(action)
+                        self.assertEqual(result.status_code, 409, result.text)
+                        self.assertIn(str(case.clone), result.json()["detail"])
+                        self.assertIn("cannot verify linked worktrees", result.json()["detail"])
+                        self.assertEqual(case.canonical.read_bytes(), before)
+                        self.assertEqual(edited.read_text(), "unsaved\n")
+                        self.assertEqual(case.bootstrap_calls, 0)
+                        self.assertFalse(case.active)
+
+                    finally:
+                        case.doCleanups()
+
         real_run = subprocess.run
         for command in ("worktree", "status", "rev-list"):
             for failure in ("exit", "timeout", "oserror"):

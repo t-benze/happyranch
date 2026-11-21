@@ -64,7 +64,9 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
 inside it and all local branches. The daemon refuses before changing the
 frontmatter while any linked worktree is dirty or has commits not reachable from
 any remote-tracking ref. Push/finish or clean up worktrees first. Missing/prunable
-worktrees and failed/timed-out Git checks also refuse; no force override exists.
+worktrees, missing/unreadable/cyclic Git metadata in an existing clone, and
+failed/timed-out Git checks also refuse; no force override exists. Submodule
+edits count as dirty even when local/global Git configuration hides them.
 
 A failed clone/pull on add/update returns HTTP 502 after saving the frontmatter
 entry and refreshing workspace metadata. Inspect the saved entry and clone before

@@ -16,10 +16,13 @@ work. `agent.yaml` and a per-workspace git-pull hook are not used.
 Remove/update deletes task worktrees inside the clone and every local branch.
 Before the canonical frontmatter write, existing clones are inspected with
 `git worktree list --porcelain -z`, excluding the primary. Every linked worktree
-must have empty `git status --porcelain --untracked-files=all` and
+must have empty `git status --porcelain --untracked-files=all --ignore-submodules=none` and
 `git rev-list HEAD --not --remotes` results. Detached HEAD uses the same commit
 reachability rule. Missing/prunable entries or any failed/timed-out Git check
 refuse with HTTP 409, naming paths and reasons; config and clone stay untouched.
+An absent clone directory needs no preservation check; an existing clone with
+missing, unreadable or cyclic Git metadata refuses. Explicit status options
+override local/global submodule-ignore and untracked-display configuration.
 There is no force override. All probes share 30 seconds, each subprocess at most
 5 seconds. Probes run outside the teams lock, inside read-only writer validation;
 the writer is drained before cancellation can release it. This is a sampled
@@ -90,7 +93,8 @@ They are implementation context, not additional repo-mutation steps.
 `python -B -m unittest scripts.test_manage_repo -v` drives the actual handler via
 in-process HTTP, real disposable Git repos and the CLI error path. It covers
 both remove/update refusals before config writes (dirty/untracked, local-only
-commits including detached HEAD, missing worktree and Git failures), clean pushed
+commits including detached HEAD, configured hidden submodule edits, missing
+worktree/Git metadata, cyclic/dangling metadata and Git failures), clean pushed
 worktrees, failed pull returns, and failed clone/pull HTTP/CLI results. Writer
 and metadata bootstrap are isolated test dependencies; the real drained-write
 helper and canonical file writes execute. No live daemon or retired units run.

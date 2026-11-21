@@ -3553,6 +3553,9 @@ Repo remove/update deletes the whole clone and its local branches/task worktrees
 Before saving frontmatter, linked worktrees must be clean and their HEAD commits
 reachable from a remote-tracking ref; missing/prunable entries and failed or
 expired Git probes return 409 with paths/reasons, leaving config and clone intact.
+An existing clone with missing, unreadable or cyclic Git metadata also refuses;
+an absent clone directory can proceed. Submodule edits count as dirty despite
+local/global ignore settings.
 Add/update clone or pull failure returns 502 after saving frontmatter and
 refreshing metadata; the CLI exits 1 and displays that saved-state warning.
 Inspect `org/agents/<agent-id>.md` and `repos/<name>/.git` after a failed or
