@@ -64,9 +64,7 @@ run() {
   install_package
   inspect clean
   echo 'CASE 1: clean deb -> public Enable -> exact READY'
-  # THR-327 seq607: exactly one diagnostic hosted run, before first Enable.
-  # Remove this option before any subsequent acceptance dispatch.
-  call Enable --home-diagnostic-umask "$(umask)"
+  call Enable
   inspect ready
   echo 'CASE 2: real health.json plus numeric diagnostic -> immediate public Disable (I5e/I5f/I5g)'
   inspect health-diagnostics
