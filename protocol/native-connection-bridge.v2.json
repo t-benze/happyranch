@@ -1,13 +1,77 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "HappyRanch native connection bridge v2 payloads",
-  "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested data, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
+  "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested or app.lifecycleRequested data, app.ownersChanged args, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, owner gates, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
   "oneOf": [
     { "$ref": "#/$defs/appState" },
     { "$ref": "#/$defs/dialogRequested" },
+    { "$ref": "#/$defs/ownersChanged" },
+    { "$ref": "#/$defs/lifecycleRequested" },
     { "$ref": "#/$defs/nativeErrorBody" }
   ],
   "$defs": {
+    "ownersChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "blocking", "counts"],
+      "properties": {
+        "schema": { "const": 2 },
+        "blocking": { "enum": ["none", "prompt", "hold"] },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dirty", "failed", "pending", "unknown"],
+          "properties": {
+            "dirty": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "failed": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "pending": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "unknown": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        },
+        "gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requestId", "decision"],
+          "properties": {
+            "requestId": { "type": "string", "minLength": 1, "maxLength": 64, "not": { "pattern": "[^A-Za-z0-9_-]" } },
+            "decision": { "enum": ["keep", "proceed"] }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "counts": { "anyOf": [
+            { "properties": { "pending": { "minimum": 1 } } },
+            { "properties": { "unknown": { "minimum": 1 } } }
+          ] } } },
+          "then": { "properties": { "blocking": { "const": "hold" } } },
+          "else": {
+            "if": { "properties": { "counts": { "anyOf": [
+              { "properties": { "dirty": { "minimum": 1 } } },
+              { "properties": { "failed": { "minimum": 1 } } }
+            ] } } },
+            "then": { "properties": { "blocking": { "const": "prompt" } } },
+            "else": { "properties": { "blocking": { "const": "none" } } }
+          }
+        },
+        {
+          "if": { "required": ["gate"], "properties": {
+            "gate": { "properties": { "decision": { "const": "proceed" } } }
+          } },
+          "then": { "properties": { "blocking": { "const": "none" } } }
+        }
+      ]
+    },
+    "lifecycleRequested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "requestId", "action"],
+      "properties": {
+        "schema": { "const": 2 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 64, "not": { "pattern": "[^A-Za-z0-9_-]" } },
+        "action": { "enum": ["close", "quit", "relaunch"] }
+      }
+    },
     "dialogRequested": {
       "type": "object",
       "additionalProperties": false,
