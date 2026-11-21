@@ -117,18 +117,20 @@ APP_PAGE = r"""(() => {
   'use strict';
   if (window !== top || location.origin !== 'happyranch-app://app') return;
   let active = true, sequence = 0;
-  const pending = new Map(), listeners = new Set();
+  const pending = new Map(), listeners = new Map([
+    ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()]]);
+  const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
   addEventListener('message', event => {
     if (!active || event.source !== window || event.origin !== location.origin) return;
     const item = event.data;
     if (item?.channel === 'hr-app-revoked') {
-      active = false; listeners.clear();
+      active = false; clearListeners();
       for (const callback of pending.values()) callback.reject(fail('documentChanged'));
       pending.clear(); return;
     }
     if (item?.channel === 'hr-app-event' && typeof item.raw === 'string') {
-      for (const listener of listeners) listener(item.raw);
+      for (const listener of listeners.get(item.event) || []) listener(item.raw);
     } else if (item?.channel === 'hr-app-reply' && pending.has(item.id) && typeof item.raw === 'string') {
       const callback = pending.get(item.id); pending.delete(item.id);
       if (item.ok === true) callback.resolve(item.raw); else callback.reject(item.raw);
@@ -149,16 +151,17 @@ APP_PAGE = r"""(() => {
     window.postMessage({channel:'hr-app-call', id, command, data}, location.origin);
   });
   const on = (event, handler) => {
-    if (!active || event !== 'app.stateChanged' || typeof handler !== 'function') throw fail('unsupportedCommand');
-    listeners.add(handler);
-    window.postMessage({channel:'hr-app-subscribe', enabled:true}, location.origin);
+    if (!active || !listeners.has(event) || typeof handler !== 'function') throw fail('unsupportedCommand');
+    const handlers = listeners.get(event);
+    handlers.add(handler);
+    window.postMessage({channel:'hr-app-subscribe', event, enabled:true}, location.origin);
     return () => {
-      listeners.delete(handler);
-      if (!listeners.size) window.postMessage({channel:'hr-app-subscribe', enabled:false}, location.origin);
+      handlers.delete(handler);
+      if (!handlers.size) window.postMessage({channel:'hr-app-subscribe', event, enabled:false}, location.origin);
     };
   };
   addEventListener('pagehide', () => {
-    active = false; listeners.clear();
+    active = false; clearListeners();
     for (const callback of pending.values()) callback.reject(fail('documentChanged'));
     pending.clear();
   }, {once:true});
@@ -180,8 +183,9 @@ APP_RELAY = r"""(() => {
     if (!active || value !== token || admitted) return;
     admitted = true;
     for (const entry of queued.splice(0)) send(entry.item).then(entry.resolve, entry.reject);
-  }, emit:raw => {
-    if (active) window.postMessage({channel:'hr-app-event', raw}, location.origin);
+  }, emit:(event, raw) => {
+    if (active && admitted && ['app.stateChanged','app.dialogRequested'].includes(event))
+      window.postMessage({channel:'hr-app-event', event, raw}, location.origin);
   }});
   const revoke = () => {
     if (!active) return;
@@ -203,8 +207,9 @@ APP_RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-app://app') return;
     const item = event.data;
-    if (item?.channel === 'hr-app-subscribe' && typeof item.enabled === 'boolean') {
-      send({event:'app.stateChanged', enabled:item.enabled}).catch(() => {}); return;
+    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested'].includes(item.event)
+        && typeof item.enabled === 'boolean') {
+      send({event:item.event, enabled:item.enabled}).catch(() => {}); return;
     }
     if (item?.channel === 'hr-app-cancel' && typeof item.id === 'string') {
       send({cancel:item.id}).catch(() => {}); return;
@@ -339,6 +344,7 @@ class AppScheme:
         self.document = 0
         self.bridge_token = None
         self.subscribed = False
+        self.dialog_subscribed = False
         self.status_refresh = None
         self.status_stop = None
         self.local = {"supported": local_mode == "service", "mode": local_mode,
@@ -434,16 +440,31 @@ class AppScheme:
     def invalidate_document(self) -> None:
         self.document += 1
         self.bridge_token, self.subscribed = None, False
+        self.dialog_subscribed = False
         self._replace_target(self.daemon)
 
     def emit_state(self) -> None:
-        if not self.subscribed or self.bridge_token is None or self.closed:
-            return
-        args = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", json.dumps(self.status())),
+        self.emit_event("app.stateChanged", json.dumps(self.status()))
+
+    def request_dialog(self, dialog: str) -> bool:
+        """Entry only: no target/lifecycle effects, queue, replay or dialog owner."""
+        if dialog not in ("connection", "settings"):
+            return False
+        return self.emit_event("app.dialogRequested", json.dumps({"schema": 2, "dialog": dialog},
+                                                               separators=(",", ":")))
+
+    def emit_event(self, event: str, raw: str) -> bool:
+        subscribed = (self.subscribed if event == "app.stateChanged" else
+                      self.dialog_subscribed if event == "app.dialogRequested" else False)
+        if not subscribed or self.bridge_token is None or self.closed:
+            return False
+        args = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw),
+                                         "event": self.GLib.Variant("s", event),
                                          "token": self.GLib.Variant("s", self.bridge_token)})
         self.view.call_async_javascript_function(
-            "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(raw);",
+            "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(event, raw);",
             -1, args, WORLD, ORIGIN + "/", None, None, None)
+        return True
 
     def bridge_message(self, manager: object, value: object, reply: object) -> bool:
         try:
@@ -481,10 +502,14 @@ class AppScheme:
                 else:
                     self.client_dispatch(item["command"], document, finish)
                 return True
-            elif set(item) == {"token", "event", "enabled"} and item["event"] == "app.stateChanged" and type(item["enabled"]) is bool:
-                self.subscribed = item["enabled"]
+            elif (set(item) == {"token", "event", "enabled"}
+                  and item["event"] in ("app.stateChanged", "app.dialogRequested") and type(item["enabled"]) is bool):
+                if item["event"] == "app.stateChanged":
+                    self.subscribed = item["enabled"]
+                else:
+                    self.dialog_subscribed = item["enabled"]
                 result = {}
-                if self.subscribed:
+                if item["event"] == "app.stateChanged" and self.subscribed:
                     self.emit_state()
             elif set(item) == {"token", "cancel"} and type(item["cancel"]) is str:
                 self.cancel_id(item["cancel"])
@@ -541,6 +566,7 @@ class AppScheme:
         if self.status_stop is not None:
             self.status_stop.set()
         self.bridge_token, self.subscribed = None, False
+        self.dialog_subscribed = False
         self.generation = new_generation()
         self.cancel_all()
         self.GLib.source_remove(self.timer)

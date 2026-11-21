@@ -617,6 +617,65 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
+### Native Main header (Settings S6-L)
+
+The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**
+entry actions. With the opt-in packaged Main scheme, its status pill reads the
+native `app.status` v2 projection: no selection, starting, connected,
+unavailable, busy, or incompatible with Host/app/unknown-side guidance. It
+preserves **This computer / 此电脑** versus the selected remote name and shows
+the candidate's separate sign-in/approval/ready-to-switch/failure/cancelled phase.
+Long names are ellipsized with full native tooltips. Native copy follows the
+launch locale; web locale changes do not relabel the native header until next
+launch.
+
+Content replacement preserves the native titlebar during startup, web loading,
+restart/error recovery and Retry. A newly launched Main installs its own header;
+GTK's child enumeration includes that header, so only content is removed.
+
+The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
+including no-target recovery. Losing the web document does not clear the warning.
+Its keyboard-accessible action requests Connection; its tooltip explains Retry
+saving and that a new invite may be needed. Only the native owner's confirmed
+save projection clears the badge; header actions do not write that state.
+
+Header actions deliver only `app.dialogRequested` JSON strings
+`{"schema":2,"dialog":"connection"}` or `{"schema":2,"dialog":"settings"}`.
+The page facade, named-world relay and native subscriber keep this closed event
+separate from `app.stateChanged`. Delivery requires the current admitted Main
+document's dialog subscription, independently of target readiness. Navigation,
+revocation and WebKit loss retire both subscriptions. Unavailable requests are
+dropped without queue or replay, including in the legacy HTTP/fallback view.
+The header shows the requested destination plus an explicit Retry action;
+becoming available never retries automatically. The subscribed web Main owns
+the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
+Native entry starts no daemon, changes no target/generation, and neither commits
+nor cancels an attempt. The existing main-window strip and close/Quit policy
+remain in place for their later cutover slices.
+
+Focused native checks use the existing direct system-Python venue, with Node 24
+for executing the literal page/relay scripts in an isolated message-bus fixture:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+# In a disposable GTK3/WebKit2 4.1 desktop/Xvfb session (DISPLAY required):
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_titlebar.py -v
+```
+
+The first two headless checks cover rendered labels/actions and the event boundary.
+The titlebar regression drives shipping `run_gui` with real GTK, including its
+actual titlebar child enumeration, web content, restart failure, Retry and fresh
+Main processes in EN/ZH. Host lifecycle/helper operations are isolated. It uses
+a minimal static web fixture by default; set `HAPPYRANCH_TITLEBAR_WEB_DIST` to an
+absolute same-source built `web/dist` for the real Main bundle, and optionally
+`HAPPYRANCH_TITLEBAR_OUTPUT` to an existing directory for 760px screenshots and
+titlebar observation JSON.
+They do not establish GTK fit, native/web focus or WebKit process behavior;
+qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
+above has known failures and must be compared against the same base, never
+reported as passing from these focused results.
+
 ### Opt-in packaged runtime UI (Settings S2a)
 
 The default runtime view still loads the verified local daemon's HTTP URL.
