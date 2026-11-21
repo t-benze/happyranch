@@ -483,8 +483,8 @@ export function TierEditorDialog({
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 {t('workHours.dialog.back')}
               </Button>
-              <Button onClick={() => void doSave()} disabled={mutation.isPending}>
-                {mutation.isPending ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
+              <Button onClick={() => void doSave()} disabled={mutation.isPending || owner.busy}>
+                {mutation.isPending || owner.busy ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
           ) : (
@@ -492,8 +492,8 @@ export function TierEditorDialog({
               <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={handleSaveClick} disabled={mutation.isPending}>
-                {mutation.isPending
+              <Button onClick={handleSaveClick} disabled={mutation.isPending || owner.busy}>
+                {mutation.isPending || owner.busy
                   ? t('workHours.dialog.saving')
                   : requiresConfirm
                     ? t('workHours.dialog.reviewImpact')

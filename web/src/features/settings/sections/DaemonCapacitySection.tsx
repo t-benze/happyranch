@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useParams } from 'react-router-dom';
-import { useConfigOwner } from '@/shared/owners';
+import { ownerContextParams, useConfigOwner } from '@/shared/owners';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import {
@@ -554,6 +554,12 @@ export function DaemonCapacitySection(): JSX.Element {
   });
   const ownerRef = useRef(owner);
   ownerRef.current = owner;
+  // S6-W2b R1: a synchronous save latch, set BEFORE the native receipt is
+  // awaited and released only when the submission is held or completed. The
+  // ref refuses a reentrant submit; the state counts admission as pending so
+  // fields, Save and Discard are disabled while native has not answered.
+  const saveLatchRef = useRef(false);
+  const [admitting, setAdmitting] = useState(false);
   // Only an operator reconciliation (or an accepted write) clears an
   // unresolved publication; mirror that into the owner.
   const wasUnresolved = useRef(false);
@@ -782,6 +788,8 @@ export function DaemonCapacitySection(): JSX.Element {
 
   async function submit(event: React.FormEvent): Promise<void> {
     event.preventDefault();
+    // R1: one submission at a time, including while it awaits admission.
+    if (saveLatchRef.current) return;
     if (base === null) return;
     // R1: refusal happens at the HANDLER as well as the control. A disabled
     // attribute is a render-time property, not a write guard — an unverified
@@ -841,6 +849,12 @@ export function DaemonCapacitySection(): JSX.Element {
     // here; without one nothing may be sent.
     const ticket = ownerRef.current.begin();
     if (ticket === null) return;
+    saveLatchRef.current = true;
+    setAdmitting(true);
+    const releaseLatch = (): void => {
+      saveLatchRef.current = false;
+      setAdmitting(false);
+    };
 
     // Capture the submission immutably BEFORE the await, so the callback reports
     // what was sent — never what is in the fields when the response lands.
@@ -852,6 +866,22 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     setSubmission(record);
     setOutcome({ kind: 'saving' });
+    // S6-W2b: send nothing until native acknowledged this save as pending.
+    // Held: the ticket settles failed and the edits stay unsaved.
+    if (!(await ownerRef.current.sendable())) {
+      ownerRef.current.settle(ticket, 'failed');
+      releaseLatch();
+      setSubmission(null);
+      const record = ownerRef.current.record;
+      setOutcome({
+        kind: 'rejected',
+        message: (locale) => {
+          const t = (key: MessageKey, params?: MessageParams): string => translate(locale, key, params);
+          return t('owners.save.failed', ownerContextParams(record ?? { page: 'settings.capacity', org: null, computer: null }, t));
+        },
+      });
+      return;
+    }
     // C3: THIS request object is what identifies this editor's own write; the
     // provider records the settlement it produced under it.
     const request: DaemonCapacityWrite = {
@@ -864,10 +894,13 @@ export function DaemonCapacitySection(): JSX.Element {
     ownWriteRef.current = { request, pending: true, observedDuring: null };
     let accepted = false;
     let settled = false;
+    // C1: false when a newer draft revision exists than the one this ticket
+    // was issued for; that draft must never be replaced by the saved values.
+    let current = true;
     const settle = (outcome: 'saved' | 'failed' | 'unknown'): void => {
       if (settled) return;
       settled = true;
-      ownerRef.current.settle(ticket, outcome);
+      current = ownerRef.current.settle(ticket, outcome).current;
     };
     try {
       const result = await save.mutateAsync(request);
@@ -895,8 +928,15 @@ export function DaemonCapacitySection(): JSX.Element {
         ? own.observedDuring.base
         : null;
       accepted = true;
-      acceptBase(baseFromSnapshot(classified.snapshot));
-      setReason('');
+      const savedBase = baseFromSnapshot(classified.snapshot);
+      if (current) {
+        acceptBase(savedBase);
+        setReason('');
+      } else {
+        // Like "Keep my draft": only `base` moves, the newer draft and its
+        // rationale stay verbatim and still read dirty.
+        setBase(savedBase);
+      }
       setFieldErrors({});
       setSubmission(null);
       setLatest(null);
@@ -906,7 +946,10 @@ export function DaemonCapacitySection(): JSX.Element {
       setUnresolvedPublication(null);
       setAckResetNotice(null);
       setOutcome({ kind: 'saved', snapshot: classified.snapshot });
-      if (newer !== null) acceptBase(newer);
+      if (newer !== null) {
+        if (current) acceptBase(newer);
+        else setBase(newer);
+      }
     } catch (error) {
       if (error instanceof ApiError && error.code === 'stale_revision') {
         settle('failed');
@@ -942,6 +985,7 @@ export function DaemonCapacitySection(): JSX.Element {
       if (classified.kind === 'rejected' && classified.focus) focusField(classified.focus);
     } finally {
       settle('unknown');
+      releaseLatch();
       // A request that produced no accepted settlement owns nothing: every
       // external observation it overlapped was already processed normally, so
       // releasing it loses nothing. An accepted one keeps identifying exactly
@@ -1028,7 +1072,7 @@ export function DaemonCapacitySection(): JSX.Element {
   // failure, and the retained values carry their own "Last received" time.
   const currentReceipt = formatReceipt(query.observation?.receiptAt ?? null, locale);
   const retainedReceipt = formatReceipt(lastUsable?.receiptAt ?? null, locale);
-  const pending = save.isPending;
+  const pending = save.isPending || admitting;
   const reconciliationNeeded = conflictSeen || conflictUnusable !== null || externalSeen;
   // R3: reconciliation may only be offered against an observation that was
   // actually read successfully and classified usable. A failed or unusable

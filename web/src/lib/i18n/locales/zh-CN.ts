@@ -1001,6 +1001,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'owners.gate.discard.changePage': '放弃更改并切换页面',
   'owners.gate.discard.changeOrg': '放弃更改并切换组织',
   'owners.gate.discard.leave': '放弃更改并离开此页面',
+  'owners.gate.discard.quit': '放弃更改并退出',
+  'owners.gate.discard.relaunch': '放弃更改并重启',
   'owners.gate.holdTitle': '正在等待保存结果',
   'owners.gate.holdBody': '已发送的保存无法放弃。结果返回后将继续。',
   'owners.gate.ownerPending': '正在等待{computer} · {org} 的{page}保存结果。',

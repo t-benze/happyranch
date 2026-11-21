@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { useReadAgentSystemPrompt, useSetAgentSystemPrompt } from '@/hooks/agents';
-import { useConfigOwner } from '@/shared/owners';
+import { ownerContextParams, useConfigOwner } from '@/shared/owners';
 import { classifySaveError, type SaveOutcome } from '@/lib/owners/ownerRegistry';
 import { useTranslation } from '@/hooks/i18n';
 import type { AgentSummary } from '@/lib/api/types';
@@ -37,6 +37,8 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
   const [error, setError] = useState<MessageKey | null>(null);
   const [diagnostic, setDiagnostic] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // S6-W2b: the last save was held (native did not acknowledge it; nothing sent).
+  const [held, setHeld] = useState(false);
   const mounted = useRef(true);
   const busy = useRef(false);
   const inspectionRequired = useRef(false);
@@ -112,12 +114,12 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     setBase({ system_prompt: visible.system_prompt, revision: visible.revision });
     inspectionRequired.current = false;
     setDraft(visible.system_prompt);
-    setExpanded(true); setError(null); setDiagnostic(null); setSaved(false); setNeedsRead(false);
+    setExpanded(true); setError(null); setDiagnostic(null); setSaved(false); setNeedsRead(false); setHeld(false);
   };
   const cancel = () => {
     // An unknown save (e.g. acknowledged but unverified) keeps its draft.
     if (busy.current || owner.saveRefused) return;
-    setBase(null); setDraft(''); setError(null); setDiagnostic(null); setNeedsRead(false);
+    setBase(null); setDraft(''); setError(null); setDiagnostic(null); setNeedsRead(false); setHeld(false);
   };
   const submit = async () => {
     if (!canSave || !base || busy.current || inspectionRequired.current) return;
@@ -126,9 +128,10 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     const ticket = owner.begin();
     if (ticket === null) return;
     const sent: PromptSubmission = { system_prompt: submission.body.system_prompt, acknowledged: null };
+    const previousSubmission = lastSubmission.current;
     lastSubmission.current = sent;
     busy.current = true; inspectionRequired.current = true;
-    setPending(true); setError(null); setDiagnostic(null); setSaved(false);
+    setPending(true); setError(null); setDiagnostic(null); setSaved(false); setHeld(false);
     // Only a matching verification read settles the ticket as saved; an
     // acknowledged save whose read fails or disagrees settles UNKNOWN (held)
     // until Check result / Reload reconciles it (see ./systemPromptSave). The
@@ -142,10 +145,16 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
         classifySaveError,
         validRevision,
         onAcknowledged: (receipt) => { sent.acknowledged = receipt; },
+        // S6-W2b: send nothing until native acknowledged this save as pending.
+        sendable: owner.sendable,
       });
       outcome = done.outcome;
       const { result } = done;
-      if (mounted.current) {
+      if (result.kind === 'held') {
+        // Held: nothing was sent, so there is nothing to inspect; the draft stays unsaved.
+        lastSubmission.current = previousSubmission; inspectionRequired.current = false;
+        if (mounted.current) setHeld(true);
+      } else if (mounted.current) {
         if (result.kind === 'verified') {
           setSnapshot(result.fresh); setBase(null); setDraft(''); setSaved(true);
         } else if (result.kind === 'unverified') {
@@ -221,6 +230,9 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
       </> : visible && <pre className="bg-surface-sunken border-border-subtle max-h-48 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{visible.system_prompt}</pre>}
     </div>}
     {error && <p role="alert" className="text-tier-red break-words px-4 pb-3 text-xs">{t(error)}{diagnostic && <span className="mt-1 block whitespace-pre-wrap">{diagnostic}</span>}</p>}
+    {held && <p role="alert" data-owner-notice="failed" className="text-tier-red break-words px-4 pb-3 text-xs">
+      {t('owners.save.failed', ownerContextParams(owner.record ?? { page: 'agents.systemPrompt', subject: agentName, org: slug || null, computer: null }, t))}
+    </p>}
     {saved && <p role="status" className="text-text-secondary px-4 pb-3 text-xs">{t('agents.prompt.saved')}</p>}
   </section>;
 }

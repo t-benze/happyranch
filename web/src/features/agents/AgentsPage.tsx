@@ -132,9 +132,10 @@ export function AgentsPage(): JSX.Element {
 
   return (
     // THR-376 r2 A13: this outer column is the page's ONE scroll container
-    // (AppShell <main> is overflow-hidden). From md up the roster rail and
-    // the detail pane flow inside it instead of scrolling on their own.
-    <div className="bg-surface-canvas flex h-full flex-col md:overflow-y-auto">
+    // (AppShell <main> is overflow-hidden). The roster rail and the detail
+    // pane flow inside it instead of scrolling on their own. THR-387 S6-W2b:
+    // below md too, so a short viewport (380x280) scrolls to the detail pane.
+    <div className="bg-surface-canvas flex h-full flex-col overflow-y-auto">
       {/* --- Top bar --- */}
       <header className="border-border-subtle shrink-0 border-b p-4">
         <PageTitle
@@ -172,8 +173,10 @@ export function AgentsPage(): JSX.Element {
           A13: from md up the panes no longer scroll on their own; the outer
           page column above is the single scroll owner. */}
       {/* W4c: below md the roster stacks above the detail (height-capped, scrolls)
-          instead of a fixed 244px rail squeezing the detail to ~90px at 390. */}
-      <div className="max-w-content mx-auto flex w-full flex-1 flex-col max-md:overflow-hidden md:flex-row">
+          instead of a fixed 244px rail squeezing the detail to ~90px at 390.
+          THR-387 S6-W2b: below md the detail keeps its content height (no clip
+          to the leftover height) and the page column above scrolls to it. */}
+      <div className="max-w-content mx-auto flex w-full flex-1 flex-col md:flex-row">
         {/* LEFT: Roster list — Pasture w-rail (244px) from md up */}
         <aside className="border-border-subtle bg-surface-sunken max-h-48 w-full shrink-0 overflow-y-auto border-b md:max-h-none md:w-rail md:overflow-visible md:border-r md:border-b-0">
           <Tabs value={tab}>
@@ -274,7 +277,7 @@ export function AgentsPage(): JSX.Element {
         </aside>
 
         {/* RIGHT: Detail/Edit pane */}
-        <main className="bg-surface-canvas max-md:min-h-0 min-w-0 flex-1 max-md:overflow-hidden">
+        <main className="bg-surface-canvas min-w-0 flex-1">
           {tab === 'terminated' && selectedSource ? (
             <RetiredAgentDetail key={selectedSource} sourceId={selectedSource} />
           ) : tab === 'terminated' ? (

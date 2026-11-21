@@ -5,7 +5,7 @@
  * edits or a sent save registers an OWNER while it is mounted. The contextual
  * owner gate (`@/shared/owners`) reads it before a dialog close/switch, a
  * Settings page change, Main navigation or an org change. S6-W2b pushes
- * `selectOwnerBlocking` to native (`app.owners`, commit/close/Quit
+ * `selectOwnerBlocking` to native (`app.ownersChanged`, commit/close/Quit
  * preconditions); S6-L/S7-L3 rely on the same aggregate. This module is pure
  * (no React, no DOM) so the rules can be checked by a plain Node script.
  *

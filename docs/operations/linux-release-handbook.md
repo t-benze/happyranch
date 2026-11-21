@@ -1153,10 +1153,17 @@ the still-connected active projection, including its saved-computer reference an
 save intent. Session-only access keeps `access_unsaved` and the native Retry save
 action; a saved active connection keeps its saved-access metadata.
 
-Assumption/dependency: section 12 requires pending/unknown owner saves to refuse,
-but the current v2 schema defines no `app.owners` payload. Until S6-W2 supplies
-owner evidence, the injected native snapshot provider returns unknown and every
-voluntary commit/disconnect refuses. No owner wire format is added. Main view
+Owner evidence: section 12 requires pending/unknown owner saves to refuse. The v2
+schema defines the closed `app.ownersChanged` summary (web → native) and the
+`app.lifecycleRequested` event (native → web); see the bridge spec's owner summary
+and lifecycle gate section. Linux Main admits only an exact closed summary
+(`schema`, `blocking`, `counts`) and replies `"{}"`; anything else, including a
+summary carrying `gate`, is refused with `unsupportedCommand`. The web sends a
+registered save only after that acknowledgement; a refused or lost push holds the
+save (nothing is sent). Without an admitted summary, or with pending/unknown
+counts, voluntary commit/disconnect refuses (`owner_save_unknown`,
+`owner_save_pending`); dirty/failed refuses with `owner_edits_pending`. Native does
+not yet emit `app.lifecycleRequested` (S7-L3). Main view
 recreation reattaches the same committed session before navigation, with a fresh
 transport admission; it cancels an unfinished candidate. This is initial attachment
 of the same target, not a voluntary switch. Earlier S5-L2-pending descriptions in

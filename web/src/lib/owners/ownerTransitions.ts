@@ -4,8 +4,11 @@
  */
 import type { OwnerRecord } from './ownerRegistry';
 
-/** What the requested transition does, named in the Discard action. */
-export type OwnerGateEffect = 'close' | 'openConnection' | 'changePage' | 'changeOrg' | 'leave';
+/**
+ * What the requested transition does, named in the Discard action. `quit` and
+ * `relaunch` (with `close`) are native lifecycle requests (S6-W2b).
+ */
+export type OwnerGateEffect = 'close' | 'openConnection' | 'changePage' | 'changeOrg' | 'leave' | 'quit' | 'relaunch';
 
 interface PathLike {
   pathname: string;

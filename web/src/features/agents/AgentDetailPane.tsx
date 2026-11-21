@@ -301,6 +301,12 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     try {
       setSaveError(null);
       const errors: SaveErrorItem[] = [];
+      // S6-W2b: send nothing until native acknowledged this save as pending.
+      // Held: the ticket settles failed (the owner notice says so).
+      if (!(await owner.sendable())) {
+        rawErrors.push({ status: 422 });
+        return;
+      }
 
       // Save executor if dirty — guard: don't send an executor that is no
       // longer selectable (e.g., refetched away or unavailable).
@@ -478,8 +484,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       </header>
 
       {/* --- Editable fields — Pasture card sections --- */}
-      {/* THR-376 r2 A13: no inner scroller from md up — AgentsPage owns the
-          page's single scroll. Below md the stacked pane keeps its own. */}
+      {/* THR-376 r2 A13: AgentsPage's page column owns the single scroll at
+          all widths; below md this pane keeps its content height (no clip). */}
       <div className="flex-1 space-y-6 px-6 py-4 max-md:overflow-y-auto">
         <AddressableNameEditor canonicalId={agentName} />
         {isEligiblePolicyManager(

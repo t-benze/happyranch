@@ -109,7 +109,6 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
   const inputId = `binary-path-${kind}`;
 
   const trimmed = path.trim();
-  const busy = validate.isPending || register.isPending;
   // THR-387 S6-W2a: a typed, unregistered path is an unsent Executors edit.
   const { slug } = useParams<{ slug: string }>();
   const owner = useConfigOwner({
@@ -124,6 +123,9 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
       setRegisterError(null);
     },
   });
+  // Receipt admission counts as registering, like the request itself.
+  const registering = register.isPending || owner.busy;
+  const busy = validate.isPending || registering;
 
   const onValidate = async () => {
     setRegisterError(null);
@@ -237,7 +239,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
             onClick={onRegister}
             disabled={!trimmed || busy}
           >
-            {register.isPending
+            {registering
               ? t('settings.executors.binaries.registering')
               : t('settings.executors.binaries.register')}
           </Button>

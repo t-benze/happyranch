@@ -68,6 +68,11 @@ function getBridge(): NativeBridge | null {
   return bridge;
 }
 
+/** The detected native v2 bridge, or null in browser mode (read-only accessor). */
+export function nativeBridge(): NativeBridge | null {
+  return getBridge();
+}
+
 /** True when the page runs behind the native v2 bridge (desktop app). */
 export function isNativeTarget(): boolean {
   return getBridge() !== null;

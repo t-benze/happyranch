@@ -314,8 +314,9 @@ mutations reject with `documentChanged`, effect `unknown` and recovery
 Read-only calls retain effect `none` / recovery `refresh`; new calls after
 retirement are refused before dispatch with that same no-effect shape.
 `app.ownersChanged` now supplies native commit/disconnect summary evidence,
-including `owner_edits_pending` after the unknown/pending refusals.
-Lifecycle request/decision handling remains S7-L3.
+including `owner_edits_pending` after the unknown/pending refusals; the web
+pushes it (S6-W2b, see the owner gate section below). Native lifecycle
+requests/decisions remain S7-L3.
 Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
@@ -367,7 +368,7 @@ keeps its editors mounted (error shown above) when a reread fails after data
 was loaded.
 
 `selectOwnerBlocking(owners, affects?)` is the pure aggregate S6-W2b pushes to
-native (`app.owners`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
+native (`app.ownersChanged`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
 is `hold` when an affected owner is pending/unknown, `prompt` when one is
 dirty/failed, else `none`, plus the affected non-clean owner list.
 
@@ -456,6 +457,54 @@ navigation (previously only Capacity and the team escalation policy page
 prompted), the C3 copy replaces the Organization failure line, and a changed
 read no longer overwrites unsent Organization edits. Focused checks:
 `node --experimental-transform-types --test web/scripts/owner-registry.test.mjs`.
+
+### Native owner summary push and lifecycle gate (THR-387 S6-W2b)
+
+Desktop only (`web/src/lib/native/owners.ts`, mounted by
+`shared/owners/NativeOwnersBridge.tsx` inside `OwnerGateProvider`); browser mode
+(no bridge) is a no-op. After subscribing to `app.lifecycleRequested`, the web
+pushes the closed v2 summary `{schema:2, blocking, counts}` of EVERY registered
+owner (Main and Settings, detached owners included; no org/page filter, so an
+old-org owner whose sent save is unresolved keeps counting after an org switch)
+through `call("app.ownersChanged", …)`: once initially, then on every registry
+change. Counts are the owners per status (dirty/failed/pending/unknown, capped at
+255); `blocking` is `selectOwnerBlocking(owners).level`. Calls are serialized
+(one in flight) and deduped only against the last ACKNOWLEDGED summary; a failed
+push clears it, so the next identical summary is sent again; there is no timer
+retry. The payload carries no page, org, computer, owner id, draft or error text
+and is never logged.
+
+Save admission: `useConfigOwner().track()` (and `sendable()`, which Agents detail,
+Capacity and the agent system prompt editor await after their own `begin()`) sends a registered save only after
+native acknowledged (`"{}"`) the summary showing it pending. A refused, lost or
+unanswered (5 s) push holds the save: nothing is sent and the ticket settles
+`failed`, so the existing C3 failed copy shows (Capacity shows the same sentence
+in its banner; the system prompt editor shows it under the editor).
+Receipt admission counts as pending. `track()` is single-flight per owner: a
+synchronous latch is set before the receipt wait and held through the request,
+and released when the save settles (held, saved, failed or unknown). While it
+is held `owner.busy`/`owner.isBusy()` are true, `begin()` returns null and a
+second `track()` is refused with nothing sent. Editors disable their submit
+control on `busy` as they do on the request's pending state (custom-skill
+Create also disables its fields), and check `isBusy()` before replacing the
+payload a Check result compares against, so a refused reentrant submit never
+replaces an unresolved payload. Editors that call `begin()`/`sendable()`
+themselves keep their own latch.
+
+Lifecycle: a strictly valid `app.lifecycleRequested` (exact keys, schema 2, ID
+`[A-Za-z0-9_-]{1,64}`, action close/quit/relaunch; anything else is ignored) runs
+the ONE contextual gate over every owner, with **Discard changes and close /
+quit / relaunch** (“放弃更改并关闭 / 退出 / 重启”). The gate outcome is answered once per
+ID on the same call with `gate:{requestId, decision}`: proceed only when the
+summary read at send time is `none` (otherwise keep); Keep editing, Back or
+another gate already open answer keep; a repeated ID only focuses the open gate.
+From a proceed answer no new save is admitted; a definitive refusal
+(`effect:"none"`) restores saving, a lost acknowledgement keeps the hold. A
+reload starts with empty module state and sends its own initial summary; nothing
+is replayed. Current Linux native accepts summaries but has no lifecycle listener
+(its `on()` throws, tolerated silently) and refuses gate-bearing summaries until
+S7-L3. Focused checks:
+`node --experimental-transform-types --test web/scripts/native-owners.test.mjs`.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 
@@ -2185,7 +2234,7 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, historically checked by a `format.test.ts` source scan retired under THR-343). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
-**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; historical en/zh-CN rendered-state regressions complemented the source scan, which rejected direct locale-formatting calls before the THR-343 test retirement; current web behavior evidence belongs to Product E2E), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; historical en/zh-CN rendered-state regressions complemented the source scan, which rejected direct locale-formatting calls before the THR-343 test retirement; current web behavior evidence belongs to Product E2E), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The outer `AgentsPage` page column (`overflow-y-auto` at all widths) is the single scroll owner (THR-376 A13): below `md` the two-pane body and the detail `<main>` no longer clip to the leftover height, so the page column scrolls to the detail pane; `md` and up is unchanged. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
 **Agent retirement (THR-296):** the active agent detail pane (`features/agents/AgentDetailPane.tsx`) ends with a **Retire agent** section that opens `RetireAgentDialog`. The dialog lists the consequences, requires an explicit destructive confirm, and calls `POST /agents/{agent_name}/retire` once through `useRetireAgent` with the existing Founder bearer; the confirm is disabled while the request runs. The daemon is the only eligibility authority: a refusal stays in the open dialog with the server's code, message, blocking work and team members verbatim (only `agent_not_quiescent` and `team_not_empty` get an en/zh-CN headline) and the agent stays active. A refusal is a 4xx answer other than 404; a lost response, a 5xx or a 404 leaves the outcome unknown, so the dialog re-reads the roster: an agent that is gone is treated as retired, one still listed is reported as such, and if that read fails the dialog says the outcome is unconfirmed instead of claiming the agent is active. Settlement (success or failure) first cancels every in-flight read of the active roster, teams, enrollments, identities and the retained retired source, including first loads, then invalidates them, so a read that began before the retirement cannot be stored as fresh; success navigates to `?view=terminated&source=<agent>` for every role, and that retained knowledge detail offers Distill (a retired manager is a Distill source since TASK-15902). For a manager, decided from the roster role, the dialog additionally says its definition is preserved and that its now-empty team is also removed. The UI adds no eligibility rule for this.
 
