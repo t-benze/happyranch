@@ -1653,6 +1653,12 @@ must contain no process with that UID (real/effective/saved/filesystem); failed,
 malformed or oversized observations refuse. These are sampled observations under
 the existing cooperative root-writer discipline, not an atomic process fence.
 
+For clean Enable admission before the Headscale account exists, there is no
+owner UID to match. Only that UID-membership comparison is skipped; the same
+systemd property checks and bounded `ps` command, exit status and four-column
+ASCII numeric row validation still apply. A receipt-bound cleanup retains its
+recorded UID comparison even after the account has been deleted.
+
 Delete user first, then only the receipted group if still present and unshared.
 E defines partial failure: successful userdel followed by failed groupdel keeps
 the receipt, group and all other remaining objects; never recreate the user.
