@@ -339,7 +339,7 @@ def _purpose_note(
             f"finish this turn: you must still reply with the result or decline "
             f"if there is nothing substantive to add."
         )
-    # purpose == "reply" — broadcast model; all participants receive the message
+    # purpose == "reply" — thread delivery selected this participant
     return f"Message {triggering_seq} was posted to this thread"
 
 
@@ -477,9 +477,8 @@ def _maybe_unresolved_escalations_note(
 def _decline_by_default_doctrine() -> str:
     return (
         "## Decline-by-Default in Threads\n\n"
-        "This invocation was minted because a new message was posted to this\n"
-        "thread. Every participant gets an invocation on every message — that\n"
-        "does NOT mean every participant should reply.\n\n"
+        "This invocation was minted because thread delivery selected you — that\n"
+        "does NOT mean you should reply.\n\n"
         "Default behavior: call `happyranch threads decline --from-file <payload>`\n"
         "with no reason. Your invocation is consumed silently; no transcript\n"
         "entry is written.\n\n"
