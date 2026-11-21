@@ -66,9 +66,12 @@ selects a persistent WKWebsiteDataStore; the suite uses a fresh UUID per build,
 shared across its restarts, leaving the product store alone.
 All file destinations go beneath the explicit probe download directory.
 
-TASK-18408 / THR-387 seq94 permits at most three submissions to the existing
-`happyranch-mac-native-probe` job with `SUITE=settings-scheme` and an exact pushed
-`SOURCE_SHA`. This is a throwaway branch; no PR, merge or job config change.
+The original three authorized submissions are spent (builds 49–51). THR-387
+S0-MAC-2 commissions a throwaway diagnostic repair with **zero builds in this
+leg**. Two additional Mac builds are reserved for a later leg, only after an
+independent code_reviewer APPROVE of the exact repair SHA. No PR, merge or job
+configuration change belongs to this spike.
+
 The suite first records OS/architecture/Swift/SDK/launchctl facts and interprets
 `mac/gui-preflight.swift` to observe NSApplication, WindowServer and a real
 WKWebView HTML/JS round trip. No usable GUI ends the build cleanly with M1–M4
@@ -84,19 +87,59 @@ TMPDIR, SwiftPM and module-cache pattern. It retrieves only hash-pinned Node24
 using the existing toolchain pins/transfer code, into the build scratch, then
 runs `npm ci` and `npm run build` on a scratch copy of `web`, with its imported
 `protocol/native-connection-bridge.v1.json` at the same relative path. It does
-not install host tools. Every invocation has a 50s external timeout (40s native timeout):
+not install host tools. The Mac-specific `mac/probe.js` runs only the selected
+check; it does not await storage, uploads or unrelated daemon cases first.
+The shared Linux page is unchanged. Fourteen separate invocations run in order:
+M1 history, root SPA, deep SPA/reload; M4 first/restart/other-origin storage;
+M2 POST, PUT; M3 stream, abort; M4 blob download, direct download;
+M2 FormData upload, serialized upload. Each writes a separate receipt even if
+an earlier check hangs. `CASES` in the suite is the invocation manifest.
+
+Each invocation receives an event file in the build's private scratch and uses
+a **25s inner watchdog / 30s outer timeout**. The watchdog is scheduled on a
+background queue before creating NSApplication, so main-thread hangs cannot
+starve it. Success emits `check-finished` / `orderly_exit` and calls `exit(0)`;
+it does not wait on AppKit termination negotiation. A watchdog emits
+`watchdog_fired` with its last phase and exits 124. Timeout sends TERM to the
+process group, drains for 1s, sends KILL to the group, drains up to 1s and reaps
+for up to 1s. A timed-out invocation and its affected question are
+`timeout_partial`, with all available evidence retained. Exit 0 alone still
+cannot verify a question. A question with a timed-out alternative remains
+`timeout_partial`, with successful sub-observations preserved separately.
+
+Build 51 receipts: GUI HTML/JS round trip 2.938s, release Swift build 5.225s,
+npm ci 58.792s, SPA build 12.929s, then eight probes at 50.012–50.014s;
+whole build 518.383s. There is no successful native M-check timing yet. The 25s
+watchdog is a diagnostic bound: about 8x the observed GUI startup, covering the
+5s stream, 2.5s abort fallback, 7s SPA render/reload wait and 4s download settle
+(the checks run independently). The outer 30s allows 5s watchdog/exit margin.
+Fourteen worst-case invocations plus TERM/drain/reap use <=462s. The unchanged
+1200s suite deadline clips preparation/commands; the existing 90min Jenkins
+limit and log caps stay unchanged. These bounds are not evidence that all
+checks complete within 25s on Mac.
+
+Example after the private build (same store UUID for persistence invocations):
 
 ```sh
-# After the suite's private scratch build, the executable takes these arguments.
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/initial" probe
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/restart" probe
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/other" other
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/root" /
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/deep" /settings
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/no-multipart" probe-no-multipart
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/serialized" probe-serialized
-"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/direct" probe-direct
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/initial" probe storage "$TMPDIR/events-initial.jsonl" 25
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/restart" probe storage "$TMPDIR/events-restart.jsonl" 25
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/other" other storage "$TMPDIR/events-other.jsonl" 25
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/stream" probe stream "$TMPDIR/events-stream.jsonl" 25
 ```
+
+Events are JSONL written with FileHandle write+synchronize after **every line**;
+stdout/stderr are unbuffered and explicitly flushed. Heartbeats cover process
+start, AppKit/store/WebView setup, handler registration, load request, handler
+start/body-read/body-finish/stop, all implemented navigation callbacks, JS
+messages, check start/finish and exit. Handler records include path, method,
+body bytes and SHA256. A body stream's size/hash is null at entry until read;
+`body-read-start` then `handler-body` exposes a blocking read honestly.
+Native events are bounded at 8192 bytes/line and 256KiB/file (overflow exits 70).
+Python hashes/counts full stdout/stderr while retaining <=1024-byte head and tail
+per stream, plus <=24KiB of parsed events per invocation and the last event.
+Counts/digests and truncation flags survive timeout; malformed/torn JSONL lines
+are counted. Evidence is embedded in `probe.json` before scratch cleanup; the
+section is capped at 768KiB when indented (below the existing 1MiB console cap). Raw scratch files are not separate archived artifacts.
 
 The suite sets one fresh `SETTINGS_S0_STORE_UUID` per build, shared by all
 invocations. Foundation's resolved home must match the private scratch home.
@@ -114,6 +157,11 @@ never supplies a verified question.
 Linux-safe preparation commands (no Mac execution):
 
 ```sh
+# TMPDIR must name an existing private non-/tmp runtime task-tmp directory.
+python3 -B spikes/settings-s0/mac/verify_timeout.py
+# Optional pre-fix proof (expected exit 1, lost partial stdout):
+python3 -B spikes/settings-s0/mac/verify_timeout.py --before-source "$OLD_SUITE_SOURCE"
+node --check spikes/settings-s0/mac/probe.js
 python3 -B scripts/mac_native/suite_settings_scheme.py --help
 python3 -B scripts/mac_native/suite_settings_scheme.py --stub
 python3 -B scripts/mac_native/probe.py --suite settings-scheme --output "$TMPDIR/linux-dispatch.json"
@@ -125,8 +173,8 @@ syntax can also be checked via stdlib `ast.parse` without writing bytecode.
 The suite imports only stdlib and the stdlib-only supervisor/toolchain modules;
 it never imports HappyRanch runtime modules.
 
-If full upload blocks later observations, run `probe-no-multipart` separately
-and preserve the failure. Record macOS and WebKit versions (the app logs both),
+A full upload hang cannot block the separately launched route/stream/storage
+checks. Preserve all invocation receipts. Record macOS and WebKit versions (the app logs both),
 OS/SDK/compiler, exit, native body count/hash, all five receipt times and native
 stop delay, both downloaded files' contents, and first/second/other-origin
 storage values. Repeat on the minimum supported macOS 14 and current macOS.
@@ -142,3 +190,10 @@ The Mac package cannot compile on the Linux maker host; only Jenkins evidence
 can establish compilation or execution. Apple
 API documentation supports handler/data-store availability; it does not prove
 large Blob bodies, fetch buffering/cancellation or custom-origin persistence.
+
+The Linux simulation starts real synthetic subprocesses: TERM-cooperative and
+TERM-ignoring/group descendants, watchdog exit, success after timeout, and large
+streams/events. It checks independently expected bytes/digests, signals, last
+event, truncation and per-question isolation. Its optional pre-fix proof compiles
+the old suite's actual nested command function. It does not test AppKit/WebKit
+or compile Swift; those remain NOT RUN on Linux.
