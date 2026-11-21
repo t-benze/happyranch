@@ -188,6 +188,85 @@ def runtime(tmp_path: Path) -> OrgPaths:
     return OrgPaths(root=rt.orgs_dir / "test")
 
 
+@pytest.mark.parametrize("slug", ("manage-agent", "manage-repo", "reflection"))
+@pytest.mark.parametrize("build_path", ("context-union", "unified"))
+def test_release_catalog_publishes_bundled_content(tmp_path, slug, build_path):
+    import yaml
+
+    from runtime.config import Settings
+    from runtime.orchestrator import workspace_adapters as wa
+    from runtime.skills.package_content import compute_skill_tree_hash
+    from runtime.skills.registry import SkillRegistry
+
+    release_root = Path(__file__).resolve().parents[1] / "runtime/skills"
+    skills_root = tmp_path / "catalog"
+    manifest_dir = skills_root / slug
+    manifest_dir.mkdir(parents=True)
+    manifest = (release_root / slug / "skill.yaml").read_text()
+    (manifest_dir / "skill.yaml").write_text(manifest)
+    # A stale sibling must never become a fallback or part of the package hash.
+    (manifest_dir / "SKILL.md").write_text("stale catalog copy\n")
+    bundled = skills_root / "bundled" / slug
+    bundled.mkdir(parents=True)
+    expected = f"authoritative bundled {slug}\n"
+    (bundled / "SKILL.md").write_text(expected)
+    entry = SkillRegistry(skills_root).get(f"hr:{slug}")
+    assert entry.skill_md_path == bundled / "SKILL.md"
+    assert entry.source == f"runtime/skills/bundled/{slug}"
+
+    org_root = tmp_path / "org-root"
+    (org_root / "org").mkdir(parents=True)
+    (org_root / "org/config.yaml").write_text(yaml.safe_dump({
+        "skills": {"org": {"allow": [f"hr:{slug}"]}},
+    }))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    settings = Settings(project_root=release_root.parents[1])
+    kwargs = dict(slug="test", provider="claude", agent_name="dev_agent",
+                  team="engineering", skills_root=skills_root, org_root=org_root)
+    if build_path == "context-union":
+        specs = wa._materialize_context_union(workspace, settings, contexts=["task"], **kwargs)
+    else:
+        specs = wa.materialize_workspace_skills(workspace, settings, context="task", **kwargs)
+    spec = next(row for row in specs if row["slug"] == slug)
+    assert spec["content_hash"] == compute_skill_tree_hash(bundled)
+    assert spec["content_hash"] != compute_skill_tree_hash(manifest_dir)
+    for root in (".claude/skills", ".agents/skills"):
+        package = workspace / root / slug
+        assert package.is_symlink()
+        assert (package / "SKILL.md").read_text() == expected
+        assert not (package / "skill.yaml").exists()
+
+
+@pytest.mark.parametrize("source", ("fixture", "user_authored", "/untrusted/path",
+                                    "runtime/skills/manage-agent"))
+def test_catalog_generic_sources_keep_sibling_content(tmp_path, source):
+    from runtime.skills.registry import SkillRegistry
+
+    package = tmp_path / "manage-agent"
+    package.mkdir()
+    (package / "skill.yaml").write_text(f"id: fixture\nsource: {source}\n")
+    (package / "SKILL.md").write_text("fixture content\n")
+    bundled = tmp_path / "bundled/manage-agent"
+    bundled.mkdir(parents=True)
+    (bundled / "SKILL.md").write_text("different bundled content\n")
+    entry = SkillRegistry(tmp_path).get("fixture")
+    assert entry.skill_md_path == package / "SKILL.md"
+    assert entry.source == source
+
+
+def test_catalog_missing_bundled_source_never_falls_back(tmp_path):
+    from runtime.skills.registry import SkillRegistry
+
+    package = tmp_path / "manage-agent"
+    package.mkdir()
+    (package / "skill.yaml").write_text(
+        "id: hr:manage-agent\nsource: runtime/skills/bundled/manage-agent\n"
+    )
+    (package / "SKILL.md").write_text("stale catalog copy\n")
+    assert SkillRegistry(tmp_path).get("hr:manage-agent").skill_md_path is None
+
+
 def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir, runtime):
     skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)

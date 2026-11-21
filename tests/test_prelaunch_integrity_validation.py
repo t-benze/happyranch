@@ -217,6 +217,51 @@ class TestReleasePackageRecovery:
             assert json.loads(rows[0]["reason_codes"]) == ["release_provenance_not_found"]
             assert (target / "SKILL.md").read_text() == "corrupted contract\n"
 
+    @pytest.mark.parametrize("slug", ("manage-agent", "manage-repo", "reflection"))
+    @pytest.mark.parametrize("case", ("corrupted", "valid", "old-hash", "missing-source"))
+    def test_bundled_catalog_recovery(self, recovery, slug, case):
+        import json
+
+        root = recovery.config.project_root / "runtime/skills"
+        manifest_dir = root / slug
+        manifest_dir.mkdir()
+        (manifest_dir / "skill.yaml").write_text(
+            f"id: hr:{slug}\nslug: {slug}\nversion: 1.0.0\n"
+            f"source: runtime/skills/bundled/{slug}\n"
+        )
+        (manifest_dir / "SKILL.md").write_text("stale catalog copy\n")
+        bundled = root / "bundled" / slug
+        bundled.mkdir()
+        (bundled / "SKILL.md").write_text("authoritative bundled catalog source\n")
+        source = manifest_dir if case == "old-hash" else bundled
+        identity = _compute_dir_hash(source)
+        body = dict(slug=slug, version="1.0.0", content_hash=identity)
+        target = recovery.store.build_from_source(**body, source_dir=source,
+                                                  verify_source_hash=identity)
+        if case != "valid":
+            self.corrupt(target)
+        before = (target / "SKILL.md").read_bytes()
+        if case == "missing-source":
+            (bundled / "SKILL.md").unlink()
+        response = self.post(recovery, body)
+        rows = self.audits(recovery)
+        assert len(rows) == 1 and rows[0]["skill_id"] == f"hr:{slug}"
+        if case == "corrupted":
+            assert response.status_code == 200, response.text
+            assert rows[0]["ok"] and not target.exists()
+            rebuilt = recovery.store.build_from_source(**body, source_dir=bundled,
+                                                       verify_source_hash=identity)
+            assert (rebuilt / "SKILL.md").read_text() == "authoritative bundled catalog source\n"
+        else:
+            status, reason = {
+                "valid": (409, "valid_target_refused"),
+                "old-hash": (400, "hash_mismatch"),
+                "missing-source": (400, "release_source_unavailable"),
+            }[case]
+            assert response.status_code == status, response.text
+            assert json.loads(rows[0]["reason_codes"]) == [reason]
+            assert (target / "SKILL.md").read_bytes() == before
+
     @pytest.mark.parametrize("failure", ("intent-audit", "refusal-audit", "deletion", "unreadable"))
     def test_failures_preserve_package_and_honest_audit(self, recovery, failure):
         import json

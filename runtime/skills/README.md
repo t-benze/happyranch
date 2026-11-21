@@ -7,10 +7,14 @@ This directory contains three distinct skill surfaces:
   context-specific session contracts from that source. System contracts are
   outside the toggleable managed catalog; do not infer that every bundled
   package is toggleable.
-- Direct child packages such as `manage-agent/`, `manage-repo/`, and
-  `reflection/` contain `skill.yaml` plus `SKILL.md`. `registry.py` loads these
-  as managed catalog entries and excludes packages classified as system
-  contracts.
+- Direct child directories `manage-agent/`, `manage-repo/`, and `reflection/`
+  contain catalog metadata in `skill.yaml`. Their `source` values select the
+  corresponding `bundled/<slug>/` instruction packages. Registry validation,
+  workspace publication, and release recovery use that same bundled content;
+  the manifest is not part of its content hash. There is no sibling `SKILL.md`
+  fallback. `registry.py` excludes packages classified as system contracts.
+  Generic fixture and user-authored packages retain their content beside the
+  manifest; arbitrary `source` strings are not filesystem redirects.
 - `custom/` and the adjacent Python modules implement custom/catalog
   resolution, persistence, validation, eligibility, exposure, canonical-store
   publication, and workspace materialization. They are runtime machinery, not

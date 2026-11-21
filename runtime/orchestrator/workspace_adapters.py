@@ -476,7 +476,7 @@ def _materialize_context_union(
         SessionContext,
         resolve_system_contracts_for_session,
     )
-    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.registry import SkillRegistry, resolve_skill_content_dir
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
@@ -553,7 +553,7 @@ def _materialize_context_union(
                 if es.skill.source == "user_authored" and org_root is not None:
                     src_dir = org_root / "skills" / skill_id_slug
                 else:
-                    src_dir = skills_root / skill_id_slug
+                    src_dir = resolve_skill_content_dir(skills_root, skill_id_slug, es.skill.source)
                 if not src_dir.is_dir():
                     continue
 
@@ -737,7 +737,7 @@ def _materialize_unified_canonical(
         SessionContext,
         resolve_system_contracts_for_session,
     )
-    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.registry import SkillRegistry, resolve_skill_content_dir
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
@@ -799,7 +799,7 @@ def _materialize_unified_canonical(
                     if es.skill.source == "user_authored" and org_root is not None:
                         src_dir = org_root / "skills" / skill_id_slug
                     else:
-                        src_dir = skills_root / skill_id_slug
+                        src_dir = resolve_skill_content_dir(skills_root, skill_id_slug, es.skill.source)
                     if not src_dir.is_dir():
                         continue
 

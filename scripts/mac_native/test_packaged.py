@@ -1070,7 +1070,12 @@ class PackagedHarnessTests(unittest.TestCase):
                             isinstance(target, ast.Name) and target.id == 'BASELINE'
                             for target in node.targets))
         rows = ast.literal_eval(baseline)
-        self.assertEqual(len(rows), 29)
+        self.assertEqual(len(rows), 26)
+        paths = {row['path'] for row in rows}
+        for slug in ('manage-agent', 'manage-repo', 'reflection'):
+            self.assertIn(f'runtime/skills/{slug}/skill.yaml', paths)
+            self.assertIn(f'runtime/skills/bundled/{slug}/SKILL.md', paths)
+            self.assertNotIn(f'runtime/skills/{slug}/SKILL.md', paths)
         sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=suite.ROOT, text=True).strip()
         tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=suite.ROOT, text=True).strip()
         app = root / 'HappyRanch.app'
@@ -1091,14 +1096,14 @@ class PackagedHarnessTests(unittest.TestCase):
         return subprocess.run(['bash', str(suite.ROOT / 'app/mac/scripts/verify-release.sh'),
             'resources', '--app', str(app), *args], capture_output=True, text=True, timeout=15)
 
-    def test_all_29_resources_match_exact_head_and_reject_bundle_archive_changes(self) -> None:
+    def test_all_resources_match_exact_head_and_reject_bundle_archive_changes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             app, rows, sha, _tree = self.resource_fixture(root)
             good = self.resource_command(app)
             self.assertEqual(good.returncode, 0, good.stderr)
             observed = json.loads(good.stdout)['resources']
-            self.assertEqual(len(observed), 29)
+            self.assertEqual(len(observed), 26)
             for row, actual in zip(rows, observed, strict=True):
                 raw = subprocess.check_output(['git', 'show', sha + ':' + row['path']], cwd=suite.ROOT)
                 self.assertEqual((actual['size'], actual['sha256'], actual['posix_mode']),
@@ -1211,7 +1216,7 @@ class PackagedHarnessTests(unittest.TestCase):
                 bad = self.resource_command(app, '--resource-evidence', str(evidence))
                 self.assertEqual(bad.returncode, 1, bad.stderr)
                 failure = json.loads(bad.stderr)
-                self.assertEqual(len(failure['detail']), 29)
+                self.assertEqual(len(failure['detail']), 26)
                 kept = suite.build_failure_evidence(root)
                 self.assertEqual(kept['status'], 'COMPLETE')
                 self.assertEqual(kept['report'], failure)
