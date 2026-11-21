@@ -48,6 +48,7 @@ def probe(root: Path) -> int:
     installed = root / "prefix/share/happyranch/desktop"
     installed.mkdir(parents=True)
     shutil.copytree(Path(__file__).parent, installed, dirs_exist_ok=True)
+    shutil.copy2(repo / "protocol/native-connection-bridge.v1.json", installed)
     shutil.copy2(repo / "runtime/remote_access/invite_v2.py", installed / "invite_v2.py")
     bundle = root / "prefix/web/dist"
     source = os.environ.get("HAPPYRANCH_TITLEBAR_WEB_DIST")

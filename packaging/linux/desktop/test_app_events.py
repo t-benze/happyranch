@@ -98,6 +98,119 @@ class EventTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.delivered[-1]["raw"]), {"schema": 2, "dialog": "connection"})
             self.assertEqual(self.app.status(), before)
 
+    def connection_boundary(self, case: str, command: str = 'host.revokeDevice') -> None:
+        script = r'''
+const vm=require('node:vm'), assert=require('node:assert/strict');
+const sources=JSON.parse(process.env.HR_EVENT_SCRIPTS);
+const handlers=[new Map(),new Map()], native=[], traffic=[];
+const contexts=handlers.map(h=>{
+ const c={location:{origin:'happyranch-app://app'},crypto:{randomUUID:()=> 'token'},TextEncoder,
+ MutationObserver:class{observe(){}disconnect(){}},document:{},
+ addEventListener:(n,f)=>{if(!h.has(n))h.set(n,[]);h.get(n).push(f);}};
+ c.window=c.top=c;
+ c.webkit={messageHandlers:{appBridge:{postMessage:raw=>{
+  const item=JSON.parse(raw);native.push(item);
+  if(item.command && sources.case.startsWith('retirement-'))
+   return new Promise(resolve=>{c.finish=resolve;});
+  return item.command ? Promise.reject(new Error(JSON.stringify(c.failure || {code:'permissionDenied',effect:'unknown',recovery:'nativeRecovery'}))) : Promise.resolve('{}');
+ }}}};return vm.createContext(c);
+});
+contexts.forEach(c=>c.postMessage=(data,origin)=>{
+ traffic.push(data);contexts.forEach((target,i)=>{target.data=data;target.origin=origin;
+ vm.runInContext('for(const f of callbacks)f({data,origin,source:window})',target);});
+});
+contexts.forEach(c=>c.callbacks=[]);
+vm.runInContext(sources.page,contexts[0]);vm.runInContext(sources.relay,contexts[1]);
+contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
+(async()=>{
+ if(sources.case==='events'){
+ vm.runInContext("globalThis.hosts=[];globalThis.off=happyranchConnection.on('host.stateChanged',raw=>hosts.push(raw));",contexts[0]);
+ vm.runInContext("hrAppBridge.emit('host.stateChanged','premature');hrAppBridge.admit(hrAppBridge.token);hrAppBridge.emit('host.stateChanged','snapshot');hrAppBridge.emit('unknown','wrong');",contexts[1]);
+ assert.equal(JSON.stringify(contexts[0].hosts),'["snapshot"]');
+ vm.runInContext('off()',contexts[0]);assert.equal(native.at(-1).enabled,false);
+ return;
+ }
+ vm.runInContext('hrAppBridge.admit(hrAppBridge.token)',contexts[1]);
+ if(sources.case.startsWith('retirement-')){
+  const command=sources.command;
+  contexts[0].command=command;
+  contexts[0].args=['client.connectSaved','client.removeSaved'].includes(command) ? '{"computerRef":"opaque"}'
+   : command==='app.ownersChanged' ? '{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}' : '{}';
+  const result=vm.runInContext('globalThis.settlements=0;happyranchConnection.call(command,args).catch(raw=>{settlements++;return JSON.parse(raw);})',contexts[0]);
+  assert.equal(native.filter(item=>item.command===command).length,1,'retirement must follow native dispatch');
+  if(sources.case==='retirement-csp'){
+   contexts[1].retireCallbacks=handlers[1].get('securitypolicyviolation');
+   vm.runInContext("for(const fn of retireCallbacks)fn({effectiveDirective:'frame-src'})",contexts[1]);
+  }else{
+   contexts.forEach((c,i)=>{c.retireCallbacks=handlers[i].get('pagehide');
+    vm.runInContext('for(const fn of retireCallbacks)fn()',c);});
+  }
+  let deadline;
+  const observed=await Promise.race([result,new Promise((_,reject)=>{
+   deadline=setTimeout(()=>reject(new Error('retirement did not settle the pending call')),1000);
+  })]).finally(()=>clearTimeout(deadline));
+  const read=['app.status','client.status','client.savedComputers','client.health','host.status','host.nextDevice'].includes(command);
+  assert.equal(observed.code,'documentChanged');
+  assert.equal(observed.effect,read ? 'none' : 'unknown','a dispatched mutation has no no-effect receipt');
+  assert.equal(observed.recovery,read ? 'refresh' : 'nativeRecovery');
+  contexts[1].finish('{}');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(contexts[0].settlements,1,'late native completion cannot resettle the retired call');
+  const refused=await vm.runInContext('happyranchConnection.call(command,args).catch(raw=>JSON.parse(raw))',contexts[0]);
+  assert.equal(refused.effect,'none','a new call after retirement is refused before dispatch');
+  assert.equal(native.filter(item=>item.command).length,1,'retirement never replays a mutation');
+  return;
+ }
+ if(sources.case==='errors'){
+ for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown']){
+  contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};
+  const error=await vm.runInContext("happyranchConnection.call('client.commitSwitch','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
+  assert.equal(error.code,code);assert.equal(error.effect,'unknown');assert.equal(error.recovery,'nativeRecovery');
+ }return;
+ }
+ const commands=['host.status','host.enable','host.turnOff','host.createInvite','host.approveDevice','host.rejectDevice','host.nextDevice','host.revokeDevice','client.health','client.retrySave','client.removeSaved','app.ownersChanged'];
+ for(const command of commands){
+  contexts[0].command=command;
+  contexts[0].args=command==='client.removeSaved' ? '{"computerRef":"opaque"}' : command==='app.ownersChanged' ? '{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}' : '{}';
+  const error=await vm.runInContext('happyranchConnection.call(command,args).catch(raw=>JSON.parse(raw))',contexts[0]);
+  assert.equal(error.code,'permissionDenied',command);assert.equal(error.effect,'unknown');assert.equal(error.recovery,'nativeRecovery');
+  assert.equal(native.at(-1).command,command);
+ }
+ for(const [command,args] of [['host.status','{ }'],['client.removeSaved','{"computerRef":3}'],['client.removeSaved','{"computerRef":"x","extra":0}'],['host.enable','[]'],['app.ownersChanged','{}']]){
+  const before=native.length;contexts[0].command=command;contexts[0].args=args;
+  await vm.runInContext('happyranchConnection.call(command,args).catch(()=>{})',contexts[0]);assert.equal(native.length,before);
+ }
+ console.log('Connection command/event/error boundary OK');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+        result = subprocess.run(["node", "-e", script], env={**os.environ, "HR_EVENT_SCRIPTS": json.dumps(
+            {"page": native.APP_PAGE, "relay": native.APP_RELAY, "case": case, "command": command})}, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def retirement_boundary(self, case: str) -> None:
+        for command in ('host.revokeDevice', 'host.enable', 'host.turnOff', 'host.createInvite',
+                        'host.approveDevice', 'host.rejectDevice', 'client.removeSaved', 'client.retrySave',
+                        'client.acceptInvite', 'client.retry', 'client.connectSaved', 'client.cancelAttempt',
+                        'client.commitSwitch', 'client.disconnect', 'app.ownersChanged',
+                        'app.status', 'client.status', 'client.savedComputers', 'client.health',
+                        'host.status', 'host.nextDevice'):
+            with self.subTest(command=command):
+                self.connection_boundary(case, command)
+
+    def test_csp_retirement_preserves_dispatched_mutation_uncertainty(self) -> None:
+        self.retirement_boundary('retirement-csp')
+
+    def test_pagehide_retirement_preserves_dispatched_mutation_uncertainty(self) -> None:
+        self.retirement_boundary('retirement-pagehide')
+
+    def test_connection_event_admission(self):
+        self.connection_boundary('events')
+
+    def test_connection_command_admission(self):
+        self.connection_boundary('commands')
+
+    def test_connection_error_semantics(self):
+        self.connection_boundary('errors')
+
     def test_page_and_named_world_relay_keep_listeners_separate(self):
         # VM supplies only browser plumbing. Both facades under test are the
         # literal shipping scripts, with no copy of their event-routing logic.

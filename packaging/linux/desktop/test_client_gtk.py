@@ -94,7 +94,7 @@ class NativeHostTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.bus, self.outcomes, self.displayed, self.events = HostBus(), [], [], []
-        self.window = ConnectionWindow.__new__(ConnectionWindow)
+        self.window = connection_owner._host.HostBridge.__new__(connection_owner._host.HostBridge)
         window = self.window
         window.Gio, window.GLib = Gio, GLib
         window.connection, window.cancellable = self.bus, Gio.Cancellable()
@@ -109,6 +109,21 @@ class NativeHostTests(unittest.TestCase):
             call_async_javascript_function=lambda *args: self.events.append(args[2].unpack()["raw"]))
         window.window = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False))
         window.show_invite = lambda *args: self.displayed.append(args)
+        window.operation_owner = window.cancel_request = None
+        window.host_timer, window.host_snapshot = None, None
+        generation = window.generation
+        current = lambda: window.active and not window.closed and window.generation == generation
+        subscriber = dict(current=current, visible=lambda: True, emit=self.events.append, window=window.window)
+        window.subscribers = {window.client_document: subscriber}
+        request = window.host_request
+        def host_request(method, finish):
+            generation = window.generation
+            def current():
+                return window.active and not window.closed and generation == window.generation
+            request(method, lambda *args: finish(*args) if current() else None,
+                    owner=window.client_document, current=current, window=window.window)
+        window.host_request = host_request
+
 
     def drain(self) -> None:
         context = GLib.MainContext.default()
@@ -183,6 +198,10 @@ class NativeHostTests(unittest.TestCase):
             self.window.client.model.host_prompt_document = None
 
     def test_invite_validator_and_secret_outputs(self) -> None:
+        # Keep the +301s invalid frame outside the 300s window across callbacks.
+        clock = patch.object(time, "time", return_value=time.time())
+        clock.start()
+        self.addCleanup(clock.stop)
         frame = dict(result="complete", invite=INVITE, expires_at=int(time.time()) + 200)
         invalid = ["{", json.dumps(frame) + " " * 6144, '"accepted"',
                    json.dumps(frame).replace('"result": "complete"', '"result":"complete","result":"complete"')]
@@ -373,7 +392,7 @@ class GTKTests(unittest.TestCase):
                     self.assertFalse(sheet.label.get_selectable())
                     self.assertFalse(sheet.label.get_can_focus())
                     self.assertIsNot(sheet.dialog.get_focus(), sheet.label)
-                with patch.object(connection_owner.time, "time", return_value=expiry - 125):
+                with patch.object(connection_owner._host.time, "time", return_value=expiry - 125):
                     self.assertTrue(sheet.tick())
                 self.assertIn("2:05", sheet.expiry.get_text())
                 self.assertIn(time.strftime("%Y-%m-%d", time.localtime(expiry)), sheet.expiry.get_text())
@@ -390,7 +409,7 @@ class GTKTests(unittest.TestCase):
                     sheet.dialog.response(Gtk.ResponseType.CLOSE)
                     self.assertIsNone(owner.invite_sheet)
                 else:
-                    with patch.object(connection_owner.time, "time", return_value=expiry):
+                    with patch.object(connection_owner._host.time, "time", return_value=expiry):
                         self.assertFalse(sheet.tick())
                     self.assertEqual(sheet.expiry.get_text(), "邀请已过期" if chinese else "Invite expired")
                 self.assertEqual((sheet.text, sheet.label.get_text()), ("", ""))
@@ -409,7 +428,7 @@ class GTKTests(unittest.TestCase):
                 if ending == "close":
                     sheet.close()
                 else:
-                    with patch.object(connection_owner.time, "time", return_value=expiry):
+                    with patch.object(connection_owner._host.time, "time", return_value=expiry):
                         sheet.tick()
                 self.assertEqual(clipboard.wait_for_text(), "new-other-app-content")
                 sheet.close()
@@ -417,6 +436,25 @@ class GTKTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     connection_owner.InviteSheet(owner, INVITE, expires_at, deadline)
                 self.assertIsNone(owner.invite_sheet)
+
+        # The helper request has completed, but the native invite belongs to
+        # its original document until that document retires.
+        bridge = connection_owner._host.HostBridge.__new__(connection_owner._host.HostBridge)
+        bridge.Gtk, bridge.GLib, bridge.tr = Gtk, GLib, lambda en, zh: en
+        bridge.subscribers, bridge.host_timer, bridge.invite_sheet = {}, None, None
+        document = bridge.operation_owner = object()
+        bridge.cancel_request = None
+        bridge.show_invite(INVITE, expiry, time.monotonic() + 120, parent)
+        sheet = bridge.invite_sheet
+        self.addCleanup(sheet.close)
+        bridge.operation_owner = None
+        sheet.copy.clicked()
+        bridge.detach(object())
+        self.assertEqual(sheet.label.get_text(), INVITE)
+        bridge.detach(document)
+        self.assertEqual((sheet.text, sheet.label.get_text()), ("", ""))
+        self.assertFalse(sheet.dialog.get_visible())
+        self.assertNotEqual(sheet.clipboard.wait_for_text(), INVITE)
 
     def test_updated_target_requires_native_confirmation(self):
         invite = SimpleNamespace(home_id="synthetic-home", control_plane_id="control", home_endpoint="100.64.0.2:443",
@@ -504,7 +542,9 @@ class GTKTests(unittest.TestCase):
         self.assertIsNone(self.ui.runtime_view)
 
     def test_host_facade_dispatch_outcomes_events_and_fencing(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # Host/Client confirmation fencing does not depend on Secret Service activation.
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                self.ui.model.store, "list", return_value=({}, "none", "known")):
             prefix = Path(directory)
             root = prefix / "share/happyranch/desktop/connection"
             root.mkdir(parents=True)
@@ -522,7 +562,7 @@ class GTKTests(unittest.TestCase):
             self.pump(lambda: window.hello_seen or window.unavailable_reason is not None)
             self.assertIsNone(window.unavailable_reason)
             bus = HostBus()
-            window.connection = bus
+            window.host_adapter.connection = bus
 
             def evaluate(source, world=None):
                 values = []
@@ -593,7 +633,7 @@ class GTKTests(unittest.TestCase):
             self.pump(lambda: evaluate("return window.joined.length;", "happyranch.connection.v1") == 8)
             self.assertEqual(evaluate("return window.joined.filter(v=>v.ok).length;", "happyranch.connection.v1"), 7)
             self.assertEqual(window.requests.reads, 0)
-            self.assertIsNone(window.host_status_waiters)
+            self.assertIsNone(window.host_adapter.host_status_waiters)
             # Coalesced failures resolve every reader and release the slot.
             bus.calls.clear()
             bus.hold = True
@@ -658,11 +698,11 @@ class GTKTests(unittest.TestCase):
             result, error = outcome("host.createInvite")
             self.assertIsNone(error)
             self.assertEqual(result["inviteState"], "issued")
-            self.assertEqual(window.invite_sheet.label.get_text(), INVITE)
+            self.assertEqual(window.host_adapter.invite_sheet.label.get_text(), INVITE)
             self.assertNotIn(INVITE, json.dumps(result))
             self.assertFalse(evaluate("return document.documentElement.outerHTML.includes(" + json.dumps(INVITE) + ");"))
             self.assertNotIn(INVITE, json.dumps(evaluate("return window.hostEvents;")))
-            window.invite_sheet.close()
+            window.host_adapter.invite_sheet.close()
             for remote, code, effect in (
                     ("ai.happyranch.RemoteAccess1.Error.denied", "permissionDenied", "none"),
                     ("org.freedesktop.DBus.Error.AccessDenied", "permissionDenied", "none"),
@@ -735,7 +775,7 @@ class GTKTests(unittest.TestCase):
                         for command in ("host.approveDevice", "host.rejectDevice", "host.revokeDevice",
                                         "host.enable", "host.turnOff", "host.createInvite"):
                             prompt_conflict(command)
-                        self.assertFalse(window.busy)
+                        self.assertFalse(window.host_adapter.busy)
                         if ending == "detach":
                             # A replacement can authorize immediately; the old
                             # worker must never open its late confirmation.
@@ -745,7 +785,7 @@ class GTKTests(unittest.TestCase):
                             self.addCleanup(window.close)
                             self.pump(lambda: window.hello_seen)
                             bus = HostBus()
-                            window.connection = bus
+                            window.host_adapter.connection = bus
                             bus.hold = True
                             start("host.approveDevice")
                             self.pump(lambda: len(bus.held) == 1)
@@ -768,7 +808,7 @@ class GTKTests(unittest.TestCase):
                             self.assertEqual([c[3] for c in bus.calls], ["ApprovePending", "Status"])
                         else:
                             self.pump(lambda: self.ui.prompt is not None)
-                            self.assertFalse(window.busy)
+                            self.assertFalse(window.host_adapter.busy)
                             if ending == "cancel":
                                 self.assertEqual(self.ui.prompt.get_title(), "Confirm computer")
                                 prompt_conflict("host.approveDevice")
@@ -803,7 +843,7 @@ class GTKTests(unittest.TestCase):
             self.assertFalse(self.ui.model.hold)
             bus.hold = False
             bus.held.pop()()
-            self.pump(lambda: not window.busy)
+            self.pump(lambda: not window.host_adapter.busy)
             self.ui.model.confirm_stop(lambda *args: stopped.append(args))
             self.assertIsNotNone(self.ui.prompt)
             self.ui.prompt.response(Gtk.ResponseType.CANCEL)
@@ -823,7 +863,7 @@ class GTKTests(unittest.TestCase):
             evaluate("stopHost();stopHost();return null;")
             # Let native unsubscribe arrive before checking that later observations do not emit.
             self.pump(lambda: not window.host_subscribed)
-            self.assertIsNone(window.host_timer)
+            self.assertIsNone(window.host_adapter.host_timer)
             count = evaluate("return window.hostEvents.length;")
             outcome("host.status")
             self.assertEqual(evaluate("return window.hostEvents.length;"), count)
@@ -851,7 +891,7 @@ class GTKTests(unittest.TestCase):
             self.addCleanup(window.close)
             self.pump(lambda: window.hello_seen)
             bus = HostBus()
-            window.connection = bus
+            window.host_adapter.connection = bus
             bus.hold = True
             evaluate("""
                 window.lateReplies=[];
@@ -861,7 +901,7 @@ class GTKTests(unittest.TestCase):
             self.pump(lambda: len(bus.held) == 1 and window.requests.reads == 2)
             window.detach()
             bus.held.pop()()
-            self.assertIsNone(window.host_status_waiters)
+            self.assertIsNone(window.host_adapter.host_status_waiters)
             self.assertTrue(bus.closed)
             self.assertEqual(evaluate("return window.lateReplies;"), [])
             self.assertEqual([c[3] for c in bus.calls], ["Status"])
@@ -871,7 +911,7 @@ class GTKTests(unittest.TestCase):
             self.addCleanup(window.close)
             self.pump(lambda: window.hello_seen)
             bus = HostBus()
-            window.connection = bus
+            window.host_adapter.connection = bus
             bus.hold = True
             start("host.enable")
             self.pump(lambda: len(bus.held) == 1)

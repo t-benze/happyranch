@@ -340,6 +340,14 @@ Closed error vocabulary: `invalidRequest`, `unsupportedVersion`, `unsupportedCom
 
 Map helper `invalid-request/unknown-method` to the corresponding schema errors, `wrong-uid` to unavailable native capability (never another credential path), `busy` to busy, `changed` to stateChanged, `expired` to expired, and confirmed `denied` to permissionDenied with no mutation. Do not call an ambiguous transport failure “cancelled — no change”: disconnected/unavailable/timeout **after dispatch** carries unknown effect until independently resolved. An early local validation/admission refusal has effect none. A successful request acknowledgement is not completion; report confirmed only from the native operation's supported result. AccessDenied is not proof of explicit revocation; Revoked requires a positive authoritative signal. Native web-load callbacks, never JS `connected:true`, own Connected.
 
+Linux Main retains the command for each pending page call. CSP/frame revocation
+and `pagehide` reject pending mutations with `documentChanged`, effect `unknown`
+and recovery `nativeRecovery`, without replay. Posting to the relay alone cannot
+establish no effect, so this applies conservatively before native admission too.
+Read-only `app.status`, `client.status`, `client.savedComputers`, `client.health`,
+`host.status` and `host.nextDevice` retain effect `none` / recovery `refresh`.
+New calls after retirement are refused before dispatch with effect `none`.
+
 ## 8. UX state coverage, acceptance and current signal gaps
 
 **The v2.1 state and acceptance appendix (TASK-17171; §1 filenames/digests) is current Product authority**, carrying founder seq23's B scope. Legacy L01–L20 → H01–H20; M01–M23 → C01–C23; X IDs are unchanged. The table below retains all 51 inherited states. Host rows apply to Linux in B; Client rows apply to Mac and Linux, with saved-access states on Linux explicitly gated and unresolved, not omitted. Mac host rows remain deferred requirements, not an implied implementation. “Existing”/“Adapter” identifies source-backed Linux host or Mac client behavior in §2; replacement lifecycle screens and native adapters remain unimplemented and unexecuted; slice 1a supplies only the web shell/schema. The design cannot manufacture unsupported readiness, expiry, early rejection or cleanup signals. V2.0 remains the earlier mapping artifact; v2.1 controls current presentation/acceptance, while the one-click spec's trust/R2 and action-preservation invariants remain.
@@ -766,7 +774,8 @@ baseline. This is source inspection, not live/native acceptance. `AS` =
 | app.status / app.stateChanged v2 | **S5-L1 implemented.** Shared closed status projection and event, admitted only through the probed Main document’s named world: `WK:331–351` (`status`), `WK:417–424` (`emit_state`), `WK:426–455` (`bridge_message`), `WK:457–486` (`probe_document`). |
 | Generation header admission and stripping | **S5-L1 implemented.** Missing/stale header refuses before forwarding (GET bootstrap exempt); process-owned generation counter survives loader reloads. Local allowlist and remote X-HappyRanch stripping remain: `WK:38–42` (`new_generation`), `WK:563–616` (`handle`), `AS:75–81` (`request_headers`), `client_runtime.py:139–151`. |
 | Atomic target+generation swap → cancellation → event | **S5-L1 implemented.** Swap under the first-send lock, cancel old generation, then emit full status: `WK:373–389` (`_replace_target`). |
-| Non-GET / pending-unknown owner commit refusal | **S5-L1 native gate implemented:** `WK:353–371` (`select_target`). Missing/unknown owner evidence and current-generation non-GET transfers refuse with named reasons. S5-L2 supplies client.commitSwitch; S6-W2 supplies owner integration. Neither is advertised here. |
+| Non-GET / owner commit refusal | **S6-W3-L native summary consumer implemented:** `AppScheme.bridge_message/owner_snapshot/select_target`, `ClientModel.owner_saves`. The admitted v2 summary gates commit/disconnect in unknown → pending → dirty/failed order, then current-generation non-GET transfers. Invalid input retires clearance; retirement with unresolved work retains an unknown latch. Web summary publication remains S6-W2b; lifecycle requests/decisions remain S7-L3. |
+| Main Connection command admission | **S6-W3-L implemented:** `AppScheme.bridge_message`, `APP_PAGE`, `APP_RELAY` admit all eight existing v1 Host commands, `host.stateChanged`, `client.health/removeSaved/retrySave`, with closed args and raw validated v1 bodies. `host_bridge.HostBridge` shares the bus/busy slot and visible-window three-second polling with ConnectionWindow; errors preserve native effect/recovery. The separate window/default-scheme cutover remains S7-L1. |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
@@ -1085,14 +1094,15 @@ target, generation, capability, draft content, error text or secret. Section 6
 applies: do not log payloads or use a registry dump. Counts are deliberately
 coarse; the web alone retains context and renders localized loss/result copy.
 
-**Implementation status.** Spec only: **S6-W2b (web)** implements initial/change
-pushes and lifecycle subscription/decisions; **S6-L / S7-L3 (native)** consume
-the summary and implement the lifecycle event, gate, failure/recovery rules
-and commit admission mapping. S5-L2 #1772's production commit remains blocked
-until owner evidence is wired. This PR changes no runtime dispatcher, route,
-auth, allowlist or v1 contract. Linux/WebKit/browser behavior and Mac work are
-NOT RUN. PR #1775's `app.owners` wording is an aggregate placeholder; its
-separately owned follow-up should point to this concrete wire contract.
+**Implementation status.** **S6-W3-L (Linux native)** consumes the admitted
+summary, clears it on document retirement/close, retains coarse unresolved
+uncertainty and wires the commit/disconnect refusal ordering above. Gate IDs
+remain unissued and are refused without applying a summary. **S6-W2b (web)**
+owns initial/change pushes and lifecycle subscription/decisions. **S7-L3
+(native)** still owns correlated lifecycle requests, keep/proceed and explicit
+recovery exit; those effects are not implemented by S6-W3-L. No daemon route,
+auth, allowlist or v1 schema changes. Mac remains pending. PR #1775's
+`app.owners` aggregate placeholder refers to this concrete wire contract.
 
 The following are JSON values inside facade strings, without transport envelopes.
 Validate summary examples against `ownersChanged` and lifecycle examples against
