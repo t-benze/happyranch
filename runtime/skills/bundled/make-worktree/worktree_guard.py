@@ -567,6 +567,7 @@ def cmd_verify(worktree_root: str) -> int:
     pr_quoted = shlex.quote(str(pr))
     wt_quoted = shlex.quote(str(wt))
     recovery_tarball = shlex.quote(str(Path(wt) / "primary-recovery.tar.gz"))
+    recovery_patch = shlex.quote(str(Path(wt) / "primary-recovery.patch"))
 
     lines.append("  To preserve your changes and move them to the worktree:")
     lines.append("")
@@ -582,9 +583,7 @@ def cmd_verify(worktree_root: str) -> int:
     lines.append("")
     if changed_tracked or changed_staged:
         lines.append("     # Save a patch of tracked+staged changes:")
-        lines.append(f"     cd {pr_quoted}")
-        lines.append(f"     git diff > /tmp/guard-recovery.patch")
-        lines.append(f"     git diff --cached >> /tmp/guard-recovery.patch")
+        lines.append(f"     git -C {pr_quoted} diff --binary HEAD > {recovery_patch}")
     if changed_untracked:
         lines.append("     # Archive untracked files (named as data above):")
         lines.append(f"     cd {pr_quoted}")
@@ -603,13 +602,15 @@ def cmd_verify(worktree_root: str) -> int:
     lines.append("")
     lines.append("  4. Restore to the worktree (review first, do NOT blindly overwrite):")
     if changed_tracked or changed_staged:
-        lines.append(f"     cd {wt_quoted}")
-        lines.append(f"     patch -p1 < /tmp/guard-recovery.patch")
+        lines.append(f"     git -C {wt_quoted} apply --3way primary-recovery.patch")
     if changed_untracked:
         lines.append(f"     cd {wt_quoted}")
         lines.append(f"     tar xzf {recovery_tarball}")
     lines.append("")
     lines.append("  5. After restoring, verify the worktree state before proceeding.")
+    if changed_tracked or changed_staged:
+        lines.append("     Remove primary-recovery.patch from the worktree after successful")
+        lines.append("     application and inspection so it is not accidentally committed.")
     lines.append("")
     lines.append("  DO NOT run 'git checkout', 'git reset --hard', or 'rm' on")
     lines.append("  the primary checkout — you will lose your work.")
