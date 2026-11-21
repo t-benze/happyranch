@@ -209,6 +209,12 @@ def tree_snapshot(root_path):
             if resolved != root_path and not resolved.startswith(root_path.rstrip(os.sep) + os.sep):
                 accepted = accepted_uv_interpreter(path, rel)
             else:
+                try:
+                    target = os.stat(resolved)
+                except OSError as exc:
+                    raise RuntimeError("external_or_protected_symlink") from exc
+                if not stat.S_ISREG(target.st_mode):
+                    raise RuntimeError("external_or_protected_symlink")
                 accepted = None
         else:
             accepted = None
@@ -333,17 +339,22 @@ def mountpoints():
 def identity(value):
     return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
 
-def row(relative, value, path=None):
+def row(relative, value, path=None, removing=False):
     accepted = None
     if path is not None and stat.S_ISLNK(value.st_mode):
         resolved = os.path.realpath(path)
-        if resolved != isolated and not resolved.startswith(isolated.rstrip(os.sep) + os.sep):
+        external = resolved != isolated and not resolved.startswith(isolated.rstrip(os.sep) + os.sep)
+        # Both descriptor admission snapshots validate every target. Once
+        # removal begins, our own earlier unlink may leave an admitted internal
+        # file link dangling; unlink that link without following its target.
+        if external or not removing:
             try:
                 target = os.stat(resolved)
             except OSError as exc:
                 raise RuntimeError("external_or_protected_symlink") from exc
             if not stat.S_ISREG(target.st_mode):
                 raise RuntimeError("external_or_protected_symlink")
+        if external:
             accepted = [
                 relative, os.readlink(path), resolved, target.st_dev,
                 target.st_ino, target.st_mode, target.st_uid, target.st_size,
@@ -428,7 +439,7 @@ def remove_tree(root_fd, expected_rows):
             child_rel = os.path.join(relative, name) if relative else name
             child_path = os.path.join(isolated, child_rel)
             before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            if row(child_rel, before, child_path) != expected[child_rel]:
+            if row(child_rel, before, child_path, removing=True) != expected[child_rel]:
                 raise RuntimeError("entry_identity_changed")
             if stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode):
                 child_fd, opened = opened_directory(directory_fd, name)
@@ -1100,6 +1111,64 @@ run_cleanup_candidate() {
     { _wc_refuse "${WC_GATE_REASON:-eligibility_gate}"; return 2; }
   fi
   if ! _wc_join; then return 2; fi
+  # Preserve admission evidence; capture and compare a separate current target
+  # recall before the complete pre-action pass. Never reuse task.json as current.
+  local fresh_task_json="$WC_TMP/pre-action-task.json" target_check_rc=0
+  if ! _wc_native "$WC_TMP/pre-action-task.native.json" happyranch recall --org "$ORG" "$TASK" > "$fresh_task_json" 2>/dev/null; then
+    { _wc_refuse "pre_action_task_unavailable"; return 2; }
+  fi
+  python3 - "$_WC_RUNNER_SKILL_DIR/scripts" "$TASK_JSON" "$fresh_task_json" "$TASK" "$AGENT" <<'PY_TARGET' || target_check_rc=$?
+import json, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from prepare_cleanup import aware_instant
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_task_key")
+        result[key] = value
+    return result
+
+def projection(path):
+    with open(path, encoding="utf-8") as handle:
+        record = json.load(handle, object_pairs_hook=unique)
+    if not isinstance(record, dict):
+        raise ValueError("task_not_object")
+    for key in ("task_id", "assigned_agent", "status", "completed_at"):
+        if not isinstance(record.get(key), str) or not record[key]:
+            raise ValueError("task_field_invalid")
+    aware_instant(record["completed_at"])
+    if "output_summary" not in record:
+        raise ValueError("task_protection_missing")
+    for key in ("output_summary", "note"):
+        if record.get(key) is not None and not isinstance(record[key], str):
+            raise ValueError("task_protection_invalid")
+    for key in ("risks", "risks_flagged"):
+        value = record.get(key)
+        if value is not None and (not isinstance(value, list) or any(not isinstance(item, str) for item in value)):
+            raise ValueError("task_risks_invalid")
+    # Keep literal timestamps and every protection field, including deferrals.
+    return {key: record.get(key) for key in (
+        "task_id", "assigned_agent", "status", "completed_at", "output_summary",
+        "note", "risks", "risks_flagged",
+    )}
+
+try:
+    admitted, fresh = map(projection, sys.argv[2:4])
+    if admitted["task_id"] != sys.argv[4] or admitted["assigned_agent"] != sys.argv[5]:
+        raise ValueError("admitted_target_mismatch")
+except (OSError, ValueError, TypeError, KeyError):
+    raise SystemExit(1)
+raise SystemExit(0 if admitted == fresh else 2)
+PY_TARGET
+  case "$target_check_rc" in
+    0) ;;
+    2) { _wc_refuse "pre_action_task_changed"; return 2; } ;;
+    *) { _wc_refuse "pre_action_task_invalid"; return 2; } ;;
+  esac
+  TASK_JSON="$fresh_task_json"; export TASK_JSON
   # The same-context fresh scan and every other gate immediately precede the
   # literal action. Unknown/refusal never falls through to mutation.
   WC_GATE_REASON=""; export WC_GATE_REASON

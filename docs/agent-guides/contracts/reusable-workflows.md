@@ -2639,6 +2639,10 @@ and [operator install/backout](../../operations/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
 
+Superseded by S8b: registration-only Coding v3; fresh admission refuses
+`sequential_coding_registration_only`. The v2 registration/admission description
+below is historical; original operation replay and readback retain their rules.
+
 `scripts/setup_sequential_coding.py` is an explicit cooperative offline operator
 entry point. `register` uses only the reviewed bundled Coding v2/full ABI pin and
 appends a missing definition without defaults or admission; an exact existing

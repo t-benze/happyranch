@@ -696,9 +696,12 @@ primary and task-worktree roots, snapshots the primary checkout baseline
 with content hashes (including untracked files — not just names), and at
 verify detects accidental primary-checkout edits — including mutations of
 already-dirty tracked paths, already-staged files, and already-untracked
-files. The guard fails with preservation-first recovery: ``git diff`` +
-``patch`` for tracked and staged changes, ``tar`` archive for untracked
-content, with all path-bearing shell commands shell-quoted via
+files. The guard fails with preservation-first recovery: tracked and staged
+changes are saved with ``git diff --binary HEAD`` to a worktree-local
+``primary-recovery.patch`` and restored with ``git apply --3way``; untracked
+content is archived in a worktree-local ``primary-recovery.tar.gz``. Recovery
+files stay inside the task worktree (never ``/tmp``) and are removed after
+successful inspection and restore; all path-bearing commands are shell-quoted via
 ``shlex.quote()``. It never suggests destructive commands. The delivered
 skill computes the workspace root as 5 parents above the task worktree
 (``$WORKTREE_ROOT/../../../../..``) and locates the guard under

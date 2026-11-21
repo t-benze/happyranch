@@ -304,6 +304,10 @@ no old-family parsing, callback, settlement, cancellation or LOCAL action.
 
 ## U9b atomic obligations (source delivered)
 
+S8b supersedes obligation 1's setup split: registration-only Coding v3; fresh
+admission refuses `sequential_coding_registration_only`. The v2 registration and
+separate admission action below are historical; original replay/readback remain.
+
 1. **SOURCE DELIVERED in the inert first PR (TASK-15616):** explicit reviewed
    non-venue definition registration and separate
    admission action under existing operator/settings ownership. Keep defaults

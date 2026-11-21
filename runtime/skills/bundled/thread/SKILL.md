@@ -3,57 +3,7 @@ name: thread
 description: Use this skill when the orchestrator invokes you for thread participation. Decide whether to reply, decline, or dispatch a task — all based on the thread context provided in your prompt.
 ---
 
-## Current names and permanent automation IDs
-
-Fresh prompts may show current Name · ID for this turn. Use the permanent ID
-from the injected parameters for callback agent/composer/speaker, task/session/
-invocation proofs, configuration and delegate/then/fanout targets. A name is
-human-addressing/presentation data, never actor authority. Human destination
-arguments and @mentions accept current names or IDs; former names refuse with
-the current name and do not forward. Founder is a separate human; recipient
-transport remains `@founder`. Metadata failure gives ID-only context.
-
-CLI send/reply and both compose upload modes preflight former tokens before
-associated uploads; forward validates final quoted+note text. ASCII quoted prose remains eligible; explicit blockquote lines are literal; email/word interiors, escaped tokens
-and supported code are literal. Unknown/ineligible body intentions follow the THR310 caller policy below; raw text stays unchanged. Preflight is
-read-only, not a reservation or rollback across upload/message requests. The
-server still owns admission; a rename between requests can leave an independent
-upload before the message refuses. Resumed/fallback prompts refresh current
-names without rewriting history. UI labels remain presentation only; source-specific
-verification and independent acceptance belong in the maker handoff.
-
-
 # thread
-
-## Current naming routing contract (THR-293)
-
-Human recipients and @mentions may use current names or permanent IDs; the
-server resolves them to canonical IDs. Former names refuse409 with the current
-name and never forward, including mixed former/current/founder text. The ASCII
-token charset is unchanged; explicit prose boundaries exclude email/word
-interiors, escaped tokens and supported code. Agent unknown text retains conditional fallback; Founder invalid intentions refuse422. Founder-only
-current mentions create no new agent wake but retain existing due catch-up and
-delivery obligations. Founder is a human inbox recipient, never an executor.
-Do not substitute names for composer/speaker/agent/task/session/invocation-token
-proofs: those remain canonical ID bindings. Read lookup grants no authority or
-reservation. Current names of pending/terminated owners grant no wake eligibility.
-
-Compose validates body/recipients before application attachment finalization.
-Separate pre-uploaded attachments already exist independently of a later send;
-former-name refusal leaves those prior objects unchanged. CLI pre-upload/target resolution and current/resumed prompt source are now
-described above; neither source paragraph claims behavioral verification.
-Keep the existing callback shapes and authentication mechanics below.
-
-New-message body admission excludes email/word interiors, escaped tokens and
-supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
-bodies perform no body naming lookup. Genuine body aliases fail closed on service
-failure, including empty explicit recipients and per-token unavailability. Known
-actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
-Observed Former refusal precedes later chunk failures. en/zh-CN service wording
-asks for retry or a known intended-recipient ID, with no body rewrite, automatic
-retry/send or locale-triggered effect. Historical messages/delivery and release
-measurement keep their original interpretation. The exact finite scanner contract
-is in the current identity-names core spec (THR293seq174).
 
 You've been invoked because something happened on a thread (THR-NNN). The
 available prior history is in your prompt, along with a note explaining WHY you were
@@ -74,43 +24,37 @@ loop or count toward the provider breaker.
 > not in this skill. This skill covers the operational mechanics — how to
 > format and submit each outcome.
 
-The C1a/C1b private thread-delivery release service has no supported human
-release command or route. Its dormant initial serving attachment is admitted only
-after actual successful ASGI/listener startup, without selection/release. Agents,
-automatic diagnostics, reapers and schedulers cannot select the human risk
-override. Caller proof flags and temporary/dynamic contexts supply no authority.
-A companion never clears raw lifecycle/host/move/Pause/effect uncertainty, supplies
-process proof, replenishes retries, restores task12044/10693, or grants a callback
-for a consumed token. Terminal sources get no second catch-up. Future human
-admission must bind exact preview/key/owner/range and explicit late-write,
-overlap, repeated-effect and missing-closure risks. Old-reader/mixed-version
-operation and downgrade after use are unsupported. Current invocation-token
-callbacks below keep their native single-use authority; no agent release follows.
-C1-13 now has dormant UNMOUNTED router and UNCALLED CLI registration/handlers,
-private custody and client source only. Existing CLI registration/app mounts and
-service are unchanged; external_adapters_available=false, proof=false. It is a
-future HUMAN tool, no supported installed command or agent/live-use authority.
-Original strict16KiB JSON, distinct preview/command digests, explicit four-risk
-confirmation, positive private durability before POST, strict bounded32KiB
-no-store responses and same-key single-GET/no-reapply rules are source contracts.
-Committed history never certifies cleanup/recovery; false/null/true stay distinct.
-Fixtures/native denials/public activation are HELD with BOTH Web/Swift attributable
-RED/restoration/GREEN MISSING and no waiver/allocation. C1-13 activation and
-C2 task-tail remain deferred; behavioral/test-authoring proof UNEXECUTED.
-Current guarded owner observations never prove historical process/effect retirement.
-Disconnect/revoke timeout cannot discharge native lifetime or permit DB close;
-notification after commit can publish only the same genuine replacement token.
+There is no supported agent release command; invocation tokens retain their
+ordinary single-use callback authority.
 
 ## Your invocation_token
 
-### Explicit resolution from a task or answer turn (THR-339)
+Look for this line in your prompt:
+
+    Your invocation_token for this turn is: <opaque-string>
+
+You MUST include this token in every callback payload (reply, decline,
+dispatch and resolve-escalation). Missing required callback fields return
+422; an invalid or mismatched token returns 401 `invocation_token_invalid`;
+a consumed token returns 409 `invocation_token_consumed`. The token is
+single-use for the terminal callback (reply/decline): one terminal outcome
+per turn, and a second terminal callback returns 409.
+
+**Scope.** This token authorizes the thread callback for this turn only. It is
+NOT a task session id and it authorizes no job submission or other side effect.
+If a thread turn reveals a skill operation blocked by an executor permission
+refusal, do not try to run it here: dispatch a task to yourself (or route it to
+the owning agent). Obtain required authorization in the thread BEFORE automatic
+job submission from that ordinary task session, as documented in the **jobs** and **start-task** skills.
+
+## Explicit resolution from a task or answer turn (THR-339)
 
 When a task-composed thread's request is explicitly settled, its opener or the
 opener's executable team manager may resolve it in the substantive decision
 message using the existing `threads send` file payload:
 
 ```json
-{"composer":"agent_id","body_markdown":"Decision and outcome; no action remains.","resolution":{"next_owner":null}}
+{"composer":"<your permanent agent ID>","body_markdown":"Decision and outcome; no action remains.","resolution":{"next_owner":null}}
 ```
 
 Send with `happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID
@@ -122,7 +66,7 @@ pending REPLY or TASK_FOLLOWUP invocation caused by another agent's answer.
 Use the existing terminal callback with the same optional object:
 
 ```json
-{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"agent_id","in_response_to_seq":3,"body_markdown":"Accepted; the request is settled.","resolution":{"next_owner":null}}
+{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"<your permanent agent ID>","in_response_to_seq":3,"body_markdown":"Accepted; the request is settled.","resolution":{"next_owner":null}}
 ```
 
 Submit with `happyranch threads reply --org ORG --from-file ABS`. The nonempty
@@ -131,7 +75,7 @@ It settles your invocation atomically and creates no REPLY or catch-up tokens.
 For a silent settlement, supply a nonempty reason instead:
 
 ```json
-{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"agent_id","in_response_to_seq":3,"reason":"Answer accepted; no further action remains.","resolution":{"next_owner":null}}
+{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"<your permanent agent ID>","in_response_to_seq":3,"reason":"Answer accepted; no further action remains.","resolution":{"next_owner":null}}
 ```
 
 Submit with `happyranch threads decline --org ORG --from-file ABS`. No message is
@@ -172,30 +116,13 @@ termination is cleanup only: unresolved requests stay open with their owner
 visible. Silence, plain declines and elapsed time never resolve a thread. The founder
 can inspect and resume any archived thread; resume clears resolution.
 
-Look for this line in your prompt:
-
-    Your invocation_token for this turn is: <opaque-string>
-
-You MUST include this token in every callback payload (reply, decline,
-dispatch). It proves the callback is part of this live turn. Without
-it, the daemon will reject the call with 401 invocation_token_invalid. The
-token is single-use for the terminal callback (reply/decline) — a
-second terminal callback with the same token returns 409.
-
-**Scope.** This token authorizes the thread callback for this turn only. It is
-NOT a task session id and it authorizes no job submission or other side effect.
-If a thread turn reveals a skill operation blocked by an executor permission
-refusal, do not try to run it here: dispatch a task to yourself (or route it to
-the owning agent). Obtain required authorization in the thread BEFORE automatic
-job submission from that ordinary task session, as documented in the **jobs** and **start-task** skills.
-
 ## Identify the trigger
 
 The "You have been invoked because" line tells you which case applies:
 
-- "A new message was posted on this thread" — a `REPLY` turn. Every participant
-  except the speaker receives this invocation. Read the prompt's
-  "Decline-by-Default" section to decide whether to reply or decline.
+- "A new message was posted on this thread" — a `REPLY` turn selected by the
+  naming and routing rules below. Read the prompt's "Decline-by-Default"
+  section to decide whether to reply or decline.
 - "The founder has added you to this thread" — you are now a participant but
   receive NO separate bootstrap turn. You will be invoked with a REPLY turn
   only when the next message is posted.
@@ -211,7 +138,7 @@ turn.
 
 Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
 {"thread_id": "<id>", "invocation_token": "<token>",
- "speaker": "<your name>", "body_markdown": "...", "in_response_to_seq": <N>}
+ "speaker": "<your permanent agent ID>", "body_markdown": "...", "in_response_to_seq": <N>}
 
 Then single-line:
 happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
@@ -246,7 +173,7 @@ list and download using their invocation token for proof:
 
 Write `/tmp/att-list-<thread_id>.json`:
 ```json
-{"thread_id": "<id>", "agent": "<your name>", "invocation_token": "<token>"}
+{"thread_id": "<id>", "agent": "<your permanent agent ID>", "invocation_token": "<token>"}
 ```
 Then:
 
@@ -254,11 +181,11 @@ Then:
 
 Or inline (single-line):
 
-    happyranch threads attachments list --org <slug> --thread-id <id> --agent <your name> --invocation-token <token>
+    happyranch threads attachments list --org <slug> --thread-id <id> --agent <your permanent agent ID> --invocation-token <token>
 
 To download an attachment, write `/tmp/att-get-<thread_id>.json`:
 ```json
-{"thread_id": "<id>", "attachment_id": "<att-id>", "agent": "<your name>", "invocation_token": "<token>"}
+{"thread_id": "<id>", "attachment_id": "<att-id>", "agent": "<your permanent agent ID>", "invocation_token": "<token>"}
 ```
 Then:
 
@@ -266,7 +193,7 @@ Then:
 
 Or inline:
 
-    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your name> --invocation-token <token> --output /tmp/file.ext
+    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your permanent agent ID> --invocation-token <token> --output /tmp/file.ext
 
 The founder (web UI / bearer token) may also list/download without these
 proofs. Agent callers must provide both `agent` and `invocation_token`.
@@ -276,7 +203,7 @@ proofs. Agent callers must provide both `agent` and `invocation_token`.
 When you need a file to be visible across tasks or threads, use the pre-upload
 pattern with `--shared`:
 
-    happyranch artifacts put /tmp/file.ext --agent <your name> --name <artifact-name> --org <slug>
+    happyranch artifacts put /tmp/file.ext --agent <your permanent agent ID> --name <artifact-name> --org <slug>
 
 Then include the artifact reference in your reply payload:
 
@@ -293,7 +220,7 @@ existing payloads.
 
 Write `/tmp/thread-decline-<thread_id>-<seq>.json`:
 {"thread_id": "<id>", "invocation_token": "<token>",
- "speaker": "<your name>", "reason": "...", "in_response_to_seq": <N>}
+ "speaker": "<your permanent agent ID>", "reason": "...", "in_response_to_seq": <N>}
 
 Then:
 happyranch threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
@@ -318,10 +245,13 @@ surface it in your reply and let the founder loop them in or open a task tree
 where manager delegation is available.
 
 Write `/tmp/thread-dispatch-<thread_id>.json`:
+```json
 {"thread_id": "<id>", "invocation_token": "<token>",
- "dispatcher": "<your name>", "brief": "...",
- "target_agent": "<your name>" /* optional; any other target is rejected */,
- "team": "<team>" /* optional, defaults to your team */}
+ "dispatcher": "<your permanent agent ID>", "brief": "..."}
+```
+
+`target_agent` is optional; if supplied, use `<your permanent agent ID>` (any
+other target is rejected). `team` is optional and defaults to your team.
 
 Then:
 happyranch threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
@@ -335,7 +265,9 @@ founder that reason/options; never silently dispatch on the default. On success,
 state the returned effective model/effort and sources in your reply confirmation.
 The CLI prints these fields and the selected task_dispatched system message
 retains them. These settings apply to this task; ordinary children do not
-inherit them. Per-handoff selections are planned separately.
+inherit them. For ordinary handoff selections, see the
+[start-task contract](../start-task/SKILL.md#steps)
+("Ordinary handoff selections", THR-356).
 
 Each distinct dispatch posts its own system message into the thread. There is no
 per-turn dispatch count limit. The daemon hashes the stripped brief, effective team,
@@ -351,10 +283,32 @@ Superseded-root followup messages, invocations and audits are atomic and reused;
 pending followup tokens are published idempotently and consumed tokens stay consumed.
 Two identical requests in one turn therefore mean one dispatch.
 
-Managers may also resolve multiple in-lineage escalations using
-`happyranch threads resolve-escalation` during REPLY, BOOTSTRAP or TASK_FOLLOWUP.
-A successful resolution keeps the token pending; repeating a resolution for the
-same task on that token returns `replayed: true`. The successor, supersession
+### Resolve an escalation (manager only)
+
+During REPLY, BOOTSTRAP or TASK_FOLLOWUP, a participating executable team
+manager may supersede an escalation in this thread's lineage. The task must
+have been dispatched from this thread or descend from a task dispatched here.
+Only `supersede` is supported; `continue` is retired and returns 410. Authority
+comes from the validated invocation, with `dispatcher` set to your permanent
+agent ID; do not supply a client-side actor.
+
+Write `/tmp/thread-resolve-escalation.json`:
+
+```json
+{"task_id":"TASK-ID","decision":"supersede","rationale":"Authorized replacement for the escalation.","brief":"The successor task's authorized work.","invocation_token":"CURRENT_TOKEN","dispatcher":"<your permanent agent ID>"}
+```
+
+Submit on one line:
+
+    happyranch threads resolve-escalation --org ORG --thread-id THR-ID --from-file /tmp/thread-resolve-escalation.json
+
+`thread_id` may instead be supplied in the JSON body. The CLI forwards the body
+unchanged. The server rejects retired continuation-envelope keys and `continue`
+with 410, missing invocation proof with 422, failed participant/manager checks
+with 403, and a task outside this thread's lineage with 409.
+
+A successful resolution keeps the invocation pending until reply or decline;
+repeating a resolution for the same task on that token returns `replayed: true`. The successor, supersession
 and invocation-ID replay audit commit together; replay restores a missing
 notification for a still-pending successor and the committed parent/followup
 tail without duplicating rows or queued work. Reply or decline afterwards.
@@ -386,20 +340,18 @@ loop handles delegation natively.
   to workers internally. The thread sees one `task_completed` /
   `task_failed` system message and one TASK_FOLLOWUP turn at the end.
 
-- **Loop in another agent in your team:** use `happyranch threads compose
-  --to <agent>` or `happyranch threads invite`. They receive a thread
-  invocation. `compose --to <agent>` gives them a REPLY turn; `invite` adds
-  them silently (they are invoked on the next message). They decide what to do
-  with it.
+- **Loop in another agent or hand off across teams:** self-dispatch a task
+  whose brief includes composing the coordination thread, then finish this
+  thread turn with reply or decline. In that task's active task/session, use
+  the compose procedure below: put the intended agent or team manager in
+  the payload's `recipients`, then run
+  `happyranch threads compose --org ORG --task-id TASK-ID --session-id SID --from-file /tmp/thread-compose-handoff.json`.
+  The compose parser calls the destination flag `--recipients`; agent compose
+  reads recipients from its JSON payload. A thread invocation token supplies
+  no task/session binding. The recipient decides whether to self-dispatch work.
 
-- **Cross-team handoff:** use `happyranch threads compose --to
-  <other-team-manager>` — possibly opening a new thread for the cross-team
-  subject. Their manager receives a REPLY turn and self-dispatches if
-  they take the work on.
-
-If you see `thread_dispatch_must_be_self` (or `thread_dispatch_must_be_self`)
-in an error envelope: you tried to push work onto another agent from inside
-a thread. Re-route via compose, or self-dispatch and own the phase.
+If you see `thread_dispatch_must_be_self`, re-route through a task that
+composes the handoff, or self-dispatch and own the phase.
 
 ## Task-followup turn
 
@@ -475,19 +427,16 @@ Requirements:
 
 1. Write `/tmp/thread-compose-<short-tag>.json`:
 
-   {"composer": "<your name>",
+   {"composer": "<your permanent agent ID>",
     "subject": "<≤120 chars>",
     "recipients": ["agent_a", "agent_b"],
     "body_markdown": "<the message>"}
 
-   > **To address the founder** — e.g. to open a founder-only thread —
-   > include the literal `"@founder"` in `recipients`, WITH the `@`. It is
-   > a routing literal, not an agent name: a bare `"founder"` is rejected
-   > as an unknown agent (404). `"@founder"` also satisfies the
-   > at-least-one-recipient requirement on its own, so
-   > `"recipients": ["@founder"]` opens a thread with just you and the
-   > founder. The founder is not added as a participant row; they follow
-   > the thread via the web UI.
+   > **To address the founder**, prefer `"recipients": ["@founder"]`.
+   > Accepted human addresses (including `founder` and the current founder
+   > name) normalize to the transport literal `@founder`; the human is never
+   > added as an agent participant. This recipient alone satisfies the
+   > at-least-one-recipient requirement.
 
 2. Single-line:
 
@@ -518,10 +467,21 @@ Use this when you are **already a participant** of an open thread and want to
 add a message to it from your current task session — without waiting to be
 re-invoked.
 
-This is the `post-as-agent` thread endpoint
-(`POST /threads/{thread_id}/post-as-agent`). It is the task-session way to
-append to a thread, and it is distinct from the other two ways an agent
-contributes:
+Write `/tmp/thread-send.json`:
+
+```json
+{"composer":"<your permanent agent ID>","body_markdown":"The substantive task update."}
+```
+
+Submit on one line:
+
+    happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID --session-id SID --from-file /tmp/thread-send.json
+
+Bound `send` uses the shared task-session agent-message path also used by
+`POST /threads/{thread_id}/post-as-agent`; there is no `threads post-as-agent`
+CLI verb. If explicitly settling the request, put the optional `resolution`
+object in this same JSON payload (see "Explicit resolution" above).
+The contribution paths are:
 
 - **compose-as-agent** opens a **NEW** thread (you become a participant).
 - **post-as-agent** appends to an **EXISTING** thread you **already
@@ -533,8 +493,8 @@ contributes:
   requires the single-use `invocation_token` from that invocation.
 
 Posting appends the message attributed to you, increments the thread's turn
-count by one, and mints a reply turn for every **other** participant (not
-you). It fails if you are not a participant or the thread is not open.
+count by one, and selects new reply turns under the naming and routing rules
+below. It fails if you are not a participant or the thread is not open.
 Turn count is tracked and displayed but no longer gates posting; there is
 no per-thread turn cap enforcement.
 
@@ -548,10 +508,9 @@ must be absent. The bound agent must also already be a thread
 participant, otherwise the send is rejected with 403
 `not_a_participant`. Only a true founder invocation (no agent binding) records
 the speaker as `'founder'`, unchanged from prior behavior. This agent
-attribution is a **safety net** that prevents the old mis-stamp-as-founder
-bug, not a new preferred path. The intended task-session way for an agent
-to append to a thread remains **post-as-agent** (attributed to you) or
-**reply** (invocation token).
+attribution uses the same agent-message helper as **post-as-agent**. Use
+bound `threads send` from a task session or **reply** with an invocation token
+from a thread turn.
 
 ## What NOT to do
 
@@ -562,16 +521,8 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
   invocation. One terminal outcome per turn. Dispatch and manager escalation resolution are nonterminal
   actions; both may be repeated for distinct work before reply or decline.
-- Do NOT treat `@text` in message bodies as a routing *instruction to yourself*
-  beyond the server's decision: the daemon routes every message at write time
-  (mention routing, THR-198; unconditional per TASK-6027) — a body that
-  mentions one or more valid current participants wakes exactly that set
-  (minus the speaker); with zero valid participant mentions (none,
-  `@founder`/typos, self-only), every participant minus the speaker is woken.
-  There is no routing switch (the shipped `mention_routing_enabled` column is
-  inert legacy). You only ever receive a wake the daemon selected; @-mentions
-  in bodies are no longer
-  purely visual. TASK_FOLLOWUP and BOOTSTRAP wakes are never mention-routed.
+- Do NOT treat body `@text` as an instruction to route work yourself. Follow
+  the server-selected wake and the naming and routing contract below.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.
 
@@ -580,51 +531,76 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 
 Root Pause refuses work-starting Continue/supersede/revisit and thread dispatch(resolves) at the actual origin before mutation/token consumption. Founder revisit also refuses `revisit_successor_live` without mutation when a transitive revisit successor remains nonterminal, naming its ID/status; terminal successors permit another revisit. Thread dispatch(resolves) creates an unlinked root under its existing blocked-predecessor/replay rules. Thread Continue remains retired410. Resume does not consume an invocation or invent a successor. A genuine accepted manager supersession retains its separately created NULL-parent unheld root; root holds do not propagate through thread/revisit/supersession history. Existing thread callback/session rules remain.
 
-## Literal text and recipient intentions (THR310 seq3/13)
+## Naming, literal text and routing (THR-293 / THR310)
 
-All Founder-authenticated writes, including an unbound agent-launched CLI, reject
-unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
-Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
-retains404 and unresolved aliases retain503 under naming failure. Preserve native
-structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
-a genuine agent composer). BODY suggestions are eligible selected prospective
-agents in a new thread, current participants in an existing one; Founder is human,
-never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+Use `<your permanent agent ID>` for callback speaker/composer/dispatcher/agent,
+task/session/invocation proofs, configuration and delegate/then/fanout targets.
+Human destination arguments and @mentions accept current ASCII names or permanent
+IDs; names confer no actor authority. Former names refuse409 with the current
+name and never forward, including mixed former/current/founder input. Fresh and
+resumed/fallback prompts refresh names without rewriting history; metadata failure
+gives ID-only context. Current names of pending/terminated owners grant no wake
+eligibility. Read lookup grants no authority or reservation. Founder is a human
+inbox recipient, never an executor or agent participant; prefer `@founder`.
 
-Validated agent writers retain compatibility; CLI stderr describes ignored tokens
-and canonical narrowed targets or conditional fallback: recipients minus speaker
-outside an exchange, frozen cohort intersect recipients minus speaker inside one,
-possibly empty. Prior catch-up is independent; pending_replies proves neither
-audience nor storage/launches. Direct agent API/internal authors receive no warning
-channel (accepted limitation). Complete valid JSON-only bindings count for CLI
-warning/upload attribution; partial/invalid bindings retain native refusal. No
-response warning field/header/auth change or preflight reservation is introduced.
-Founder-only suppresses new selection while preserving obligations/prior catch-up;
-Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+To alone selects participants (plus a genuine agent composer). BODY suggestions
+are eligible selected prospective agents in a new thread, current participants
+in an existing one; Founder is never a BODY suggestion, though manual `@founder`
+is valid. Founder-authenticated writes, including an unbound agent-launched CLI,
+reject unknown/nonparticipant body intentions with422 and eligible current-name/ID
+guidance. Genuine Former anywhere in To/body retains409 before body422; unknown
+explicit To retains404 and unresolved aliases retain503 under naming failure.
+Preserve native structural/auth/binding/lifecycle/file errors. Validated agent
+writers retain compatibility and the conditional fallback below.
 
-Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
-unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
-literal; unprefixed lazy continuation and four-space indentation are outside this
-quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
-later notes. The precise finite whitespace/code grammar and examples are in the
-identity-names core spec's THR310 section; this is not a full Markdown parser.
+| New-message body selection | New agent wakes (speaker excluded) |
+| --- | --- |
+| One or more valid live-participant mentions | Exactly that stable, deduplicated set; mentions may pierce an open exchange's hold without changing its frozen cohort. |
+| Founder-only mentions | None; existing delivery obligations and prior catch-up remain. |
+| No valid agent mentions, outside an open exchange | Current recipients minus speaker. |
+| No valid agent mentions, inside an open exchange | Frozen cohort intersect current recipients minus speaker; possibly empty. |
+| Independent prior catch-up | Retains its own obligations; not determined by this new-message selection. |
+
+Founder plus unknown text differs from founder-only. Self-only, quote-only and
+agent unknown/ineligible text use ordinary conditional fallback. Routing happens
+at write time and is frozen for that message; there is no routing switch (the
+legacy `mention_routing_enabled` column is inert). `pending_replies` proves neither
+audience nor storage/launches. BOOTSTRAP and TASK_FOLLOWUP wakes remain separate,
+never mention-routed; their callback paths keep the isolated broadcast branch.
+
+CLI send/reply and both compose upload modes preflight former tokens before
+associated uploads; forward validates final quoted+note text. Compose validates
+body/recipients before application attachment finalization. Preflight is read-only,
+not a reservation or rollback: a rename between requests can leave an independent
+upload before message refusal; separate pre-uploaded objects remain unchanged.
+CLI stderr describes ignored tokens and canonical narrowed targets or conditional
+fallback. Complete valid JSON-only bindings count for warning/upload attribution;
+partial/invalid bindings retain native refusal. Direct agent API/internal writers
+have no warning channel; no response warning field/header or auth change follows.
+
+Email/word interiors, escaped tokens and supported inline/fenced code are literal;
+ASCII quoted prose remains eligible; explicit physical blockquote lines are literal.
+Literal-only bodies perform no body naming lookup. Genuine body aliases fail closed
+on service failure, including empty explicit recipients and per-token unavailability.
+Known canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. Naming-service errors ask
+for retry or a known intended-recipient ID without body rewrite, automatic retry/send
+or locale-triggered effect. See the [identity-names core spec](../../../../docs/specs/2026-10-09-identity-names-core.md)
+(THR293seq174 and THR310) for the exact finite scanner grammar and examples;
+this is not a full Markdown parser.
+
 Nonblank authored bodies remain exact through storage, including controls,
 indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
-predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+predicate and attachment-only null outcomes remain; subjects/history and historical
+delivery/release measurement keep their interpretation. Forwarders quote every
+physical source line/header/blank/marker; generated source separators may become
+LF while notes remain verbatim, including CLI note-file newlines. The CLI's fully
+serialized quoted excerpt is at most4096 UTF8 bytes including metadata/prefixes/
+newlines/marker, excluding separator and note; reserve the quoted marker and keep
+the longest valid source prefix. Genuine task/dream/callback proof and authentic
+delivery debt/outage require actual evidence, never inference from static/mock checks.
 
-Forwarders quote every physical source line/header/blank/marker. Generated source
-separators may become LF; notes remain verbatim, including CLI note-file newlines.
-CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
-newlines/marker included; separator and note excluded. Reserve the quoted marker
-and retain the longest valid source prefix. Web retains its last-message selection
-and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
-Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
-Thread-body rendering styles only proven exact raw intervals, noninteractively;
-ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
-and historical delivery stay unchanged. No render-time naming or recipient inference.
-Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
-Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
-proof require actual evidence and cannot be inferred from static/mock checks.
+## Founder abort
 
 A Founder abort terminalizes the original thread invocation token. Do not send
 another reply/decline or reuse that token for a later arrival; its stale callback
