@@ -267,13 +267,32 @@
       "properties": {
         "schema": { "const": 2 },
         "command": { "enum": ["local.start", "local.stop", "local.restart", "local.keepRunning.set", "local.repair", "local.turnOff"] },
+        "readmission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "incompatible"],
+          "properties": {
+            "state": { "enum": ["ready", "unreachable", "incompatible", "unknown"] },
+            "incompatible": { "oneOf": [{ "$ref": "#/$defs/incompatible" }, { "type": "null" }] }
+          },
+          "allOf": [{
+            "if": { "properties": { "state": { "const": "incompatible" } } },
+            "then": { "properties": { "incompatible": { "$ref": "#/$defs/incompatible" } } },
+            "else": { "properties": { "incompatible": { "type": "null" } } }
+          }]
+        },
         "service": {
           "allOf": [
             { "$ref": "#/$defs/localServiceStatus" },
             { "properties": { "supported": { "const": true }, "busy": { "const": false } } }
           ]
         }
-      }
+      },
+      "allOf": [{
+        "if": { "properties": { "command": { "enum": ["local.start", "local.restart"] } } },
+        "then": { "required": ["readmission"] },
+        "else": { "not": { "required": ["readmission"] } }
+      }]
     },
     "localKeepRunningSet": {
       "type": "object",

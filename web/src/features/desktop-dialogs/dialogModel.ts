@@ -7,9 +7,14 @@
  * imports so its rules can be checked by a plain Node test.
  */
 
-/** Settings dialog pages, in nav order (v2.4 §2: This app, then Runtime). */
+/**
+ * Settings dialog pages, in nav order (v2.4 §2: This app, This computer,
+ * then Runtime). `local` (HappyRanch on this computer, S7-L2) is a
+ * desktop-only page with no browser Settings route.
+ */
 export const DESKTOP_SETTINGS_SECTIONS = [
   'preferences',
+  'local',
   'daemon-capacity',
   'executors',
   'organization',

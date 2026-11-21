@@ -18,6 +18,7 @@ and the author includes the TLC model-check result as review evidence.
 Existing model: [docs/specs/formal/task-lifecycle/](../../specs/formal/task-lifecycle/README.md)
 (PR #1754, updated in PR #1784). Next model candidate: job lifecycle (not part of
 this PR).
+Existing model: [Linux local-service supervisor](../../specs/formal/local-service-supervisor/README.md) (PR #1815).
 
 Model checks are review evidence and **NOT a CI gate** (founder test policy
 THR-291: required checks stay lint/static only; no new scheduled runs).

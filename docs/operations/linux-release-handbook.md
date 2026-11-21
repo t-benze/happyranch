@@ -784,8 +784,9 @@ The header shows the requested destination plus an explicit Retry
 action; becoming available never retries automatically. The subscribed web Main owns
 the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
 Native entry starts no daemon, changes no target/generation, and neither commits
-nor cancels an attempt. The existing main-window strip and close/Quit policy
-remain in place for their later cutover slices.
+nor cancels an attempt. S7-L2 removes the Main control/remote-access strip,
+its margins and separator. Local controls move into Settings and remote-access
+controls use Connection. Close/Quit policy remains a later cutover slice.
 
 Focused native checks use the existing direct system-Python venue, with Node 24
 for executing the literal page/relay scripts in an isolated message-bus fixture:
@@ -1219,16 +1220,24 @@ GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client
 
 ### Keep running after logout
 
-The native controls sit above the web view with 12px margins and a separator.
-The setting label and compact switch share a horizontal row; partial-state and
-update actions each share a row with their label. Diagnostics wrap below the setting.
+S7-L2 places local controls in Settings → **HappyRanch on this computer**.
+Main has no control strip or reserved height. The admitted Main document calls
+`local.status/start/stop/restart/keepRunning.set/repair/turnOff/update.status`
+through the existing supervisor queue. These commands affect this computer,
+including while a remote target is selected; they never operate on that Host.
+`local.status` reports independent running and keep-running observations:
+Checking, Off, Fully on, Partly on or Unknown. Failed inspection is Unknown.
+The supervisor atomically reserves one mutation slot before native consent;
+another mutation returns `busy` with effect `none` and recovery `refresh`.
+Reads remain available while busy. A failed effect retains its slot until an
+explicit fresh status inspection reconciles it; no mutation is replayed.
 
 **Keep HappyRanch running when I'm logged out** defaults OFF. Turning it ON
 calls logind's system-bus `SetUserLinger(own uid, true, interactive=true)` via
 system Python's existing Gio/GLib bindings, then
 `systemctl --user enable happyranch-daemon`. There is no new dependency. A local
-polkit `AccessDenied` leaves the switch OFF and names the local polkit rule in
-a plain diagnostic. If enable fails after the app enabled linger, the app rolls
+polkit `AccessDenied` refuses the change; a fresh status read determines the
+displayed state. If enable fails after the app enabled linger, the app rolls
 that linger change back.
 
 The app atomically replaces `~/.config/happyranch/desktop.json` with
@@ -1245,8 +1254,10 @@ only when that provenance is true. Existing external linger is preserved. The
 daemon keeps running while the window stays open. State is derived from fresh
 `UnitFileState=enabled` and `loginctl show-user <own uid> -p Linger --value`
 observations, never from the JSON flag. Both must be on for ON. A mismatch shows
-**Partly on - click to repair/turn off** with **Repair** and **Turn off** actions.
-Controls refresh while open and after actions; closing observes the state again.
+**Partly on** with **Repair** and **Turn off** actions. Turn off uses a
+Cancel-default native confirmation explaining that background running turns off
+but HappyRanch does not stop now. Controls read fresh state after actions;
+closing observes the state again.
 Only a fully attached, freshly ON service is left running when the window closes;
 the window exits and releases its lock. Startup/restart proof failures retain the
 existing shutdown obligation even when keep-running had been ON. Failed state
@@ -1254,7 +1265,7 @@ reads or stops keep window/worker/lock custody for a subsequent close retry.
 
 ### Update installed while running
 
-After ownership proof, the app shows **Update installed - restart HappyRanch**
+After ownership proof, `local.update.status` reports `restart_required`
 when `/opt/happyranch-desktop/build-info.json` has `st_ctime` newer than the
 unit's process start, or the unit reports `NeedDaemonReload=yes`. The Debian
 builder moves the payload under `/opt/happyranch-desktop`; dpkg replacement by
@@ -1264,28 +1275,45 @@ the unit's recorded realtime `ExecMainStartTimestamp` in microseconds through
 ctime. Suspend does not shift that recorded start; no current realtime-minus-
 monotonic offset is reconstructed. Wall-clock adjustments between service start
 and installation can still affect this best-effort signal. Missing/unreadable
-metadata or invalid/unrepresentable start timestamps suppress the banner and log
-a warning, without refusing attachment.
+metadata or invalid/unrepresentable start timestamps return the helper's negative
+hint (`not_detected`) and log a warning, without refusing attachment. An unavailable
+service observation returns `unknown`; foreground returns `unsupported`.
 
 This is the authorized substitute for design 2.4's comparison against the
 running daemon's reported version: the daemon currently reports no build
-identity. It preserves the same user-visible banner/restart behavior without
+identity. It preserves the installed-update hint without
 reading daemon version fields or changing runtime source. An immutable running
 build identity is a possible later improvement.
 
-**Restart HappyRanch** first revalidates ownership, reloads the user manager if
+**Restart HappyRanch** is always presented when local controls are supported,
+independently of the update hint. Native uses Cancel-default interruption consent
+naming this computer and checks current Main owners/effects before admission.
+It first revalidates ownership, reloads the user manager if
 `NeedDaemonReload=yes`, and restarts `happyranch-daemon`. It then repeats the full
 B2a ownership proof, including the bounded asynchronous PID/port publication
-wait, listener inode, health and post-health rechecks, before reattaching the
-web view. Every restart error, including reload failure or timeout, revokes
-leave-running eligibility and enters the existing shutdown path. A failed stop
-retains worker/window/lock custody and subsequent-close retry until a packaged-unit
-stop succeeds, even if the switch is ON and the old daemon was attached.
+wait, listener inode, health and post-health rechecks. Native invalidates cached
+local compatibility/bearer and uses the existing loopback bootstrap after Start
+or Restart, then publishes `app.stateChanged`. Service success and API compatibility
+are separate: a remaining mismatch keeps its named Host/app/unknown guidance.
+Local interruption cancels already-admitted background status workers before
+resetting local transport, so a late worker cannot cache the pre-effect bearer
+or publish readiness during Start/Stop/Restart. Reads remain available. Successful
+Start/Restart replies include this computer's closed `readmission` result
+(`ready|unreachable|incompatible|unknown` plus the existing incompatibility detail
+or null). A remote-selected `app.status` remains remote; this local result carries
+no endpoint or credential and never authorizes retrying the effect. Other local
+mutation replies omit `readmission`.
+Main, its current dialog and drafts stay mounted; this never relaunches the app
+or changes keep-running. A selected remote target/candidate is preserved.
+Restart failure revokes leave-running eligibility and retains the operation
+owner for explicit inspection. Existing shutdown custody remains until an owned
+stop succeeds on close; page Retry does not repeat Restart.
 
 If `systemctl --user is-system-running` is unavailable or reports no running
-manager, the window shows a fallback explanation and retains its child-process
-mode. Its keep-running switch is disabled with the reason **Unavailable: no
-systemd user manager.** It requires an empty home (any existing `daemon.pid` or
+manager, the window retains its child-process mode. Settings observes
+`supported:false, mode:"foreground"`; lifecycle/keep-running commands refuse with
+`unavailable`, effect `none`, recovery `nativeRecovery`. It requires an empty home
+(any existing `daemon.pid` or
 `daemon.port`,
 even stale/partial, refuses startup without changing it). The child receives a
 minimal OS environment, the selected home, loopback bind, random port `0`, and
@@ -1294,6 +1322,18 @@ published port, then attaches. Closing sends TERM only to that child, waits five
 seconds, then KILL and a two-second reap if necessary. Marker cleanup retains
 the existing empty-at-spawn and unchanged-inode checks. Child logs are at
 `<desktop-home>/logs/desktop-daemon.log`.
+
+Focused local-control checks use the same direct native test venue:
+
+```sh
+/usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py LocalControlsTests -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py LocalBridgeTests EventTests.test_local_page_relay_admission_and_retired_effect_semantics -v
+```
+
+These isolate system-service effects and exercise real loopback compatibility/
+bootstrap with synthetic credentials. They do not qualify a real systemd/logind
+transition or GTK/WebKit layout. Use a disposable temp-home user-service venue
+for those checks, never the development daemon or the account's live user unit.
 
 A second launch for the same canonical home activates/focuses the first window
 through Gtk.Application's session bus. Without a bus, `desktop.lock` still

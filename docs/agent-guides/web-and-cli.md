@@ -18,19 +18,35 @@ Focused serializer checks use the existing standalone Node test venue:
 They inspect exact framing and decode with the platform multipart parser;
 the retired Vitest suite remains retired.
 
-The separate, daemon-independent native connection shell is built with
-`cd web && npm run build:connection`; see [its boundary/import audit](../../web/connection/README.md).
-It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.
-Native loading is packaged separately. Slice 5a adds the Linux host fallback:
+The separate native Connection shell is built with `cd web && npm run build:connection`
+and emits `web/dist-connection/`. Mac still packages it. Linux S7-L1 packages
+only the main SPA and opens its Connection dialog in Main; the shared
+connection/resource-manifest helper remains a main-build dependency.
+Slice 5a adds the Linux host fallback:
 `happyranch connection status` and `connection host --help`. Slice 5b adds Linux
 `connection client --help` with terminal consent, foreground ownership and honest
 `runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). I5b delivers the seven Linux host lifecycle/invite CLI mappings with terminal-only invites and replacement confirmation; address refresh remains B13-deferred. Native/live acceptance remains pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
-Settings S2a adds an explicit Linux local-main-view opt-in,
-`HAPPYRANCH_DESKTOP_APP_SCHEME=1`, to serve packaged `web/dist` at
-`happyranch-app://app` and forward API/stream requests natively to the verified
-local daemon. The default HTTP path, remote path and separate connection
-bridge remain unchanged. See [loading, limits and native checks](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+Linux S7-L1 always serves installed `web/dist` at `happyranch-app://app` for
+local and remote targets. Main uses the in-process native adapter; no GUI
+RuntimeProxy or separate Connection/Remote runtime window remains. Header
+Connection and the Access wasn't saved warning deliver `app.dialogRequested`.
+If Main or WebKit is unavailable, retain honest errors and the documented
+installed CLI recovery. See [the Linux loader contract](../operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
+
+Linux S7-L2 routes `local.status/start/stop/restart/keepRunning.set/repair/turnOff/update.status`
+from admitted Main to its existing ServiceMode supervisor. Main's control strip,
+duplicate remote panel and reserved height are removed; local controls belong
+in Settings → HappyRanch on this computer. The single mutation slot is reserved
+before native consent, with named `busy` refusal; status reads remain available.
+Foreground mode is read-only/unsupported. Stop and Restart use native interruption
+consent and the existing owner/effect gate. Turn off confirms background running
+changes without stopping the service. Start/Restart recheck compatibility and
+refresh the local bearer through the existing loopback bootstrap, publishing
+`app.stateChanged` without reloading Main or relaunching the app. The selected
+remote target and candidate remain unchanged. Failed effects require explicit
+fresh status reconciliation before another mutation; no automatic replay.
+See [local lifecycle semantics](../operations/linux-release-handbook.md#keep-running-after-logout).
 
 ## Native recovery states and compatibility page (THR-387 S1b-A)
 
@@ -291,25 +307,59 @@ not. A shell whose `on()` refuses the event name simply has no native entry.
 
 The Settings dialog body is `features/settings/SettingsDialogBody.tsx`,
 composed by `routes.tsx` so neither feature imports the other. Its nav follows
-v2.4 §2: This app → Language; Runtime settings (with the current org named in
-full) → Capacity, Executors, Organization, Coding; Open Connection. Panes are
+v2.4 §2: This app → Language; This computer → HappyRanch on this computer;
+Runtime settings (with the current org named in full) → Capacity, Executors,
+Organization, Coding; Open Connection. Panes are
 the existing sections through `SettingsPane` (same loading/error/recovery
 gates as the page), so there is one Settings editor. Runtime pages with no
 org in Main show the recovery panel during a recovery state, otherwise an
-"open an organization" note. The "This computer" group shows only the C5
-scope note (“These controls affect this computer, not {host}.”) and only when
-a remote Host name is supplied; nothing supplies it until the S5-W1 status
-store lands, and the local controls page itself is S7-L2. The Connection
+"open an organization" note. The "This computer" group (S7-L2) lists
+HappyRanch on this computer (`features/settings/local/`, dialog page
+`local`, also reached by `/orgs/:slug/settings/local` or `/settings/local`)
+whenever native admits `local.status`; a shell that refuses it
+`unsupportedCommand` (a shell without the S7-L2 local commands) lists nothing and that page says it is not
+available. While a remote target is selected (`app.status` target kind
+`remote`) the group and the page show the C5 note “These controls affect this
+computer, not {host}.” with that target's name, and the page stays usable.
+The page reads `local.status` and `local.update.status` on open and when
+`app.status` local running changes, and shows Checking, Off/Running/Starting/
+Unknown, foreground (running inside this app: every control unavailable), the
+keep-running switch (Off / Fully on / mixed Partly on with Repair and Turn off;
+unknown is never shown as Off) and update status (Update installed emphasises
+Restart). Restart HappyRanch is always visible (THR-371) and disabled only
+while checking, busy, unknown, unsupported or unresolved; it restarts the
+service only, never the app or this dialog. Native owns consent and the one
+mutation slot: a refusal shows its named copy (cancelled/busy/owner save/
+in-flight change) and changes nothing; an unknown effect shows Restart failed
+or the action's unknown result with Check again, and every mutation stays
+disabled until a fresh fully known `local.status`. Native Start/Restart return
+this computer's closed `readmission` result (`ready|unreachable|incompatible|unknown`,
+with the existing incompatibility object only for `incompatible`, otherwise null),
+even with a remote selected; other local mutations omit it, and a Start/Restart
+result without it is unreadable (unknown effect). The local result never changes
+selected-target `app.status`, carries no URL/credential and is never an
+effect-retry signal. After Start/Restart the page shows the C6 steps separately
+(service result, ready check, compatibility check) ending in Ready or a named
+mismatch (service older than the app: update the service and restart again; app
+too old: update the desktop app; compatibility unknown), unreachable, or not
+confirmed (`unknown`). Under a remote selection the steps come only from
+`readmission` (remote `app.status` is never read as local compatibility), the
+outcome adds "{host} is not affected" and the C5 note stays visible. Under local
+selection `app.status` drives the steps and a settled `readmission` that differs
+from it is shown as a named disagreement (both answers named, attention tone).
+Only a fully passed Ready uses the OK tone. Recheck / Check again only re-read:
+under remote selection `local.status` and `local.update.status` (the earlier
+readmission is kept); under local selection those plus `app.status`, whose fresh
+answer supersedes the readmission. Nothing retries or replays a mutation.
+The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see
-“Connection dialog contents” below). Until S7-L1, the Linux header Connection button
-and “Access wasn't saved” badge open/present the existing native Connection
-window in both default and app-scheme opt-in builds; Settings retains
-`app.dialogRequested` delivery and explicit Retry when unavailable.
-Linux S6-W3-L admits the full existing v1 Host command set and
-`host.stateChanged`, plus `client.health/removeSaved/retrySave`, on the admitted
-Main document. The native Connection window shares `host_bridge.py` with Main
-and remains packaged until S7-L1. On CSP/frame revocation or `pagehide`, pending
+“Connection dialog contents” below). Linux S7-L1 routes the header Connection
+button and Access wasn't saved badge through `app.dialogRequested`, with explicit
+Retry when delivery is unavailable. S6-W3-L's reviewed v1 Host/client commands
+and `host.stateChanged` remain admitted on Main, using the existing shared
+`host_bridge.py` and ClientUI/model owners. The native Connection window and
+its Linux payload are retired. On CSP/frame revocation or `pagehide`, pending
 mutations reject with `documentChanged`, effect `unknown` and recovery
 `nativeRecovery`, without replay.
 Read-only calls retain effect `none` / recovery `refresh`; new calls after
@@ -401,8 +451,8 @@ placeholder. It reads native state only and keeps no second store:
   `host.stateChanged`); Check again and failed re-reads do not clear it. The section is hidden when `host.status` answers
   `unsupportedCommand` (Mac: no host role; no `bridge.hello`, M8).
 - **Locale.** All copy is in the `connection.*` catalogs (EN + zh-CN). Keys
-  were moved verbatim from `web/connection/src/strings.ts` (that window
-  stays until S7-L1). Native-generic names are shown as given, except
+  were moved verbatim from `web/connection/src/strings.ts`; Linux no longer
+  packages that shell, while Mac still consumes it. Native-generic names are shown as given, except
   “Saved computer N”, which is re-localized (M15).
 
 Pure rules live in `connectionModel.ts`. Focused checks:
@@ -610,10 +660,11 @@ handler in the built entry, so boot works with `script-src 'self'` without
 `style-src 'self' 'unsafe-inline'`; the separate connection CSP is unchanged.
 
 Daemon browser serving already returns existing root-level dist files through
-its GET fallback, including the new script. Linux's opt-in `app_scheme.Bundle`
-currently inventories dist independently and serves the manifest as another
-listed file. Packaging adoption of this manifest belongs to the later cutover;
-emitting it does not switch loaders, admit a command bridge or alter API access.
+its GET fallback, including the new script. Linux's default `app_scheme.Bundle`
+inventories dist independently and serves the manifest as an inventoried file.
+S7-L1 Debian packaging validates that main manifest with the trusted bounded
+no-follow Assets reader and rejects missing/unlisted/extra/hash-mismatched
+resources. The runtime loader's existing authority and API admission remain unchanged.
 
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
