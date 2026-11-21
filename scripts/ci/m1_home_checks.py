@@ -42,6 +42,42 @@ def command(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, check=check, timeout=30)
 
 
+def enable_refusal_logs() -> None:
+    """Keep closed diagnostic records only; raw journal/config never leaves RAM."""
+    units = (HELPER, *REMOTE)
+    stages = ('dispatch|admission|capture|capture-transport|authorization|revalidation|child|'
+              'protected-record|protected-parent|inventory|clean-residue|ca-sources|'
+              'headscale-quiescence|managed-quiescence|snapshot|headscale-publication|'
+              'issuer-receipt|custody-directory|native-command|unknown')
+    allowed = re.compile(r'remote-access-enable-refusal origin=(?:helper|child) stage='
+                         r'(?:' + stages + r')(?:\.(?:' + stages + r')){0,7}'
+                         r' exception=[A-Za-z_][A-Za-z0-9_]{0,63}')
+    matched, status, truncated = 0, 'unavailable', False
+    try:
+        result = command('journalctl', '--quiet', '--no-pager', '--boot', '--lines=160',
+            '--output=json', '--output-fields=_SYSTEMD_UNIT,MESSAGE',
+            *[argument for unit in units for argument in ('--unit', unit)], check=False)
+        if result.returncode == 0:
+            status, truncated = 'ok', len(result.stdout) > 262144
+            for line in result.stdout[:262144].splitlines():
+                if len(line) > 8192:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if type(record) is not dict:
+                    continue
+                unit, message = record.get('_SYSTEMD_UNIT'), record.get('MESSAGE')
+                if (unit in units and type(message) is str and allowed.fullmatch(message)
+                        and matched < 32):
+                    print(json.dumps(dict(unit=unit, diagnostic=message), sort_keys=True))
+                    matched += 1
+    except Exception:
+        pass  # Collection cannot replace the original acceptance failure.
+    print(json.dumps(dict(journal=status, matched=matched, truncated=truncated), sort_keys=True))
+
+
 def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
     raw = command('systemctl', 'show', unit, '--property=' + ','.join(names)).stdout
     return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
@@ -513,6 +549,7 @@ def main() -> None:
     parser.add_argument('pid', nargs='?', type=int)
     args = parser.parse_args()
     actions = {'runner-custody': runner_custody,
+               'enable-refusal-logs': enable_refusal_logs,
                'ready': ready, 'off': off, 'uninstall-refusal': uninstall_refusal,
                'health-diagnostics': health_diagnostics,
                'archive-off': archive_off, 'failed-fixture': failed_fixture,

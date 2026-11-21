@@ -135,6 +135,9 @@ logs() {
     systemctl show "$unit" -p Id,LoadState,ActiveState,SubState,MainPID,Result,ExecMainStatus,FragmentPath,DropInPaths,NeedDaemonReload \
       > "$M1_LOGS/$unit.properties.txt" || true
   done
+  if [[ -x $python ]]; then
+    inspect enable-refusal-logs > "$M1_LOGS/enable-refusal.journal.jsonl"
+  fi
 }
 teardown() {
   admit

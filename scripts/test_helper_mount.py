@@ -12,6 +12,7 @@ import threading
 import time
 import ssl
 import hashlib
+import io
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
@@ -42,6 +43,71 @@ PUBLIC_LIFECYCLE = {
     'RetryPolicyRenewal': 'retry-policy-renewal', 'IssueInvite': 'issue-invite',
     'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite',
 }
+
+
+def test_enable_admission_diagnostic_preserves_refusal(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    import syslog
+
+    sent = Mock()
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    mount.message.get_member = lambda: 'Enable'
+    mount.reader.current_generation.side_effect = RuntimeError('synthetic-secret /private/path :12345')
+    mount.helper._dispatch(mount.message)
+    mount.helper._error.assert_called_once_with(mount.message, 'unavailable')
+    assert not mount.helper.authority.call.called and not mount.reader.effect.called
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-enable-refusal origin=helper stage=dispatch.admission.capture exception=RuntimeError')
+    assert capsys.readouterr() == ('', '')
+
+
+def test_m1_enable_journal_exports_only_bounded_allowlist(
+        monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    from scripts.ci import m1_home_checks as collector
+
+    message = ('remote-access-enable-refusal origin=child '
+               'stage=child.dispatch.capture.clean-residue.custody-directory exception=OSError')
+    records = [dict(_SYSTEMD_UNIT='unrelated.service', MESSAGE=message),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message + ' synthetic-secret /private :12345'),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE='synthetic-secret /private :12345'),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message.replace('capture', 'private-path'))]
+    records += [dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message)] * 40
+    run = Mock(return_value=SimpleNamespace(returncode=0,
+        stdout='\n'.join(json.dumps(row) for row in records) + '\ninvalid-json synthetic-secret'))
+    monkeypatch.setattr(collector, 'command', run)
+    collector.enable_refusal_logs()
+    output = capsys.readouterr().out
+    lines = [json.loads(line) for line in output.splitlines()]
+    assert lines[:-1] == [dict(unit=collector.HELPER, diagnostic=message)] * 32
+    assert lines[-1] == dict(journal='ok', matched=32, truncated=False)
+    assert 'synthetic-secret' not in output and '/private' not in output and '12345' not in output
+    assert len(output) < 16384
+    args, kwargs = run.call_args
+    assert '--lines=160' in args and '--output-fields=_SYSTEMD_UNIT,MESSAGE' in args
+    assert kwargs == {'check': False}
+    run.return_value = SimpleNamespace(returncode=1, stdout='synthetic-secret')
+    collector.enable_refusal_logs()
+    assert json.loads(capsys.readouterr().out) == dict(journal='unavailable', matched=0, truncated=False)
+
+
+@pytest.mark.parametrize('journal_fails', [False, True])
+def test_enable_child_diagnostic_preserves_closed_exit(
+        monkeypatch: pytest.MonkeyPatch, capsys: Any, journal_fails: bool) -> None:
+    import syslog
+
+    sent = Mock(side_effect=OSError('synthetic-journal-secret') if journal_fails else None)
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    request = dict(method='Enable', uid=1000, step='capture', expected=None,
+                   deadline=time.monotonic() + 30)
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(backend.HomeActivationStore, 'current',
+                        Mock(side_effect=OSError('synthetic-secret /private/path :12345')))
+    assert backend.helper_main() == 1
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
+    assert capsys.readouterr() == ('', '')
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])

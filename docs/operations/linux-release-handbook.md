@@ -1342,7 +1342,11 @@ sidecar health diagnostics must be absent after successful revoke. Failed revoke
 with persisted trust/sidecar state remains Q2 partial cleanup. **Home-profile
 uninstall remains deferred**; no legacy uninstall fixture is substituted. Runner
 disposal owns retained/root-only archived fixture data. Only categorical results
-and selected nonsecret properties are uploaded. **Disposable authentication
+and selected nonsecret properties are uploaded, together with the bounded
+allowlisted Enable stage/exception-class journal excerpt described in the
+[M1 runbook](remote-access-runbook.md#manual-home-m1-i6a). No exception text,
+paths, values or raw journals are exported; caller refusal categories are
+unchanged. **Disposable authentication
 simulation does not prove a real desktop dialog.** Earlier M1 receipts belong to
 the earlier operator journey; the new head needs its own hosted evidence.
 

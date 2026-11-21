@@ -51,8 +51,17 @@ deferred; M1 tests its refusal, with no legacy uninstall fixture.
 Only a runner-local test polkit rule simulates authentication. **Disposable
 authentication simulation does not prove a real desktop dialog.** Artifacts
 contain categorical case results/helper identities and selected nonsecret unit
-properties, never config, state, tokens or raw service journals. Historical M1
-receipts do not establish these home cases; native acceptance requires a run at
+properties, never config, state, tokens or raw service journals. On Enable refusal,
+the helper's existing admission/capture catch-alls journal only fixed internal
+stage names and the exception class, without exception text, paths or values;
+the public refusal category is unchanged. The capture child uses the local syslog
+sink because its private stderr remains discarded. The pre-teardown collector
+examines the last 160 journal records for fixed helper/related units, scans at most
+256 KiB, and exports at most 32 exact allowlisted records plus collection status
+to `enable-refusal.journal.jsonl`. Unknown messages/stages, unrelated units and
+raw journal metadata are discarded. Diagnostic delivery failure preserves the
+original refusal and cannot turn unavailable collection into acceptance.
+Historical M1 receipts do not establish these home cases; native acceptance requires a run at
 the exact new head. M2/M3/M4, Product E2E and deployment are separate.
 
 Before hosted dispatch, a real `build-deb.sh`/`dpkg-deb --extract` temp-root

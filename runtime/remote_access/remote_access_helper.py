@@ -419,6 +419,8 @@ class RemoteAccessHelper:
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 int(self.deadline * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
+            if message.get_member() == 'Enable':
+                _helper_lifecycle.log_enable_refusal(error)
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
@@ -459,7 +461,9 @@ class RemoteAccessHelper:
                     continue
                 if readonly:
                     raise Refused('unavailable')
-        except Exception:
+        except Exception as error:
+            if method == 'Enable':
+                _helper_lifecycle.log_enable_refusal(error)
             self.exit_requested = True
             raise Refused('unavailable') from None
         uid = self._uid(sender)
@@ -490,7 +494,9 @@ class RemoteAccessHelper:
                 ACTION_PREFIX + LIFECYCLE_ACTIONS[method], {'polkit.message': verb},
                 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 max(1, int(remaining * 1000)) + 2000, None, self._authorized, capture)
-        except Exception:
+        except Exception as error:
+            if method == 'Enable':
+                _helper_lifecycle.log_enable_refusal(error)
             self._cancel('unavailable')
 
     def _lifecycle_authorized(self, capture: object, terminal: bool, granted: bool) -> None:
@@ -522,6 +528,8 @@ class RemoteAccessHelper:
                     self._reply(capture.message, 'accepted')
                 threading.Thread(target=self._run_lifecycle, args=(operation,), daemon=True).start()
             except Exception as error:
+                if capture.method == 'Enable':
+                    _helper_lifecycle.log_enable_refusal(error)
                 self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
 
@@ -805,6 +813,8 @@ class RemoteAccessHelper:
             granted = authorization.unpack()[0][0] is True
         except Exception as error:
             granted = False
+            if capture.method == 'Enable':
+                _helper_lifecycle.log_enable_refusal(error)
             # A polkit error reply is terminal too; a transport timeout/loss is not.
             remote = Gio.DBusError.get_remote_error(error) if isinstance(error, GLib.Error) else None
             terminal = terminal or bool(remote and remote.startswith('org.freedesktop.PolicyKit1.Error.'))

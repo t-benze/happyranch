@@ -1055,6 +1055,10 @@ retention is not a pass. The post-Off uninstall refusal must preserve byte/inode
 inventory and issue no systemd mutation; no legacy uninstall fixture is added.
 Proven-Off fixture cells may be archived root-only until disposal, never called
 product cleanup. Uploaded evidence excludes config/state/keys/raw journals.
+Enable admission/capture catch-alls may journal fixed internal stage names and
+the exception class only. The harness exports a bounded allowlisted excerpt
+under the [M1 runbook](../operations/remote-access-runbook.md#manual-home-m1-i6a),
+without exception text, paths, values or changes to public refusal categories.
 **Disposable authentication simulation does not prove a real desktop dialog.**
 These cases require new exact-head hosted evidence; historical M1 receipts do
 not qualify them, and no trigger, required check or Product E2E run is added.
