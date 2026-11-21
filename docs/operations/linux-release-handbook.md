@@ -629,6 +629,10 @@ Long names are ellipsized with full native tooltips. Native copy follows the
 launch locale; web locale changes do not relabel the native header until next
 launch.
 
+Content replacement preserves the native titlebar during startup, web loading,
+restart/error recovery and Retry. A newly launched Main installs its own header;
+GTK's child enumeration includes that header, so only content is removed.
+
 The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
 including no-target recovery. Losing the web document does not clear the warning.
 Its keyboard-accessible action requests Connection; its tooltip explains Retry
@@ -655,9 +659,18 @@ for executing the literal page/relay scripts in an isolated message-bus fixture:
 ```sh
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+# In a disposable GTK3/WebKit2 4.1 desktop/Xvfb session (DISPLAY required):
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_titlebar.py -v
 ```
 
-These headless checks cover rendered labels/actions and the event boundary.
+The first two headless checks cover rendered labels/actions and the event boundary.
+The titlebar regression drives shipping `run_gui` with real GTK, including its
+actual titlebar child enumeration, web content, restart failure, Retry and fresh
+Main processes in EN/ZH. Host lifecycle/helper operations are isolated. It uses
+a minimal static web fixture by default; set `HAPPYRANCH_TITLEBAR_WEB_DIST` to an
+absolute same-source built `web/dist` for the real Main bundle, and optionally
+`HAPPYRANCH_TITLEBAR_OUTPUT` to an existing directory for 760px screenshots and
+titlebar observation JSON.
 They do not establish GTK fit, native/web focus or WebKit process behavior;
 qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
 above has known failures and must be compared against the same base, never

@@ -1048,8 +1048,11 @@ def run_gui(prefix: Path, home: Path) -> int:
         if app_scheme is not None:
             app_scheme.close()
             app_scheme = None
-        for widget in window.get_children():
-            window.remove(widget)
+        # GtkBin's child excludes the titlebar. Retain the old content until
+        # attach_remote has reparented the existing remote panel out of it.
+        content = window.get_child()
+        if content is not None:
+            window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         box.set_border_width(32)
         heading = Gtk.Label(label=title)
@@ -1170,8 +1173,11 @@ def run_gui(prefix: Path, home: Path) -> int:
             except (OSError, ValueError, ImportError):
                 show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
                 return False
-        for widget in window.get_children():
-            window.remove(widget)
+        # GtkBin's child excludes the titlebar. Retain the old content until
+        # attach_remote has reparented the existing remote panel out of it.
+        content = window.get_child()
+        if content is not None:
+            window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         controls.set_margin_start(12)
