@@ -182,7 +182,11 @@ APP_PAGE = r"""(() => {
     let args;
     // Native owns closed parsing, including duplicate-key detection. Preserve
     // the original string; JSON.parse here would erase duplicate keys.
-    const locale = command === 'app.locale.set' && typeof data === 'string';
+    const locale = command === 'app.locale.set';
+    // Keep invalid arguments inside the native envelope's existing byte bound;
+    // escape expansion must not turn a locale refusal into a generic error.
+    if (locale && (typeof data !== 'string' || new TextEncoder().encode(JSON.stringify(data)).length > 3072))
+      return reject(JSON.stringify({code:'invalidRequest',effect:'none',recovery:'none'}));
     try { args = JSON.parse(data); } catch {
       if (!locale) return reject(fail('unsupportedCommand'));
     }
@@ -603,6 +607,8 @@ class AppScheme:
         self.host_subscribed = False
 
     def emit_state(self) -> None:
+        if not self.subscribed or self.bridge_token is None or self.closed:
+            return
         # Background health/target observations must not publish a locale that
         # the store has updated before its setter reply has been delivered.
         if _locale_process.busy:

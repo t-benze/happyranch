@@ -159,6 +159,12 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
    contexts[1].refuse(new Error('{"code":"invalidRequest","effect":"none","recovery":"none"}'));
    assert.equal((await result).code,'invalidRequest');
   }
+  for(const args of [null,{},'x'.repeat(4096),'\0'.repeat(1024)]){
+   contexts[0].args=args;const before=native.length;
+   const error=await vm.runInContext("happyranchConnection.call('app.locale.set',args).catch(raw=>JSON.parse(raw))",contexts[0]);
+   assert.equal(error.code,'invalidRequest');assert.equal(error.effect,'none');assert.equal(error.recovery,'none');
+   assert.equal(native.length,before,'wrong types and oversized escaped payloads refuse before dispatch');
+  }
   return;
  }
  if(sources.case.startsWith('retirement-')){
