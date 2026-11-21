@@ -10,6 +10,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+import pwd
+import shutil
+import stat
 import subprocess
 import time
 
@@ -29,6 +32,86 @@ KNOWN_ERRORS = frozenset(NAME + '.Error.' + value for value in (
 ))
 
 
+def home_diagnostic(sender_uid: int, shell_umask: str) -> None:
+    """One approved hosted observation; never read discovery/config contents."""
+    assert sender_uid == os.getuid(), 'diagnostic sender uid differs from caller'
+    home = Path(pwd.getpwuid(sender_uid).pw_dir)
+    assert home.is_absolute() and '..' not in home.parts, 'invalid diagnostic passwd home'
+    candidate = home / '.local/share/happyranch'
+    print(json.dumps({'diagnostic': 'release-home', 'sender_uid': sender_uid,
+                      'passwd_home': str(home), 'shell_umask': shell_umask}), flush=True)
+    for scope, unit, properties in (
+        ('user', None, ('UMask',)),
+        ('system', f'user@{sender_uid}.service', ('UMask',)),
+        ('user', 'happyranch-daemon.service', ('UMask', 'ExecMainStartTimestamp',
+                                             'ExecMainStartTimestampMonotonic')),
+    ):
+        # The user-manager API may have no UMask property; also observe the
+        # actual system service that launches that manager, without changing it.
+        command = ['systemctl', *(['--user'] if scope == 'user' else []), 'show']
+        if unit is not None:
+            command.append(unit)
+        for name in properties:
+            command.extend(('-p', name))
+        record = {'diagnostic': 'release-home-unit', 'scope': scope,
+                  'unit': unit or 'user-manager'}
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            record['exit_code'] = result.returncode
+            # Only the explicitly requested property values; never raw stderr.
+            record['properties'] = {key: value for line in result.stdout.splitlines()
+                                    if '=' in line for key, value in (line.split('=', 1),)
+                                    if key in properties}
+        except (OSError, subprocess.TimeoutExpired) as error:
+            record['error'] = type(error).__name__
+        print(json.dumps(record), flush=True)
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open('/', flags)
+    acl_tool = shutil.which('getfacl')
+    try:
+        for path in reversed((candidate, *candidate.parents)):
+            record = {'diagnostic': 'release-home-path', 'path': str(path)}
+            try:
+                info = os.fstat(descriptor) if path == Path('/') else os.stat(
+                    path.name, dir_fd=descriptor, follow_symlinks=False)
+                record.update(exists=True, uid=info.st_uid, gid=info.st_gid,
+                              mode=f'{info.st_mode:#08o}',
+                              permissions=f'{stat.S_IMODE(info.st_mode):04o}')
+                if path == candidate:
+                    record['ctime_ns'] = info.st_ctime_ns
+                if path != Path('/'):
+                    child = os.open(path.name, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                if acl_tool is None:
+                    record['acl'] = 'getfacl unavailable'
+                else:
+                    # The child sees only this already-open directory, even if
+                    # a pathname is redirected after our no-follow traversal.
+                    try:
+                        acl = subprocess.run([acl_tool, '-c', '-n', '--', f'/proc/self/fd/{descriptor}'],
+                                             pass_fds=(descriptor,), capture_output=True,
+                                             text=True, timeout=3)
+                        record.update(acl=acl.stdout, acl_exit=acl.returncode)
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        record['acl_error'] = type(error).__name__
+            except (OSError, subprocess.TimeoutExpired) as error:
+                record.update(error=type(error).__name__, errno=getattr(error, 'errno', None))
+                if isinstance(error, FileNotFoundError):
+                    record['exists'] = False
+                print(json.dumps(record), flush=True)
+                # Descendants cannot safely be observed through this component.
+                for descendant in reversed((candidate, *candidate.parents)):
+                    if descendant != path and descendant.is_relative_to(path):
+                        print(json.dumps({'diagnostic': 'release-home-path', 'path': str(descendant),
+                                          'exists': 'unknown', 'error': 'parent-unavailable'}), flush=True)
+                break
+            print(json.dumps(record), flush=True)
+    finally:
+        os.close(descriptor)
+
+
 def main() -> None:
     assert os.getuid() >= 1000, 'M1 caller requires uid>=1000'
     assert os.environ.get('GITHUB_ACTIONS') == 'true', f'GITHUB_ACTIONS present={"GITHUB_ACTIONS" in os.environ}; equals true={os.environ.get("GITHUB_ACTIONS") == "true"}'
@@ -36,8 +119,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('method', choices=BUDGETS)
     parser.add_argument('--interrupt', action='store_true')
+    parser.add_argument('--home-diagnostic-umask')
     args = parser.parse_args()
     assert not args.interrupt or args.method == 'Enable', 'interruption fixture requires Enable'
+    if args.home_diagnostic_umask is not None:
+        assert args.method == 'Enable' and not args.interrupt, 'home diagnostic requires clean Enable'
+        assert len(args.home_diagnostic_umask) == 4 and all(
+            digit in '01234567' for digit in args.home_diagnostic_umask), 'invalid shell umask'
     connection = Gio.DBusConnection.new_for_address_sync(
         Gio.dbus_address_get_for_bus_sync(Gio.BusType.SYSTEM, None),
         Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
@@ -59,13 +147,17 @@ def main() -> None:
             assert observer.stdout.readline().strip() == 'ARMED', 'interruption observer failed admission'
         owner = None
         for attempt in range(2):
-            deadline = time.monotonic() + BUDGETS[args.method] + 10
             try:
                 # Read the actual reply sender, avoiding a race with I5e's name
                 # release after a quickly refused renewal. This is the CLI's
                 # exact zero-input method and interactive-authorization flag.
                 message = Gio.DBusMessage.new_method_call(NAME, PATH, NAME, args.method)
                 message.set_flags(Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
+                if args.home_diagnostic_umask is not None and attempt == 0:
+                    sender_uid = bus('GetConnectionUnixUser', '(s)',
+                                     (connection.get_unique_name(),), '(u)')
+                    home_diagnostic(sender_uid, args.home_diagnostic_umask)
+                deadline = time.monotonic() + BUDGETS[args.method] + 10
                 reply, _ = connection.send_message_with_reply_sync(
                     message, Gio.DBusSendMessageFlags.NONE, 122000, None)
                 if reply.get_message_type() == Gio.DBusMessageType.ERROR:

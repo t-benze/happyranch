@@ -381,7 +381,19 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   paths (otherwise `unrecognized-member`), and environment diagnostics only
   presence/equality. Public admission refusals report only an allowlisted helper
   or D-Bus error name (otherwise `unrecognized`), never an error body; refusal
-  and retry predicates are unchanged. A clean-package refusal also reports its
+  and retry predicates are unchanged.
+  The THR-327 seq607 one-run release-home diagnostic executes immediately before
+  CASE 1 Enable, after the packaged daemon publishes discovery files. It records
+  the live bus sender UID, passwd home, shell umask, selected user-manager/daemon
+  UMask (including the system `user@UID.service`) and daemon start properties,
+  and existence, UID/GID, full octal mode and
+  numeric ACLs for the data directory and every literal parent to `/`. Only the
+  data directory's ctime is added for comparison with daemon start; its creator
+  is an inference from those observations and the initial absent-folder check.
+  It traverses directories without following symlinks and reads no file contents.
+  This diagnostic is excluded from the stop count; remove its first-call option
+  before any later acceptance dispatch. It neither normalizes the data folder
+  nor changes product admission. A clean-package refusal also reports its
   exception class and at most eight trusted installer function/line locations. Before the clean
   assertion, the test collector prints numeric UID/GID, full octal modes and
   available numeric ACLs for `/`, `/etc`, `/etc/happyranch` and its entries,

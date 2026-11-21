@@ -881,6 +881,104 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                     connection.close_sync.assert_called_once_with(None)
                     reply.get_body.assert_not_called()
 
+    def test_m1_home_diagnostic_before_enable(self):
+        import runpy
+
+        connection, reply, gio, glib = Mock(), Mock(), Mock(), Mock()
+        glib.Error = OSError
+        connection.get_unique_name.return_value = ':1.73'
+        connection.call_sync.return_value.unpack.return_value = (1001,)
+        reply.get_message_type.return_value = 'error'
+        reply.get_error_name.return_value = 'ai.happyranch.RemoteAccess1.Error.release_home_invalid'
+        gio.DBusMessageType.ERROR = 'error'
+        gio.DBusConnectionFlags = SimpleNamespace(AUTHENTICATION_CLIENT=1, MESSAGE_BUS_CONNECTION=2)
+        gio.DBusConnection.new_for_address_sync.return_value = connection
+        observed = []
+        connection.send_message_with_reply_sync.side_effect = lambda *args: (
+            observed.append('Enable') or (reply, None))
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'gi.repository': SimpleNamespace(Gio=gio, GLib=glib)}), \
+                patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted'), \
+                patch.object(os, 'getuid', return_value=1001), \
+                patch.object(sys, 'argv', ['m1_home_bus.py', 'Enable', '--home-diagnostic-umask', '0002']), \
+                redirect_stdout(output):
+            caller = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'ci/m1_home_bus.py'))
+            with patch.dict(caller['main'].__globals__, home_diagnostic=lambda uid, mask: observed.append((uid, mask))):
+                with self.assertRaisesRegex(AssertionError, '^public lifecycle admission refused$'):
+                    caller['main']()
+        self.assertEqual(observed, [(1001, '0002'), 'Enable'])
+        self.assertEqual(connection.call_sync.call_args.args[3], 'GetConnectionUnixUser')
+        glib.Variant.assert_called_once_with('(s)', (':1.73',))
+        connection.close_sync.assert_called_once_with(None)
+
+    def test_m1_home_metadata_diagnostic(self):
+        import runpy
+
+        with patch.dict(sys.modules, {'gi.repository': SimpleNamespace(Gio=Mock(), GLib=Mock())}):
+            caller = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'ci/m1_home_bus.py'))
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            candidate = home / '.local/share/happyranch'
+            candidate.mkdir(parents=True)
+            candidate.chmod(0o775)
+            private(candidate / 'daemon.token', b'synthetic-content-must-not-be-read')
+            (candidate / 'daemon.port').write_text('synthetic-port-must-not-be-read')
+            info = candidate.stat()
+            output = io.StringIO()
+            commands = []
+
+            def native(command, **kwargs):
+                commands.append(command)
+                if command[0] == '/usr/bin/getfacl':
+                    self.assertTrue(command[-1].startswith('/proc/self/fd/'))
+                    self.assertIn(int(command[-1].rsplit('/', 1)[1]), kwargs['pass_fds'])
+                    return SimpleNamespace(returncode=0, stdout='user::rwx\ngroup::rwx\nother::r-x\n')
+                return SimpleNamespace(returncode=0, stdout='UMask=0002\nExecMainStartTimestamp=Fri 2026-11-20 10:00:00 UTC\nExecMainStartTimestampMonotonic=12345\nUnrequested=private-canary\n')
+
+            with patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=str(home))), \
+                    patch('shutil.which', return_value='/usr/bin/getfacl'), \
+                    patch.object(subprocess, 'run', side_effect=native), \
+                    patch.object(Path, 'read_text', side_effect=AssertionError('no file contents')), \
+                    patch.object(Path, 'read_bytes', side_effect=AssertionError('no file contents')), \
+                    redirect_stdout(output):
+                caller['home_diagnostic'](os.getuid(), '0002')
+            rows = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(rows[0], dict(diagnostic='release-home', sender_uid=os.getuid(),
+                                          passwd_home=str(home), shell_umask='0002'))
+            paths = [row for row in rows if row['diagnostic'] == 'release-home-path']
+            self.assertEqual([row['path'] for row in paths], [str(path) for path in reversed((candidate, *candidate.parents))])
+            self.assertEqual((paths[-1]['uid'], paths[-1]['gid'], paths[-1]['mode'], paths[-1]['ctime_ns']),
+                             (info.st_uid, info.st_gid, f'{info.st_mode:#08o}', info.st_ctime_ns))
+            self.assertTrue(all(row['exists'] is True and row['acl_exit'] == 0 for row in paths))
+            self.assertEqual(paths[-1]['acl'], 'user::rwx\ngroup::rwx\nother::r-x\n')
+            self.assertEqual(candidate.stat(), info)
+            self.assertNotIn('private-canary', output.getvalue())
+            self.assertNotIn('must-not-be-read', output.getvalue())
+            self.assertEqual(commands[:3], [
+                ['systemctl', '--user', 'show', '-p', 'UMask'],
+                ['systemctl', 'show', f'user@{os.getuid()}.service', '-p', 'UMask'],
+                ['systemctl', '--user', 'show', 'happyranch-daemon.service', '-p', 'UMask',
+                 '-p', 'ExecMainStartTimestamp', '-p', 'ExecMainStartTimestampMonotonic']])
+
+            for boundary in ('missing', 'redirected'):
+                with self.subTest(boundary=boundary):
+                    isolated_home = home / boundary
+                    isolated_home.mkdir()
+                    if boundary == 'redirected':
+                        (isolated_home / '.local').symlink_to(candidate, target_is_directory=True)
+                    output = io.StringIO()
+                    with patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=str(isolated_home))), \
+                            patch('shutil.which', return_value=None), \
+                            patch.object(subprocess, 'run', side_effect=native), redirect_stdout(output):
+                        caller['home_diagnostic'](os.getuid(), '0002')
+                    paths = [json.loads(line) for line in output.getvalue().splitlines()
+                             if json.loads(line)['diagnostic'] == 'release-home-path']
+                    local = next(row for row in paths if row['path'] == str(isolated_home / '.local'))
+                    self.assertIs(local['exists'], boundary == 'redirected')
+                    self.assertIn('error', local)
+                    self.assertEqual(paths[-1]['exists'], 'unknown')
+                    self.assertEqual(candidate.stat(), info)
+
     @contextmanager
     def host(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as folder:
