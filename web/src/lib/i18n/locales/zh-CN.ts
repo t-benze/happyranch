@@ -3901,6 +3901,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "connection.refusal.targetStarting": "{name} 尚未可以切换。请查看上方状态。",
   "connection.refusal.targetUnreachable": "无法连接到 {name}。",
   "connection.refusal.changed": "执行前连接已发生变化。请检查当前状态，然后再试。",
+  "connection.refusal.switchChoiceChanged": "你选择的电脑已发生变化。请重新选择切换。",
+  "connection.refusal.disconnectChoiceChanged": "你选择断开的连接已发生变化。请重新选择断开连接。",
   "connection.refusal.busy": "另一个连接操作仍在进行中。",
   "connection.refusal.receipt": "此应用无法与原生应用确认你的更改状态，因此没有发送任何内容。请再试一次。",
   "connection.refusal.incompatibleHost": "{name} 需要更新后才能被此应用使用。请更新 {name} 上的 HappyRanch。",

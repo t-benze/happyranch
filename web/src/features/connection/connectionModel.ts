@@ -274,6 +274,9 @@ export function refusalView(failure: ConnectionFailure, action: CommitAction): R
         : failure.side === 'app'
           ? 'connection.refusal.incompatibleApp'
           : 'connection.refusal.incompatibleUnknown';
+  } else if (failure.code === 'intent_changed') {
+    // Web-side: the chosen candidate/target changed before anything was sent (F1).
+    reason = action === 'switch' ? 'connection.refusal.switchChoiceChanged' : 'connection.refusal.disconnectChoiceChanged';
   } else if (unknown) {
     reason = 'connection.refusal.checkStatus';
   } else {

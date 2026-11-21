@@ -47,6 +47,11 @@ export function HostSection(): JSX.Element | null {
   const reads = useHostSnapshot();
   const [pending, setPending] = useState<HostCommand | null>(null);
   const [outcome, setOutcome] = useState<HostOutcome | null>(null);
+  // F2: an action whose effect is unknown, kept apart from the transient
+  // outcome notice (Check again clears that). It holds the successful
+  // observation count at the moment the action returned; only a NEWER
+  // successful observation (host.status read or host.stateChanged) ends it.
+  const [uncertainSince, setUncertainSince] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<{ command: Confirmable; name: string | null } | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -76,6 +81,7 @@ export function HostSection(): JSX.Element | null {
     } catch (error) {
       next = { command, name, failure: failureOf(error) };
     }
+    if (next.result?.effect === 'unknown' || next.failure?.effect === 'unknown') setUncertainSince(reads.observedCount());
     setPending(null);
     setOutcome(next);
     // Re-read after every mutation; never edit the list optimistically.
@@ -89,8 +95,8 @@ export function HostSection(): JSX.Element | null {
   };
 
   const snapshot = state.kind === 'ready' ? state.snapshot : state.kind === 'failed' ? state.snapshot : null;
-  // An uncertain action whose re-read failed: the retained snapshot proves nothing.
-  const uncertain = !!outcome?.read && (outcome.result?.effect === 'unknown' || outcome.failure?.effect === 'unknown');
+  // An uncertain action with no successful observation since: the retained snapshot proves nothing.
+  const uncertain = uncertainSince !== null && reads.observed <= uncertainSince;
   const view = snapshot ? hostView(snapshot, uncertain) : null;
   const busy = pending !== null;
 
@@ -150,7 +156,8 @@ export function HostSection(): JSX.Element | null {
       );
       if (ov.retry && !stillApplies) parts.push(<Hint key="gone">{t('connection.host.hRecordGone', { name: outcome.name ?? '' })}</Hint>);
     }
-    if (outcome.read) {
+    // Only while the newest read still failed: a later successful observation supersedes it.
+    if (outcome.read && state.kind === 'failed') {
       parts.push(
         <Notice key="read" tone="attention" announce>
           <p>{joinSentences([t('connection.client.failedAction', { action: t('connection.client.checkAgain') }), t('connection.err.unavailable')], locale)}</p>

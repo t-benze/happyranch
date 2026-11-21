@@ -33,7 +33,8 @@ import { useTranslation } from '@/hooks/i18n';
 import type { MessageParams } from '@/lib/i18n';
 import { useNativeAppStatus } from '@/lib/native/hooks';
 import { awaitOwnersReceipt, holdOwnerSaves } from '@/lib/native/owners';
-import { getAppStatus, refreshAppStatus } from '@/lib/native/target';
+import { getAppStatus, refreshAppStatus, subscribeAppStatus } from '@/lib/native/target';
+import type { AppState } from '@/lib/native/appStatus';
 import {
   callConnection,
   failureOf,
@@ -83,6 +84,43 @@ interface CommitState {
   result?: ActionResult;
 }
 
+/**
+ * The explicit Switch/Disconnect the user chose, bound to what they chose it
+ * for (F1). Switch binds the candidate (kind/id) and the target still in
+ * use; Disconnect binds the active target. `stale` is sticky: once native
+ * state stops matching (Cancel, a replacement candidate, a phase change, a
+ * new target) the intent can never be spent, even if a later state looks
+ * the same again.
+ */
+interface CommitIntent {
+  kind: CommitAction;
+  candidate: string | null;
+  target: string | null;
+  stale: boolean;
+}
+
+// kind + id only: names are display text and may be relocalized by a locale
+// change, which must not drop the user's choice. Candidate ids are fresh per attempt.
+const identity = (item: { kind: string; id: string } | null | undefined): string | null => (item ? `${item.kind}:${item.id}` : null);
+
+function intentFor(kind: CommitAction, app: AppState | null): CommitIntent | null {
+  if (!app) return null;
+  if (kind === 'switch') {
+    if (app.candidate?.phase !== 'ready_to_switch') return null;
+    return { kind, candidate: identity(app.candidate), target: identity(app.target), stale: false };
+  }
+  if (!app.target) return null;
+  return { kind, candidate: null, target: identity(app.target), stale: false };
+}
+
+/** True while native state still describes what the intent was chosen for. */
+function intentHolds(intent: CommitIntent, app: AppState | null): boolean {
+  if (intent.stale || !app) return false;
+  if (identity(app.target) !== intent.target) return false;
+  if (intent.kind === 'switch') return app.candidate?.phase === 'ready_to_switch' && identity(app.candidate) === intent.candidate;
+  return true;
+}
+
 const ATTEMPT_COMMANDS: readonly ClientCommand[] = ['client.acceptInvite', 'client.connectSaved', 'client.retry', 'client.cancelAttempt'];
 
 export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionDialogBodyProps): JSX.Element {
@@ -100,6 +138,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
   const [commit, setCommit] = useState<CommitState | null>(null);
   const [rechecking, setRechecking] = useState(false);
   const committing = useRef(false);
+  const intent = useRef<CommitIntent | null>(null);
 
   // Reopen re-reads the native status (a read; no mutation is replayed).
   useEffect(() => {
@@ -109,6 +148,18 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
       alive.current = false;
     };
   }, []);
+
+  // Every native status change re-checks the pending Switch/Disconnect intent
+  // (while the owner gate is open and during the receipt wait): a mismatch
+  // drops it for good.
+  useEffect(
+    () =>
+      subscribeAppStatus(() => {
+        const held = intent.current;
+        if (held && !intentHolds(held, getAppStatus())) held.stale = true;
+      }),
+    [],
+  );
 
   const snapshot = client.snapshot;
   const stage = snapshot?.stage ?? null;
@@ -130,6 +181,8 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
     const cancel = command === 'client.cancelAttempt';
     // Cancel is busy-exempt; every other mutation runs one at a time.
     if (!cancel && (pending !== null || committing.current)) return;
+    // Cancel (or any new attempt) ends the Switch the user chose for the old candidate.
+    if (ATTEMPT_COMMANDS.includes(command) && intent.current?.kind === 'switch') intent.current.stale = true;
     if (cancel) setCancelling(true);
     else setPending(command);
     setOutcome(null);
@@ -149,13 +202,18 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
     void refreshAppStatus();
   };
 
-  const runCommit = async (kind: CommitAction): Promise<void> => {
+  const runCommit = async (chosen: CommitIntent): Promise<void> => {
     if (committing.current) return;
-    // Recheck at commit: the candidate must still be ready (newest native state).
-    if (kind === 'switch' && getAppStatus()?.candidate?.phase !== 'ready_to_switch') {
-      setCommit({ kind, running: false, failure: { code: 'target_starting', effect: 'none', recovery: 'refresh' } });
-      return;
-    }
+    const { kind } = chosen;
+    // Revalidate the chosen candidate/target against the newest native state
+    // after the owner gate and after every wait, right before anything is
+    // sent. A changed choice sends nothing and needs a fresh explicit action.
+    const stillChosen = (): boolean => intent.current === chosen && intentHolds(chosen, getAppStatus());
+    const drop = (): void => {
+      if (intent.current === chosen) intent.current = null;
+      if (alive.current) setCommit({ kind, running: false, failure: { code: 'intent_changed', effect: 'none', recovery: 'refresh' } });
+    };
+    if (!stillChosen()) return drop();
     committing.current = true;
     setCommit({ kind, running: true, failure: null });
     setOutcome(null);
@@ -168,6 +226,10 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
     } else {
       const release = holdOwnerSaves();
       try {
+        if (!stillChosen()) {
+          committing.current = false;
+          return drop();
+        }
         const parsed = parseActionResult(await callConnection(kind === 'switch' ? 'client.commitSwitch' : 'client.disconnect'));
         if (!parsed) failure = UNKNOWN_FAILURE;
         else if (parsed.effect === 'unknown') failure = { code: 'outcomeUnknown', effect: 'unknown', recovery: 'nativeRecovery' };
@@ -178,6 +240,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
         release();
       }
     }
+    if (intent.current === chosen) intent.current = null;
     committing.current = false;
     if (!alive.current) return;
     setCommit({ kind, running: false, failure, result });
@@ -189,11 +252,25 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
   const requestCommit = (kind: CommitAction): void => {
     if (committing.current || pending !== null) return;
     setCommit(null);
+    // Bind the choice to the candidate/target the user saw (newest native state).
+    const chosen = intentFor(kind, getAppStatus());
+    if (!chosen) {
+      intent.current = null;
+      setCommit({ kind, running: false, failure: { code: kind === 'switch' ? 'target_starting' : 'intent_changed', effect: 'none', recovery: 'refresh' } });
+      return;
+    }
+    const previous = intent.current;
+    intent.current = chosen;
     requestOwnerTransition({
       effect: kind === 'switch' ? 'switchTarget' : 'disconnect',
       // A target commit affects every Main and Settings owner.
       affects: () => true,
-      proceed: () => void runCommit(kind),
+      proceed: () => void runCommit(chosen),
+      // Keep editing, or a repeat while a gate is already open: the open
+      // gate keeps its own intent.
+      cancel: () => {
+        if (intent.current === chosen) intent.current = previous;
+      },
     });
   };
 
@@ -240,6 +317,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
   const attemptStage = stage !== null && isAttemptStage(stage);
   const canStart = !inFlight && !attemptStage && (stage === null || stage === 'idle' || stage === 'failed' || stage === 'connected');
   const busy = pending !== null || commit?.running === true;
+  const committedRemote = target?.kind === 'remote' && candidate === null && stage === 'connected';
 
   const outcomeParams = (o: ClientOutcome): MessageParams => ({
     action: t(ACTION_LABEL[o.command], { name: candidate?.name ?? '' }),
@@ -437,6 +515,8 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
             </Actions>
           )}
           {refusalNode('disconnect')}
+          {/* A dropped Switch stays named even after its attempt is gone. */}
+          {!candidate && refusalNode('switch')}
           {view.health && remoteConnected && (
             <div className="space-y-2" data-testid="connection-health">
               <dl className="grid gap-1 text-sm sm:grid-cols-2">
@@ -549,7 +629,9 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
               <ul className="space-y-2" data-testid="connection-saved">
                 {snapshot.computers.map((computer) => {
                   const name = label(computer.label);
-                  const current = computer.computerRef === snapshot.activeComputerRef && stage !== 'idle' && stage !== 'failed';
+                  // "current" only for the committed v2 remote target: native points
+                  // activeComputerRef at an attempt's record before any commit (F3).
+                  const current = committedRemote && computer.computerRef === snapshot.activeComputerRef;
                   const args = { computerRef: computer.computerRef };
                   return (
                     <li key={computer.computerRef} className="border-border-default flex flex-wrap items-center gap-2 rounded-md border p-3">

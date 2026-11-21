@@ -354,12 +354,18 @@ placeholder. It reads native state only and keeps no second store:
   is never labelled Connected; Ready to switch needs the explicit Switch.
 - **Switch and Disconnect.** Both ask the contextual owner gate over EVERY
   owner first (new effects `switchTarget` / `disconnect`: “Discard changes and
-  switch computer / disconnect”). After consent the body rechecks that the
-  candidate is still ready, awaits native's receipt for the current owner
+  switch computer / disconnect”). The request is bound to what the user
+  chose: Switch to the candidate's kind/id plus the target in use, Disconnect
+  to the active target. Any status change that no longer matches (Cancel, a
+  replacement candidate, a phase change, a new target) drops that choice for
+  good, while the gate itself stays as it is. After consent the body
+  revalidates the choice, awaits native's receipt for the current owner
   summary (`awaitOwnersReceipt`), freezes saves with `holdOwnerSaves()`
-  (`lib/native/owners.ts`), calls `client.commitSwitch` / `client.disconnect`,
-  and releases the freeze when native answers. If the receipt is lost,
-  nothing is sent (`connection.refusal.receipt`). Every refusal has named copy
+  (`lib/native/owners.ts`), revalidates again, calls `client.commitSwitch` /
+  `client.disconnect`, and releases the freeze when native answers. A changed
+  choice sends nothing and asks for a fresh explicit Switch / Disconnect
+  (`connection.refusal.switchChoiceChanged` / `disconnectChoiceChanged`). If
+  the receipt is lost, nothing is sent (`connection.refusal.receipt`). Every refusal has named copy
   with no automatic retry: `owner_save_pending`, `owner_save_unknown`,
   `owner_edits_pending` (each lists the affected owners), `non_get_pending`,
   `target_starting`, `target_unreachable`, `incompatible` + side,
@@ -372,7 +378,10 @@ placeholder. It reads native state only and keeps no second store:
 - **Outcomes (M9).** Native `effect`/`recovery` drive the copy: `unknown`
   gives result-unknown copy plus Check again; “nothing changed” only for
   `effect: "none"`. Explicit retry reuses the same command and record while
-  that record is still listed.
+  that record is still listed. A saved computer is marked “current” only for
+  the committed remote target (`app.status` target remote, no candidate,
+  client connected); native points `activeComputerRef` at an attempt's record
+  before any commit, so attempts never show “current”.
 - **Compatibility (C6).** For a remote Host-side mismatch: “Update {Host}”
   (with or without metadata; the reported contract range is shown) plus
   Recheck (an `app.status` re-read) and “Choose another computer”. For a local
@@ -387,8 +396,9 @@ placeholder. It reads native state only and keeps no second store:
 - **Host management.** Uses `host.status` / `host.stateChanged` and
   enable / turn off / create invite / approve / reject / next device / revoke.
   Turn off and Revoke ask for in-dialog confirmation, then native consent. An
-  uncertain action whose re-read failed is shown as “not confirmed”, with no
-  lifecycle controls. The section is hidden when `host.status` answers
+  action with an unknown effect stays “not confirmed”, with no lifecycle
+  controls, until a newer successful observation (`host.status` read or
+  `host.stateChanged`); Check again and failed re-reads do not clear it. The section is hidden when `host.status` answers
   `unsupportedCommand` (Mac: no host role; no `bridge.hello`, M8).
 - **Locale.** All copy is in the `connection.*` catalogs (EN + zh-CN). Keys
   were moved verbatim from `web/connection/src/strings.ts` (that window

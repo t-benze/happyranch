@@ -122,6 +122,10 @@ export interface HostReadApi {
   observe: (snapshot: HostSnapshot, token: number) => void;
   /** Current observation revision (taken before an action). */
   revision: () => number;
+  /** Count of SUCCESSFUL observations (host.status read, event or action snapshot); failed reads never move it. */
+  observed: number;
+  /** The same count, read synchronously (taken right after an uncertain action returns). */
+  observedCount: () => number;
 }
 
 /** `host.status` on open + `host.stateChanged`; `unsupportedCommand` hides Host management. */
@@ -129,13 +133,24 @@ export function useHostSnapshot(): HostReadApi {
   const alive = useAlive();
   const revision = useRef(0);
   const last = useRef<HostSnapshot | null>(null);
+  const seen = useRef(0);
   const [state, setState] = useState<HostReads>({ kind: 'loading' });
+  const [observed, setObserved] = useState(0);
 
-  const apply = useCallback((snapshot: HostSnapshot) => {
-    revision.current += 1;
-    last.current = snapshot;
-    setState({ kind: 'ready', snapshot });
+  const succeeded = useCallback(() => {
+    seen.current += 1;
+    setObserved(seen.current);
   }, []);
+
+  const apply = useCallback(
+    (snapshot: HostSnapshot) => {
+      revision.current += 1;
+      last.current = snapshot;
+      succeeded();
+      setState({ kind: 'ready', snapshot });
+    },
+    [succeeded],
+  );
 
   const refresh = useCallback(async (): Promise<HostSnapshot | null> => {
     const token = ++revision.current;
@@ -147,6 +162,7 @@ export function useHostSnapshot(): HostReadApi {
         return null;
       }
       last.current = next;
+      succeeded();
       setState({ kind: 'ready', snapshot: next });
       return next;
     } catch (error) {
@@ -156,7 +172,7 @@ export function useHostSnapshot(): HostReadApi {
       else setState({ kind: 'failed', failure, snapshot: last.current });
       return null;
     }
-  }, [alive]);
+  }, [alive, succeeded]);
 
   useEffect(() => {
     void refresh();
@@ -173,7 +189,8 @@ export function useHostSnapshot(): HostReadApi {
     [alive, apply],
   );
   const current = useCallback(() => revision.current, []);
-  return { state, refresh, observe, revision: current };
+  const observedCount = useCallback(() => seen.current, []);
+  return { state, refresh, observe, revision: current, observed, observedCount };
 }
 
 export interface HealthReads {

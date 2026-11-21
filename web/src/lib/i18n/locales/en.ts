@@ -4091,6 +4091,8 @@ export const en = {
   "connection.refusal.targetStarting": "{name} isn’t ready to switch yet. Check its status above.",
   "connection.refusal.targetUnreachable": "{name} can’t be reached.",
   "connection.refusal.changed": "The connection changed before this ran. Check the current status, then try again.",
+  "connection.refusal.switchChoiceChanged": "The computer you chose changed. Choose Switch again.",
+  "connection.refusal.disconnectChoiceChanged": "The connection you chose to disconnect changed. Choose Disconnect again.",
   "connection.refusal.busy": "Another connection action is still in progress.",
   "connection.refusal.receipt": "This app couldn’t confirm the state of your changes with the native app, so nothing was sent. Try again.",
   "connection.refusal.incompatibleHost": "{name} needs an update before this app can use it. Update HappyRanch on {name}.",
