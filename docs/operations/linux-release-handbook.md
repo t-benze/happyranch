@@ -1,9 +1,9 @@
 # Linux release handbook
 
-## Native language preference store (S8-1-L-a)
+## Native language preference (S8-1-L)
 
-`packaging/linux/desktop/app_locale.py` supplies the unwired native preference
-store for the later Settings wiring slice. Its closed API is `load()`,
+`packaging/linux/desktop/app_locale.py` supplies the native preference
+store used by the Main bridge and GTK launcher. Its closed API is `load()`,
 `current()`, and `set(value)`, each returning a fresh
 `{"current": "en" | "zh-CN", "persisted": bool}` dictionary compatible with
 the shell locale snapshot. First access reads once; repeated loads preserve a
@@ -39,13 +39,47 @@ memory and disk throughout each call, ordering concurrent threads by lock
 acquisition. The assumption is one owning native process with stable
 environment; concurrent processes have no ordering guarantee.
 
-No shell or bridge wiring is included here. Later wiring will switch web
-content live; native menus and system dialogs follow the choice on next launch.
+The admitted Main document accepts `app.locale.set` through the existing string
+`call` facade, with exactly `{"schema":2,"locale":"en"|"zh-CN"}`. Native rejects
+malformed/duplicate-key JSON, wrong types, missing/extra fields and other values
+as `invalidRequest`, `effect:none`, `recovery:none`, without a store call, file
+change or event. The JSON-string result is exactly
+`{"schema":2,"locale":{"current":"en"|"zh-CN","persisted":boolean}}`, using the
+snapshot returned by the completed store write. Write failure resolves with
+`persisted:false` and the live choice retained. Both `app.status` and the full
+`app.stateChanged` read the store, rather than recomputing `LANG`.
+
+A bounded process-owned FIFO admits choices on the GTK context in observed
+order, including across view reconstruction. One worker writes at a time. Native
+returns the result, then awaits the private named-world relay's reply/publication
+barrier before starting the next write. The relay posts the setter reply before
+the full state event, including `persisted:false`, only for the current admitted
+document and its existing subscription. Other state observations defer during
+that interval, so they cannot publish the new locale ahead of its reply. A
+retired document drops queued, unstarted writes; an already-started write may
+finish, with an unknown-effect retirement error and no retired-document event.
+The setter performs no daemon request, target/generation change, navigation,
+service restart or app relaunch.
+
+The GTK launch translation closure reads `load()` once instead of `LANG` alone.
+Native header, menus and dialogs retain that language until next app launch;
+service-only Restart is not an app launch. Built-in target/candidate names also
+retain the launch language in native state. No synchronous locale property or
+HTML `lang` injection precedes page scripts: web obtains native locale through
+the asynchronous status/event bridge. Web live translation and truthful Saved /
+session-only UI remain the separate S8-1-W slice.
+
 For isolated verification, set `TMPDIR` and `XDG_CONFIG_HOME` to disposable
 directories outside real user config, then run from `packaging/linux/desktop`:
 `GSETTINGS_BACKEND=memory /usr/bin/python3 -B -m unittest test_app_locale -v`.
 Check a saved choice in a new process, a read-only config directory, corrupt
 files, and rapid threaded sets; no daemon or Product E2E is needed.
+Bridge ordering/refusal and fresh-process native-header checks use the existing
+direct native test venue:
+`GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v`
+and `GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v`
+from the repository root. Real WebKitGTK/header visuals need a disposable
+desktop/Xvfb session; headless checks do not establish that acceptance.
 
 ## Build the intermediate payload
 
@@ -431,6 +465,7 @@ acceptance remains separate from temp-root verification.
 
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/app_locale.py`,
 `share/happyranch/desktop/client_store.py`,
 `share/happyranch/desktop/client_session.py`,
 `share/happyranch/desktop/client_runtime.py`,
@@ -911,10 +946,11 @@ admission leaves the bridge unavailable. This does not migrate the separate
 Connection window or enable unfinished client commands.
 
 The full v2 appState supplies native generation, target, state, compatibility,
-local status, nullable candidate, access_unsaved and session locale. A selected
-remote never exposes a local prompt URL or remote address. Native owners supply
-sanitized remote id/name; active/candidate integration remains S5-L2, locale
-persistence remains S8. After an admitted target becomes unreachable, status
+local status, nullable candidate, access_unsaved and the store's current/persisted
+locale. A selected remote never exposes a local prompt URL or remote address. Native owners supply
+sanitized remote id/name; native locale persistence and ordered setter publication
+are wired by S8-1-L (above); live web locale UI remains S8-1-W. After an admitted
+target becomes unreachable, status
 refresh requires fresh successful health and compatibility checks before ready,
 and native bootstrap if its bearer is absent. Cached compatibility/bearer alone
 cannot establish recovery; no forwarded request is replayed. Every scheme API

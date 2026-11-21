@@ -22,8 +22,9 @@ One native process owns this module with stable environment after first access.
 A single lock covers state AND disk I/O: threaded calls are linearized in lock
 acquisition order, so an older write cannot complete after a newer write. There
 is no cross-process ordering guarantee. Callers receive snapshots, not shared
-mutable state. This module is not wired into the shell yet; later wiring owns
-live web translation and native menus/dialogs taking effect at next launch.
+mutable state. The Main adapter serializes admission, replies and publication;
+the shell reads the preference for native menus/dialogs at next launch. Live
+web translation is owned by the web's native locale adapter.
 """
 from __future__ import annotations
 
