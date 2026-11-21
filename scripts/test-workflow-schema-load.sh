@@ -56,6 +56,14 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+EXPECTED_REGISTERED_DEFINITIONS = (
+    ('release/happyranch/coding', 2,
+     '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
+     'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c'),
+    ('release/happyranch/coding', 3,
+     'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
+     '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'),
+)
 S8A_CASES = ('coding_brief_roles', 'new_version_pin', 'reported_evidence', 'no_setup_effect')
 s8a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
@@ -6228,7 +6236,9 @@ OrgState.close = uncertain_close
                                 continue
                             assert org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone(), 'A4-M daemon startup did not install sequential storage'
                             assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel').fetchone()) == (37, b'original\0typed'), 'A4-M changed retained typed cells'
-                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-M missed qualified catalog registration'
+                            assert tuple(tuple(row) for row in org.db._conn.execute(
+                                'SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions ORDER BY identity,version'
+                            )) == EXPECTED_REGISTERED_DEFINITIONS, 'A4-M missed qualified catalog registration'
                             assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-M setup allocated settings or Allow'
                             assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0, 'A4-M setup allocated a workflow run'
                             assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted','completed')], 'A4-M setup changed native tasks'
@@ -6522,7 +6532,9 @@ if sys.argv[1:] in ([], ['--bootstrap-worker']):
                         '00.json', '01.json', '02.json', '03.json', '04.json', '05.json', 'before.db'], 'A4-H missing registered phase'
                     with closing(sqlite3.connect(path)) as conn:
                         assert conn.execute('SELECT * FROM a4_helper_sentinel').fetchall() == [(37, b'original\0typed')], 'A4-H changed retained typed/rowid cells'
-                        assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-H missing actual qualified source registration'
+                        assert tuple(tuple(row) for row in conn.execute(
+                            'SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions ORDER BY identity,version'
+                        )) == EXPECTED_REGISTERED_DEFINITIONS, 'A4-H missing actual qualified source registration'
                 else:
                     assert inventory() == original and path.read_bytes() == before, 'A4-H failed worker changed original source'
                     if fault in ('refuse_commit', 'cancel', 'kill', 'reserve', 'foreign_permit', 'duplicate_permit'):

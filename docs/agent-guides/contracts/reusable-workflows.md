@@ -2589,7 +2589,9 @@ unchanged source/definition/ABI pins. `coding.v1.json` is retired legacy grammar
 fresh selection refuses `coding_fresh_start_retired`, with no filesystem fallback.
 A2's existing registrar and A4/offline consumers share that manifest via
 `preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
-projection. Exact existing registration writes zero; mismatches refuse. There
+projection. S8a qualified registration also includes the separate staged Coding
+v3 definition alongside v2; the public manifest remains v2 only.
+Exact existing registration writes zero; mismatches refuse. There
 is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
 at old callback intake and consumption/inner writers, after authenticated exact
