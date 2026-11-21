@@ -732,9 +732,6 @@ def c12():
                 clock['observing'] = True
                 if boundary:
                     clock['armed'] = True
-                    if boundary == 'entry':
-                        clock['value'] = deadline + int(beyond)
-                        clock['flipped'] = True
 
             def snapshot(path: Path, original_deadline: float, **kwargs) -> dict:
                 observed = real_snapshot(path, original_deadline, **kwargs)
@@ -789,6 +786,11 @@ def c12():
                 if not selected or left is not selected[0] or right is not selected[1]:
                     return real_compare(left, right, original_deadline)
                 assert original_deadline == deadline, label
+                # Expire at comparator entry, after the fresh scratch gitfile
+                # checks, so an earlier guard cannot mask this contract.
+                if boundary == 'entry':
+                    clock['value'] = deadline + int(beyond)
+                    clock['flipped'] = True
                 clock['inside'] = True
                 try:
                     value = real_compare(left, right, original_deadline)

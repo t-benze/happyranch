@@ -977,6 +977,8 @@ signature fields from accompanying ancestor changes; exact parity is also review
 CPU-expiry rows arm only after genuine selected snapshots/admissions, at entry,
 first pair, last pair/exit and an early non-root mismatch followed by later expiry,
 each exactly at the ORIGINAL deadline and beyond it. Delegating observers bind
+the entry clock advance to the actual comparator call, after fresh scratch
+gitfile checks, so those earlier guards cannot mask comparator coverage. They bind
 old `ds.signature`, new `fs.signature`/`fs.check` and imported `ds.trees_equal`;
 they record entries begun or normal comparator returns after expiry, before outer
 guards can mask a missing exit check. They add no guard or fabricated Expired.
