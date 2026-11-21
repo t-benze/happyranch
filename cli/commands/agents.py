@@ -290,6 +290,30 @@ def cmd_retire_agent(args: argparse.Namespace) -> None:
         print(json.dumps(response.json(), indent=2))
 
 
+def cmd_agents_list(args: argparse.Namespace) -> None:
+    """Read the active roster, including canonical definition revisions."""
+    import json
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    response = client.get(f"/api/v1/orgs/{slug}/agents")
+    if not _ok(response):
+        return
+    rows = response.json()["agents"]
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        print(f"{row['name']}  team={row['team']}  role={row['role']}  "
+              f"revision={row['revision']}  repos={json.dumps(row['repos'])}")
+
+
 
 def cmd_set_model(args: argparse.Namespace) -> None:
     """Founder action: set or clear an existing agent's model.
@@ -474,8 +498,12 @@ def cmd_identities_rename(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
-    p_agents = sub.add_parser("agents", help="Founder agent administration")
+    p_agents = sub.add_parser("agents", help="Agent roster and administration")
     agents_sub = p_agents.add_subparsers(dest="agents_command", required=True)
+    p_roster = agents_sub.add_parser("list", help="Read the active agent roster and definition revisions")
+    p_roster.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_roster.add_argument("--json", action="store_true", help="Print the response rows as JSON")
+    p_roster.set_defaults(func=cmd_agents_list)
     p_retire = agents_sub.add_parser("retire", help="Archive an idle agent and its empty non-routing team")
     p_retire.add_argument("name", help="Permanent agent ID or current name")
     p_retire.add_argument("--org", required=True)
@@ -530,7 +558,7 @@ def register(sub) -> None:
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--expected-revision", dest="expected_revision", default=None,
-                      help="Required roster revision for an update; copy it from the same GET /agents row")
+                      help="Required roster revision for an update; copy it from happyranch agents list --org ORG --json")
     p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")
     p_ma.add_argument("--repos", default=None, help="JSON dict of repos")
     p_ma.add_argument("--from-file", dest="from_file", default=None,
