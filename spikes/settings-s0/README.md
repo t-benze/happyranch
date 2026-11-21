@@ -55,25 +55,70 @@ native memory for the tail GET. No real bearer is logged or passed to JS;
 only SSE event names/lengths are logged. No other real daemon API is reachable
 through this probe. No remote address or dial exists.
 
-## Mac — prepared only, no run authorization here
+## Mac — standalone feasibility probe
 
 The separate Swift package targets macOS 14+, matching the product minimum.
 It depends only on system AppKit/WebKit/CryptoKit. It never contacts a daemon
 or a remote host; the shared page's daemon cases explicitly return 503.
 It records `httpBody` versus `httpBodyStream`, handles incremental `didReceive`
-and `stop`, and provides WKDownloadDelegate callbacks. A fixed nonzero UUID
-uses a dedicated persistent WKWebsiteDataStore, leaving the product store alone.
+and `stop`, and provides WKDownloadDelegate callbacks. A dedicated nonzero UUID
+selects a persistent WKWebsiteDataStore; the suite uses a fresh UUID per build,
+shared across its restarts, leaving the product store alone.
 All file destinations go beneath the explicit probe download directory.
 
-After a Mac run is separately approved, in a logged-in macOS GUI runner:
+TASK-18408 / THR-387 seq94 permits at most three submissions to the existing
+`happyranch-mac-native-probe` job with `SUITE=settings-scheme` and an exact pushed
+`SOURCE_SHA`. This is a throwaway branch; no PR, merge or job config change.
+The suite first records OS/architecture/Swift/SDK/launchctl facts and interprets
+`mac/gui-preflight.swift` to observe NSApplication, WindowServer and a real
+WKWebView HTML/JS round trip. No usable GUI ends the build cleanly with M1–M4
+NOT RUN and forbids further attempts in that venue. Background/System alone
+is not a failure if the actual WKWebView succeeds.
+
+The suite then runs `swift build` with the supervisor suite's private HOME,
+TMPDIR, SwiftPM and module-cache pattern. It retrieves only hash-pinned Node24
+using the existing toolchain pins/transfer code, into the build scratch, then
+runs `npm ci` and `npm run build` on a scratch copy of `web`. It does not install
+host tools. Every invocation has a 50s external timeout (40s native timeout):
 
 ```sh
-swift run --package-path spikes/settings-s0/mac SettingsSchemeProbe "$PWD" /tmp/settings-s0-downloads probe
-swift run --package-path spikes/settings-s0/mac SettingsSchemeProbe "$PWD" /tmp/settings-s0-downloads probe
-swift run --package-path spikes/settings-s0/mac SettingsSchemeProbe "$PWD" /tmp/settings-s0-downloads other
-swift run --package-path spikes/settings-s0/mac SettingsSchemeProbe "$PWD" /tmp/settings-s0-downloads /
-swift run --package-path spikes/settings-s0/mac SettingsSchemeProbe "$PWD" /tmp/settings-s0-downloads /settings
+# After the suite's private scratch build, the executable takes these arguments.
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/initial" probe
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/restart" probe
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/other" other
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/root" /
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/deep" /settings
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/no-multipart" probe-no-multipart
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/serialized" probe-serialized
+"$PROBE" "$ASSET_ROOT" "$DOWNLOAD_ROOT/direct" probe-direct
 ```
+
+The suite sets one fresh `SETTINGS_S0_STORE_UUID` per build, shared by all
+invocations. Foundation's resolved home must match the private scratch home.
+All caches/assets/downloads are under the build's TMPDIR, never `/tmp`.
+`/settings` explicitly calls `WKWebView.reload()` after the first load; both
+index responses and rendered DOM/assets must be observed. Serialized upload
+and direct-download diagnostic modes preserve the original full-run result.
+Question results in `evidence/probe.json` distinguish direct FormData from the
+byte-serialized adaptation and blob from direct attachment. M3 records all five
+native-to-JS wall-time differences, receipt intervals, abort-to-stop delay and
+sends after stop; thresholds are stated in JSON. M4 compares first/restart/other
+store values and verifies saved download size/SHA256. Observer exit alone
+never supplies a verified question.
+
+Linux-safe preparation commands (no Mac execution):
+
+```sh
+python3 -B scripts/mac_native/suite_settings_scheme.py --help
+python3 -B scripts/mac_native/suite_settings_scheme.py --stub
+python3 -B scripts/mac_native/probe.py --suite settings-scheme --output "$TMPDIR/linux-dispatch.json"
+```
+
+`--stub` exercises only the result parser and rejects absent evidence; it is
+not a Mac result. The dispatcher reports Darwin-only skip on Linux. Python
+syntax can also be checked via stdlib `ast.parse` without writing bytecode.
+The suite imports only stdlib and the stdlib-only supervisor/toolchain modules;
+it never imports HappyRanch runtime modules.
 
 If full upload blocks later observations, run `probe-no-multipart` separately
 and preserve the failure. Record macOS and WebKit versions (the app logs both),
@@ -88,6 +133,7 @@ root-absolute assets. This transport probe does not implement the new dialog.
 
 This is an observational tiny app, not a regression test suite. No production
 seam, test flag, product edit, CI workflow or new dependency is introduced.
-The Mac package has **NOT RUN** or compiled on the Linux maker host. Apple
+The Mac package cannot compile on the Linux maker host; only Jenkins evidence
+can establish compilation or execution. Apple
 API documentation supports handler/data-store availability; it does not prove
 large Blob bodies, fetch buffering/cancellation or custom-origin persistence.

@@ -13,6 +13,8 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
     var view: WKWebView!
     var active = Set<ObjectIdentifier>()
     var runningDownloads = [WKDownload]()
+    var deepReloaded = false
+    var domScheduled = false
 
     init(root: URL, downloads: URL, mode: String) {
         self.root = root; self.downloads = downloads; self.mode = mode
@@ -27,14 +29,18 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
     func applicationDidFinishLaunching(_ notification: Notification) {
         let config = WKWebViewConfiguration()
         // Dedicated persistent profile. Keep the UUID identical across invocations.
-        config.websiteDataStore = WKWebsiteDataStore(forIdentifier: UUID(uuidString: "18075000-0000-4000-8000-000000000001")!)
+        config.websiteDataStore = WKWebsiteDataStore(forIdentifier: UUID(uuidString: ProcessInfo.processInfo.environment["SETTINGS_S0_STORE_UUID"] ?? "18075000-0000-4000-8000-000000000001")!)
         config.setURLSchemeHandler(self, forURLScheme: "happyranch-app")
         config.userContentController.add(self, name: "probe")
         view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: config)
         view.navigationDelegate = self
         window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.contentView = view; window.makeKeyAndOrderFront(nil)
-        let path = mode == "probe" ? "/probe/page" : (["other", "probe-no-multipart"].contains(mode) ? "/probe/page?omitMultipart=1" : mode)
+        let paths = ["probe": "/probe/page", "other": "/probe/page?omitMultipart=1",
+                     "probe-no-multipart": "/probe/page?omitMultipart=1",
+                     "probe-serialized": "/probe/page?serializeMultipart=1",
+                     "probe-direct": "/probe/page?omitMultipart=1&directOnly=1"]
+        let path = paths[mode] ?? mode
         let host = mode == "other" ? "other" : "app"
         log("venue", ["os": ProcessInfo.processInfo.operatingSystemVersionString, "mode": mode,
                        "webkit": Bundle(for: WKWebView.self).infoDictionary?["CFBundleVersion"] as? String ?? "unknown"])
@@ -65,6 +71,8 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
             if path == "/probe/body" {
                 var data = task.request.httpBody ?? Data()
                 let fromStream = task.request.httpBodyStream != nil
+                let hadBody = task.request.httpBody != nil
+                if data.count > 12 * 1024 * 1024 { throw NSError(domain: "S0", code: 2) }
                 if data.isEmpty, let stream = task.request.httpBodyStream {
                     stream.open(); defer { stream.close() }
                     var buffer = [UInt8](repeating: 0, count: 65536)
@@ -78,7 +86,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
                 }
                 let type = task.request.value(forHTTPHeaderField: "Content-Type") ?? ""
                 let multipart = type.hasPrefix("multipart/")
-                var value: [String: Any] = ["length": data.count, "fromStream": fromStream,
+                var value: [String: Any] = ["length": data.count, "fromStream": fromStream, "hadBody": hadBody,
                     "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
                 if multipart {
                     // Verify the entire synthetic file, not only a Content-Length.
@@ -86,6 +94,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
                     if let head = data.range(of: marker), let tail = data.range(of: suffix, options: .backwards), tail.lowerBound >= head.upperBound {
                         let file = data.subdata(in: head.upperBound..<tail.lowerBound)
                         value["fileLengths"] = [file.count]
+                        value["fileSHA256"] = SHA256.hash(data: file).map { String(format: "%02x", $0) }.joined()
                         value["intact"] = file == Data(repeating: 115, count: 10 * 1024 * 1024)
                     } else { value["intact"] = false }
                 } else { value["text"] = String(data: data, encoding: .utf8) ?? "invalid-utf8" }
@@ -101,7 +110,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
                     DispatchQueue.main.asyncAfter(deadline: .now() + Double(i)) {
                         guard self.active.contains(id) else { return }
                         if i == count { task.didFinish(); self.active.remove(id); return }
-                        let value: [String: Any] = ["i": i, "nativeMs": Date().timeIntervalSince(began) * 1000,
+                        let value: [String: Any] = ["path": path, "i": i, "nativeMs": Date().timeIntervalSince(began) * 1000,
                                                   "nativeWallMs": Date().timeIntervalSince1970 * 1000]
                         let json = String(data: try! JSONSerialization.data(withJSONObject: value), encoding: .utf8)!
                         task.didReceive(Data("data: \(json)\n\n".utf8)); self.log("chunk-written", value)
@@ -129,7 +138,9 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
                     file = base.appendingPathComponent("index.html")
                 }
                 let mime = ["html":"text/html", "js":"text/javascript", "css":"text/css", "svg":"image/svg+xml", "woff2":"font/woff2"][file.pathExtension] ?? "application/octet-stream"
-                send(task, data: try Data(contentsOf: file), type: mime)
+                let data = try Data(contentsOf: file)
+                log("served", ["path": path, "file": file.lastPathComponent, "mime": mime, "bytes": data.count])
+                send(task, data: data, type: mime)
             }
         } catch { active.remove(id); task.didFailWithError(error); log("handler-error", String(describing: type(of: error))) }
     }
@@ -140,7 +151,14 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         log("load-finished", webView.url?.absoluteString ?? "none")
-        if mode == "/" || mode == "/settings" {
+        if mode == "/settings" && !deepReloaded {
+            deepReloaded = true
+            log("deep-reload", webView.url?.absoluteString ?? "none")
+            webView.reload()
+            return
+        }
+        if (mode == "/" || mode == "/settings") && !domScheduled {
+            domScheduled = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
                 webView.evaluateJavaScript("JSON.stringify({path:location.pathname,origin:location.origin,root:document.getElementById('root').childElementCount,text:document.body.innerText.slice(0,100)})") { value, error in
                     self.log("spa-dom", value ?? error.map { String(describing: type(of: $0)) } ?? "none")
@@ -149,6 +167,14 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
             }
         }
     }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        log("navigation-failed", String(describing: error))
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        log("navigation-failed", String(describing: error))
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { log("web-process-terminated", true) }
 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let disposition = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition") ?? ""
@@ -162,6 +188,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
     func attach(_ download: WKDownload) { runningDownloads.append(download); download.delegate = self; log("download-started", true) }
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
         let file = downloads.appendingPathComponent(UUID().uuidString + "-" + URL(fileURLWithPath: suggestedFilename).lastPathComponent)
+        log("download-destination", ["source": response.url?.absoluteString ?? "none", "name": file.lastPathComponent])
         completionHandler(file)
     }
     func downloadDidFinish(_ download: WKDownload) { log("download-finished", true) }
@@ -170,7 +197,7 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
 
 // No production app dependencies. Run only after explicit Mac allowance.
 let arguments = CommandLine.arguments
-guard arguments.count == 4 else { fatalError("usage: SettingsSchemeProbe REPO_ROOT DOWNLOAD_DIR probe|probe-no-multipart|other|/|/settings") }
+guard arguments.count == 4 else { fatalError("usage: SettingsSchemeProbe REPO_ROOT DOWNLOAD_DIR probe|probe-serialized|probe-direct|probe-no-multipart|other|/|/settings") }
 let delegate = Probe(root: URL(fileURLWithPath: arguments[1]), downloads: URL(fileURLWithPath: arguments[2]), mode: arguments[3])
 try FileManager.default.createDirectory(at: delegate.downloads, withIntermediateDirectories: true)
 NSApplication.shared.setActivationPolicy(.regular)
