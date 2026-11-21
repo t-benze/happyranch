@@ -201,6 +201,12 @@ def snapshot_tree(candidate, containing, primary, workspace, destination, budget
                 if resolved != candidate and not resolved.startswith(candidate.rstrip(os.sep) + os.sep):
                     accepted = accepted_uv_interpreter(path, rel)
                 else:
+                    try:
+                        target = os.stat(resolved)
+                    except OSError as exc:
+                        raise RuntimeError("external_or_protected_symlink") from exc
+                    if not stat.S_ISREG(target.st_mode):
+                        raise RuntimeError("external_or_protected_symlink")
                     accepted = None
             else:
                 accepted = None
