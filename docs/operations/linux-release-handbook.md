@@ -635,19 +635,26 @@ GTK's child enumeration includes that header, so only content is removed.
 
 The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
 including no-target recovery. Losing the web document does not clear the warning.
-Its keyboard-accessible action requests Connection; its tooltip explains Retry
-saving and that a new invite may be needed. Only the native owner's confirmed
-save projection clears the badge; header actions do not write that state.
+Its keyboard-accessible action opens or re-presents the existing native Connection
+window; its tooltip explains Retry saving and that a new invite may be needed.
+Only the native owner's confirmed save projection clears the badge; header
+actions do not write that state.
 
-Header actions deliver only `app.dialogRequested` JSON strings
-`{"schema":2,"dialog":"connection"}` or `{"schema":2,"dialog":"settings"}`.
+Until the S7-L1 topology lands, the Connection button and “Access wasn't saved”
+badge use the temporary native route `open_connection(None)` to open or
+re-present the existing native Connection window in both default and
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1` builds. Neither entry emits
+`app.dialogRequested` or requires a dialog subscription or Connection Retry.
+
+Only the Settings header action delivers the `app.dialogRequested` JSON string
+`{"schema":2,"dialog":"settings"}`.
 The page facade, named-world relay and native subscriber keep this closed event
 separate from `app.stateChanged`. Delivery requires the current admitted Main
 document's dialog subscription, independently of target readiness. Navigation,
 revocation and WebKit loss retire both subscriptions. Unavailable requests are
 dropped without queue or replay, including in the legacy HTTP/fallback view.
-The header shows the requested destination plus an explicit Retry action;
-becoming available never retries automatically. The subscribed web Main owns
+The header shows Settings as the requested destination plus an explicit Retry
+action; becoming available never retries automatically. The subscribed web Main owns
 the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
 Native entry starts no daemon, changes no target/generation, and neither commits
 nor cancels an attempt. The existing main-window strip and close/Quit policy
