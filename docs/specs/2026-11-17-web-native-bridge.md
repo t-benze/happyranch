@@ -6,7 +6,7 @@
 
 **Linux S7-L1 cutover (THR-387 seq86):** Main always serves installed `web/dist` at `happyranch-app://app`, with native local/remote API forwarding and the reviewed Connection commands admitted on its current document. The opt-in, plain HTTP Main, GUI loopback proxy and separate Linux Connection window are retired. Foreground Client CLI retains ClientSession.open_runtime/RuntimeProxy. Failures retain honest error and installed CLI recovery; no native connection-screen fallback. Mac remains unchanged. See the [Linux loader contract](../operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
 
-**Settings S1b-B build preparation (TASK-18101 / THR-387):** the main build
+**Historical Settings S1b-B build preparation (TASK-18101 / THR-387):** the main build
 also emits the v1 `resource-manifest.json` (sorted path/bytes/SHA-256 inventory,
 entry `index.html`, manifest excluded), using the same helper as the separate
 connection build. Its theme bootstrap is a same-origin blocking classic
@@ -14,11 +14,12 @@ connection build. Its theme bootstrap is a same-origin blocking classic
 handlers. This supports the opt-in main loader's `script-src 'self'`;
 its `style-src 'self' 'unsafe-inline'`, `connect-src 'self'`,
 `img-src 'self' data: blob:` and `font-src 'self'` are unchanged. The existing
-Linux main loader inventories the manifest as a normal dist file; manifest
-consumption by packaging is future cutover work. This preparation changes
+Linux main loader inventoried the manifest as a normal dist file; packaging
+consumption was later cutover work. S7-L1 now validates the Main manifest during
+Debian packaging with the trusted Assets reader. This preparation changed
 neither the separate connection bundle's bytes/CSP nor native bridge admission.
 
-**Linux Settings S2b PR-A (TASK-18097):** the opt-in loader additionally accepts
+**Historical Linux Settings S2b PR-A (TASK-18097):** the opt-in loader additionally accepts
 a native-selected local daemon, one active remote `ClientSession` with an
 explicit connecting/ready state, or no target. Remote requests use a
 listener-free binary HTTP adapter and the existing pinned-peer/credential
@@ -28,7 +29,8 @@ pre-header errors use `{"detail":{"code":C}}`: 503 `no_target`,
 `target_starting`, `target_unreachable`, `busy`; 409 `target_changed`.
 S4b-Linux PR-B adds the compatibility gate below; candidate switching belongs
 to S5 and remote window/default cutover to S7. This adds no page control command
-or daemon security change. The current opt-in launcher still chooses local.
+or daemon security change. The then-opt-in launcher chose local; S7-L1 now
+attaches Main to ClientModel, which owns active/candidate target selection.
 
 **Linux Settings S4b PR-B (TASK-18122):** before any API transfer (including
 native's dummy page bootstrap), the selected target performs a bounded native
@@ -50,11 +52,12 @@ native errors or logs; incompatible instances forward no API or token fetch.
 Results are cached per target and reset by native `select_target` (including
 same-instance reselection), navigation STARTED, web-process loss, close, and
 remote `ready` transitions. The launcher's `message`/`show_web` close/recreate
-sequence gives Restart, retry and reattachment a new local target. There is no
-same-instance remote reconnect callback in the current opt-in launcher; a future
-remote owner must reselect or transition readiness to invalidate its gate. This
-assumes existing active-session ownership; no candidate policy is added. See
-the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+sequence gives Restart, retry and reattachment a fresh Main. S7-L1's
+ClientModel reattaches the committed local/remote target and selects candidates
+through AppScheme; same-instance reselection or readiness changes invalidate
+admission. The earlier S4b opt-in launcher had no remote reconnect owner; that
+stage limitation no longer describes Main. See the
+[Linux loader contract](../operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
 
 Move connection presentation into shared web components while retaining native custody, permission prompts and exact-device approval. Use the selected in-process script-message bridge in a **separate, locally packaged connection web view**. Never attach this bridge to the runtime SPA web view, including the Mac's loopback proxy of a remote runtime. The connection view can work before connection and during daemon failure. It reuses the web build/design system; it is not fetched from the computer being connected to.
 
@@ -891,15 +894,15 @@ dialog is open or that an owner/effect is resolved.
 
 **Implementation status and follow-up.** Linux S6-L is implemented by
 PR #1776: closed named-event admission/routing keeps `app.stateChanged` and
-`app.dialogRequested` listeners separate (page [app_scheme_webkit.py:138](../../packaging/linux/desktop/app_scheme_webkit.py#L138),
-relay [app_scheme_webkit.py:242](../../packaging/linux/desktop/app_scheme_webkit.py#L242), native [app_scheme_webkit.py:615](../../packaging/linux/desktop/app_scheme_webkit.py#L615)).
+`app.dialogRequested` listeners separate (page [app_scheme_webkit.py:152](../../packaging/linux/desktop/app_scheme_webkit.py#L152) and [subscription:212](../../packaging/linux/desktop/app_scheme_webkit.py#L212),
+relay [app_scheme_webkit.py:275](../../packaging/linux/desktop/app_scheme_webkit.py#L275), native [app_scheme_webkit.py:730](../../packaging/linux/desktop/app_scheme_webkit.py#L730)).
 `request_dialog` emits the exact schema-2 payload only to the current admitted
 dialog subscriber, dropping unavailable requests without queue/replay
-([app_scheme_webkit.py:519](../../packaging/linux/desktop/app_scheme_webkit.py#L519), [app_scheme_webkit.py:526](../../packaging/linux/desktop/app_scheme_webkit.py#L526)).
+([app_scheme_webkit.py:619](../../packaging/linux/desktop/app_scheme_webkit.py#L619), [app_scheme_webkit.py:626](../../packaging/linux/desktop/app_scheme_webkit.py#L626)).
 Settings header emission and explicit named Retry are implemented
-([happyranch_window.py:1017](../../packaging/linux/desktop/happyranch_window.py#L1017), [happyranch_window.py:938](../../packaging/linux/desktop/happyranch_window.py#L938)).
+([happyranch_window.py:919](../../packaging/linux/desktop/happyranch_window.py#L919), [happyranch_window.py:946](../../packaging/linux/desktop/happyranch_window.py#L946)).
 The EN/ZH status/candidate pill and persistent access-unsaved badge are also
-implemented by #1776 ([happyranch_window.py:947](../../packaging/linux/desktop/happyranch_window.py#L947), [happyranch_window.py:924](../../packaging/linux/desktop/happyranch_window.py#L924)).
+implemented by #1776 ([happyranch_window.py:963](../../packaging/linux/desktop/happyranch_window.py#L963), [happyranch_window.py:978](../../packaging/linux/desktop/happyranch_window.py#L978), [badge:988](../../packaging/linux/desktop/happyranch_window.py#L988)).
 The historical #1781 native Connection fallback is retired by S7-L1 (#1813):
 Connection/Settings and the access-unsaved badge now request the Main dialog
 ([happyranch_window.py:1019](../../packaging/linux/desktop/happyranch_window.py#L1019)).
@@ -1467,7 +1470,7 @@ reconstruction ([app_scheme_webkit.py:474](../../packaging/linux/desktop/app_sch
 and reads current/persisted locale from the shared store
 ([app_scheme_webkit.py:472](../../packaging/linux/desktop/app_scheme_webkit.py#L472)).
 The GTK launch translation closure reads the preference for native header/menus/dialogs
-on next app launch ([happyranch_window.py:999](../../packaging/linux/desktop/happyranch_window.py#L999));
+on next app launch ([happyranch_window.py:998](../../packaging/linux/desktop/happyranch_window.py#L998));
 built-in native state names retain the launch locale. The existing TASK-18213
 store implementation is unchanged. Native/script checks and the real GTK/WebKit
 bridge test cover acknowledged true/false results, ordered rapid choices, refusal
