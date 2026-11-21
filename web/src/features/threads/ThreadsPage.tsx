@@ -1731,7 +1731,10 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     // token max-w-3xl = 768px; mockup 780px) with 18px between turns. The
     // padding follows the COLUMN width (container query), not the viewport:
     // with both rails open at 768-800px the column is only ~250px wide.
-    <div className="@container h-full overflow-auto">
+    // `relative` makes this scroller the containing block for the sr-only
+    // (position:absolute) speaker/system-event labels; without it they escape
+    // to the initial containing block and window-scroll the whole app (MEM-116).
+    <div className="@container relative h-full overflow-auto">
       <div className="px-3.5 pt-1 pb-5 @xl:px-7 @xl:pt-2 @xl:pb-7">
       <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col">
         {rows.map((row, i) => {
