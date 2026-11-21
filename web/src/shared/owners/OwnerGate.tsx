@@ -49,7 +49,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
-import type { AppCandidate } from '@/lib/native/appStatus';
+import { appEntryName, type AppCandidate } from '@/lib/native/appStatus';
 import { callConnection } from '@/lib/native/connection';
 import { useNativeAppStatus } from '@/lib/native/hooks';
 import {
@@ -497,7 +497,7 @@ function CandidateCancelRow(): JSX.Element | null {
       data-testid="owner-gate-candidate"
       className="border-border-default bg-surface-raised text-text-primary rounded-md border p-3 text-sm break-words"
     >
-      <p>{t('connection.candidate.gateRow', { name: candidate.name, phase: t(CANDIDATE_PHASE[candidate.phase]) })}</p>
+      <p>{t('connection.candidate.gateRow', { name: appEntryName(candidate, t('owners.computer.thisComputer')), phase: t(CANDIDATE_PHASE[candidate.phase]) })}</p>
       <p className="text-text-secondary mt-1 text-xs">{t('connection.candidate.gateHint')}</p>
       <Button
         size="sm"

@@ -17,6 +17,11 @@
  * persisted choice: the browser adapter consumes same-origin `storage` events;
  * a `native` adapter's injected snapshot is authoritative and browser events
  * are ignored so a stale origin-scoped value cannot override it.
+ *
+ * A native adapter with `subscribe` (desktop, THR-387 S8-1-W) also delivers
+ * later native locale reports; `reconcileNativeReport` decides each one (no
+ * write back, never while a newer choice is pending). A native acknowledgement
+ * with `persisted: false` surfaces as `session-only`.
  */
 import {
   createContext,
@@ -38,10 +43,13 @@ import {
   readAdapterSnapshot,
   resolveLocale,
   type Locale,
+  type LocaleAuthority,
   type LocaleMode,
   type LocalePreferenceAdapter,
   type LocaleResolution,
+  type LocalePersistenceStatus,
   type LocaleWriteOutcome,
+  reconcileNativeReport,
   renderTranslated,
   translate,
   type MessageKey,
@@ -49,12 +57,14 @@ import {
   type NodeParams,
 } from '@/lib/i18n';
 
-export type LocalePersistenceStatus = 'idle' | 'pending' | 'durable' | 'failed';
+export type { LocalePersistenceStatus };
 
 export interface I18nContextValue {
   locale: Locale;
   source: LocaleResolution['source'];
   mode: LocaleMode;
+  /** Who owns the persisted choice (`native` in the desktop app). */
+  authority: LocaleAuthority;
   persistence: LocalePersistenceStatus;
   persistenceReason?: string;
   setLocale: (locale: Locale) => void;
@@ -107,8 +117,16 @@ export function I18nProvider({
 
   const [locale, setLocaleState] = useState<Locale>(initial.locale);
   const [source, setSource] = useState<LocaleResolution['source']>(initial.source);
-  const [persistence, setPersistence] = useState<LocalePersistenceStatus>('idle');
+  const [persistence, setPersistenceState] = useState<LocalePersistenceStatus>('idle');
   const [persistenceReason, setPersistenceReason] = useState<string | undefined>(undefined);
+  // Native report reconciliation reads these synchronously (no stale closure).
+  const persistenceRef = useRef<LocalePersistenceStatus>('idle');
+  const choiceRef = useRef<Locale | null>(null);
+  const pendingRef = useRef(false);
+  const setPersistence = useCallback((next: LocalePersistenceStatus) => {
+    persistenceRef.current = next;
+    setPersistenceState(next);
+  }, []);
 
   // Monotonic write sequence: a newer choice, an external change, or unmount
   // invalidates an older in-flight acknowledgement.
@@ -159,13 +177,40 @@ export function I18nProvider({
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [adapter, mode]);
+  }, [adapter, mode, setPersistence]);
+
+  useEffect(() => {
+    if (adapterAuthority(adapter) !== 'native' || typeof adapter.subscribe !== 'function') return;
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = adapter.subscribe((report) => {
+        if (!mountedRef.current) return;
+        const decision = reconcileNativeReport(
+          { choice: choiceRef.current, pending: pendingRef.current, persistence: persistenceRef.current },
+          report,
+        );
+        if (decision.kind === 'ignore') return;
+        if (decision.kind === 'adopt') {
+          setLocaleState(decision.locale);
+          setSource('native');
+          applyDocumentLocale(decision.locale);
+        }
+        setPersistence(decision.persistence);
+        setPersistenceReason(undefined);
+      });
+    } catch {
+      unsubscribe = undefined;
+    }
+    return () => unsubscribe?.();
+  }, [adapter, setPersistence]);
 
   const setLocale = useCallback(
     (next: Locale) => {
       if (!isLocale(next)) return;
       const requestId = writeSeqRef.current + 1;
       writeSeqRef.current = requestId;
+      choiceRef.current = next;
+      pendingRef.current = true;
       setLocaleState(next);
       setSource(adapterAuthority(adapter) === 'native' ? 'native' : 'saved');
       applyDocumentLocale(next);
@@ -175,8 +220,12 @@ export function I18nProvider({
       const settle = (outcome: LocaleWriteOutcome | undefined) => {
         // A newer choice, an external change, or unmount superseded this write.
         if (!mountedRef.current || writeSeqRef.current !== requestId) return;
+        pendingRef.current = false;
         if (outcome && outcome.status === 'durable') {
           setPersistence('durable');
+          setPersistenceReason(undefined);
+        } else if (outcome && outcome.status === 'session-only') {
+          setPersistence('session-only');
           setPersistenceReason(undefined);
         } else {
           setPersistence('failed');
@@ -198,7 +247,7 @@ export function I18nProvider({
         settle(result);
       }
     },
-    [adapter],
+    [adapter, setPersistence],
   );
 
   const value = useMemo<I18nContextValue>(
@@ -206,13 +255,14 @@ export function I18nProvider({
       locale,
       source,
       mode,
+      authority: adapterAuthority(adapter),
       persistence,
       persistenceReason,
       setLocale,
       t: (key, params) => translate(locale, key, params),
       render: (key, params) => renderTranslated(locale, key, params),
     }),
-    [locale, source, mode, persistence, persistenceReason, setLocale],
+    [locale, source, mode, adapter, persistence, persistenceReason, setLocale],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

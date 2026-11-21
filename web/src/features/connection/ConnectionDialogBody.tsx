@@ -34,7 +34,7 @@ import type { MessageParams } from '@/lib/i18n';
 import { useNativeAppStatus } from '@/lib/native/hooks';
 import { awaitOwnersReceipt, holdOwnerSaves } from '@/lib/native/owners';
 import { getAppStatus, refreshAppStatus, subscribeAppStatus } from '@/lib/native/target';
-import type { AppState } from '@/lib/native/appStatus';
+import { appEntryName, type AppState } from '@/lib/native/appStatus';
 import {
   callConnection,
   failureOf,
@@ -309,9 +309,11 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
   }
 
   const target = app.target;
-  const targetName = target?.name ?? '';
+  const localName = t('owners.computer.thisComputer');
+  const targetName = target ? appEntryName(target, localName) : '';
   const view = targetView(app);
   const candidate = app.candidate;
+  const candidateName = candidate ? appEntryName(candidate, localName) : '';
   const cv = candidate ? candidateView(candidate, target !== null) : null;
   const inFlight = candidateCancellable(candidate);
   const attemptStage = stage !== null && isAttemptStage(stage);
@@ -320,7 +322,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
   const committedRemote = target?.kind === 'remote' && candidate === null && stage === 'connected';
 
   const outcomeParams = (o: ClientOutcome): MessageParams => ({
-    action: t(ACTION_LABEL[o.command], { name: candidate?.name ?? '' }),
+    action: t(ACTION_LABEL[o.command], { name: candidateName }),
     name: o.raw === null ? '' : label(o.raw),
   });
   const outcomeNode = (where: 'candidate' | 'connect' | 'access'): JSX.Element | null => {
@@ -372,7 +374,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
       return null;
     }
     const rv = refusalView(commit.failure, kind);
-    const params = { name: kind === 'switch' ? (candidate?.name ?? '') : targetName, active: targetName };
+    const params = { name: kind === 'switch' ? candidateName : targetName, active: targetName };
     const owners = rv.showOwners ? records.filter((owner) => owner.status !== 'clean') : [];
     return (
       <Notice tone={rv.tone} announce testId={`connection-refusal-${kind}`}>
@@ -421,9 +423,9 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
         {candidate && cv && (
           <Section title={t('connection.candidate.label')} testId="connection-candidate" aside={<ToneBadge tone={cv.tone} label={t(cv.badge)} />}>
             <h4 className="text-base font-semibold break-words" data-testid="connection-candidate-title">
-              {t(cv.title, { name: candidate.name })}
+              {t(cv.title, { name: candidateName })}
             </h4>
-            <p className="text-sm break-words">{t(cv.lead, { name: candidate.name, active: targetName })}</p>
+            <p className="text-sm break-words">{t(cv.lead, { name: candidateName, active: targetName })}</p>
             {(cv.switchable || cv.cancel || cv.retry) && (
               <Actions>
                 {cv.switchable && (
@@ -434,7 +436,7 @@ export function ConnectionDialogBody({ headingRef, onOpenSettings }: ConnectionD
                     data-command="client.commitSwitch"
                     onClick={() => requestCommit('switch')}
                   >
-                    {t('connection.candidate.switch', { name: candidate.name })}
+                    {t('connection.candidate.switch', { name: candidateName })}
                   </Button>
                 )}
                 {cv.cancel && (

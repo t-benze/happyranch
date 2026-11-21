@@ -2239,6 +2239,35 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
+**Native locale authority (THR-387 S8-1-W).** Behind the desktop bridge
+(`isNativeTarget()`), `main.tsx` and `AppShell` use
+`nativeLocalePreferenceAdapter` (`web/src/lib/native/locale.ts`, chosen by
+`appLocalePreferenceAdapter()`); everywhere else the browser adapter and its
+`happyranch.ui.locale`/`storage`-event path are unchanged. Native mode never
+reads or writes browser storage. Startup waits for the first `app.status`,
+bounded by the existing status timeout, so the first text uses
+`appState.locale.current`. The provider then applies later
+`app.status`/`app.stateChanged` reports through `reconcileNativeReport`
+(`lib/i18n/locale.ts`). Before any local choice it adopts the native locale:
+`persisted:true` shows Saved and `persisted:false` shows session-only. It
+ignores every report while a choice is pending, and it ignores reports for a
+locale other than the latest choice, so the live choice is never rolled back.
+`setLocale` switches Main and both dialogs live (`<html lang>` included) and
+calls `app.locale.set` `{"schema":2,"locale":…}`. Only a matching reply with
+`persisted:true` shows **Saved**; `persisted:false` shows session-only. A
+refusal, a malformed or other-locale reply, no bridge, or no reply within the
+status timeout shows failed. A lost or unusable reply re-reads `app.status`
+without re-sending the setter. A later report that the latest choice is
+persisted settles failed to Saved. A newer choice wins through the existing
+write sequence, and stale acks are dropped. The desktop Language pane uses
+native copy, with a neutral session-only status, a danger-colored failed
+status, and a Retry button (`common.retry`) for both, which calls `setLocale`
+again. The browser pane copy is unchanged. Built-in `kind:"local"`
+target/candidate names show the live-locale `owners.computer.thisComputer`
+(`appEntryName`); authored remote names stay verbatim. Native menus and
+dialogs keep their launch language until the next launch. Focused check:
+`node --experimental-transform-types --test web/scripts/native-locale.test.mjs`.
+
 **W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Historical pending-import assertions lived in Markdown.loading.test.tsx; Markdown.test.tsx SVG/error cases used an independent lazy-module instance to avoid cross-file import dependencies. Both files were retired under THR-343; web behavior belongs to Product E2E.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts were checked by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx before their THR-343 retirement. Current write evidence requires Product E2E; screenshots alone do not prove writes.
 
