@@ -16,6 +16,45 @@ The operator disk/output reports are inputs, not independent feature evidence.
 Retry counts in those reports are not distinct removed-root counts. No operator
 reclamation is attributed to this feature.
 
+## Review and QA worktrees (THR-389 choice 3b; MW-14)
+
+Review, QA and diagnostic checkouts use the existing worktree candidate location
+`<workspace>/repos/<repo>/.claude/worktrees/<own TASK-id>` and the reviewing
+task's own identity, not the task that authored the reviewed commit. Git's admin
+entry must also be exactly `<repo>/.git/worktrees/<own TASK-id>`. There is one
+canonical slot per task and clone; an existing maker worktree, branch or admin
+entry is preserved and reported as a conflict, never renamed or replaced to
+make room for another checkout.
+
+The bundled make-worktree recipe first creates `task/<own TASK-id>` at the
+immutable review SHA and runs normal guard setup while that branch is attached.
+Only then may the read-only review checkout detach at the same SHA, retaining
+the original guard and using guard verification without another setup. Direct
+detached creation followed by setup fails the guard's branch check. This
+exception does not authorize edits or commits from a detached review checkout.
+
+No sweeper eligibility or authority changes. Discovery already enumerates
+canonical TASK worktrees; `_worktree_guard` joins the guard to the path/task and
+primary clone, and `Evidence._ownership` requires the task's assigned workspace
+and recorded session workspace. The task and its structural root must have
+ended with no active job in that root. Detached rows are accepted, but clean
+status, HEAD reachability from a kept branch/remote, recursive one-hour age,
+fresh registration, containment, native-writer/hold and all other existing
+gates still apply. Naming or a detached HEAD alone grants no removal authority.
+Maker cleanup retains its separate preservation gates and non-force exact-path
+removal; neither cleanup path grants prune authority.
+
+Legacy worktrees under `<workspace>/.happyranch/scratch/worktrees/<task>-<sha>`
+are outside candidate discovery and remain untouched by this change. A valid,
+stable legacy registration present throughout discovery does not by itself hold
+the clone. A new non-TASK admin name appearing during discovery fails the
+additions proof; appearing after discovery it raises
+`unknown_registration_arrival` in the shallow shared observation and holds the
+clone. Unsafe or uncertain legacy metadata can also hold discovery. The sweeper
+never migrates, repairs, prunes or removes these legacy registrations. Any later
+exact-path removal needs the owner's existing cleanup authority and fresh
+preservation checks; this change commissions no legacy cleanup.
+
 ## Schedule, configuration and lifecycle
 
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
