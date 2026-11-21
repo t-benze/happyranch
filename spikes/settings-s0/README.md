@@ -66,11 +66,13 @@ selects a persistent WKWebsiteDataStore; the suite uses a fresh UUID per build,
 shared across its restarts, leaving the product store alone.
 All file destinations go beneath the explicit probe download directory.
 
-The original three authorized submissions are spent (builds 49–51). THR-387
-S0-MAC-2 commissions a throwaway diagnostic repair with **zero builds in this
-leg**. Two additional Mac builds are reserved for a later leg, only after an
-independent code_reviewer APPROVE of the exact repair SHA. No PR, merge or job
-configuration change belongs to this spike.
+The original three authorized submissions are spent (builds 49–51). Of the two
+additional THR-387 seq101 runs, build 52 spent one: all fourteen invocations
+stopped at `nsapplication-run` before the launch callback, while GUI preflight
+succeeded. S0-MAC-2b repairs startup with **zero builds in this source leg**.
+One conditional Mac run remains, only after an independent code_reviewer
+APPROVE of the exact new repair SHA. No PR, merge or job configuration change
+belongs to this spike.
 
 The suite first records OS/architecture/Swift/SDK/launchctl facts and interprets
 `mac/gui-preflight.swift` to observe NSApplication, WindowServer and a real
@@ -81,6 +83,18 @@ is not a failure if the actual WKWebView succeeds.
 Both Swift entry points keep synchronous AppKit startup inside
 `MainActor.assumeIsolated`, which checks the main executor before accessing the
 actor-isolated probe. Compilation errors leave GUI availability unknown.
+
+The executable now mirrors the successful preflight: `.prohibited` activation
+policy, a retained hidden window, and synchronous `Probe.start()` before
+`NSApplication.run()`. `applicationDidFinishLaunching` only logs its arrival;
+no check waits for it. Startup heartbeats bracket probe/directory/application
+creation, activation-policy selection (including its return value), delegate
+assignment, window creation/attachment and the direct `probe-starting` /
+`probe-started` call. `check-started` still marks the selected operation before
+its load request. A scheduled `main-queue-ready` marker distinguishes queue
+progress from a later stall inside `run()`. There is no second setup attempt:
+it could not recover a blocked main thread and would risk duplicate loads.
+These source changes do not establish native success or an AppKit root cause.
 
 The suite then runs `swift build` with the supervisor suite's private HOME,
 TMPDIR, SwiftPM and module-cache pattern. It retrieves only hash-pinned Node24

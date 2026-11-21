@@ -80,6 +80,10 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("nsapplication-launched", true)
+    }
+
+    // Match the working GUI preflight: start before run(), without waiting for a launch callback.
+    func start() {
         let config = WKWebViewConfiguration()
         // Dedicated persistent profile. Keep the UUID identical across invocations.
         log("store-creating", true)
@@ -92,8 +96,13 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
         view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: config)
         log("wkwebview-created", true)
         view.navigationDelegate = self
+        log("window-creating", true)
         window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.contentView = view; window.makeKeyAndOrderFront(nil)
+        log("window-created", true)
+        log("window-content-attaching", true)
+        // Retain a hidden window, as in the preflight; no foreground activation is needed.
+        window.contentView = view
+        log("window-content-attached", true)
         let paths = ["probe": "/probe/page", "other": "/probe/page",
                      "probe-serialized": "/probe/page?serializeMultipart=1",
                      "probe-direct": "/probe/page?directOnly=1"]
@@ -302,14 +311,30 @@ events.write("process_start", ["pid": ProcessInfo.processInfo.processIdentifier,
 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + watchdog) { events.watchdog() }
 // Keep AppKit startup and the delegate alive within the main-thread actor scope.
 try MainActor.assumeIsolated {
+    events.write("probe-creating", true)
     let delegate = Probe(root: URL(fileURLWithPath: arguments[1]), downloads: URL(fileURLWithPath: arguments[2]),
                          mode: arguments[3], check: arguments[4], events: events)
+    events.write("probe-created", true)
+    events.write("download-directory-creating", true)
     try FileManager.default.createDirectory(at: delegate.downloads, withIntermediateDirectories: true)
+    events.write("download-directory-created", true)
     events.write("nsapplication-creating", true)
-    NSApplication.shared.setActivationPolicy(.regular)
-    NSApplication.shared.delegate = delegate
+    let application = NSApplication.shared
+    events.write("nsapplication-created", true)
+    events.write("activation-policy-setting", "prohibited")
+    let policyAccepted = application.setActivationPolicy(.prohibited)
+    events.write("activation-policy-set", ["policy": "prohibited", "accepted": policyAccepted])
+    events.write("delegate-setting", true)
+    application.delegate = delegate
+    events.write("delegate-set", true)
+    events.write("main-queue-scheduling", true)
+    DispatchQueue.main.async { events.write("main-queue-ready", true) }
+    events.write("main-queue-scheduled", true)
+    events.write("probe-starting", ["source": "pre-run"])
+    delegate.start()
+    events.write("probe-started", true)
     events.write("nsapplication-run", true)
-    NSApplication.shared.run()
+    application.run()
     events.write("app-run-returned", true)
     delegate.finish()
 }
