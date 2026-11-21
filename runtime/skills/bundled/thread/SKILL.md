@@ -578,7 +578,7 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 
 ## Root task Pause outcomes
 
-Root Pause refuses work-starting Continue/supersede/revisit and thread dispatch(resolves) at the actual origin before mutation/token consumption. Thread Continue remains retired410. Resume does not consume an invocation or invent a successor. A genuine accepted manager supersession retains its separately created NULL-parent unheld root; root holds do not propagate through thread/revisit/supersession history. Existing thread callback/session rules remain.
+Root Pause refuses work-starting Continue/supersede/revisit and thread dispatch(resolves) at the actual origin before mutation/token consumption. Founder revisit also refuses `revisit_successor_live` without mutation when a transitive revisit successor remains nonterminal, naming its ID/status; terminal successors permit another revisit. Thread dispatch(resolves) creates an unlinked root under its existing blocked-predecessor/replay rules. Thread Continue remains retired410. Resume does not consume an invocation or invent a successor. A genuine accepted manager supersession retains its separately created NULL-parent unheld root; root holds do not propagate through thread/revisit/supersession history. Existing thread callback/session rules remain.
 
 ## Literal text and recipient intentions (THR310 seq3/13)
 

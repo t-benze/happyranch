@@ -13,9 +13,9 @@ Phases == {"none", "prepared", "possible_launch", "action_started", "running",
            "pending_job", "unknown"}
 
 VARIABLES status, block, parent, alive, journal, result, queue, woke,
-          daemon, restarts, held, revisited
+          daemon, restarts, held, revisited, revisitOf
 vars == <<status, block, parent, alive, journal, result, queue, woke,
-          daemon, restarts, held, revisited>>
+          daemon, restarts, held, revisited, revisitOf>>
 
 Children(t) == {c \in Tasks : parent[c] = t /\ status[c] # "absent"}
 ChildrenDone(t) == \A c \in Children(t) : status[c] \in Terminal
@@ -40,6 +40,7 @@ Init ==
          (Scenario = "restart-twin" /\ t = "child")]
     /\ journal = [t \in Tasks |->
          IF Scenario = "pause" /\ t = "root" THEN "running" ELSE "none"]
+    /\ revisitOf = [t \in Tasks |-> "none"]
     /\ result = [t \in Tasks |-> FALSE]
     /\ queue = IF Scenario = "normal" THEN {"root"} ELSE {}
     /\ woke = {}
@@ -55,7 +56,7 @@ Start(t) ==
     /\ alive' = [alive EXCEPT ![t] = TRUE]
     /\ journal' = [journal EXCEPT ![t] = "running"]
     /\ queue' = queue \ {t}
-    /\ UNCHANGED <<parent, woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<parent, woke, daemon, restarts, held, revisited, revisitOf>>
 
 Delegate(t, n) ==
     /\ result' = [result EXCEPT ![t] = FALSE]
@@ -66,7 +67,7 @@ Delegate(t, n) ==
     /\ alive' = [alive EXCEPT ![t] = FALSE]
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ queue' = queue \cup {n}
-    /\ UNCHANGED <<woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<woke, daemon, restarts, held, revisited, revisitOf>>
 
 WaitJob(t) ==
     /\ result' = [result EXCEPT ![t] = FALSE]
@@ -74,7 +75,7 @@ WaitJob(t) ==
     /\ block' = [block EXCEPT ![t] = "blocked_on_job"]
     /\ alive' = [alive EXCEPT ![t] = FALSE]
     /\ journal' = [journal EXCEPT ![t] = "none"]
-    /\ UNCHANGED <<status, parent, queue, woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<status, parent, queue, woke, daemon, restarts, held, revisited, revisitOf>>
 
 Wake(t) ==
     /\ daemon /\ ~held /\ status[t] = "in_progress" /\ block[t] # "none"
@@ -84,7 +85,7 @@ Wake(t) ==
     /\ queue' = queue \cup {t}
     /\ woke' = woke \cup Children(t)
     /\ UNCHANGED <<status, block, parent, alive, journal, result,
-                   daemon, restarts, held, revisited>>
+                   daemon, restarts, held, revisited, revisitOf>>
 
 PublishResult(t) ==
     /\ Scenario = "normal"
@@ -92,7 +93,7 @@ PublishResult(t) ==
     /\ result' = [result EXCEPT ![t] = TRUE]
     /\ journal' = [journal EXCEPT ![t] = "result_processing"]
     /\ UNCHANGED <<status, block, parent, alive, queue, woke,
-                   daemon, restarts, held, revisited>>
+                   daemon, restarts, held, revisited, revisitOf>>
 
 Finish(t, outcome) ==
     /\ (Scenario = "normal" \/ restarts > 0)
@@ -104,7 +105,7 @@ Finish(t, outcome) ==
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ result' = [result EXCEPT ![t] = FALSE]
     /\ queue' = queue \ {t}
-    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held, revisited, revisitOf>>
 
 \* Bounded decision feedback reruns the same NON-terminal task id.
 Feedback(t) ==
@@ -114,14 +115,14 @@ Feedback(t) ==
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ result' = [result EXCEPT ![t] = FALSE]
     /\ queue' = queue \cup {t}
-    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held, revisited, revisitOf>>
 
 RejectPreparation(t) ==
     /\ Scenario = "normal" /\ daemon /\ status[t] = "pending" /\ ~held
     /\ status' = [status EXCEPT ![t] = "failed"]
     /\ queue' = queue \ {t}
     /\ UNCHANGED <<block, parent, alive, journal, result, woke,
-                   daemon, restarts, held, revisited>>
+                   daemon, restarts, held, revisited, revisitOf>>
 
 Crash ==
     /\ daemon /\ restarts < MaxRestarts
@@ -129,7 +130,7 @@ Crash ==
     /\ alive' \in [Tasks -> BOOLEAN]
     /\ \A t \in Tasks : alive'[t] => alive[t]
     /\ queue' = {}
-    /\ UNCHANGED <<status, block, parent, journal, result, woke, held, revisited>>
+    /\ UNCHANGED <<status, block, parent, journal, result, woke, held, revisited, revisitOf>>
 
 Boot ==
     /\ ~daemon /\ daemon' = TRUE
@@ -138,7 +139,7 @@ Boot ==
                                "running", "result_processing"}
          THEN "unknown" ELSE journal[t]]
     /\ queue' = {t \in Tasks : status[t] = "pending"}
-    /\ UNCHANGED <<status, block, parent, alive, result, woke, restarts, held, revisited>>
+    /\ UNCHANGED <<status, block, parent, alive, result, woke, restarts, held, revisited, revisitOf>>
 
 \* Narrow ordinary owner, exact current identity and positive death proof assumed.
 Recover(t) ==
@@ -148,7 +149,7 @@ Recover(t) ==
     /\ status' = [status EXCEPT ![t] = "failed"]
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ UNCHANGED <<block, parent, alive, result, queue, woke,
-                   daemon, restarts, held, revisited>>
+                   daemon, restarts, held, revisited, revisitOf>>
 
 LegacyRevisit(n) ==
     /\ restarts > 0
@@ -159,14 +160,25 @@ LegacyRevisit(n) ==
     /\ queue' = queue \cup {n}
     /\ revisited' = revisited \cup {"root"}
     /\ UNCHANGED <<block, parent, alive, journal, result, woke,
-                   daemon, restarts, held>>
+                   daemon, restarts, held, revisitOf>>
 
+RECURSIVE RevisitReachable(_, _)
+RevisitReachable(t, depth) ==
+    IF depth = 0 THEN {t}
+    ELSE {t} \cup UNION {RevisitReachable(n, depth - 1) :
+                            n \in {s \in Tasks : revisitOf[s] = t}}
+LiveRevisitDescendants(t) ==
+    {n \in (RevisitReachable(t, Cardinality(Tasks)) \ {t}) :
+        status[n] \notin Terminal}
+
+\* AllowRepeatedRevisit bypasses admission only for the pre-fix counterexample.
 \* Founder revisit: terminal predecessors remain terminal; blocked ones close.
 Revisit(t, n) ==
     /\ daemon /\ ~held /\ n \in Fresh /\ parent[t] = "none"
     /\ status[t] \in {"completed", "failed", "cancelled", "escalated"} \/
          (status[t] = "in_progress" /\ block[t] = "delegated" /\ ChildrenDone(t))
-    /\ AllowRepeatedRevisit \/ t \notin revisited
+    /\ AllowRepeatedRevisit \/ LiveRevisitDescendants(t) = {}
+    /\ revisitOf' = [revisitOf EXCEPT ![n] = t]
     /\ status' = [status EXCEPT ![n] = "pending",
          ![t] = IF @ \in Terminal THEN @ ELSE "superseded"]
     /\ block' = [block EXCEPT ![t] = "none"]
@@ -184,7 +196,7 @@ Retry(t, n) ==
     /\ parent' = [parent EXCEPT ![n] = parent[t]]
     /\ queue' = (queue \ {parent[t]}) \cup {n}
     /\ revisited' = revisited \cup {t}
-    /\ UNCHANGED <<block, alive, journal, result, woke, daemon, restarts, held>>
+    /\ UNCHANGED <<block, alive, journal, result, woke, daemon, restarts, held, revisitOf>>
 
 Rerun(t) ==
     /\ result' = [result EXCEPT ![t] = FALSE]
@@ -192,7 +204,7 @@ Rerun(t) ==
     /\ status' = [status EXCEPT ![t] = "pending"]
     /\ queue' = queue \cup {t}
     /\ UNCHANGED <<block, parent, alive, journal, woke,
-                   daemon, restarts, held, revisited>>
+                   daemon, restarts, held, revisited, revisitOf>>
 
 ManagerSupersede(t, n) ==
     /\ result' = [result EXCEPT ![t] = FALSE]
@@ -203,7 +215,7 @@ ManagerSupersede(t, n) ==
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ queue' = (queue \ {t}) \cup {n}
     /\ revisited' = {t}
-    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held>>
+    /\ UNCHANGED <<block, parent, woke, daemon, restarts, held, revisitOf>>
 
 Cancel(t) ==
     /\ result' = [result EXCEPT ![t] = FALSE]
@@ -214,12 +226,12 @@ Cancel(t) ==
     /\ alive' = [alive EXCEPT ![t] = FALSE]
     /\ journal' = [journal EXCEPT ![t] = "none"]
     /\ queue' = queue \ {t}
-    /\ UNCHANGED <<parent, woke, daemon, restarts, held, revisited>>
+    /\ UNCHANGED <<parent, woke, daemon, restarts, held, revisited, revisitOf>>
 
 Hold ==
     /\ AllowHold /\ daemon /\ ~held /\ held' = TRUE
     /\ UNCHANGED <<status, block, parent, alive, journal, result, queue,
-                   woke, daemon, restarts, revisited>>
+                   woke, daemon, restarts, revisited, revisitOf>>
 
 Next == Crash \/ Boot \/ Hold \/
     (\E t \in Tasks : Start(t) \/ WaitJob(t) \/ Wake(t) \/ PublishResult(t) \/
@@ -236,6 +248,7 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Boot) /\
 
 TypeOK == /\ status \in [Tasks -> Statuses] /\ block \in [Tasks -> Blocks]
           /\ parent \in [Tasks -> (Tasks \cup {"none"})]
+          /\ revisitOf \in [Tasks -> (Tasks \cup {"none"})]
           /\ alive \in [Tasks -> BOOLEAN] /\ journal \in [Tasks -> Phases]
           /\ result \in [Tasks -> BOOLEAN] /\ queue \subseteq Tasks
           /\ woke \subseteq Tasks /\ revisited \subseteq Tasks

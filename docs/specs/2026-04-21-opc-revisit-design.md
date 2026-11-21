@@ -13,6 +13,20 @@
 - **v1 (2026-04-21):** Mutate-in-place design — revived the original root row and reused the existing child namespace.
 - **v2 (2026-04-21, this revision):** Create-fresh-root design — predecessor root stays frozen; `opc revisit` inserts a brand-new root that references the predecessor via an audit entry. Motivated by adversarial review: the v1 approach re-parented new children alongside the prior attempt's `FAILED` children, so parent cascade-fail logic (`run_step::_enqueue_parent_if_waiting`) would re-poison the revived root on every completion check. v2 gets attempt isolation for free, resets the orchestration-step budget naturally (new row → `orchestration_step_count=0`), and is simpler to reason about.
 
+## Current admission amendment (THR-386, 2026-11-21)
+
+The historical design below is subject to the current
+[revisit contract](../agent-guides/features-and-invariants.md#revisit).
+Before allocation, the predecessor root's complete transitive revisit-descendant
+chain is checked in the same SQLite write transaction as insertion. A nonterminal
+successor refuses HTTP 409 `revisit_successor_live` with `reason`,
+`predecessor_root_task_id`, `existing_successor_task_id` and
+`existing_successor_status`. Refusal changes no row, audit, family or Pause state.
+Escalated and blocked successors remain live; terminal intermediates do not hide
+later live successors. Once all successors are terminal, repeated revisits still
+work. This adds no retry ceiling or schema change. Existing predecessor eligibility
+is unchanged; an eligible blocked/escalated successor may itself be revisited.
+
 ## 1. Problem
 
 The cascade-fail policy landed in 2f5756e makes any delegated child's failure collapse its entire ancestor chain to `FAILED`, with no in-lineage retry path. This is deliberate — it stopped the 6+ duplicate-retry spirals on TASK-033..038 and TASK-041..045 — but it leaves the founder without a recovery surface when a failure is actually worth re-examining.

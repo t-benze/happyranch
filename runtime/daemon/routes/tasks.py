@@ -2383,6 +2383,7 @@ async def revisit_from_notification(
     try:
         from runtime.infrastructure.audit_logger import AuditLogger
         from runtime.infrastructure.database import LineageTooDeep
+        from runtime.infrastructure.db.tasks import RevisitSuccessorLive
 
         flagged = org.db.get_task(task_id)
         if flagged is None:
@@ -2452,16 +2453,25 @@ async def revisit_from_notification(
                 # Track family tasks closed during the db lock so tail handling
                 # (parent-wake, thread-followup) can be applied after release.
                 family_closed: list[str] = []
-                org.db.insert_task(TaskRecord(
-                    id=new_id,
-                    brief=predecessor.brief,
-                    team=predecessor.team,
-                    assigned_agent=predecessor.assigned_agent,
-                    status=TaskStatus.PENDING,
-                    parent_task_id=None,
-                    revisit_of_task_id=predecessor.id,
-                    session_timeout_seconds=new_timeout, **selection,
-                ))
+                try:
+                    org.db.insert_revisit_task(TaskRecord(
+                        id=new_id,
+                        brief=predecessor.brief,
+                        team=predecessor.team,
+                        assigned_agent=predecessor.assigned_agent,
+                        status=TaskStatus.PENDING,
+                        parent_task_id=None,
+                        revisit_of_task_id=predecessor.id,
+                        session_timeout_seconds=new_timeout, **selection,
+                    ))
+                except RevisitSuccessorLive as exc:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "revisit_successor_live",
+                        "reason": f"Successor {exc.task_id} of predecessor {predecessor.id} is still {exc.status}.",
+                        "predecessor_root_task_id": predecessor.id,
+                        "existing_successor_task_id": exc.task_id,
+                        "existing_successor_status": exc.status,
+                    }) from exc
                 audit = AuditLogger(org.db)
                 audit.log_revisit_of(
                     task_id=new_id,

@@ -2911,6 +2911,20 @@ Traps:
 
 Eligible predecessor states: failed, cancelled (incl. historical founder-cancelled failed rows), escalated, in_progress/delegated (all children terminal), or completed.
 
+**Live-successor admission (THR-386).** A revisit refuses with HTTP 409
+`revisit_successor_live` when any transitive `revisit_of_task_id` descendant of
+the predecessor root is nonterminal. The detail names the predecessor root and
+existing successor ID/status with a plain reason. Pending, running, delegated,
+job-blocked and escalated successors all count as live. Terminal intermediates
+do not hide later live successors. Once all successors are terminal, another
+revisit works normally; an eligible blocked/escalated successor can itself be revisited.
+`TasksMixin.insert_revisit_task` checks and inserts under one `BEGIN IMMEDIATE`
+transaction, inside the route's DB lock and origin Pause guard. Refusal inserts
+no task/audit row, changes no family state and consumes no Pause state. The CLI
+prints the structured refusal and exits 1. Thread dispatch with `resolves` creates
+an unlinked root under its separate blocked-predecessor/replay checks; delegated
+child retries retain their existing rules.
+
 **Auto-resolve forcing function (THR-018 tier #3).** When `revisit` (or a founder/manager thread-dispatch) creates a continuation whose predecessor root is `escalated` / `in_progress(delegated)`, that predecessor is auto-transitioned to the terminal `superseded` state — block_kind cleared, audit citing the new continuation root task_id (+ founder note / thread ruling). This is the maker-checker boundary: auto-resolution fires **only** because a human authorized the continuation; an un-ruled escalation with no continuation is never auto-closed. The close does **not** re-enqueue the predecessor (it would otherwise spawn a wasted manager session), but it preserves parent-wake (`_enqueue_parent_if_waiting`) so a delegated parent still learns its branch reached terminal. The delegated close is gated on **all children being terminal** and never reuses the `cancel` cascade, so live siblings are never SIGTERM'd.
 
 Traps:
