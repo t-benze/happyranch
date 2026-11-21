@@ -125,7 +125,7 @@ function receipt(value: SequentialSettingsReceipt, slug: string, key: string): S
 export const putSequentialSettings = async (slug: string, command: SequentialSettingsCommand): Promise<SequentialSettingsReceipt> => {
   const body = freezeSequentialSettingsCommand(command);
   const saved = await request<SequentialSettingsReceipt>(`/orgs/${slug}/workflows/sequential/settings`, {
-    method: 'PUT', body, auth: { token: await getToken() },
+    method: 'PUT', body, auth: { token: getToken },
   });
   const value = receipt(saved, slug, body.operation_key);
   if (JSON.stringify(canonical(value.command)) !== JSON.stringify(body)) throw new TypeError('sequential_settings_original_command');

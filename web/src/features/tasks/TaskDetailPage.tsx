@@ -8,14 +8,14 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * `jobs/:job_id -> JobDetailPage`). A '‹ All tasks' back-nav returns to the
  * roots list; the Tasks list navigates here rather than opening an overlay.
  *
- * Shows the task identity card (Pasture card style), the chain timeline
- * (current/done/blocked nodes, blocked node names its blocker), the brief,
- * execution subtasks (from recall), live events, and jobs cross-link.
+ * Shows the task identity card (Pasture card style), the brief, execution
+ * subtasks (from recall), live events, and jobs cross-link. The former
+ * 'Workflow chain — step N of M' timeline was removed (THR-358).
  *
  * Uses ds.css .card styling (bg-surface-raised, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
@@ -61,109 +61,9 @@ import { ResolveEscalationDialog } from './ResolveEscalationDialog';
 
 type Translate = (key: MessageKey, params?: MessageParams) => string;
 
-/* ================================================================
- * Timeline node — ds.css chain styling for the workflow strip
- * ================================================================ */
-
-/** A single node in the chain timeline. */
-interface TimelineNodeProps {
-  label: ReactNode;
-  detail?: string;
-  state: 'done' | 'current' | 'blocked' | 'pending';
-  blockerName?: string;
-}
-
-function dotColor(state: TimelineNodeProps['state']): string {
-  switch (state) {
-    case 'done':
-      return 'bg-status-open';
-    case 'current':
-      return 'bg-accent-default';
-    case 'blocked':
-      return 'bg-status-escalated';
-    case 'pending':
-      return 'bg-border-strong';
-  }
-}
-
-function dotRing(state: TimelineNodeProps['state']): string {
-  switch (state) {
-    case 'done':
-    case 'current':
-    case 'blocked':
-      return 'ring-2 ring-offset-1 ring-offset-surface-raised';
-    case 'pending':
-      return '';
-  }
-}
-
-function textClass(state: TimelineNodeProps['state']): string {
-  switch (state) {
-    case 'done':
-      return 'text-text-secondary';
-    case 'current':
-      return 'text-text-primary font-semibold';
-    case 'blocked':
-      return 'text-status-escalated font-semibold';
-    case 'pending':
-      return 'text-text-muted';
-  }
-}
-
-function TimelineNodeItem({
-  label,
-  detail,
-  state,
-  blockerName,
-}: TimelineNodeProps): JSX.Element {
-  const { render } = useTranslation();
-  return (
-    <li className="flex gap-3">
-      {/* Vertical connector */}
-      <div className="flex flex-col items-center">
-        <div
-          className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${dotColor(state)} ${dotRing(state)}`}
-        />
-      </div>
-      <div className="min-w-0 flex-1 pb-3">
-        <span className={`text-sm ${textClass(state)}`}>{label}</span>
-        {detail && (
-          <span className="text-text-muted ml-2 font-mono text-xs">{detail}</span>
-        )}
-        {state === 'blocked' && blockerName && (
-          <p className="text-status-escalated mt-0.5 text-xs">
-            {render('tasks.detail.blockedOn', {
-              name: <span className="font-mono">{blockerName}</span>,
-            })}
-          </p>
-        )}
-      </div>
-    </li>
-  );
-}
-
-/* ================================================================
- * Chain timeline
- * ================================================================ */
-
-interface ChainTimelineBlockInfo {
-  isBlocked: boolean;
-  blockerName?: string;
-}
-
 /** Detail-page waiting qualifier: finished-job state first, then the shared projection. */
 function detailWaitingQualifier(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | null {
   return finishedJobsQualifier(task, blockedOnJobs, t) ?? resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
-}
-
-/** Timeline uses the same current projection as the header/rail, without count inference. */
-function deriveBlockerName(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | undefined {
-  const finished = finishedJobsQualifier(task, blockedOnJobs, t);
-  if (finished) return finished;
-  if (task.block_kind === 'delegated') return resolveTaskWaitingQualifier(task, taskWaitingLabels(t)) ?? t('tasks.waiting.childUnavailable');
-  if (blockedOnJobs && blockedOnJobs.length > 0) return t('tasks.detail.blocker.jobs', {ids: blockedOnJobs.map(e => e.job_id).join(', ')});
-  if (task.block_kind === 'blocked_on_job') return t('tasks.detail.blocker.blockedOnJob');
-  return task.block_kind ?? undefined;
 }
 
 /** Validate the whole selected recursive tree; never filter partial recall into zero. */
@@ -222,73 +122,6 @@ function latestEscalationReason(auditLog: unknown[] | undefined): string | null 
     }
   }
   return null;
-}
-
-function WorkflowChainTimeline({
-  chain,
-  blockInfo,
-}: {
-  chain: ActiveChainResponse;
-  blockInfo?: ChainTimelineBlockInfo;
-}): JSX.Element {
-  const { t } = useTranslation();
-  const totalLegs = 1 + chain.legs.length;
-  const currentIdx = chain.step_index;
-
-  return (
-    <section className="mt-6">
-      <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        {t('tasks.detail.chain.heading', { step: currentIdx + 1, total: totalLegs })}
-      </h3>
-      <ol>
-        {/* First leg */}
-        <TimelineNodeItem
-          label={t('tasks.detail.chain.firstLeg')}
-          detail={chain.first_leg_expect_verdict ?? undefined}
-          state={
-            blockInfo?.isBlocked && currentIdx === 0
-              ? 'blocked'
-              : currentIdx === 0
-                ? 'current'
-                : currentIdx > 0
-                  ? 'done'
-                  : 'pending'
-          }
-          blockerName={
-            blockInfo?.isBlocked && currentIdx === 0
-              ? blockInfo.blockerName
-              : undefined
-          }
-        />
-        {/* Subsequent legs */}
-        {chain.legs.map((leg, i) => {
-          const legNum = i + 2;
-          const isCurrentLeg = currentIdx === legNum - 1;
-          const legState: TimelineNodeProps['state'] =
-            blockInfo?.isBlocked && isCurrentLeg
-              ? 'blocked'
-              : isCurrentLeg
-                ? 'current'
-                : currentIdx >= legNum
-                  ? 'done'
-                  : 'pending';
-          return (
-            <TimelineNodeItem
-              key={legNum}
-              label={<IdentityName canonicalId={leg.agent} />}
-              detail={leg.expect_verdict ?? undefined}
-              state={legState}
-              blockerName={
-                blockInfo?.isBlocked && isCurrentLeg
-                  ? blockInfo.blockerName
-                  : undefined
-              }
-            />
-          );
-        })}
-      </ol>
-    </section>
-  );
 }
 
 /* ================================================================
@@ -1067,29 +900,7 @@ export function TaskDetailPage(): JSX.Element {
   // §G derived escalated flavor (graceful: null → plain "escalated").
   const escalationFlavor = isEscalated ? chainQuery.data?.escalationFlavor ?? null : null;
 
-  // Build block info for the chain timeline. The red "blocked" timeline node
-  // fires for a genuine escalation OR a parked in_progress task waiting on its
-  // children/jobs (THR-037 §F.2) — `blocked` as a status is retired.
   const fanoutCtx = parseActiveFanout(task.data?.active_fanout);
-  const blockInfo: ChainTimelineBlockInfo | undefined = useMemo(() => {
-    if (!task.data) return undefined;
-    const isBlocked =
-      task.data.status === 'escalated' ||
-      (task.data.status === 'blocked' && task.data.block_kind === 'escalated') ||
-      (task.data.status === 'in_progress' && !!task.data.block_kind);
-    if (!isBlocked) return { isBlocked: false };
-    const blockerName =
-      task.data.status === 'escalated' ||
-      (task.data.status === 'blocked' && task.data.block_kind === 'escalated')
-        ? t('tasks.detail.blocker.escalation')
-        : deriveBlockerName(
-            task.data,
-            chainQuery.data?.blockedOnJobs ?? null,
-            t,
-          );
-    return { isBlocked: true, blockerName };
-  }, [task.data, chainQuery.data, t]);
-
   // ── Fan-out status band derivation ──────────────────────────────────────
   // Three lifecycle states, all DERIVED from data already fetched. Regular
   // (non-fan-out) tasks produce `null` and render no band. Honesty rules from
@@ -1311,13 +1122,6 @@ export function TaskDetailPage(): JSX.Element {
                 revisitChain={chainQuery.data?.revisitChain ?? []}
                 directRevisits={chainQuery.data?.directRevisits ?? []}
                 routes={routes}
-              />
-            )}
-
-            {chainQuery.data?.chain && (
-              <WorkflowChainTimeline
-                chain={chainQuery.data.chain}
-                blockInfo={blockInfo}
               />
             )}
 

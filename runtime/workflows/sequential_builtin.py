@@ -11,26 +11,32 @@ from typing import Any
 from runtime.orchestrator.producer_move import native_writer, owner_for
 from runtime.workflows.coding_builtin import _Deferred, _NativeCensusBudget, _RegistrationPhase
 from runtime.workflows.coding_authority_history import _Budget
-from runtime.workflows.sequential_definition import CompiledDefinition
+from runtime.workflows.sequential_definition import CompiledDefinition, GenericCompiledDefinition
 from runtime.workflows.sequential_engine import _engine_rows, _identity
 from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
-from runtime.workflows.sequential_release import MANIFEST, manifest_entry, select_bundled_release
+from runtime.workflows.sequential_release import (
+    MANIFEST, STAGED_GENERIC, manifest_entry, select_bundled_release, staged_entry, select_staged_release,
+)
 
-# Compatibility projection of the single reviewed manifest, not another catalog.
+# Compatibility projection of the public @1 manifest; staged v3 is deliberately absent.
 PRESET_CATALOG = tuple((entry.pin.identity, entry.pin.version,
     entry.pin.source_digest, entry.pin.definition_digest) for entry in MANIFEST.values())
 
 
-def preset_catalog() -> tuple[CompiledDefinition, ...]:
-    """Read reviewed manifest resources outside database scopes."""
-    return tuple(select_bundled_release(entry.pin) for entry in MANIFEST.values())
+def preset_catalog() -> tuple[CompiledDefinition | GenericCompiledDefinition, ...]:
+    """Read public and registration-only staged resources outside database scopes."""
+    return (tuple(select_bundled_release(entry.pin) for entry in MANIFEST.values())
+            + tuple(select_staged_release(entry.pin) for entry in STAGED_GENERIC.values()))
 
 
-def inspect_definition(conn: sqlite3.Connection, compiled: CompiledDefinition,
+def inspect_definition(conn: sqlite3.Connection, compiled: CompiledDefinition | GenericCompiledDefinition,
                        budget: _ReadBudget) -> tuple[dict, bool]:
     """Shared live/offline exact immutable-row selection; no writes."""
     pin = compiled.pin
-    manifest_entry(pin)
+    if isinstance(compiled, GenericCompiledDefinition):
+        staged_entry(pin)
+    else:
+        manifest_entry(pin)
     definitions = _engine_rows(conn, 'workflow_seq_definitions', budget,
         'definition_digest=? OR (identity=? AND version=?)',
         (pin.definition_digest, pin.identity, pin.version))

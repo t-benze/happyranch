@@ -7,6 +7,16 @@
 **Related:**
 - `docs/specs/2026-04-21-opc-revisit-design.md` — introduced revisit; chose audit-log-only linkage ("no schema migration"). This spec revisits that decision narrowly.
 
+## Current admission amendment (THR-386, 2026-11-21)
+
+Founder revisit follows this existing column transitively before inserting a
+successor, using `idx_tasks_revisit_of` in the insertion's `BEGIN IMMEDIATE`
+transaction. Any nonterminal descendant refuses `revisit_successor_live` (409)
+with the existing successor ID/status; terminal-only chains permit a new revisit.
+No column, index, audit shape or structural-ancestor meaning changes. Delegated
+child retry links keep their separate admission rules. See the
+[current revisit contract](../agent-guides/features-and-invariants.md#revisit).
+
 ## 1. Problem
 
 Today the link between a revisit's new root (TASK-N) and its predecessor root (TASK-P) lives only in the `audit_log` table:

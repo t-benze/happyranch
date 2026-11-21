@@ -79,6 +79,7 @@ _CLASSIFICATION = {
     'run_error': ('run', False),
     'preservation': ('item', True),
     'dirty_unknown_owner': ('item', True),
+    'registered_worktree_in_scratch': ('item', True),
     'item_unknown': ('item', False),
 }
 _PRESERVATION_REASONS = {
@@ -105,6 +106,7 @@ def _classification(reason: str, finding: str | None = None) -> dict:
                    'missing_folder' if code == 'missing_worktree_folder' else
                    'unregistered_task' if code == 'unknown_unregistered_task_worktree' else
                    'dirty_unknown_owner' if code == 'dirty_unknown_owner' else
+                   'registered_worktree_in_scratch' if code == 'registered_worktree_in_scratch' else
                    'preservation' if code in _PRESERVATION_REASONS else 'item_unknown')
     hold, located = _CLASSIFICATION[finding]
     return dict(finding=finding, hold=hold, located_inspected=located)
@@ -1542,6 +1544,56 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, rows.topology, rows.metadata[str(path)]
 
+
+def _retain_registered_scratch_worktrees(path: Path, tree: dict[str, os.stat_result], deadline: float) -> None:
+    """Keep registered or uncertain regular gitfiles; never alter Git metadata."""
+    for relative, expected in tree.items():
+        check(deadline)
+        if not relative or Path(relative).name != '.git' or not stat.S_ISREG(expected.st_mode):
+            continue
+        pointer = path / relative
+        reason = f'registered_worktree_in_scratch:{pointer}'
+        try:
+            with directory(pointer.parent, deadline) as parent:
+                fd = os.open(pointer.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    observed = os.fstat(fd)
+                    if signature(observed) != signature(expected) or observed.st_size > 65536:
+                        raise Retain(reason)
+                    raw = os.read(fd, 65537)
+                    if (len(raw) != observed.st_size or len(raw) > 65536
+                            or signature(os.fstat(fd)) != signature(expected)
+                            or signature(os.stat(pointer.name, dir_fd=parent, follow_symlinks=False)) != signature(expected)):
+                        raise Retain(reason)
+                finally:
+                    os.close(fd)
+            check(deadline)
+            if not raw.startswith(b'gitdir: '):
+                continue
+            target = Path(os.fsdecode(raw[8:].rstrip(b'\r\n')))
+            if not target.is_absolute():
+                continue
+            # A linked-worktree gitdir is an entry under .git/worktrees.
+            # Submodule and dangling gitfiles remain disposable under seq194.
+            parts = target.parts
+            for index, part in enumerate(parts[:-2]):
+                check(deadline)
+                if part != '.git' or parts[index + 1] != 'worktrees':
+                    continue
+                admin = Path(*parts[:index + 3])
+                try:
+                    with directory(admin.parent, deadline) as parent:
+                        os.stat(admin.name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise Retain(reason)
+        except Expired:
+            raise
+        except (OSError, ValueError, Retain) as exc:
+            # Read, size and identity uncertainty must not orphan a registration.
+            raise Retain(reason) from exc
+
+
 def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, retained: dict | None = None, topology: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
@@ -1568,6 +1620,8 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             if git_identity[:2] != (inventoried.get('HEAD'), inventoried.get('branch')):
                 raise Retain('git_identity_changed_since_inventory')
     tree = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
+    if candidate['phase'] == 'scratch':
+        _retain_registered_scratch_worktrees(path, tree, deadline)
     if candidate['phase'] == 'worktree':
         for relative in sorted(tree):
             check(deadline)
@@ -1594,6 +1648,14 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
+    if candidate['phase'] == 'scratch':
+        _retain_registered_scratch_worktrees(path, latest, deadline)
+        for relative, before in tree.items():
+            check(deadline)
+            if relative and Path(relative).name == '.git' and stat.S_ISREG(before.st_mode):
+                after = latest.get(relative)
+                if after is None or signature(before) != signature(after):
+                    raise Retain(f'registered_worktree_in_scratch:{path / relative}')
     if candidate['phase'] == 'worktree':
         for relative in sorted(latest):
             check(deadline)

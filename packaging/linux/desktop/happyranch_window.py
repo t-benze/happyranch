@@ -899,6 +899,88 @@ class RemoteAccessPanel:
             self.connection.close(None, None, None)
 
 
+class MainHeader:
+    """Native presentation of app.status and Connection/Settings entry actions."""
+
+    def __init__(self, Gtk: object, GLib: object, tr: Callable,
+                 status: Callable, request: Callable) -> None:
+        self.header = Gtk.HeaderBar(title="HappyRanch", show_close_button=True)
+        from gi.repository import Pango
+        self.tr, self.status, self.request = tr, status, request
+        self.retry_dialog = None  # Explicit Retry destination, never an automatic delivery.
+        for dialog, en, zh in (("connection", "Connection", "连接"), ("settings", "Settings", "设置")):
+            button = Gtk.Button(label=tr(en, zh))
+            button.connect("clicked", lambda _button, dialog=dialog: self.open(dialog))
+            self.header.pack_start(button)
+        summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.pill, self.candidate = Gtk.Label(), Gtk.Label()
+        self.candidate.set_no_show_all(True)
+        self.pill.get_style_context().add_class("button")
+        for label in (self.pill, self.candidate):
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(28)
+            summary.pack_start(label, False, False, 0)
+        self.header.set_custom_title(summary)
+        self.badge = Gtk.Button(label=tr("Access wasn't saved", "访问权限未保存"))
+        self.badge.set_tooltip_text(tr(
+            "Access wasn't saved. Open Connection to retry saving; a new invite may be needed.",
+            "访问权限未保存。打开连接以重试保存；可能需要新的邀请。"))
+        self.badge.connect("clicked", lambda _button: self.open("connection"))
+        self.retry = Gtk.Button()
+        self.retry.connect("clicked", lambda _button: self.open(self.retry_dialog))
+        for button in (self.badge, self.retry):
+            button.set_no_show_all(True)
+            self.header.pack_end(button)
+        self.refresh()
+        timer = GLib.timeout_add(100, self.refresh)
+        self.header.connect("destroy", lambda *_args: GLib.source_remove(timer))
+
+    def open(self, dialog: str) -> None:
+        if dialog not in ("connection", "settings"):
+            return
+        delivered = self.request(dialog)
+        self.retry_dialog = None if delivered else dialog
+        self.retry.set_label(self.tr("Settings unavailable · Retry", "设置暂不可用 · 重试") if dialog == "settings"
+                             else self.tr("Connection unavailable · Retry", "连接暂不可用 · 重试"))
+        self.retry.set_visible(not delivered)
+
+    def refresh(self) -> bool:
+        state = self.status()
+        if state is None:
+            self.pill.set_label(self.tr("Interface unavailable", "界面暂不可用"))
+            self.pill.set_tooltip_text(self.pill.get_label())
+            self.candidate.set_visible(False)
+            # Losing the document is not confirmation that access was saved.
+            return True
+        target = state["target"]
+        name = ((self.tr("This computer", "此电脑") if target["kind"] == "local" else target["name"])
+                if target else "")
+        labels = {"no_target": self.tr("No connection selected", "尚未选择连接"),
+                  "target_starting": self.tr("Starting", "正在启动"), "ready": self.tr("Connected", "已连接"),
+                  "unreachable": self.tr("Unavailable", "无法连接"), "busy": self.tr("Busy", "忙碌")}
+        if state["state"] == "incompatible":
+            side = state["incompatible"]["side"]
+            detail = {"host": self.tr("Update Host", "更新主机"), "app": self.tr("Update app", "更新应用"),
+                      "unknown": self.tr("Check compatibility", "检查兼容性")}[side]
+        else:
+            detail = labels[state["state"]]
+        text = f"{name} · {detail}" if name else detail
+        self.pill.set_label(text)
+        self.pill.set_tooltip_text(text)
+        candidate = state["candidate"]
+        if candidate:
+            phases = {"signing_in": self.tr("Signing in", "正在登录"),
+                      "awaiting_approval": self.tr("Awaiting approval", "等待批准"),
+                      "ready_to_switch": self.tr("Ready to switch", "准备切换"),
+                      "failed": self.tr("Connection failed", "连接失败"), "cancelled": self.tr("Cancelled", "已取消")}
+            text = f"{candidate['name']} · {phases[candidate['phase']]}"
+            self.candidate.set_label(text)
+            self.candidate.set_tooltip_text(text)
+        self.candidate.set_visible(candidate is not None)
+        self.badge.set_visible(state["access_unsaved"])
+        return True
+
+
 def run_gui(prefix: Path, home: Path) -> int:
     # Lazy imports keep lifecycle functions runnable without GI or a display.
     import gi
@@ -927,6 +1009,15 @@ def run_gui(prefix: Path, home: Path) -> int:
     connection_windows = []
     client_ui = None
     app_scheme = None
+
+    def request_dialog(dialog: str) -> bool:
+        if dialog == "connection":
+            open_connection(None)
+            return True
+        if app_scheme is None or not app_scheme.request_dialog(dialog):
+            return False
+        app_scheme.view.grab_focus()
+        return True
 
     def open_connection(_button: object) -> None:
         nonlocal client_ui
@@ -960,8 +1051,11 @@ def run_gui(prefix: Path, home: Path) -> int:
         if app_scheme is not None:
             app_scheme.close()
             app_scheme = None
-        for widget in window.get_children():
-            window.remove(widget)
+        # GtkBin's child excludes the titlebar. Retain the old content until
+        # attach_remote has reparented the existing remote panel out of it.
+        content = window.get_child()
+        if content is not None:
+            window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         box.set_border_width(32)
         heading = Gtk.Label(label=title)
@@ -1050,7 +1144,7 @@ def run_gui(prefix: Path, home: Path) -> int:
             GLib.idle_add(render_controls, "off", str(exc), False, False)
 
     def show_web(url: str, fallback: bool = False) -> bool:
-        nonlocal controls, app_scheme
+        nonlocal controls, app_scheme, client_ui
         if closing:
             return False
         if app_scheme is not None:
@@ -1072,12 +1166,26 @@ def run_gui(prefix: Path, home: Path) -> int:
                 spec.loader.exec_module(module)
                 app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
                                               local_mode="foreground" if fallback else "service")
+                if client_ui is None:
+                    client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
+                    client_module = importlib.util.module_from_spec(client_spec)
+                    client_spec.loader.exec_module(client_module)
+                    client_ui = client_module.ClientUI(app, window, prefix, tr)
+                client_ui.attach_main(app_scheme, module)
+                host_spec = importlib.util.spec_from_file_location("host_bridge", path.with_name("host_bridge.py"))
+                host_module = importlib.util.module_from_spec(host_spec)
+                host_spec.loader.exec_module(host_module)
+                app_scheme.host_adapter = host_module.shared_bridge(client_ui, prefix, tr)
+                app_scheme.connection_protocol = app_scheme.host_adapter.protocol
                 view, url = app_scheme.view, module.ORIGIN + "/"
             except (OSError, ValueError, ImportError):
                 show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
                 return False
-        for widget in window.get_children():
-            window.remove(widget)
+        # GtkBin's child excludes the titlebar. Retain the old content until
+        # attach_remote has reparented the existing remote panel out of it.
+        content = window.get_child()
+        if content is not None:
+            window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         controls.set_margin_start(12)
@@ -1226,11 +1334,9 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.present()
             return
         window = Gtk.ApplicationWindow(application=app, title="HappyRanch")
-        header = Gtk.HeaderBar(title="HappyRanch", show_close_button=True)
-        connection_button = Gtk.Button(label=tr("Connection", "连接"))
-        connection_button.connect("clicked", open_connection)
-        header.pack_end(connection_button)
-        window.set_titlebar(header)
+        header = MainHeader(Gtk, GLib, tr, lambda: app_scheme.status() if app_scheme is not None else None,
+                            request_dialog)
+        window.set_titlebar(header.header)
         window.set_default_size(1100, 760)
         icon = prefix / "share/icons/hicolor/128x128/apps/happyranch.png"
         if icon.is_file():

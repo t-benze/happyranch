@@ -1,13 +1,83 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "HappyRanch native connection bridge v2 payloads",
-  "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested data, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
+  "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested or app.lifecycleRequested data, app.ownersChanged args, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, owner gates, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
   "oneOf": [
     { "$ref": "#/$defs/appState" },
     { "$ref": "#/$defs/dialogRequested" },
-    { "$ref": "#/$defs/nativeErrorBody" }
+    { "$ref": "#/$defs/ownersChanged" },
+    { "$ref": "#/$defs/lifecycleRequested" },
+    { "$ref": "#/$defs/nativeErrorBody" },
+    { "$ref": "#/$defs/localStatusResult" },
+    { "$ref": "#/$defs/localActionResult" },
+    { "$ref": "#/$defs/localKeepRunningSet" },
+    { "$ref": "#/$defs/localUpdateStatusResult" },
+    { "$ref": "#/$defs/appLocaleSet" },
+    { "$ref": "#/$defs/appLocaleSetResult" }
   ],
   "$defs": {
+    "ownersChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "blocking", "counts"],
+      "properties": {
+        "schema": { "const": 2 },
+        "blocking": { "enum": ["none", "prompt", "hold"] },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dirty", "failed", "pending", "unknown"],
+          "properties": {
+            "dirty": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "failed": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "pending": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "unknown": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        },
+        "gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requestId", "decision"],
+          "properties": {
+            "requestId": { "type": "string", "minLength": 1, "maxLength": 64, "not": { "pattern": "[^A-Za-z0-9_-]" } },
+            "decision": { "enum": ["keep", "proceed"] }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "counts": { "anyOf": [
+            { "properties": { "pending": { "minimum": 1 } } },
+            { "properties": { "unknown": { "minimum": 1 } } }
+          ] } } },
+          "then": { "properties": { "blocking": { "const": "hold" } } },
+          "else": {
+            "if": { "properties": { "counts": { "anyOf": [
+              { "properties": { "dirty": { "minimum": 1 } } },
+              { "properties": { "failed": { "minimum": 1 } } }
+            ] } } },
+            "then": { "properties": { "blocking": { "const": "prompt" } } },
+            "else": { "properties": { "blocking": { "const": "none" } } }
+          }
+        },
+        {
+          "if": { "required": ["gate"], "properties": {
+            "gate": { "properties": { "decision": { "const": "proceed" } } }
+          } },
+          "then": { "properties": { "blocking": { "const": "none" } } }
+        }
+      ]
+    },
+    "lifecycleRequested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "requestId", "action"],
+      "properties": {
+        "schema": { "const": 2 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 64, "not": { "pattern": "[^A-Za-z0-9_-]" } },
+        "action": { "enum": ["close", "quit", "relaunch"] }
+      }
+    },
     "dialogRequested": {
       "type": "object",
       "additionalProperties": false,
@@ -161,6 +231,91 @@
             "if": { "properties": { "code": { "const": "incompatible" } } },
             "else": { "not": { "required": ["side"] } }
           }]
+        }
+      }
+    },
+    "localServiceStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported", "mode", "running", "keepRunning", "busy"],
+      "properties": {
+        "supported": { "type": "boolean" },
+        "mode": { "enum": ["service", "foreground", "unsupported"] },
+        "running": { "enum": ["running", "starting", "stopped", "unknown"] },
+        "keepRunning": { "enum": ["checking", "off", "on", "partial", "unknown"] },
+        "busy": { "type": "boolean" }
+      },
+      "allOf": [{
+        "if": { "properties": { "supported": { "const": true } } },
+        "then": { "properties": { "mode": { "const": "service" } } },
+        "else": { "properties": { "mode": { "enum": ["foreground", "unsupported"] } } }
+      }]
+    },
+    "localStatusResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "service"],
+      "properties": {
+        "schema": { "const": 2 },
+        "service": { "$ref": "#/$defs/localServiceStatus" }
+      }
+    },
+    "localActionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "command", "service"],
+      "properties": {
+        "schema": { "const": 2 },
+        "command": { "enum": ["local.start", "local.stop", "local.restart", "local.keepRunning.set", "local.repair", "local.turnOff"] },
+        "service": {
+          "allOf": [
+            { "$ref": "#/$defs/localServiceStatus" },
+            { "properties": { "supported": { "const": true }, "busy": { "const": false } } }
+          ]
+        }
+      }
+    },
+    "localKeepRunningSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "enabled"],
+      "properties": {
+        "schema": { "const": 2 },
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "localUpdateStatusResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "update"],
+      "properties": {
+        "schema": { "const": 2 },
+        "update": { "enum": ["restart_required", "not_detected", "unknown", "unsupported"] }
+      }
+    },
+    "appLocaleSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "locale"],
+      "properties": {
+        "schema": { "const": 2 },
+        "locale": { "enum": ["en", "zh-CN"] }
+      }
+    },
+    "appLocaleSetResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "locale"],
+      "properties": {
+        "schema": { "const": 2 },
+        "locale": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["current", "persisted"],
+          "properties": {
+            "current": { "enum": ["en", "zh-CN"] },
+            "persisted": { "type": "boolean" }
+          }
         }
       }
     }

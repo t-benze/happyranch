@@ -1,15 +1,16 @@
 # Task lifecycle: bounded TLA+ pilot
 
-Round 1 of the three-round THR-386 pilot (TASK-18026, manager TASK-18023).
-This is a design model, not a proof of the Python implementation. Source mapping
-was checked against freshly fetched `origin/main` at
-`84915adec7f448babfcf5598c9b5d6a1b356850e` on 2026-11-20. The checked-in files
-add no runtime dependency, CI job, scheduled run or merge gate.
+THR-386 bounded pilot (TASK-18026 / TASK-18023), updated for the founder-approved
+revisit dedupe repair (TASK-18273 / TASK-18272). Source mapping was rechecked at
+`774c91572` on 2026-11-21. This models the repair in this branch; it is not a proof
+of Python execution or deployment. No runtime dependency, CI job, scheduled run
+or merge gate is added.
 
-**Result:** both historical incidents reproduce. Current ordinary recovery
-passes the bounded checks, but repeated founder revisits can create two live
-roots for the same predecessor. Unconditional liveness also needs a human-control
-qualification. See [RESULTS.md](RESULTS.md) for traces, counts and triage.
+**Result:** both historical incidents and the preserved pre-fix repeated-revisit
+counterexamples reproduce. With transactional live-descendant admission,
+`current.cfg` passes `OneDriver` and `current-executors.cfg` passes
+`OneLiveRootProcess`. Human-control liveness exceptions remain explicit. See
+[RESULTS.md](RESULTS.md) for actual outputs and limits.
 
 ## State and source correspondence
 
@@ -28,7 +29,8 @@ Paths in this document are relative to the repository root. `TaskStatus` and
 
 The three names `root`, `child`, `next` are slots, not fixed roles: in the
 normal scenario either unused slot can become a child or a successor root.
-`parent` preserves structural ancestry. All roots in one run represent the same
+`parent` preserves structural ancestry; `revisitOf` separately records founder
+revisit edges. All roots in one run represent the same
 logical work lineage, including successor roots whose stored parent is NULL.
 `alive` records producer existence independently of status; `result` records an
 available, session-matched callback. `queue` is a set of admitted wake hints.
@@ -67,7 +69,7 @@ are crash-atomic.
 | `Crash`, `Boot` | Environmental host/daemon loss; `runtime/daemon/__main__.py:_sweep_on_startup`; `runtime/orchestrator/task_pause.py:restore_pause_preparations` |
 | `Recover` | Startup Branch 1; `runtime/daemon/zombie_reaper.py:_sweep_org_zombies`; `runtime/orchestrator/task_pause.py:ordinary_unknown_owner`, `_ordinary_unknown_entries`, `OrdinaryUnknownOwner.process_dead`, `writer`, `settle`, `pause_deferred_owner` |
 | `LegacyRevisit` | Historical `_maybe_spawn_auto_revisit` in `runtime/orchestrator/run_step.py`, called after startup child failure; absent from current source (removed in PR #515) |
-| `Revisit` | `runtime/daemon/routes/tasks.py:revisit_from_notification`, `_classify_predecessor_status`, `_supersede_predecessor_locked`, `_collect_eligible_revisit_family` |
+| `Revisit` | `runtime/daemon/routes/tasks.py:revisit_from_notification`, `_classify_predecessor_status`, `_supersede_predecessor_locked`, `_collect_eligible_revisit_family`; `runtime/infrastructure/db/tasks.py:insert_revisit_task` checks transitive live successors and inserts in one SQLite write transaction |
 | `Rerun` | `runtime/daemon/routes/tasks.py:resolve_escalation_in_process` (`continue`); uses the same nonterminal ID |
 | `ManagerSupersede` | `runtime/orchestrator/run_step.py:_consume_completion_report_body`; `runtime/infrastructure/db/tasks.py:try_manager_supersede`, `_has_live_manager_supersession_family_work_uncommitted` |
 | `Cancel` | `runtime/daemon/routes/tasks.py:cancel_task`; leaf-first abstraction of the terminal cancellation path |
@@ -84,7 +86,7 @@ the predecessor as `superseded`. The model follows the implementation.
   queued to resume. A delegated parent and its executing child are one owner
   hierarchy. A queued delegated original plus a revisit root are two drivers.
 * `OneLiveRootProcess`: the weaker process-only form, checked separately to show
-  the current counterexample can advance from two pending successors to two
+  the pre-fix counterexample can advance from two pending successors to two
   executing root producers.
 * `TerminalAbsorbing`: once any task reaches a terminal status, its status never
   changes, including terminal-to-terminal rewrites. Retries/revisits allocate a
@@ -139,11 +141,19 @@ check is disabled deliberately, while temporal properties remain checked.
    not refinement-checked. `Hold` is persistent and affects the single root in
    its dedicated scenario; independent successor-root hold generations are
    outside that scenario. Accepted callbacks can still be consumed while held.
-8. `AllowRepeatedRevisit=TRUE` is current behavior, **not a historical bug flag**.
-   Setting it false is a restricted caller environment (one revisit per
-   predecessor), not a shipped fix or an unrestricted current-design PASS.
-   The only historical flags are `LegacyAutoRevisit` and
-   `LegacyUnknownDeferral`; both are false in every current config.
+8. `AllowRepeatedRevisit=FALSE` models the source guard in this branch: no new root
+   while any transitive revisit descendant is nonterminal, including escalated
+   and blocked rows. Reachability is closed over all three bounded slots; terminal
+   intermediates are traversed. It allows another revisit after successors end,
+   rather than imposing the pilot's old one-revisit-per-predecessor restriction.
+   `TRUE` bypasses that guard only in `pre-fix*.cfg` to retain the old defect.
+   All `current*.cfg` use the guard. `bounded-environment.cfg` is retained by
+   name and now checks the same guard/scoped liveness rather than restricting
+   the caller. `current`/`current-executors` use `RecoverableDeadProgress`;
+   the known broad liveness counterexample remains checked in
+   `current-unconditional.cfg` (and human hold in `current-hold.cfg`).
+   Structural child retries and thread dispatch are outside `Revisit` admission:
+   retries have non-NULL parents; thread `resolves` roots have no revisit edge.
 9. Source inspection supports the mapping; TLC explores the model, not Python.
    Passing finite checks do not prove unbounded behavior or deployment state.
    No production mutation or reproduction was performed.
@@ -170,7 +180,7 @@ If expanding the model can exceed a minute, use the repository's durable jobs
 workflow. Exit 12 is an invariant counterexample; exit 13 is a temporal
 counterexample. Neither is an invocation failure or a passing design.
 
-Full logs, exact absolute commands, stream lengths/hashes, the audit script and
-full audit report are in task output `output/TASK-18026/`. None belong in this
+Repair TLC logs, commands and hashes are in `output/TASK-18273/`.
+The original pilot audit script and full audit report remain in `output/TASK-18026/`. None belong in this
 folder. The shared audit artifact is
 `dev_agent-2026-11-20-tla-audit-conformance.md`.

@@ -1,4 +1,64 @@
-# Round 1 results — 2026-11-20
+# Revisit dedupe repair — 2026-11-21 (TASK-18273)
+
+Source base: `774c91572` (THR-386 seq21). The original pilot results below are
+historical evidence at their stated base; the following results supersede their
+current-design admission conclusions.
+
+`Revisit` now records `revisitOf` and refuses allocation while any nonterminal
+transitive descendant exists. `AllowRepeatedRevisit=FALSE` enables this guard;
+`TRUE` preserves the pre-fix behavior. Terminal intermediates remain traversable,
+and all-terminal successors permit a later revisit. The check and allocation
+are one model action, corresponding to the Python DB owner's `BEGIN IMMEDIATE`
+check/insert transaction under `org.db_lock` and `origin_guard`.
+
+Actual TLC 2.19 / pinned v1.7.4 jar outputs, Java 21, one worker, `-fp 0 -seed 1`,
+three task slots, one restart (all runs under two seconds):
+
+| Config | Exit | Generated | Distinct | Result |
+|---|---:|---:|---:|---|
+| `bounded-environment.cfg` | 0 | 35359 | 7443 | Guard and scoped recovery pass (retained config name) |
+| `bug139.cfg` | 12 | 54 | 38 | Historical restart twin reproduced |
+| `bug574.cfg` | 13 | 37 | 18 | Historical unknown deferral reproduced |
+| `current-executors.cfg` | 0 | 35359 | 7443 | `OneLiveRootProcess` and scoped recovery pass |
+| `current-hold.cfg` | 13 | 71 | 36 | Known human-hold broad-liveness exception preserved |
+| `current-recovery.cfg` | 0 | 38 | 18 | Unheld ordinary recovery passes |
+| `current-restart.cfg` | 0 | 144 | 68 | No automatic revisit; recovery passes |
+| `current-temporal.cfg` | 0 | 35359 | 7443 | Terminal absorption and scoped recovery pass |
+| `current-unconditional.cfg` | 13 | 35359 | 7443 | Known landed-escalation broad-liveness exception preserved |
+| `current.cfg` | 0 | 35359 | 7443 | `OneDriver` and scoped recovery pass; no duplicate driver |
+| `pre-fix-executors.cfg` | 12 | 802 | 427 | Old `OneLiveRootProcess` counterexample reproduced |
+| `pre-fix.cfg` | 12 | 90 | 55 | Old `OneDriver` counterexample reproduced |
+
+All configurations also check `TypeOK` and `TerminalAbsorbing`. The two primary
+current safety configurations use `RecoverableDeadProgress`, the pilot's already
+qualified property; broad liveness is still explicitly exercised by the unchanged
+property in `current-unconditional.cfg` and `current-hold.cfg`. The live-descendant
+guard does not fix or hide those intentional human-control exceptions.
+
+The pre-fix trace still contains Cancel(root), Revisit(root,child),
+Revisit(root,next) with child pending; the process variant then starts both.
+The added edge state changes pre-fix state counts compared with the original
+pilot. Neither path is enabled with the current guard. This is finite model
+evidence, not proof of the Python implementation or deployment.
+
+Path inspection: HTTP `/tasks/{id}/revisit` and CLI reach
+`revisit_from_notification` -> `TasksMixin.insert_revisit_task`; its indexed
+recursive query traverses terminal predecessors and checks all statuses outside
+completed/failed/cancelled/superseded. Thread dispatch(`resolves`) and escalation
+supersession allocate unlinked roots with separate blocked-predecessor/replay
+rules; delegate/fanout revisit links are non-root failed-child retries. They do
+not enter this root-revisit admission path and were not widened.
+
+The disposable API regression run failed on the base at duplicate admission
+(11 failed, four positive terminal-successor cases passed), then all 15 cases
+passed with the guard. Refusals preserve persisted rows, audits and queue state.
+No production org was mutated. Exact TLC argv, statuses, counts and log hashes,
+API/CLI-renderer transcript and focused-test output are in `output/TASK-18273/`.
+The original audit conformance analysis was not rerun for this repair.
+
+---
+
+# Original pilot results — 2026-11-20
 
 Source base: `84915adec7f448babfcf5598c9b5d6a1b356850e`.
 The commands and assumptions are in [README.md](README.md).
@@ -81,7 +141,7 @@ parent wake. Unknown journal uncertainty is retained as settled producer
 evidence, not erased. `current-recovery.cfg` passes for that precise domain.
 This does not claim that every unknown journal is recoverable.
 
-## Current-design finding: repeated founder revisits
+## Current-design finding: repeated founder revisits (pre-fix)
 
 **Triage: reachable product design defect relative to the requested single-driver
 contract; source-supported, not reproduced by mutating the live system.**
@@ -118,10 +178,10 @@ Code pointers checked at the source base:
   the individual task ID/status/block. Distinct pending successor IDs can each
   win; a per-task CAS cannot reject the sibling root.
 
-This differs from the already-fixed daemon auto-revisit incident. The founder
-must decide any product correction or a qualification of the invariant.
-`AllowRepeatedRevisit=FALSE` is only an experimental caller restriction used for
-sensitivity evidence. No guard or product fix was added.
+This historical finding led to founder approval THR-386 seq21. The repair
+and rerun above implement the live-descendant guard. At the original pilot base,
+`AllowRepeatedRevisit=FALSE` was only a caller restriction; it now models the
+transactional guard and allows repeated revisits after terminal successors.
 
 ## Current liveness: human control is an explicit exception
 

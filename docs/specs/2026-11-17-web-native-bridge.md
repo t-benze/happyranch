@@ -340,6 +340,14 @@ Closed error vocabulary: `invalidRequest`, `unsupportedVersion`, `unsupportedCom
 
 Map helper `invalid-request/unknown-method` to the corresponding schema errors, `wrong-uid` to unavailable native capability (never another credential path), `busy` to busy, `changed` to stateChanged, `expired` to expired, and confirmed `denied` to permissionDenied with no mutation. Do not call an ambiguous transport failure “cancelled — no change”: disconnected/unavailable/timeout **after dispatch** carries unknown effect until independently resolved. An early local validation/admission refusal has effect none. A successful request acknowledgement is not completion; report confirmed only from the native operation's supported result. AccessDenied is not proof of explicit revocation; Revoked requires a positive authoritative signal. Native web-load callbacks, never JS `connected:true`, own Connected.
 
+Linux Main retains the command for each pending page call. CSP/frame revocation
+and `pagehide` reject pending mutations with `documentChanged`, effect `unknown`
+and recovery `nativeRecovery`, without replay. Posting to the relay alone cannot
+establish no effect, so this applies conservatively before native admission too.
+Read-only `app.status`, `client.status`, `client.savedComputers`, `client.health`,
+`host.status` and `host.nextDevice` retain effect `none` / recovery `refresh`.
+New calls after retirement are refused before dispatch with effect `none`.
+
 ## 8. UX state coverage, acceptance and current signal gaps
 
 **The v2.1 state and acceptance appendix (TASK-17171; §1 filenames/digests) is current Product authority**, carrying founder seq23's B scope. Legacy L01–L20 → H01–H20; M01–M23 → C01–C23; X IDs are unchanged. The table below retains all 51 inherited states. Host rows apply to Linux in B; Client rows apply to Mac and Linux, with saved-access states on Linux explicitly gated and unresolved, not omitted. Mac host rows remain deferred requirements, not an implied implementation. “Existing”/“Adapter” identifies source-backed Linux host or Mac client behavior in §2; replacement lifecycle screens and native adapters remain unimplemented and unexecuted; slice 1a supplies only the web shell/schema. The design cannot manufacture unsupported readiness, expiry, early rejection or cleanup signals. V2.0 remains the earlier mapping artifact; v2.1 controls current presentation/acceptance, while the one-click spec's trust/R2 and action-preservation invariants remain.
@@ -540,12 +548,11 @@ Backend signal gaps in §8 remain tracked Engineering/TASK-16779 dependencies. S
 ## 12. Settings bridge v2: status, errors and target generation
 
 THR-387 S5-0 / TASK-18133; target contract from TASK-18102 §§1.1–1.4 and
-TASK-18131. This section defines the next version; it does **not** claim that
-Linux, Mac or web implements it. The implementation table below is pinned to
-Linux main **`921f126e14d6dd5befc869ae77278134b20985ab`** (PRs #1762, #1765,
-#1767), rather than the earlier plan's WIP. Mac is pending (no Mac work this
-wave); web is pending S5-W1. The v1 file, facade and deployed admission remain
-unchanged. The proposed Main-view bridge/cutover supersedes the earlier
+TASK-18131. This section defines the next version. Which platforms implement
+it is recorded only in [Current implementation status](#current-implementation-status)
+below: Linux per PR #1769 (S5-L1), web per the S5-W1 PR (TASK-18159); Mac is
+pending (no Mac work this wave). The v1 file, facade and deployed admission
+remain unchanged. The proposed Main-view bridge/cutover supersedes the earlier
 separate-view placement only when its separately owned implementation lands.
 
 ### v2 status payload
@@ -632,8 +639,8 @@ cancel queries and remove target-scoped queries; desktop query keys include
 generation. Open drafts survive recovery rereads. On 409, re-read `app.status`;
 GET queries may refetch once under the new generation, mutations never retry.
 SSE stops and resubscribes only after the new generation is known. Browser's
-generation is the constant `browser` and does not trigger this logic. These are
-pending S5-W1 requirements, not a description of main's web implementation.
+generation is the constant `browser` and does not trigger this logic. The web
+implementation status is in the table below.
 
 ### v2 compatibility rule
 
@@ -729,12 +736,13 @@ and date-time values. The final two examples must be rejected.
 
 The historical Linux inventory baseline is main `921f126e14d6dd5befc869ae77278134b20985ab`
 (PRs #1762, #1765 and #1767). The table below describes the later **PR #1769
-source epoch** (S5-L1, including the round-2 recovery fix); every file/line
+source revision** (S5-L1, including the round-2 recovery fix); every file/line
 citation in this table refers to that PR source tree, not the historical main
 baseline. This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
 `packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
-**pending (no Mac work this wave)** and web is **pending S5-W1**. Existing v1 bridge result errors
+**pending (no Mac work this wave)**. Web status is summarized after the table
+(S5-W1). Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
 | Code / rule | Linux PR #1769 status and file:line evidence |
@@ -766,16 +774,29 @@ baseline. This is source inspection, not live/native acceptance. `AS` =
 | app.status / app.stateChanged v2 | **S5-L1 implemented.** Shared closed status projection and event, admitted only through the probed Main document’s named world: `WK:331–351` (`status`), `WK:417–424` (`emit_state`), `WK:426–455` (`bridge_message`), `WK:457–486` (`probe_document`). |
 | Generation header admission and stripping | **S5-L1 implemented.** Missing/stale header refuses before forwarding (GET bootstrap exempt); process-owned generation counter survives loader reloads. Local allowlist and remote X-HappyRanch stripping remain: `WK:38–42` (`new_generation`), `WK:563–616` (`handle`), `AS:75–81` (`request_headers`), `client_runtime.py:139–151`. |
 | Atomic target+generation swap → cancellation → event | **S5-L1 implemented.** Swap under the first-send lock, cancel old generation, then emit full status: `WK:373–389` (`_replace_target`). |
-| Non-GET / pending-unknown owner commit refusal | **S5-L1 native gate implemented:** `WK:353–371` (`select_target`). Missing/unknown owner evidence and current-generation non-GET transfers refuse with named reasons. S5-L2 supplies client.commitSwitch; S6-W2 supplies owner integration. Neither is advertised here. |
+| Non-GET / owner commit refusal | **S6-W3-L native summary consumer implemented:** `AppScheme.bridge_message/owner_snapshot/select_target`, `ClientModel.owner_saves`. The admitted v2 summary gates commit/disconnect in unknown → pending → dirty/failed order, then current-generation non-GET transfers. Invalid input retires clearance; retirement with unresolved work retains an unknown latch. Web summary publication remains S6-W2b; lifecycle requests/decisions remain S7-L3. |
+| Main Connection command admission | **S6-W3-L implemented:** `AppScheme.bridge_message`, `APP_PAGE`, `APP_RELAY` admit all eight existing v1 Host commands, `host.stateChanged`, `client.health/removeSaved/retrySave`, with closed args and raw validated v1 bodies. `host_bridge.HostBridge` shares the bus/busy slot and visible-window three-second polling with ConnectionWindow; errors preserve native effect/recovery. The separate window/default-scheme cutover remains S7-L1. |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
-W-1/W-2 remain web-owner requirements: native 429 must stay an ordinary error;
-host busy must be transient and clear on successful forwarding; stale responses
-must not revive recovery, and mutations never auto-retry on 409. Merged S1b-A
-PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec slice itself changes no implementation, tests, required checks or
-CI triggers. Live Linux, Mac and web v2 behavior is
-**NOT RUN** by this specification change.
+**Web (S5-W1, TASK-18159).** The web consumes this contract as described in
+[`docs/agent-guides/web-and-cli.md`](../agent-guides/web-and-cli.md#native-bridge-v2-target-generation-thr-387-s5-w1):
+generation store and `X-HappyRanch-Target` echo (`web/src/lib/native/target.ts`,
+`web/src/lib/api/client.ts` `schemeFetch`, `sse.ts`, `features/jobs/jobEventsHook.ts`),
+stale drop, query/stream cleanup on change (`web/src/lib/native/queryClient.ts`),
+409/429/499 handling and the app.status-derived page state. W-1 (host busy is a
+transient notice and clears on successful forwarding), W-2a (recovery clears on a
+later successful forwarded response; stale responses neither clear nor revive it)
+and W-2b (mutations never auto-retry on 409) are implemented with focused checks in
+`web/scripts/native-bridge-v2.test.mjs`. Review round 1 (TASK-18178) added
+per-operation generation pinning across the 401 re-send, error-body generation
+rechecks, Result unknown for native mutation transport loss, Settings editor
+custody across a switch and transient read recovery. Review round 3 (TASK-18189)
+added a per-generation bearer bootstrap (a newer generation never shares an older
+pending bootstrap) and pinning before explicit-token bearer preparation. This is source/unit evidence only. Merged
+S1b-A PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec
+slice itself changed no implementation, tests, required checks or CI triggers.
+Live Linux, Mac and web v2 behavior is **NOT RUN** by these changes.
 
 ### v2 dialog request event
 
@@ -788,6 +809,11 @@ whose value is exactly `{"schema":2,"dialog":"settings"}` or
 `{"schema":2,"dialog":"connection"}`. There is no call, request id, response,
 reply or acknowledgement. Delivery does not prove that a dialog opened: its
 owner gate may retain the current presentation.
+
+Current Linux exception until S7-L1: the header Connection button and
+“Access wasn't saved” badge open/present the existing native Connection window
+in default and app-scheme opt-in builds while the SPA Connection pane is a
+placeholder. Only Settings uses header `app.dialogRequested` delivery and Retry.
 
 `#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
 requires both keys and rejects extra keys. In addition to the status/error
@@ -924,4 +950,563 @@ claimed here. No open/closed notice or target/generation authority is added.
 
 ```json
 {"schema":2}
+```
+
+### v2 owner summary and native lifecycle gate
+
+THR-387 S5-0c / TASK-18199 specifies **`app.ownersChanged`**, a web-to-native
+push through `call("app.ownersChanged", JSON.stringify(summary))`. Its data
+is `#/$defs/ownersChanged` in the [v2 schema](../../protocol/native-connection-bridge.v2.json):
+exactly `schema:2`, `blocking:"none"|"prompt"|"hold"`, closed `counts` and an
+optional closed `gate` decision described below. This is the concrete wire
+contract for the earlier plan/section-12 placeholder `app.owners`; no query or
+third facade function is introduced. Native resolves the call with the JSON
+string `"{}"` only after accepting the summary; that acknowledges receipt,
+never a save, discard, lifecycle effect or target commit.
+
+**Vocabulary and aggregation.** Summarize ALL registered Main and Settings
+owners together, including detached owners whose sent save is unresolved;
+never filter to the visible dialog, page or selected organization. The
+`selectOwnerBlocking(owners)` vocabulary documented by PR #1775 is the input
+contract, not a dependency on that PR's internal records or error classifier.
+
+| Owner state | Meaning | Normal close / Quit / relaunch / `client.commitSwitch` |
+| --- | --- | --- |
+| `clean` | No unsent draft or unresolved save | Allows the owner gate |
+| `confirmed` | Save confirmed for the current draft revision | Allows the owner gate |
+| `dirty` | Unsent changes remain | Web keep/discard prompt required |
+| `failed` | Save definitively refused; unsent changes remain | Same web keep/discard prompt required |
+| `pending` | Save sent, no result yet | Hold; wait, never discard the sent save |
+| `unknown` | Sent save's effect cannot be established | Hold; same-owner Check result or named unavailable recovery, never assume failure |
+
+`counts` has exactly `dirty`, `failed`, `pending`, `unknown`, each a JSON
+integer from 0 to 255 (Booleans are invalid). Each is the number of owners in
+that state, saturated at 255; saturation must never omit a positive state.
+Clean/confirmed owners contribute zero to these counts; zero owners is a valid
+`none` summary. Pending or unknown > 0 requires `blocking:"hold"`; otherwise
+dirty or failed > 0 requires `"prompt"`; otherwise `"none"`. The schema rejects
+inconsistent levels. A newer unsent revision stays dirty after an older save
+succeeds; it cannot be summarized as confirmed. Unmounting an editor, a failed
+read or a lost transport cannot remove its pending/unknown contribution.
+
+**Publish and admission.** Web sends the initial complete summary as soon as
+the admitted Main shell's registry and lifecycle subscription are ready, then
+on every change to these aggregate counts/level. Serialize calls in observation
+order; await native receipt of a pending summary BEFORE sending its save. A
+failed push holds transitions and save dispatch; never retry the save as a
+side effect of republishing. Native stores only the latest accepted summary
+for the current admitted top-level packaged `happyranch-app://app` Main
+document, independent of API/target readiness. Use §7's existing bounded,
+duplicate-free parser, `call`/`on` and structured named-world relay. Transport
+document identity, not a field supplied by web, fences late calls/replies.
+No iframe, auxiliary connection document, remote/daemon HTML or browser can
+publish. A summary is advisory owner evidence; native rechecks it and its own
+current-generation non-GET transfers at effect admission. It never authorizes
+a target/generation/org/capability, starts the daemon or changes a candidate.
+
+**Native lifecycle request and web decision.** A push cannot ask web to open
+its contextual gate. The one additional message kind is
+**`app.lifecycleRequested`**, delivered with `on("app.lifecycleRequested", handler)`
+and `#/$defs/lifecycleRequested`: exactly `{schema:2, requestId, action}`, where
+`action` is `"close"|"quit"|"relaunch"`. Native creates a fresh opaque request ID
+(1–64 ASCII letters/digits/underscore/hyphen, never reused in the app process)
+only for a native user action, bound to that Main document and captured action.
+This ID correlates consent; it is not a capability or an operation/owner ID.
+
+For every normal native lifecycle request, even with `blocking:"none"`, native
+waits for this web gate. Emit only to the current admitted subscriber; drop
+when unavailable, never queue/replay across subscription or document changes.
+Native keeps at most one outstanding request; repeats focus the existing web
+gate using the same ID/action, never replace it with a different action.
+Web runs its ONE contextual gate over all Main and Settings owners: dirty-only
+(or failed) owners get **Keep editing** (default; Escape/close means keep) /
+**Discard changes and close / quit / relaunch**, naming page, computer, org and
+the exact unsent loss. Native never decides which drafts to discard. A hold
+shows waiting / Check result; Back to the page cancels the transition without
+discarding or cancelling a sent save. Recheck current draft revisions before
+discard; a changed draft invalidates prior consent. Preserve focus and serialize
+with any existing dialog/navigation gate rather than opening a second prompt.
+
+Web returns the decision via the SAME `app.ownersChanged` call, adding
+`gate:{requestId,decision:"keep"|"proceed"}`. Keep cancels only that request and
+retains owners. Proceed follows a successful gate and requires current counts
+all zero / `blocking:"none"`; with no blocking owners it needs no discard
+prompt. Web freezes new edits/saves from this final recheck through native's
+effect admission; on refusal/cancellation it restores editing. Native consumes
+the decision once only for its matching outstanding document/ID, rechecks the
+latest summary, any retained uncertainty and non-GET transfers, then either
+admits the captured normal lifecycle action before acknowledging the decision,
+or refuses without effect. Lost acknowledgement is never proof of cancellation.
+A count update alone never completes a lifecycle request; proceed is not a
+standing approval. Drop/keep/revocation releases the transition freeze. Existing
+keep-running policy and relaunch prerequisites still apply; closing a dialog
+or Connection presentation does not disconnect/cancel a connection attempt.
+
+`client.commitSwitch` keeps its existing explicit call: web runs the same
+all-owner gate before calling it, publishes the post-gate summary and awaits
+receipt, keeping edits/saves frozen through commit admission or refusal.
+Native refuses with `owner_save_unknown`
+when evidence is missing/unknown (including a retained unresolved-save latch),
+else `owner_save_pending` while pending is positive, else `owner_edits_pending`
+while dirty/failed requires the web prompt; all have no switch effect. Existing
+`non_get_pending` also refuses while current-generation non-GET transfers remain.
+Only `none` plus the existing native preconditions allows commit. Native never
+auto-commits on a summary/decision update, and refusal never retries a mutation.
+
+**Missing evidence, reload and WebKit death.** Before the first summary,
+assume unknown, not an empty registry. Invalidation, replacement/reload or
+WebKit death immediately retires the summary, subscription and outstanding
+gate; late data/decisions cannot clear that state. The new document must
+subscribe and publish its own initial summary. If no save was unresolved and
+no non-GET transfer remains, its valid summary may establish readiness. If
+the retired document reported pending/unknown, or native observed an unfinished
+non-GET, retain only a coarse unresolved-save latch: a new empty registry is
+not proof about an earlier save. Normal lifecycle and commit remain held for
+the rest of that app process; this minimal summary cannot prove an earlier
+document's save outcome. Only the explicit recovery exit below remains; a new
+`none` summary or an elapsed timeout cannot clear the latch. No persistence or
+replay of draft data or automatic re-send is introduced by this contract.
+
+The user must still be able to leave. Native always offers a separate explicit
+recovery exit when the web gate is unavailable or a hold cannot be resolved,
+including an unresponsive web process: **Stay** is the default; an explicit
+close/Quit/relaunch-anyway confirmation warns that unsent edits may be lost
+and a sent save may still take effect, cannot be assumed cancelled, and needs
+Check result in the original context. This bypasses only waiting for web to
+exit, never the `client.commitSwitch` precondition, and never labels a pending
+save saved/failed/discarded. No automatic candidate commit, mutation retry or
+silent recovery occurs. This explicit last-resort loss warning prevents an
+unavailable web process from trapping the user forever while preserving the
+truth about a pending save; ordinary keep/discard cannot dismiss a hold.
+
+**Invalid input and minimization.** Native rejects malformed/duplicate-key JSON,
+wrong schema, missing/extra keys, bad types/enums/counts, inconsistent blocking,
+or unknown/stale/consumed gate IDs with the existing closed `invalidRequest`
+(`effect:"none"`, `recovery:"none"`) rejection string, without echoing data or
+applying any part of the summary/decision. From the current document, invalid
+summary input also marks owner evidence unknown (last good `none` cannot remain
+clearance); foreign/retired-document input is rejected without changing the
+current document's evidence. Web ignores an invalid lifecycle event, including
+extra keys, without opening a gate or sending a decision. Unsupported names
+remain unavailable until implemented; absence is never clean owner evidence.
+The summary has no page/subject, org/computer label, owner/revision/operation ID,
+target, generation, capability, draft content, error text or secret. Section 6
+applies: do not log payloads or use a registry dump. Counts are deliberately
+coarse; the web alone retains context and renders localized loss/result copy.
+
+**Implementation status.** **S6-W3-L (Linux native)** consumes the admitted
+summary, clears it on document retirement/close, retains coarse unresolved
+uncertainty and wires the commit/disconnect refusal ordering above. Gate IDs
+remain unissued and are refused without applying a summary. **S6-W2b (web)**
+owns initial/change pushes and lifecycle subscription/decisions. **S7-L3
+(native)** still owns correlated lifecycle requests, keep/proceed and explicit
+recovery exit; those effects are not implemented by S6-W3-L. No daemon route,
+auth, allowlist or v1 schema changes. Mac remains pending. PR #1775's
+`app.owners` aggregate placeholder refers to this concrete wire contract.
+
+The following are JSON values inside facade strings, without transport envelopes.
+Validate summary examples against `ownersChanged` and lifecycle examples against
+`lifecycleRequested`, as well as the root `oneOf`.
+
+#### Valid: no blocking owners
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Valid: unsent edits require the web prompt
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":1,"pending":0,"unknown":0}}
+```
+
+#### Valid: pending and unknown dominate dirty
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":1,"failed":0,"pending":1,"unknown":1}}
+```
+
+#### Valid: native requests Quit
+
+```json
+{"schema":2,"requestId":"q1","action":"quit"}
+```
+
+#### Valid: Keep editing for q1 (only while q1 is outstanding)
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"keep"}}
+```
+
+#### Valid: gate completed for q1 (only while q1 is outstanding)
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"proceed"}}
+```
+
+#### Invalid: unknown cannot be downgraded to none
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":1}}
+```
+
+#### Invalid: Boolean is not a count
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":true,"unknown":0}}
+```
+
+#### Invalid: missing failed count
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: extra organization authority
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"org":"example"}
+```
+
+#### Invalid: nested draft content
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":0,"pending":0,"unknown":0,"draft":"synthetic"}}
+```
+
+#### Invalid: proceed while pending
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0},"gate":{"requestId":"q1","decision":"proceed"}}
+```
+
+#### Invalid: unbounded count
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":256,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: wrong summary schema
+
+```json
+{"schema":1,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: unknown lifecycle action
+
+```json
+{"schema":2,"requestId":"q1","action":"commitSwitch"}
+```
+
+#### Invalid: extra lifecycle target authority
+
+```json
+{"schema":2,"requestId":"q1","action":"close","target":"local"}
+```
+
+#### Invalid: unknown gate decision
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"discardAll"}}
+```
+
+### v2 local service commands
+
+THR-387 S7-0 / TASK-18220 specifies eight installation-local commands on the
+existing `call(command, data: string): Promise<string>` facade. This subsection
+follows the merged S5-0c **v2 owner summary and native lifecycle gate**
+specification (#1777); it changes none of its owner/lifecycle rules.
+These are contracts for later implementation, not newly callable commands.
+The [v2 schema](../../protocol/native-connection-bridge.v2.json) adds closed
+schema-2 payloads to its root `oneOf`; dispatch still selects the definition by
+command and direction. No third facade primitive, daemon route or v1 change
+is introduced. Like `app.status`, no-argument calls send the JSON string `"{}"`;
+that empty argument object is not a versioned result payload/root branch.
+
+| Command | Arguments (JSON inside facade string) | Resolved result definition | Existing Linux supervisor meaning |
+| --- | --- | --- | --- |
+| `local.status` | Exactly `{}` | `localStatusResult` | Read current local service/lifetime observations; never start or repair. |
+| `local.start` | Exactly `{}` | `localActionResult` with matching `command` | `ServiceMode.start(cancel)` and verified attachment, retaining existing unit/environment/ownership checks. |
+| `local.stop` | Exactly `{}` | `localActionResult` with matching `command` | Supervisor's existing owned-service stop/close path; validate provenance and observe stop. Keep-running unchanged. |
+| `local.restart` | Exactly `{}` | `localActionResult` with matching `command` | `ServiceMode.restart(cancel)`; service only, with fresh attachment and the compatibility/bootstrap steps below. |
+| `local.keepRunning.set` | `localKeepRunningSet`: exactly `{schema:2, enabled:boolean}` | `localActionResult` with matching `command` | Existing queue `on`/`off` → `set_keep_running(enabled)`. |
+| `local.repair` | Exactly `{}` | `localActionResult` with matching `command` | Same existing queue `on` as Repair → `set_keep_running(true)`; no generic installation repair. |
+| `local.turnOff` | Exactly `{}` | `localActionResult` with matching `command` | Same existing queue `off` as Turn off → `set_keep_running(false)`; does not stop the running service. |
+| `local.update.status` | Exactly `{}` | `localUpdateStatusResult` | Existing read-only `update_installed(prefix)` observation; never install, restart or relaunch. |
+
+**State vocabulary.** `service` is the closed `localServiceStatus` projection:
+`supported`, `mode`, `running`, `keepRunning`, `busy`. Only `mode:"service"`
+has `supported:true`; foreground fallback is `supported:false, mode:"foreground"`
+and local lifecycle/keep-running mutations are unsupported. Another unavailable
+mode is `"unsupported"`. Preserve the existing fallback's owned-child stop/reap
+on app exit; this bridge grants no fallback controls. `running` independently
+uses `running|starting|stopped|unknown`; it is not inferred from keep-running.
+
+| `keepRunning` | Presentation and evidence |
+| --- | --- |
+| `checking` | Checking / 正在检查; initial or fresh inspection in progress, controls noninteractive. |
+| `off` | Off / 已关闭; fresh inspection confirms both unit enablement and linger off. Default is opt-out; missing/failed evidence is not Off. |
+| `on` | Fully on / 完全开启; fresh inspection confirms both enablement and linger on. |
+| `partial` | Partly on / 部分开启; only one condition is on, mixed/noninteractive switch with explicit Repair and Turn off. |
+| `unknown` | Unknown / 状态未知; unavailable, refused, stale or failed inspection. Offer Check again/reason, never display an old state as current. |
+
+This maps `ServiceMode.lifetime_state()`'s `off|on|partial` exactly, adding
+`checking|unknown` for unavailable observations. Read both actual controls;
+`desktop.json` records undo custody, never the effective On state. Repair/Turn
+off preserve `set_keep_running`'s existing authorization, rollback and app-owned
+linger custody; never undo another actor's settings. Turn off uses the existing
+Cancel-default native confirmation: **“Turn off keep running? This turns off
+background running, but does not stop HappyRanch now.” / “关闭后台运行？这会关闭后台运行，
+但不会立即停止 HappyRanch。”** Start/Stop do not enable/disable keep-running.
+Manual Stop makes no promise about next login/reboot or resumed work.
+
+**One supervisor operation at a time.** Native validates the entire bounded,
+duplicate-free input and admitted Main-document identity before any effect,
+then rechecks fresh capability/ownership and existing native/system consent.
+Only the current admitted packaged top-level `happyranch-app://app` document
+can call; frames, remote/daemon HTML and ordinary browsers cannot. These calls
+remain reachable without a selected/ready target. A status read is observation,
+not effect admission. Retain the supervisor's single queue/owner, without a
+second worker or a queue of competing mutations. Atomically reserve its effect
+slot before prompting/enqueueing; another mutation rejects with the existing
+closed facade error `{"code":"busy","effect":"none","recovery":"refresh"}`.
+This named queue refusal is distinct from HTTP `503 busy` (host update-busy).
+Status reads remain available and report `busy:true` while an operation owns
+the slot. Release only after its outcome/reobservation; failed, partial or
+lost outcomes retain their operation owner/recovery and block competing effects
+until reconciled. Never infer no effect or replay a mutation after timeout,
+cancel, page loss or a lost reply. Existing owner/effect gates still apply.
+
+Malformed, missing/extra/wrong-type arguments reject atomically as existing
+`invalidRequest` (`effect:"none", recovery:"none"`). Unsupported mutations use
+existing `unavailable` (`effect:"none", recovery:"nativeRecovery"`) and a named
+unsupported-mode UI, never a foreground fallback effect. Existing permission,
+state-change, unavailable and `outcomeUnknown` error/effect/recovery semantics
+remain intact; a failed inspection is never a successful Off result. Each
+successful mutation resolves only after the supervisor result and fresh status
+observation; `command` must match its call. Success is not permission for the
+next effect. A partial observed lifetime state remains `partial`, not Fully on.
+
+**Restart is service-only and always presented when supported.** Keep Restart
+visible whenever local controls are supported, even without an installed-update
+hint; disable while checking/busy or when current ownership/consent cannot be
+established, with the reason. Native Cancel-default confirmation warns of local
+work interruption and names this computer. It restarts the local service, never
+the app: Main and its current dialog stay open, keep-running stays unchanged.
+Do not call the desktop Quit/relaunch path, reload away owners/drafts, or promise
+work resumption. Observe service attachment, API compatibility/readiness and page
+load separately; page Retry after service success is not another Restart.
+
+Before publishing local readiness after Start/Restart, native invalidates cached
+local compatibility and bearer, re-runs health compatibility admission and
+refreshes its cached local bearer through the **existing loopback bootstrap**.
+No credential is exposed to this payload or logged, and no bootstrap/auth policy
+changes. After Restart, C6's update → explicit service-only Restart → readiness/
+compatibility recheck ends in ready or the existing named host/app/unknown
+mismatch/unreachable state. Service restart success alone is not compatibility
+or page-load success. Publish refreshed `app.stateChanged` when its existing
+appState changes; its existing `local` projection is unchanged. Read the richer
+lifetime snapshot with `local.status`; this adds no local event or automatic
+effect retry. Remote-selected appState continues to describe that remote target.
+
+`local.update.status` returns `update:"restart_required"` for a positive existing
+installed-update hint, `"not_detected"` for no detected hint (including the
+best-effort helper's false result), `"unknown"` for an unavailable observation,
+or `"unsupported"` in unsupported mode. A negative hint is not proof of current
+assets or compatibility. This is no updater/download command; installed desktop
+assets and running service remain distinct. Normal app relaunch still requires
+the existing verified-compatible-assets and actual-effects Quit+launch rules.
+
+**This computer only (C5).** All eight names inspect/act on this installation,
+even while a remote target is active. Render **“These controls affect this
+computer, not Studio Host.” / “这些控制项作用于此电脑，而不是 Studio Host。”**, naming the
+actual local computer. No target/org/generation/path/host field is accepted;
+do not forward a local command to the selected target, switch targets, cancel a
+candidate, disconnect or grant remote lifecycle/config authority. Remote Host
+service, access and grants remain outside these commands. No daemon route,
+remote allowlist or security/auth change is needed or authorized.
+
+**Implementation status.** Spec only: S7-L2 wires the existing ServiceMode
+supervisor and the web Settings local page, with native consent and C5/C6 copy.
+Foreground/native/web execution, screenshots, service effects and Mac parity
+are NOT RUN here. Mac implementation remains pending separate authorization.
+The examples below are versioned payloads, each checked against its named
+definition and the root; no-argument `{}` is checked only as the empty call args.
+
+#### Valid: localStatusResult with Partly on
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"service","running":"running","keepRunning":"partial","busy":false}}
+```
+
+#### Valid: localStatusResult in unsupported foreground
+
+```json
+{"schema":2,"service":{"supported":false,"mode":"foreground","running":"running","keepRunning":"unknown","busy":false}}
+```
+
+#### Valid: localKeepRunningSet enables keep running
+
+```json
+{"schema":2,"enabled":true}
+```
+
+#### Valid: localActionResult after service-only restart
+
+```json
+{"schema":2,"command":"local.restart","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
+```
+
+#### Valid: localUpdateStatusResult requests service restart
+
+```json
+{"schema":2,"update":"restart_required"}
+```
+
+#### Invalid: localKeepRunningSet Boolean required
+
+```json
+{"schema":2,"enabled":"true"}
+```
+
+#### Invalid: localKeepRunningSet rejects remote target
+
+```json
+{"schema":2,"enabled":false,"target":"Studio Host"}
+```
+
+#### Invalid: localStatusResult cannot support foreground controls
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"foreground","running":"running","keepRunning":"on","busy":false}}
+```
+
+#### Invalid: localStatusResult missing busy observation
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"service","running":"running","keepRunning":"off"}}
+```
+
+#### Invalid: localActionResult cannot relaunch desktop app
+
+```json
+{"schema":2,"command":"app.relaunch","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
+```
+
+#### Invalid: localUpdateStatusResult cannot claim compatibility
+
+```json
+{"schema":2,"update":"compatible"}
+```
+
+### v2 app locale setter
+
+THR-387 S8-0 / TASK-18220 adds **`app.locale.set`** through the same admitted
+Main-document `call` primitive. Arguments are exactly `appLocaleSet`:
+`schema:2, locale:"en"|"zh-CN"`. Resolve with JSON-string `appLocaleSetResult`,
+exactly `schema:2, locale:{current:"en"|"zh-CN", persisted:boolean}`. No locale
+getter/event is added: existing `app.status` and full `app.stateChanged` carry
+the same current/persisted snapshot in their existing `locale` field. Unsupported
+names stay unavailable until implemented. Wrong/extra/missing fields, another
+locale or malformed/duplicate-key JSON reject atomically as `invalidRequest`
+(`effect:"none", recovery:"none"`), preserving both live and stored choices.
+
+**Acknowledge persistence before Saved.** Native owns one installation-local
+preference, independent of daemon, target, computer selection and organization.
+For an accepted choice, update native session state, attempt an atomic local
+write and acknowledge that write's actual outcome before resolving the call.
+`persisted:true` requires completed write/flush/fsync, atomic replacement and
+directory fsync. Only a matching acknowledged true result permits **Saved /
+已保存**. Write failure resolves with the chosen `current` and `persisted:false`:
+the live web switch remains **session-only**, never rolled back or labelled
+Saved. Even a post-replacement sync failure is false; bytes may be visible but
+durability is unconfirmed. A lost reply is not persistence confirmation; obtain
+the current native snapshot without automatically retrying the setter.
+
+The Linux S8-1-L-a store (`packaging/linux/desktop/app_locale.py`, TASK-18213)
+uses `$XDG_CONFIG_HOME/happyranch/locale` for an absolute XDG config home,
+otherwise `~/.config/happyranch/locale`; only `en` or `zh-CN` with an optional
+newline. Loading a valid saved preference reports true. Missing, invalid,
+unsafe or unreadable data falls back to the existing LANG-based `zh`/English
+choice with false. Repeated reads do not replace a session-only choice; a new
+process reads saved state anew. No shared config or credential store is added.
+
+**Newer choice wins.** Within one app process, admit choices in observed call
+order and serialize store writes, result delivery and locale publication in
+that order. The adapter must preserve this order before invoking the store
+(whose lock linearizes calls in lock-acquisition order). An older queued write,
+reply or event must never overwrite the newer choice. Web applies the live
+choice immediately across Main and either dialog and ignores stale setter
+acknowledgements using its local choice revision; those revisions are not wire
+fields. While a newer set is pending, an older snapshot cannot restore old web
+copy or show Saved. Publish the full `app.stateChanged` with the final snapshot
+after each persistence attempt, following the existing document/subscription
+rules. Reopening a dialog reads current native state; it does not reapply an
+old choice. No cross-process concurrent-writer ordering is promised.
+
+All web surfaces switch live, preserving mounted drafts, focus, selection and
+original actions. This preference call/event must trigger no daemon HTTP
+request, save, target/generation switch, transport restart or dialog navigation.
+Native menus and native dialogs take the preference **next launch**, with
+truthful **Menus change after restart / 菜单将在重启应用后更改** helper copy; a
+service-only `local.restart` is not that launch. No automatic app relaunch and
+no locale-triggered lifecycle/owner prompt. Session-only persistence failure
+does not promise that the next launch will retain the choice.
+
+**Implementation status.** Spec only. S8-1-L wires the native store into the
+bridge and next-launch native strings; S8-1-W wires the web's native locale
+authority and truthful pending/saved/session-only UI. TASK-18213's store at
+`870e34e62bd3a844abb0379be1f170dbb8d4cc48` matches atomic acknowledgement,
+failure=false and serialized writes; the adapter ordering above is later wiring,
+not a store mismatch. Browser-mode localStorage behavior stays as documented.
+No daemon route/auth/remote allowlist change, Mac edit/build or runtime/visual
+acceptance is claimed. The following examples validate against `appLocaleSet`
+or `appLocaleSetResult` as named, and the root schema.
+
+#### Valid: appLocaleSet chooses Simplified Chinese
+
+```json
+{"schema":2,"locale":"zh-CN"}
+```
+
+#### Valid: appLocaleSetResult acknowledged saved choice
+
+```json
+{"schema":2,"locale":{"current":"zh-CN","persisted":true}}
+```
+
+#### Valid: appLocaleSetResult session-only choice after write failure
+
+```json
+{"schema":2,"locale":{"current":"en","persisted":false}}
+```
+
+#### Invalid: appLocaleSet unsupported locale
+
+```json
+{"schema":2,"locale":"fr"}
+```
+
+#### Invalid: appLocaleSet wrong schema
+
+```json
+{"schema":1,"locale":"en"}
+```
+
+#### Invalid: appLocaleSet cannot supply persistence authority
+
+```json
+{"schema":2,"locale":"en","persisted":true}
+```
+
+#### Invalid: appLocaleSetResult missing persistence acknowledgement
+
+```json
+{"schema":2,"locale":{"current":"en"}}
+```
+
+#### Invalid: appLocaleSetResult nested extra field
+
+```json
+{"schema":2,"locale":{"current":"en","persisted":false,"path":"synthetic"}}
 ```

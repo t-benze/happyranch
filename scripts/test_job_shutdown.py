@@ -26,6 +26,7 @@ from runtime.daemon.routes import jobs
 from runtime.daemon.state import DaemonState
 from runtime.daemon.org_state import OrgState
 from runtime.models import BlockKind, JobInterpreter, JobRecord, TaskRecord, TaskStatus
+from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,6 +47,41 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch.object(jobs_runner, "_RESUME_MAIN_LOOP", None))
         for name in ("_INFLIGHT", "_RUNNER_TASKS", "_KILL_REASON_OVERRIDE"):
             stack.enter_context(patch.dict(getattr(jobs_runner, name), clear=True))
+
+    async def test_terminal_task_kill_reaches_backstop_with_outer_owner(self) -> None:
+        for fenced in (False, True):
+            for has_roots in (False, True):
+                with self.subTest(current_owner=fenced, root_transitions=has_roots), \
+                        tempfile.TemporaryDirectory() as temp:
+                    async with fixture(Path(temp) / "org") as (org, _client):
+                        org.db.insert_task(TaskRecord(id="TASK-901", brief="Synthetic terminal task",
+                            assigned_agent="worker", team="retiring", status=TaskStatus.COMPLETED))
+                        # A runner that missed its terminal write still needs the real DB backstop.
+                        org.db.insert_job(JobRecord(id="JOB-901", task_id="TASK-901", agent_name="worker",
+                            title="Synthetic stranded job", rationale="Closure regression", script_text="pass",
+                            interpreter=JobInterpreter.PYTHON3, status="running",
+                            created_at="2026-11-21T00:00:00+00:00"))
+                        owner = Mock(return_value=True) if fenced else None
+                        roots = [object()] if has_roots else None
+                        with patch.object(jobs_runner, "terminate_jobs_for_task",
+                                wraps=jobs_runner.terminate_jobs_for_task) as terminate, \
+                                patch.object(org.db, "backstop_terminated_task_jobs",
+                                    wraps=org.db.backstop_terminated_task_jobs) as backstop, \
+                                patch("runtime.orchestrator.run_step._await_root_worktree_batch") as batch:
+                            drain = _kill_jobs_for_terminating_task(org.orchestrator, "TASK-901",
+                                current_owner=owner, root_transitions=roots)
+                            self.assertIsNotNone(drain)
+                            await drain
+                            terminate.assert_awaited_once_with("TASK-901", db=org.db,
+                                org_slug=org.slug, inflight_to_task={"JOB-901": "TASK-901"})
+                            backstop.assert_called_once()
+                            if has_roots:
+                                batch.assert_awaited_once_with(org.orchestrator, roots, teardown_incomplete=True)
+                            else:
+                                batch.assert_not_awaited()
+                        job = org.db.get_job("JOB-901")
+                        self.assertEqual((job.status.value, job.reason), ("failed", "task_ended"))
+                        self.assertIsNotNone(job.finished_at)
 
     async def launch(self, org: OrgState, script: str) -> jobs_runner._JobRegistration:
         org.db.insert_task(TaskRecord(id="TASK-901", brief="Synthetic shutdown waiter",

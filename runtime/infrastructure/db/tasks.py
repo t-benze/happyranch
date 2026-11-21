@@ -32,6 +32,14 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class RevisitSuccessorLive(Exception):
+    """A founder revisit would duplicate a non-terminal successor."""
+
+    def __init__(self, task_id: str, status: str) -> None:
+        self.task_id, self.status = task_id, status
+        super().__init__(f"Successor {task_id} is still {status}.")
+
+
 class TaskThreadOriginUnavailable(ValueError):
     """The complete association read exceeded its finite acquisition limits."""
 
@@ -915,6 +923,39 @@ class TasksMixin:
             intents.extend(dict(row) for row in reviews)
         return dict(successors=related, jobs=[dict(row) for row in jobs],
                     recoveries=[dict(row) for row in recoveries], intents=intents)
+
+    @_task_move_admission
+    @_synchronized
+    def insert_revisit_task(self, task: TaskRecord) -> None:
+        """Admit one founder root revisit in the same write transaction as its insert.
+
+        UNION deduplicates even corrupt cycles; both recursive edges use the
+        existing idx_tasks_revisit_of. Terminal intermediates remain traversable.
+        The connection lock also excludes in-process orchestrator writers.
+        """
+        if task.parent_task_id is not None or task.revisit_of_task_id is None:
+            raise ValueError("founder revisit requires a root with a predecessor")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = self._conn.execute(
+                """WITH RECURSIVE successors(id) AS (
+                       SELECT id FROM tasks WHERE revisit_of_task_id = ?
+                       UNION
+                       SELECT t.id FROM tasks t JOIN successors s
+                         ON t.revisit_of_task_id = s.id
+                   )
+                   SELECT id, status FROM tasks WHERE id IN successors AND id != ?
+                     AND status NOT IN ('completed', 'failed', 'cancelled', 'superseded')
+                   LIMIT 1""",
+                (task.revisit_of_task_id, task.revisit_of_task_id),
+            ).fetchone()
+            if live is not None:
+                raise RevisitSuccessorLive(live["id"], live["status"])
+            self._insert_task_uncommitted(task)
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
 
     @_task_move_admission
     @_synchronized

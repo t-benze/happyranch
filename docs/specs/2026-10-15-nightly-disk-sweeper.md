@@ -490,6 +490,20 @@ invalid manifest retains. Sibling manifests/locks are not candidates or repaired
 Under Founder THR307 seq194 item2 approving seq193, nested Git repositories
 and `.git` files/directories are disposable scratch content after BOTH task and
 structural root have ended and all other gates pass. Unix sockets and FIFOs
+retain their disposable behavior. Founder THR307 seq405 adds one exception:
+on both recursive admission snapshots, including the repeated pre-mutation
+admission, a non-root regular file literally named `.git` is read no-follow,
+bounded to 65536 bytes and checked against its snapshot identity/signature.
+An absolute `gitdir:` target beneath an existing `.git/worktrees/<name>` admin
+entry (checked no-follow, never modified) retains the scratch root with
+`registered_worktree_in_scratch:<absolute .git path>`. Unreadable, oversized or
+changed regular `.git` files (during reads or between snapshots) fail closed
+with that same located reason. This check precedes tree-mismatch comparison
+on the fresh snapshot. Nested `.git`
+directories, readable submodule-style/non-worktree or dangling gitfiles, sockets
+and FIFOs remain disposable. Tasks creating worktrees in task-tmp must remove
+their exact registered worktrees with `git worktree remove` before completion;
+the sweeper never prunes, repairs or removes their registrations. Sockets/FIFOs
 are measured with no-follow stat/allocated inode blocks and unlinked through
 verified parent descriptors. They are never opened for endpoint/content I/O,
 read, connected, drained or signaled. Linux O_PATH descriptors observe only
@@ -675,7 +689,13 @@ narrows destructive registration proofs as described above. Step 4 guard ignore 
 | DB/native-writer failure, Git timeout | Org/run | Not complete |
 | Known dirty/active/recent/hardlink/mount/nested/descendant keep | Item | Located inspected keep |
 | Dirty worktree held only by unknown guard/branch owner (`dirty_unknown_owner`) | Item, never deleted or repaired | Located inspected keep, listed by path |
+| Registered or uncertain regular scratch gitfile (`registered_worktree_in_scratch`) | Scratch root only, never deleted or repaired | Located inspected keep; reason names the exact absolute `.git` path |
 | Other unclassified observation | Existing conservative retention | Not complete |
+
+The scratch gitfile entry mirrors `dirty_unknown_owner`: `('item', True)` in
+`_CLASSIFICATION`, with the scratch root as the candidate location. It does not
+by itself prevent coverage or night completeness, including fail-closed reads;
+it never clears another unknown/shared hold or supplies deletion authority.
 
 Founder THR-307 seq355 approving seq354 item 2 applies only to dirty
 unknown-owner worktrees. After `unknown_worktree_owner`, final guard-file
@@ -957,6 +977,8 @@ signature fields from accompanying ancestor changes; exact parity is also review
 CPU-expiry rows arm only after genuine selected snapshots/admissions, at entry,
 first pair, last pair/exit and an early non-root mismatch followed by later expiry,
 each exactly at the ORIGINAL deadline and beyond it. Delegating observers bind
+the entry clock advance to the actual comparator call, after fresh scratch
+gitfile checks, so those earlier guards cannot mask comparator coverage. They bind
 old `ds.signature`, new `fs.signature`/`fs.check` and imported `ds.trees_equal`;
 they record entries begun or normal comparator returns after expiry, before outer
 guards can mask a missing exit check. They add no guard or fabricated Expired.
@@ -1000,6 +1022,18 @@ root/ancestor link refusal; retained age, fresh jobs, registration, partial-erro
 and deadline cases exercise shared-helper preservation. No historical namespace
 or mounted-boundary case is selected; those remain SKIPPED/UNEXECUTED. No new
 harness, retired Python-unit import/collection, integration or Product E2E run.
+
+Seq405 regression selection: `.venv/bin/python scripts/verify_disk_sweeper.py
+--cases 62 63 64` with task-owned `TMPDIR`. Case62 uses real detached linked
+worktrees at each of the four admission snapshots: the initial/fresh inventory
+pair and the repeated pre-mutation pair. It checks exact-path retention before
+tree mismatch, unchanged scratch/admin content and admin signatures, zero
+removal credit and complete located coverage. Case63 checks real unreadable,
+oversized, snapshot-to-read changed and between-snapshot changed regular gitfiles
+with the same reason and coverage. Case64 preserves seq194 removal for nested `.git` directories,
+non-worktree/submodule/dangling gitfiles (including an internal hardlink), sockets
+and FIFOs, with outside content untouched and no endpoint I/O; case1 remains
+the existing independent seq194 removal/allocation keeper.
 
 Historical broader driver (not authorized for the current policy delivery):
 `.venv/bin/python scripts/verify_disk_sweeper.py` after `uv sync --frozen`.

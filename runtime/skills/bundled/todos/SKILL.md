@@ -4,65 +4,6 @@ description: Use when you need to create a scheduled Todo for yourself from expl
 ---
 
 
-## Retained preparation and admission
-
-`OrgState.load` retains the org-owned `team_move_operations` compatibility table.
-`install_team_move_schema` validates the existing layout/history and org identity,
-creates only the frozen literal table when absent, and validates before COMMIT.
-The active-row startup refusal is removed with the online operation/recovery
-surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
-task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
-ordinary participant/session-write, reply-delivery claim/probe and scheduler
-redelivery move checks, plus dead move-only projection/publication APIs.
-Reserved readers remain in Founder abort/attestation and callback/uncertainty
-settlement, delivery-release permission/recovery, the archived-thread retry chain
-and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
-history or stored move row is rewritten.
-
-C2 freezes thread retry initialization explicitly, including EMPTY
-budgets. New initial/fallback/nudge phase initialization is distinct from a
-frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
-their original history interpretation but refuse ambiguous new retry/reentry
-with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
-
-Historical task attribution remains separate from current launch eligibility.
-PR-3b removes the unused move-only task/workflow closure census. New execution
-still requires a current executable owner. Strict saved history, native identity,
-Pause and cleanup ownership remain; no historical record, team, callback or
-binding is rewritten.
-
-The SAME INTEGER thread invocation/agent/SID preparation owner spans native
-materialization, integrity, repository refresh and launch-spec/cache preparation,
-including helper-internal omissions and caught failures. Such uncertainty appends
-the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
-backend preparation/cleanup and native workspace/cache failures retain ownership.
-Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
-strict history reader, restart/reentry and census preserve that fact, independently
-of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
-launch-seam refusals before effects retain their native no-effect disposition;
-returned failure alone never proves compensation. No new schema/journal/backfill
-or generic producer identity is introduced. All behavior remains UNEXECUTED.
-
-Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
-through materialization, integrity (including retries), package omissions,
-repository refresh, attachment writes/cleanup, task scratch and builtin/custom
-cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
-preparation resumes; this never clears existing uncertainty.
-Preparation failure sets the existing local reservation cleanup flag BEFORE the
-fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
-the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
-worktree cleanup cannot clear it. Settlement persists that fact before release;
-failed saves retain local ownership and original plus persistence errors.
-Restart treats unclosed task `prepared` entries as unknown, including terminal
-rows and prepared recovery/retry owners; absence of first launch is no proof of
-preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
-Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
-backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
-
 ## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
@@ -78,16 +19,10 @@ Human Todo-list filters accept current names; `schedules create/spawn` payload a
 
 # Todos — Agent-owned scheduled commitments (THR-105 v2)
 
-Native C3 preparation failure or ordinary process return never proves file,
-package or process cleanup. Unknown ownership remains in retained audit census.
-New retry budgets explicitly freeze even an empty schedule; missing legacy facts
-cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
-real preparation/spec/execution and is distinct from provider resume identity.
-Custom-skill authority validates before reservations; only explicit native
-validation/rollback/temporary-cleanup evidence can settle a refused writer.
-No history deletion, automatic recovery, apply or execution authority follows.
-
-Schedule creation, claim and launch no longer check a team-move hold. The native owner keeps ordinary deadline, recurrence, firing/session and retry semantics; never shift recurrence, invent catch-up or create a replacement schedule. Stable permanent-ID schedules remain; retired-team content or unsupported bindings need explicit owner resolution. Behavior remains UNEXECUTED.
+Preparation and recovery refusals belong to the maintained
+[runtime lifecycle contract](../../../../docs/agent-guides/contracts/runtime-lifecycle.md).
+A failed create is not authority to repair ownership, invent catch-up, shift
+recurrence or create a replacement schedule; report the actual refusal.
 
 Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the
 `schedules create` callback. This is a **self-only, explicit-instruction,
@@ -107,7 +42,7 @@ the skill body is discoverability only — it does not bypass server validation.
 
 3. **Self-target only.**  Agents must create Todos only for themselves
    and must never target another agent.  The `agent` field must match
-   your own agent name — the server validates it against the active
+   your own permanent agent ID — the server validates it against the active
    session.
 
 4. **Normalize before arming.**  Before firing the callback, turn the
@@ -116,7 +51,7 @@ the skill body is discoverability only — it does not bypass server validation.
    reading the Todo list would understand without extra context:
    "Run the weekly user-growth report and post it to #metrics" is good;
    "do the thing from yesterday" is not.  `source_instruction` records
-   the original request verbatim.
+   the original request with outer whitespace trimmed; it is immutable after creation.
 
 ## The single-line callback
 
@@ -124,9 +59,9 @@ the skill body is discoverability only — it does not bypass server validation.
 happyranch schedules create --org {ORG_SLUG} --from-file /tmp/schedule-<task_id>.json
 ```
 
-All `happyranch` examples MUST be single-line and use `--from-file` with a
-pre-written JSON payload file.  Multi-line bash is rejected by executor
-permission matchers.
+Callback writes MUST be single-line and use `--from-file` with a pre-written
+JSON payload file. Multi-line bash is rejected by executor permission matchers.
+Read-only commands such as `todos show --json` do not take `--from-file`.
 
 ## Payload shape (`--from-file` file)
 
@@ -134,8 +69,8 @@ permission matchers.
 {
   "task_id":      "TASK-XXX",
   "session_id":   "sess-…",
-  "agent":        "your_agent_name",
-  "source_instruction": "verbatim founder/operator instruction",
+  "agent":        "your_permanent_agent_id",
+  "source_instruction": "original founder/operator instruction",
   "normalized_brief":   "self-contained, reviewable task brief",
   "kind":         "one_shot | weekly | recurring",
   "fire_at":      "2026-08-07T18:00:00+08:00",
@@ -148,8 +83,8 @@ permission matchers.
 | --- | :---: | --- |
 | `task_id` | ✓ | Your current task id |
 | `session_id` | ✓ | Your current session id |
-| `agent` | ✓ | Your agent name (validated against the active session) |
-| `source_instruction` | ✓ | Verbatim instruction — kept for audit, never edited afterward |
+| `agent` | ✓ | Your injected permanent agent ID (validated against the active session); never substitute a displayed name |
+| `source_instruction` | ✓ | Original instruction with outer whitespace trimmed — kept for audit, immutable afterward |
 | `normalized_brief` | ✓ | Self-contained, founder-reviewable brief — immutable after creation |
 | `kind` | ✓ | `"one_shot"`, `"weekly"`, or `"recurring"` |
 | `fire_at` | ✓ except native recurring with `start_date` | ISO-8601 with an **explicit timezone offset** (`+00:00`, `+08:00`, or `Z`); omit for the server-derived phase form below |
@@ -239,7 +174,7 @@ existing Todo to make room.
 
 | Failure class | Server response | What you do |
 | --- | --- | --- |
-| Session mismatch / unknown | 409 | Re-read your `task_id`/`session_id`/`agent` triples; retry once |
+| Session mismatch / unknown | 409 `session_mismatch` / `unknown_session` | Correct a local transcription error only to the injected task/agent/SID. If that exact triple is refused, stop and report under the [start-task session contract](../start-task/SKILL.md#error-handling); never retry or adopt a returned active SID from another launch |
 | Agent team unresolved | 409 `agent_team_unresolved` | Do not arm; report the in-org identity/configuration problem |
 | Invalid `kind` | 422 `invalid_kind` | Only `one_shot`, `weekly`, and `recurring` are valid |
 | Malformed `fire_at` or missing timezone offset | 422 `invalid_fire_at` | Correct the ISO-8601 timestamp; always include an offset |
@@ -250,12 +185,20 @@ existing Todo to make room.
 
 ## On success
 
-The server returns a schedule response including:
+The create CLI prints only ID/kind/status/agent. After a successful create, read
+the stored schedule before confirming it:
+
+```bash
+happyranch todos show <SCHEDULE-ID> --org {ORG_SLUG} --json
+```
+
+Use this server readback for `fire_at` and `timezone`, especially when
+`start_date` lets the server derive the first instant. The response includes:
 
 - `schedule_id` (e.g., `SCHEDULE-007`)
 - `kind`, `normalized_brief`, `timezone`
 - `fire_at` (the next fire, returned as server-validated ISO-8601)
-- `status: "armed"`, `active: true`
+- `status: "armed"`, `active: 1` (`active` is the integer 0/1 wire field)
 
 Report to the founder: the `schedule_id`, the normalized commitment,
 kind, timezone, and next fire time.  Let them know:
@@ -380,13 +323,3 @@ happyranch schedules create --org happyranch --from-file /tmp/schedule-fortnight
 | Edit `source_instruction` or `normalized_brief` | Immutable; founder can only edit timing/recurrence/timezone |
 | Agent-driven `todos create` | Agent create is `schedules create`; the `todos` surface is founder management (list/show/pause/cancel/edit) |
 | `indefinite: true` from agent callback | Indefinite expiry is founder-set only |
-
-C3 writer disposition follows the actual authority/profile interval through
-native naming reconciliation and explicit leading validation. Stale rename or
-prompt CAS may settle only after successful native rollback/reconciliation;
-unfenced status alone proves nothing. Caught reconciliation/publication/clone
-failure, cancellation and partial effects retain unknown ownership. Skill scratch
-cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
-prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
-history is never cleared. These are source accounting rules, not behavioral
-verification or new execution/activation authority.

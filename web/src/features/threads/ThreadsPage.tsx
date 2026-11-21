@@ -1560,12 +1560,11 @@ function DetailColumn({
           </div>
 
           {/* This thread — mockup .rail-row (13px, tabular numerals). Fresh
-              tokens · Cost · Opened. "Fresh tokens" is the REAL per-thread
+              tokens · Opened. "Fresh tokens" is the REAL per-thread
               fresh/uncached input total, wired over the existing tokens rollup
               and OMITTED when the thread has no recorded usage (never a
-              fabricated figure). Cost stays a static honest "not metered" fence
-              — no dollar meter exists on main. Status is shown in the header
-              pill, so it is not duplicated here. */}
+              fabricated figure). Status is shown in the header pill, so it is
+              not duplicated here. */}
           <div>
             <h3 className={RAIL_LABEL}>{t('threads.page.rail.thisThread')}</h3>
             <dl>
@@ -1577,10 +1576,6 @@ function DetailColumn({
                   </dd>
                 </div>
               )}
-              <div className={RAIL_ROW}>
-                <dt className="text-text-secondary">{t('threads.page.rail.cost')}</dt>
-                <dd className="text-text-primary tabular-nums">{t('threads.page.rail.notMetered')}</dd>
-              </div>
               <div className={RAIL_ROW}>
                 <dt className="text-text-secondary">{t('threads.page.rail.opened')}</dt>
                 <dd className="text-text-primary tabular-nums">
@@ -1731,7 +1726,10 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     // token max-w-3xl = 768px; mockup 780px) with 18px between turns. The
     // padding follows the COLUMN width (container query), not the viewport:
     // with both rails open at 768-800px the column is only ~250px wide.
-    <div className="@container h-full overflow-auto">
+    // `relative` makes this scroller the containing block for the sr-only
+    // (position:absolute) speaker/system-event labels; without it they escape
+    // to the initial containing block and window-scroll the whole app (MEM-116).
+    <div className="@container relative h-full overflow-auto">
       <div className="px-3.5 pt-1 pb-5 @xl:px-7 @xl:pt-2 @xl:pb-7">
       <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col">
         {rows.map((row, i) => {

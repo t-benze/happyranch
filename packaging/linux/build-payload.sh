@@ -211,7 +211,8 @@ cp "$WORK/source/packaging/linux/desktop/app_scheme.py" \
 cp "$WORK/source/packaging/linux/desktop/connection_contract.py" \
     "$WORK/source/packaging/linux/desktop/connection_cli.py" \
     "$WORK/source/packaging/linux/desktop/client_cli.py" \
-    "$WORK/source/packaging/linux/desktop/connection_window.py" "$PAYLOAD/share/happyranch/desktop/"
+    "$WORK/source/packaging/linux/desktop/connection_window.py" \
+    "$WORK/source/packaging/linux/desktop/host_bridge.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/client_store.py" \
     "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/client_session.py" \

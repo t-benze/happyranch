@@ -334,6 +334,27 @@ def cmd_threads_dispatch(args: argparse.Namespace) -> None:
 
 
 
+def cmd_threads_resolve_escalation(args: argparse.Namespace) -> None:
+    import json as _json
+    _shared.require_absolute_payload_path(args.from_file, kind="thread-resolve-escalation")
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    if not isinstance(body, dict):
+        raise SystemExit("thread resolve-escalation payload must be an object")
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    thread_id = args.thread_id or body.get("thread_id", "")
+    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/resolve-escalation", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    replayed = " (replayed)" if resp.get("replayed") else ""
+    print(f"ok: resolved {resp['task_id']} -> {resp['new_status']}{replayed}")
+
+
 def cmd_threads_show(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -787,6 +808,14 @@ def register(sub) -> None:
     from cli.commands.tasks import task_selection_arguments
     task_selection_arguments(p_threads_dispatch)
     p_threads_dispatch.set_defaults(func=cmd_threads_dispatch)
+
+    p_threads_resolve = threads_sub.add_parser(
+        "resolve-escalation", help="Agent callback: supersede an escalated task from a thread",
+    )
+    p_threads_resolve.add_argument("--org", default=None, help="Org slug")
+    p_threads_resolve.add_argument("--thread-id", dest="thread_id", default=None)
+    p_threads_resolve.add_argument("--from-file", required=True)
+    p_threads_resolve.set_defaults(func=cmd_threads_resolve_escalation)
 
     p_threads_show = threads_sub.add_parser("show", help="Show a thread's metadata + transcript")
     p_threads_show.add_argument("--org", default=None, help="Org slug")

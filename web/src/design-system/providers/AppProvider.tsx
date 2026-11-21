@@ -20,6 +20,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
+import { attachNativeQueryClient } from '@/lib/native/queryClient';
 import { DataContext } from './DataContext';
 import { realIdentitiesApi } from './_real-identities';
 
@@ -49,7 +50,7 @@ import { realThreadsApi } from './_real-threads';
 import { realWorkHoursApi } from './_real-work-hours';
 
 export function makeQueryClient(): QueryClient {
-  return new QueryClient({
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: 30_000,
@@ -58,6 +59,12 @@ export function makeQueryClient(): QueryClient {
       },
     },
   });
+  // THR-387 S5-W1: desktop target-generation keys and switch cleanup; a no-op
+  // in browser mode (no native bridge). Settings reads keep editor custody
+  // across a switch (their open drafts stay; no change is sent to the new
+  // target until the editor re-mounts), see lib/native/queryClient.ts.
+  attachNativeQueryClient(client, { custody: [['settings']] });
+  return client;
 }
 
 interface AppProviderProps {

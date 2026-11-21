@@ -1,5 +1,27 @@
 # Reusable workflow contracts
 
+## S8a staged Coding v3 boundary (THR-336)
+
+Coding v3 is registration-only until S8b catalog cutover. The separate literal
+`STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
+immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
+v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
+v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
+Missing settings remain Disabled/unset; registration creates no settings, roles,
+admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.
+
+V3 repository/base/worktree preflight, independent exact-head review, same-head
+QA and guarded non-admin expected-head merge/remote observation are agent duties,
+not engine capabilities. The canonical responsibilities and generic JSON report
+convention are in `docs/agent-guides/contracts/coding-workflow.md`, “Coding v3 role
+reports”. Generic completion accepts a settled attributed report and does not
+independently verify repository heads or merge truth. The historical special
+repository/finalize adapters, typed Coding outputs and old guarantees in this
+document apply only to their actual v1/v2 or legacy binding; v3 does not inherit
+them. Original bytes, pins, replay and uncertain effects remain unchanged.
+Semantic role adherence/pilot is founder-reserved and NOT RUN; no live operation
+is authorized by this source delivery.
+
 ## S7a: additive Founder read projections @2
 
 The existing @1 definition/settings/run/detail/singular-task-link APIs keep their
@@ -386,6 +408,10 @@ cancellation stays available. Fence/finish consume the reservation without
 business-content acceptance. A cancelling run keeps its reservation against
 other runs' non-cancel writes. The rule can refuse a hold/retry before the
 ordinary reader itself exhausts; it is not a callback-size or event-cap increase.
+Every registered definition row is charged on each complete read: parsing
+reserves 48 times its byte size plus 512 bytes, then charges the decoded copy.
+The staged S8a Coding v3 row therefore reduces remaining history capacity by
+its accounted parse cost, including while public discovery still selects v2.
 This cancellation-headroom guarantee is preserved across all @2 writers only.
 Unchanged @1 writers on the same org, such as
 `SequentialDispatcher._record_business_hold`, are not budget-aware and can
@@ -2563,7 +2589,9 @@ unchanged source/definition/ABI pins. `coding.v1.json` is retired legacy grammar
 fresh selection refuses `coding_fresh_start_retired`, with no filesystem fallback.
 A2's existing registrar and A4/offline consumers share that manifest via
 `preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
-projection. Exact existing registration writes zero; mismatches refuse. There
+projection. S8a qualified registration also includes the separate staged Coding
+v3 definition alongside v2; the public manifest remains v2 only.
+Exact existing registration writes zero; mismatches refuse. There
 is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
 at old callback intake and consumption/inner writers, after authenticated exact

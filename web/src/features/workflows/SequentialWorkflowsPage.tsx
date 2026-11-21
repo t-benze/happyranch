@@ -10,13 +10,14 @@ import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { useTranslation } from '@/hooks/i18n';
-import { useSequentialDefinition, useSequentialDefinitions, useSequentialRuns } from '@/hooks/workflows';
+import { useSequentialDefinition, useSequentialDefinitions, useSequentialRunsV2 } from '@/hooks/workflows';
+import type { GenericSequentialRun, SequentialRun } from '@/shared/workflows/SequentialTaskBanner';
 import { parseDefinition, taskLinks, type DefEdge, type DefView } from '@/lib/workflowSequentialView';
 import { RunStateBadge } from '@/shared/workflows/SequentialRunPresentation';
-import { WorkflowSetupStatusCard } from '@/shared/workflows/SequentialTaskBanner';
+import { GenericRunState, HistoricalLabel, HoldFacts, WorkflowSetupStatusCard } from '@/shared/workflows/SequentialTaskBanner';
 import { SequentialRunDetail } from './SequentialRunDetail';
 import { SequentialSetup } from './SequentialSetup';
-import { ReadOnlyNote, ReadState, TaskRef } from './SequentialCommon';
+import { ReadOnlyNote, ReadState, RunTaskLinks, TaskRef, V2ReadState } from './SequentialCommon';
 
 export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup' | 'runs' | 'definition' | 'run' }): JSX.Element {
   const { slug = '', definitionId = '', runId = '' } = useParams();
@@ -79,31 +80,59 @@ function DefinitionsList({ base }: { base: string }): JSX.Element {
   }}</ReadState>;
 }
 
+/**
+ * S7b: the plural @2 runs projection is the only source. Every link keeps the projection's
+ * stable run-ID order; @1 entries carry the explicit historical label and their @1 summary.
+ */
 function RunsList({ slug }: { slug: string }): JSX.Element {
   const { t } = useTranslation();
-  const q = useSequentialRuns();
+  const q = useSequentialRunsV2();
   const base = `/orgs/${slug}`;
-  return <ReadState q={q}>{() => {
-    const data = q.data!;
-    if (data.storage !== 'storage readable') return <Unavailable />;
+  return <V2ReadState q={q}>{data => {
+    if (data.storage === 'absent') return <p className="text-text-muted">{t('seqwf.v2.storageAbsent')}</p>;
     if (!data.runs.length) return <p className="text-text-muted">{t('seqwf.runsEmpty')}</p>;
-    return <ul className="flex flex-col gap-3" aria-label={t('seqwf.tab.runs')}>{data.runs.map(r => {
-      const links = taskLinks(r);
-      return <li key={r.id} className="border-border-default bg-surface-raised rounded-lg border p-4 text-sm wrap-anywhere">
-        <div className="flex flex-wrap items-center gap-2">
-          <Link className="text-accent-default font-mono font-medium hover:underline" to={`${base}/workflows/runs/${encodeURIComponent(r.id)}`}>{r.id}</Link>
-          <RunStateBadge state={r.state} />
-          <Link className="text-text-muted hover:underline" to={`${base}/workflows/definitions/${encodeURIComponent(r.definition_id)}`}>{t('seqwf.versionLink', { identity: r.definition.identity, version: r.definition.version })}</Link>
-        </div>
-        <p className="text-text-muted mt-1 text-xs">{t('seqwf.counters', { visits: r.counters.visits, epoch: r.counters.epoch, returns: r.counters.content_returns })}</p>
-        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-          {links.source && <TaskRef label="seqwf.sourceTask" id={links.source} base={base} />}
-          {links.activeTask && <TaskRef label="seqwf.activeTask" id={links.activeTask} base={base} />}
-          {r.state === 'completed' && <span className="text-text-muted">{t('seqwf.noActiveNode')}</span>}
-        </div>
-      </li>;
-    })}</ul>;
-  }}</ReadState>;
+    return <ul className="flex flex-col gap-3" aria-label={t('seqwf.tab.runs')}>{data.runs.map((link, i) => link.abi === '@1'
+      ? <HistoricalRunItem key={`${i}:${link.run.id}`} r={link.run} base={base} />
+      : <GenericRunItem key={`${i}:${link.id}`} r={link} base={base} />)}</ul>;
+  }}</V2ReadState>;
+}
+
+function GenericRunItem({ r, base }: { r: GenericSequentialRun; base: string }): JSX.Element {
+  const { t, render } = useTranslation();
+  return <li className="border-border-default bg-surface-raised rounded-lg border p-4 text-sm wrap-anywhere">
+    <div className="flex flex-wrap items-center gap-2">
+      <Link className="text-accent-default font-mono font-medium hover:underline" to={`${base}/workflows/runs/${encodeURIComponent(r.id)}`}>{r.id}</Link>
+      <GenericRunState run={r} />
+      <span className="text-text-muted">{t('seqwf.versionLink', { identity: r.definition.identity, version: r.definition.version })}</span>
+    </div>
+    <p className="mt-1 text-xs">{render('seqwf.v2.initiator', {
+      task: <Link className="text-id-task font-mono hover:underline" to={`${base}/tasks/${encodeURIComponent(r.initiator_task_id)}`}>{r.initiator_task_id}</Link>,
+      agent: <span className="font-mono">{r.initiator_agent_id}</span>,
+    })}</p>
+    <p className="text-text-muted mt-1 text-xs">{t('seqwf.v2.counts', { visits: r.visits, results: r.result_events, stored: r.stored_events, recoveries: r.recoveries })}</p>
+    {r.state === 'held' && r.hold && <div className="mt-2"><HoldFacts hold={r.hold} /></div>}
+    <div className="mt-2"><RunTaskLinks tasks={r.tasks} base={base} /></div>
+  </li>;
+}
+
+/** The original @1 summary, unchanged apart from the explicit historical label. */
+function HistoricalRunItem({ r, base }: { r: SequentialRun; base: string }): JSX.Element {
+  const { t } = useTranslation();
+  const links = taskLinks(r);
+  return <li className="border-border-default bg-surface-raised rounded-lg border p-4 text-sm wrap-anywhere">
+    <div className="flex flex-wrap items-center gap-2">
+      <HistoricalLabel />
+      <Link className="text-accent-default font-mono font-medium hover:underline" to={`${base}/workflows/runs/${encodeURIComponent(r.id)}`}>{r.id}</Link>
+      <RunStateBadge state={r.state} />
+      <Link className="text-text-muted hover:underline" to={`${base}/workflows/definitions/${encodeURIComponent(r.definition_id)}`}>{t('seqwf.versionLink', { identity: r.definition.identity, version: r.definition.version })}</Link>
+    </div>
+    <p className="text-text-muted mt-1 text-xs">{t('seqwf.counters', { visits: r.counters.visits, epoch: r.counters.epoch, returns: r.counters.content_returns })}</p>
+    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+      {links.source && <TaskRef label="seqwf.sourceTask" id={links.source} base={base} />}
+      {links.activeTask && <TaskRef label="seqwf.activeTask" id={links.activeTask} base={base} />}
+      {r.state === 'completed' && <span className="text-text-muted">{t('seqwf.noActiveNode')}</span>}
+    </div>
+  </li>;
 }
 
 export function useEdgeText(): (outcome: string, edge: DefEdge) => string {

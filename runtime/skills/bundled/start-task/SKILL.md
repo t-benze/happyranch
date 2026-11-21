@@ -308,7 +308,10 @@ none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
-after both task and structural root end. Socket/FIFO handling uses no-follow
+after both task and structural root end, except that a registered linked-worktree
+checkout (or an unreadable, oversized or changed regular `.git` file) retains
+that scratch root under THR307 seq405. Tasks creating worktrees in task-tmp must
+`git worktree remove` their exact worktrees before completion. Socket/FIFO handling uses no-follow
 stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
 metadata-only O_PATH descriptors, including post-unlink inode observation.
 Darwin never opens any leaf: immediately before unlink it checks the full
@@ -486,6 +489,42 @@ Holds even if a callback exists. References grant no domain capability or
 semantic proof. Preserve the actual task/agent/SID and genuine FINAL
 report-completion contract. Public @2 admission remains unavailable and Coding
 stays Disabled; this paragraph grants no start, setup or live operation.
+
+## Agent-owned Coding responsibilities (v3)
+
+Coding v3 is staged registration-only until S8b catalog cutover, absent from
+public discovery and fresh selection. Coding stays Disabled/unset; this grants
+no start, setup, roles or Allow. Apply these duties only when actually bound to
+Coding v3 under `workflow-sequential-node-brief@2`, using its authored node data
+and addressed reports subject to trusted instructions and actual authorization.
+The generic callback@2 paragraph above controls: exactly format, outcome,
+content_base64 and findings, no capability claims, in your own genuine FINAL
+report-completion summary. BLOCK/held/uncertain use empty content with your own
+causal findings. Correction outcomes carry a bounded JSON assessment and findings
+for the declared advancing edge. Do not fabricate reports or native IDs.
+
+- Develop performs the authorized repository/base SHA1/worktree/scope preflight
+  before editing, then records actual branch/head/PR, evidence and spent allowances.
+- Review fetches the exact head itself, checks author/contributor independence,
+  and reports APPROVE/REQUEST_CHANGES/BLOCK with reviewed head and findings.
+- QA fetches that same head itself, runs supported checks and reports
+  PASS/REVISE/BLOCK with actual evidence and limits; unexecuted checks are NOT RUN.
+- Final compares developer/reviewer/QA heads, independent APPROVE and same-head
+  PASS, requires literal successful Source Boundary Lint and Web Lint (Node 24),
+  uses the existing guarded non-admin expected-head merge under actual authority,
+  then separately observes remote MERGED/full commit/aware time or reports a
+  causal hold. Preserve uncertainty and never reissue an uncertain merge.
+
+Use bounded canonical JSON role reports as described in the Coding contract.
+These are attributed agent reports; generic completion is no engine-verified
+repository head, review, QA or merge guarantee. No repository/exact-head/merge
+capability or new credential, access observer, job or daemon executor is granted.
+Semantic adherence requires a separately authorized founder pilot (NOT RUN).
+
+Historical Coding instructions throughout this skill, including U4/U4c
+repository-resolve/bind/preflight and U5/U7/U9 LOCAL finalize, apply only to an
+actual original @1/v2 or legacy Coding binding. They do not apply to @2/v3.
+Preserve their original pins, callback grammars, replay and effect uncertainty.
 
 For a genuinely bound sequential @1 visit, follow only its `workflow-sequential-node-brief@1` and trusted domain supplement, actual task/SID and addressed inputs. Use `workflow-sequential-callback@1` as the canonical UTF8 JSON STRING in your completion file's summary: exactly format, outcome, content_base64, findings (own text strings) and capability_claims (untrusted check/digest references). Sort keys, compact separators, Unicode verbatim, no duplicate/extra keys or trailing newline. Encode exact output bytes as standard padded base64 without whitespace; documents must be UTF8 and at most 1048576 bytes, JSON contract content canonical and at most 49152 bytes. Metadata with content_base64 empty is at most 16384 bytes. The carrier has no result/task/session/run/visit IDs, recipients, verified checks or OutputRef; the daemon composes identities after your genuine result exists. Success-shaped produced/APPROVE/PASS/merged carries nonempty content; other outcomes carry empty content, no claims and own causal findings. Preserve actual native failed/blocked causes; a negative domain assessment may use completed status. Follow your domain supplement for the matching verdict. Claims, references and transport success confer no capability, access, settlement or advance. The summary has existing native task-result visibility; do not put narrower private material there or substitute a path/staging command. Use only your actual task/agent/SID with `happyranch report-completion --org ORG --from-file /absolute/completion.json` as the FINAL action; no decision, manager assessment or job-wait field. A zero-write 409 refusal may be corrected manually in the same still-live SID before any result committed; after transport uncertainty preserve the exact body and never automatically retry, change SID or invent a result.
 

@@ -36,6 +36,9 @@ class ClientUI:
     def later(self, milliseconds: int, callback: object) -> None:
         self.GLib.timeout_add(milliseconds, callback)
 
+    def attach_main(self, main: object, bridge_types: object) -> None:
+        self.model.attach_main(main, bridge_types)
+
     def changed(self) -> None:
         if self.notice:
             unsaved = self.model.saved_access != "saved"
@@ -293,7 +296,9 @@ class ClientUI:
 
     def shutdown(self) -> None:
         self.model.token += 1
-        session, self.model.session = self.model.session, None
+        sessions = [session for session in (self.model.session, self.model.active_session) if session is not None]
+        self.model.session = self.model.active_session = None
+        self.model.candidate_stop.set()
         self.dismiss()
         self.close_runtime()
         deadline = time.monotonic() + 20
@@ -303,8 +308,8 @@ class ClientUI:
                 writers = list(self.model.workers)
             for writer in writers:
                 writer.join(max(0, deadline - time.monotonic()))
-        if session:
-            def stop() -> None:
+        for session in sessions:
+            def stop(session: object = session) -> None:
                 try:
                     session.stop()
                 except Exception:

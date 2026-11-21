@@ -56,7 +56,10 @@ never an auth failure: it never clears or re-acquires the bearer and never
 logs out; the 401 clear/re-bootstrap/replay path is unchanged. A stream that
 opens to a recovery answer stops (no retry), like other non-OK opens; network
 errors still retry. Streams are not resubscribed after Retry; a remount
-(navigation) reopens them.
+(navigation) reopens them. Since S5-W1 (next section), `busy` is a
+non-blocking notice and never this page state (W-1), any successful forwarded
+response clears the state (W-2a), and in the desktop app a 409
+`target_changed` re-reads `app.status` instead of setting the state.
 
 While a state is active, `NativeRecoveryFence` (in
 `shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
@@ -115,6 +118,124 @@ missing or invalid metadata is incompatible. Bump rules mirror
 `node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
 (Node 24, repository root; transform-types is needed for TS parameter
 properties).
+
+## Native bridge v2 target generation (THR-387 S5-W1)
+
+Web side of spec `docs/specs/2026-11-17-web-native-bridge.md` §12. The desktop
+app is detected only by origin `happyranch-app://app` with the
+`window.happyranchConnection` facade; every other page (daemon-served
+`happyranch web`, Mac) is browser mode: the generation is the constant
+`browser`, no header is sent and none of the logic below runs.
+
+- **Store** (`web/src/lib/native/target.ts`): seeded from `app.status` and
+  updated from `app.stateChanged` (closed v2 `appState`, parsed by
+  `native/appStatus.ts`; invalid payloads are ignored). A status reply is
+  applied only if no event arrived meanwhile. The store also drives the page
+  recovery state: `ready` clears it; `no_target`, `target_starting`,
+  `unreachable` and `incompatible` set the matching state; `busy` is a notice.
+- **Header**: `schemeFetch` in `lib/api/client.ts` (used by `request()`, the
+  artifacts and task-attachment direct fetches) and both SSE helpers send
+  `X-HappyRanch-Target` with the native-issued generation;
+  `GET /api/v1/auth/bootstrap` is exempt. Until native has reported a
+  generation, requests wait for the first `app.status`; if none is available
+  nothing is sent (reads show the `target_changed` state, changes fail as Not
+  sent).
+- **Pinning** (`pinTarget`/`repinBeforeSend`): `request()`, the artifacts
+  helpers and the task-attachment upload pin the generation once per logical
+  operation, before any preparatory await (bearer bootstrap, multipart
+  preparation), and keep it across the 401 clear/re-bootstrap/re-send. If the
+  generation changed before a send, a change is never sent to the new target:
+  this includes explicit-token callers (Workflow Setup and Coding settings
+  saves pass `auth: { token: getToken }`, so the bearer is prepared after the
+  pin and still sent once, including on 401, without clearing the bearer);
+  `NotSentError` / Not sent (that send never left the page; a 401 is a
+  definite refusal, so nothing was applied). A GET re-pins once and is sent
+  under the new generation. Browser mode keeps the unchanged single 401
+  re-send.
+- **Stale drop**: a GET whose captured generation is no longer current is
+  rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
+  a state): no cache write, toast or draft update. The generation is
+  rechecked after every asynchronous error-body read (client, both SSE
+  open handlers and the bearer bootstrap), so an old body never publishes a
+  notice or recovery state for the new target. The bootstrap is exempt from
+  the header only: one generation is captured when the shared in-flight
+  bootstrap starts (callers under a newer generation start their own
+  bootstrap instead of sharing an older one), and a failed body that finishes after a switch publishes
+  nothing (`BootstrapStaleError`); `pinnedToken` turns it into
+  `StaleTargetError` for a read and Not sent for a change (browser mode and
+  the stored bearer are unchanged). A change (non-GET) that is stale, answered 499
+  `cancelled`, whose fetch rejects (transport loss, even with no generation
+  event: upstream bytes may already have been forwarded) or whose body read
+  fails is `ResultUnknownError` with the Result unknown notice; it is never
+  retried. A caller's own abort keeps its `AbortError`; explicit pre-forward
+  refusals (409 `target_changed` Not sent, 503 codes, 429 Throttled) stay
+  distinct.
+- **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
+  hashes include the generation of the last switch; a change cancels queries,
+  moves each mounted observer to its new-generation key (one fetch under the
+  new generation), removes all old-generation queries, retries latched read
+  owners (as an explicit Retry) and aborts old-generation streams. Feature
+  query keys are unchanged and nothing remounts. `subscribeSSE` resubscribes
+  in place once the new generation is known; `useJobEventStream` re-runs its
+  stream effect for the new generation.
+- **Editor custody** (`custody` key prefixes; `AppProvider` passes
+  `['settings']`): a mounted observer of a custody key that already shows
+  data is NOT moved. It stays suspended on its older-target entry with the
+  same data object (no fetch, refetch or invalidation refetch, and no
+  new-target data ever lands in it), so data-gated editors such as the
+  Settings Organization form stay mounted and keep their drafts; old data is
+  never used as the new target's entry. While any custody hold exists, no
+  change (non-GET `schemeFetch`) is sent to the current target: Not sent,
+  draft kept. The pin is scoped to the observer's original logical query
+  key: same-key rerenders keep it, but when the owner gives the SAME observer
+  a different key (for example Settings following an org change in the
+  sidebar) that observer is released and the new key resolves and fetches
+  under the current generation. The hold ends when its last observer leaves
+  (navigation, unmount or such a re-key); a new mount reads the new target. A custody read still
+  loading at the switch moves like any other. Owner UI for the held state
+  (re-key, carry or discard the draft) is S6-W1.
+- **Transient recovery**: when busy/throttled clears (a native `ready`
+  status or a later successful forwarded response), active queries that
+  failed with a transient native error (503 `busy`, 429 `too_many_requests`,
+  including the bearer bootstrap) are refetched once. A read still pending
+  when the signal fires (a bootstrap busy body or the final GET backoff
+  attempt) is not missed: each query records the recovery epoch its fetch
+  started under, and a transient failure that settles after a newer signal
+  is refetched once. Mutations are never retried. `RootRedirect` routes only on a successful (possibly empty) org
+  list; a pending read shows Loading and a failed one the shell error copy, so
+  an existing install is never sent to onboarding on failure (browser mode
+  too).
+- **409 `target_changed`** (desktop): re-read `app.status`. A GET refetches
+  once when the generation is unchanged (a changed generation is dropped as
+  stale and refetched by its new owners); a change is `NotSentError` with the
+  Not sent notice and is never retried. A stream waits for the new generation
+  before resubscribing. Browser mode keeps the S1b behavior.
+- **429 `too_many_requests`** (native per-view cap) is `ThrottledError` /
+  the Throttled notice, distinct from **503 `busy`** (host busy, W-1). Both
+  are non-blocking: GETs and stream opens retry with backoff (0.5/1/2 s; 3
+  GET retries, streams capped at 5 s), changes fail at once and are never
+  retried. The next successful forwarded response clears busy/throttled and
+  the page recovery state (W-2a); a stale response clears nothing.
+- **Notice** (`shared/connection/NativeNotice.tsx`, mounted once above the
+  routed page): busy/throttled ("retrying") clear themselves; Not sent ("your
+  changes are still here") and Result unknown ("check the result before
+  trying again") stay until dismissed. It never hides the page and never
+  resends anything; owner-specific Check result reconciliation is S6-W2.
+- **Menu state and prompt URL**: `deriveConnectionMenuState` /
+  `useConnectionMenuState` expose the app.status-derived target, state,
+  candidate phase, local running state and Access-not-saved badge for the S6
+  dialogs (no UI here). Copy-paste CLI prompts in `shared/connect` use
+  `getPromptBaseUrl()`: the page origin in browser mode, otherwise
+  `local.prompt_base_url`; when that is null (remote target or not yet
+  known) no token is minted and the flow shows that prompts are available
+  only while using HappyRanch on this computer.
+
+Focused checks (Node 24, repository root):
+`node --experimental-transform-types --test web/scripts/native-bridge-v2.test.mjs`.
+They exercise the real transport/query modules with fetch, bridge and
+QueryObserver stubs (module coverage). `AppProvider`/`routes.tsx` wiring and
+rendered editors are not executed by them (JSX); live WebKitGTK/native
+behavior is not covered either.
 
 ## Desktop Settings and Connection dialogs (THR-387 S6-W1)
 
@@ -180,7 +301,22 @@ scope note (“These controls affect this computer, not {host}.”) and only whe
 a remote Host name is supplied; nothing supplies it until the S5-W1 status
 store lands, and the local controls page itself is S7-L2. The Connection
 dialog is a placeholder shell (S6-W3 moves the `web/connection` screens in)
-with a Settings cross-action. Layout (C4): at md and wider a large centered
+with a Settings cross-action. Until S7-L1, the Linux header Connection button
+and “Access wasn't saved” badge open/present the existing native Connection
+window in both default and app-scheme opt-in builds; Settings retains
+`app.dialogRequested` delivery and explicit Retry when unavailable.
+Linux S6-W3-L admits the full existing v1 Host command set and
+`host.stateChanged`, plus `client.health/removeSaved/retrySave`, on the admitted
+Main document. The native Connection window shares `host_bridge.py` with Main
+and remains packaged until S7-L1. On CSP/frame revocation or `pagehide`, pending
+mutations reject with `documentChanged`, effect `unknown` and recovery
+`nativeRecovery`, without replay.
+Read-only calls retain effect `none` / recovery `refresh`; new calls after
+retirement are refused before dispatch with that same no-effect shape.
+`app.ownersChanged` now supplies native commit/disconnect summary evidence,
+including `owner_edits_pending` after the unknown/pending refusals.
+Lifecycle request/decision handling remains S7-L3.
+Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
 one vertically scrolling column, and choosing a page scrolls it into view.
@@ -2015,6 +2151,8 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **Fan-out tracks on Task detail (THR-358).** `GET /tasks/{id}/recall` adds read-only keys to every node: `block_kind` and `blocked_on_job_ids` (the existing task waiting fields; the job list is parsed JSON or `null`), and `track`: `null` for ordinary tasks, or `{planned_agents, step_index, plan_source}` for a chain carrier. A carrier may have its own executor session and `task_results` row: a fitting persisted chain plan plus launch provenance proves its track. Fan-out provenance is the unique `fanout_spawned` audit naming the carrier (newest 64 rows by parent id, with a sentinel to detect overflow); its first child has the same brief and agent. A plain delegate-then carrier is also recognized when its live chain references its own `orchestration_step` delegate decision, whose first agent/prompt matches the first child and whose remaining agents/prompts match the saved chain. The first delegate agent comes from that decision, rather than the carrier’s assigned agent. An ordinary session-running subtask without a fitting chain stays `track: null`. Existing no-result fan-out carriers retain their historical projection, including plan-unavailable tracks. `planned_agents` (first leg agent, then each `then` leg) is read, in order, from the carrier's live `active_chain` (`plan_source: active_chain`, the only source of the 0-based `step_index`), the parent's live `active_fanout` entry for this child (`fanout`), or the parent's persisted fan-out launch history (`launch_history`): the single `fanout_spawned` audit whose `children_ids` names the carrier fixes the order, and every persisted fan-out decision of the parent (`orchestration_step` audit payload or `task_results.decision_json`; the `fanout_spawned` audits and each decision stream are bounded to the newest 64 rows by parent id) whose children map one-to-one by agent and prompt onto those rows must agree on the plan. Each of these three bounded streams (`fanout_spawned`, `orchestration_step`, `task_results`) reads one sentinel row past its bound; if any stream exceeds 64 rows the history is treated as truncated and the plan is unavailable, never inferred from a partial candidate set. The created legs must also be a prefix of the plan. For existing historical carriers, missing, malformed, ambiguous or non-matching provenance returns all three as `null` (plan unavailable); result-bearing carriers require a proven fitting plan and otherwise stay `track: null`; the plan is never guessed. The projection writes nothing and changes no chain, schema or orchestrator behaviour. Execution subtasks render each carrier as a track group (`features/tasks/ExecutionTracks.tsx`): header with chevron, branch glyph, `Track` label, name (first brief line minus a 16+ character prefix shared by all sibling tracks, noted once above the list; full line as tooltip), step strip, header status and the carrier ID link. Header status: any failed step → `failed · at Step N`; any cancelled → `cancelled · at Step N`; else a failed/cancelled/superseded carrier wins over all-completed children → `failed`/`cancelled · at Step K` (K = last created step); all done → `completed · N/N steps`; else the last created step: waiting on a job (`in_progress` + `blocked_on_job`) → `in_progress · Step K waiting on JOB-…`, queued → `pending · Step K queued`, otherwise `in_progress · Step K of N`. For a failed carrier the last created step is drawn failed; its row keeps the child's real status badge and shows its `verdict` (e.g. a completed reviewer with `REQUEST_CHANGES`). Waiting steps use the clock chip, a hollow ring and `in_progress · waiting on JOB-…`. Legs are `Step N · agent` rows (a revisit child replaces its leg); planned legs not yet created are dashed `not created` rows (`Created when Step K completes`, or `Not created: track ended at Step N` once ended). A non-completed carrier without a plan shows a `Remaining steps unavailable` row and a trailing `?` chip. With 6+ children, completed tracks (never failed/cancelled ones) start collapsed; Expand/Collapse all appears with 2+ tracks. Without carriers the list is unchanged; ordinary children keep `SubtaskRow`. Strings are in `tasks.detail.tracks.*` (en/zh-CN).
 
+**Workflow chain timeline removed (THR-358).** Task detail no longer renders the 'Workflow chain — step N of M' timeline section for any task (roots with an active then-chain, fan-out/retry carriers or others). Display-only: the API `active_chain` field, `happyranch tasks show` chain output and orchestration are unchanged, and Task detail still reads the chain query for the escalation banner, fan-out band, job waits and lineage links.
+
 **W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
 **W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
@@ -3195,7 +3333,10 @@ stored assigned agent is never called a removed agent and does not consult
 the roster: its effective value shows as returned, and a null value reads
 "Not set" with a note that the team manager's default, or else the CLI
 default, applies. After a
-successful revisit the dialog opens the new root (`new_root_task_id`). All states are in English and
+successful revisit the dialog opens the new root (`new_root_task_id`). A live
+transitive revisit successor causes HTTP 409 `revisit_successor_live`, naming the
+existing successor; no new root is created. After successors reach terminal
+states, revisit is available again. All states are in English and
 zh-CN. See the
 [full task design](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
@@ -5443,11 +5584,51 @@ finite 409 unavailable bodies do not advance admission. Positive absent storage,
 settings-not-saved and original-operation-absent exceptions stay unchanged.
 Transport-only refresh failures retain this mount's data with freshness flags.
 S7a helpers use enums/keys,
-with no new display strings. S7b supplies UI/providers and locales. See the
+with no new display strings. S7b supplies UI/providers and locales (below). See the
 [S7a contract](contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2)
 for wire formats, budgets and focused shell selectors. Web lint/typecheck is
 static API evidence; hook behavior is NOT RUN without a supported runtime venue
 (Vitest retired, Product E2E scheduled-only).
+
+## S7b generic Workflows UI (read-only @2 adoption)
+
+The Runs tab, run detail and Task-detail workflow banner read only the S7a
+plural hooks (`useSequentialRunsV2`, `useSequentialRunV2`,
+`useTaskSequentialWorkflows`). Lists and the banner render every run link and
+every source/carrier/visit task link in projection order; an initiator with
+several runs shows several entries. Generic @2 runs show `running | held |
+finished` with separate progress (`queued`, `executing`, `result pending
+settlement`, `cancelling`) and `terminal_outcome` only when Finished. Held always
+shows the localized finite cause plus the raw code and the original hold event,
+node and visit; `declared_edge` reads "agent-declared hold". No cause is inferred.
+
+Generic detail shows the definition/settings pins and verbatim admitted
+definition, request and inputs, every assignment generation (agent, selection
+source bundled/org/run/control, predecessor, effective/requested model and
+effort with `agent_default | run | clear` origins, native override and its
+source, executor), visit-to-assignment mapping, ordered control history with
+actor task/principal/SID/result and IDs, and native cancellation events with
+their distinct founder/source-terminal origin. Every outcome, finding and output
+is labelled Agent-reported and shown as a raw token; the Engine-authenticated
+label appears only on native task/principal/SID/result identity and terminal/
+outer digests. A native callback result that differs from the nullable
+`accepted_result_id` is shown separately as not accepted. A reported head,
+review, QA or merge is never shown as verified, approved or merged.
+
+`abi=@1` runs carry an explicit Historical (@1) label. Their detail renders the
+unchanged U8a @1 view (and its R-M3-6 redaction as served) inside a history
+wrapper, and their banner entry keeps the original @1 banner. Setup and @1
+original-save custody/recovery are unchanged. `storage=absent` shows an empty
+state; each closed `workflow-sequential-unavailable@2` code
+(`history_unverified`, `read_budget_exhausted`, `authority_unverified`,
+`authority_denied`) shows its own localized message, never an empty list.
+403/404 keep the shared access-refusal handling and task 404 hides the banner.
+A `late_org_response` rejection shows a loading status and never another org's
+data. @2 definitions are not linked to the @1 definition page. There is no
+start, retry, rebrief, reassign, cancel or wait control. All strings ship in
+`en` and `zh-CN`. `_mock-workflows.ts` exports typed deterministic
+`sequentialV2MockStates` fixtures; because the @2 hooks bypass `WorkflowsApi`,
+screenshot evidence serves them as daemon responses through harness mode A.
 
 ## U8a Workflows read journey (TASK-15582)
 

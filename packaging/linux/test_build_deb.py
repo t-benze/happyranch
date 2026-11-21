@@ -435,6 +435,7 @@ class DebPackageTests(unittest.TestCase):
             'python/lib/__pycache__/module.cpython-312.pyc': 'generated cache',
             'share/happyranch/desktop/happyranch_window.py': '# fixture',
             'share/happyranch/desktop/connection_window.py': '# inert fixture',
+            'share/happyranch/desktop/host_bridge.py': '# inert fixture',
             'share/happyranch/desktop/connection_contract.py': '# inert fixture',
             'share/happyranch/desktop/native-connection-bridge.v1.json': '{}',
             'share/happyranch/desktop/connection/index.html': '<html>connection fixture</html>',
@@ -760,7 +761,8 @@ class DebPackageTests(unittest.TestCase):
                                          'libexec/remote-access/helper_generation.py',
                                          'libexec/remote-access/helper_lifecycle.py',
                                          'libexec/remote-access/helper_invite.py',
-                                         'bin/happyranch-remote-access-policy-renew')):
+                                         'bin/happyranch-remote-access-policy-renew',
+                                         'share/happyranch/desktop/host_bridge.py')):
             with self.subTest(missing=missing):
                 archive = self.payload(version=f'0.3.{index}')
                 root = self.work / f'happyranch-0.3.{index}-linux-x86_64'

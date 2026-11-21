@@ -4,383 +4,18 @@ description: Shared daily/manual own-workspace cleanup contract — bounded, Git
 ---
 
 
-## Retained preparation and admission
-
-`OrgState.load` retains the org-owned `team_move_operations` compatibility table.
-`install_team_move_schema` validates the existing layout/history and org identity,
-creates only the frozen literal table when absent, and validates before COMMIT.
-The active-row startup refusal is removed with the online operation/recovery
-surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
-task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
-ordinary participant/session-write, reply-delivery claim/probe and scheduler
-redelivery move checks, plus dead move-only projection/publication APIs.
-Reserved readers remain in Founder abort/attestation and callback/uncertainty
-settlement, delivery-release permission/recovery, the archived-thread retry chain
-and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
-history or stored move row is rewritten.
-
-C2 freezes thread retry initialization explicitly, including EMPTY
-budgets. New initial/fallback/nudge phase initialization is distinct from a
-frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
-their original history interpretation but refuse ambiguous new retry/reentry
-with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
-
-Historical task attribution remains separate from current launch eligibility.
-PR-3b removes the unused move-only task/workflow closure census. New execution
-still requires a current executable owner. Strict saved history, native identity,
-Pause and cleanup ownership remain; no historical record, team, callback or
-binding is rewritten.
-
-The SAME INTEGER thread invocation/agent/SID preparation owner spans native
-materialization, integrity, repository refresh and launch-spec/cache preparation,
-including helper-internal omissions and caught failures. Such uncertainty appends
-the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
-backend preparation/cleanup and native workspace/cache failures retain ownership.
-Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
-strict history reader, restart/reentry and census preserve that fact, independently
-of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
-launch-seam refusals before effects retain their native no-effect disposition;
-returned failure alone never proves compensation. No new schema/journal/backfill
-or generic producer identity is introduced. All behavior remains UNEXECUTED.
-
-Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
-through materialization, integrity (including retries), package omissions,
-repository refresh, attachment writes/cleanup, task scratch and builtin/custom
-cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
-preparation resumes; this never clears existing uncertainty.
-Preparation failure sets the existing local reservation cleanup flag BEFORE the
-fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
-the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
-worktree cleanup cannot clear it. Settlement persists that fact before release;
-failed saves retain local ownership and original plus persistence errors.
-Restart treats unclosed task `prepared` entries as unknown, including terminal
-rows and prepared recovery/retry owners; absence of first launch is no proof of
-preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
-Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
-backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
-
 # workspace-cleanup
 
-Native C3 preparation failure or ordinary process return never proves file,
-package or process cleanup. Unknown ownership remains in retained audit census.
-New retry budgets explicitly freeze even an empty schedule; missing legacy facts
-cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
-real preparation/spec/execution and is distinct from provider resume identity.
-Custom-skill authority validates before reservations; only explicit native
-validation/rollback/temporary-cleanup evidence can settle a refused writer.
-No history deletion, automatic recovery, apply or execution authority follows.
+## Scope
 
-The native workspace-cleanup trigger no longer checks a team-move hold. Its existing cleanup authority, writer ownership and all preservation gates remain. Never delete another owner’s workspace, clear uncertainty or fabricate settlement. The separate nightly disk sweeper retains its move-hold and native uncertainty gates. Behavior remains UNEXECUTED.
+You may only ever consider paths inside **your own workspace**:
+`<workspace>/repos/<repo>/.claude/worktrees/*` (registered linked worktrees) and
+the literal `node_modules`/`.venv` caches inside them. Never touch another
+agent's workspace, the primary checkout, workspace roots, `output/`, `memory/`,
+artifact stores, configuration, databases, logs, canonical skills, or any
+unknown path. Never use elevation.
 
-THR307 seq337 package step 1 adds observation-only candidate `measurement`,
-org/clone `measurements`, run/org `stop_cause` and bounded once-per-run retained
-report history. A report-count or aggregate-byte boundary preserves validated
-dates and exposes `measurement_history.status=bounded_window`, `reports` and
-`bytes_read`; `kept_since` is the earliest recorded retained date in the window
-actually read, including safe carried dates, not an exhaustive-history claim.
-Invalid/unsafe or individually oversized reports still expose unavailable
-history and discard partial dates. The existing loader-code `revision`,
-report/audit keys and empty-task/daemon envelope keep their meanings; the audit
-retains the same org projection. No extra candidate observation or
-measurement-only publication is added. Kept size is `unknown` without an existing
-complete snapshot; interrupted effects after the last checkpoint remain unknown.
-See the maintained nightly
-sweeper spec, “Measurement-only additions”, for exact counter/history bounds,
-write-confirmation lag and measurement-failure behavior. This grants no cleanup
-or configuration authority.
-
-THR307 seq337 step 3 ownership reads use a new read-only transaction at every
-existing admission boundary. Task and active-job ancestry use the existing task
-primary-key index; all job statuses (including unknown/NULL) are enumerated through
-the existing status index before unfinished rows are fetched in original rowid
-order. Finished orphan jobs still skip lineage. Workspace evidence, terminal
-owner/root and native writer/hold checks keep their meanings. After discovery,
-one read transaction inventories org tasks and job states for final KEEP answers
-only; a failed observation stays kept even if it later heals. The same evaluator
-preserves refusal priority. Successful inventory answers are discarded: every
-existing delete, repair and retry admission opens an independent current read,
-including after slow work. Transaction-local task/job rows are never reused as
-delete authority. Discovery retains its once-per-clone topology inventory for
-KEEP decisions only. In existing candidate order after ownership refusals, a
-no-follow root-directory stat first keeps a root whose mtime or ctime is within
-the existing hour. This observation is final even if the timestamp heals; an
-old root supplies no clearance and still requires every recursive age/tree and
-fresh delete check. Previously observed local/shared uncertainty keeps precedence.
-The earlier recent keep can take precedence over guard/dirt not yet inspected;
-it is a located keep under the unchanged coverage definition. Subsequent guard,
-known mapping/lock/branch and dirty-status refusals are final for the night, even
-after healing. Own directory identities and reciprocal pointer signatures are
-revalidated no-follow before status; unsafe changed locations hold the clone. A clean
-status or successful mapping check is discarded. Kept items perform no later
-admission; deletion still repeats fresh candidate registration, ownership and
-tree gates. There is no schema, index or classification change. The seq361
-registration scope is described below. There is no two-pass ordering without
-real-night step 1 data.
-
-Founder THR307 seq361 approving seq359 item 1 adds the one-time operator
-backlog entry `happyranch disk-sweep manual-backlog`. It sends one founder-bearer
-POST to `/api/v1/runtime/disk-sweep/manual-backlog` and waits for the run inside
-the daemon. There is no new credential or agent authority. The daemon uses the
-same `native_writer(org.db, publisher='disk_sweep')` reservations,
-`DeferredTeamMove` handling, `sweep()` and `run_worker`, per-candidate gates,
-15-second Git limits, publication-before-effect and deadline SIGKILL/reap.
-`MANUAL_BACKLOG_BUDGET_SECONDS=7200` covers admission, all orgs and effects;
-`BUDGET_SECONDS=1800` and the existing machine-local 03:00 schedule are unchanged.
-
-Before any reservation or worker effect, the manual run refuses if its local
-interval `[now, now + 7200s + 120s margin]` intersects 03:00–03:30, including a
-start before 03:00 whose budget would cross it. It uses the same machine-local
-clock as `next_night` (Asia/Shanghai on the operator host). An in-process slot
-also refuses concurrent scheduled/manual deletion; at most one manual run can
-be in flight. These checks add no retry, catch-up, repair or eligibility rule.
-The same `_scheduled_admission` validator reads the daemon-global `stop.json`:
-only genuinely absent or exact Boolean false permits deletion; true, invalid,
-unreadable or unsafe control refuses. The initial report must publish before
-native reservations; missing/unsafe report parents refuse without deletion.
-Only the existing dry-run preview can create missing report parents.
-
-Reports use `<daemon_home>/disk-sweep/manual-backlog-<ns>.json`, carry
-`trigger=manual_backlog`, `scheduled_date=null` and `budget_seconds=7200` at
-initial publication, worker checkpoints and closure, and record refusal causes.
-Existing empty-task/daemon `disk_sweep_summary` audits carry the same manual
-trigger. These reports/audits never advance `last-scheduled.json`, satisfy a
-prior-night check, suppress a night notice or make `night.complete` true. A
-successful manual deletion can have `outcome=complete` while its scheduled-night
-record remains incomplete. Scheduled night completeness semantics are unchanged.
-The CLI submits once with a 7320-second transport timeout; lost transport is
-unknown, never automatic retry authority. The daemon keeps supervision in its
-request, including cancellation stop/reap. Inspect its report/audits after loss.
-The standalone `--dry-run --runtime-root` preview remains unchanged, including
-with true/invalid stop control. This entry grants no agent permission to run
-live deletion, deploy or restart; the approved one-time live run belongs to the
-operator after release.
-
-Founder THR307 seq361 approving seq359 item 2 narrows the fresh worktree
-registration proof. Discovery still performs its complete once-per-clone proof:
-three literal no-follow admin censuses, full Git-list reconciliation, residue and
-arrival classification, and every recorded path/ancestor identity. The own
-admin entry identity already recorded there pins later checks. No discovery
-census, metadata shape, classification or discovery-time unsafe-peer hold changes.
-
-Each candidate admission gate, pre-remove check, permission-repair/retry check and
-post-removal confirmation re-observes only that candidate's admin entry, metadata,
-reciprocal `.git` pointer and folder. Literal own pointer ancestors, primary common
-directory, admin container and own entry/folder identities stay bound to discovery.
-Own metadata is checked no-follow for unsafe types, hardlinks, changed signatures,
-valid gitdir/commondir/HEAD and exact reciprocal mapping. A single fresh
-`git worktree list --porcelain -z` per check must contain exactly one own row with
-unchanged HEAD/branch and no lock/prunable flag. A missing/duplicated own row or
-lost/redirected own mapping still holds the clone. Ordinary attributed own metadata
-changes retain the candidate; discovery's local/shared refusal latches remain.
-Successful discovery answers never authorize a delete. Discovery defines the
-fixed coverage window: damage to a candidate's own metadata after discovery
-retains that candidate with a blocking reason naming its exact metadata path
-and native cause, and keeps coverage incomplete naming that candidate. Paths
-that add no retained discovery scope, including the C21 `git_failed` rows,
-leave discovery complete. A late ordinary own-leaf read error latched in
-`retained` can still add a discovery scope at the checkpoint and make discovery
-partial, as in C21 `self_final_to_remove`. Post-removal confirmation does not
-re-scan peers; a peer's later own check follows the same distinction.
-Independently proven healthy peers can still progress; a refusal before any
-effect adds no partial/unknown effect.
-
-At each of these boundaries exactly one additional shallow shared observation
-lstats the primary `.git` and `.git/worktrees` no-follow, pins their discovery
-identities, real-directory types and device, and enumerates only the container's
-entry names with no-follow lstat. Symlink/special/non-directory entries, changed
-shared identities/types/devices, or a new non-TASK entry name hold the clone.
-New TASK-named entries are retained as deferred arrivals at their observed admin
-locations; their names grant no worktree location or deletion authority. There
-are no peer content reads or recursion in this observation. Its duration is
-charged to existing `durations_seconds.shared_registration` and its lstat work
-to `entries_walked`, at org and clone scope. Existing census/topology counters
-continue to count full discovery only.
-
-The manager's TASK-16422 ruling on seq361 removes the post-discovery unrelated
-peer-internal veto: a symlink or unreadable auxiliary object inside a peer's
-previously registered admin directory no longer holds this candidate. That peer
-remains subject to its own ownership, registration and recursive safety gates.
-An unsafe peer already present at discovery still holds the clone. Unrelated
-peer pointer-ancestor changes and omitted peer Git rows likewise do not replace
-the candidate's own proof; fresh literal overlap and nested-worktree vetoes stay.
-
-Git's listed literal paths are also compared for overlap with the candidate. This
-cheap peer-level check is necessary to catch a new registration at a literal
-ancestor or descendant; only the shallow shared observation enumerates peer names. A newly
-listed ancestor holds the clone; descendants retain their containing tree,
-including a listed path whose pointer is now absent. Discovery's complete linked
-and residue paths still protect containing trees. Both recursive admission
-snapshots keep the unconditional PR1231 rule4-prime `possible_nested_worktree`
-check. Unrelated agent worktree additions no longer veto this candidate or become
-new deletion authority. Arrivals observed during discovery retain its existing
-classification; later TASK-named arrivals are deferred outside the fixed candidate
-inventory. A new unrelated non-TASK admin name holds the clone. The shallow
-observation does not enumerate unrelated conventional worktree folders: a newly
-created unregistered peer folder is outside this observation and stays untouched.
-
-After each local registration proof, the fresh recursive tree snapshot must still
-equal the admitted tree before the existing current ownership/native-writer/hold
-transaction and effect. Task and structural root must be ended, no active job may
-remain, Git status must be clean, and HEAD commits must be reachable from a kept
-branch/remote. Recursive age, no-follow/link/special-object and same-filesystem/
-mount checks remain. There is still only non-force Git removal and the single
-existing permission repair/retry; branches are never deleted. Expired/killed
-removal is not retried and its published in-flight intent remains an unknown
-partial effect, with no removal credit.
-
-Post-removal proof requires the own folder and admin entry absent and the own Git
-row gone. A named branch must resolve to its admitted commit; detached worktrees
-have no named branch to resolve. Git may remove the empty admin container only
-when discovery's remaining entry set was this candidate alone. The inventory is
-reduced by only this candidate after all confirmations succeed; peers' saved
-identities remain pinned for their own later checks. Failed confirmation remains
-partial/unknown. These are sampled observations, not a racing-rename fence.
-There is no repair/prune/housekeeping authority, new classification, timer/budget,
-stop-file, report or audit-key change. Existing `censuses`/`topology_reads` count
-full discovery proofs only; own/shared checks appear in existing Git/entry/duration counters.
-
-Worker report publication batches up to 32 nonmutating checkpoint requests.
-The initial report, first initialized org state, outer run boundaries, every org
-exit/error/expiry and each removal intent still flush through the unchanged
-exclusive-pending, no-follow,
-descriptor-relative atomic writer. Intent is published before fresh destructive
-admission; publication refusal prevents that deletion. A crash may leave older
-keep progress, never a completed-night claim or a confirmed unpublished effect.
-The parent still must prove stop/reap and publish closure before night.complete.
-
-THR307 seq337 package step 2 uses the review revision 3 coverage definition.
-The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
-Candidate-own missing, cyclic or malformed task ancestry retains that candidate
-only; unknown job status or active-job ancestry still holds the whole org.
-A uniquely recorded missing worktree folder is retained locally only after the
-full existing no-follow census/pointer/ancestor proof; its recorded location
-protects containing candidates and it is never repaired. Unknown-location admin
-residue ALWAYS prevents a complete night. Founder THR307 seq355 approving
-seq354 item 2 also permits a located, item-scoped `dirty_unknown_owner` keep
-when only an unknown guard/branch owner or final guard-file ENOENT holds a
-worktree and one read-only existing Git status proves dirty/untracked work.
-The original registration/location proofs still precede status, within the
-same deadline and with the existing guard ignore. Every report lists the
-original owner reason and absolute path; the worktree is never deleted or
-repaired. Clean/error/uncertain observations remain blocking unknowns; timeout
-still interrupts. Clean unknown-owner worktrees and empty unknown-owner scratch
-folders are unchanged. Located inspected keeps and proven listed TASK arrivals
-can satisfy coverage; unknown discovery/shared holds,
-unreached/in-flight/partial effects, operational errors or an unpublished report
-cannot. Positively classified ordinary non-clone folders are listed exclusions;
-a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
-The empty-scope Git prune is removed; seq361 narrows registration proof as above.
-JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
-exclusions and deferred arrivals. Worker-only JSON is unproven until the parent
-records stop/reap and a successful worker return code within the original budget;
-the prior-night check also requires matching summary audits for loaded orgs.
-Interrupted-removal intents and bounded prior
-report provenance are reporting only, never authority to finish, repair or retry.
-At startup and before each existing night, the daemon records the previous
-expected missing/incomplete night once per loaded org in existing audit rows
-(empty task id, `daemon`, action `disk_sweep_night_notice`) and the daemon log.
-This is a record, not delivery to the founder; delivery awaits the founder's
-choice. A daemon that stays down cannot record. A suspended stop-file night is
-not complete, with explicit reason `scheduled_suspension`. There is no new timer,
-catch-up, retry or marker reset. See the maintained nightly sweeper spec's
-“Coverage and classification” section for fields, limits and assumptions.
-
-One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
-Its only supported content is a JSON object containing exactly `stop` with a
-real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
-`{"stop":false}` or a genuinely absent literal file permits the default policy.
-The control is read afresh once per regular scheduled attempt, after the normal
-same-night reservation and before native writer reservation or worker launch,
-inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
-content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
-dangling links or aliased parents), hardlinks, directories and special files
-visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
-Malformed control does not prevent daemon/org startup. Operators alone write or
-remove this local file; there is no per-org override, setting/API or new schedule.
-Suspension logs its cause and, when publication is safe, writes `outcome:
-suspended` with daemon-scoped `scheduled_admission` (`path,state,reason` and an
-error when invalid) in the existing summary/audit payload. All orgs remain
-unreached, with no worker/PID, reaping, removal-byte or successful-sweep claim.
-The existing audit empty-task/daemon envelope and org ordering remain. Marker
-and report reads/writes traverse literal no-follow parents; publication uses a
-new exclusive pending inode and descriptor-relative replacement. A missing or
-aliased parent, aliased/hardlinked/special final metadata or existing pending
-entry refuses without writing through that path. Scheduled work never creates
-a missing control parent. Refusal is visible through the existing daemon log;
-a summary or org audit may be unavailable and must not be claimed as persisted.
-Only manual preview can create missing report parents, with no-follow traversal.
-After the single stop observation, the actual initial date summary is published
-before any native writer reservation. Allowed admission initially records
-`incomplete`, empty org results and all orgs unreached, without a finished/PID or
-mutation claim. Unsafe date-summary or pending metadata therefore refuses with
-zero reservations or worker effects. Later checkpoint/publication failures after
-genuine reservation retain native uncertainty; this initial observation is not
-a fence against subsequent filesystem changes.
-These are filesystem observations, not a racing-rename fence or hard real-time
-certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
-true, invalid or absent control; it may write its existing reports/audits.
-Removing/fixing the file affects the NEXT existing scheduled attempt only:
-no same-night catchup/retry or marker reset. This is a run-admission boundary;
-writing stop does not cancel an already launched worker or promise a hard
-real-time stop. Existing deletion/ownership/age/containment gates still apply.
-
-Under Founder THR307seq134, the independent daemon disk sweeper deletes eligible
-scratch/worktrees for every normally admitted org on its nightly schedule. There
-is no per-org opt-out; obsolete disk_sweep config is ignored. Explicit manual
---dry-run remains a nonmutating preview. The sweeper keeps its own ended-task/
-ended-structural-root, fresh jobs, recursive-age and containment contract. Under
-Founder seq117 it does not inspect OS-process usage: once both the task and its
-structural root have ended, nightly sweeping may remove their task scratch and eligible worktrees. Stop and reap task-owned processes before
-successful completion; do not rely on those folders afterward. Settle owned jobs;
-genuine authorized native job waits keep the existing blocked/wait callbacks,
-never fake completion. Filesystem mount containment remains in force.
-This grants no agent deletion authority or end-of-task deletion hook, replaces
-none of this skill's legacy gates, and disables none of the seven nightly agent
-sessions. Other cleanup owners' process gates and old flags remain unchanged.
-Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
-directories, Unix sockets and FIFOs inside admitted task scratch are disposable
-after both task and structural root end. Socket/FIFO handling uses no-follow
-stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
-metadata-only O_PATH descriptors, including post-unlink inode observation.
-Darwin never opens any leaf: immediately before unlink it checks the full
-no-follow signature through the verified parent fd, with only the documented
-own-unlink hardlink adjustment. Darwin requires validated native getmntinfo/statfs
-mount evidence; unavailable or malformed evidence retains. It loses post-unlink
-observation and accepts the non-atomic stat-to-unlink window within the existing
-same-UID threat model, without an atomic identity guarantee. See the maintained
-`docs/specs/2026-10-15-nightly-disk-sweeper.md` for the exact platform
-and hardlink contract. Devices/unknown special types retain. Worktrees and
-Git metadata keep strict special-object checks; all ownership/jobs/age/link/
-mount gates and durable manifest/lock/output exclusions remain.
-At discovery, Founder THR307seq235 approving234 permits registration-local retention
-only after exhaustive literal no-follow names, fresh common/admin/entry identities,
-canonical unique reciprocal mappings and task-root/containment reconciliation before Git.
-An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
-its exact metadata path/native cause; independently validated same-repository peers
-can progress. A literal unregistered conventional TASK directory without a `.git`
-pointer retains only that path as `unknown_unregistered_task_worktree:<exact path>`.
-At discovery, additive TASK roots and new canonical reciprocal TASK-folder/admin-entry
-pairs across censuses or Git listing retain only the arriving task with that same reason;
-existing identities/pointers stay exact and new admin names are TASK names.
-These paths protect containing trees and latch partial discovery; only proven, listed arrivals satisfy coverage.
-At discovery, other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
-alias/hardlink/special objects, conflict or unknown descendant location retains
-the shared scope.
-All proven paths, including locally uncertain non-task descendants, protect
-containing trees at every final remove/repair/retry boundary. Retention is latched
-for the attempt, never clearance; own metadata and shared topology stay fresh.
-For local unknowns observed at discovery, reports keep discovery partial, known-only
-counts and unknown allocation;
-repository-wide prune is removed for every scope.
-This changes none of this skill's legacy gates or agent cleanup authority.
-Durable output and sibling task-scratch manifests/locks stay excluded. Put
-regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
-in output. Do not run historical cleanup, change live configuration, deploy/
-restart, or use a manual cleanup fallback on this note's authority.
+## Invocation
 
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:
@@ -407,6 +42,95 @@ agents. It is invoked two ways, and both use exactly this contract:
 Both markers identify the same skill. No other skill, task, or prompt grants
 cleanup authority.
 
+## Prerequisites and ordered steps
+
+Use the current task/session binding and an exact marker above. Keep complete
+native inventory, owner/peer/trigger receipts and maintained history exclusions;
+unknown history, ownership, process use, protection or remaining budget refuses
+action. Installed scripts require external PATH `python3`, Git and the supported
+HappyRanch readers. Source delivery, a witness or a merge grants no live cleanup,
+deployment, restart or activation authority.
+
+1. [Collect and prepare](#bootstrap-and-read-only-collection) one repository at a
+   time, preserving native receipts and exact original history sources.
+2. [Prepare the frozen manifest](#preparation-and-observed-handoff-thr-259-seq506).
+   Complete empty/no-repository evidence produces no action request; incomplete
+   evidence stops without refilling candidates or repairing history.
+3. Render the supported observed job request only with authentic launch-deadline
+   evidence, then submit exactly once under the current ACTIVE owner binding.
+4. Observe the original job and retain its terminal receipt, enclosing sequence,
+   postchecks and acknowledged journal. Unknown transport or any anomaly stops
+   further mutation; successful submission or wrapper exit alone proves no removal.
+5. [Report](#reporting) actual outcomes and missing evidence, then make the genuine
+   current-session completion callback the final action.
+
+Gate refusals retain the candidate and their exact reason. Evidence/publication
+failures, interruption and partial effects remain unknown and stop the batch;
+never rebind, retry or replace an uncertain attempt.
+
+The separate daemon nightly disk sweeper, its operator manual backlog entry and
+measurement internals are owned by the maintained
+[nightly disk sweeper contract](../../../../docs/specs/2026-10-15-nightly-disk-sweeper.md).
+Its native writer/hold, ownership, age, mount/link and durable-output protections
+remain its own. It does not replace this skill's marker, ordinal, host-job,
+peer/history or preservation gates and grants no manual fallback or live authority.
+
+## Retained preparation and admission
+
+Shared Pause, native identity, retry budgets and cleanup ownership remain
+operative under the [native ownership contract](../../../../docs/agent-guides/contracts/jobs-and-cleanup.md).
+New execution requires a current executable owner; historical task attribution
+is not current launch eligibility. Strict saved history and callback/uncertainty
+settlement remain. Never rewrite live state, audit history, stored compatibility
+rows, teams, callbacks or bindings as cleanup.
+
+Thread retry initialization freezes even EMPTY budgets. Initial/fallback/nudge
+initialization differs from a frozen zero budget; deferral/reentry cannot
+replenish it. Missing legacy facts preserve their original interpretation but
+refuse ambiguous retry/reentry with `team_move_thread_retry_initialization_unknown`;
+never backfill that history.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced.
+
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
+The native workspace-cleanup trigger no longer checks a team-move hold. Its existing cleanup authority, writer ownership and all preservation gates remain. Never delete another owner’s workspace, clear uncertainty or fabricate settlement. The separate nightly disk sweeper retains its move-hold and native uncertainty gates.
+
 Guard setup best-effort adds the root-only `/.worktree-guard.json` rule to
 that clone's shared common-dir `info/exclude` (THR-307 seq337 step 4). Existing
 clones gain it only on their next guard setup; this skill does not bulk-edit Git
@@ -417,17 +141,7 @@ file, or any non-regular final file. Setup and guard enforcement continue.
 Unwritable excludes leave guard enforcement active and, without another
 ignore rule, the file dirty. Modified tracked/staged guards, `.gitignore` negation,
 subdirectory guards and other untracked files stay dirty. This changes no cleanup
-gate or non-force removal rule; 91 observed guard-only dirty worktrees is not a
-removal promise.
-
-## Scope
-
-You may only ever consider paths inside **your own workspace**:
-`<workspace>/repos/<repo>/.claude/worktrees/*` (registered linked worktrees) and
-the literal `node_modules`/`.venv` caches inside them. Never touch another
-agent's workspace, the primary checkout, workspace roots, `output/`, `memory/`,
-artifact stores, configuration, databases, logs, canonical skills, or any
-unknown path. Never use elevation.
+gate or non-force removal rule; guard-only dirt is not removal authority.
 
 ## Report-only ordinal
 
@@ -456,8 +170,9 @@ non-exempt evidence is a skip. Positive use blocks.
   acting task. Any nonterminal peer is a skip. Recheck after claim and again
   immediately before every action. Unrelated audit history, however large,
   never makes this candidate-specific join incomplete.
-- **R7 (prior occurrences).** Require exactly two distinct prior joined terminal
-  scheduled occurrences. Duplicates collapse. The filtered trigger audit is
+- **R7 (prior occurrences).** Require at least two distinct prior joined terminal
+  scheduled occurrences, retaining the complete history rather than selecting a
+  subset. Duplicates collapse. The filtered trigger audit is
   read through complete keyset pages; missing, malformed, changing, or failed
   pages are a skip.
 - **Cooperative overlap.** Perform the peer and listing recheck after claim and
@@ -642,7 +357,11 @@ The snapshot records the link text, resolved target, and target identity so
 drift refuses. This applies to a `.venv` cache and to a nested `.venv` anywhere
 inside a whole-worktree candidate. Every other external/dangling/directory or
 protected symlink refuses as `external_or_protected_symlink`. Descriptor-rooted
-deletion unlinks the symlink itself and never follows it.
+deletion unlinks the symlink itself and never follows it. An internal link must
+resolve to an existing regular file at every admission snapshot, including both
+descriptor snapshots before deletion. After deletion starts, unlinking an
+already admitted internal link may follow removal of its target by this same
+operation; this does not authorize a dangling link at admission.
 
 ## Eligibility gates (literal commands)
 
@@ -691,8 +410,14 @@ For the initial pass, the first authoritative peer/history join runs after
 `cache-immediate-parent-manifest` and before `registration`, so cheap
 candidate-local refusals do not pay for the join or later Git, PR, scan, and
 tree work. The second peer/history join remains immediately before the complete
-pre-action pass. No gate is omitted from either pass. Gate refusals name the
-exact gate as `gate:<gate-id>` on the initial pass and
+pre-action pass. At that boundary the runner retains a separate fresh target
+`happyranch recall` and its native receipt, validates task/owner/status/aware
+completed_at and protection fields (summary, note and any risks), and compares
+them with admission evidence. Unavailable, malformed or changed target evidence
+refuses as `pre_action_task_unavailable`, `pre_action_task_invalid` or
+`pre_action_task_changed`; original `task.json` and its receipt remain intact.
+The pre-action gates read the fresh recall. No gate is omitted from either pass.
+Gate refusals name the exact gate as `gate:<gate-id>` on the initial pass and
 `pre_action_gate:<gate-id>` on the pre-action pass; the established
 `cache_not_gitignored` reason remains unchanged.
 
@@ -706,6 +431,65 @@ non-exempt unreadable same-user process, a missing/ambiguous containing
 worktree, or any incomplete listing makes the scan `unknown` -> skip; a positive
 non-exempt use makes it `blocked` -> skip; only `clear_observation` with every
 gate exit 0 permits the non-force action.
+
+## Bootstrap and read-only collection
+
+For one configured repository, bind the actual current values and an installed
+skill path. The task ID, runtime SID and marker come from this invocation, not
+from a prior attempt. Set the seven exports explicitly; `SKILL` and the paths
+below locate retained files and are not authority:
+
+```bash
+export WORKSPACE="/absolute/own/workspace"
+export PRIMARY="$WORKSPACE/repos/assigned-repository"
+export AGENT="actual-agent-id" ORG="actual-org"
+export ACTING_TASK="actual-task-id" SESSION_ID="actual-runtime-session-id"
+export CLEANUP_MARKER="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"
+SKILL="$WORKSPACE/.agents/skills/workspace-cleanup"
+COLLECTED="$WORKSPACE/output/$ACTING_TASK/collection"
+INVENTORY="$COLLECTED/inventory.json"
+HISTORY_EXCLUSIONS="$COLLECTED/history-exclusions.json"
+PREPARED="$WORKSPACE/output/$ACTING_TASK/prepared"
+mkdir -p "$COLLECTED"
+python3 "$SKILL/scripts/prepare_cleanup.py" evidence-capture \
+  --output "$COLLECTED/tasks.native.json" -- \
+  happyranch tasks --org "$ORG" --agent "$AGENT" --limit 1000 --all-pages --json
+python3 "$SKILL/scripts/prepare_cleanup.py" evidence-capture \
+  --output "$COLLECTED/triggers.native.json" -- \
+  happyranch audit --org "$ORG" --agent "$AGENT" \
+  --action workspace_cleanup_triggered --limit 1000 --all-pages --json
+python3 "$SKILL/scripts/prepare_cleanup.py" evidence-capture \
+  --output "$COLLECTED/owner.native.json" -- \
+  happyranch recall --org "$ORG" "$ACTING_TASK"
+python3 "$SKILL/scripts/prepare_cleanup.py" evidence-capture \
+  --output "$COLLECTED/worktrees.native.json" -- \
+  git -C "$PRIMARY" worktree list --porcelain
+```
+
+Inspect each native exit, error, stream and completeness before using it. These
+readers collect inputs; they do not create `inventory.json` or history exclusions.
+Assemble only the closed inventory/history schemas below from complete native
+receipts, exact task listings and retained native allocation measurements. Keep
+original argv/cwd/times/exits/streams and source files; do not substitute reference
+hashes for reader coverage or invent a collector command. Obtain original
+history sources through the maintained owner history pointer below. Unavailable
+measurement, repository enumeration or history stops actionable preparation.
+
+For no-repository agents, PRIMARY is empty only for no-action preparation.
+Retain native configuration and inspected repository-parent evidence proving
+absence, plus the same complete task/trigger/history receipts. Prepare and report
+complete empty/known-excluded inventory without rendering a job or fabricating
+host baseline/sequence evidence; incomplete collection reports blocked intent.
+
+There is currently **no supported task/audit/recall reader that supplies the
+absolute owner launch deadline** required by `CLEANUP_SESSION_DEADLINE`.
+The renderer only validates the supplied aware timestamp; it does not discover
+or authenticate that deadline. Unless authentic retained launch evidence already
+supplies that exact deadline for this current task/session, **stop before job
+request rendering/submission** and report `launch deadline evidence unavailable`.
+Never derive it from this example, wall-clock time, a guessed session duration,
+job wall budget or a previous session. Read-only collection and honest no-action
+reporting remain possible; this source gap grants no action authority.
 
 ## Preparation and observed handoff (THR-259 seq506)
 
@@ -736,8 +520,15 @@ The history object contains only `complete`, `sources` (absolute path and
 sha256 for each exact original history/exclusion artifact) and `excluded_paths`.
 Retain the actual prior attempts/outcomes and exclusions in those artifacts;
 never replace them with counts. Unknown scope/history prevents an actionable
-manifest. Historical containing-tree/cache overlap stays excluded. Do not
-revive TASK9513, parked551/43, TASK10711/10918 or TASK10929 attempts.
+manifest. Historical containing-tree/cache overlap stays excluded. Obtain the
+maintained owner-scoped history through that owner's `task_history.md` and the original
+cleanup output referenced there, using supported `happyranch recall --org ORG
+TASK --fetch-output` and artifact readers to retrieve retained evidence. Record
+each original artifact's literal absolute path and sha256 in `sources`; keep the
+original path/outcome/exclusion records, including parked and incomplete attempts.
+See [local attempt and publication evidence](#local-attempt-and-publication-evidence).
+Never rebind or retry an old attempt, clear exclusions or infer an empty history
+from missing records; unavailable maintained history stops preparation.
 
 Only explicit aware timestamp strings are accepted. Z, +00:00 and nonzero
 offsets compare as UTC instants; original strings remain in the receipts.
@@ -921,8 +712,26 @@ sibling helper.
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
 Direct use dispatches the bound one-journal driver; native runner output remains
-in its terminal evidence. The candidate operation returns `0` only for a verified removal and `2` only for a refusal whose final
-state has no outstanding mutation, established by positive original-cache,
+in its terminal evidence. These are separate exit contracts:
+
+| Direct wrapper / batch exit | Meaning and output |
+| --- | --- |
+| `0` | Batch-summary stdout; processed rows may all be refusals, report-only or inventory-only. It does not prove removal. |
+| `2` | Invalid input or preflight refusal on stderr; no candidate-removal claim. |
+| `3` (or other nonzero) | Evidence/action anomaly, unsafe halt or execution failure; inspect native journal and enclosing observations. |
+
+Derive removal only from verified acknowledged removal rows plus complete
+successful enclosing observer evidence, never wrapper exit `0` alone.
+
+| Internal candidate exit | Meaning and output |
+| --- | --- |
+| `0` | Verified-removal JSON receipt. |
+| `2` | Refusal/report-only/inventory-only JSON with no outstanding mutation. |
+| `3` | Anomaly or evidence-failure JSON; stop further mutations. |
+
+The candidate operation returns `0` only for a verified removal and `2` only
+for a refusal whose final state has no outstanding mutation, established by
+positive original-cache,
 isolation-absence, source/status/raw-index and measurement proof after any
 isolation-directory creation, rename or restoration. Exit `3` is the anomaly
 family. A restoration failure before recursive deletion is the distinct
@@ -981,10 +790,13 @@ the batch deadline plus one full per-candidate timeout, and wait in-session with
 `happyranch jobs wait`. The per-candidate runner still submits and authenticates
 its own nested host-visible scan job at action time; never replace that scan
 with an in-process shortcut. If the session ends mid-batch, later nested job
-submissions fail closed without mutation; a later cleanup task resumes from the
-fsync'd journal. This outer-job-to-nested-scanner flow is verified on a
-disposable target; an `unknown` scanner result remains an ordinary fail-closed
-refusal rather than a batch-wide stop.
+submissions fail closed without mutation. Preserve the original evidence and
+uncertainty for its owner. Recovery can only skip uniquely acknowledged terminal
+rows under the unchanged task/session/output binding, with complete successful
+enclosing batch, sequence and post-observations. An ended-session or incomplete
+attempt is not an actionable continuation manifest. Cross-task recovery needs a
+separate design; never weaken or rebind the saved context. An `unknown` scanner
+result remains an ordinary fail-closed refusal rather than a batch-wide stop.
 
 ## Authorized actions (non-force only)
 
@@ -1015,9 +827,9 @@ refusal rather than a batch-wide stop.
   ```
 
   **Never** `--force`. Never use `rm -rf`, a glob, a parent root, or
-  `git clean` to remove a worktree; `git worktree prune` is allowed only for an
-  already-missing registered path after a dry-run confirms the exact stale
-  record. Cache recursion uses only the descriptor-rooted primitive above,
+  `git clean` to remove a worktree. This procedure grants no worktree-prune
+  authority or standalone metadata mutation. Cache recursion uses only the
+  descriptor-rooted primitive above,
   never `rm -rf` or a later standalone pathname dispatch. A changed or
   reappearing original candidate path, isolation residue, or identity mismatch
   fails stopped and never emits `removed_cache`.
@@ -1028,11 +840,12 @@ concurrent/unattributed filesystem delta. Record literal argv and exit status
 beside that receipt and perform protected-path postchecks. Stop further
 mutations on any action, evidence, or report failure.
 
-This **implementation and witness task** deletes no production residue, never
-deploys, restarts, activates a flag, or sweeps. That prohibition belongs to this
-delivery task; the separately authorized future daily/manual use of this skill
-retains exactly the narrow cache/worktree actions and protections above, under
-the same action-time gates.
+Source delivery and witness execution grant no production cleanup, deployment,
+restart or activation authority. Separately authorized exact-marker daily/manual
+runs retain only the narrow actions and action-time gates above. Historical
+rollout and witness outcomes remain in their original task/release evidence,
+including failures and uncertainty; this operating procedure does not certify
+deployed activation or behavioral verification.
 
 ## Reporting
 
@@ -1101,7 +914,10 @@ cleanup authority. The root owner still retains unavailable scanner evidence;
 Darwin process-use observations and strict BSD mount parsing are described above;
 Scratch report routing is described above; frozen-app acceptance remains separate.
 
-## Separate future root-terminal owner
+## Separate runtime root-terminal owner
+
+See the maintained [forward-only terminal-task worktree contract](../../../../docs/agent-guides/orchestrator-contracts.md#forward-only-terminal-task-worktrees).
+Source wiring alone does not establish deployed activation.
 
 This manual/daily procedure keeps its marker, age, ordinal, peer/history,
 authenticated host-job scanner and cache gates. Its Git preservation,
@@ -1142,7 +958,7 @@ history is never cleared. These are source accounting rules, not behavioral
 verification or new execution/activation authority.
 
 
-Current-main C3 composition preserves automatic job admission: omitted/false
+Native job admission preserves automatic execution: omitted/false
 review_required executes through native owner checks; true refuses before allocation,
 legacy true pending is inert, and /run remains a tombstone. Authenticated later
 prerequisite loss rechecks native causal task ownership in the Pause transaction
@@ -1153,19 +969,7 @@ Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagno
 provenance alongside SAME native disposition, rollback and reconciliation rules;
 no removed whole-release naming fingerprint is restored.
 
-The scheduled daemon disk worker reserves a global native writer per admitted
-org before spawn, through supervision/reap/report. Held/unowned orgs defer with
-bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
-child admission re-reads the actual parent's active global writer ID
-through strict append-only history and validate the optional move layout/hold.
-An installed layout with missing/unknown ownership refuses before mutation; absent
-layout preserves native behavior. Missing/incomplete effect closure, interruption
-and partial mutation retain unknown writer evidence; a clean later provider result
-cannot erase it. The common1800-second window includes reservation admission.
-THR307seq134 scheduled deletion covers every admitted org when the daemon-wide
-stop admission above permits; metadata/jobs/age/
-containment safeguards and explicit manual dry-run remain. This C3 source
-checkpoint grants no live cleanup authority. These source changes have no
-behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. Retained C3 admission/native-writer hooks grant no
-live move or cleanup authority.
+The separate nightly worker's native-writer/hold and uncertainty contract is
+maintained in the nightly disk sweeper spec linked above. Source accounting
+never grants live cleanup, migration, recovery or deployment authority. Retain
+original failures and unverified outcomes in their owner-scoped evidence.

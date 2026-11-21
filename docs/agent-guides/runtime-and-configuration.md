@@ -2381,7 +2381,17 @@ lookup; active jobs still require valid lineage and retain their structural root
 Unknown job status/active lineage retains.
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
-after both task and structural root end. Socket/FIFO handling uses no-follow
+after both task and structural root end, with the Founder THR307 seq405 exception:
+a registered linked-worktree checkout (or an unreadable, oversized or changed
+regular `.git` file) retains its scratch root with
+`registered_worktree_in_scratch:<absolute .git path>`, naming the exact gitfile
+path. This is a located, item-scoped keep at the scratch root and does not by
+itself make the night incomplete. Nested `.git` directories, readable
+submodule-style/non-worktree or dangling gitfiles, sockets and FIFOs remain
+disposable. Tasks creating linked worktrees in task-tmp must remove their own
+exact registered worktrees with non-force `git worktree remove` before
+completion; the sweeper never prunes, repairs or removes their registrations.
+Socket/FIFO handling uses no-follow
 stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
 metadata-only O_PATH descriptors, including post-unlink inode observation.
 Darwin never opens any leaf: immediately before unlink it checks the full

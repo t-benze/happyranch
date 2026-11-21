@@ -1,5 +1,52 @@
 # Linux release handbook
 
+## Native language preference store (S8-1-L-a)
+
+`packaging/linux/desktop/app_locale.py` supplies the unwired native preference
+store for the later Settings wiring slice. Its closed API is `load()`,
+`current()`, and `set(value)`, each returning a fresh
+`{"current": "en" | "zh-CN", "persisted": bool}` dictionary compatible with
+the shell locale snapshot. First access reads once; repeated loads preserve a
+session-only choice. Unsupported values (including non-strings) raise
+`ValueError` without changing state or disk.
+
+The installation-local file is `$XDG_CONFIG_HOME/happyranch/locale`, or
+`~/.config/happyranch/locale` when XDG is empty, unset or relative. Its content
+is ASCII `en` or `zh-CN`, optionally followed by one newline. Missing, corrupt,
+unknown, oversized (over 64 bytes), unreadable, symlinked or non-regular files
+fall back to the existing rule: `LANG.lower().startswith("zh")` selects
+`zh-CN`; everything else selects `en`, with `persisted: false`.
+
+The module copies the desktop lowercase `happyranch` directory and atomic
+write conventions locally, with descriptor-relative no-follow parent traversal
+and bounded nonblocking regular-file reads. A mode-0600 exclusive temporary
+file in the same directory is flushed, fsynced and atomically replaced; the
+`happyranch` directory is then fsynced. Before writing the file, every write
+fsyncs the containing directory of every path component after opening that child
+without following links, whether mkdir created it or found it already present.
+This runs from `/` through the config parent, so retries confirm any ancestor
+entry left by a failed sync, with no durability state cached between calls.
+For default `~/.config/happyranch`, it syncs `/`, every HOME ancestor, HOME and
+`~/.config`, then `happyranch` after replacement. For absolute XDG config paths,
+it syncs `/` and every directory through `XDG_CONFIG_HOME`, including containing
+directories of missing intermediate ancestors, then `happyranch` after
+replacement. The bound is `/`: the traversal may create any component below
+root, and there is no containing entry above root to confirm.
+`persisted: true` is returned only after these steps succeed. Write failure
+keeps the choice in memory with `persisted: false`; a failure after replacement
+may leave the new file visible without confirmed durability. One lock covers
+memory and disk throughout each call, ordering concurrent threads by lock
+acquisition. The assumption is one owning native process with stable
+environment; concurrent processes have no ordering guarantee.
+
+No shell or bridge wiring is included here. Later wiring will switch web
+content live; native menus and system dialogs follow the choice on next launch.
+For isolated verification, set `TMPDIR` and `XDG_CONFIG_HOME` to disposable
+directories outside real user config, then run from `packaging/linux/desktop`:
+`GSETTINGS_BACKEND=memory /usr/bin/python3 -B -m unittest test_app_locale -v`.
+Check a saved choice in a new process, a read-only config directory, corrupt
+files, and rapid threaded sets; no daemon or Product E2E is needed.
+
 ## Build the intermediate payload
 
 Founder authorizes one manual build workflow under THR-291.
@@ -617,6 +664,109 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
+### Native Main header (Settings S6-L)
+
+The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**
+entry actions. With the opt-in packaged Main scheme, its status pill reads the
+native `app.status` v2 projection: no selection, starting, connected,
+unavailable, busy, or incompatible with Host/app/unknown-side guidance. It
+preserves **This computer / 此电脑** versus the selected remote name and shows
+the candidate's separate sign-in/approval/ready-to-switch/failure/cancelled phase.
+Long names are ellipsized with full native tooltips. Native copy follows the
+launch locale; web locale changes do not relabel the native header until next
+launch.
+
+Content replacement preserves the native titlebar during startup, web loading,
+restart/error recovery and Retry. A newly launched Main installs its own header;
+GTK's child enumeration includes that header, so only content is removed.
+
+The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
+including no-target recovery. Losing the web document does not clear the warning.
+Its keyboard-accessible action opens or re-presents the existing native Connection
+window; its tooltip explains Retry saving and that a new invite may be needed.
+Only the native owner's confirmed save projection clears the badge; header
+actions do not write that state.
+
+Until the S7-L1 topology lands, the Connection button and “Access wasn't saved”
+badge use the temporary native route `open_connection(None)` to open or
+re-present the existing native Connection window in both default and
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1` builds. Neither entry emits
+`app.dialogRequested` or requires a dialog subscription or Connection Retry.
+
+Only the Settings header action delivers the `app.dialogRequested` JSON string
+`{"schema":2,"dialog":"settings"}`.
+The page facade, named-world relay and native subscriber keep this closed event
+separate from `app.stateChanged`. Delivery requires the current admitted Main
+document's dialog subscription, independently of target readiness. Navigation,
+revocation and WebKit loss retire both subscriptions. Unavailable requests are
+dropped without queue or replay, including in the legacy HTTP/fallback view.
+The header shows Settings as the requested destination plus an explicit Retry
+action; becoming available never retries automatically. The subscribed web Main owns
+the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
+Native entry starts no daemon, changes no target/generation, and neither commits
+nor cancels an attempt. The existing main-window strip and close/Quit policy
+remain in place for their later cutover slices.
+
+Focused native checks use the existing direct system-Python venue, with Node 24
+for executing the literal page/relay scripts in an isolated message-bus fixture:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+# In a disposable GTK3/WebKit2 4.1 desktop/Xvfb session (DISPLAY required):
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_titlebar.py -v
+```
+
+The first two headless checks cover rendered labels/actions and the event boundary.
+The titlebar regression drives shipping `run_gui` with real GTK, including its
+actual titlebar child enumeration, web content, restart failure, Retry and fresh
+Main processes in EN/ZH. Host lifecycle/helper operations are isolated. It uses
+a minimal static web fixture by default; set `HAPPYRANCH_TITLEBAR_WEB_DIST` to an
+absolute same-source built `web/dist` for the real Main bundle, and optionally
+`HAPPYRANCH_TITLEBAR_OUTPUT` to an existing directory for 760px screenshots and
+titlebar observation JSON.
+They do not establish GTK fit, native/web focus or WebKit process behavior;
+qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
+above has known failures and must be compared against the same base, never
+reported as passing from these focused results.
+
+### Main Connection bridge admission (S6-W3-L)
+
+With `HAPPYRANCH_DESKTOP_APP_SCHEME=1`, the admitted top-level Main document
+also accepts the eight existing v1 `host.*` commands, `host.stateChanged`,
+`client.health`, `client.removeSaved` and `client.retrySave`. Results and events
+are raw v1 bodies, validated by the existing Protocol; mutation errors retain
+their native effect/recovery, including unknown outcomes. CSP/frame revocation
+and `pagehide` reject pending mutations as `documentChanged` / effect `unknown` /
+recovery `nativeRecovery`, never replaying them. This is conservative even before native
+admission, since posting supplies no no-effect receipt. Read-only calls retain
+effect `none` / recovery `refresh`, as do new calls refused after retirement.
+`host_bridge.py` is installed and required in the desktop payload. Main and the
+native Connection window share its dedicated bus, one busy slot and bounded
+Status waiters.
+Subscriptions receive a full snapshot and poll Status every three seconds
+while a subscribing window is visible; document retirement drops late events.
+The native Connection window and temporary header entry remain until S7-L1.
+
+`app.ownersChanged` admits the closed v2 aggregate summary for the current Main
+document. Commit/disconnect consult it: missing/unknown, pending, then dirty or
+failed owners refuse with `owner_save_unknown`, `owner_save_pending`, then
+`owner_edits_pending`; current non-GET transfers still gate effects. Invalid
+current summaries retire clearance, and document loss with unresolved work
+retains a process-lifetime unknown latch. No lifecycle keep/proceed decisions
+are consumed here (S7-L3); unknown/unissued gate IDs are refused.
+
+Focused checks, with Node 24 on PATH:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_host_bridge.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
+```
+
+Real helper/polkit mutations require a disposable venue; synthetic transport
+checks do not establish installed helper acceptance.
+
 ### Opt-in packaged runtime UI (Settings S2a)
 
 The default runtime view still loads the verified local daemon's HTTP URL.
@@ -942,6 +1092,47 @@ pre-start refusals create no shutdown obligation. A nonzero or timed-out stop
 shows a plain failure message and keeps the worker, window and desktop lock.
 Closing again requests one more bounded stop attempt; only successful shutdown
 permits exit and lock release. No process is signaled directly in service mode.
+
+### Linux active and candidate switching (Settings S5-L2)
+
+With the existing app-scheme opt-in, Main and the native Connection window now
+share one ClientUI/model owner. Main's admitted document can start an invitation
+or saved-computer attempt while its current target continues serving. Native
+dialogs retain invitation, approval and credential custody. The candidate uses
+the existing listener-free RemoteDaemon health/compatibility admission; it does
+not open a second runtime window or a loopback proxy. Its public identity is a
+generic name and opaque id, with phase and optional deadline only.
+
+`client.commitSwitch` requires a `ready_to_switch` candidate and uses the existing
+`select_target` gate. Refusals retain both targets and generation, with
+`owner_save_unknown`, `owner_save_pending` or `non_get_pending`. Candidate
+compatibility failures retain the active target and report `incompatible` with
+the existing host/app side. Cancel fences late completion and stops only the
+candidate. Success swaps target/generation, errors old-generation streams, then
+publishes status; old native-session cleanup is separately unknown until observed.
+Cleanup outcomes belong to each native session. A successful cleanup cannot clear
+another session's pending or failed cleanup; new Main attempts refuse while any
+owned cleanup is unknown or incomplete. Cancelling or failing a candidate restores
+the still-connected active projection, including its saved-computer reference and
+save intent. Session-only access keeps `access_unsaved` and the native Retry save
+action; a saved active connection keeps its saved-access metadata.
+
+Assumption/dependency: section 12 requires pending/unknown owner saves to refuse,
+but the current v2 schema defines no `app.owners` payload. Until S6-W2 supplies
+owner evidence, the injected native snapshot provider returns unknown and every
+voluntary commit/disconnect refuses. No owner wire format is added. Main view
+recreation reattaches the same committed session before navigation, with a fresh
+transport admission; it cancels an unfinished candidate. This is initial attachment
+of the same target, not a voluntary switch. Earlier S5-L2-pending descriptions in
+this handbook describe the preceding source epoch; native/live acceptance remains
+separate from this source implementation.
+
+Focused switch and admitted-document checks use the existing standalone venues:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py SwitchTests ClientDispatchTests -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py GTKTests.test_main_bridge_status_event_and_frame_navigation_refusal -v
+```
 
 ### Keep running after logout
 
