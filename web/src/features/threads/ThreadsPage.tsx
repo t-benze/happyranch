@@ -1252,10 +1252,12 @@ function DetailColumn({
   // back to the single-column thread list must stay reachable in every state.
   // THR-376: mockup .crumb — chevron + "All threads", rendered inside the
   // header block when the thread is loaded and on its own row otherwise.
+  // Size comes from the wrapper: ThreadHeader's crumb slot sets the spec §2
+  // 12.5px; the loading/error back row keeps the caption size.
   const crumb = (
     <Link
       to={backHref}
-      className="text-caption text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 font-medium transition-colors"
+      className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 font-medium transition-colors"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
         <path d="M15 18l-6-6 6-6" />
@@ -1263,7 +1265,7 @@ function DetailColumn({
       {t('threads.page.detail.back')}
     </Link>
   );
-  const backNav = <div className="px-3.5 pt-4 sm:px-7">{crumb}</div>;
+  const backNav = <div className="text-caption px-3.5 pt-4 sm:px-7">{crumb}</div>;
 
   // Loading skeleton
   if (loading) {
@@ -1356,42 +1358,27 @@ function DetailColumn({
               save: t('threads.page.header.save'),
               cancel: t('threads.page.header.cancel'),
               dreamBadge: t('threads.page.dreamBadge'),
+              pinned: t('threads.page.header.pinned'),
+              pinThread: t('threads.page.action.pinThread'),
+              unpinThread: t('threads.page.action.unpinThread'),
+              moreActions: t('threads.page.action.more'),
+              rename: t('threads.page.action.rename'),
+              pin: t('threads.page.action.pin'),
+              unpin: t('threads.page.action.unpin'),
+              copyId: t('threads.page.action.copyId'),
+              archive: t('threads.page.action.archive'),
             }}
-            actions={
-              <div className="flex flex-wrap items-center gap-1">
-                {/* Invite moved into the Participants rail (a-thread-detail);
-                    the header carries only Archive + archived-thread affordances.
-                    THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
-                    routing directly without duplicating actions in a menu. */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onRenameStart}
-                  disabled={renaming}
-                  title={t('threads.page.action.renameTitle')}
-                >
-                  {t('threads.page.action.rename')}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onTogglePin(!thread.pinned)}
-                  disabled={pinPending}
-                  aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-                  title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-                >
-                  {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-                </Button>
-                {/* Mockup .btn.btn-sm: outlined small button with the archive icon. */}
-                <Button variant="outline" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-                    <path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4" />
-                  </svg>
-                  {t('threads.page.action.archive')}
-                </Button>
-                {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
-              </div>
-            }
+            // THR-376 spec §2: Pin icon toggle + ⋯ menu (Rename, Pin/Unpin when
+            // narrow, Copy thread ID, Archive) are built by the header from
+            // these existing handlers. Invite lives in the Participants rail.
+            pinned={!!thread.pinned}
+            onTogglePin={onTogglePin}
+            pinPending={pinPending}
+            onRenameStart={onRenameStart}
+            onArchive={onArchive}
+            archiveDisabled={!open}
+            // Resume (archived threads) is outside spec §2 but kept as-is.
+            actions={thread.status === 'archived' ? <ResumeButton threadId={thread.thread_id} /> : undefined}
           />
           <PinErrorBanner message={pinError} />
           <div className="max-h-96 min-h-32 flex-1 overflow-auto md:max-h-none md:min-h-0">

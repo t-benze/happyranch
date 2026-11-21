@@ -207,11 +207,15 @@ Read messages, send a reply, manage thread lifecycle (invite, archive, abandon).
 
 ### ThreadHeader anatomy
 
-- Line 1, left: subject in `h2`, with a status `Badge` (open / archiving / archived / abandoned) immediately after. Right: action button row — Invite, Archive (all `ghost`).
-- Line 2, all `caption` size, all `text.muted`: monospace `THR-NNN`, then `·`, then participant AgentChips (comma-separated, with role dots).
+THR-376 spec §2 (supersedes the earlier Invite/Archive button row; Invite lives in the Participants rail):
+
+- Back link "All threads" (12.5px / 500, `text.secondary`, hover `text.primary`) above the title row.
+- Title row: subject in `h2`, `font-display` 22px / 500, line-height 1.25, letter-spacing −0.3px, clamped to 2 lines with an ellipsis; the full subject is always the `title` tooltip (never single-line truncated). Right: a 32px Pin icon toggle (`aria-pressed`; pinned = `accent-soft` fill + `accent-text` icon; label/tooltip "Pin thread" / "Unpin thread") and a 32px ⋯ menu (`DropdownMenu`, end-aligned, min-width 176px, `border.strong`): Rename, Pin/Unpin (narrow only), Copy thread ID (client clipboard), separator, Archive (disabled unless open). Archived threads also keep the Resume button beside them.
+- Meta line (12.5px, `text.secondary`, wraps): status pill → monospace `THR-NNN` → `·` message count → `·` "Pinned" (only when pinned). Separators use `text.muted`. No owner (the daemon has no owner field).
+- Narrow: when the HEADER container is ≤ 520px (container query, not viewport) the title is 19px and the Pin toggle moves into the ⋯ menu.
 - Optional row 3: if `archive_summary` present, render in a `surface.raised` box with a `text.primary` "Archive summary:" lead-in.
 
-When status ≠ "open", all action buttons are disabled.
+When status ≠ "open", the Archive menu item is disabled.
 
 ### MessageList anatomy
 

@@ -767,9 +767,9 @@ on intent for the founder-facing inventory:
 
 - **Button** has five variants: `primary`, `secondary`, `ghost`,
   `danger` (text-only red, hover tint), `destructive_filled` (only in
-  Archive/Abandon confirmation modals). The header action row in
-  ThreadHeader uses `ghost`, never `secondary` — chrome should not
-  compete with the message body.
+  Archive/Abandon confirmation modals). ThreadHeader actions are 32px
+  borderless icon buttons (Pin toggle + ⋯ menu, THR-376 §2), never
+  `secondary` — chrome should not compete with the message body.
 - **Input** / **Select** / **Textarea** share a single ink-on-raised
   treatment. The composer Textarea uses `body_lg` (15px / 24px) and is
   measure-capped at 72ch.
