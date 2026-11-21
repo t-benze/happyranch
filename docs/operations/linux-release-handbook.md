@@ -465,6 +465,7 @@ acceptance remains separate from temp-root verification.
 
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/app_locale.py`,
 `share/happyranch/desktop/client_store.py`,
 `share/happyranch/desktop/client_session.py`,
 `share/happyranch/desktop/client_runtime.py`,
