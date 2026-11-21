@@ -6,6 +6,8 @@ revisit dedupe repair (TASK-18273 / TASK-18272). Source mapping was rechecked at
 of Python execution or deployment. No runtime dependency, CI job, scheduled run
 or merge gate is added.
 
+New risky lifecycle changes must update a model per the [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
+
 **Result:** both historical incidents and the preserved pre-fix repeated-revisit
 counterexamples reproduce. With transactional live-descendant admission,
 `current.cfg` passes `OneDriver` and `current-executors.cfg` passes
