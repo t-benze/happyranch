@@ -1,5 +1,7 @@
 # Coding workflow contracts
 
+<a id="coding-v3-role-reports--s8a-staged-registration"></a>
+
 ## Coding v3 role reports — S8b registration
 
 Coding v3 (`release/happyranch/coding@3`) uses definition ABI @2 and generic
