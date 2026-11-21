@@ -204,6 +204,11 @@ export function refreshAppStatus(): Promise<AppState | null> {
   return seeding;
 }
 
+/** True while an `app.status` read is in flight (read-only accessor). */
+export function appStatusReadInFlight(): boolean {
+  return seeding !== null;
+}
+
 /** Seed (once) and subscribe; a no-op in browser mode. */
 export function ensureNativeTarget(): void {
   if (isNativeTarget() && !status && !seeding) void refreshAppStatus();

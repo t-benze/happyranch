@@ -33,7 +33,7 @@ import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
 import type { AppState } from '@/lib/native/appStatus';
 import { useNativeAppStatus } from '@/lib/native/hooks';
-import { refreshAppStatus } from '@/lib/native/target';
+import { appStatusReadInFlight, getAppStatus, refreshAppStatus } from '@/lib/native/target';
 import {
   callLocal,
   localFailureOf,
@@ -101,7 +101,7 @@ function useLocalService(): {
   view: LocalView;
   refresh: () => Promise<void>;
   act: (command: LocalMutation, enabled?: boolean) => Promise<void>;
-  supersedeReadmission: () => void;
+  supersedeReadmission: (outcome: Outcome) => void;
 } {
   const [view, setView] = useState<LocalView>(INITIAL);
   const mounted = useRef(true);
@@ -175,13 +175,34 @@ function useLocalService(): {
     [readUpdate],
   );
 
-  // A local-selection Recheck re-reads app.status; that fresh read replaces
-  // the earlier readmission instead of being compared with it.
-  const supersedeReadmission = useCallback((): void => {
-    setView((prev) => (prev.outcome?.kind === 'done' && prev.outcome.readmission ? { ...prev, outcome: { ...prev.outcome, readmission: null } } : prev));
+  // A local-selection Recheck that obtained a fresh local app.status replaces
+  // the earlier readmission instead of being compared with it. Only the same
+  // result the Recheck was started from is superseded (a newer action wins).
+  const supersedeReadmission = useCallback((outcome: Outcome): void => {
+    setView((prev) =>
+      prev.outcome === outcome && prev.outcome.kind === 'done' && prev.outcome.readmission ? { ...prev, outcome: { ...prev.outcome, readmission: null } } : prev,
+    );
   }, []);
 
   return { view, refresh, act, supersedeReadmission };
+}
+
+/**
+ * Recheck's app.status read. True only when a local status was published
+ * after this read was issued: its own successfully parsed reply, or a newer
+ * `app.stateChanged`. `refreshAppStatus()` keeps the cached status when a read
+ * is rejected, times out or is unreadable, so its return value is not proof;
+ * an unchanged status object means nothing fresh arrived. A read already in
+ * flight may predate the click, so it is settled first and not counted.
+ * While this is pending, and after a failure, the readmission result and its
+ * Recheck stay as they were.
+ */
+async function readFreshLocalStatus(): Promise<boolean> {
+  if (appStatusReadInFlight()) await refreshAppStatus();
+  const before = getAppStatus();
+  await refreshAppStatus();
+  const after = getAppStatus();
+  return after !== null && after !== before && after.target?.kind === 'local';
 }
 
 /**
@@ -224,14 +245,14 @@ export function LocalServicePage(): JSX.Element {
 
   // Re-read only. Under a remote selection app.status describes that Host,
   // so only this computer's local.status / local.update.status are read.
+  const outcome = view.outcome;
   const recheck = useCallback(async () => {
     if (!localSelected) {
       await refresh();
       return;
     }
-    supersedeReadmission();
-    await Promise.all([refresh(), refreshAppStatus()]);
-  }, [refresh, localSelected, supersedeReadmission]);
+    await Promise.all([refresh(), outcome ? readFreshLocalStatus().then((fresh) => fresh && supersedeReadmission(outcome)) : refreshAppStatus()]);
+  }, [refresh, localSelected, outcome, supersedeReadmission]);
 
   const service = view.service;
   const foreground = service?.mode === 'foreground';
