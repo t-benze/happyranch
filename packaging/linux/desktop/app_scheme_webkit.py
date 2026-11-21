@@ -46,6 +46,8 @@ CLIENT_COMMANDS = frozenset({"client.status", "client.acceptInvite", "client.ret
                              "client.savedComputers", "client.connectSaved", "client.cancelAttempt",
                              "client.commitSwitch", "client.disconnect", "client.health",
                              "client.removeSaved", "client.retrySave"})
+LOCAL_COMMANDS = frozenset({"local.status", "local.start", "local.stop", "local.restart",
+                            "local.keepRunning.set", "local.repair", "local.turnOff", "local.update.status"})
 
 
 def owners_summary(value: object) -> dict:
@@ -153,7 +155,8 @@ APP_PAGE = r"""(() => {
   const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
   const retired = command => {
-    const read = ['app.status','client.status','client.savedComputers','client.health','host.status','host.nextDevice'].includes(command);
+    const read = ['app.status','client.status','client.savedComputers','client.health','host.status','host.nextDevice',
+      'local.status','local.update.status'].includes(command);
     // Posting alone cannot confirm that a mutation had no effect, even before admission.
     return JSON.stringify({code:'documentChanged', effect:read ? 'none' : 'unknown',
       recovery:read ? 'refresh' : 'nativeRecovery'});
@@ -183,12 +186,14 @@ APP_PAGE = r"""(() => {
     // Native owns closed parsing, including duplicate-key detection. Preserve
     // the original string; JSON.parse here would erase duplicate keys.
     const locale = command === 'app.locale.set';
+    const local = ['local.status','local.start','local.stop','local.restart','local.keepRunning.set',
+      'local.repair','local.turnOff','local.update.status'].includes(command);
     // Keep invalid arguments inside the native envelope's existing byte bound;
     // escape expansion must not turn a locale refusal into a generic error.
-    if (locale && (typeof data !== 'string' || new TextEncoder().encode(JSON.stringify(data)).length > 3072))
+    if ((locale || local) && (typeof data !== 'string' || new TextEncoder().encode(JSON.stringify(data)).length > 3072))
       return reject(JSON.stringify({code:'invalidRequest',effect:'none',recovery:'none'}));
     try { args = JSON.parse(data); } catch {
-      if (!locale) return reject(fail('unsupportedCommand'));
+      if (!locale && !local) return reject(fail('unsupportedCommand'));
     }
     const saved = ['client.connectSaved','client.removeSaved'].includes(command) && args && !Array.isArray(args)
       && Object.keys(args).length === 1 && typeof args.computerRef === 'string'
@@ -199,7 +204,7 @@ APP_PAGE = r"""(() => {
       && counts && !Array.isArray(counts) && Object.keys(counts).sort().join(',') === 'dirty,failed,pending,unknown'
       && Object.values(counts).every(n=>Number.isInteger(n) && n >= 0 && n <= 255)
       && args.blocking === (counts.pending || counts.unknown ? 'hold' : counts.dirty || counts.failed ? 'prompt' : 'none');
-    if (!(empty.includes(command) && data === '{}') && !saved && !owners && !locale) return reject(fail('unsupportedCommand'));
+    if (!(empty.includes(command) && data === '{}') && !saved && !owners && !locale && !local) return reject(fail('unsupportedCommand'));
     if (pending.size >= 8) return reject(fail('busy'));
     const id = 'r' + (++sequence);
     pending.set(id, {resolve, reject, command});
@@ -283,7 +288,9 @@ APP_RELAY = r"""(() => {
         'client.retry','client.savedComputers','client.connectSaved','client.cancelAttempt',
         'client.commitSwitch','client.disconnect','client.health','client.removeSaved','client.retrySave',
         'host.status','host.enable','host.turnOff','host.createInvite','host.approveDevice','host.rejectDevice',
-        'host.nextDevice','host.revokeDevice','app.ownersChanged','app.locale.set'].includes(item.command) || typeof item.data !== 'string'
+        'host.nextDevice','host.revokeDevice','app.ownersChanged','app.locale.set',
+        'local.status','local.start','local.stop','local.restart','local.keepRunning.set',
+        'local.repair','local.turnOff','local.update.status'].includes(item.command) || typeof item.data !== 'string'
         || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
     let raw, ok = true, delivery;
     if (item.command === 'app.locale.set') {
@@ -439,6 +446,9 @@ class AppScheme:
         self.owners_unresolved = False
         self.status_refresh = None
         self.status_stop = None
+        self.local_dispatch = None
+        self.local_daemon = self.daemon if isinstance(self.daemon, LocalDaemon) else None
+        self.local_changing = False
         self.local = {"supported": local_mode == "service", "mode": local_mode,
                       "running": "running" if self.daemon is not None else "unknown",
                       "prompt_base_url": None}
@@ -463,7 +473,7 @@ class AppScheme:
                     if state == "incompatible":
                         incompatible = {"side": daemon._compatibility or "host", "host_contract": daemon.host_contract,
                                         "client_contract": _transport.CLIENT, "min_daemon": _transport.MIN_DAEMON}
-                if not remote and local["running"] == "stopped":
+                if not remote and local["running"] in {"stopped", "unknown"}:
                     state, incompatible = "unreachable", None
                 if not remote and local["running"] == "running":
                     local["prompt_base_url"] = f"http://127.0.0.1:{daemon.port}/api/v1"
@@ -526,9 +536,18 @@ class AppScheme:
         process loss and close invalidate transfers independently of this gate.
         """
         with self.target_lock:
-            if self.owner_uncertain or owner_saves is None or any(state == "unknown" for state in owner_saves):
+            refusal = self.effect_refusal(owner_saves)
+            if refusal:
+                return refusal
+            self._replace_target(target)
+        return None
+
+    def effect_refusal(self, owner_saves: tuple[str, ...] | None) -> str | None:
+        """Same fail-closed owner/effect gate for target and local interruption."""
+        with self.target_lock:
+            if self.owner_uncertain or owner_saves is None or "unknown" in owner_saves:
                 return "owner_save_unknown"
-            if any(state == "pending" for state in owner_saves):
+            if "pending" in owner_saves:
                 return "owner_save_pending"
             if any(state not in {"idle", "saved", "dirty", "failed"} for state in owner_saves):
                 return "owner_save_unknown"
@@ -537,8 +556,39 @@ class AppScheme:
             if any(t.generation == self.generation and not t.finished and t.method != "GET"
                    for t in self.transfers.values()):
                 return "non_get_pending"
-            self._replace_target(target)
         return None
+
+    def local_service_changed(self, running: str, url: str | None = None,
+                              recheck: bool = False, stop: threading.Event | None = None) -> None:
+        """Supervisor observation; never select a target or rebuild Main."""
+        with self.target_lock:
+            if self.closed:
+                return
+            local = self.local_daemon
+            if running != "running" or recheck:
+                if local is not None:
+                    local.reset()
+                for transfer in self.transfers.values():
+                    if transfer.target is local:
+                        transfer.cancel("target_changed")
+            self.local["running"] = running
+            self.local_changing = running != "running" or recheck
+            if recheck:
+                endpoint = urlsplit(url)
+                if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
+                    raise ValueError("invalid verified endpoint")
+                if local is None:
+                    local = self.local_daemon = LocalDaemon(endpoint.port)
+                else:
+                    local.port = endpoint.port
+        if recheck:
+            try:
+                local.bootstrap(stop)  # Existing health/compatibility + loopback bearer bootstrap.
+            except SchemeError:
+                pass  # app.status preserves the named mismatch/unreachable/busy result.
+            with self.target_lock:
+                self.local_changing = False
+        self.GLib.idle_add(self.emit_state)
 
     def _replace_target(self, target: LocalDaemon | RemoteDaemon | None) -> None:
         # The same lock fences first-send admission against this atomic swap.
@@ -562,7 +612,8 @@ class AppScheme:
         """Native admission progresses even while the page is in recovery."""
         with self.target_lock:
             daemon, generation, document = self.daemon, self.generation, self.document
-            if daemon is None or self.status_refresh == generation:
+            if (daemon is None or self.status_refresh == generation
+                    or daemon is self.local_daemon and self.local_changing):
                 return
             self.status_refresh = generation
             stop = self.status_stop = threading.Event()
@@ -640,6 +691,7 @@ class AppScheme:
     def bridge_message(self, manager: object, value: object, reply: object) -> bool:
         owner_command = False
         locale_command = False
+        local_command = False
         try:
             if manager != self.controller or self.closed or not self.bridge_token or not value.is_string():
                 raise ValueError("unavailable document")
@@ -649,6 +701,46 @@ class AppScheme:
             item = _contract.parse_json(value.to_string(), 4096)
             if type(item) is not dict or item.get("token") != self.bridge_token:
                 raise ValueError("stale document")
+            if item.get("command") in LOCAL_COMMANDS:
+                local_command = True
+                if set(item) != {"token", "command", "data"} or type(item["data"]) is not str:
+                    raise ValueError("invalid local request")
+                command = item["command"]
+                args = _contract.parse_json(item["data"], 1024)
+                if command == "local.keepRunning.set":
+                    if (type(args) is not dict or set(args) != {"schema", "enabled"}
+                            or type(args["schema"]) is not int or args["schema"] != 2
+                            or type(args["enabled"]) is not bool):
+                        raise ValueError("invalid keep-running request")
+                elif type(args) is not dict or args:
+                    raise ValueError("unexpected local arguments")
+                read = command in {"local.status", "local.update.status"}
+                document, token = self.document, self.bridge_token
+                def current() -> bool:
+                    return not self.closed and document == self.document and token == self.bridge_token
+                def gate(begin: bool = False) -> str | None:
+                    if command not in {"local.start", "local.stop", "local.restart"}:
+                        return None
+                    # Freeze local transport in the same lock as the final
+                    # owner/effect check, before the supervisor touches service.
+                    with self.target_lock:
+                        refusal = self.effect_refusal(self.owner_snapshot())
+                        if refusal is None and begin:
+                            self.local_service_changed("unknown" if command == "local.stop" else "starting")
+                        return refusal
+                def finish(result: object = None, error: dict | None = None) -> None:
+                    if not current():
+                        error = {"code": "documentChanged", "effect": "none" if read else "unknown",
+                                 "recovery": "refresh" if read else "nativeRecovery"}
+                    if error:
+                        reply.return_error_message(json.dumps(error))
+                    else:
+                        reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
+                if not callable(self.local_dispatch):
+                    finish(None, {"code": "unavailable", "effect": "none", "recovery": "nativeRecovery"})
+                else:
+                    self.local_dispatch(command, args, finish, current, gate)
+                return True
             if item.get("command") == "app.locale.set":
                 locale_command = True
                 if set(item) != {"token", "command", "data"} or type(item["data"]) is not str:
@@ -761,7 +853,7 @@ class AppScheme:
             reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
         except (SchemeError, ValueError, TypeError, UnicodeError, RecursionError):
             reply.return_error_message(json.dumps({"code": "invalidRequest", "effect": "none",
-                                                  "recovery": "none" if owner_command or locale_command else "refresh"}))
+                                                  "recovery": "none" if owner_command or locale_command or local_command else "refresh"}))
         return True
 
     def probe_document(self) -> None:
@@ -945,6 +1037,9 @@ class AppScheme:
             daemon = transfer.target
             if daemon is None:
                 raise SchemeError(503, "no_target")
+            with self.target_lock:
+                if daemon is self.local_daemon and self.local_changing:
+                    raise SchemeError(503, "target_starting" if self.local["running"] == "starting" else "target_unreachable")
             daemon.bootstrap(transfer.stop)
             if route(ORIGIN + target)[0].rstrip("/") == "/api/v1/auth/bootstrap":
                 # The dummy session is page-visible only after native admission.

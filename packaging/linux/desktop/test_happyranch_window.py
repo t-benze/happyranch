@@ -1939,5 +1939,139 @@ class RemoteAccessTests(unittest.TestCase):
         self.exercise(check)
 
 
+class LocalControlsTests(unittest.TestCase):
+    """Real supervisor/ServiceMode; only system commands and consent are synthetic."""
+
+    def setUp(self) -> None:
+        self.fixture = ServiceTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        f = self.fixture
+        self.service = f.service
+        def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            if argv[:3] in (["systemctl", "--user", "stop"], ["systemctl", "--user", "restart"]):
+                self.assertEqual(kwargs["timeout"], 60)
+            result = f.run_command(argv, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and argv[:3] == ["systemctl", "--user", "stop"]:
+                f.state.update(ActiveState="inactive", MainPID="0")
+                (f.home / "daemon.pid").unlink(missing_ok=True)
+                (f.home / "daemon.port").unlink(missing_ok=True)
+            elif result.returncode == 0 and argv[:3] == ["systemctl", "--user", "start"]:
+                f.state.update(ActiveState="active", MainPID="42")
+                f.publish()
+            return result
+        self.service.runner = runner
+        self.service.set_linger = lambda enabled: setattr(f, "linger", "yes" if enabled else "no")
+        self.requests, self.results, self.prompts, self.changes = queue.Queue(), [], [], []
+        self.allowed, self.current, self.refusal = True, True, None
+        self.controls = window.LocalControls(self.service, f.user_home, self.requests,
+            threading.Event(), lambda fn, *args: fn(*args), self.confirm,
+            lambda *args: self.changes.append(args))
+
+    def confirm(self, command: str, args: dict) -> bool:
+        self.prompts.append((command, args))
+        return self.allowed
+
+    def request(self, command: str, args: dict | None = None) -> None:
+        self.controls.request(command, args or {}, lambda result, error=None: self.results.append((result, error)),
+                              lambda: self.current, lambda _begin=False: self.refusal)
+
+    def run_request(self, command: str, args: dict | None = None) -> tuple:
+        self.request(command, args)
+        if not self.requests.empty():
+            self.controls.process(self.requests.get_nowait())
+        return self.results[-1]
+
+    def test_status_observes_actual_lifetime_and_foreground_is_read_only(self) -> None:
+        f = self.fixture
+        for enabled, linger, expected in ((False, False, "off"), (True, True, "on"),
+                                          (True, False, "partial"), (False, True, "partial")):
+            f.state["UnitFileState"], f.linger = ("enabled" if enabled else "disabled"), ("yes" if linger else "no")
+            result, error = self.run_request("local.status")
+            self.assertIsNone(error)
+            self.assertEqual(result, {"schema": 2, "service": {"supported": True, "mode": "service",
+                "running": "running", "keepRunning": expected, "busy": False}})
+        f.failed_command = "show"
+        self.assertEqual(self.run_request("local.status")[0]["service"]["keepRunning"], "unknown")
+        self.assertFalse(any(call[2] in {"start", "stop", "enable", "disable", "restart"}
+                             for call in f.calls if call[0] == "systemctl"))
+        self.controls.mode = "foreground"
+        before = len(f.calls)
+        self.assertEqual(self.run_request("local.status")[0]["service"], {"supported": False,
+            "mode": "foreground", "running": "running", "keepRunning": "unknown", "busy": False})
+        self.assertEqual(self.run_request("local.update.status")[0], {"schema": 2, "update": "unsupported"})
+        for command in ("local.start", "local.stop", "local.restart", "local.repair", "local.turnOff", "local.keepRunning.set"):
+            self.assertEqual(self.run_request(command, {"schema": 2, "enabled": True})[1],
+                             {"code": "unavailable", "effect": "none", "recovery": "nativeRecovery"})
+        self.assertEqual(len(f.calls), before)
+        self.assertEqual(self.prompts, [])
+
+    def test_slot_is_reserved_before_consent_and_busy_reads_do_not_compete(self) -> None:
+        def confirm(command: str, args: dict) -> bool:
+            self.request("local.turnOff")
+            self.request("local.status")
+            self.assertEqual(self.requests.qsize(), 0)
+            return True
+        self.controls.confirm = confirm
+        self.request("local.keepRunning.set", {"schema": 2, "enabled": True})
+        self.assertEqual(self.results[0][1], {"code": "busy", "effect": "none", "recovery": "refresh"})
+        self.assertEqual(self.results[1][0]["service"]["busy"], True)
+        self.assertEqual(self.results[1][0]["service"]["keepRunning"], "checking")
+        self.assertEqual(self.requests.qsize(), 1)
+        self.controls.process(self.requests.get_nowait())
+        self.assertEqual(self.results[-1][0], {"schema": 2, "command": "local.keepRunning.set",
+            "service": {"supported": True, "mode": "service", "running": "running", "keepRunning": "on", "busy": False}})
+        self.assertEqual(self.fixture.verbs().count("enable"), 1)
+
+    def test_failed_effect_requires_explicit_status_reconciliation_and_never_replays(self) -> None:
+        self.fixture.failed_command = "enable"
+        self.assertEqual(self.run_request("local.repair")[1],
+                         {"code": "outcomeUnknown", "effect": "unknown", "recovery": "nativeRecovery"})
+        before = self.fixture.verbs().count("enable")
+        self.assertEqual(self.run_request("local.repair")[1]["code"], "busy")
+        self.fixture.failed_command = None
+        self.assertFalse(self.run_request("local.status")[0]["service"]["busy"])
+        self.assertEqual(self.fixture.verbs().count("enable"), before)
+        self.assertEqual(self.run_request("local.repair")[0]["service"]["keepRunning"], "on")
+        self.assertEqual(self.run_request("local.turnOff")[0]["service"]["keepRunning"], "off")
+        self.assertNotIn("stop", self.fixture.verbs())
+
+    def test_consent_owner_and_document_are_rechecked_before_any_effect(self) -> None:
+        self.allowed = False
+        self.assertEqual(self.run_request("local.restart")[1]["effect"], "none")
+        self.allowed = True
+        self.refusal = "owner_save_pending"
+        self.assertEqual(self.run_request("local.restart")[1]["code"], "owner_save_pending")
+        self.refusal = None
+        self.request("local.restart")
+        self.current = False
+        self.controls.process(self.requests.get_nowait())
+        self.assertIsNotNone(self.results[-1][1], "retired document must not restart the service")
+        self.assertEqual(self.results[-1][1], {"code": "documentChanged", "effect": "none", "recovery": "refresh"})
+        self.assertEqual(self.fixture.calls, [])
+        self.assertIsNone(self.controls.operation)
+
+    def test_lifecycle_uses_owned_service_and_start_restart_request_readmission(self) -> None:
+        self.service.attached = self.service.shutdown_pending = True
+        for command, running in (("local.stop", "stopped"), ("local.start", "running"), ("local.restart", "running")):
+            result, error = self.run_request(command)
+            self.assertIsNone(error)
+            self.assertEqual(result["command"], command)
+            self.assertEqual(result["service"]["running"], running)
+            self.assertEqual(result["service"]["keepRunning"], "off")
+        self.assertEqual([entry for entry in self.changes if len(entry) == 3],
+                         [("running", "http://127.0.0.1:43127/", True)] * 2)
+        self.assertEqual(self.fixture.verbs().count("stop"), 1)
+        self.assertEqual(self.fixture.verbs().count("restart"), 1)
+        self.assertEqual(self.prompts, [("local.stop", {}), ("local.start", {}), ("local.restart", {})])
+        with patch.object(self.service, "update_installed", return_value=True):
+            self.assertEqual(self.run_request("local.update.status")[0], {"schema": 2, "update": "restart_required"})
+        with patch.object(self.service, "update_installed", return_value=False):
+            self.assertEqual(self.run_request("local.update.status")[0], {"schema": 2, "update": "not_detected"})
+        self.fixture.state["FragmentPath"] = "/foreign.service"
+        self.assertEqual(self.run_request("local.restart")[1]["code"], "outcomeUnknown")
+        self.assertEqual(self.fixture.verbs().count("restart"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

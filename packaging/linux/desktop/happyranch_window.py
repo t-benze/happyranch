@@ -585,6 +585,139 @@ class ServiceMode:
             self.attached = False
 
 
+class LocalControls:
+    """Main's local commands, using the launcher's one existing supervisor."""
+
+    def __init__(self, service: ServiceMode, prefix: Path, requests: queue.Queue,
+                 cancel: threading.Event, deliver: Callable, confirm: Callable,
+                 changed: Callable) -> None:
+        self.service, self.prefix, self.requests = service, prefix, requests
+        self.cancel, self.deliver, self.confirm, self.changed = cancel, deliver, confirm, changed
+        self.mode = "service"
+        self.lock = threading.Lock()
+        self.operation = None
+        self.unresolved = False
+
+    def pending_status(self) -> dict:
+        return {"supported": self.mode == "service", "mode": self.mode,
+                "running": "running" if self.mode == "foreground" else "unknown",
+                "keepRunning": "checking" if self.operation and not self.unresolved else "unknown",
+                "busy": self.operation is not None}
+
+    def observe(self) -> dict:
+        result = self.pending_status()
+        if self.mode != "service":
+            return result
+        try:
+            self.service.check_legacy()
+            self.service.validate_environment()
+            state = self.service.state()
+            self.service.refuse_external(self.service.pid(state))
+            if state.get("ActiveState") in {"inactive", "failed"} and self.service.pid(state) == 0:
+                result["running"] = "stopped"
+            elif self.service.verified_port(state) is not None:
+                result["running"] = "running"
+            elif state.get("ActiveState") == "activating":
+                result["running"] = "starting"
+            result["keepRunning"] = self.service.lifetime_state()
+        except (OSError, LaunchError):
+            # A failed inspection never turns into a successful Off observation.
+            result["running"], result["keepRunning"] = "unknown", "unknown"
+        return result
+
+    def request(self, command: str, args: dict, finish: Callable, current: Callable,
+                gate: Callable) -> None:
+        read = command in {"local.status", "local.update.status"}
+        with self.lock:
+            if read and self.operation is not None and not self.unresolved:
+                finish({"schema": 2, **({"service": self.pending_status()} if command == "local.status"
+                                        else {"update": "unknown"})})
+                return
+            if not read:
+                if self.mode != "service":
+                    finish(None, {"code": "unavailable", "effect": "none", "recovery": "nativeRecovery"})
+                    return
+                if self.operation is not None:
+                    finish(None, {"code": "busy", "effect": "none", "recovery": "refresh"})
+                    return
+                # Reserve before native prompting (which runs a nested GTK loop).
+                self.operation = command
+        if not read:
+            refusal = gate()
+            accepted = not refusal and current() and self.confirm(command, args)
+            refusal = refusal or (gate() if accepted else "permissionDenied")
+            if not current():
+                refusal = "documentChanged"
+            if refusal:
+                with self.lock:
+                    self.operation = None
+                finish(None, {"code": refusal, "effect": "none",
+                              "recovery": "nativePermission" if refusal == "permissionDenied" else "refresh"})
+                return
+        self.requests.put((command, args, finish, current, gate))
+
+    def process(self, request: tuple | None = None) -> None:
+        """Called only by supervise, never by another lifecycle worker."""
+        command, args, finish, current, gate = request or ("local.status", {}, None, lambda: True, lambda _begin=False: None)
+        read = command in {"local.status", "local.update.status"}
+        error, result = None, None
+        admitted = current()
+        refusal = gate(True) if not read and admitted else None
+        if not read and (not admitted or refusal):
+            with self.lock:
+                self.operation = None
+            error = {"code": "documentChanged" if not admitted else refusal,
+                     "effect": "none", "recovery": "refresh"}
+        else:
+            try:
+                if command == "local.update.status":
+                    update = "unsupported"
+                    if self.mode == "service":
+                        update = "unknown" if self.observe()["running"] == "unknown" else (
+                            "restart_required" if self.service.update_installed(self.prefix) else "not_detected")
+                    result = {"schema": 2, "update": update}
+                else:
+                    if command in {"local.start", "local.restart"}:
+                        url = (self.service.restart(self.cancel) if command == "local.restart"
+                               else self.service.start(self.cancel))
+                        if url is None:
+                            raise LaunchError("The user manager is unavailable.")
+                        self.changed("running", url, True)
+                    elif command == "local.stop":
+                        state = self.service.state()
+                        self.service.check_legacy()
+                        self.service.validate_environment()
+                        self.service.refuse_external(self.service.pid(state))
+                        if state.get("ActiveState") not in {"inactive", "failed"}:
+                            self.service.current_port()  # Fresh ownership before the existing stop path.
+                            self.service.shutdown_pending = True
+                            self.service.close()
+                    elif not read:
+                        self.service.set_keep_running(command == "local.repair" or
+                            command == "local.keepRunning.set" and args["enabled"])
+                    snapshot = self.observe()
+                    if not read and (snapshot["running"] == "unknown" or snapshot["keepRunning"] == "unknown"
+                                     or command == "local.stop" and snapshot["running"] != "stopped"):
+                        raise LaunchError("The local operation needs fresh inspection.")
+                    with self.lock:
+                        if not read or self.unresolved and snapshot["running"] != "unknown" and snapshot["keepRunning"] != "unknown":
+                            self.operation, self.unresolved = None, False
+                        snapshot["busy"] = self.operation is not None
+                    self.changed(snapshot["running"])
+                    result = {"schema": 2, "service": snapshot}
+                    if not read:
+                        result["command"] = command
+            except (OSError, LaunchError):
+                # The service may already have changed. Hold this exact owner;
+                # only an explicit fresh local.status can reconcile it.
+                with self.lock:
+                    self.unresolved = True
+                self.changed("unknown")
+                error = {"code": "outcomeUnknown", "effect": "unknown", "recovery": "nativeRecovery"}
+        if finish is not None:
+            self.deliver(finish, result, error)
+
+
 def wait_for_health(child: subprocess.Popen, home: Path, cancel: threading.Event,
                     timeout: float = 60) -> str:
     deadline = time.monotonic() + timeout
@@ -1011,10 +1144,41 @@ def run_gui(prefix: Path, home: Path) -> int:
     log_path = home / "logs/desktop-daemon.log"
     service = ServiceMode(home)
     requests = queue.Queue()
-    controls = None
     remote = None
     client_ui = None
     app_scheme = None
+
+    def confirm_local(command: str, args: dict) -> bool:
+        if command == "local.start":
+            return True
+        if command in {"local.turnOff", "local.keepRunning.set"} and not args.get("enabled", False):
+            text = tr("Turn off keep running? This turns off background running, but does not stop HappyRanch now.",
+                      "关闭后台运行？这会关闭后台运行，但不会立即停止 HappyRanch。")
+        elif command == "local.restart":
+            text = tr("Restart the HappyRanch service on this computer? This may interrupt local work. The app stays open and keep running is unchanged.",
+                      "重启此电脑上的 HappyRanch 服务？这可能中断本地工作。应用保持打开，后台运行设置不变。")
+        elif command == "local.stop":
+            text = tr("Stop HappyRanch on this computer? This may interrupt local work. Keep running is unchanged; work may not resume after login or reboot.",
+                      "停止此电脑上的 HappyRanch？这可能中断本地工作。后台运行设置不变；登录或重启后工作可能不会恢复。")
+        else:
+            text = tr("Keep HappyRanch running on this computer after closing the app and logging out? System permission may be required.",
+                      "关闭应用并退出登录后，仍让此电脑上的 HappyRanch 保持运行？可能需要系统授权。")
+        dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+            message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE, text=text)
+        dialog.format_secondary_text(socket.gethostname())
+        dialog.add_buttons(tr("Cancel", "取消"), Gtk.ResponseType.CANCEL,
+                           tr("Continue", "继续"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        accepted = dialog.run() == Gtk.ResponseType.OK
+        dialog.destroy()
+        return accepted
+
+    def local_changed(running: str, url: str | None = None, recheck: bool = False) -> None:
+        if app_scheme is not None:
+            app_scheme.local_service_changed(running, url, recheck, cancel)
+
+    local_controls = LocalControls(service, prefix, requests, cancel, GLib.idle_add,
+                                   confirm_local, local_changed)
 
     def request_dialog(dialog: str) -> bool:
         if app_scheme is None or not app_scheme.request_dialog(dialog):
@@ -1076,60 +1240,8 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.show_all()
         return False
 
-    def render_controls(state: str, detail: str, update: bool, available: bool = True) -> bool:
-        if closing or controls is None:
-            return False
-        for widget in controls.get_children():
-            controls.remove(widget)
-        setting_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        label = Gtk.Label(label=tr("Keep HappyRanch running when I'm logged out",
-                                   "退出登录后保持 HappyRanch 运行"))
-        setting_row.pack_start(label, False, False, 0)
-        switch = Gtk.Switch()
-        switch.set_valign(Gtk.Align.CENTER)
-        switch.set_active(state == "on")
-        switch.set_sensitive(available)
-        def toggled(_switch: object, active: bool) -> bool:
-            switch.set_sensitive(False)
-            requests.put("on" if active else "off")
-            return True  # Only fresh observations update the displayed switch.
-        switch.connect("state-set", toggled)
-        setting_row.pack_start(switch, False, False, 0)
-        controls.pack_start(setting_row, False, False, 0)
-        if state == "partial":
-            partial_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            partial_row.pack_start(Gtk.Label(label=tr("Partly on - click to repair/turn off",
-                                                      "部分开启 - 点击修复或关闭")), False, False, 0)
-            for text, zh, action in (("Repair", "修复", "on"), ("Turn off", "关闭", "off")):
-                button = Gtk.Button(label=tr(text, zh))
-                button.connect("clicked", lambda _button, action=action: requests.put(action))
-                partial_row.pack_start(button, False, False, 0)
-            controls.pack_start(partial_row, False, False, 0)
-        if detail:
-            diagnostic = Gtk.Label(label=detail)
-            diagnostic.set_line_wrap(True)
-            diagnostic.set_xalign(0)
-            controls.pack_start(diagnostic, False, False, 0)
-        if update:
-            update_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            update_row.pack_start(Gtk.Label(label=tr("Update installed - restart HappyRanch",
-                                                     "更新已安装 - 请重启 HappyRanch")), False, False, 0)
-            button = Gtk.Button(label=tr("Restart HappyRanch", "重启 HappyRanch"))
-            button.connect("clicked", lambda _button: requests.put("restart"))
-            update_row.pack_start(button, False, False, 0)
-            controls.pack_start(update_row, False, False, 0)
-        controls.show_all()
-        return False
-
-    def refresh_controls(detail: str = "") -> None:
-        try:
-            state = service.lifetime_state()
-            GLib.idle_add(render_controls, state, detail, service.update_installed(prefix))
-        except (OSError, LaunchError) as exc:
-            GLib.idle_add(render_controls, "off", str(exc), False, False)
-
     def show_web(url: str, fallback: bool = False) -> bool:
-        nonlocal controls, app_scheme, client_ui
+        nonlocal app_scheme, client_ui
         if closing:
             return False
         if app_scheme is not None:
@@ -1149,6 +1261,8 @@ def run_gui(prefix: Path, home: Path) -> int:
             spec.loader.exec_module(module)
             app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
                                           local_mode="foreground" if fallback else "service")
+            local_controls.mode = "foreground" if fallback else "service"
+            app_scheme.local_dispatch = local_controls.request
             if client_ui is None:
                 client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
                 client_module = importlib.util.module_from_spec(client_spec)
@@ -1170,14 +1284,6 @@ def run_gui(prefix: Path, home: Path) -> int:
         if content is not None:
             window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        controls.set_margin_start(12)
-        controls.set_margin_end(12)
-        controls.set_margin_top(12)
-        controls.set_margin_bottom(12)
-        box.pack_start(controls, False, False, 0)
-        attach_remote(box)
-        box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
             return True
@@ -1186,11 +1292,6 @@ def run_gui(prefix: Path, home: Path) -> int:
         window.add(box)
         view.load_uri(url)
         window.show_all()
-        if fallback:
-            render_controls("off", tr("Unavailable: no systemd user manager.",
-                                       "不可用：没有 systemd 用户服务管理器。"), False, False)
-        else:
-            requests.put("refresh")
         return False
 
     def finish(error: str | LaunchError | None) -> bool:
@@ -1214,28 +1315,15 @@ def run_gui(prefix: Path, home: Path) -> int:
             url = service.start(cancel, retry=action == "retry")
             if url is not None:
                 GLib.idle_add(show_web, url)
-                detail = ""
                 while not cancel.is_set():
                     try:
                         operation = requests.get(timeout=2)
                     except queue.Empty:
-                        operation = "refresh"
+                        operation = None
                     if cancel.is_set():
                         break
-                    if operation != "refresh":
-                        detail = ""
-                    try:
-                        if operation in {"on", "off"}:
-                            service.set_keep_running(operation == "on")
-                        elif operation == "restart":
-                            GLib.idle_add(message, tr("Restarting HappyRanch…", "正在重启 HappyRanch…"))
-                            url = service.restart(cancel)
-                            GLib.idle_add(show_web, url)
-                    except (OSError, LaunchError) as exc:
-                        if operation == "restart":
-                            raise
-                        detail = str(exc)
-                    refresh_controls(detail)
+                    if operation is not None or not local_controls.unresolved:
+                        local_controls.process(operation)
                 return
             GLib.idle_add(message, tr("Starting HappyRanch without a user manager…",
                                      "用户服务管理器不可用，正在启动 HappyRanch…"))
@@ -1252,6 +1340,10 @@ def run_gui(prefix: Path, home: Path) -> int:
                 while not cancel.wait(0.2):
                     if child.poll() is not None:
                         raise LaunchError(f"Daemon exited (status {child.returncode}).")
+                    try:
+                        local_controls.process(requests.get_nowait())
+                    except queue.Empty:
+                        pass
         except (OSError, LaunchError) as exc:
             if not cancel.is_set():
                 error = exc if isinstance(exc, LaunchError) else str(exc)

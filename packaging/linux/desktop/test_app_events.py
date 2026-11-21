@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import os
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
 import threading
@@ -15,6 +17,7 @@ from unittest.mock import patch
 
 from gi.repository import GLib
 import app_scheme_webkit as native
+import happyranch_window as launcher
 
 
 class EventTests(unittest.TestCase):
@@ -136,6 +139,18 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  return;
  }
  vm.runInContext('hrAppBridge.admit(hrAppBridge.token)',contexts[1]);
+ if(sources.case==='local'){
+  for(const command of ['local.status','local.start','local.stop','local.restart','local.keepRunning.set','local.repair','local.turnOff','local.update.status']){
+   for(const args of ['{}','{','{"schema":2,"enabled":false,"enabled":true}']){
+    contexts[0].command=command;contexts[0].args=args;
+    const before=native.length;
+    await vm.runInContext("happyranchConnection.call(command,args).catch(()=>{})",contexts[0]);
+    assert.equal(native.length,before+1,'each local command must reach native closed parsing');
+    assert.equal(native.at(-1).data,args,'preserve duplicate/malformed argument bytes');
+   }
+  }
+  return;
+ }
  if(sources.case==='locale'){
   vm.runInContext("globalThis.seen=[];happyranchConnection.on('app.stateChanged',raw=>seen.push(['event',JSON.parse(raw)]));",contexts[0]);
   for(const locale of ['zh-CN','en']){
@@ -249,6 +264,12 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
 
     def test_locale_relay_delivers_reply_before_even_an_early_native_publication(self):
         self.connection_boundary('locale')
+
+    def test_local_page_relay_admission_and_retired_effect_semantics(self):
+        self.connection_boundary('local')
+        for command in ('local.start', 'local.stop', 'local.restart', 'local.keepRunning.set',
+                        'local.repair', 'local.turnOff'):
+            self.connection_boundary('retirement-pagehide', command)
 
     def test_page_and_named_world_relay_keep_listeners_separate(self):
         # VM supplies only browser plumbing. Both facades under test are the
@@ -477,6 +498,128 @@ class LocaleBridgeTests(unittest.TestCase):
         self.assertEqual(self.trace, [("write", "zh-CN"), ("write", "en"), ("reply", "en"), ("event", "en")])
         self.assertEqual(self.store.current(), {"current": "en", "persisted": True})
         self.assertEqual(json.loads(self.errors[0])["effect"], "unknown")
+
+
+class LocalBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        EventTests.setUp(self)
+        self.calls, self.results = [], []
+        self.reply.return_value = self.results.append
+        self.app.local_dispatch = lambda *args: self.calls.append(args)
+
+    def call(self, command: str, data: str = "{}", **extra: object) -> None:
+        item = {"token": self.app.bridge_token, "command": command, "data": data, **extra}
+        value = SimpleNamespace(is_string=lambda: True, to_string=lambda: json.dumps(item), get_context=lambda: None)
+        self.app.bridge_message(self.app.controller, value, self.reply)
+
+    def test_closed_local_native_admission_and_retired_replies(self) -> None:
+        for command in ("local.status", "local.start", "local.stop", "local.restart", "local.repair", "local.turnOff", "local.update.status"):
+            self.call(command)
+            self.assertEqual(self.errors, [], "admitted local commands must reach the supervisor")
+            self.assertEqual(self.calls[-1][:2], (command, {}))
+        self.call("local.keepRunning.set", '{"schema":2,"enabled":true}')
+        self.assertEqual(self.calls[-1][:2], ("local.keepRunning.set", {"schema": 2, "enabled": True}))
+        count = len(self.calls)
+        for command, data in (("local.status", "[]"), ("local.restart", '{"host":"Studio"}'),
+                ("local.stop", '{"x":1,"x":2}'), ("local.start", '{'),
+                ("local.keepRunning.set", '{}'), ("local.keepRunning.set", '{"schema":2,"enabled":1}'),
+                ("local.keepRunning.set", '{"schema":true,"enabled":true}'),
+                ("local.keepRunning.set", '{"schema":2,"enabled":true,"enabled":false}'),
+                ("local.keepRunning.set", '{"schema":2,"enabled":true,"target":"Studio"}')):
+            self.call(command, data)
+            self.assertEqual(json.loads(self.errors[-1]), {"code": "invalidRequest", "effect": "none", "recovery": "none"})
+        self.assertEqual(len(self.calls), count)
+        self.call("local.restart", token="stale")
+        self.uri = "https://app/"
+        self.call("local.restart")
+        self.uri = native.ORIGIN + "/api/v1/health"
+        self.call("local.restart")
+        self.assertEqual(len(self.calls), count)
+        self.uri = native.ORIGIN + "/"
+        self.call("local.restart")
+        finish = self.calls[-1][2]
+        self.app.bridge_token = "replacement"
+        finish({"schema": 2})
+        self.assertEqual(json.loads(self.errors[-1]), {"code": "documentChanged", "effect": "unknown", "recovery": "nativeRecovery"})
+
+    def test_local_interruption_reuses_fail_closed_owner_and_effect_gate(self) -> None:
+        requests = queue.Queue()
+        controls = launcher.LocalControls(SimpleNamespace(), Path("/unused"), requests,
+            threading.Event(), lambda fn, *args: fn(*args), lambda *_args: True, lambda *_args: None)
+        self.app.local_dispatch = controls.request
+        for summary, expected in ((None, "owner_save_unknown"),
+                ({"counts": {"pending": 1}}, "owner_save_pending"),
+                ({"counts": {"unknown": 1}}, "owner_save_unknown"),
+                ({"counts": {"dirty": 1}}, "owner_edits_pending"),
+                ({"counts": {}}, None)):
+            self.errors.clear()
+            self.app.owners = summary
+            self.call("local.restart")
+            if expected:
+                self.assertTrue(self.errors, "uncertain owners must refuse the local operation")
+                self.assertEqual(json.loads(self.errors[-1]), {"code": expected, "effect": "none", "recovery": "refresh"})
+                self.assertTrue(requests.empty())
+            else:
+                self.assertEqual(self.errors, [], "clean owners may enqueue the operation")
+                self.assertEqual(requests.qsize(), 1)
+        self.app.transfers["pending"] = SimpleNamespace(generation=self.app.generation, finished=False, method="POST")
+        controls.process(requests.get_nowait())
+        self.assertEqual(json.loads(self.errors[-1]), {"code": "non_get_pending", "effect": "none", "recovery": "refresh"})
+
+    def test_service_readmission_uses_real_loopback_and_preserves_main_remote_and_owners(self) -> None:
+        seen = []
+        contract = {"current": 1, "min_client": 1}
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                seen.append(self.path)
+                body = json.dumps({"api_contract": contract} if self.path == "/api/v1/health"
+                                  else {"token": "synthetic-refreshed-local"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *_args: object) -> None:
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.shutdown)
+        local = self.app.local_daemon = native.LocalDaemon(server.server_port)
+        url = f"http://127.0.0.1:{server.server_port}/"
+        remote = native.RemoteDaemon(None, ready=True, target_id="remote-test", name="Studio Host")
+        remote.state = "ready"
+        self.app.owners = {"counts": {}}
+        self.app.candidate = {"kind": "remote", "id": "candidate", "name": "Candidate Host",
+                              "phase": "ready_to_switch", "deadline": None}
+        self.app.subscribed = True
+        for target in (local, remote):
+            self.app.daemon = target
+            before = (self.app.view, self.app.document, self.app.generation, self.app.owners, self.app.candidate)
+            local._bearer, local._compatibility, local.state = "synthetic-old-local", "", "ready"
+            seen.clear()
+            self.app.local_service_changed("starting")
+            self.assertIsNone(local._bearer)
+            self.app.local_service_changed("running", url, True)
+            context = GLib.MainContext.default()
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual(seen, ["/api/v1/health", "/api/v1/auth/bootstrap"])
+            self.assertEqual(local._bearer, "synthetic-refreshed-local")
+            self.assertEqual(local.state, "ready")
+            self.assertIs(self.app.daemon, target)
+            self.assertEqual(self.delivered[-1]["event"], "app.stateChanged")
+            self.assertEqual(json.loads(self.delivered[-1]["raw"])["target"]["id"],
+                             "local" if target is local else "remote-test")
+            self.assertEqual((self.app.view, self.app.document, self.app.generation, self.app.owners, self.app.candidate), before)
+        self.app.candidate = None
+        self.app.daemon = local
+        contract.update(current=2, min_client=2)
+        self.app.local_service_changed("starting")
+        self.app.local_service_changed("running", url, True)
+        self.assertEqual(self.app.status()["incompatible"]["side"], "app")
+        self.assertIsNone(local._bearer)
 
 
 if __name__ == "__main__":
