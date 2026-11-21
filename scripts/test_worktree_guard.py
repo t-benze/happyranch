@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,45 @@ def setup(writer: Path, repo: Path, target: Path, *owner: str) -> subprocess.Com
 
 
 class WorktreeGuardTests(unittest.TestCase):
+    def test_recovery_recipe_preserves_mixed_binary_and_mode_changes(self) -> None:
+        for writer in WRITERS:
+            with self.subTest(writer=writer):
+                with tempfile.TemporaryDirectory(prefix="guard recovery '") as directory:
+                    repo, target = worktree(Path(directory), "TASK-1", "task/TASK-1")
+                    result = setup(writer, repo, target, "--task-id", "TASK-1")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    (repo / "source").write_text("staged\n")
+                    (repo / "source").chmod(0o755)
+                    (repo / "binary").write_bytes(b"\x00staged\xff")
+                    git(repo, "add", "source", "binary")
+                    (repo / "source").write_text("staged\nunstaged\n")
+                    (repo / "binary").write_bytes(b"\x00staged\xffunstaged\xfe")
+                    result = subprocess.run([sys.executable, str(writer), "verify",
+                        "--worktree-root", str(target)], capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    recipe = result.stderr
+                    self.assertNotIn("> /tmp/", recipe)
+                    self.assertNotIn("< /tmp/", recipe)
+                    patch = target / "primary-recovery.patch"
+                    export = (f"git -C {shlex.quote(str(repo))} diff --binary HEAD > "
+                              f"{shlex.quote(str(patch))}")
+                    apply = f"git -C {shlex.quote(str(target))} apply --3way primary-recovery.patch"
+                    self.assertIn(export, recipe)
+                    self.assertIn(apply, recipe)
+                    self.assertIn("Remove primary-recovery.patch", recipe)
+                    # Execute the actual emitted lines, including their shell quoting.
+                    for command in (export, apply):
+                        emitted = next(line.strip() for line in recipe.splitlines()
+                                       if line.strip() == command)
+                        # Control file creation permissions independently of the host umask.
+                        applied = subprocess.run("umask 022\n" + emitted, shell=True, capture_output=True,
+                                                 text=True, timeout=10)
+                        self.assertEqual(applied.returncode, 0, applied.stderr)
+                    self.assertIn(b"GIT binary patch", patch.read_bytes())
+                    for name in ("source", "binary"):
+                        self.assertEqual((target / name).read_bytes(), (repo / name).read_bytes())
+                    self.assertEqual((target / "source").stat().st_mode & 0o777, 0o755)
+
     def test_refuses_unproven_owner_without_effects(self) -> None:
         cases = (
             ("omitted", "TASK-1", "task/TASK-1", (), "requires --task-id"),

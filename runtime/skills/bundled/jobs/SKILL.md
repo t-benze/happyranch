@@ -3,217 +3,39 @@ name: jobs
 description: Run an authorized script in the background; inspect its actual result.
 ---
 
-
-## Retained preparation and admission
-
-`OrgState.load` retains the org-owned `team_move_operations` compatibility table.
-`install_team_move_schema` validates the existing layout/history and org identity,
-creates only the frozen literal table when absent, and validates before COMMIT.
-The active-row startup refusal is removed with the online operation/recovery
-surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
-task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
-ordinary participant/session-write, reply-delivery claim/probe and scheduler
-redelivery move checks, plus dead move-only projection/publication APIs.
-Reserved readers remain in Founder abort/attestation and callback/uncertainty
-settlement, delivery-release permission/recovery, the archived-thread retry chain
-and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
-history or stored move row is rewritten.
-
-C2 freezes thread retry initialization explicitly, including EMPTY
-budgets. New initial/fallback/nudge phase initialization is distinct from a
-frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
-their original history interpretation but refuse ambiguous new retry/reentry
-with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
-
-Historical task attribution remains separate from current launch eligibility.
-PR-3b removes the unused move-only task/workflow closure census. New execution
-still requires a current executable owner. Strict saved history, native identity,
-Pause and cleanup ownership remain; no historical record, team, callback or
-binding is rewritten.
-
-The SAME INTEGER thread invocation/agent/SID preparation owner spans native
-materialization, integrity, repository refresh and launch-spec/cache preparation,
-including helper-internal omissions and caught failures. Such uncertainty appends
-the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
-backend preparation/cleanup and native workspace/cache failures retain ownership.
-Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
-strict history reader, restart/reentry and census preserve that fact, independently
-of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
-launch-seam refusals before effects retain their native no-effect disposition;
-returned failure alone never proves compensation. No new schema/journal/backfill
-or generic producer identity is introduced. All behavior remains UNEXECUTED.
-
-Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
-through materialization, integrity (including retries), package omissions,
-repository refresh, attachment writes/cleanup, task scratch and builtin/custom
-cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
-preparation resumes; this never clears existing uncertainty.
-Preparation failure sets the existing local reservation cleanup flag BEFORE the
-fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
-the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
-worktree cleanup cannot clear it. Settlement persists that fact before release;
-failed saves retain local ownership and original plus persistence errors.
-Restart treats unclosed task `prepared` entries as unknown, including terminal
-rows and prepared recovery/retry owners; absence of first launch is no proof of
-preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
-Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
-backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
-
 # jobs
-
-The normal daemon holds `<daemon_home>/daemon.lock` before startup sweeps until
-process exit; never unlink that file. Its logged previous-boot proof is not job
-or process-tree quiescence. Only the separate narrow thread startup pass consumes
-it together with recorded thread-attempt quiescence; job recovery is unchanged. Shell stop retains
-60s TERM grace and waits up to 2s for actual exit after KILL; an unconfirmed exit
-returns nonzero and retains lifecycle evidence. Every shell stop-success and
-applying legacy-migration path also waits up to 2s for a no-follow nonblocking
-flock release probe, including missing/stale PID and observed live-PID exit.
-The probe immediately releases an acquired lock; never unlink the file. Only
-absent/free regular lock evidence permits success. Held or ambiguous evidence
-refuses with the lock path and readable PID, preserving markers. Shell uses the
-checkout's uv/Python; migration dry-run remains a preview without a stopped
-claim. This adds no restart/cleanup
-authority; current job recovery and unknown-ownership rules below still apply.
-
-### Current Stop/status boundary — THR321seq6
-
-Stop200 acknowledges an owned Stop signal request, or a proven-dead retained
-job settlement. CLI says “Stop requested”; inspect show/wait for the actual
-row/reason/nullable exit and output.
-Running without a signal target returns409 `job_runner_pending`,
-`job_runner_finalizing` or, unless retained-job death is proven,
-`job_liveness_unknown`. Unavailable attribution/history
-returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
-holds; the `team_move_native_held` response model and exception translator remain
-compatibility surfaces. Actual owned Stop remains possible under active root Pause.
-Signal/audit503 states request_issued true/false/null. Do not blindly retry.
-Startup retains unproven running jobs with explicit unknown liveness;
-missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
-Actual DB attachment/original preparation/attempt/runner/Process fences prevent
-cross-org ID collisions and stale-owner signals/removal/writes. The original job
-row/CAS, one trigger audit, actual producer and strict Pause disposition commit
-before local release/hint/wake; failed tails and descendant uncertainty remain.
-Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
-on read failure and offer explicit fresh detail-only Refresh status when streaming
-is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
-Stop success/error settlement refreshes actual detail/list; locale changes issue
-no requests. A terminal hint alone never verifies [done]. Source publication is separate
-from deployment or historical recovery.
-
-Native C3 preparation failure or ordinary process return never proves file,
-package or process cleanup. Unknown ownership remains in retained audit census.
-New retry budgets explicitly freeze even an empty schedule; missing legacy facts
-cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
-real preparation/spec/execution and is distinct from provider resume identity.
-Custom-skill authority validates before reservations; only explicit native
-validation/rollback/temporary-cleanup evidence can settle a refused writer.
-No history deletion, automatic recovery, apply or execution authority follows.
-
-Job creation and automatic launch no longer check a team-move hold. Shared task/session/job ownership, Pause controls and cleanup uncertainty remain. A safe already-admitted no-launch deferral keeps its exact runner and submission. Terminal job status alone is not process-tree quiescence. No live repair or cleanup authority follows; behavior remains UNEXECUTED.
-
-## THR-247 recovery-turn exception
-
-A server-designated completion-recovery binding must not submit a new job. It
-may only observe an already-owned task job, including its actual wait result,
-for the recovery report. A normal resumed turn is not a recovery turn and uses
-the ordinary rules below.
-
-You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs an authorized daemon operation. Obtain any required authorization in an existing thread BEFORE submitting; job admission does not authorize contents or grant executor permissions.
-
-## Agent-owned Coding responsibilities (v3)
-
-Coding v3 is registration-only until S8b catalog cutover and remains Disabled;
-source registration grants no start, setup, roles, admission or Allow. If actually
-bound to a v3 generic node brief, repository preflight, independent exact-head
-review, same-head QA and Final matching-head/literal-lint/guarded expected-head
-non-admin merge/remote MERGED observation are agent responsibilities. Use the
-existing authorized tools in the genuine live task, with the generic callback@2
-and bounded JSON report convention in start-task and the Coding contract.
-Generic acceptance does not verify these reports' semantic or remote truth.
-
-This adds no job or credential authority. Never put Final merge, intent/action/
-receipt production or an uncertain-effect retry in a job, daemon or recovery
-runner. Retain the existing job prohibitions and original live-session boundary.
-Historical special Coding and sequential LOCAL finalize instructions below apply
-only to their actual old binding, never to v3. Separately authorized ordinary
-preparation/verification/publication jobs retain their existing rules; infer no
-such entitlement from a Coding role. Semantic adherence/pilot is NOT RUN.
 
 ## When to use
 
-Three signals you should reach for jobs instead of running the command inline:
+Use a job for a command that does not return (a dev server or watcher), takes
+longer than your session can safely wait, or needs an already-authorized daemon
+operation. Run short/focused, in-sandbox commands directly.
 
-1. **The command doesn't return.** Dev servers, log watchers, polling loops, things you want running while you do other work.
-2. **The command takes too long.** A build, a backup, a long migration that would consume the rest of your session.
-3. **An authorized one-off operation needs the daemon.** Classify an executor refusal, obtain the exact content authorization in a thread first, then submit from a genuine ordinary task session. Do not use jobs to evade a refusal or product policy.
-
-Do NOT use jobs for one-shot, fast, in-sandbox commands. Run those inline — `bash` is still the right tool. Jobs add audit overhead and only pay off for the three signals above.
+Obtain any required content authorization in an existing thread BEFORE
+submission. Job admission authorizes neither the contents nor new executor
+permissions. Submit only from a genuine ordinary active task/session; a thread
+invocation token is not a task session ID. A server-designated completion-recovery
+turn may only observe an already-owned job and its wait result, never submit a
+new one. A normal resumed task uses the ordinary rules.
 
 ### Mandatory durable verification boundary
 
-Any verification command expected to exceed one minute or the remaining safe
-interactive-session window MUST run as a durable job with exactly
-`"review_required": false` and `"persistent": true`. This includes:
+Any verification expected to exceed one minute or the remaining safe session
+window MUST use a durable job with exactly `"review_required": false` and
+`"persistent": true`. This includes `scripts/local_ci.sh all`, canonical/full
+suites in venues the repository still supports, and `git push` when its hooks
+invoke such verification. This is no authority to run retired or held suites.
 
-- `scripts/local_ci.sh all`;
-- canonical/full test suites (including equivalent full Python, web, or
-  integration verification); and
-- `git push` when its hooks invoke any such verification.
-
-After submission, report `status="blocked"` with the job id in
+After submission, report `status="blocked"` with the job ID in
 `waiting_on_job_ids`; do not poll or continue publication in the same session.
-On the resumed task, inspect the terminal receipt with `happyranch jobs show`
-and `happyranch jobs output`, verify the exact command, effective runtime
-path/version, and exit code 0, then continue. A submission id or a terminal
-status without that receipt is not passing evidence.
-
-Short/focused tests that are expected to finish inside one minute remain
-appropriate to run directly in-session. If duration is uncertain, use the
-durable job boundary.
-
-## Classify the failure before requesting a job
-
-A skill step can fail for several different reasons. Only one is a permission refusal. Record it and obtain authorization in a thread before any supported job submission.
-Classify first:
-
-| Observed failure | Signal | Permission refusal? | Correct action |
-| --- | --- | --- | --- |
-| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record evidence; obtain bounded thread authorization first |
-| Binary not found | Shell "command not found" / exit 127 | No | Install or use an available tool; do not request permissions |
-| Authentication / credential | The program runs and returns 401/403, an auth prompt, or "no credentials" | No | Route through the existing credential/operator workflow; do not request shell permissions |
-| Network / service unreachable | DNS/timeout/connection refused from a runnable program | No | Report the dependency; do not request permissions |
-| Denied product policy | A HappyRanch policy gate rejects the operation | No | Escalate the policy decision; do not request permissions |
-| Ordinary command bug | Non-zero exit with a normal program error | No | Fix the command or its inputs |
-
-Record the minimum redacted evidence: the skill id/version; the exact attempted
-command; the cwd or resource scope; the executor's refusal text (redact secrets,
-tokens, credentials and private paths); why the step needs it; and the narrowest
-scope that would unblock it. Pause that one operation. Do not evade the decision
-with an executor switch, a skill-level grant, wildcard expansion, gate
-suppression, or an unrelated credential request.
-
-## Authorize a blocked operation before submission
-
-For a one-off executor refusal, preserve the skill/version, exact command/cwd,
-redacted refusal and narrow requested scope in the existing task artifact.
-Obtain any required Founder authorization in a thread BEFORE submission. Do
-not submit first to solicit approval: there is no job approval queue. A missing
-binary, credentials, network failure or denied product policy needs its own
-existing resolution; a job supplies no permission or credential grant.
-
-Once authorized, use the form below from a normal active task session. The
-thread invocation token is never a job session ID. Keep `cwd_hint` relative to
-the workspace; do not `cd` a second time. `rationale` is optional context and
-may cite the existing authorization artifact; no new token/field is required.
+On resume, verify the terminal receipt, exact command, effective runtime
+path/version and exit code before continuing. Admission or terminal status alone
+is not passing evidence. If duration is uncertain, use this durable boundary.
 
 ## The form
 
-You fill in a JSON payload with these fields:
+Write a complete JSON payload; replace the example task, session and path with
+your actual binding and an existing directory relative to your workspace:
 
 ```json
 {
@@ -230,105 +52,51 @@ You fill in a JSON payload with these fields:
 }
 ```
 
-**Required:** auth binding + `title` + `script` + `interpreter`.
-**Auth binding (exactly one):**
-- **Task path** — `task_id` + `session_id` from your active task session (the shape above).
-- **Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`.
+| Field | Required? | Contract |
+| --- | --- | --- |
+| `task_id`, `session_id` | Both required | Supply together from the actual active ordinary task session. Neither missing nor partial bindings are valid. |
+| `title` | Required | Nonempty after stripping whitespace; at most 200 characters after stripping. |
+| `script` | Required | Nonempty after stripping; at most 65536 UTF-8 bytes before stripping. |
+| `interpreter` | Required | Exactly one of `bash`, `sh`, `zsh`, `python3`; its binary must be available. |
+| `cwd_hint` | Optional; default `null` | Existing directory relative to the agent workspace root; no absolute path or `..` segment. Omission uses the workspace root. Use a path, never a descriptive note; do not `cd` a second time. |
+| `rationale` | Optional; default `""` | Context only; may cite existing authorization, never grants it. |
+| `review_required` | Optional; default `false` | Deprecated; omit or set false. Parsed true refuses before allocation (`422 review_required_removed`; CLI exit 2). Never flip true and retry or solicit job approval. |
+| `persistent` | Optional; default `false` | False defaults to a 300-second runtime cap; true defaults to no runtime cap. Task termination, Stop and daemon shutdown still apply. |
+| `max_runtime_seconds` | Optional; default `null` | Explicit integer 1..86400 overrides either persistence default. Null uses that default. |
+| `max_output_bytes` | Not a public input | Fixed 50 MiB (52428800 bytes) per stream, stdout and stderr separately. An override is unsupported. |
 
-**Current output-cap limitation:** public submission uses a fixed default of
-50 MiB (52428800 bytes) per stream (stdout and stderr separately).
-`max_output_bytes` is an internal record/runner field, not a supported public
-input. A configurable submission override remains unimplemented design intent.
+The public fields and runtime defaults are defined in
+`runtime/daemon/routes/jobs.py`; its allocated `JobRecord` inherits the fixed
+output cap from `runtime/models.py`.
 
-### Admission and persistence
+## Submit
 
-Omit deprecated `review_required` or set it to false. Parsed true returns
-`422 review_required_removed` before allocation; the CLI refuses it locally
-with exit2. Never flip true and retry. Obtain any required authorization in a
-thread before submitting. Old clients that require rationale locally may
-upgrade or supply rationale with false mode. A new client cannot change an old
-server's policy; compatible source must be delivered and separately deployed.
-
-`persistent=false` defaults to300 seconds; `persistent=true` defaults to no
-runtime cap. Explicit `max_runtime_seconds`1..86400 overrides either. Persistence
-is no permission grant: task termination, stop and daemon shutdown still apply.
-
-Bounded jobs enforce that budget with an independent guardian even if the
-spawning daemon dies. The original job group receives TERM at expiry and KILL
-after five seconds; a durable `.err.timeout.json` sidecar records `timeout`.
-External Stop/shutdown uses the daemon's escalation and existing 30-second
-shutdown grace; the guardian sends no duplicate TERM and keeps its independent
-deadline active, including after parent loss. The reserved `.err.launch.json`
-record also requires a private helper-only pipe acknowledgement, sent after
-file fsync and parent-directory open/fsync succeed. The script does not inherit
-the pipe. A readable record after failed publication, or missing/invalid
-confirmation, means `failed/spawn_failed`, with the helper
-error in stderr, rather than a natural script result. Confirmed script nonzero
-exits still mean `completed` with the actual exit code.
-Unbounded jobs retain direct launch. Restart still retains unproven running
-rows as `job_liveness_unknown`: `jobs show` reports advisory fence holders with
-job ID, PID/PGID and age, plus observed timeout markers, without adopting or
-clearing the row. Missing identity or `/proc` reports unavailable, never free.
-Online `jobs stop` can separately settle a retained job only with valid exact-job
-boot/start identity, a dead or reused leader plus no same-boot PGID/SID members,
-and an available advisory observation with no holder. It rechecks before a
-running-only CAS, validates `reviewed_by` against the original persisted start
-audit, audits `failed/orphaned_process_dead` with NULL exit as that run initiator,
-and uses the existing terminal owner-wake path. It sends no signals and changes
-no fence custody, unknown journals or holds. Missing/legacy/invalid evidence, live members,
-unsupported platforms, missing/inconsistent run attribution or exhausted/unavailable
-reads retain `job_liveness_unknown` without writes or signals.
-See the jobs-and-cleanup contract for exact proof and bounds.
-Offline operator stopping requires separate authority and the boot/start-time
-identity checks in `docs/agent-guides/contracts/jobs-and-cleanup.md`; numeric
-PIDs, parent loss and timeout alone never authorize release or row edits.
-
-HTTP201 / CLI exit0 means admission only, not script success. Automatic launch
-may defer while a root is held or its owner is unavailable. Inspect returned
-status/deferred code, actual terminal reason, exit code and output.
-
-Legacy `review_required=true` pending rows remain unchanged and will not run.
-The `/run` endpoint is a nonexecuting410 `job_manual_run_removed` tombstone;
-`jobs run` and `scripts run` exit2 locally. Inspect history and explicitly reject
-one pending ID with a reason if it should close; never mass dispose or resubmit.
-
-Initial cwd/interpreter preflight errors allocate no row. A genuine later loss
-may atomically settle an authenticated, never-launched false pending job as
-failed/spawn_failed, NULL start/exit, actual finish and bounded diagnostic, with
-submitting-agent failure audit and postcommit wake. Holds, unavailable owners,
-lost CAS and unknown launches are preserved. An error for a committed failed job
-identifies its job_id/status; inspect it, do not print success or silently retry.
-
-## How to submit
-
-1. Write the payload to `/tmp/job-<random>.json` with the Write tool.
-2. Submit as a single line (`--from-file` is mandatory; multi-line bash is rejected by the permission matcher):
+1. Write the payload to an absolute task-owned scratch path, for example
+   `/tmp/job-<random>.json` (use workspace scratch if /tmp is unavailable).
+2. Submit as a single line; `--from-file` is mandatory:
 
    ```bash
    happyranch jobs submit --from-file /tmp/job-<random>.json --org <slug>
    ```
 
-3. Output is `ok: submitted JOB-NNN ...`. Keep the JOB-NNN id.
+3. Keep the returned `JOB-NNN` ID. HTTP 201 / CLI exit 0 means admission only,
+   never script success. Inspect returned status and any deferred code.
 
-## Normal publication
+Initial cwd/interpreter preflight failures allocate no row. A later authenticated
+prerequisite loss can fail a never-launched false pending job as
+`failed/spawn_failed`, with NULL start/exit. An error identifying a committed
+job ID/status requires inspection, not a success claim or silent retry.
+Preserve holds, unavailable owners, race winners and possible launches.
 
-For a job whose purpose is a normal ref-advancing `git push`, follow the target
-repository's documented Git-hook and publication-process requirements. Its
-script must contain only safe working-directory/environment setup and `git push`
-itself. `git push --no-verify` remains forbidden.
+Legacy `review_required=true` pending rows stay inert and visible. The `/run`
+endpoint is a nonexecuting 410 `job_manual_run_removed` tombstone; `jobs run`
+and `scripts run` exit 2 locally. Inspect history and explicitly reject one
+pending ID with a reason if appropriate; never mass-dispose or resubmit.
 
-Safe push-only publish job example:
+## Block and resume
 
-```json
-{
-  "script": "cd /absolute/path/to/repository && git push -u origin task/TASK-4729\n"
-}
-```
-
-## After submitting — waiting on jobs
-
-When you need an admitted job to finish before proceeding, submit your block via `report-completion`
-with `status=blocked` and `waiting_on_job_ids` populated:
+When an admitted job must finish before you proceed, make your genuine
+`report-completion` callback the final action, with this shape:
 
 ```json
 {
@@ -337,55 +105,181 @@ with `status=blocked` and `waiting_on_job_ids` populated:
   "agent": "<you>",
   "status": "blocked",
   "confidence": 0,
-  "summary": "Waiting for JOB-12 and JOB-13 before I can verify the migration ran cleanly.",
+  "summary": "Waiting for JOB-12 and JOB-13 before verifying their results.",
   "waiting_on_job_ids": ["JOB-12", "JOB-13"]
 }
 ```
 
-Use the agent-facing `summary` field (the CLI maps it to the daemon's
-`output_summary`); do not send the daemon-only alias from a completion file.
-`waiting_on_job_ids` is valid only alongside `status="blocked"`: an explicitly
-empty list is rejected (`400 empty_waiting_on_job_ids`), so **omit the key
-entirely** when there is no live job wait.
+Use `summary`; the CLI maps it to daemon `output_summary`. The wait field is
+valid only with `status="blocked"` and real, owned, nonterminal jobs. Omit it
+entirely when no live wait exists; an empty list returns
+`400 empty_waiting_on_job_ids`. An authorization question has no job ID.
 
-The system resumes your task automatically once **every** listed job reaches a
-terminal state (`completed`, `failed`, or `rejected`). When you resume, your
-bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's
-status and, when stored, its reason and exit code, plus
-`happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN` commands to
-fetch full output. A job killed by graceful daemon shutdown therefore reads
-`failed (daemon_shutdown, exit -15)` (platform signal codes may differ); the
-task resumes once on the next startup, not during teardown. **You don't poll.**
+The task resumes after every listed job is terminal (`completed`, `failed`,
+or `rejected`). Its bootstrap includes `BLOCKED-JOBS-RESULTS`. Graceful daemon
+shutdown can produce `failed (daemon_shutdown, exit -15)` (signal codes may
+differ); resumption occurs on the next startup, not during teardown. Do not poll.
 
-If you need to stay in-session for a fast `review_required=false` job, the
-existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
-Prefer block-and-resume for any wait long enough to risk session timeout.
+For a fast false-mode job outside the mandatory durable verification boundary,
+`happyranch jobs wait JOB-NNN --timeout-seconds 30` can keep you in-session.
+Prefer block/resume whenever the wait risks session timeout.
 
-## Job outcomes and duplicate side effects
+## Verify the actual result
 
-When the task resumes, read the actual receipt (`happyranch jobs show` /
-`happyranch jobs output`) before acting. Terminal state and exit code are
-separate facts:
+Keep the simple human inspection commands:
 
-| Terminal state | Meaning | Required disposition |
+```bash
+happyranch jobs show JOB-NNN --org ORG
+happyranch jobs output JOB-NNN --org ORG
+```
+
+For a structured receipt bound to your exact task/session, use either:
+
+```bash
+happyranch jobs show JOB-NNN --org ORG --json --task-id TASK --session-id SID
+happyranch jobs output JOB-NNN --org ORG --json --task-id TASK --session-id SID --stream both --max-bytes 1048576
+```
+
+Both `--json` forms require both binding flags (CLI exit 2 if either is absent)
+and return the same receipt endpoint. Structured receipts are terminal-only;
+a nonterminal job returns `409 not_terminal`. The receipt includes authenticated
+binding, script/interpreter, resolved cwd, status/reason/nullable exit, timestamps,
+output and truncation/total-byte metadata. Inspect truncation before treating
+captured output as complete. The script itself must print effective runtime
+path/version when that evidence is needed; the receipt does not discover it.
+
+Verify the exact command, cwd, runtime, output, exit code and observable side
+effects before acting. Terminal state and exit code are separate facts:
+
+| State | Meaning and disposition |
+| --- | --- |
+| `completed`, exit 0 | Verify output and effects, then continue. Do not repeat successful work merely because the task resumed. |
+| `completed`, nonzero exit | Normal process termination with a failed operation. Inspect output and partial effects before any retry. |
+| `failed` (`timeout`, `output_cap`, external kill) | Possible partial effects. Reconcile state; retry only unfinished authorized work. |
+| `rejected` | Founder declined; command not executed. Terminal: no re-wait or automatic resubmission. Report the precise blocker without the wait field, or use an authorized alternative. |
+| `pending` / `running` | Not terminal; preserve the existing submission and stay blocked when its result is needed. |
+
+Never automatically resubmit a byte-identical job or replay an uncertain effect.
+A helper exit alone does not prove script completion: missing/invalid bounded
+launch confirmation means `failed/spawn_failed`; confirmed script nonzero exits
+remain `completed` with the actual exit code.
+
+## Stop and cleanup
+
+Stop your own jobs you no longer need before the final task callback:
+
+```bash
+happyranch jobs stop JOB-NNN --org ORG --task-id TASK --session-id SID
+happyranch jobs show JOB-NNN --org ORG
+happyranch jobs wait JOB-NNN --org ORG --task-id TASK --session-id SID --timeout-seconds 30
+```
+
+Stop 200 acknowledges an owned signal request or a positively proven dead
+retained-job settlement; it does not prove successful execution or cleanup.
+Inspect actual row/reason/nullable exit and output. Stop remains available under
+root Pause. Running without a signal target can return 409
+`job_runner_pending`, `job_runner_finalizing` or `job_liveness_unknown`;
+unavailable attribution returns `job_owner_unavailable`. Signal/audit 503 reports
+`request_issued` true/false/null. Do not blindly retry.
+
+Startup retains unproven running rows as `job_liveness_unknown`. Missing PID,
+daemon death, timeout, empty/unavailable advisory fence observations or terminal
+status alone never prove process-tree quiescence or release authority. Only the
+existing exact-job identity/death/fence checks may settle a dead retained job;
+that path sends no signals and grants no cleanup, setup retry or hold release.
+Offline operator stopping needs separate authority. Never unlink daemon locks
+or fences, unlock inherited custody, or edit job/hold rows to force progress.
+
+The maintained [jobs and cleanup contract](../../../../docs/agent-guides/contracts/jobs-and-cleanup.md)
+owns Stop proofs, independent runtime guardians, shutdown grace, retained-job
+diagnostics and offline operator procedures. Bounded jobs retain their original
+deadline after daemon loss; unbounded persistence supplies no permission grant.
+The [runtime lifecycle contract](../../../../docs/agent-guides/contracts/runtime-lifecycle.md)
+owns daemon lock, migration, preparation and original-owner settlement details.
+
+Scheduled disk sweeping uses `dry_run=False` only after admission and stop-control
+gates; repository-wide empty-scope prune is removed. Follow the maintained
+[nightly sweeper contract](../../../../docs/specs/2026-10-15-nightly-disk-sweeper.md)
+for scheduled deletion and operator stop control. This grants agents no cleanup,
+activation, repair, deploy or restart authority.
+
+## Authorization and uncertain ownership
+
+Classify an operation's failure before requesting a job:
+
+| Failure | Signal | Action |
 | --- | --- | --- |
-| `completed`, exit 0 | Executed successfully | Verify output and side effects, then continue the skill step. Do not repeat successful work merely because the task resumed. |
-| **`completed`, non-zero exit** | The process ran to completion but **failed** (the runner records `completed` for normal termination and stores `returncode` separately) | Treat as a **failed operation**; inspect output for partial side effects before any retry. |
-| `failed` (`timeout` / `output_cap` / external kill) | Did not complete cleanly | May have **partial side effects**; reconcile state, then retry only the unfinished authorized work. |
-| `rejected` | Founder declined; the command was **not executed** | **Terminal**: no re-wait and no automatic resubmission. Report the precise blocked disposition with `waiting_on_job_ids` omitted, or finish via an authorized alternative. |
-| `running` | Not terminal | The task stays blocked; do not duplicate the submission. |
+| Executor permission refusal | Executor/sandbox refuses the exact command | Record redacted evidence; obtain required bounded thread authorization before submission. |
+| Missing binary | Command not found / exit 127 | Use an available tool or the existing installation process; no permission request. |
+| Authentication/credentials | 401/403, auth prompt or missing credentials | Use the credential/operator workflow; no shell-permission request. |
+| Network/service | DNS, timeout or connection refusal | Report the dependency. |
+| Product policy denial | HappyRanch gate rejects the action | Escalate the policy decision; a job cannot override it. |
+| Command bug | Ordinary nonzero program error | Correct the command or inputs within authorized scope. |
 
-Never resubmit a byte-identical job automatically. Retry only unfinished
-authorized work, after side-effect reconciliation, and never repeat a
-successful operation. The blocked-report and lasting-grant rules live in the
-**start-task** skill; the executor-specific grant effects live in the
-**manage-agent** skill and `docs/agent-guides/agent-executors-and-permissions.md`.
+For an executor refusal record skill/version, exact command/cwd or resource,
+redacted refusal, why it is needed and narrow scope in the existing task artifact.
+Pause that operation until required authorization exists. Do not evade it with
+an executor switch, skill-level grant, wildcard expansion, gate suppression or
+an unrelated credential request. Rationale or compatible source delivery grants
+no authority and does not change an older server's policy.
 
-## PR CI / guarded merge helper
+Preserve exact task/session/job ownership, native identity, Pause and cleanup
+uncertainty. An already-admitted safe no-launch deferral keeps its exact runner
+and submission; historical attribution alone is not current launch eligibility.
+Preparation/process failure or later success, callback, terminal state or unrelated
+worktree cleanup cannot erase sticky `failed_cleanup`, `execution_unknown` or
+unknown producer history. Only explicit native validation/rollback/cleanup and
+positive original-owner settlement can establish the existing safe disposition.
+Never clear trackers/journals or rewrite history to force release.
+Unclosed prepared owners remain unknown after restart, even without a first
+launch; unknown deferred ownership cannot authorize a fresh launch.
 
-For PR-producing engineering tasks, use the existing authorized CI poll mechanism. The poll job reports readiness only. The final assigned manager performs the guarded action and remote observation in its genuine live session before its own completion callback.
+Frozen retry budgets, including EMPTY schedules, cannot replenish on deferral
+or reentry. Missing legacy initialization facts grant no fresh retry/reentry.
+A schedule's runtime SID stays distinct from provider resume identity.
+Custom-skill authority must validate before reservation; surviving scratch,
+inspection errors or prior uncertainty stay unknown, not compensated. Scratch
+cleanup requires no-follow lstat ENOENT; a returned failure alone proves none.
 
-**Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
+Root Pause can leave an admitted job pending; its ID, tracker binding or host
+lease is not running evidence or PASS. Only an actual ordinary running session
+captured by that Pause generation has the existing auto-run exception, subject
+to fresh exact task/agent/SID and generation checks. Resume never enables manual
+run. A pre-request snapshot grants no exception; duplicate Pause never renews
+capture. Job-owned unknown journals are excluded from ordinary crash recovery;
+periodic/startup paths do not re-probe them. Only post-reap proof of the original
+group and session both empty may close the job entry; missing handles or failed
+tails stay unknown. Terminal status/PID absence cannot settle them. Descendants
+escaping via setsid/daemonization remain outside full containment. See the
+[task Pause contract](../../../../docs/agent-guides/contracts/task-orchestration.md#root-task-pause-and-resume-thr-292).
+
+## Normal publication
+
+For a normal ref-advancing push, follow the target repository's hook and
+publication requirements. A publish job script contains only safe cwd/environment
+setup and `git push`; never `--no-verify` or `--force`.
+
+Use an existing workspace-relative worktree directory, with no absolute `cd`:
+
+```json
+{
+  "task_id": "TASK-4729",
+  "session_id": "<your active session_id>",
+  "title": "Push task branch",
+  "script": "git push -u origin task/TASK-4729\n",
+  "interpreter": "bash",
+  "cwd_hint": "repos/happyranch/.claude/worktrees/TASK-4729",
+  "rationale": "Publish the authorized committed change with normal hooks.",
+  "review_required": false,
+  "persistent": true,
+  "max_runtime_seconds": 3600
+}
+```
+
+## PR CI and guarded merge
+
+An authorized poll job reports readiness only. For HappyRanch, retain exactly the
+two lint/static expected checks at the pinned PR head and exact merged main:
 
 ```bash
 python -m runtime.daemon.pr_ci_waiter \
@@ -395,25 +289,19 @@ python -m runtime.daemon.pr_ci_waiter \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 ```
 
-For HappyRanch under THR-291 seq69, exactly these two unconditional lint/static
-checks apply on PR and exact-merge main; there are no path-specific behavioral
-merge checks. Daily Product E2E Health is outside expected-check lists and
-daily at19:00UTC. Founder THR291seq247 additionally allocates ONE main-only
-workflow_dispatch under sole TASK-11897 after independent review/scoped QA,
-two final-head lints, guarded merge and exact-main receipt. The manual entry
-grants no standing run authority or retry. Actual health is separately observed.
-Docs/lab are manual;
-mac packaging is manual/tag; legacy integration schedule remains separate.
-Local default/all/pre-push selection is lint/static only; units RETIRED exit2.
-The waiter takes caller-supplied names; product gate semantics are unchanged.
-Freshly observed protection contexts/checks are empty and strict=false; do not
-claim external enforcement. Independent review/scoped QA, normal hooks and
-manager guarded merge remain required. Static checks are not behavioral proof.
-Other repositories use their own current check policy.
+Use the maintained [CI policy](../../../../docs/operations/local-ci.md).
+Local default/all/pre-push checks are lint/static only; Python units are RETIRED
+(exit 2), general integration stays SKIPPED unless separately authorized. Daily
+Product E2E Health runs at 19:00 UTC and stays outside merge-check lists. This
+skill grants no E2E dispatch, new trigger, retry or broader run authority.
+Other repositories follow their own policy. Determine protection configuration
+through a fresh authorized read when it matters; never infer external enforcement
+from a past snapshot. Static checks are not behavioral proof.
 
-This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
-
-After an authorized poll job completes, inspect its actual terminal receipt. The final assigned manager personally checks settled independent review/QA results and successful exact-head checks, then invokes the guarded-merge entrypoint in its genuine live session before its own completion callback:
+The poller prints a structured verdict, exits 0 only for `ci_pass` and performs
+NO merge. After verifying its terminal receipt, the final assigned manager must
+personally check settled independent exact-head APPROVE/PASS and successful
+literal checks, then act and observe remotely in its genuine live session:
 
 ```bash
 python -m runtime.daemon.pr_ci_merge \
@@ -422,206 +310,89 @@ python -m runtime.daemon.pr_ci_merge \
   --review-task-id TASK-xxx --qa-task-id TASK-yyy
 ```
 
-The merge guard is conjunctive — all must pass before the engine attempts merge:
+All merge guards remain conjunctive: independent review APPROVE, QA PASS,
+unchanged pinned head, `ci_pass`, open non-draft PR and CLEAN mergeability.
+Pending, missing, ambiguous, skipped or neutral literal checks hold Final.
+The ordinary configured method uses `gh pr merge --match-head-commit H` without
+`--admin`. Missing, contradictory, malformed or ambiguous verdict evidence fails
+closed; structured verdict is primary, with only the existing strict annotated
+legacy prose fallback for serialized null.
 
-- review verdict is `APPROVE`;
-- QA verdict is `PASS`;
-- fresh PR head SHA equals the pinned SHA;
-- CI verdict is `ci_pass` for the pinned SHA;
-- the PR is still open and not draft;
-- GitHub mergeability is `CLEAN`;
-- the configured ordinary merge method sends the same full pinned head to
-  `gh pr merge --match-head-commit H`, without `--admin`.
+Success needs actual read-only remote confirmation of addressed repo/PR/URL,
+pinned head, MERGED state, full lowercase SHA1 merge commit and timezone-aware
+`mergedAt`. Missing/invalid metadata or query failure after command success
+means `merge_failed` (exit 14), with post-effect uncertainty. Never substitute
+an empty commit/local time, use admin fallback or automatically replay.
+Later read-only confirmation can establish an effect but cannot rewrite the
+original failed/uncertain receipt or permit a second merge. Callback completion
+never triggers daemon PR finalization/recovery. Existing tool/repository
+entitlement remains required; workers must not request raw merge permission or
+run arbitrary merge shell.
 
-The guarded-merge implementation validates review/QA evidence (canonical vocabulary
-`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
-`verdict` primary; serialized `null` — the durable recall producer's
-representation of legacy/no-structured rows — uses the strict annotated
-prose `Verdict: PASS — rationale` fallback; missing/contradictory/malformed/
-ambiguous evidence fails closed).
+## Coding and selected live Final
 
-Success requires actual read-only remote confirmation: exact addressed repository/PR number and GitHub URL, pinned head, MERGED state, full lowercase SHA1 merge commit and parseable timezone-aware `mergedAt`. Output retains the remote commit and time. Missing/invalid metadata or query failure after command success yields `merge_failed` (exit14) with post-effect uncertainty. No empty commit or local-time fallback exists.
+Only the genuinely selected live Final manager may use the mounted LOCAL
+sequential Final transport, under its existing current-authority, selection,
+independent exact-head review/QA, literal-lint and expected-head non-admin
+action checks. The maintained
+[Final contract](../../../../docs/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564)
+owns selection, local intent/command/remote receipts, uncertainty and authenticated
+success admission. Wiring proves neither deployment nor new authority.
 
-A nonzero/lost command response remains failed/uncertain, preserving its actual cause/exit where available. Later read-only confirmation can separately establish the exact effect; it never rewrites that receipt or permits a second merge. There is no admin fallback or automatic replay. Guard order, verdict/JSON/audit shapes and legacy evidence extraction are unchanged.
+Never move Final selection, intent/action/observation/receipt production,
+`execute_selected_final` or an uncertain-effect retry into a job, daemon,
+second CLI OrgState or recovery runner. Access denied versus unverified remains
+causal BLOCK/Held; graph data grants no credential or access-observer authority.
+Failed/uncertain/missing command, including recording failure with command=None,
+keeps causal BLOCK, empty content/claims and original local records, never a
+merged bundle or second action. Preserve existing per-complete-read allowances
+on one original deadline.
 
-An authorized poll job may auto-run through existing admission. The live final manager owns the merge and remote observation before callback; callback completion never triggers daemon PR finalization or recovery. Existing tool/repository entitlement remains required. Do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+The [Coding contract](../../../../docs/agent-guides/contracts/coding-workflow.md)
+owns actual binding/version rules and agent responsibilities. Coding v3 remains
+registration-only/Disabled until its catalog cutover; infer no start, setup,
+roles, admission, Allow, job or credential entitlement. Its actual generic node
+brief requires authorized repository/base/worktree preflight, independent
+exact-head review, same-head QA and genuine live Final with matching-head literal
+checks and remote MERGED observation. Follow the generic callback@2 and bounded
+JSON report convention in start-task and that contract. Generic acceptance is
+not semantic/remote verification; semantic adherence/pilot is NOT RUN. Historical special Coding
+LOCAL finalize instructions apply only to actual old bindings, never to v3.
+Coding source/carrier/stage jobs remain forbidden under existing document/legacy
+predicates, even for an agent_manager role. Separately entitled ordinary legacy
+preparation/verification/publication jobs retain their rules; infer none here.
 
-## Cleanup
-
-Before reporting your task complete, stop any of your own jobs you no longer need. Persistent jobs you forget about will be auto-killed when your task transitions terminal, but explicit cleanup makes the audit log cleaner and avoids ambiguous "did the agent forget about this?" questions.
+When original authorized Coding cancellation wins, stop fresh repository, stage,
+result, successor and Final work. Preserve original intent/action/receipt,
+native preparation and terminal/outer uncertainty. Only an already-committed
+exact original INTEGER/task/SID callback may drain/replay unchanged without
+advance; a stopped task, missing handle or successful control return proves no
+cleanup or remote-effect clearance. The existing Founder cancellation route
+owns control; this skill supplies none. Readiness, live allocation and deferred
+recovery/reassignment holds remain as defined by the actual binding's contract.
+No automatic held-manager reallocation or PR recovery service is authorized.
+Always use your own actual task/SID; genuine report-completion is the final
+action, never a fabricated earlier result or another task's callback.
 
 ## Error handling
 
-- `422 empty_<field>` — required field missing or whitespace-only. Check and resubmit.
-- `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `task_id`, or supplied `task_id` without `session_id`).
-- `422 unknown_interpreter` — `interpreter` not in the allowed set.
-- `422 review_required_removed` — obsolete true mode; obtain thread authorization before submission, omit/set false on a fresh authorized request. No automatic retry.
-- `422 script_too_large` — script body exceeded 64 KB.
-- `422 invalid_cwd_hint` — `cwd_hint` is absolute or contains `..`.
-- `400 task_not_active` — the referenced task is not pending/in-progress.
-- `403 recovery_purpose_forbidden` — this is a completion-recovery binding; it cannot submit new jobs.
-- `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
-- `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
+| Surface / response | Meaning |
+| --- | --- |
+| CLI local error, exit 2 | Missing/falsy `title`, `script` or `interpreter`; missing both task/session values or supplying only one. No submission. |
+| Direct HTTP request-model 422 | Omitted required fields or missing/partial task/session binding; standard validation, not an `empty_<field>` code. |
+| `422 empty_title` / `empty_script` | Whitespace-only title/script reaching the explicit checks (script size is checked first). |
+| `422 title_too_long` / `script_too_large` | Stripped title exceeds 200 characters / original script exceeds 65536 UTF-8 bytes. |
+| `422 unknown_interpreter` | Interpreter not exactly in the allowed set, including whitespace-only. |
+| `422 interpreter_unavailable` | Allowed interpreter has no available binary. |
+| `422 review_required_removed` | Parsed true mode; CLI also rejects locally with exit 2. Obtain required authorization first; no flip/retry. |
+| `422 invalid_cwd_hint` / `409 cwd_missing` | Absolute/`..` hint / resolved directory missing or not a directory. |
+| `422 invalid_timeout` | Explicit runtime outside 1..86400 seconds. |
+| `400 task_not_active` | Task is neither pending nor in progress. |
+| `403 recovery_purpose_forbidden` / `workflow_document_only` | Completion-recovery binding / task outside the supported legacy job path. |
+| `404 unknown_task` | Submission references a missing task. |
+| `404 unknown_job` | Show, receipt, output, Stop or wait references a missing job ID. |
+| `409 not_terminal` | Receipt/output requested before terminal state. |
+| `409 session_mismatch` | Current task/agent session differs; exit immediately. |
 
-Do not automatically retry job submission or flip policy fields. Reconcile the actual ID/side effects and resolve the error before any fresh authorized submission.
-
-
-## Root task Pause outcomes
-
-THR-350's ordinary unknown-session crash recovery excludes job-owned journal
-entries. An ordinary session resumed with authenticated job_terminal or
-block_submit provenance remains ordinary.
-
-At job end, only a post-reap single observation confirming both the
-launch-captured original process group (killpg ESRCH) and original session empty
-closes the job Pause entry under the existing terminal CAS/audit/root writer.
-All unconfirmable cases, live group/session descendants, failed tails and missing
-handles stay unknown; periodic/startup do not re-probe jobs. Restart/legacy
-entries and historical unknowns stay as-is. Founder THR-359 seq13 OPTION A
-accepts the blind spot: setsid/daemonize descendants escape into a new session.
-This is not full descendant containment, and terminal status/PID absence alone
-never proves closure.
-
-Only the matching ordinary session producer may be marked settled
-after its existing startup failure or periodic terminal path commits, under
-current ownership and an unheld root. Deliberate Pause and all job admission,
-host/tree settlement and retention rules remain unchanged.
-
-Task-root Pause may leave an authorized submitted job Pending. Automatic launch is gated at the actual origin root; rejection/stop remain available. Manual run is retired410 even after Resume. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
-
-Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; legacy true rows never use this exception.
-
-C3 writer disposition follows the actual authority/profile interval through
-native naming reconciliation and explicit leading validation. Stale rename or
-prompt CAS may settle only after successful native rollback/reconciliation;
-unfenced status alone proves nothing. Caught reconciliation/publication/clone
-failure, cancellation and partial effects retain unknown ownership. Skill scratch
-cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
-prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
-history is never cleared. These are source accounting rules, not behavioral
-verification or new execution/activation authority.
-
-
-Current-main C3 composition preserves automatic job admission: omitted/false
-review_required executes through native owner checks; true refuses before allocation,
-legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks native causal task ownership in the Pause transaction
-before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
-that exact completed no-launch refusal may settle; partial scratch/environment,
-output or process effects and earlier uncertainty remain in producer history.
-Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
-provenance alongside SAME native disposition, rollback and reconciliation rules;
-no removed whole-release naming fingerprint is restored.
-
-The scheduled daemon disk worker reserves a global native writer per admitted
-org before spawn, through supervision/reap/report. Held/unowned orgs defer with
-bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
-child admission and prune re-read the actual parent's active global writer ID
-through strict append-only history and validate the optional move layout/hold.
-An installed layout with missing/unknown ownership refuses before mutation; absent
-layout preserves native behavior. Missing/incomplete effect closure, interruption
-and partial mutation retain unknown writer evidence; a clean later provider result
-cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
-behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. Retained C3 admission/native-writer hooks grant no
-live move or cleanup authority.
-
-
-The disabled coding final-manager path uses the LOCAL workflows coding finalize
-command inside its actual running original manager invocation, never a job or
-daemon PR service. It observes the shared waiter once (settle=0/timeout=0) with
-stricter exact-head actual successful literal lints; pending/missing/ambiguous/
-skipped/neutral checks hold. Coding source/carrier/stage jobs remain forbidden by
-unchanged document/legacy predicates, even when the selected role is agent_manager.
-Separately entitled ordinary legacy preparation may use existing job mechanisms;
-no such task/job or entitlement is inferred here. Save original intent/command/
-remote receipts before own FINAL callback; transport loss never reissues merge.
-No automatic held-manager reallocation or PR recovery service exists. Readiness
-remains disabled; SOURCE/static is not native or remote acceptance.
-
-The repaired final-manager@2 path binds the selected authenticated repository
-reference to its repo_key checkout/raw-origin digest/opaque ID before checks or
-action, then again immediately before action. One original native OrgPaths/
-assigned-principal workspace capture selects the task/attempt reservation across
-cwd/key/path variants. Partial or failed recording never permits another action.
-Selected/native/final-output@2/history reconstruct the SAME full root/reference;
-no daemon file reservation, job runner or new command entitlement is supplied.
-
-
-Coding revision2/3 final-manager@3 retains the same live-session-only LOCAL
-finalize boundary and captured native workspace/reference. Final-selection@3,
-finalize-command@2 and final-output@3 bind only the current exact-subject fresh
-results. Never move its action or receipt production into a job, daemon, recovery
-runner or old source/upstream SID. Existing reservations/unknown facts survive.
-
-
-Coding cancellation is a business stop. Stop fresh repository/stage/result/
-successor/finalize work when the authorized original task cancellation wins.
-Preserve original intent/action/receipt uncertainty and native preparation/
-terminal/outer ownership. Only a callback already committed under the exact
-original INTEGER/task/SID may drain or replay unchanged, without advancing.
-A stopped task, missing handle/control or transport loss supplies no cleanup,
-remote-effect clearance, reservation release or retry permission. A later ordinary
-ancestor batch preserves earlier cancelled graphs even without another live
-coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
-higher live Q retains G1 through terminal ordinary dependency paths. This is
-separate from live mutation: newly captured rows below the stopped path must
-be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
-untouched. Hidden live work refuses. Only normally reachable live ordinary rows
-receive their sole overlay; a normally reachable fresh G2 is fenced once.
-With no fresh graph, a separate closed
-ordinary-operation audit anchors the original cancellation without another graph
-fence/control/result;
-complete readers authenticate every batch and the sole ordinary-row overlay
-against unchanged original admission bytes. Retained task originals compare at
-an independently reconstructed later capture boundary; authenticated event and
-heartbeat order must agree with its capture interval. Full native suffix replay
-and exact current SQL equality still include every field, including executor_pid,
-on the original finite allowances. R-M3-2 (ROOT TASK-15165) gives the mounted
-mixed writer's pre-write authentication and post-write WHOLE target reads their
-OWN unchanged D2 A/B/C/L allowance on ONE original operation deadline; discovery,
-copying, comparison and writer work share the existing single additional finite
-operation budget, without reset/retry/fork on refusal. No history rewrite or settlement
-inference follows. A point stop of a coding-dependent
-ordinary ancestor refuses before writes, independently of mutation cascade;
-ordinary-only point stops remain supported. Prepared/unknown ownership,
-missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
-without a PID and after a successful control return. Only positive original owner
-settlement permits the existing safe disposition; never clear tracker/journal
-ownership to force it. The existing Founder task-cancel route owns cancellation;
-this skill grants no control tool.
-Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
-availability as source-merge prerequisites under sole recovery ROOT12727.
-Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
-acceptance remains NOT RUN/open and required before ordinary work/activation.
-Readiness remains unconditionally disabled; this grants no live allocation.
-Deferred native recovery/reassignment remain unavailable separately. Genuine
-current task/SID report-completion remains the final action; never fabricate
-an earlier result or another task's callback to work around a refusal.
-
-
-Sequential Coding U5a's unmounted evidence reader/policy grants no job or Final
-execution entitlement. Mandatory settled independent exact-subject APPROVE/PASS
-and required selected-head Source Boundary Lint + Web Lint (Node 24) cannot be
-waived by graph data. U5b still owns LOCAL genuine live Final wiring and one
-owned expected-head non-admin action/remote observation; neither selection,
-intent, action nor receipt production moves to a job/daemon/recovery runner.
-ACCESS-1 msg131 / PRD v1.0.4 preserves current-authority rechecks and agent-owned
-access failures (denied versus unverified BLOCK -> Held), with zero daemon PR/
-network I/O or new access observer/credential. U5a supplies no executable
-selection on success or refusal; existing assessment/Final success paths stay
-held. See docs/specs/2026-11-11-sequential-coding-u5.md.
-
-Sequential Coding U5b2b2 / R-M3-3 adds only an unmounted closed Final callback
-observation parser/reader, with complete/selected U6 history, original callback/
-host/positive outer proofs and current authority. Its valid observation grants
-no effect or success admission. Failed/uncertain/missing command (including
-recording-failure command=None) remains causal BLOCK with empty content/claims
-and retained local records, never a merged bundle or second action. U7 owns
-selected task-session Final transport, genuine live manager-local adapter mount,
-acceptance wiring and success decision. No production caller or _advance wiring
-is added; Final success stays Held. Neither execute_selected_final nor observation/
-intent/action production may run in a job, daemon, second CLI OrgState or recovery
-runner. R-M3-2 keeps unchanged per-complete-read allowances on one deadline.
+Do not automatically retry submission or flip policy fields. Reconcile the
+actual ID and effects and resolve the error before a fresh authorized request.

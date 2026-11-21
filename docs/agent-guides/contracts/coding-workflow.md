@@ -1,22 +1,28 @@
 # Coding workflow contracts
 
-## Coding v3 role reports — S8a staged registration
+<a id="coding-v3-role-reports--s8a-staged-registration"></a>
+
+## Coding v3 role reports — S8b registration
 
 Coding v3 (`release/happyranch/coding@3`) uses definition ABI @2 and generic
-bounded canonical JSON objects (at most 49152 UTF8 bytes). It is registration-only
-until S8b catalog cutover: `STAGED_GENERIC` pins its literal resource separately
-from the public @1 `MANIFEST`. The qualified registrar appends v2 and v3 definition
-rows only. `PRESET_CATALOG` keeps its v2 compatibility projection and omits staged
-v3. No settings, roles, admission, tasks, runs or Allow are created; missing
-settings mean Disabled/unset. Registration is not activation or start authority.
+bounded canonical JSON objects (at most 49152 UTF8 bytes). `GENERIC_CATALOG`
+pins its literal resource; `STAGED_GENERIC` keeps the compatible registrar
+export. The qualified registrar appends v2 and v3 immutable definition rows
+only. `PRESET_CATALOG` and the public @1 `MANIFEST` keep their v2 projection.
+No settings, roles, admission, tasks, runs or Allow are created. Coding stays
+Disabled/unset; registration supplies no activation or start authority.
 
-Public start-context discovery, start-compose and fresh-start selection still
-use v2 only. V3 is absent from discovery and its fresh pin fails closed with
-`sequential_release_pin_mismatch`. S8b owns promotion into the public catalog and
-the ABI-aware transport/view cutover. V1/v2 bytes, pins and admitted histories
-retain their original contracts. Historical repository-resolve/bind/preflight,
-all-four-role duty evidence, typed Coding outputs and LOCAL finalize instructions
-below apply only to an actual old binding, never to the v3 role reports.
+S8b delivers registration and version-selective transport refusal. Public
+start-context discovery, its @1 wire shape, start-compose and v2 fresh-start
+behavior remain unchanged. A fresh public v3 pin still refuses with
+`sequential_release_pin_mismatch`; public @2 start/composition stays closed
+pending separate authorization. Repository-resolve/bind/preflight and sequential
+Final/journal transports refuse fresh generic @2 selections. Offline setup
+registers v3 only, with no fresh admission; original @1 admission lookup/replay
+remains read-only. V1/v2 bytes, pins, admitted replay, selected-history reads and
+uncertain Final records retain their original contracts. Historical domain
+transports, typed Coding outputs and LOCAL finalize instructions below apply
+only to an actual old binding.
 
 The following authored responsibilities are carried verbatim into generic node
 briefs. Trusted instructions and actual authorization control every tool effect.

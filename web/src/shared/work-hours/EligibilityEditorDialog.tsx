@@ -10,7 +10,9 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Settings ▸ Organization operating controls mount it; it is the single
  * owner of the existing `working_hours.agents` patch mutation.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner, useOwnerGate } from '@/shared/owners';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +59,36 @@ export function EligibilityEditorDialog({
   const [errors, setErrors] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
 
+  // THR-387 S6-W2a: a Work Hours config owner while the editor holds edits.
+  const { slug } = useParams<{ slug: string }>();
+  // The draft belongs to the org it was opened for: Discard consent closes the
+  // editor, and any org change closes it before it can render or save there.
+  const openedOrg = useRef(slug);
+  if (!open) openedOrg.current = slug; // while closed, follow the route
+  const boundOrg = openedOrg.current;
+  const orgChanged = open && slug !== boundOrg;
+  useEffect(() => {
+    if (orgChanged) onOpenChange(false);
+  }, [orgChanged, onOpenChange]);
+  const draft = { mode, include, exclude };
+  const owner = useConfigOwner({
+    page: 'settings.workHours',
+    org: boundOrg ?? null,
+    onDiscard: () => onOpenChange(false),
+    dirty: open && !orgChanged && JSON.stringify(draft) !== JSON.stringify({ mode: wh.agents.mode, include: wh.agents.include, exclude: wh.agents.exclude }),
+    draft,
+  });
+  // Direct close paths (close button, Escape, Cancel) ask the owner gate
+  // first: unsent edits get Keep editing / Discard, a sent save holds.
+  const { requestOwnerTransition } = useOwnerGate();
+  const requestOpenChange = (next: boolean): void => {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: () => onOpenChange(false) });
+  };
+
   const resulting = useMemo(
     () => eligibleSet(allAgents, { mode, include, exclude }),
     [allAgents, mode, include, exclude],
@@ -68,27 +100,32 @@ export function EligibilityEditorDialog({
 
   async function doSave() {
     setErrors([]);
-    try {
-      await mutation.mutateAsync({
+    const result = await owner.track(() =>
+      mutation.mutateAsync({
         working_hours: { agents: { mode, include, exclude } },
-      });
-      setConfirming(false);
+      }),
+    );
+    setConfirming(false);
+    if (result.ok) {
       onSaved();
-      onOpenChange(false);
-    } catch (err: unknown) {
-      setConfirming(false);
-      setErrors(extractServerErrors(err));
+      // Close only when the acknowledged draft is still the current one. A
+      // newer draft typed while the save was pending (via Back) stays open and
+      // dirty against the saved value, which is now the baseline.
+      if (result.current) onOpenChange(false);
+    } else if (result.outcome === 'failed') {
+      setErrors(extractServerErrors(result.error));
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open && !orgChanged} onOpenChange={requestOpenChange}>
       <DialogContent className="max-w-lg" closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('workHours.eligibilityEditor.title')}</DialogTitle>
           <DialogDescription>{t('workHours.eligibilityEditor.description')}</DialogDescription>
         </DialogHeader>
 
+        <OwnerSaveNotice owner={owner} className="" />
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
@@ -166,7 +203,7 @@ export function EligibilityEditorDialog({
             </>
           ) : (
             <>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
               <Button onClick={() => setConfirming(true)} disabled={mutation.isPending}>

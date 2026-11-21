@@ -64,6 +64,12 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
      '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'),
 )
+S8B_CASES = ('new_transport_refused', 'legacy_replay', 'old_fresh_refused', 'uncertain_final_preserved')
+s8b_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--s8b='):
+    s8b_case = sys.argv[1].split('=', 1)[1]
+    assert s8b_case in ('all', *S8B_CASES)
+    sys.argv[1:] = ['--assignments']
 S8A_CASES = ('coding_brief_roles', 'new_version_pin', 'reported_evidence', 'no_setup_effect')
 s8a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
@@ -2313,7 +2319,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2425,10 +2431,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -2998,7 +3004,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sy
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -5720,7 +5726,242 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sy
                 assert value['storage'] == 'absent' and value['runs'] == [], 'unavailable: genuine absence misclassified'
         print('PASS S7a', case, 'served route/private fixtures; SELECT-only inventory + SQL evidence', flush=True)
 
-    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case:
+    def s8b_selection(workspace, *, digest='1'*64):
+        from runtime.workflows.sequential_coding_final_records import CodingFinalSelection
+        change = dict(format='workflow-sequential-code-change@1', epoch=1, head='b'*40,
+            subject=dict(repository_id='workflow-repository:'+'1'*64, repo_key='private', origin_digest='2'*64,
+                object_format='sha1', base='a'*40, scope=['runtime']),
+            pr=dict(repository='synthetic/private', number=1, url='https://github.com/synthetic/private/pull/1'))
+        results = [dict(ref=dict(slot=slot, contract=contract, epoch=1, producer_visit='visit-'+role,
+            task_id='task-'+role, session_id='sid-'+role, result_id=index+1, digest='3'*64),
+            principal=role, carrier_digest='4'*64, terminal_digest='5'*64, outer_digest='6'*64)
+            for index, (role, slot, contract) in enumerate((('developer','change','code-change@1'),
+                ('reviewer','review','independent-code-review@1'), ('qa','qa','code-qa@1')))]
+        return CodingFinalSelection.model_validate_json(s4bytes(dict(format='workflow-sequential-coding-final-selection@1',
+            org_slug='scratch', run_id='run', visit_id='final', task_id='final-task', principal='manager',
+            session_id='final-sid', definition_digest=digest, start_digest='7'*64, cas=3,
+            last_event_digest='8'*64, input_selection_digest='9'*64, authority_generation=1,
+            authority_digest='a'*64, change=change, contributors=['developer'], results=results,
+            native=dict(root_task_id='source', invocation_id='invocation', request_id='request', handle_id='handle',
+                backend='linux-systemd-cgroup-v2', pause_generation=0, org_root=str(workspace.parent.parent),
+                workspace_root=str(workspace)))))
+
+    async def s8b_transports(f):
+        import asyncio
+        import httpx
+        from cli.main import build_parser
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.runtime import port_file
+        task, principal, sid = f.ids.visit_task_id, 's3_author', 's8b-session'
+        f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?", (sid, f.ids.visit_id))
+        f.conn.execute("UPDATE tasks SET current_session_id=?,status='in_progress' WHERE id=?", (sid, task))
+        f.conn.commit()
+        f.org.sessions.set_active(task, principal, sid, org_slug='scratch')
+        state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+        state.orgs['scratch'], state.profile_coordinator = f.org, f.coordinator
+        app = create_app(state)
+        port_file().write_text('43210')
+        loop = asyncio.get_running_loop()
+        real_client = httpx.Client
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                def transport(request):
+                    response = asyncio.run_coroutine_threadsafe(client.send(request), loop).result(timeout=10)
+                    return httpx.Response(response.status_code, content=response.content, headers=response.headers)
+                for form in ('repository-resolve', 'repository-bind', 'repository-preflight', 'finalize'):
+                    declaration = dict(format='workflow-sequential-repository-command@1', repo_key='private', base='a'*40, scope=['runtime'])
+                    if form == 'finalize':
+                        workspace = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'org/workspaces/manager'
+                        declaration = dict(format='workflow-sequential-finalize-command@1', operation_key='no-final',
+                            repository_path=str(workspace), change=s8b_selection(workspace).change.model_dump(mode='json'))
+                    payload = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 's8b-command.json'
+                    payload.write_bytes(s4bytes(declaration))
+                    argv = ['workflows','sequential',form,'--org','scratch','--session-id',sid,'--json']
+                    if form != 'repository-preflight':
+                        argv += ['--from-file', str(payload)]
+                    out, err = io.StringIO(), io.StringIO()
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    def invoke():
+                        with redirect_stdout(out), redirect_stderr(err), patch.object(httpx, 'Client',
+                                lambda **kw: real_client(transport=httpx.MockTransport(transport), **kw)):
+                            args = build_parser().parse_args(argv)
+                            try:
+                                args.func(args)
+                            except SystemExit as exc:
+                                return exc.code
+                        return 0
+                    status = await asyncio.to_thread(invoke)
+                    assert status == 2 and not out.getvalue() and 'sequential_domain_transport_unavailable' in err.getvalue(), (
+                        'new_transport_refused', form, status, out.getvalue(), err.getvalue())
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes, form+' wrote rows'
+                    assert payload.read_bytes() == s4bytes(declaration)
+                    print('PASS S8b new_transport_refused CLI + real route', form, '409 zero writes', flush=True)
+        finally:
+            state.metrics_store.close()
+            state.direct_connect_authority_store.close()
+
+    for case in (S8B_CASES if s8b_case or not sys.argv[1:] else ()):
+        if s8b_case not in (None, 'all', case):
+            continue
+        from runtime.workflows import sequential_release as release
+        from scripts import setup_sequential_coding as setup
+        from runtime.workflows.sequential_history import _ReadBudget
+        import asyncio
+        if case == 'new_transport_refused':
+            with s4fixture() as f:
+                asyncio.run(s8b_transports(f))
+            # Distinct local risk: even an @1-shaped selection carrying the
+            # registered generic digest must refuse before filesystem/Git effects.
+            from cli.commands import workflow_sequential_finalize as final, workflow_sequential_final_journal as journal
+            from cli.commands.workflow_sequential_transport import RemoteSelection
+            import httpx
+            with tempfile.TemporaryDirectory(prefix='s8b-local-') as private:
+                workspace = Path(private) / 'org/workspaces/manager'
+                workspace.mkdir(parents=True)
+                selected = s8b_selection(workspace, digest=release.STAGED_GENERIC[('release/happyranch/coding',3)].pin.definition_digest)
+                before = tuple(workspace.rglob('*'))
+                for label, action in (
+                    ('journal', lambda: journal.reserve_attempt(selected, reselect=lambda: selected)),
+                    ('final adapter', lambda: final.execute_selected_final(selection=SimpleNamespace(select=lambda **kw: selected),
+                        task_id=selected.task_id, principal=selected.principal, session_id=selected.session_id,
+                        change=s4bytes(selected.change.model_dump(mode='json')), operation_key='no-final', repository_path=workspace)),
+                    ('remote selection', lambda: RemoteSelection(httpx.Client(base_url='http://private', transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, content=s4bytes(selected.model_dump(mode='json'))))),
+                        'scratch', selected.session_id).current(s4bytes(selected.change.model_dump(mode='json'))))):
+                    try:
+                        action()
+                    except ValueError as exc:
+                        assert str(exc) == 'sequential_domain_transport_unavailable', (label, str(exc))
+                    else:
+                        raise AssertionError('new_transport_refused: '+label+' admitted generic selection')
+                    assert tuple(workspace.rglob('*')) == before, label+' changed filesystem'
+                    print('PASS S8b new_transport_refused', label, 'no local effects', flush=True)
+        elif case in ('legacy_replay', 'old_fresh_refused'):
+            with s3_fixture() as f:
+                coding = release.read_coding_release()
+                definition = dict(f.conn.execute('SELECT * FROM workflow_seq_definitions WHERE identity=? AND version=2',
+                    (coding.pin.identity,)).fetchone())
+                bindings = [dict(role=role, principal=dict(developer='s3_author', reviewer='s3_review', qa='s3_alt', final_manager='s3_manager')[role])
+                    for role, _ in coding.definition.roles]
+                saved = s4bytes(dict(format='workflow-sequential-settings-storage@1', definition=coding.pin.model_dump(mode='json'),
+                    bindings=bindings, limits=coding.definition.limits.model_dump(mode='json'), admission='Allowed'))
+                for generation, key in ((1, 's8b-defaults'), (2, 's8b-original')):
+                    setup._write(f.conn, 'scratch', 'admission', SimpleNamespace(operation_key=key, definition=coding.pin,
+                        expected_generation=generation-1), dict(write=dict(definition_id=definition['id'], generation=generation, raw=saved)))
+                f.conn.commit()
+                if case == 'legacy_replay':
+                    ids = s7legacy(f)
+                    from runtime.workflows.sequential_start import _admitted_replay
+                    from runtime.workflows.sequential_definition import parse_start
+                    row = s4row(f, 'workflow_seq_runs', ids.run_id)
+                    claim = RetryClaim.from_task(f.db.get_task(row['source_task_id']), result_row_id=row['source_result_id'])
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    with f.db.coherent_read_view() as reader:
+                        replay = _admitted_replay(reader, f.org, claim, parse_start(row['start_bytes']), _ReadBudget())
+                        original = setup._inspect(reader, org='scratch', action='admission-show', command=None,
+                            key='s8b-original', compiled=coding, budget=_ReadBudget())
+                        command = setup.AdmissionCommand.model_validate(original['command'])
+                        again = setup._inspect(reader, org='scratch', action='admission', command=command,
+                            key=command.operation_key, compiled=coding, budget=_ReadBudget())
+                    assert replay == ids, 'legacy_replay changed original admission IDs'
+                    assert original == again and original['write'] is None
+                    receipt = f.conn.execute('SELECT receipt_bytes FROM workflow_seq_settings_operations WHERE operation_key=?',
+                        ('s8b-original',)).fetchone()[0]
+                    assert s4bytes(original['receipt']) == receipt, 'legacy_replay changed receipt bytes'
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+                    body = asyncio.run(s7read(f, '/workflows/sequential/runs/'+ids.run_id))
+                    assert body['run']['id'] == ids.run_id, 'legacy_replay selected history unavailable'
+                else:
+                    command = setup.AdmissionCommand(format='workflow-sequential-coding-admission@1', operation_key='fresh-allow',
+                        definition=coding.pin, expected_generation=2, admission='Allowed')
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    with f.db.coherent_read_view() as reader:
+                        try:
+                            setup._inspect(reader, org='scratch', action='admission', command=command,
+                                key=command.operation_key, compiled=coding, budget=_ReadBudget())
+                        except ValueError as exc:
+                            assert str(exc) == 'sequential_coding_registration_only'
+                        else:
+                            raise AssertionError('old_fresh_refused: setup still offers a fresh admission write')
+                        generic = release.read_generic_coding_release()
+                        registered = setup._inspect(reader, org='scratch', action='register', command=None,
+                            key=None, compiled=generic, budget=_ReadBudget())
+                        assert generic.pin == release.GENERIC_CATALOG[('release/happyranch/coding',3)].pin
+                        assert registered['registered'] and registered['write'] is None
+                        assert registered['definition'] == generic.pin.model_dump(mode='json')
+                    # Fresh @1 v2 selection is unchanged; no runtime admission is claimed.
+                    assert release.select_bundled_release(coding.pin) == coding
+                    assert release.is_bundled_definition(coding.pin)
+                    try:
+                        release.is_bundled_definition(coding.pin.model_copy(update={'version': 1}))
+                    except ValueError as exc:
+                        assert str(exc) == 'coding_fresh_start_retired'
+                    else:
+                        raise AssertionError('old_fresh_refused: retired v1 fresh start admitted')
+                    try:
+                        release.is_bundled_definition(generic.pin)
+                    except ValueError as exc:
+                        assert str(exc) == 'sequential_release_pin_mismatch'
+                    else:
+                        raise AssertionError('old_fresh_refused: generic pin became publicly startable')
+                    f.db.insert_task(TaskRecord(id='s8b-context', assigned_agent='s3_manager', team='engineering',
+                        task_type='task', status='in_progress', current_session_id='s8b-context-sid', brief='Private discovery'))
+                    f.org.sessions.set_active('s8b-context','s3_manager','s8b-context-sid',org_slug='scratch')
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    from runtime.workflows.sequential_views import read_start_context
+                    async def context(selector):
+                        return await read_start_context(f.org, task_id='s8b-context', principal='s3_manager',
+                            session_id='s8b-context-sid', selector=selector, revalidate=lambda: None)
+                    body = asyncio.run(context(None)).model_dump(mode='json')
+                    assert body['format'] == 'workflow-sequential-start-context@1' and body['start_format'] == 'workflow-sequential-start@1'
+                    assert [item['pin']['version'] for item in body['definitions']] == [2]
+                    try:
+                        asyncio.run(context('release/happyranch/coding@3'))
+                    except ValueError as exc:
+                        assert str(exc) == 'sequential_definition_unavailable'
+                    else:
+                        raise AssertionError('old_fresh_refused: public discovery offered v3')
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+                    # Close the private attachment before the real cooperative
+                    # offline operator. No successful custody stub or live DB.
+                    path = f.db.path
+                    f.org.close()
+                    home = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])
+                    (home / 'runtimes.yaml').write_text(json.dumps(dict(active=str(f.root.parent.parent), registered=[str(f.root.parent.parent)])))
+                    environment = {key:value for key,value in os.environ.items() if key not in setup._MARKERS}
+                    original_bytes = path.read_bytes()
+                    with patch.dict(os.environ, environment, clear=True):
+                        registered = setup.operation(SimpleNamespace(action='register', runtime_root=f.root.parent.parent,
+                            org='scratch', confirm_cooperative_offline=True, operation_key=None, backup=None,
+                            backup_sha256=None))
+                    assert registered['definition'] == generic.pin.model_dump(mode='json'), 'old_fresh_refused: operator registered v2'
+                    assert registered['registered'] and path.read_bytes() == original_bytes
+        else:
+            from cli.commands import workflow_sequential_final_journal as journal
+            from runtime.workflows.sequential_coding_final_records import read_final_selection
+            with tempfile.TemporaryDirectory(prefix='s8b-uncertain-') as private:
+                workspace = Path(private) / 'org/workspaces/manager'
+                workspace.mkdir(parents=True)
+                selected = s8b_selection(workspace)
+                attempt = journal.reserve_attempt(selected, reselect=lambda: selected)
+                # Original partial records are evidence, never replay permission.
+                records = {'selected.json': s4bytes(selected.model_dump(mode='json')),
+                    'intent.json': b'{"original":"uncertain intent"}',
+                    'action-started.json': b'{"original":"command may have run"}'}
+                for name, raw in records.items():
+                    (attempt.directory / name).write_bytes(raw)
+                assert read_final_selection(records['selected.json']) == selected
+                try:
+                    journal.reserve_attempt(selected, reselect=lambda: selected)
+                except FileExistsError:
+                    pass
+                else:
+                    raise AssertionError('uncertain_final_preserved: reserved original task again')
+                assert {p.name:p.read_bytes() for p in attempt.directory.iterdir()} == records
+        print('PASS S8b', case, 'original rows/receipts preserved; no live operation', flush=True)
+
+    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case:
         raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

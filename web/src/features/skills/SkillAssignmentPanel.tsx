@@ -1,3 +1,4 @@
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
@@ -23,7 +24,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * modules.
  */
 import { useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   BadgeCheck,
   CircleDashed,
@@ -100,6 +101,16 @@ export function SkillAssignmentPanel({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [applied, setApplied] = useState(false);
   const [applyError, setApplyError] = useState<SkillErrorView | null>(null);
+  // THR-387 S6-W2a: queued, unapplied assignment changes are a Skills owner.
+  const { slug: ownerOrg } = useParams<{ slug: string }>();
+  const owner = useConfigOwner({
+    page: 'skills.assignment',
+    subject: skillId,
+    org: ownerOrg ?? null,
+    dirty: Object.keys(queue).length > 0,
+    draft: queue,
+    onDiscard: () => setQueue({}),
+  });
 
   const section = (body: ReactNode) => (
     <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
@@ -185,7 +196,7 @@ export function SkillAssignmentPanel({
 
   async function apply(): Promise<void> {
     setApplyError(null);
-    try {
+    const result = await owner.track(async () => {
       for (const c of changes) {
         await assign.mutateAsync({
           agentId: c.agent,
@@ -193,11 +204,15 @@ export function SkillAssignmentPanel({
           body: { action: c.action },
         });
       }
+    });
+    if (result.ok) {
       setQueue({});
       setReviewOpen(false);
       setApplied(true);
-    } catch (err) {
-      setApplyError(classifySkillError(err, 'skills.assign.applyError'));
+    } else if (!result.refused) {
+      // A refused apply sent nothing (a prior result is still unknown; the
+      // owner notice offers its reconciliation).
+      setApplyError(classifySkillError(result.error, 'skills.assign.applyError'));
     }
   }
 
@@ -315,6 +330,7 @@ export function SkillAssignmentPanel({
                 {t(CONFIG_REVIEW_NOTE)}
               </p>
 
+              <OwnerSaveNotice owner={owner} className="mt-2" />
               {applyError && (
                 <p className="text-attention-text text-body-sm mt-2" role="alert">
                   {renderSkillErrorInContext(applyError, 'skills.assign.applyError', t)}

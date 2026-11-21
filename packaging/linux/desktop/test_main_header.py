@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import io
+import importlib.util
 import os
 from pathlib import Path
 import queue
 import shutil
+import subprocess
 import tempfile
 from types import ModuleType, SimpleNamespace
 import sys
@@ -16,7 +18,7 @@ import happyranch_window as native
 
 
 class HeaderTests(unittest.TestCase):
-    def exercise(self, check, chinese=False, app_scheme=True):
+    def exercise(self, check, chinese=False, app_scheme=True, saved_locale=None, system_chinese=None):
         from gi.repository import Gio
         callbacks, timers, widgets = queue.Queue(), [], []
         test = self
@@ -116,6 +118,13 @@ class HeaderTests(unittest.TestCase):
             attach_main=lambda *_args: None, shutdown=lambda: None)
         with tempfile.TemporaryDirectory() as scratch:
             prefix = Path(scratch)
+            config = prefix / "config"
+            if saved_locale is not None:
+                (config / "happyranch").mkdir(parents=True)
+                (config / "happyranch/locale").write_text(saved_locale + "\n")
+            spec = importlib.util.spec_from_file_location("header_locale", Path(__file__).with_name("app_locale.py"))
+            store = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(store)
             installed = prefix / "share/happyranch/desktop"
             installed.mkdir(parents=True)
             for name in ("host_bridge.py", "connection_contract.py"):
@@ -136,12 +145,24 @@ class HeaderTests(unittest.TestCase):
                 "  connections.append(self)\n"
                 " def close(self): self.closed=True\n")
             with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository, "header_fixture": fixture}), \
-                    patch.dict(os.environ, {"LANG": "zh_CN.UTF-8" if chinese else "en_US.UTF-8",
+                    patch.dict(os.environ, {"LANG": "zh_CN.UTF-8" if (chinese if system_chinese is None else system_chinese) else "en_US.UTF-8",
+                                           "XDG_CONFIG_HOME": str(config),
                                            "HAPPYRANCH_DESKTOP_APP_SCHEME": "1" if app_scheme else ""}), \
+                    patch.object(native, "_locale", store, create=True), \
                     patch.object(native, "RemoteAccessPanel", return_value=SimpleNamespace(box=Widget(), close=lambda: None)), \
                     patch.object(native, "ServiceMode", return_value=service), \
                     patch.object(native, "acquire_lock", return_value=io.BytesIO()):
                 self.assertEqual(native.run_gui(prefix, prefix / "home"), 0)
+
+    def test_saved_locale_controls_native_header_in_fresh_process(self):
+        for locale, chinese in (("zh-CN", True), ("en", False)):
+            with self.subTest(locale=locale):
+                code = ("from test_main_header import HeaderTests; "
+                        f"HeaderTests().exercise(lambda: None, chinese={chinese!r}, "
+                        f"saved_locale={locale!r}, system_chinese={not chinese!r})")
+                result = subprocess.run([sys.executable, "-B", "-c", code],
+                    cwd=Path(__file__).parent, env=os.environ.copy(), capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_pill_states_and_target_identity_in_both_locales(self):
         for chinese in (False, True):

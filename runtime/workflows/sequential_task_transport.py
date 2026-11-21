@@ -46,14 +46,16 @@ async def selected_read(org: Any, *, task_id: str, principal: str, session_id: s
                     raise ProjectionRefusal('task_not_found', 404)
                 with _sql_budget(conn, budget):
                     _current_authority(conn, authority, capture, budget)
-                read_selected_mixed_history_uncommitted(conn, org_slug=org.slug,
-                    task_id=task_id, deadline=deadline)
                 dispatcher = org.workflow_sequential_dispatch
                 with _sql_budget(conn, budget):
-                    owner, native = _live_owner(org, dispatcher, conn, task_id, principal, session_id, budget)
                     selected_run, _, _ = dispatcher._entry(conn, task_id, budget=budget)
+                    conn.set_progress_handler(budget.progress, 1000)
                     if selected_run.get('engine_version', 1) == 2:
                         raise ProjectionRefusal('sequential_domain_transport_unavailable')
+                read_selected_mixed_history_uncommitted(conn, org_slug=org.slug,
+                    task_id=task_id, deadline=deadline)
+                with _sql_budget(conn, budget):
+                    owner, native = _live_owner(org, dispatcher, conn, task_id, principal, session_id, budget)
                     if change is not None:
                         result = select_final_uncommitted(conn, org=org, dispatcher=dispatcher,
                             task_id=task_id, principal=principal, session_id=session_id,
@@ -62,8 +64,6 @@ async def selected_read(org: Any, *, task_id: str, principal: str, session_id: s
                     else:
                         run, visit, compiled = dispatcher._entry(conn, task_id, budget=budget)
                         conn.set_progress_handler(budget.progress, 1000)
-                        if run.get('engine_version', 1) == 2:
-                            raise ProjectionRefusal('sequential_domain_transport_unavailable')
                         if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
                                 or _native_task(conn, task_id)['status'] != 'in_progress'
                                 or (visit['state'], visit['selected']) != ('running', 1)

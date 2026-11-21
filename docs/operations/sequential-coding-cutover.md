@@ -1,14 +1,25 @@
 # Sequential Coding cutover and backout — operator draft
 
-## S8a staged Coding v3 boundary (THR-336)
+## S8b registration and transport boundary (THR-336)
 
-Coding v3 is registration-only until S8b catalog cutover. The separate literal
-`STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
-immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
-v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
-v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
+Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
+`STAGED_GENERIC` registrar export retains the same identity/pins). Registration
+adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
+`workflow-sequential-start-context@1` wire shape and Start@1 composer stay
+unchanged, offering v2 only. A fresh public v3 pin still refuses with
+`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
+closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.
+admission, tasks, runs or Allow. Coding stays Disabled.
+
+Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
+Final transport with `sequential_domain_transport_unavailable`. Local Final
+selection/journal guards also refuse the registered generic pin before effects.
+Original @1 selections, admitted replay, selected-history reads and uncertain
+Final journal bytes retain their original contracts; saved records never grant
+reissue authority. Offline `setup_sequential_coding.py register` selects v3 only.
+Fresh offline admission refuses `sequential_coding_registration_only`; original
+@1 admission-show and exact command/receipt replay remain read-only.
 
 V3 repository/base/worktree preflight, independent exact-head review, same-head
 QA and guarded non-admin expected-head merge/remote observation are agent duties,
@@ -148,7 +159,7 @@ authority or genuine Coding execution acceptance.
    submission `--check` refusal `coding_authority_history_invalid` remains a
    recorded finding, unrepaired and unrelated to sequential installation.
 
-4. Explicitly register ONLY the reviewed Coding v2 package resource:
+4. Explicitly register ONLY the reviewed generic Coding v3 package resource (no admission):
 
    ```sh
    python scripts/setup_sequential_coding.py register --runtime-root /absolute/runtime --org ORG --confirm-cooperative-offline --backup /absolute/backup/happyranch.db --backup-sha256 VERIFIED_SHA256
@@ -160,39 +171,28 @@ authority or genuine Coding execution acceptance.
    old-release fallback or automatic registration. Keep the returned complete
    `definition` pin. Do not use direct SQL, old import, the disposable
    `setup_sequential_venue.py` publisher or marker creation as a public shortcut.
-5. With separately authorized service ownership, Workflows → Setup at
+5. The following settings/start procedure is retained for existing v2 definitions
+   only; it does not expose or activate v3. With separately authorized service
+   ownership, Workflows → Setup at
    `/orgs/ORG/workflows/setup` saves repo-free defaults for that stored definition.
    The historical host setup links there but does not register/install sequential
    data. Explicit first Save starts Disabled; later Save preserves admission,
    allocating no work. Preserve original save key/body and use Check original save
    after uncertainty. The pointer at `/orgs/ORG/settings/coding` retains only OLD
    read-only save recovery; never translate/re-key/resend repo-bearing commands.
-6. Separately Allow/Disable through the cooperative offline operator. Reestablish
-   complete offline/native/job exclusions and take a fresh verified checkpointed
-   backup matching the source after defaults were saved. Preserve a canonical
-   UTF8 JSON command file (sorted keys, compact separators, no final newline),
-   at most 16384 bytes, with exactly:
-
-   ```json
-   {"admission":"Allowed","definition":{"capabilities":"workflow-sequential-capabilities@1","compiler":"workflow-sequential-compiler@1","definition_digest":"a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c","identity":"release/happyranch/coding","interpreter":"workflow-sequential-interpreter@1","source_digest":"5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065","validator":"workflow-sequential-validator@1","version":2},"expected_generation":1,"format":"workflow-sequential-coding-admission@1","operation_key":"original-admission-key"}
-   ```
-
-   Replace generation with the actual current generation and key with the new
-   stable operation key. Use `Disabled` for the separate backout action. The
-   command copies only that generation's NEW saved bindings/limits, advances
-   generation under CAS and never changes admitted pins or constructs defaults.
+6. Fresh offline admission is closed. `setup_sequential_coding.py admission`
+   refuses a new operation with `sequential_coding_registration_only` and creates
+   no settings or Allow. For an original v2 operation, retain its exact command,
+   key and receipt. Read it without creating a new admission:
 
    ```sh
-   python scripts/setup_sequential_coding.py admission --runtime-root /absolute/runtime --org ORG --confirm-cooperative-offline --backup /absolute/backup/current.db --backup-sha256 VERIFIED_SHA256 --from-file /absolute/admission.json
    python scripts/setup_sequential_coding.py admission-show --runtime-root /absolute/runtime --org ORG --confirm-cooperative-offline --operation-key original-admission-key
    ```
 
-   Stored provenance is `operator/sequential-coding`, separate from Founder
-   Save/lookup; it is not a new executable principal or permission. Readback
-   distinguishes the original command/receipt from latest generation/admission.
-   Exact command replay is read-only, even after newer defaults/admission; changed
-   key-body reuse conflicts. A read-only no-op/replay needs no backup. Absence or
-   read failure supplies no resend, replacement key or success authority.
+   Exact `admission --from-file /absolute/original-admission.json` replay remains
+   read-only, even after newer defaults/admission; changed key/body reuse
+   conflicts. The original provenance remains `operator/sequential-coding`.
+   Lookup/replay supplies no replacement-key, resend or success authority.
 7. Verify loaded selector/engine identity separately from source/storage/settings.
    With separately authorized operating ownership, the
    genuine ordinary executable manager's own unchanged sequential `workflow_start`
@@ -339,7 +339,8 @@ operation custody throughout. No PR1252 action is part of this procedure.
 
    Retain the returned definition pin; repeating exact registration is a read-only
    no-op and verifies the same stored definition. Registration exit 0 does not enable Coding.
-   Existing defaults/admission steps above remain separately authorized.
+   V2 defaults/admission remain separately authorized; this script cannot create
+   fresh admission. Registration does not expose or activate v3.
 5. With the named service owner's authority, use `scripts/daemon.sh start` and
    `scripts/daemon.sh status`. Verify the loaded compatible release/engine and
    complete stored definition separately. Verify Workflows Setup and current
@@ -385,7 +386,7 @@ Larger unrelated cell payloads do not buy larger task/ownership collections.
 - After extension installation, even empty storage needs compatible schema and
   ownership@2 readers. Old-code-only downgrade is unsupported. Never drop tables,
   erase marks, rewrite pins/settings/events or reset source/carrier rows.
-- Close NEW admission using a fresh explicit Disabled command with current CAS,
+- Close NEW v2 admission through the separately authorized settings owner with current CAS,
   preserving original operations. Keep admitted old/new callbacks, settlement,
   cancellation and LOCAL Final under original pins/current authority. Keep the
   unconditional old-fresh fence: backout must not reopen old @2 or fall back into bespoke progression.

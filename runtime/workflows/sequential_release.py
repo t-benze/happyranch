@@ -40,8 +40,8 @@ MANIFEST = {
 _RETIRED = frozenset({('release/happyranch/coding', 1)})
 
 
-# Literal reviewed registration-only entries until S8b catalog cutover.
-# Never used by public discovery, fresh selection or the legacy compatibility view.
+# Literal reviewed generic Coding catalog: registration identity/pins only.
+# Public Start@1 discovery and the legacy compatibility view remain separate.
 @dataclass(frozen=True)
 class StagedGenericDefinition:
     package: str
@@ -61,12 +61,16 @@ STAGED_GENERIC = {
 }
 
 
+# Keep the S8a registrar import stable; neither name grants public Start@2.
+GENERIC_CATALOG = STAGED_GENERIC
+
+
 class SequentialReleaseUnavailable(ValueError):
     """Categorical source refusal, with no resource path or raw loader detail."""
 
     def __init__(self, code: Literal['sequential_release_unavailable',
                  'sequential_release_corrupt', 'sequential_release_pin_mismatch',
-                 'coding_fresh_start_retired']) -> None:
+                 'coding_fresh_start_retired', 'sequential_domain_transport_unavailable']) -> None:
         self.code = code
         super().__init__(code)
 
@@ -162,6 +166,21 @@ def select_staged_release(pin: GenericDefinitionPin) -> GenericCompiledDefinitio
 def read_coding_release() -> CompiledDefinition:
     """Compatibility accessor for existing Coding setup callers."""
     return select_bundled_release(MANIFEST[('release/happyranch/coding', 2)].pin)
+
+
+def read_generic_coding_release() -> GenericCompiledDefinition:
+    """Coding's generic registration pin; never a public start selector."""
+    return select_staged_release(GENERIC_CATALOG[('release/happyranch/coding', 3)].pin)
+
+
+def require_legacy_domain_selection(definition_digest: str) -> None:
+    """Refuse a generic catalog pin before new local engineering effects.
+
+    Original @1 records keep their parsers and uncertain journal bytes. The
+    daemon independently classifies every selected run by engine version.
+    """
+    if any(entry.pin.definition_digest == definition_digest for entry in GENERIC_CATALOG.values()):
+        raise SequentialReleaseUnavailable('sequential_domain_transport_unavailable')
 
 
 def select_coding_release(pin: DefinitionPin) -> CompiledDefinition:

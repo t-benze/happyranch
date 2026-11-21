@@ -736,16 +736,18 @@ and date-time values. The final two examples must be rejected.
 
 The historical Linux inventory baseline is main `921f126e14d6dd5befc869ae77278134b20985ab`
 (PRs #1762, #1765 and #1767). The table below describes the later **PR #1769
-source revision** (S5-L1, including the round-2 recovery fix); every file/line
-citation in this table refers to that PR source tree, not the historical main
-baseline. This is source inspection, not live/native acceptance. `AS` =
+source revision** (S5-L1, including the round-2 recovery fix); every S5-L1
+file/line citation in this table refers to that PR source tree, not the historical
+main baseline. S6-L/S6-W3-L and temporary Connection-routing citations refer to
+merged main `7535eaad416d1b0311f99796b49822bfe6220527` (#1776/#1782/#1781).
+This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
 `packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
 **pending (no Mac work this wave)**. Web status is summarized after the table
 (S5-W1). Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
-| Code / rule | Linux PR #1769 status and file:line evidence |
+| Code / rule | Linux status and file:line evidence |
 | --- | --- |
 | `no_target` → 503 | Emitted by `WK:632–634` when captured target is absent. |
 | `target_starting` → 503 | Emitted by `AS:369–374,463–466` for unchecked/not-ready targets. |
@@ -774,8 +776,8 @@ baseline. This is source inspection, not live/native acceptance. `AS` =
 | app.status / app.stateChanged v2 | **S5-L1 implemented.** Shared closed status projection and event, admitted only through the probed Main document’s named world: `WK:331–351` (`status`), `WK:417–424` (`emit_state`), `WK:426–455` (`bridge_message`), `WK:457–486` (`probe_document`). |
 | Generation header admission and stripping | **S5-L1 implemented.** Missing/stale header refuses before forwarding (GET bootstrap exempt); process-owned generation counter survives loader reloads. Local allowlist and remote X-HappyRanch stripping remain: `WK:38–42` (`new_generation`), `WK:563–616` (`handle`), `AS:75–81` (`request_headers`), `client_runtime.py:139–151`. |
 | Atomic target+generation swap → cancellation → event | **S5-L1 implemented.** Swap under the first-send lock, cancel old generation, then emit full status: `WK:373–389` (`_replace_target`). |
-| Non-GET / owner commit refusal | **S6-W3-L native summary consumer implemented:** `AppScheme.bridge_message/owner_snapshot/select_target`, `ClientModel.owner_saves`. The admitted v2 summary gates commit/disconnect in unknown → pending → dirty/failed order, then current-generation non-GET transfers. Invalid input retires clearance; retirement with unresolved work retains an unknown latch. Web summary publication remains S6-W2b; lifecycle requests/decisions remain S7-L3. |
-| Main Connection command admission | **S6-W3-L implemented:** `AppScheme.bridge_message`, `APP_PAGE`, `APP_RELAY` admit all eight existing v1 Host commands, `host.stateChanged`, `client.health/removeSaved/retrySave`, with closed args and raw validated v1 bodies. `host_bridge.HostBridge` shares the bus/busy slot and visible-window three-second polling with ConnectionWindow; errors preserve native effect/recovery. The separate window/default-scheme cutover remains S7-L1. |
+| Non-GET / owner commit refusal | **S6-W3-L native summary consumer implemented (#1782):** [app_scheme_webkit.py:551](../../packaging/linux/desktop/app_scheme_webkit.py#L551), [app_scheme_webkit.py:497](../../packaging/linux/desktop/app_scheme_webkit.py#L497), [client_model.py:69](../../packaging/linux/desktop/client_model.py#L69), [client_model.py:210](../../packaging/linux/desktop/client_model.py#L210); `AppScheme.bridge_message/owner_snapshot/select_target`, `ClientModel.owner_saves`. The admitted v2 summary gates commit/disconnect in unknown → pending → dirty/failed order, then current-generation non-GET transfers; dirty/failed return `owner_edits_pending` ([app_scheme_webkit.py:428](../../packaging/linux/desktop/app_scheme_webkit.py#L428), relay [app_scheme_webkit.py:263](../../packaging/linux/desktop/app_scheme_webkit.py#L263)). Invalid input retires clearance; retirement with unresolved work retains an unknown latch ([app_scheme_webkit.py:502](../../packaging/linux/desktop/app_scheme_webkit.py#L502)). Web summary publication remains S6-W2b; lifecycle requests/decisions remain S7-L3. |
+| Main Connection command admission | **S6-W3-L implemented (#1782):** [app_scheme_webkit.py:164](../../packaging/linux/desktop/app_scheme_webkit.py#L164), [app_scheme_webkit.py:249](../../packaging/linux/desktop/app_scheme_webkit.py#L249), [app_scheme_webkit.py:563](../../packaging/linux/desktop/app_scheme_webkit.py#L563), [app_scheme_webkit.py:624](../../packaging/linux/desktop/app_scheme_webkit.py#L624); `AppScheme.bridge_message`, `APP_PAGE`, `APP_RELAY` admit all eight existing v1 Host commands, `host.stateChanged`, `client.health/removeSaved/retrySave`, with closed args and raw validated v1 bodies. `host_bridge.HostBridge` shares the bus/busy slot and visible-window three-second polling with ConnectionWindow; errors preserve native effect/recovery ([host_bridge.py:116](../../packaging/linux/desktop/host_bridge.py#L116), [host_bridge.py:137](../../packaging/linux/desktop/host_bridge.py#L137), [host_bridge.py:194](../../packaging/linux/desktop/host_bridge.py#L194), [app_scheme_webkit.py:575](../../packaging/linux/desktop/app_scheme_webkit.py#L575)). The separate window/default-scheme cutover remains S7-L1; the header Connection/badge fallback is #1781 ([happyranch_window.py:1013](../../packaging/linux/desktop/happyranch_window.py#L1013)). |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
@@ -894,21 +896,25 @@ status/badge state continues to come from its existing state owner, not dialog
 visibility. The subscription says only that a handler exists, never that a
 dialog is open or that an owner/effect is resolved.
 
-**Implementation status and follow-up.** This subsection/schema are spec only.
-At base `5cc7b295156fb33aaf1d2703ca84016755ec3763`, Linux
-`app_scheme_webkit.py` admits only `app.stateChanged` in page `on` (line 143),
-hard-codes it in the subscribe relay (line 198), and accepts only that event in
-native `bridge_message` (line 439). Existing emission has an unlabelled raw
-status payload. This additive schema change alone breaks no current consumer
-and implements no new delivery. **S6-L must add closed named-event subscription
-and routing end to end**, keeping dialog and status listeners separate, then
-emit the exact dialog payload from header actions under the admission and drop
-rules above. Merely adding a header callback cannot deliver it today. **S6-W1
-must subscribe at the Main shell (including recovery), validate against
+**Implementation status and follow-up.** Linux S6-L is implemented by
+PR #1776: closed named-event admission/routing keeps `app.stateChanged` and
+`app.dialogRequested` listeners separate (page [app_scheme_webkit.py:138](../../packaging/linux/desktop/app_scheme_webkit.py#L138),
+relay [app_scheme_webkit.py:242](../../packaging/linux/desktop/app_scheme_webkit.py#L242), native [app_scheme_webkit.py:615](../../packaging/linux/desktop/app_scheme_webkit.py#L615)).
+`request_dialog` emits the exact schema-2 payload only to the current admitted
+dialog subscriber, dropping unavailable requests without queue/replay
+([app_scheme_webkit.py:519](../../packaging/linux/desktop/app_scheme_webkit.py#L519), [app_scheme_webkit.py:526](../../packaging/linux/desktop/app_scheme_webkit.py#L526)).
+Settings header emission and explicit named Retry are implemented
+([happyranch_window.py:1017](../../packaging/linux/desktop/happyranch_window.py#L1017), [happyranch_window.py:938](../../packaging/linux/desktop/happyranch_window.py#L938)).
+The EN/ZH status/candidate pill and persistent access-unsaved badge are also
+implemented by #1776 ([happyranch_window.py:947](../../packaging/linux/desktop/happyranch_window.py#L947), [happyranch_window.py:924](../../packaging/linux/desktop/happyranch_window.py#L924)).
+PR #1781 keeps the Connection button/badge routed to the existing native
+Connection window until S7-L1 ([happyranch_window.py:1013](../../packaging/linux/desktop/happyranch_window.py#L1013)); those entries do not emit
+`app.dialogRequested`. These citations refer to merged main `7535eaad4`.
+**S6-W1 must subscribe at the Main shell (including recovery), validate against
 `dialogRequested`, and route valid events through the single-dialog owner gate**;
 it must ignore invalid payloads and unsubscribe on document teardown. Mac menu
-emission follows this contract when separately authorized; no Mac build/work is
-claimed here. No open/closed notice or target/generation authority is added.
+emission remains pending separate authorization; no Mac build/work is claimed
+here. No open/closed notice or target/generation authority is added.
 
 #### Valid: request Settings
 
@@ -1094,15 +1100,20 @@ target, generation, capability, draft content, error text or secret. Section 6
 applies: do not log payloads or use a registry dump. Counts are deliberately
 coarse; the web alone retains context and renders localized loss/result copy.
 
-**Implementation status.** **S6-W3-L (Linux native)** consumes the admitted
-summary, clears it on document retirement/close, retains coarse unresolved
-uncertainty and wires the commit/disconnect refusal ordering above. Gate IDs
-remain unissued and are refused without applying a summary. **S6-W2b (web)**
-owns initial/change pushes and lifecycle subscription/decisions. **S7-L3
-(native)** still owns correlated lifecycle requests, keep/proceed and explicit
-recovery exit; those effects are not implemented by S6-W3-L. No daemon route,
-auth, allowlist or v1 schema changes. Mac remains pending. PR #1775's
-`app.owners` aggregate placeholder refers to this concrete wire contract.
+**Implementation status.** **S6-W3-L (Linux native), PR #1782**, consumes the
+admitted summary ([app_scheme_webkit.py:551](../../packaging/linux/desktop/app_scheme_webkit.py#L551)) and connects `owner_snapshot` to
+`ClientModel.owner_saves` ([app_scheme_webkit.py:497](../../packaging/linux/desktop/app_scheme_webkit.py#L497), [client_model.py:69](../../packaging/linux/desktop/client_model.py#L69), [client_model.py:210](../../packaging/linux/desktop/client_model.py#L210)).
+It clears the summary on document retirement/close and retains coarse unresolved
+uncertainty ([app_scheme_webkit.py:502](../../packaging/linux/desktop/app_scheme_webkit.py#L502), [app_scheme_webkit.py:686](../../packaging/linux/desktop/app_scheme_webkit.py#L686)), then wires the commit/disconnect
+refusal ordering above, including `owner_edits_pending` ([app_scheme_webkit.py:428](../../packaging/linux/desktop/app_scheme_webkit.py#L428),
+relay [app_scheme_webkit.py:263](../../packaging/linux/desktop/app_scheme_webkit.py#L263)). These citations refer to merged main `7535eaad4`.
+Gate IDs remain unissued and are refused without applying a summary
+([app_scheme_webkit.py:37](../../packaging/linux/desktop/app_scheme_webkit.py#L37)). **S6-W2b (web) remains PENDING**: initial/change pushes and
+lifecycle subscription/decisions have not merged. **S7-L3 (native)** still owns
+correlated lifecycle requests, keep/proceed and explicit recovery exit; those
+effects are not implemented by S6-W3-L. No daemon route, auth, allowlist or v1
+schema changes. Mac remains pending. PR #1775's `app.owners` aggregate
+placeholder refers to this concrete wire contract.
 
 The following are JSON values inside facade strings, without transport envelopes.
 Validate summary examples against `ownersChanged` and lifecycle examples against
@@ -1453,14 +1464,26 @@ service-only `local.restart` is not that launch. No automatic app relaunch and
 no locale-triggered lifecycle/owner prompt. Session-only persistence failure
 does not promise that the next launch will retain the choice.
 
-**Implementation status.** Spec only. S8-1-L wires the native store into the
-bridge and next-launch native strings; S8-1-W wires the web's native locale
-authority and truthful pending/saved/session-only UI. TASK-18213's store at
-`870e34e62bd3a844abb0379be1f170dbb8d4cc48` matches atomic acknowledgement,
-failure=false and serialized writes; the adapter ordering above is later wiring,
-not a store mismatch. Browser-mode localStorage behavior stays as documented.
-No daemon route/auth/remote allowlist change, Mac edit/build or runtime/visual
-acceptance is claimed. The following examples validate against `appLocaleSet`
+**Implementation status.** Linux native wiring is implemented by S8-1-L-b,
+PR #1799 (merged `74eae6f4`): the admitted Main setter validates the closed request
+([app_scheme_webkit.py:652](../../packaging/linux/desktop/app_scheme_webkit.py#L652)),
+serializes store write, result delivery and full state publication across Main
+reconstruction ([app_scheme_webkit.py:474](../../packaging/linux/desktop/app_scheme_webkit.py#L474)),
+and reads current/persisted locale from the shared store
+([app_scheme_webkit.py:472](../../packaging/linux/desktop/app_scheme_webkit.py#L472)).
+The GTK launch translation closure reads the preference for native header/menus/dialogs
+on next app launch ([happyranch_window.py:999](../../packaging/linux/desktop/happyranch_window.py#L999));
+built-in native state names retain the launch locale. The existing TASK-18213
+store implementation is unchanged. Native/script checks and the real GTK/WebKit
+bridge test cover acknowledged true/false results, ordered rapid choices, refusal
+and retirement; new-process header checks cover saved preference precedence over
+LANG. Installed payload isolated imports pass; packaged/X11 visual acceptance
+remains unverified. S8-1-W remains pending for live web native locale authority
+and truthful pending/saved/session-only UI; browser-mode localStorage behavior
+stays as documented. No synchronous facade/wire field, daemon route/auth/remote
+allowlist change or Mac edit/build is included.
+
+The following examples validate against `appLocaleSet`
 or `appLocaleSetResult` as named, and the root schema.
 
 #### Valid: appLocaleSet chooses Simplified Chinese

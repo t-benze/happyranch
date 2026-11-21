@@ -16,6 +16,8 @@
  *
  * Authority: KB ADR `executor-path-registry-resolution`.
  */
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronRight, Terminal, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
@@ -108,6 +110,20 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
 
   const trimmed = path.trim();
   const busy = validate.isPending || register.isPending;
+  // THR-387 S6-W2a: a typed, unregistered path is an unsent Executors edit.
+  const { slug } = useParams<{ slug: string }>();
+  const owner = useConfigOwner({
+    page: 'settings.executors',
+    subject: kind,
+    org: slug ?? null,
+    dirty: trimmed !== '',
+    draft: path,
+    onDiscard: () => {
+      setPath('');
+      setCheck(null);
+      setRegisterError(null);
+    },
+  });
 
   const onValidate = async () => {
     setRegisterError(null);
@@ -123,13 +139,15 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
   const onRegister = async () => {
     setRegisterError(null);
     setCheck(null);
-    try {
-      await register.mutateAsync({ kind, path: trimmed });
-      setPath('');
-    } catch (err) {
+    const sent = path;
+    const result = await owner.track(() => register.mutateAsync({ kind, path: trimmed }));
+    if (result.ok) {
+      // Clear only the path that was sent; a newer typed path stays unsaved.
+      setPath((current) => (current === sent ? '' : current));
+    } else if (result.outcome === 'failed') {
       // The register route validates server-side and returns 422 with a
       // human-readable reason (not absolute / missing / not executable).
-      setRegisterError(errMessage(err, 'settings.executors.binaries.registerFailed'));
+      setRegisterError(errMessage(result.error, 'settings.executors.binaries.registerFailed'));
     }
   };
 
@@ -247,6 +265,8 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
           </p>
         )}
 
+        {/* C3 failed / unknown / pending for this row's register (S6-W2a). */}
+        <OwnerSaveNotice owner={owner} className="mt-2" />
         {/* Register failure (server-side validation) */}
         {registerError !== null && (
           <p

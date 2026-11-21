@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+from collections import deque
 import itertools
 import sys
 from types import ModuleType
@@ -27,6 +28,19 @@ RemoteDaemon, RemoteError = _transport.RemoteDaemon, _transport.RemoteError
 _spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
 _contract = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_contract)
+# Reconstructed views and the launcher share one installation-owned session.
+_locale = sys.modules.get("_happyranch_app_locale")
+if _locale is None:
+    _spec = importlib.util.spec_from_file_location("_happyranch_app_locale", Path(__file__).with_name("app_locale.py"))
+    _locale = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_locale)
+    sys.modules["_happyranch_app_locale"] = _locale
+_locale_process = ModuleType("_happyranch_locale_delivery")
+_locale_process.queue = deque()
+_locale_process.busy = False
+_locale_process.launch = None
+_locale_process.deferred = set()
+_locale_process = sys.modules.setdefault("_happyranch_locale_delivery", _locale_process)
 WORLD = "happyranch.app.v2"
 CLIENT_COMMANDS = frozenset({"client.status", "client.acceptInvite", "client.retry",
                              "client.savedComputers", "client.connectSaved", "client.cancelAttempt",
@@ -166,7 +180,16 @@ APP_PAGE = r"""(() => {
       'client.health','client.retrySave','host.status','host.enable','host.turnOff','host.createInvite',
       'host.approveDevice','host.rejectDevice','host.nextDevice','host.revokeDevice'];
     let args;
-    try { args = JSON.parse(data); } catch { return reject(fail('unsupportedCommand')); }
+    // Native owns closed parsing, including duplicate-key detection. Preserve
+    // the original string; JSON.parse here would erase duplicate keys.
+    const locale = command === 'app.locale.set';
+    // Keep invalid arguments inside the native envelope's existing byte bound;
+    // escape expansion must not turn a locale refusal into a generic error.
+    if (locale && (typeof data !== 'string' || new TextEncoder().encode(JSON.stringify(data)).length > 3072))
+      return reject(JSON.stringify({code:'invalidRequest',effect:'none',recovery:'none'}));
+    try { args = JSON.parse(data); } catch {
+      if (!locale) return reject(fail('unsupportedCommand'));
+    }
     const saved = ['client.connectSaved','client.removeSaved'].includes(command) && args && !Array.isArray(args)
       && Object.keys(args).length === 1 && typeof args.computerRef === 'string'
       && args.computerRef.length > 0 && args.computerRef.length <= 256;
@@ -176,7 +199,7 @@ APP_PAGE = r"""(() => {
       && counts && !Array.isArray(counts) && Object.keys(counts).sort().join(',') === 'dirty,failed,pending,unknown'
       && Object.values(counts).every(n=>Number.isInteger(n) && n >= 0 && n <= 255)
       && args.blocking === (counts.pending || counts.unknown ? 'hold' : counts.dirty || counts.failed ? 'prompt' : 'none');
-    if (!(empty.includes(command) && data === '{}') && !saved && !owners) return reject(fail('unsupportedCommand'));
+    if (!(empty.includes(command) && data === '{}') && !saved && !owners && !locale) return reject(fail('unsupportedCommand'));
     if (pending.size >= 8) return reject(fail('busy'));
     const id = 'r' + (++sequence);
     pending.set(id, {resolve, reject, command});
@@ -206,6 +229,7 @@ APP_RELAY = r"""(() => {
   const native = window.webkit.messageHandlers.appBridge, token = crypto.randomUUID();
   let active = true, admitted = false;
   const queued = [];
+  const localeReplies = [];
   const send = item => {
     if (admitted) return native.postMessage(JSON.stringify({token, ...item}));
     if (queued.length >= 8) return Promise.reject();
@@ -215,6 +239,15 @@ APP_RELAY = r"""(() => {
     if (!active || value !== token || admitted) return;
     admitted = true;
     for (const entry of queued.splice(0)) send(entry.item).then(entry.resolve, entry.reject);
+  }, publishLocale:async (raw, enabled) => {
+    // Native waits for this promise before starting the next locale write.
+    // Even if WebKit schedules publication before its native promise callback,
+    // the page receives the setter reply before this full state snapshot.
+    const delivery = localeReplies.shift();
+    if (!delivery) return;
+    await delivery.promise;
+    if (active && admitted && enabled === 'true')
+      window.postMessage({channel:'hr-app-event', event:'app.stateChanged', raw}, location.origin);
   }, emit:(event, raw) => {
     if (active && admitted && ['app.stateChanged','app.dialogRequested','host.stateChanged'].includes(event))
       window.postMessage({channel:'hr-app-event', event, raw}, location.origin);
@@ -250,9 +283,14 @@ APP_RELAY = r"""(() => {
         'client.retry','client.savedComputers','client.connectSaved','client.cancelAttempt',
         'client.commitSwitch','client.disconnect','client.health','client.removeSaved','client.retrySave',
         'host.status','host.enable','host.turnOff','host.createInvite','host.approveDevice','host.rejectDevice',
-        'host.nextDevice','host.revokeDevice','app.ownersChanged'].includes(item.command) || typeof item.data !== 'string'
+        'host.nextDevice','host.revokeDevice','app.ownersChanged','app.locale.set'].includes(item.command) || typeof item.data !== 'string'
         || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
-    let raw, ok = true;
+    let raw, ok = true, delivery;
+    if (item.command === 'app.locale.set') {
+      delivery = {};
+      delivery.promise = new Promise(resolve => { delivery.resolve = resolve; });
+      localeReplies.push(delivery);
+    }
     try { raw = await send({command:item.command, data:item.data}); }
     catch (error) {
       ok = false;
@@ -275,6 +313,13 @@ APP_RELAY = r"""(() => {
     }
     if (active && typeof raw === 'string' && new TextEncoder().encode(raw).length <= 32768)
       window.postMessage({channel:'hr-app-reply', id:item.id, raw, ok}, location.origin);
+    if (delivery) {
+      if (!ok) {
+        const index = localeReplies.indexOf(delivery);
+        if (index >= 0) localeReplies.splice(index, 1);
+      }
+      delivery.resolve();
+    }
   });
 })();"""
 
@@ -400,8 +445,9 @@ class AppScheme:
         self.candidate = None
         self.client_dispatch = None
         self.access_unsaved = False
-        self.locale = {"current": "zh-CN" if os.environ.get("LANG", "").lower().startswith("zh") else "en",
-                       "persisted": False}
+        if _locale_process.launch is None:
+            _locale_process.launch = _locale.load()
+        self.locale = dict(_locale_process.launch)  # Native built-in names keep the launch language.
 
     def status(self) -> dict:
         with self.target_lock:
@@ -423,7 +469,54 @@ class AppScheme:
                     local["prompt_base_url"] = f"http://127.0.0.1:{daemon.port}/api/v1"
             return {"schema": 2, "generation": self.generation, "target": target, "state": state,
                     "incompatible": incompatible, "local": local, "candidate": self.candidate,
-                    "access_unsaved": self.access_unsaved, "locale": dict(self.locale)}
+                    "access_unsaved": self.access_unsaved, "locale": _locale.current()}
+
+    def next_locale(self) -> None:
+        """GTK-context FIFO: write -> reply -> delivered publication -> next write."""
+        # Process-owned queue survives AppScheme reconstruction after Restart.
+        if _locale_process.busy or not _locale_process.queue:
+            return
+        app, locale, document, token, context, reply = _locale_process.queue.popleft()
+        def current() -> bool:
+            return not app.closed and document == app.document and token == app.bridge_token
+        if not current():
+            reply.return_error_message('{"code":"documentChanged","effect":"none","recovery":"refresh"}')
+            self.next_locale()
+            return
+        _locale_process.busy = True
+        def advance(*_args: object) -> None:
+            if _args and _args[1] is not None:
+                try:
+                    _args[0].call_async_javascript_function_finish(_args[1])
+                except app.GLib.Error:
+                    pass  # WebKit/document loss does not replay an acknowledged write.
+            _locale_process.busy = False
+            deferred = tuple(_locale_process.deferred)
+            _locale_process.deferred.clear()
+            for owner in deferred:
+                owner.emit_state()
+            self.next_locale()
+        def work() -> None:
+            snapshot = _locale.set(locale)
+            def complete() -> bool:
+                if not current():
+                    reply.return_error_message('{"code":"documentChanged","effect":"unknown","recovery":"nativeRecovery"}')
+                    advance()
+                    return False
+                reply.return_value(app.JSC.Value.new_string(context, json.dumps({"schema": 2, "locale": snapshot})))
+                _locale_process.deferred.discard(app)
+                state = {**app.status(), "locale": snapshot}
+                args = app.GLib.Variant("a{sv}", {"raw": app.GLib.Variant("s", json.dumps(state)),
+                    "enabled": app.GLib.Variant("s", "true" if app.subscribed else "false"),
+                    "token": app.GLib.Variant("s", token)})
+                # Private named-world barrier, not a page facade or wire field.
+                # Also drains the reply barrier when there is no subscription.
+                app.view.call_async_javascript_function(
+                    "if (globalThis.hrAppBridge?.token === token) return await globalThis.hrAppBridge.publishLocale(raw, enabled);",
+                    -1, args, WORLD, ORIGIN + "/", None, advance, None)
+                return False
+            app.GLib.idle_add(complete)
+        threading.Thread(target=work, daemon=True, name="app-locale").start()
 
     def select_target(self, target: LocalDaemon | RemoteDaemon | None,
                       *, owner_saves: tuple[str, ...] | None = None) -> str | None:
@@ -514,6 +607,13 @@ class AppScheme:
         self.host_subscribed = False
 
     def emit_state(self) -> None:
+        if not self.subscribed or self.bridge_token is None or self.closed:
+            return
+        # Background health/target observations must not publish a locale that
+        # the store has updated before its setter reply has been delivered.
+        if _locale_process.busy:
+            _locale_process.deferred.add(self)
+            return
         self.emit_event("app.stateChanged", json.dumps(self.status()))
 
     def request_dialog(self, dialog: str) -> bool:
@@ -539,6 +639,7 @@ class AppScheme:
 
     def bridge_message(self, manager: object, value: object, reply: object) -> bool:
         owner_command = False
+        locale_command = False
         try:
             if manager != self.controller or self.closed or not self.bridge_token or not value.is_string():
                 raise ValueError("unavailable document")
@@ -548,6 +649,21 @@ class AppScheme:
             item = _contract.parse_json(value.to_string(), 4096)
             if type(item) is not dict or item.get("token") != self.bridge_token:
                 raise ValueError("stale document")
+            if item.get("command") == "app.locale.set":
+                locale_command = True
+                if set(item) != {"token", "command", "data"} or type(item["data"]) is not str:
+                    raise ValueError("invalid locale request")
+                args = _contract.parse_json(item["data"], 1024)
+                if (type(args) is not dict or set(args) != {"schema", "locale"}
+                        or type(args["schema"]) is not int or args["schema"] != 2
+                        or type(args["locale"]) is not str or args["locale"] not in {"en", "zh-CN"}):
+                    raise ValueError("invalid locale request")
+                if len(_locale_process.queue) + _locale_process.busy >= 8:
+                    reply.return_error_message('{"code":"busy","effect":"none","recovery":"refresh"}')
+                    return True
+                _locale_process.queue.append((self, args["locale"], self.document, self.bridge_token, value.get_context(), reply))
+                self.next_locale()
+                return True
             if item.get("command") == "app.ownersChanged":
                 owner_command = True
                 self.owners = None  # Invalid current-document input cannot retain clean clearance.
@@ -645,7 +761,7 @@ class AppScheme:
             reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
         except (SchemeError, ValueError, TypeError, UnicodeError, RecursionError):
             reply.return_error_message(json.dumps({"code": "invalidRequest", "effect": "none",
-                                                  "recovery": "none" if owner_command else "refresh"}))
+                                                  "recovery": "none" if owner_command or locale_command else "refresh"}))
         return True
 
     def probe_document(self) -> None:

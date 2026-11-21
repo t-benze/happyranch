@@ -545,10 +545,10 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         assert ("worktree_guard" in body) or ("GUARD" in body), (
             "Source make-worktree SKILL.md must reference the worktree guard"
         )
-        assert "python \"$GUARD\" setup" in body or "worktree_guard setup" in body, (
+        assert "python3 \"$GUARD\" setup" in body or "worktree_guard setup" in body, (
             "Source make-worktree SKILL.md must contain guard setup command"
         )
-        assert "python \"$GUARD\" verify" in body or "worktree_guard verify" in body, (
+        assert "python3 \"$GUARD\" verify" in body or "worktree_guard verify" in body, (
             "Source make-worktree SKILL.md must contain guard verify command"
         )
 
@@ -586,8 +586,8 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
-        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
+        assert ("python3 \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python3 \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
 
@@ -607,8 +607,8 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
-        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
+        assert ("python3 \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python3 \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
 
@@ -1354,3 +1354,187 @@ class TestDeliveredMakeWorktreeWorkflow:
                 ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
                 capture_output=True, text=True,
             )
+
+
+class TestWorkspaceCleanupBoundaries:
+    """Execute the shipped cleanup scripts at their admission/action boundaries."""
+
+    @staticmethod
+    def _scripts() -> Path:
+        return Path(__file__).resolve().parents[1] / 'runtime/skills/bundled/workspace-cleanup/scripts'
+
+    @pytest.mark.parametrize('change', [
+        'unchanged', 'task_id', 'assigned_agent', 'status', 'completed_at',
+        'output_summary', 'note', 'risks_flagged', 'unavailable', 'malformed',
+    ])
+    def test_pre_action_target_recall(self, tmp_path: Path, change: str):
+        import json
+        import os
+
+        scripts = self._scripts()
+        containing = tmp_path / 'TASK-fixture'
+        containing.mkdir()
+        candidate = containing / 'node_modules'
+        candidate.mkdir()
+        attempt = tmp_path / 'attempt'
+        attempt.mkdir()
+        admitted = {
+            'task_id': containing.name, 'assigned_agent': 'fixture',
+            'status': 'completed', 'completed_at': '2020-01-01T00:00:00+00:00',
+            'output_summary': 'retained outcome', 'note': None, 'risks_flagged': [],
+        }
+        fresh = dict(admitted)
+        changes = {'task_id': 'TASK-other', 'assigned_agent': 'other', 'status': 'in_progress',
+                   'completed_at': '2020-01-02T00:00:00+00:00',
+                   'output_summary': 'worktree-deferred: protected',
+                   'note': 'worktree-deferred: protected',
+                   'risks_flagged': ['worktree-deferred: protected']}
+        if change in changes:
+            fresh[change] = changes[change]
+        original = tmp_path / 'admitted.json'
+        original.write_text(json.dumps(admitted))
+        current = tmp_path / 'fresh.json'
+        current.write_text('{' if change == 'malformed' else json.dumps(fresh))
+        # Keep real runner ordering/recall handling. Other admission gates and
+        # native transport are test-side doubles; stop before any cleanup action.
+        shell = r'''
+source "$RUNNER"
+python3() {
+  case "$*" in *'prepare_cleanup.py attempt-check'*) return 0;; esac
+  command python3 "$@"
+}
+git() { printf 'task/TASK-fixture\n'; }
+_wc_native() {
+  local sink="$1"
+  printf '%s\n' "$sink" >> "$TEST_ROOT/recalls"
+  case "$sink" in
+    */task.native.json) cat "$ORIGINAL";;
+    *) [ "$CHANGE" != unavailable ] || return 1; cat "$CURRENT";;
+  esac
+}
+_wc_join() { return 0; }
+_wc_run_gates() { printf '%s\n' "$TASK_JSON" >> "$TEST_ROOT/gate-inputs"; }
+_wc_measure_path() { return 1; }
+run_cleanup_candidate "$CANDIDATE" "$CONTAINING"
+'''
+        env = dict(os.environ, RUNNER=str(scripts / 'run_cleanup_candidate.sh'),
+                   TEST_ROOT=str(tmp_path), ORIGINAL=str(original), CURRENT=str(current),
+                   CHANGE=change, WC_ATTEMPT=str(attempt), WORKSPACE=str(tmp_path),
+                   PRIMARY=str(tmp_path / 'primary'), AGENT='fixture', ORG='fixture',
+                   ACTING_TASK='TASK-acting', SESSION_ID='synthetic-session',
+                   CLEANUP_MARKER='HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)',
+                   CANDIDATE=str(candidate), CONTAINING=str(containing))
+        result = subprocess.run(['bash', '-c', shell], env=env, capture_output=True, text=True, timeout=15)
+        assert result.returncode == 2, result.stderr
+        receipt = json.loads(result.stdout)
+        expected = ('pre_action_measurement_failed' if change == 'unchanged' else
+                    'pre_action_task_unavailable' if change == 'unavailable' else
+                    'pre_action_task_invalid' if change == 'malformed' else
+                    'pre_action_task_changed')
+        assert receipt == {'decision': 'refused', 'reason': expected}
+        recalls = (tmp_path / 'recalls').read_text().splitlines()
+        assert len(recalls) == 2
+        assert json.loads((Path(recalls[0]).parent / 'task.json').read_text()) == admitted
+        gates = (tmp_path / 'gate-inputs').read_text().splitlines()
+        assert len(gates) == (2 if change == 'unchanged' else 1)
+        if change == 'unchanged':
+            assert gates[0] != gates[1]
+            assert json.loads(Path(gates[1]).read_text()) == fresh
+        assert candidate.is_dir()
+
+    @pytest.mark.parametrize('stage', ['shared', 'isolated', 'descriptor'])
+    @pytest.mark.parametrize('kind', [
+        'regular', 'internal_file', 'internal_dangling', 'internal_directory',
+        'external', 'interpreter', 'protected_interpreter',
+    ])
+    def test_cleanup_symlink_boundaries(self, tmp_path: Path, stage: str, kind: str):
+        import json
+        import os
+
+        scripts = self._scripts()
+        workspace = tmp_path / 'workspace'
+        containing = workspace / 'repos/fixture/.claude/worktrees/TASK-fixture'
+        containing.mkdir(parents=True)
+        candidate = containing / '.venv'
+        candidate.mkdir()
+        (candidate / 'keep').write_text('fixture bytes')
+        outside = tmp_path / 'interpreter-home'
+        outside.mkdir()
+        target = outside / 'python3'
+        target.write_text('synthetic interpreter; never executed')
+        if kind == 'internal_file':
+            (candidate / 'link').symlink_to('keep')
+        elif kind == 'internal_dangling':
+            (candidate / 'link').symlink_to('missing')
+        elif kind == 'internal_directory':
+            (candidate / 'directory').mkdir()
+            (candidate / 'link').symlink_to('directory', target_is_directory=True)
+        elif kind == 'external':
+            (candidate / 'link').symlink_to(target)
+        elif kind in ('interpreter', 'protected_interpreter'):
+            if kind == 'protected_interpreter':
+                target = workspace / 'python3'
+                target.write_text('protected bytes')
+            (candidate / 'bin').mkdir()
+            (candidate / 'bin/python3').symlink_to(target)
+            (candidate / 'pyvenv.cfg').write_text('home = ' + str(target.parent) + '\n')
+        allowed = kind in ('regular', 'internal_file', 'interpreter')
+        snapshot = tmp_path / 'snapshot.json'
+        primary = workspace / 'repos/fixture'
+        if stage == 'shared':
+            result = subprocess.run([
+                sys.executable, '-I', '-B', str(scripts / 'worktree_safety.py'), 'snapshot',
+                str(candidate), str(containing), str(primary), str(workspace), str(snapshot),
+            ], capture_output=True, text=True, timeout=10)
+            assert result.returncode == (0 if allowed else 2), result.stdout + result.stderr
+            if not allowed:
+                assert json.loads(result.stdout)['reason'] == 'external_or_protected_symlink'
+        else:
+            # Fixed schema input to the post-isolation boundaries. A previously
+            # admitted internal link can change type before descriptor admission.
+            rows = []
+            for path in [candidate, *sorted(candidate.rglob('*'))]:
+                value = path.lstat()
+                relative = '' if path == candidate else str(path.relative_to(candidate))
+                accepted = None
+                if kind == 'interpreter' and path.is_symlink():
+                    dest = target.stat()
+                    accepted = [relative, os.readlink(path), str(target), dest.st_dev, dest.st_ino,
+                                dest.st_mode, dest.st_uid, dest.st_size]
+                rows.append([relative, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                             value.st_size, getattr(value, 'st_blocks', 0), accepted])
+            snapshot.write_text(json.dumps({'tree': sorted(rows), 'protected': {}}))
+            isolation = containing / '.workspace-cleanup-isolate.fixture'
+            isolation.mkdir(mode=0o700)
+            isolated = isolation / '.venv'
+            candidate.rename(isolated)
+            scratch = tmp_path / 'gates'
+            scratch.mkdir()
+            shutil.copyfile(snapshot, scratch / 'tree-boundary.json')
+            env = dict(os.environ, CANDIDATE=str(candidate), CONTAINING=str(containing),
+                       WC_ISOLATION_DIR=str(isolation), WC_ISOLATED_CANDIDATE=str(isolated),
+                       PRIMARY=str(primary), WORKSPACE=str(workspace), WC_TMP=str(scratch))
+            function = '_wc_validate_isolated_cache' if stage == 'isolated' else '_wc_delete_isolated_cache'
+            result = subprocess.run(['bash', '-c', 'source "$1"; ' + function,
+                                     'fixture', str(scripts / 'run_cleanup_candidate.sh')],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            assert (result.returncode == 0) == allowed, result.stdout + result.stderr
+            if not allowed:
+                assert isolated.is_dir()
+                assert not (scratch / 'delete-isolated-started').exists()
+            elif stage == 'descriptor':
+                assert not isolated.exists()
+                assert not isolation.exists()
+        assert target.read_text() in ('synthetic interpreter; never executed', 'protected bytes')
+
+    def test_cleanup_snapshot_root_alias_refuses(self, tmp_path: Path):
+        root = tmp_path / 'root'
+        root.mkdir()
+        alias = tmp_path / 'alias'
+        alias.symlink_to(root, target_is_directory=True)
+        result = subprocess.run([
+            sys.executable, '-I', '-B', str(self._scripts() / 'worktree_safety.py'),
+            'snapshot', str(alias), str(alias), str(tmp_path), str(tmp_path), str(tmp_path / 'snapshot'),
+        ], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 2
+        assert root.is_dir()

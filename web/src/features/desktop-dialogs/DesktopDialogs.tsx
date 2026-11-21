@@ -20,6 +20,14 @@
  *   opens the named dialog through the same open request, with no invoker.
  *   Invalid payloads are ignored.
  *
+ * - THR-387 S6-W2a: every close request, dialog switch and Settings page
+ *   change asks the contextual owner gate (`@/shared/owners`) first, with the
+ *   owners it would hide: close / Open Connection → every Settings owner; a
+ *   page change → the owners of the page being left; an in-pane link →
+ *   Settings owners plus Main owners when Main's page changes. Main
+ *   navigation to a Settings route while some owner is not clean opens the
+ *   dialog in place (Main is not unmounted), so a Main draft is not lost.
+ *
  * The internal API is `useDesktopDialogs()` →
  * `{ openDesktopDialog, requestDesktopDialogClose }`.
  */
@@ -51,6 +59,8 @@ import {
 } from './dialogModel';
 import { ConnectionDialogBody } from './ConnectionDialogBody';
 import { isDesktopShell } from './desktopShell';
+import { orgOfPath, useOwnerGate, type OwnerGateEffect } from '@/shared/owners';
+import type { OwnerRecord } from '@/lib/owners/ownerRegistry';
 
 /** Id of the Main content landmark: the focus-return fallback. */
 export const MAIN_CONTENT_ID = 'happyranch-main-content';
@@ -65,9 +75,8 @@ export interface DesktopDialogsApi {
   /**
    * The ONE close request (close button, Escape, an in-pane link, future
    * native close). With `navigateTo`, Main then shows that in-app path and
-   * gets focus. S6-W2 seam: the owner registry / keep-discard gate decides
-   * here, before the dialog is closed or Main navigates. Today it closes
-   * immediately.
+   * gets focus. The contextual owner gate decides first (S6-W2a): a kept
+   * owner cancels both the close and the navigation.
    */
   requestDesktopDialogClose: (options?: { navigateTo?: string }) => void;
 }
@@ -161,26 +170,80 @@ export function DesktopDialogsProvider({
     }
   }, []);
 
+  const { requestOwnerTransition, setNavigationInterceptor } = useOwnerGate();
+  const stateRef = useRef<DesktopDialogState>(CLOSED);
+  stateRef.current = state;
+
   const openDesktopDialog = useCallback(
     (request: DesktopDialogRequest, invoker?: HTMLElement | null) => {
-      if (!isOpen.current) returnTarget.current = invoker ?? null;
-      isOpen.current = true;
-      setState((current) => applyOpenRequest(current, request));
+      const current = stateRef.current;
+      const next = applyOpenRequest(current, request);
+      const run = (): void => {
+        if (!isOpen.current) returnTarget.current = invoker ?? null;
+        isOpen.current = true;
+        stateRef.current = next;
+        setState(next);
+      };
+      // Owners this switch would hide: all of Settings for Connection, the
+      // page being left for a page change.
+      let affects: ((owner: OwnerRecord) => boolean) | null = null;
+      let effect: OwnerGateEffect = 'changePage';
+      if (current.dialog === 'settings' && next.dialog === 'connection') {
+        affects = (owner) => owner.scope === 'settings';
+        effect = 'openConnection';
+      } else if (current.dialog === 'settings' && next.dialog === 'settings' && next.section !== current.section) {
+        const left = current.section;
+        affects = (owner) => owner.scope === 'settings' && owner.section === left;
+      }
+      if (affects === null) run();
+      else requestOwnerTransition({ effect, affects, proceed: run });
     },
-    [],
+    [requestOwnerTransition],
   );
 
   const requestDesktopDialogClose = useCallback(
     (options?: { navigateTo?: string }) => {
-      // S6-W2 seam: consult affected owners here before closing or
-      // navigating; a kept owner cancels both.
-      isOpen.current = false;
-      focusMainOnClose.current = options?.navigateTo !== undefined;
-      setState(CLOSED);
-      if (options?.navigateTo !== undefined) navigate(options.navigateTo);
+      const navigateTo = options?.navigateTo;
+      let effect: OwnerGateEffect = 'close';
+      let mainAffected = false;
+      if (navigateTo !== undefined) {
+        const target = new URL(navigateTo, window.location.href);
+        const orgChange = orgOfPath(target.pathname) !== orgOfPath(window.location.pathname);
+        mainAffected =
+          target.pathname !== window.location.pathname || target.search !== window.location.search;
+        effect = orgChange ? 'changeOrg' : 'leave';
+      }
+      requestOwnerTransition({
+        effect,
+        affects: (owner) => owner.scope === 'settings' || (mainAffected && owner.scope === 'main'),
+        proceed: () => {
+          isOpen.current = false;
+          focusMainOnClose.current = navigateTo !== undefined;
+          stateRef.current = CLOSED;
+          setState(CLOSED);
+          if (navigateTo !== undefined) navigate(navigateTo);
+        },
+      });
     },
-    [navigate],
+    [navigate, requestOwnerTransition],
   );
+
+  // While an owner is not clean, Main navigation to a Settings route opens
+  // the dialog in place instead of routing (which would unmount Main's page
+  // and lose its draft). Only same-org requests: another org goes through the
+  // org-change gate as a normal navigation.
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    setNavigationInterceptor((next) => {
+      const request = settingsRequestFromPath(next.pathname);
+      if (!request) return false;
+      const org = orgOfPath(next.pathname);
+      if (org !== null && org !== orgOfPath(window.location.pathname)) return false;
+      openDesktopDialog(request, takeLinkInvoker(next.pathname));
+      return true;
+    });
+    return () => setNavigationInterceptor(null);
+  }, [setNavigationInterceptor, openDesktopDialog, takeLinkInvoker]);
 
   // Native entry (bridge spec "v2 dialog request event"): exactly
   // {"schema":2,"dialog":"settings"|"connection"}; anything else is ignored.

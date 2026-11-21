@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import {
   Navigate,
   Outlet,
@@ -51,6 +51,7 @@ import {
   MAIN_CONTENT_ID,
 } from '@/features/desktop-dialogs/DesktopDialogs';
 import { isDesktopShell } from '@/features/desktop-dialogs/desktopShell';
+import { OwnerGateProvider } from '@/shared/owners';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -152,11 +153,25 @@ function AppShell(): JSX.Element {
   );
 }
 
+/**
+ * THR-387 S6-W2a: remount a Main editor page when its route params (org,
+ * record id) change, so a draft never carries into another org or record.
+ * The owner gate asks for Discard consent before such a change.
+ */
+function KeyedByParams({ children }: { children: ReactNode }): JSX.Element {
+  const params = useParams();
+  return <Fragment key={JSON.stringify(params)}>{children}</Fragment>;
+}
+
 export function AppRoutes(): JSX.Element {
   // THR-387 S6-W1: in the desktop app, Main Settings routes open the one
   // Settings dialog at that page; browser mode keeps the full-page routes.
   const desktop = isDesktopShell();
+  // THR-387 S6-W2a: one owner registry + contextual owner gate per document,
+  // in browser and desktop mode alike (it only acts on genuine unsaved edits
+  // and outstanding saves).
   return (
+    <OwnerGateProvider>
     <DesktopDialogsProvider renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}>
       <Routes>
         {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
@@ -193,8 +208,8 @@ export function AppRoutes(): JSX.Element {
                 react-router v6, but keep them declared first for readability. */}
             <Route path="skills/validation" element={<SkillValidationPage />} />
             <Route path="skills/custom" element={<CustomSkillsPage />} />
-            <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
-            <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
+            <Route path="skills/custom/new" element={<KeyedByParams><CustomSkillCreatePage /></KeyedByParams>} />
+            <Route path="skills/custom/:skillId" element={<KeyedByParams><CustomSkillDetailPage /></KeyedByParams>} />
             <Route path="skills/:skillId" element={<SkillDetailPage />} />
             <Route path="agents" element={<AgentsPage />} />
             <Route path="agents/:agent_name" element={<AgentsPage />} />
@@ -233,6 +248,7 @@ export function AppRoutes(): JSX.Element {
         </Route>
       </Routes>
     </DesktopDialogsProvider>
+    </OwnerGateProvider>
   );
 }
 

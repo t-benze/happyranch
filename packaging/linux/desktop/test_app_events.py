@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
+from pathlib import Path
 import subprocess
+import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -110,8 +115,8 @@ const contexts=handlers.map(h=>{
  c.window=c.top=c;
  c.webkit={messageHandlers:{appBridge:{postMessage:raw=>{
   const item=JSON.parse(raw);native.push(item);
-  if(item.command && sources.case.startsWith('retirement-'))
-   return new Promise(resolve=>{c.finish=resolve;});
+  if(item.command && (sources.case.startsWith('retirement-') || sources.case==='locale'))
+   return new Promise((resolve,reject)=>{c.finish=resolve;c.refuse=reject;});
   return item.command ? Promise.reject(new Error(JSON.stringify(c.failure || {code:'permissionDenied',effect:'unknown',recovery:'nativeRecovery'}))) : Promise.resolve('{}');
  }}}};return vm.createContext(c);
 });
@@ -131,6 +136,37 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  return;
  }
  vm.runInContext('hrAppBridge.admit(hrAppBridge.token)',contexts[1]);
+ if(sources.case==='locale'){
+  vm.runInContext("globalThis.seen=[];happyranchConnection.on('app.stateChanged',raw=>seen.push(['event',JSON.parse(raw)]));",contexts[0]);
+  for(const locale of ['zh-CN','en']){
+   contexts[0].args=JSON.stringify({schema:2,locale});
+   const result=vm.runInContext("happyranchConnection.call('app.locale.set',args).then(raw=>{seen.push(['reply',JSON.parse(raw)]);return raw;})",contexts[0]);
+   assert.equal(native.at(-1).command,'app.locale.set','locale must cross both admission tables');
+   contexts[1].state=JSON.stringify({schema:2,locale:{current:locale,persisted:locale==='en'}});
+   const published=vm.runInContext("hrAppBridge.publishLocale(state,'true')",contexts[1]);
+   await Promise.resolve();
+   assert.equal(contexts[0].seen.length,locale==='en' ? 2 : 0,'publication must wait for reply delivery');
+   contexts[1].finish(contexts[1].state);
+   await result;await published;await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.equal(JSON.stringify(contexts[0].seen.map(item=>[item[0],item[1].locale.current])),
+   JSON.stringify([['reply','zh-CN'],['event','zh-CN'],['reply','en'],['event','en']]));
+  assert.equal(contexts[0].seen[1][1].locale.persisted,false,'session-only also publishes');
+  for(const args of ['{','{"schema":2,"locale":"en","locale":"zh-CN"}','{"schema":2,"locale":"fr"}']){
+   contexts[0].args=args;
+   const result=vm.runInContext("happyranchConnection.call('app.locale.set',args).catch(raw=>JSON.parse(raw))",contexts[0]);
+   assert.equal(native.at(-1).data,args,'native receives the exact string, including duplicate keys');
+   contexts[1].refuse(new Error('{"code":"invalidRequest","effect":"none","recovery":"none"}'));
+   assert.equal((await result).code,'invalidRequest');
+  }
+  for(const args of [null,{},'x'.repeat(4096),'\0'.repeat(1024)]){
+   contexts[0].args=args;const before=native.length;
+   const error=await vm.runInContext("happyranchConnection.call('app.locale.set',args).catch(raw=>JSON.parse(raw))",contexts[0]);
+   assert.equal(error.code,'invalidRequest');assert.equal(error.effect,'none');assert.equal(error.recovery,'none');
+   assert.equal(native.length,before,'wrong types and oversized escaped payloads refuse before dispatch');
+  }
+  return;
+ }
  if(sources.case.startsWith('retirement-')){
   const command=sources.command;
   contexts[0].command=command;
@@ -211,6 +247,9 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
     def test_connection_error_semantics(self):
         self.connection_boundary('errors')
 
+    def test_locale_relay_delivers_reply_before_even_an_early_native_publication(self):
+        self.connection_boundary('locale')
+
     def test_page_and_named_world_relay_keep_listeners_separate(self):
         # VM supplies only browser plumbing. Both facades under test are the
         # literal shipping scripts, with no copy of their event-routing logic.
@@ -273,6 +312,171 @@ console.log('page/relay: closed event names, admission, independent unsubscribe,
         result = subprocess.run(["node", "-e", script], env={**os.environ, "HR_EVENT_SCRIPTS": json.dumps(
             {"page": native.APP_PAGE, "relay": native.APP_RELAY})}, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class LocaleBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.config = Path(self.scratch.name)
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config), "LANG": "en_US.UTF-8"})
+        env.start()
+        self.addCleanup(env.stop)
+        spec = importlib.util.spec_from_file_location("locale_fixture", Path(native.__file__).with_name("app_locale.py"))
+        self.store = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.store)
+        dependency = patch.object(native, "_locale", self.store, create=True)
+        dependency.start()
+        self.addCleanup(dependency.stop)
+        EventTests.setUp(self)
+        self.app.subscribed = True
+        self.results, self.trace, self.publications = [], [], []
+        self.app.view.call_async_javascript_function = self.publish
+
+    def publish(self, *args) -> None:
+        payload = args[2].unpack()
+        if payload.get("enabled", "true") == "true":
+            self.delivered.append(payload)
+            self.trace.append(("event", json.loads(payload["raw"])["locale"]["current"]))
+        if args[-2] is not None:
+            self.publications.append(lambda: args[-2](self.app.view, None, None))
+
+    def call(self, raw: str, **extra: object) -> None:
+        item = {"token": self.app.bridge_token, "command": "app.locale.set", "data": raw, **extra}
+        value = SimpleNamespace(is_string=lambda: True, to_string=lambda: json.dumps(item), get_context=lambda: None)
+        def result(raw: str) -> None:
+            self.results.append(json.loads(raw))
+            self.trace.append(("reply", self.results[-1]["locale"]["current"]))
+        reply = SimpleNamespace(return_value=result, return_error_message=self.errors.append)
+        self.app.bridge_message(self.app.controller, value, reply)
+
+    def drain(self, count: int, release: bool = True) -> None:
+        deadline = time.monotonic() + 3
+        context = GLib.MainContext.default()
+        while len(self.results) + len(self.errors) < count and time.monotonic() < deadline:
+            while context.pending():
+                context.iteration(False)
+            if release:
+                while self.publications:
+                    self.publications.pop(0)()
+            time.sleep(.001)
+        self.assertEqual(len(self.results) + len(self.errors), count, "locale call must settle")
+
+    def test_set_acknowledges_store_snapshot_then_full_state(self) -> None:
+        before = self.app.status()
+        self.call('{"schema":2,"locale":"zh-CN"}')
+        self.drain(1)
+        self.assertEqual(self.errors, [], "valid locale choice must be admitted")
+        self.assertEqual(self.results, [{"schema": 2, "locale": {"current": "zh-CN", "persisted": True}}])
+        self.assertEqual((self.config / "happyranch/locale").read_bytes(), b"zh-CN\n")
+        expected = {**before, "locale": self.results[0]["locale"]}
+        self.assertEqual(self.app.status(), expected)
+        self.assertEqual(json.loads(self.delivered[-1]["raw"]), expected)
+        self.assertEqual(self.trace, [("reply", "zh-CN"), ("event", "zh-CN")])
+
+    def test_write_failure_stays_live_and_publishes_session_only(self) -> None:
+        self.store.set("en")
+        with patch.object(self.store.os, "replace", side_effect=OSError("synthetic write failure")):
+            self.call('{"schema":2,"locale":"zh-CN"}')
+            self.drain(1)
+        self.assertEqual(self.errors, [], "write failure must resolve session-only, not reject")
+        expected = {"current": "zh-CN", "persisted": False}
+        self.assertEqual(self.results, [{"schema": 2, "locale": expected}])
+        self.assertEqual(self.store.current(), expected)
+        self.assertEqual(self.app.status()["locale"], expected)
+        self.assertEqual(json.loads(self.delivered[-1]["raw"])["locale"], expected)
+        self.assertEqual((self.config / "happyranch/locale").read_bytes(), b"en\n")
+
+    def test_rapid_sets_serialize_write_reply_publication_before_next_write(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        original = self.store.set
+        def slow(value: str) -> dict:
+            self.trace.append(("write", value))
+            if value == "zh-CN":
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return original(value)
+        with patch.object(self.store, "set", side_effect=slow):
+            self.call('{"schema":2,"locale":"zh-CN"}')
+            self.call('{"schema":2,"locale":"en"}')
+            try:
+                self.assertTrue(entered.wait(1), "first admitted choice must reach store")
+                self.app.emit_state()  # A concurrent health/target observation cannot jump the reply.
+                self.assertEqual(self.trace, [("write", "zh-CN")])
+            finally:
+                release.set()
+            self.drain(1, release=False)
+            self.assertEqual(self.trace, [("write", "zh-CN"), ("reply", "zh-CN"), ("event", "zh-CN")],
+                             "next write waits for publication delivery, not thread scheduling")
+            self.publications.pop(0)()
+            self.drain(2)
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.trace, [("write", "zh-CN"), ("reply", "zh-CN"), ("event", "zh-CN"),
+                                     ("write", "en"), ("reply", "en"), ("event", "en")])
+        self.assertEqual(self.store.current(), {"current": "en", "persisted": True})
+        self.assertEqual((self.config / "happyranch/locale").read_bytes(), b"en\n")
+        self.assertEqual(json.loads(self.delivered[-1]["raw"])["locale"], self.store.current())
+
+    def test_invalid_payloads_refuse_without_store_disk_state_or_event_effects(self) -> None:
+        self.store.set("en")
+        before, saved = self.app.status(), (self.config / "happyranch/locale").stat()
+        with patch.object(self.store, "set", side_effect=AssertionError("invalid input called store")) as setter:
+            for raw in ('{}', '[]', 'null', '{', '{"schema":2,"locale":"fr"}',
+                        '{"schema":true,"locale":"en"}', '{"schema":2.0,"locale":"en"}',
+                        '{"schema":2,"locale":"en","extra":0}', '{"locale":"en"}',
+                        '{"schema":2,"locale":"en","locale":"zh-CN"}',
+                        '{"schema":2,"schema":2,"locale":"en"}'):
+                with self.subTest(raw=raw):
+                    self.call(raw)
+                    self.assertEqual(json.loads(self.errors[-1]),
+                        {"code": "invalidRequest", "effect": "none", "recovery": "none"})
+            self.call('{"schema":2,"locale":"zh-CN"}', extra=True)
+            self.assertEqual(json.loads(self.errors[-1])["recovery"], "none")
+            setter.assert_not_called()
+        self.assertEqual(self.app.status(), before)
+        self.assertEqual((self.config / "happyranch/locale").stat(), saved)
+        self.assertEqual(self.delivered, [])
+        self.assertEqual(self.results, [])
+
+    def test_retired_document_drops_queued_choice_and_events(self) -> None:
+        self.call('{"schema":2,"locale":"zh-CN"}')
+        self.call('{"schema":2,"locale":"en"}')
+        self.app.invalidate_document()
+        self.drain(2)
+        self.assertEqual(self.results, [])
+        self.assertEqual(self.delivered, [])
+        self.assertEqual(self.store.current(), {"current": "zh-CN", "persisted": True})
+        self.assertEqual([json.loads(raw)["code"] for raw in self.errors], ["documentChanged"] * 2)
+
+    def test_recreated_main_cannot_overtake_a_retired_main_write(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        original = self.store.set
+        def slow(value: str) -> dict:
+            self.trace.append(("write", value))
+            if value == "zh-CN":
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return original(value)
+        with patch.object(self.store, "set", side_effect=slow):
+            self.call('{"schema":2,"locale":"zh-CN"}')
+            try:
+                self.assertTrue(entered.wait(1), "first admitted choice must reach store")
+                old = self.app
+                old.invalidate_document()
+                replacement = native.AppScheme.__new__(native.AppScheme)
+                replacement.daemon, replacement.closed = None, False
+                replacement.initialize_state()
+                replacement.controller, replacement.JSC, replacement.GLib = old.controller, old.JSC, old.GLib
+                replacement.view, replacement.bridge_token, replacement.subscribed = old.view, "replacement", True
+                self.app = replacement
+                self.call('{"schema":2,"locale":"en"}')
+                self.assertEqual(self.trace, [("write", "zh-CN")])
+            finally:
+                release.set()
+            self.drain(2)
+        self.assertEqual(self.trace, [("write", "zh-CN"), ("write", "en"), ("reply", "en"), ("event", "en")])
+        self.assertEqual(self.store.current(), {"current": "en", "persisted": True})
+        self.assertEqual(json.loads(self.errors[0])["effect"], "unknown")
 
 
 if __name__ == "__main__":

@@ -1217,6 +1217,7 @@ def _recover_release_package(
         _make_writable_for_removal,
     )
     from runtime.skills.package_content import compute_skill_tree_hash
+    from runtime.skills.registry import resolve_skill_content_dir
 
     skill_id = f"hr:{body.slug}"
 
@@ -1235,7 +1236,7 @@ def _recover_release_package(
         for entry in SkillRegistry(skills_root=release_root).list_all():
             if (entry.slug == body.slug and (entry.version or "0") == body.version
                     and entry.source != "user_authored"):
-                source_dir = release_root / entry.slug
+                source_dir = resolve_skill_content_dir(release_root, entry.slug, entry.source)
                 skill_id = entry.id
                 break
     if source_dir is None:
