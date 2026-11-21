@@ -1038,8 +1038,10 @@ Web returns the decision via the SAME `app.ownersChanged` call, adding
 `gate:{requestId,decision:"keep"|"proceed"}`. Keep cancels only that request and
 retains owners. Proceed follows a successful gate and requires current counts
 all zero / `blocking:"none"`; with no blocking owners it needs no discard
-prompt. Web freezes new edits/saves from this final recheck through native's
-effect admission; on refusal/cancellation it restores editing. Native consumes
+prompt. From this final recheck through native's effect admission web admits
+no new save; edits are not frozen (MM-4 ruling: saves only). A definitive
+refusal (`effect:"none"`) restores saving; a lost acknowledgement keeps the
+save hold. Native consumes
 the decision once only for its matching outstanding document/ID, rechecks the
 latest summary, any retained uncertainty and non-GET transfers, then either
 admits the captured normal lifecycle action before acknowledging the decision,
