@@ -37,7 +37,25 @@ export function CustomSkillDetailPage(): JSX.Element {
   const [confirmingPurge, setConfirmingPurge] = useState(false); const [typedSlug, setTypedSlug] = useState('');
   const initializedRulesForSkill = useRef<string>();
   const diff = useCustomSkillDiff(skillId, a, b);
-  useEffect(() => { if (detail.data) { setName(detail.data.name ?? ''); setDescription(detail.data.description ?? ''); } }, [detail.data]);
+  // The metadata draft is separate from the saved baseline (THR-387 S6-W2a):
+  // a reread (Check result, lifecycle, a save's refresh) moves the baseline
+  // and adopts it only while the draft still equals the previous baseline. A
+  // newer unsent draft is never overwritten; it stays dirty against the new
+  // baseline, so leaving still prompts.
+  const metadataDraft = useRef({ name, description });
+  metadataDraft.current = { name, description };
+  const metadataBaseline = useRef<{ name: string; description: string } | null>(null);
+  useEffect(() => {
+    if (!detail.data) return;
+    const next = { name: detail.data.name ?? '', description: detail.data.description ?? '' };
+    const previous = metadataBaseline.current;
+    metadataBaseline.current = next;
+    const draft = metadataDraft.current;
+    if (previous === null || (draft.name === previous.name && draft.description === previous.description)) {
+      setName(next.name);
+      setDescription(next.description);
+    }
+  }, [detail.data]);
   useEffect(() => {
     if (!eligibility.data) return;
     setRevision(eligibility.data.revision);

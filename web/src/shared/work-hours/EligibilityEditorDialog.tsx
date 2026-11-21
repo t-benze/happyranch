@@ -10,7 +10,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Settings ▸ Organization operating controls mount it; it is the single
  * owner of the existing `working_hours.agents` patch mutation.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { OwnerSaveNotice, useConfigOwner, useOwnerGate } from '@/shared/owners';
 import {
@@ -61,11 +61,21 @@ export function EligibilityEditorDialog({
 
   // THR-387 S6-W2a: a Work Hours config owner while the editor holds edits.
   const { slug } = useParams<{ slug: string }>();
+  // The draft belongs to the org it was opened for: Discard consent closes the
+  // editor, and any org change closes it before it can render or save there.
+  const openedOrg = useRef(slug);
+  if (!open) openedOrg.current = slug; // while closed, follow the route
+  const boundOrg = openedOrg.current;
+  const orgChanged = open && slug !== boundOrg;
+  useEffect(() => {
+    if (orgChanged) onOpenChange(false);
+  }, [orgChanged, onOpenChange]);
   const draft = { mode, include, exclude };
   const owner = useConfigOwner({
     page: 'settings.workHours',
-    org: slug ?? null,
-    dirty: open && JSON.stringify(draft) !== JSON.stringify({ mode: wh.agents.mode, include: wh.agents.include, exclude: wh.agents.exclude }),
+    org: boundOrg ?? null,
+    onDiscard: () => onOpenChange(false),
+    dirty: open && !orgChanged && JSON.stringify(draft) !== JSON.stringify({ mode: wh.agents.mode, include: wh.agents.include, exclude: wh.agents.exclude }),
     draft,
   });
   // Direct close paths (close button, Escape, Cancel) ask the owner gate
@@ -105,7 +115,7 @@ export function EligibilityEditorDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={requestOpenChange}>
+    <Dialog open={open && !orgChanged} onOpenChange={requestOpenChange}>
       <DialogContent className="max-w-lg" closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('workHours.eligibilityEditor.title')}</DialogTitle>

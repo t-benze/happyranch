@@ -4,7 +4,7 @@ design-system/primitives/Dialog.tsx	38	27	bg-black/60	Existing modal scrim palet
 features/settings/SettingsDialog.tsx	378	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
 features/settings/sections/OrganizationSection.tsx	868	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/OverviewPage.tsx	127	65	bg-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
-features/work-hours-config/TierEditorDialog.tsx	457	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
+features/work-hours-config/TierEditorDialog.tsx	468	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
 design-system/patterns/Composer.tsx	359	161	bg-transparent	legacy default Tailwind special colour utility
 design-system/patterns/MessageBubble.tsx	88	170	bg-transparent	legacy default Tailwind special colour utility
 design-system/patterns/Sparkline.tsx	55	24	stroke-current	legacy default Tailwind special colour utility

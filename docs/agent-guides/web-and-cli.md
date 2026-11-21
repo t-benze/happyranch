@@ -247,11 +247,22 @@ discarded (no close button, Escape does nothing), naming each owner, with
 **Check result** for unknown owners that can reconcile (a fresh same-context
 read) and **Back to {page}** to cancel the transition; when the results arrive
 the gate re-evaluates and runs the transition or shows the prompt. A repeated
-request while the gate is open focuses it; there is never a second prompt. The
-Settings dialog pane is keyed by org, so an old-org draft is never shown under
-another org; the Main custom-skill create/detail routes remount on an
-org/skill change (`KeyedByParams` in `routes.tsx`) and Main editors reset their
-draft on Discard. React Router honours only the last registered blocker:
+request while the gate is open focuses it; there is never a second prompt. An
+old-org draft is never shown or saved under another org, which each editor
+proves individually rather than by assuming an unmount: the desktop Settings
+dialog panes and the browser Settings page panels (Capacity, Organization,
+Executors) are keyed by org; the Main custom-skill create/detail routes remount
+on an org/skill change (`KeyedByParams` in `routes.tsx`); the team escalation
+policy card is keyed by org/agent; and every draft-holding owner resets its
+draft on Discard (`onDiscard`: Organization, Executors binary path, Capacity,
+custom-skill create/metadata/version/eligibility, agent detail, skill
+assignment, policy). The Work Hours tier and eligibility dialogs belong to the
+org they were opened for: Discard closes them, and any org change closes them
+before they can render or save under the new org. A reread (Check result,
+lifecycle, a save's refresh) moves an editor's saved baseline but never
+overwrites a newer unsent draft: custom-skill metadata adopts the reread
+values only while its draft still equals the previous baseline, so a newer
+draft stays dirty and leaving still prompts. React Router honours only the last registered blocker:
 editors with their own leave dialog (Capacity, the team escalation policy
 page, both registered with `ownNavigationGuard`) keep it only while exactly
 one such editor is mounted, it is the only unsaved owner and it has unsent

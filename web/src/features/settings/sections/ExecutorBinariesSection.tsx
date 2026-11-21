@@ -118,6 +118,11 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
     org: slug ?? null,
     dirty: trimmed !== '',
     draft: path,
+    onDiscard: () => {
+      setPath('');
+      setCheck(null);
+      setRegisterError(null);
+    },
   });
 
   const onValidate = async () => {

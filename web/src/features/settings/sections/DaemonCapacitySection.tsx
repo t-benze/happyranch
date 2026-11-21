@@ -548,6 +548,8 @@ export function DaemonCapacitySection(): JSX.Element {
     org: ownerOrg ?? null,
     dirty,
     draft: { workersText, capText, reason, ack },
+    // Shared-gate Discard consent resets the editor like "Discard draft".
+    onDiscard: () => discardDraft(),
     ownNavigationGuard: true,
   });
   const ownerRef = useRef(owner);

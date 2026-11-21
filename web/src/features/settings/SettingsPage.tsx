@@ -122,6 +122,8 @@ export function SettingsPage(): JSX.Element {
       <ContentWrap className="max-w-content-narrow">
         <PageTitle className="mb-6" title={t('settings.page.title')} />
 
+        {/* Panels are keyed by org (as the desktop Settings panes are): an org
+            change after Discard consent never carries a draft into another org. */}
         <Routes>
           {/* Default, legacy and unknown routes resolve before the API gate. */}
           <Route index element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
@@ -141,9 +143,9 @@ export function SettingsPage(): JSX.Element {
             path="coding"
             element={fenced(<CodingPanel key={slug} />)}
           />
-          <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
-          <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
-          <Route path="executors" element={gated(<ExecutorsPanel />)} />
+          <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel key={slug} />)} />
+          <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel key={slug} org={settingsQuery.data.org} />)} />
+          <Route path="executors" element={gated(<ExecutorsPanel key={slug} />)} />
           <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
         </Routes>
       </ContentWrap>
