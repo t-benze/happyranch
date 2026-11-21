@@ -526,8 +526,19 @@ class RemoteAccessHelper:
                 self.timer = 0  # Auth has settled; original operation budget continues.
                 if capture.method != 'IssueInvite':
                     self._reply(capture.message, 'accepted')
-                threading.Thread(target=self._run_lifecycle, args=(operation,), daemon=True).start()
+                worker = threading.Thread(target=self._run_lifecycle, args=(operation,), daemon=True)
             except Exception as error:
+                if capture.method == 'Enable':
+                    _helper_lifecycle.log_enable_refusal(error)
+                self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
+                self._clear()
+                return
+        # The slot stays captured, but the worker must not contend with its own
+        # authorization callback's lock at the nonblocking effect/settlement guards.
+        try:
+            worker.start()
+        except Exception as error:
+            with self.lock:
                 if capture.method == 'Enable':
                     _helper_lifecycle.log_enable_refusal(error)
                 self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')

@@ -29,6 +29,8 @@ from scripts.test_installer_token_custody import fixture as renewal_fixture, ren
 from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
 from scripts.test_installer_token_custody import staged_inventory
 
+REAL_THREAD = threading.Thread
+
 
 class Variant:
     def __init__(self, signature: str, value: Any) -> None:
@@ -300,6 +302,55 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     v = SimpleNamespace(h=h, helper=helper, reader=reader, effects=effects, admit=admit,
                         message=message, renew=renew, statvfs=statvfs)
     return v
+
+
+@pytest.mark.parametrize('schedule', ['immediate', 'after_authorization'])
+def test_worker_settles_after_accepted_enable(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, schedule: str) -> None:
+    v = mount
+    queued, completed = [], []
+    v.message.get_member = lambda: 'Enable'
+
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        return {'outcome': 'ready', 'residue': []}
+
+    v.reader.effect.side_effect = effect
+
+    def run_worker(target: Any, args: tuple) -> None:
+        worker = REAL_THREAD(target=target, args=args, daemon=True)
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive(), 'bounded local worker did not return'
+        completed.append(True)
+
+    def new_thread(*, target: Any, args: tuple, **kwargs: Any) -> SimpleNamespace:
+        def start() -> None:
+            assert v.helper.inflight is v.helper.lifecycle_operation.capture
+            v.helper._reply.assert_called_once_with(v.message, 'accepted')
+            if schedule == 'immediate':
+                # A legal scheduling order: run the real worker to return before
+                # Thread.start returns to the authorizing callback.
+                run_worker(target, args)
+            else:
+                queued.append((target, args))
+        return SimpleNamespace(start=start)
+
+    monkeypatch.setattr(v.h.threading, 'Thread', new_thread)
+    v.admit()
+    for target, args in queued:
+        run_worker(target, args)
+    v.helper._reply.assert_called_once_with(v.message, 'accepted')
+    print(json.dumps(dict(schedule=schedule, worker_returned=bool(completed),
+        slot_released=v.helper.inflight is None, audit_exists=v.helper.audit.path.exists(),
+        effect_calls=v.reader.effect.call_count, outcome=v.helper.lifecycle_result['outcome']), sort_keys=True))
+    assert completed == [True]
+    assert v.helper.inflight is None, 'accepted worker returned but its global slot stayed sealed'
+    assert v.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
+    assert v.reader.effect.call_count == 1
+    rows = [json.loads(line) for line in v.helper.audit.path.read_text().splitlines()]
+    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+    v.helper._error.assert_not_called()
 
 
 @pytest.mark.parametrize('method', PUBLIC_LIFECYCLE)

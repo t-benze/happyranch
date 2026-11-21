@@ -3658,6 +3658,12 @@ I3a's native polkit CheckAuthorization callback with the captured unique bus sen
 and exact action. Linux CLI consumers are I5b and bridge consumers are I5c;
 RefreshHomeAddress remains absent and B13-deferred. Admission is unchanged;
 the terminal/cancellation rules retain the same slot through the entire worker.
+The slot is captured before authorization; its callback constructs the worker
+under the helper lock, then starts it only after leaving that lock. The slot stays
+captured across unlock/start, so another caller still refuses as busy; the worker
+retains current-caller revalidation and the nonblocking effect/settlement guards.
+Worker startup failure uses the existing locked error/clear handling. Genuine
+effect or settlement uncertainty retains its existing sealed-slot behavior.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains
