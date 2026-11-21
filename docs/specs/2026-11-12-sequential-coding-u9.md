@@ -1,14 +1,25 @@
 # Sequential Coding U9: release selection and atomic fresh-start cutover
 
-## S8a staged Coding v3 boundary (THR-336)
+## S8b registration and transport boundary (THR-336)
 
-Coding v3 is registration-only until S8b catalog cutover. The separate literal
-`STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
-immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
-v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
-v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
+Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
+`STAGED_GENERIC` registrar export retains the same identity/pins). Registration
+adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
+`workflow-sequential-start-context@1` wire shape and Start@1 composer stay
+unchanged, offering v2 only. A fresh public v3 pin still refuses with
+`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
+closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.
+admission, tasks, runs or Allow. Coding stays Disabled.
+
+Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
+Final transport with `sequential_domain_transport_unavailable`. Local Final
+selection/journal guards also refuse the registered generic pin before effects.
+Original @1 selections, admitted replay, selected-history reads and uncertain
+Final journal bytes retain their original contracts; saved records never grant
+reissue authority. Offline `setup_sequential_coding.py register` selects v3 only.
+Fresh offline admission refuses `sequential_coding_registration_only`; original
+@1 admission-show and exact command/receipt replay remain read-only.
 
 V3 repository/base/worktree preflight, independent exact-head review, same-head
 QA and guarded non-admin expected-head merge/remote observation are agent duties,
@@ -292,6 +303,10 @@ no old-family parsing, callback, settlement, cancellation or LOCAL action.
 | Empty installed sequential extension | Compatible reader still required | No old-code-only downgrade, table drop, pin/mark rewrite or effect-undo claim |
 
 ## U9b atomic obligations (source delivered)
+
+S8b supersedes obligation 1's setup split: registration-only Coding v3; fresh
+admission refuses `sequential_coding_registration_only`. The v2 registration and
+separate admission action below are historical; original replay/readback remain.
 
 1. **SOURCE DELIVERED in the inert first PR (TASK-15616):** explicit reviewed
    non-venue definition registration and separate

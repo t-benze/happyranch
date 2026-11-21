@@ -102,6 +102,7 @@ def execute_selected_final(*, selection: FinalSelectionReader, task_id: str, pri
     def reselect() -> CodingFinalSelection:
         return selection.select(task_id=task_id, principal=principal, session_id=session_id, change=change)
     selected = reselect()
+    _current(selected, reselect)
     subject = _local_subject(selected, repository_path)
     attempt = reserve_attempt(selected, reselect=reselect)
     try:

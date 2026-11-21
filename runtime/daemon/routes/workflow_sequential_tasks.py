@@ -38,6 +38,8 @@ def _repository_owner(org: OrgDep, task_id: str, principal: str, sid: str, *, al
     budget = _ReadBudget()
     with dispatcher._reader() as conn, _sql_budget(conn, budget):
         run, visit, compiled = dispatcher._entry(conn, task_id, budget=budget)
+        if run.get('engine_version', 1) == 2:
+            raise SequentialRefusal('sequential_domain_transport_unavailable')
         conn.set_progress_handler(budget.progress, 1000)
         task = _native_task(conn, task_id)
         store = getattr(org.db, '_task_pause_store', None)

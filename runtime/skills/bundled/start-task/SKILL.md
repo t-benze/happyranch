@@ -621,6 +621,15 @@ Required genuine scratch/pilot acceptance precedes ordinary use; source/static
 evidence is not acceptance. Deferred native recovery/reassignment remains
 unavailable. Ordinary routing stays legacy.
 
+S8b registers Coding v3 as generic Coding data only. Public Start@1 discovery
+and composition remain unchanged; public @2 start/composition stays closed.
+Repository resolve/bind/preflight and sequential finalize/journal transports refuse
+generic @2 selections with `sequential_domain_transport_unavailable`; perform only
+the authorized engineering duties with existing tools. Original @1 replay,
+selected history and uncertain Final records retain their original rules; never
+reissue an uncertain Final. Coding stays Disabled/unset; registration grants no
+start, setup, roles or Allow.
+
 Keep these live boundaries in every lane:
 
 - Review/QA independently fetch and inspect the exact selected head; preserve
@@ -670,7 +679,7 @@ Use only the closed command/body from the matching supplement under actual
 entitlement. Bind's explicitly permitted same-body reissue uses current bind
 semantics; it never permits reissuing Final. Preserve exact saved callback bytes.
 
-See Coding role reports (`docs/agent-guides/contracts/coding-workflow.md#coding-v3-role-reports--s8a-staged-registration` in the happyranch repository),
+See Coding role reports (`docs/agent-guides/contracts/coding-workflow.md#coding-v3-role-reports--s8b-registration` in the happyranch repository),
 original-pin cutover/replay rules (`docs/operations/sequential-coding-cutover.md` in the happyranch repository),
 and [retained historical contracts](references/historical-contracts.md#coding-rollout-and-original-pin-contracts)
 only for the matching original binding or a specialist audit.

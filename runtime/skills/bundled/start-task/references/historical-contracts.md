@@ -560,6 +560,10 @@ absence never proves freshness. Exact existing definitions write zero; mismatche
 refuse. Registration creates no settings, roles, admission, runs or tasks:
 missing defaults remain Disabled/unset and saved state stays exact. Existing-org
 storage bootstrap remains A4. This supplies no agent self-setup authority.
+S8b supersedes the U9b setup split below: registration-only Coding v3; fresh
+admission refuses `sequential_coding_registration_only`. Original operation
+replay/readback retain their rules; the v2 setup/admission account is historical.
+
 Sequential Coding U9b’s inert setup split (TASK-15616) supplies human-owned
 cooperative offline `scripts/setup_sequential_coding.py` registration and a
 separate admission action. Agents must not invoke it on real orgs or self-install,

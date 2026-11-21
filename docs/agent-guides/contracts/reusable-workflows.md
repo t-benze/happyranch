@@ -1,14 +1,25 @@
 # Reusable workflow contracts
 
-## S8a staged Coding v3 boundary (THR-336)
+## S8b registration and transport boundary (THR-336)
 
-Coding v3 is registration-only until S8b catalog cutover. The separate literal
-`STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
-immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
-v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
-v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
+Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
+`STAGED_GENERIC` registrar export retains the same identity/pins). Registration
+adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
+`workflow-sequential-start-context@1` wire shape and Start@1 composer stay
+unchanged, offering v2 only. A fresh public v3 pin still refuses with
+`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
+closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.
+admission, tasks, runs or Allow. Coding stays Disabled.
+
+Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
+Final transport with `sequential_domain_transport_unavailable`. Local Final
+selection/journal guards also refuse the registered generic pin before effects.
+Original @1 selections, admitted replay, selected-history reads and uncertain
+Final journal bytes retain their original contracts; saved records never grant
+reissue authority. Offline `setup_sequential_coding.py register` selects v3 only.
+Fresh offline admission refuses `sequential_coding_registration_only`; original
+@1 admission-show and exact command/receipt replay remain read-only.
 
 V3 repository/base/worktree preflight, independent exact-head review, same-head
 QA and guarded non-admin expected-head merge/remote observation are agent duties,
@@ -2589,8 +2600,9 @@ unchanged source/definition/ABI pins. `coding.v1.json` is retired legacy grammar
 fresh selection refuses `coding_fresh_start_retired`, with no filesystem fallback.
 A2's existing registrar and A4/offline consumers share that manifest via
 `preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
-projection. S8a qualified registration also includes the separate staged Coding
-v3 definition alongside v2; the public manifest remains v2 only.
+projection. S8b keeps Coding v3 in the separate generic registration catalog
+alongside v2; the public manifest and Start@1 composer remain v2 only, with
+public @2 start/composition closed pending separate authorization.
 Exact existing registration writes zero; mismatches refuse. There
 is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
@@ -2626,6 +2638,10 @@ and complete preservation; copy execution is separate from live acceptance. See 
 and [operator install/backout](../../operations/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
+
+Superseded by S8b: registration-only Coding v3; fresh admission refuses
+`sequential_coding_registration_only`. The v2 registration/admission description
+below is historical; original operation replay and readback retain their rules.
 
 `scripts/setup_sequential_coding.py` is an explicit cooperative offline operator
 entry point. `register` uses only the reviewed bundled Coding v2/full ABI pin and

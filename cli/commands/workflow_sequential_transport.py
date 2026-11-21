@@ -23,6 +23,7 @@ from runtime.workflows.sequential_definition import _json
 from runtime.workflows.sequential_history import _bytes
 from runtime.workflows.sequential_repository_command import read_repository_command
 from runtime.workflows.sequential_repository_records import RepositoryChangeSubject
+from runtime.workflows.sequential_release import require_legacy_domain_selection
 
 
 class FinalizeCommand(Closed):
@@ -45,6 +46,7 @@ class RemoteSelection:
             raise ValueError(f'sequential_selection_refused:{response.status_code}:'
                              + response.text[:4096])
         selected = read_final_selection(response.content)
+        require_legacy_domain_selection(selected.definition_digest)
         if (selected.org_slug != self.org or selected.session_id != self.sid
                 or _bytes(selected.change.model_dump(mode='json')) != change):
             raise ValueError('sequential_selection_changed')

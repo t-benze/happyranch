@@ -16,6 +16,7 @@ from runtime.workflows.sequential_coding_final_records import (
     CodingFinalIntent, CodingFinalSelection, FinalLintObservation, read_final_intent, read_final_selection,
 )
 from runtime.workflows.sequential_history import _bytes
+from runtime.workflows.sequential_release import require_legacy_domain_selection
 
 Reselect = Callable[[], CodingFinalSelection]
 
@@ -24,6 +25,7 @@ def _current(selected: CodingFinalSelection, reselect: Reselect) -> None:
     # Parsing/saved metadata is never admission. The trusted adapter must re-run
     # the original authority/live/subject/evidence boundary on every call.
     read_final_selection(_bytes(selected.model_dump(mode='json')))
+    require_legacy_domain_selection(selected.definition_digest)
     if reselect() != selected:
         raise ValueError('sequential_final_selection_changed')
 
