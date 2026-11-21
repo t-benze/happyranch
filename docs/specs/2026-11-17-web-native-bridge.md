@@ -4,15 +4,9 @@
 
 ## 1. Scope, evidence and assumptions
 
-**Settings S2a additive exception (TASK-18081 / THR-387 seq86):** Linux's
-local main view can explicitly opt into packaged `web/dist` serving and
-local API forwarding at `happyranch-app://app` with
-`HAPPYRANCH_DESKTOP_APP_SCHEME=1`. It installs a byte-fetch adapter and an
-abort-only message handler, **no connection command bridge**. The default
-daemon-served runtime, remote proxy and separate connection view below are
-unchanged. S7 owns default cutover. See the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+**Linux S7-L1 cutover (THR-387 seq86):** Main always serves installed `web/dist` at `happyranch-app://app`, with native local/remote API forwarding and the reviewed Connection commands admitted on its current document. The opt-in, plain HTTP Main, GUI loopback proxy and separate Linux Connection window are retired. Foreground Client CLI retains ClientSession.open_runtime/RuntimeProxy. Failures retain honest error and installed CLI recovery; no native connection-screen fallback. Mac remains unchanged. See the [Linux loader contract](../operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
 
-**Settings S1b-B build preparation (TASK-18101 / THR-387):** the main build
+**Historical Settings S1b-B build preparation (TASK-18101 / THR-387):** the main build
 also emits the v1 `resource-manifest.json` (sorted path/bytes/SHA-256 inventory,
 entry `index.html`, manifest excluded), using the same helper as the separate
 connection build. Its theme bootstrap is a same-origin blocking classic
@@ -20,11 +14,12 @@ connection build. Its theme bootstrap is a same-origin blocking classic
 handlers. This supports the opt-in main loader's `script-src 'self'`;
 its `style-src 'self' 'unsafe-inline'`, `connect-src 'self'`,
 `img-src 'self' data: blob:` and `font-src 'self'` are unchanged. The existing
-Linux main loader inventories the manifest as a normal dist file; manifest
-consumption by packaging is future cutover work. This preparation changes
+Linux main loader inventoried the manifest as a normal dist file; packaging
+consumption was later cutover work. S7-L1 now validates the Main manifest during
+Debian packaging with the trusted Assets reader. This preparation changed
 neither the separate connection bundle's bytes/CSP nor native bridge admission.
 
-**Linux Settings S2b PR-A (TASK-18097):** the opt-in loader additionally accepts
+**Historical Linux Settings S2b PR-A (TASK-18097):** the opt-in loader additionally accepts
 a native-selected local daemon, one active remote `ClientSession` with an
 explicit connecting/ready state, or no target. Remote requests use a
 listener-free binary HTTP adapter and the existing pinned-peer/credential
@@ -34,7 +29,8 @@ pre-header errors use `{"detail":{"code":C}}`: 503 `no_target`,
 `target_starting`, `target_unreachable`, `busy`; 409 `target_changed`.
 S4b-Linux PR-B adds the compatibility gate below; candidate switching belongs
 to S5 and remote window/default cutover to S7. This adds no page control command
-or daemon security change. The current opt-in launcher still chooses local.
+or daemon security change. The then-opt-in launcher chose local; S7-L1 now
+attaches Main to ClientModel, which owns active/candidate target selection.
 
 **Linux Settings S4b PR-B (TASK-18122):** before any API transfer (including
 native's dummy page bootstrap), the selected target performs a bounded native
@@ -56,11 +52,12 @@ native errors or logs; incompatible instances forward no API or token fetch.
 Results are cached per target and reset by native `select_target` (including
 same-instance reselection), navigation STARTED, web-process loss, close, and
 remote `ready` transitions. The launcher's `message`/`show_web` close/recreate
-sequence gives Restart, retry and reattachment a new local target. There is no
-same-instance remote reconnect callback in the current opt-in launcher; a future
-remote owner must reselect or transition readiness to invalidate its gate. This
-assumes existing active-session ownership; no candidate policy is added. See
-the [Linux loader contract](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+sequence gives Restart, retry and reattachment a fresh Main. S7-L1's
+ClientModel reattaches the committed local/remote target and selects candidates
+through AppScheme; same-instance reselection or readiness changes invalidate
+admission. The earlier S4b opt-in launcher had no remote reconnect owner; that
+stage limitation no longer describes Main. See the
+[Linux loader contract](../operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
 
 Move connection presentation into shared web components while retaining native custody, permission prompts and exact-device approval. Use the selected in-process script-message bridge in a **separate, locally packaged connection web view**. Never attach this bridge to the runtime SPA web view, including the Mac's loopback proxy of a remote runtime. The connection view can work before connection and during daemon failure. It reuses the web build/design system; it is not fetched from the computer being connected to.
 
@@ -579,7 +576,7 @@ credential or fingerprint field is exposed. Names are presentation only.
 | `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground` or `unsupported`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
 | `candidate` | `null` or exactly `{kind, id, name, phase, deadline}`. Kind is `local`/`remote`; phase is `signing_in`, `awaiting_approval`, `ready_to_switch`, `failed` or `cancelled`; deadline is an ISO8601/RFC3339 date-time or null. Candidate identity is sanitized and separate from the active target. |
 | `access_unsaved` | Boolean for the persistent native badge and Connection detail; only confirmed protected save clears it. |
-| `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Live locale switching/persistence is S8. |
+| `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Desktop web (S8-1-W, PR #1812) treats it as the native locale authority: first `app.status` seeds the first frame, later `app.status`/`app.stateChanged` reports apply only when no local choice is pending; see "v2 app locale setter". |
 
 ### v2 native errors and HTTP mapping
 
@@ -744,7 +741,7 @@ This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
 `packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
 **pending (no Mac work this wave)**. Web status is summarized after the table
-(S5-W1). Existing v1 bridge result errors
+(S5-W1); Main Connection and locale updates are reconciled to main `59e29630` (#1811/#1812/#1813). Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
 | Code / rule | Linux status and file:line evidence |
@@ -778,7 +775,8 @@ This is source inspection, not live/native acceptance. `AS` =
 | Atomic target+generation swap → cancellation → event | **S5-L1 implemented.** Swap under the first-send lock, cancel old generation, then emit full status: `WK:373–389` (`_replace_target`). |
 | Non-GET / owner commit refusal | **S6-W3-L native summary consumer implemented (#1782):** [app_scheme_webkit.py:551](../../packaging/linux/desktop/app_scheme_webkit.py#L551), [app_scheme_webkit.py:497](../../packaging/linux/desktop/app_scheme_webkit.py#L497), [client_model.py:69](../../packaging/linux/desktop/client_model.py#L69), [client_model.py:210](../../packaging/linux/desktop/client_model.py#L210); `AppScheme.bridge_message/owner_snapshot/select_target`, `ClientModel.owner_saves`. The admitted v2 summary gates commit/disconnect in unknown → pending → dirty/failed order, then current-generation non-GET transfers; dirty/failed return `owner_edits_pending` ([app_scheme_webkit.py:428](../../packaging/linux/desktop/app_scheme_webkit.py#L428), relay [app_scheme_webkit.py:263](../../packaging/linux/desktop/app_scheme_webkit.py#L263)). Invalid input retires clearance; retirement with unresolved work retains an unknown latch ([app_scheme_webkit.py:502](../../packaging/linux/desktop/app_scheme_webkit.py#L502)). Web summary publication: S6-W2b row below; native lifecycle requests/decisions remain S7-L3. |
 | `app.ownersChanged` / `app.lifecycleRequested` (web) | **S6-W2b implemented (#1804, merge 521b0e45):** [owners.ts](../../web/src/lib/native/owners.ts), [NativeOwnersBridge.tsx](../../web/src/shared/owners/NativeOwnersBridge.tsx), [useConfigOwner.tsx](../../web/src/shared/owners/useConfigOwner.tsx). Initial + per-change all-owner summary via `call()`, serialized and deduped against the last acknowledged summary; a registered save is sent only after native acknowledged its pending summary, and a refused/lost push holds it (settled failed, nothing sent); lifecycle keep/proceed answered once per ID on the same call; browser mode no-op. Native lifecycle requests (S7-L3) and a WebKitGTK round-trip are NOT RUN. |
-| Main Connection command admission | **S6-W3-L implemented (#1782):** [app_scheme_webkit.py:164](../../packaging/linux/desktop/app_scheme_webkit.py#L164), [app_scheme_webkit.py:249](../../packaging/linux/desktop/app_scheme_webkit.py#L249), [app_scheme_webkit.py:563](../../packaging/linux/desktop/app_scheme_webkit.py#L563), [app_scheme_webkit.py:624](../../packaging/linux/desktop/app_scheme_webkit.py#L624); `AppScheme.bridge_message`, `APP_PAGE`, `APP_RELAY` admit all eight existing v1 Host commands, `host.stateChanged`, `client.health/removeSaved/retrySave`, with closed args and raw validated v1 bodies. `host_bridge.HostBridge` shares the bus/busy slot and visible-window three-second polling with ConnectionWindow; errors preserve native effect/recovery ([host_bridge.py:116](../../packaging/linux/desktop/host_bridge.py#L116), [host_bridge.py:137](../../packaging/linux/desktop/host_bridge.py#L137), [host_bridge.py:194](../../packaging/linux/desktop/host_bridge.py#L194), [app_scheme_webkit.py:575](../../packaging/linux/desktop/app_scheme_webkit.py#L575)). The separate window/default-scheme cutover remains S7-L1; the header Connection/badge fallback is #1781 ([happyranch_window.py:1013](../../packaging/linux/desktop/happyranch_window.py#L1013)). |
+| Main Connection command admission | **S6-W3-L (#1782), S7-L1 (#1813) implemented:** [AppScheme.bridge_message](../../packaging/linux/desktop/app_scheme_webkit.py#L640), `APP_PAGE`/`APP_RELAY` admit all eight existing v1 Host commands and ten existing v1 Client commands, plus `client.commitSwitch`, with closed args and validated v1 bodies. `host.stateChanged` remains; `bridge.hello`/`client.stateChanged` retired with the Linux shell, and Main uses v2 `app.status`/`app.stateChanged`. Main's AppScheme uses [host_bridge.HostBridge](../../packaging/linux/desktop/host_bridge.py#L116) for the bus/busy slot, bounded Status sharing and visible-Main three-second polling; errors preserve native effect/recovery. Linux S7-L1 uses the app scheme by default, retires the native Connection window and GUI proxy, and routes Connection/badge entry through `app.dialogRequested`. |
+| S7-L1 Linux topology | Main always uses happyranch-app://app; Connection/badge request the SPA dialog; GUI uses only the in-process adapter. connection_window.py and Linux shell assets are retired. Foreground CLI RuntimeProxy remains. Debian packaging validates the main resource manifest. Native/live acceptance is tracked separately. |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
@@ -813,10 +811,7 @@ whose value is exactly `{"schema":2,"dialog":"settings"}` or
 reply or acknowledgement. Delivery does not prove that a dialog opened: its
 owner gate may retain the current presentation.
 
-Current Linux exception until S7-L1: the header Connection button and
-“Access wasn't saved” badge open/present the existing native Connection window
-in default and app-scheme opt-in builds while the SPA Connection pane is a
-placeholder. Only Settings uses header `app.dialogRequested` delivery and Retry.
+Linux S7-L1 routes both header destinations and the Access wasn't saved badge through app.dialogRequested on admitted Main. Unavailable delivery exposes the named manual Retry without replay. Main's single-dialog owner gate decides whether a request can change the presentation. No separate native Connection fallback remains.
 
 `#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
 requires both keys and rejects extra keys. In addition to the status/error
@@ -899,21 +894,21 @@ dialog is open or that an owner/effect is resolved.
 
 **Implementation status and follow-up.** Linux S6-L is implemented by
 PR #1776: closed named-event admission/routing keeps `app.stateChanged` and
-`app.dialogRequested` listeners separate (page [app_scheme_webkit.py:138](../../packaging/linux/desktop/app_scheme_webkit.py#L138),
-relay [app_scheme_webkit.py:242](../../packaging/linux/desktop/app_scheme_webkit.py#L242), native [app_scheme_webkit.py:615](../../packaging/linux/desktop/app_scheme_webkit.py#L615)).
+`app.dialogRequested` listeners separate (page [app_scheme_webkit.py:152](../../packaging/linux/desktop/app_scheme_webkit.py#L152) and [subscription:212](../../packaging/linux/desktop/app_scheme_webkit.py#L212),
+relay [app_scheme_webkit.py:275](../../packaging/linux/desktop/app_scheme_webkit.py#L275), native [app_scheme_webkit.py:730](../../packaging/linux/desktop/app_scheme_webkit.py#L730)).
 `request_dialog` emits the exact schema-2 payload only to the current admitted
 dialog subscriber, dropping unavailable requests without queue/replay
-([app_scheme_webkit.py:519](../../packaging/linux/desktop/app_scheme_webkit.py#L519), [app_scheme_webkit.py:526](../../packaging/linux/desktop/app_scheme_webkit.py#L526)).
+([app_scheme_webkit.py:619](../../packaging/linux/desktop/app_scheme_webkit.py#L619), [app_scheme_webkit.py:626](../../packaging/linux/desktop/app_scheme_webkit.py#L626)).
 Settings header emission and explicit named Retry are implemented
-([happyranch_window.py:1017](../../packaging/linux/desktop/happyranch_window.py#L1017), [happyranch_window.py:938](../../packaging/linux/desktop/happyranch_window.py#L938)).
+([happyranch_window.py:919](../../packaging/linux/desktop/happyranch_window.py#L919), [happyranch_window.py:946](../../packaging/linux/desktop/happyranch_window.py#L946)).
 The EN/ZH status/candidate pill and persistent access-unsaved badge are also
-implemented by #1776 ([happyranch_window.py:947](../../packaging/linux/desktop/happyranch_window.py#L947), [happyranch_window.py:924](../../packaging/linux/desktop/happyranch_window.py#L924)).
-PR #1781 keeps the Connection button/badge routed to the existing native
-Connection window until S7-L1 ([happyranch_window.py:1013](../../packaging/linux/desktop/happyranch_window.py#L1013)); those entries do not emit
-`app.dialogRequested`. These citations refer to merged main `7535eaad4`.
-**S6-W1 must subscribe at the Main shell (including recovery), validate against
-`dialogRequested`, and route valid events through the single-dialog owner gate**;
-it must ignore invalid payloads and unsubscribe on document teardown. Mac menu
+implemented by #1776 ([happyranch_window.py:963](../../packaging/linux/desktop/happyranch_window.py#L963), [happyranch_window.py:978](../../packaging/linux/desktop/happyranch_window.py#L978), [badge:988](../../packaging/linux/desktop/happyranch_window.py#L988)).
+The historical #1781 native Connection fallback is retired by S7-L1 (#1813):
+Connection/Settings and the access-unsaved badge now request the Main dialog
+([happyranch_window.py:1019](../../packaging/linux/desktop/happyranch_window.py#L1019)).
+Main subscribes (including recovery), validates `dialogRequested`, routes valid
+events through the single-dialog owner gate, ignores invalid payloads and
+unsubscribes on document teardown. Connection contents are implemented by S6-W3 (#1811). Mac menu
 emission remains pending separate authorization; no Mac build/work is claimed
 here. No open/closed notice or target/generation authority is added.
 
@@ -1475,15 +1470,13 @@ reconstruction ([app_scheme_webkit.py:474](../../packaging/linux/desktop/app_sch
 and reads current/persisted locale from the shared store
 ([app_scheme_webkit.py:472](../../packaging/linux/desktop/app_scheme_webkit.py#L472)).
 The GTK launch translation closure reads the preference for native header/menus/dialogs
-on next app launch ([happyranch_window.py:999](../../packaging/linux/desktop/happyranch_window.py#L999));
+on next app launch ([happyranch_window.py:998](../../packaging/linux/desktop/happyranch_window.py#L998));
 built-in native state names retain the launch locale. The existing TASK-18213
 store implementation is unchanged. Native/script checks and the real GTK/WebKit
 bridge test cover acknowledged true/false results, ordered rapid choices, refusal
 and retirement; new-process header checks cover saved preference precedence over
 LANG. Installed payload isolated imports pass; packaged/X11 visual acceptance
-remains unverified. S8-1-W remains pending for live web native locale authority
-and truthful pending/saved/session-only UI; browser-mode localStorage behavior
-stays as documented. No synchronous facade/wire field, daemon route/auth/remote
+remains unverified. Web native locale authority is implemented by S8-1-W, PR #1812: `web/src/lib/native/locale.ts` (adapter: `app.locale.set`, Saved only for a matching `persisted:true` reply, `persisted:false` session-only, refusal/timeout/malformed fail; timeout or unusable replies trigger an `app.status` re-read, with no automatic setter retry) and `reconcileNativeReport` in `web/src/lib/i18n/locale.ts` (newer choice wins and is never rolled back; after the latest choice settles, the persistence claim follows native's latest report: the same locale with persisted:true is Saved, persisted:false is session-only, another locale is failed with Retry); the desktop Language pane shows pending/Saved/failed/session-only with Retry, and built-in `kind:"local"` names follow the live locale. Browser-mode localStorage behavior is unchanged. WebKitGTK/native/packaged visual acceptance of the web switch remains unverified. No synchronous facade/wire field, daemon route/auth/remote
 allowlist change or Mac edit/build is included.
 
 The following examples validate against `appLocaleSet`
