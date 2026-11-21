@@ -307,10 +307,15 @@ window in both default and app-scheme opt-in builds; Settings retains
 `app.dialogRequested` delivery and explicit Retry when unavailable.
 Linux S6-W3-L admits the full existing v1 Host command set and
 `host.stateChanged`, plus `client.health/removeSaved/retrySave`, on the admitted
-Main document. The native Connection window shares `host_bridge.py` with Main;
-it remains packaged until S7-L1. `app.ownersChanged` now supplies native
-commit/disconnect summary evidence, including `owner_edits_pending` after the
-unknown/pending refusals. Lifecycle request/decision handling remains S7-L3.
+Main document. The native Connection window shares `host_bridge.py` with Main
+and remains packaged until S7-L1. On CSP/frame revocation or `pagehide`, pending
+mutations reject with `documentChanged`, effect `unknown` and recovery
+`nativeRecovery`, without replay.
+Read-only calls retain effect `none` / recovery `refresh`; new calls after
+retirement are refused before dispatch with that same no-effect shape.
+`app.ownersChanged` now supplies native commit/disconnect summary evidence,
+including `owner_edits_pending` after the unknown/pending refusals.
+Lifecycle request/decision handling remains S7-L3.
 Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in

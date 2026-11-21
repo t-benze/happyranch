@@ -98,7 +98,7 @@ class EventTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.delivered[-1]["raw"]), {"schema": 2, "dialog": "connection"})
             self.assertEqual(self.app.status(), before)
 
-    def connection_boundary(self, case):
+    def connection_boundary(self, case: str, command: str = 'host.revokeDevice') -> None:
         script = r'''
 const vm=require('node:vm'), assert=require('node:assert/strict');
 const sources=JSON.parse(process.env.HR_EVENT_SCRIPTS);
@@ -110,6 +110,8 @@ const contexts=handlers.map(h=>{
  c.window=c.top=c;
  c.webkit={messageHandlers:{appBridge:{postMessage:raw=>{
   const item=JSON.parse(raw);native.push(item);
+  if(item.command && sources.case.startsWith('retirement-'))
+   return new Promise(resolve=>{c.finish=resolve;});
   return item.command ? Promise.reject(new Error(JSON.stringify(c.failure || {code:'permissionDenied',effect:'unknown',recovery:'nativeRecovery'}))) : Promise.resolve('{}');
  }}}};return vm.createContext(c);
 });
@@ -129,6 +131,35 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  return;
  }
  vm.runInContext('hrAppBridge.admit(hrAppBridge.token)',contexts[1]);
+ if(sources.case.startsWith('retirement-')){
+  const command=sources.command;
+  contexts[0].command=command;
+  contexts[0].args=['client.connectSaved','client.removeSaved'].includes(command) ? '{"computerRef":"opaque"}'
+   : command==='app.ownersChanged' ? '{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}' : '{}';
+  const result=vm.runInContext('globalThis.settlements=0;happyranchConnection.call(command,args).catch(raw=>{settlements++;return JSON.parse(raw);})',contexts[0]);
+  assert.equal(native.filter(item=>item.command===command).length,1,'retirement must follow native dispatch');
+  if(sources.case==='retirement-csp'){
+   contexts[1].retireCallbacks=handlers[1].get('securitypolicyviolation');
+   vm.runInContext("for(const fn of retireCallbacks)fn({effectiveDirective:'frame-src'})",contexts[1]);
+  }else{
+   contexts.forEach((c,i)=>{c.retireCallbacks=handlers[i].get('pagehide');
+    vm.runInContext('for(const fn of retireCallbacks)fn()',c);});
+  }
+  let deadline;
+  const observed=await Promise.race([result,new Promise((_,reject)=>{
+   deadline=setTimeout(()=>reject(new Error('retirement did not settle the pending call')),1000);
+  })]).finally(()=>clearTimeout(deadline));
+  const read=['app.status','client.status','client.savedComputers','client.health','host.status','host.nextDevice'].includes(command);
+  assert.equal(observed.code,'documentChanged');
+  assert.equal(observed.effect,read ? 'none' : 'unknown','a dispatched mutation has no no-effect receipt');
+  assert.equal(observed.recovery,read ? 'refresh' : 'nativeRecovery');
+  contexts[1].finish('{}');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(contexts[0].settlements,1,'late native completion cannot resettle the retired call');
+  const refused=await vm.runInContext('happyranchConnection.call(command,args).catch(raw=>JSON.parse(raw))',contexts[0]);
+  assert.equal(refused.effect,'none','a new call after retirement is refused before dispatch');
+  assert.equal(native.filter(item=>item.command).length,1,'retirement never replays a mutation');
+  return;
+ }
  if(sources.case==='errors'){
  for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};
@@ -152,8 +183,24 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
         result = subprocess.run(["node", "-e", script], env={**os.environ, "HR_EVENT_SCRIPTS": json.dumps(
-            {"page": native.APP_PAGE, "relay": native.APP_RELAY, "case": case})}, capture_output=True, text=True, timeout=10)
+            {"page": native.APP_PAGE, "relay": native.APP_RELAY, "case": case, "command": command})}, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def retirement_boundary(self, case: str) -> None:
+        for command in ('host.revokeDevice', 'host.enable', 'host.turnOff', 'host.createInvite',
+                        'host.approveDevice', 'host.rejectDevice', 'client.removeSaved', 'client.retrySave',
+                        'client.acceptInvite', 'client.retry', 'client.connectSaved', 'client.cancelAttempt',
+                        'client.commitSwitch', 'client.disconnect', 'app.ownersChanged',
+                        'app.status', 'client.status', 'client.savedComputers', 'client.health',
+                        'host.status', 'host.nextDevice'):
+            with self.subTest(command=command):
+                self.connection_boundary(case, command)
+
+    def test_csp_retirement_preserves_dispatched_mutation_uncertainty(self) -> None:
+        self.retirement_boundary('retirement-csp')
+
+    def test_pagehide_retirement_preserves_dispatched_mutation_uncertainty(self) -> None:
+        self.retirement_boundary('retirement-pagehide')
 
     def test_connection_event_admission(self):
         self.connection_boundary('events')

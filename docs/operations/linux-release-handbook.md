@@ -736,9 +736,14 @@ With `HAPPYRANCH_DESKTOP_APP_SCHEME=1`, the admitted top-level Main document
 also accepts the eight existing v1 `host.*` commands, `host.stateChanged`,
 `client.health`, `client.removeSaved` and `client.retrySave`. Results and events
 are raw v1 bodies, validated by the existing Protocol; mutation errors retain
-their native effect/recovery, including unknown outcomes. `host_bridge.py` is
-installed and required in the desktop payload. Main and the native Connection
-window share its dedicated bus, one busy slot and bounded Status waiters.
+their native effect/recovery, including unknown outcomes. CSP/frame revocation
+and `pagehide` reject pending mutations as `documentChanged` / effect `unknown` /
+recovery `nativeRecovery`, never replaying them. This is conservative even before native
+admission, since posting supplies no no-effect receipt. Read-only calls retain
+effect `none` / recovery `refresh`, as do new calls refused after retirement.
+`host_bridge.py` is installed and required in the desktop payload. Main and the
+native Connection window share its dedicated bus, one busy slot and bounded
+Status waiters.
 Subscriptions receive a full snapshot and poll Status every three seconds
 while a subscribing window is visible; document retirement drops late events.
 The native Connection window and temporary header entry remain until S7-L1.

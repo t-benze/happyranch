@@ -340,6 +340,14 @@ Closed error vocabulary: `invalidRequest`, `unsupportedVersion`, `unsupportedCom
 
 Map helper `invalid-request/unknown-method` to the corresponding schema errors, `wrong-uid` to unavailable native capability (never another credential path), `busy` to busy, `changed` to stateChanged, `expired` to expired, and confirmed `denied` to permissionDenied with no mutation. Do not call an ambiguous transport failure “cancelled — no change”: disconnected/unavailable/timeout **after dispatch** carries unknown effect until independently resolved. An early local validation/admission refusal has effect none. A successful request acknowledgement is not completion; report confirmed only from the native operation's supported result. AccessDenied is not proof of explicit revocation; Revoked requires a positive authoritative signal. Native web-load callbacks, never JS `connected:true`, own Connected.
 
+Linux Main retains the command for each pending page call. CSP/frame revocation
+and `pagehide` reject pending mutations with `documentChanged`, effect `unknown`
+and recovery `nativeRecovery`, without replay. Posting to the relay alone cannot
+establish no effect, so this applies conservatively before native admission too.
+Read-only `app.status`, `client.status`, `client.savedComputers`, `client.health`,
+`host.status` and `host.nextDevice` retain effect `none` / recovery `refresh`.
+New calls after retirement are refused before dispatch with effect `none`.
+
 ## 8. UX state coverage, acceptance and current signal gaps
 
 **The v2.1 state and acceptance appendix (TASK-17171; §1 filenames/digests) is current Product authority**, carrying founder seq23's B scope. Legacy L01–L20 → H01–H20; M01–M23 → C01–C23; X IDs are unchanged. The table below retains all 51 inherited states. Host rows apply to Linux in B; Client rows apply to Mac and Linux, with saved-access states on Linux explicitly gated and unresolved, not omitted. Mac host rows remain deferred requirements, not an implied implementation. “Existing”/“Adapter” identifies source-backed Linux host or Mac client behavior in §2; replacement lifecycle screens and native adapters remain unimplemented and unexecuted; slice 1a supplies only the web shell/schema. The design cannot manufacture unsupported readiness, expiry, early rejection or cleanup signals. V2.0 remains the earlier mapping artifact; v2.1 controls current presentation/acceptance, while the one-click spec's trust/R2 and action-preservation invariants remain.

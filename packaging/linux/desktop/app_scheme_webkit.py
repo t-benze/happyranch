@@ -138,12 +138,18 @@ APP_PAGE = r"""(() => {
     ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()], ['host.stateChanged', new Set()]]);
   const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
+  const retired = command => {
+    const read = ['app.status','client.status','client.savedComputers','client.health','host.status','host.nextDevice'].includes(command);
+    // Posting alone cannot confirm that a mutation had no effect, even before admission.
+    return JSON.stringify({code:'documentChanged', effect:read ? 'none' : 'unknown',
+      recovery:read ? 'refresh' : 'nativeRecovery'});
+  };
   addEventListener('message', event => {
     if (!active || event.source !== window || event.origin !== location.origin) return;
     const item = event.data;
     if (item?.channel === 'hr-app-revoked') {
       active = false; clearListeners();
-      for (const callback of pending.values()) callback.reject(fail('documentChanged'));
+      for (const callback of pending.values()) callback.reject(retired(callback.command));
       pending.clear(); return;
     }
     if (item?.channel === 'hr-app-event' && typeof item.raw === 'string') {
@@ -173,7 +179,7 @@ APP_PAGE = r"""(() => {
     if (!(empty.includes(command) && data === '{}') && !saved && !owners) return reject(fail('unsupportedCommand'));
     if (pending.size >= 8) return reject(fail('busy'));
     const id = 'r' + (++sequence);
-    pending.set(id, {resolve, reject});
+    pending.set(id, {resolve, reject, command});
     window.postMessage({channel:'hr-app-call', id, command, data}, location.origin);
   });
   const on = (event, handler) => {
@@ -188,7 +194,7 @@ APP_PAGE = r"""(() => {
   };
   addEventListener('pagehide', () => {
     active = false; clearListeners();
-    for (const callback of pending.values()) callback.reject(fail('documentChanged'));
+    for (const callback of pending.values()) callback.reject(retired(callback.command));
     pending.clear();
   }, {once:true});
   Object.defineProperty(window, 'happyranchConnection', {value:Object.freeze({call,on})});
