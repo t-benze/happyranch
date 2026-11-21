@@ -75,6 +75,10 @@ WKWebView HTML/JS round trip. No usable GUI ends the build cleanly with M1–M4
 NOT RUN and forbids further attempts in that venue. Background/System alone
 is not a failure if the actual WKWebView succeeds.
 
+Both Swift entry points keep synchronous AppKit startup inside
+`MainActor.assumeIsolated`, which checks the main executor before accessing the
+actor-isolated probe. Compilation errors leave GUI availability unknown.
+
 The suite then runs `swift build` with the supervisor suite's private HOME,
 TMPDIR, SwiftPM and module-cache pattern. It retrieves only hash-pinned Node24
 using the existing toolchain pins/transfer code, into the build scratch, then

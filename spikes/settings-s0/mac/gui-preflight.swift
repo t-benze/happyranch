@@ -39,6 +39,9 @@ final class GUIProbe: NSObject, WKNavigationDelegate {
         }
     }
 }
-let probe = GUIProbe()
-probe.start()
-NSApplication.shared.run()
+// Synchronous script startup is on the main thread; make its isolation explicit.
+MainActor.assumeIsolated {
+    let probe = GUIProbe()
+    probe.start()
+    NSApplication.shared.run()
+}

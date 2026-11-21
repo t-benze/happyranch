@@ -198,8 +198,11 @@ final class Probe: NSObject, NSApplicationDelegate, WKURLSchemeHandler,
 // No production app dependencies. Run only after explicit Mac allowance.
 let arguments = CommandLine.arguments
 guard arguments.count == 4 else { fatalError("usage: SettingsSchemeProbe REPO_ROOT DOWNLOAD_DIR probe|probe-serialized|probe-direct|probe-no-multipart|other|/|/settings") }
-let delegate = Probe(root: URL(fileURLWithPath: arguments[1]), downloads: URL(fileURLWithPath: arguments[2]), mode: arguments[3])
-try FileManager.default.createDirectory(at: delegate.downloads, withIntermediateDirectories: true)
-NSApplication.shared.setActivationPolicy(.regular)
-NSApplication.shared.delegate = delegate
-NSApplication.shared.run()
+// Keep AppKit startup and the delegate alive within the main-thread actor scope.
+try MainActor.assumeIsolated {
+    let delegate = Probe(root: URL(fileURLWithPath: arguments[1]), downloads: URL(fileURLWithPath: arguments[2]), mode: arguments[3])
+    try FileManager.default.createDirectory(at: delegate.downloads, withIntermediateDirectories: true)
+    NSApplication.shared.setActivationPolicy(.regular)
+    NSApplication.shared.delegate = delegate
+    NSApplication.shared.run()
+}
