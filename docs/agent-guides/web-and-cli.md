@@ -3211,7 +3211,10 @@ stored assigned agent is never called a removed agent and does not consult
 the roster: its effective value shows as returned, and a null value reads
 "Not set" with a note that the team manager's default, or else the CLI
 default, applies. After a
-successful revisit the dialog opens the new root (`new_root_task_id`). All states are in English and
+successful revisit the dialog opens the new root (`new_root_task_id`). A live
+transitive revisit successor causes HTTP 409 `revisit_successor_live`, naming the
+existing successor; no new root is created. After successors reach terminal
+states, revisit is available again. All states are in English and
 zh-CN. See the
 [full task design](../specs/2026-11-13-task-model-reasoning-overrides.md).
 

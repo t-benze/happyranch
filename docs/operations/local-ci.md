@@ -1,5 +1,16 @@
 # Local CI
 
+## Focused founder revisit admission (THR-386)
+
+`uv run --frozen pytest scripts/test_task_revisit.py -v --tb=short`
+drives the real HTTP route and SQLite writer through the existing synthetic-org
+ASGI fixture. It covers sequential/concurrent duplicate refusal, terminal
+successor reopening, transitive pending/running/blocked/escalated successors,
+revisiting an escalated successor itself, and flagged-child root selection.
+Refusals preserve persisted state and queue publication. No lifespan, listener,
+provider or live org runs. This focused script is outside retired Python units
+and skipped general integration; it adds no CI trigger or required gate.
+
 ## Focused S4a hold/control source
 
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4a=all`
