@@ -127,9 +127,8 @@ The orchestrator's thread-invocation prompt builder gains a new top-of-prompt se
 ```
 ## Decline-by-Default in Threads
 
-This invocation was minted because a new message was posted to THR-NNN.
-Every participant gets an invocation on every message — that does NOT mean
-every participant should reply.
+This invocation was minted because thread delivery selected you — that
+does NOT mean you should reply.
 
 Default behavior: call `happyranch threads decline --from-file <payload>`
 with no reason. Your invocation is consumed silently; no transcript entry
