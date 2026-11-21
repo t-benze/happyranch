@@ -338,6 +338,13 @@ from `app.status`) ending in Ready or a named mismatch (service older than the
 app: update the service and restart again; app too old: update the desktop
 app; compatibility unknown). Check again / Recheck only re-read `local.status`,
 `local.update.status` and `app.status`; nothing retries or replays a mutation.
+Native Start/Restart now additionally return this computer's closed `readmission`
+result (`ready|unreachable|incompatible|unknown`, with the existing incompatibility
+object only for `incompatible`, otherwise null), even with a remote selected.
+Other local mutations omit it. The local result never changes selected-target
+`app.status`, carries no URL/credential and is never an effect-retry signal.
+The local-result parser accepts the carrier; page consumption/recovery under a
+remote target is pending the following frontend leg on PR #1815.
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see

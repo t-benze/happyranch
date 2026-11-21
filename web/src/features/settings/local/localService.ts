@@ -10,7 +10,8 @@
  *   `{schema:2, update}`;
  * - mutations: `local.start`, `local.stop`, `local.restart`, `local.repair`,
  *   `local.turnOff` (data `{}`) and `local.keepRunning.set`
- *   (`{schema:2, enabled}`) → `{schema:2, service, command}`.
+ *   (`{schema:2, enabled}`) → `{schema:2, service, command}`; Start/Restart also
+ *   carry this computer's post-effect `readmission` (independent of app.status).
  *
  * Refusals are the Main envelope `{code, effect, recovery}` (busy, unavailable,
  * permissionDenied, documentChanged, outcomeUnknown, owner/effect gate codes).
@@ -101,11 +102,25 @@ function isSnapshot(value: unknown): value is LocalServiceSnapshot {
   );
 }
 
+function isReadmission(value: unknown): boolean {
+  if (!closed(value, ['state', 'incompatible']) || !oneOf(value.state, ['ready', 'unreachable', 'incompatible', 'unknown'])) return false;
+  if (value.state !== 'incompatible') return value.incompatible === null;
+  const mismatch = value.incompatible;
+  if (!closed(mismatch, ['side', 'host_contract', 'client_contract', 'min_daemon'])) return false;
+  if (!oneOf(mismatch.side, ['host', 'app', 'unknown']) || mismatch.client_contract !== 1 || mismatch.min_daemon !== 1) return false;
+  const host = mismatch.host_contract;
+  return host === null || (closed(host, ['current', 'min_client']) && Number.isInteger(host.current) && Number.isInteger(host.min_client));
+}
+
 /** `local.status` result, or a mutation result (which also names its command). */
 export function parseLocalServiceResult(raw: unknown, command?: LocalMutation): LocalServiceSnapshot | null {
   const value = json(raw);
   if (command) {
-    if (!closed(value, ['schema', 'service', 'command']) || value.command !== command) return null;
+    const readmission = command === 'local.start' || command === 'local.restart';
+    const keys = ['schema', 'service', 'command'];
+    // Accept both the existing shell and the new carrier until the page cutover.
+    if (readmission && value && typeof value === 'object' && 'readmission' in value) keys.push('readmission');
+    if (!closed(value, keys) || value.command !== command || (keys.length === 4 && !isReadmission(value.readmission))) return null;
   } else if (!closed(value, ['schema', 'service'])) {
     return null;
   }

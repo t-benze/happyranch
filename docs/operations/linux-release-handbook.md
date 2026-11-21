@@ -1295,6 +1295,14 @@ wait, listener inode, health and post-health rechecks. Native invalidates cached
 local compatibility/bearer and uses the existing loopback bootstrap after Start
 or Restart, then publishes `app.stateChanged`. Service success and API compatibility
 are separate: a remaining mismatch keeps its named Host/app/unknown guidance.
+Local interruption cancels already-admitted background status workers before
+resetting local transport, so a late worker cannot cache the pre-effect bearer
+or publish readiness during Start/Stop/Restart. Reads remain available. Successful
+Start/Restart replies include this computer's closed `readmission` result
+(`ready|unreachable|incompatible|unknown` plus the existing incompatibility detail
+or null). A remote-selected `app.status` remains remote; this local result carries
+no endpoint or credential and never authorizes retrying the effect. Other local
+mutation replies omit `readmission`.
 Main, its current dialog and drafts stay mounted; this never relaunches the app
 or changes keep-running. A selected remote target/candidate is preserved.
 Restart failure revokes leave-running eligibility and retains the operation

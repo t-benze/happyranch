@@ -1318,6 +1318,22 @@ appState changes; its existing `local` projection is unchanged. Read the richer
 lifetime snapshot with `local.status`; this adds no local event or automatic
 effect retry. Remote-selected appState continues to describe that remote target.
 
+**Local readmission result (C6).** `localActionResult.readmission` is required
+for `local.start` and `local.restart` and forbidden for `local.stop`,
+`local.keepRunning.set`, `local.repair` and `local.turnOff`. It is a closed object
+exactly `{"state":"ready|unreachable|incompatible|unknown","incompatible":...}`:
+`state` is one of those four strings; `incompatible` is the existing closed
+`$defs/incompatible` object only when state is `incompatible`, otherwise null.
+It records this computer's post-effect health/compatibility/bootstrap admission,
+separately from service-effect success. `unknown` includes unsettled/cancelled
+admission or update-busy, never an inferred readiness result. It carries no URL,
+bearer or credential. Under local selection it agrees with the local readiness
+published in appState (`target_starting`/`busy` are unsettled, represented here
+as `unknown`). Under remote selection C6 uses this local result while appState
+continues to describe the remote target, including a remote `ready`/null alongside
+a local `incompatible` result. It never changes remote selection or appState,
+grants remote lifecycle authority, or justifies retrying the service effect.
+
 `local.update.status` returns `update:"restart_required"` for a positive existing
 installed-update hint, `"not_detected"` for no detected hint (including the
 best-effort helper's false result), `"unknown"` for an unavailable observation,
@@ -1363,7 +1379,19 @@ definition and the root; no-argument `{}` is checked only as the empty call args
 #### Valid: localActionResult after service-only restart
 
 ```json
-{"schema":2,"command":"local.restart","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
+{"schema":2,"command":"local.restart","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false},"readmission":{"state":"ready","incompatible":null}}
+```
+
+#### Valid: localActionResult reports local incompatibility while remote remains selected
+
+```json
+{"schema":2,"command":"local.restart","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false},"readmission":{"state":"incompatible","incompatible":{"side":"app","host_contract":{"current":2,"min_client":2},"client_contract":1,"min_daemon":1}}}
+```
+
+#### Invalid: localActionResult cannot attach readmission to Stop
+
+```json
+{"schema":2,"command":"local.stop","service":{"supported":true,"mode":"service","running":"stopped","keepRunning":"off","busy":false},"readmission":{"state":"ready","incompatible":null}}
 ```
 
 #### Valid: localUpdateStatusResult requests service restart

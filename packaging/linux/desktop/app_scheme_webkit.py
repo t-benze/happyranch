@@ -559,13 +559,18 @@ class AppScheme:
         return None
 
     def local_service_changed(self, running: str, url: str | None = None,
-                              recheck: bool = False, stop: threading.Event | None = None) -> None:
+                              recheck: bool = False, stop: threading.Event | None = None) -> dict | None:
         """Supervisor observation; never select a target or rebuild Main."""
         with self.target_lock:
             if self.closed:
                 return
             local = self.local_daemon
             if running != "running" or recheck:
+                # A previously admitted worker may not have entered bootstrap
+                # yet, so resetting the transport epoch alone cannot fence it.
+                if self.status_stop is not None:
+                    self.status_stop.set()
+                self.status_refresh = None
                 if local is not None:
                     local.reset()
                 for transfer in self.transfers.values():
@@ -588,7 +593,14 @@ class AppScheme:
                 pass  # app.status preserves the named mismatch/unreachable/busy result.
             with self.target_lock:
                 self.local_changing = False
+                with local._state:
+                    state = local.state if local.state in {"ready", "unreachable", "incompatible"} else "unknown"
+                    readmission = {"state": state, "incompatible": (
+                        {"side": local._compatibility or "host", "host_contract": local.host_contract,
+                         "client_contract": _transport.CLIENT, "min_daemon": _transport.MIN_DAEMON}
+                        if state == "incompatible" else None)}
         self.GLib.idle_add(self.emit_state)
+        return readmission if recheck else None
 
     def _replace_target(self, target: LocalDaemon | RemoteDaemon | None) -> None:
         # The same lock fences first-send admission against this atomic swap.
@@ -623,9 +635,11 @@ class AppScheme:
             except SchemeError:
                 pass
             def done() -> bool:
-                if (not self.closed and generation == self.generation and document == self.document):
-                    self.status_refresh = None
-                    self.emit_state()
+                with self.target_lock:
+                    if (not self.closed and not stop.is_set() and self.status_stop is stop
+                            and generation == self.generation and document == self.document):
+                        self.status_refresh = None
+                        self.emit_state()
                 return False
             self.GLib.idle_add(done)
         threading.Thread(target=work, daemon=True, name="app-status-admission").start()

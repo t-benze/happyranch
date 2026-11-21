@@ -1,10 +1,11 @@
 # Linux local-service supervisor: bounded TLA+ model
 
-S7-L2 / THR-387, PR #1815. Source correspondence is to native head
-`fd266a01342453c32b3acacf68f1ef99cc475dd0`; this continuation changes only
-model/docs. This satisfies the same-PR model requirement in the
+S7-L2 / THR-387, PR #1815. Source correspondence includes round-2 native
+status-admission cancellation in `AppScheme.local_service_changed/refresh_status`
+(TASK-18530), extending the original fd266a013 supervisor sequence.
+This satisfies the same-PR model requirement in the
 [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
-[Actual TLC results](RESULTS.md) include a deliberately broken recheck scenario.
+[Actual TLC results](RESULTS.md) include broken recheck and status-fence scenarios.
 No production dependency, CI job, test/build trigger or merge gate is added.
 
 ## State and source correspondence
@@ -20,6 +21,7 @@ Source paths below are relative to `packaging/linux/desktop/`.
 | `surface` | Main document, generation, owners, candidate, selected local/remote target and foreground owned child. These local actions never replace Main/target or signal the fallback child. |
 | `readResult`, `reply` | Closed abstractions of local.status/update.status and mutation replies; not full schema-2 JSON. Busy refusal includes `busy/none/refresh`; foreground mutation refusal includes `unavailable/none/nativeRecovery`. |
 | `emission` | Snapshot at an abstract `app.stateChanged` emission of local transport admission, including named mismatch/unreachable/busy. `ready` is not keepRunning=on. A separately ready selected remote may remain ready while local admission fails. |
+| `background`, `interrupted` | One background `AppScheme.refresh_status` worker, allowed to pause before bootstrap or GTK completion; its cancellation Event is set before local reset. `local_changing` blocks admission until supervisor readmission; completion checks the captured cancellation/token identity. |
 
 The initial state has a running local service, fresh cached admission and either
 absent or externally owned linger. Stop then Start, repeated Restart, and
@@ -41,6 +43,7 @@ selection in `Request`.
 | `NamedFailure`, `Publish` | Bootstrap `SchemeError` retains named failure; `local_service_changed` queues `emit_state`, which serializes `AppScheme.status`. Successful local readiness is emitted only after check and refresh. |
 | `Finish`, `UnknownEffect` | `LocalControls.process` fresh post-effect observation releases slot or retains exact unknown owner with `outcomeUnknown/unknown/nativeRecovery`. |
 | `Read`, `Reconcile` | `LocalControls.request/process/observe`: status/update reads do not acquire a slot; in-flight reads return pending state. Only explicit successful local.status clears unresolved outcome; update status cannot clear it. Failed inspections/read attempts may stutter. `run_gui.supervise` suppresses automatic status reconciliation while unresolved. |
+| `StatusAdmission`, `StatusBootstrap`, `StatusCompletion` | `AppScheme.refresh_status`: captures a caller cancellation token before launching; bootstrap checks that token even if it begins after transport reset. Queued completion discards cancelled admission. `WorkerGate` cancels that token before the effect. `SkipStatusFence` disables both checks only in the negative model. |
 
 ## Properties and limits
 
@@ -52,6 +55,10 @@ selection in `Request`.
   admission may emit its named failure. The snapshot remains a historical event,
   not a claim that an earlier event stays current after later invalidation.
 - `ForegroundNeverMutates`: service configuration and owned child stay intact.
+- `NoStaleLocalCache`: an interrupted background worker cannot cache an old-service
+  bearer. `NoReadyDuringInterruption` records interruption at emission time and
+  forbids background ready publication before supervisor readmission. Resetting
+  the transport alone cannot protect a worker paused before bootstrap.
 - `MainAndRemoteUnchanged`: local actions preserve document/generation,
   owners, candidate and selected target even when remote is active.
 - `MutationEventuallyReleases`: each admitted caller eventually leaves active.
@@ -64,13 +71,19 @@ selection in `Request`.
 
 This is a finite design model: two callers with one attempt each, seven command
 variants (the Boolean keepRunning argument is split), local/remote selection
-checked in separate configs, and no target changes during a run. Mutex admission,
+checked in separate configs, one background worker with admission/bootstrap/
+completion phases, and no target changes during a run. Mutex admission,
 one supervisor and source current-owner checks are atomic abstractions, not a
 proof of Python locking, frame/origin security or GTK scheduling. The final gate
 collapses owner/document refusal categories. Systemd/logind provenance, consent
 text, rollback substeps, partial enable/linger observations, process crashes,
 external changes, cancellation during effects, networking, token custody,
-epoch cancellation and queued GLib event delivery are not independently modeled.
+transport epoch internals and individual GLib delivery mechanics are not modeled.
+Caller cancellation and queued completion are represented at their observable
+boundaries. A stale symbol denotes an old-service bearer; no credential exists
+in the model. Background failure outcomes are collapsed; supervisor named
+failures remain explicit. Worker completion fairness is not required for slot
+release. A second local interruption cancels the same bounded worker again.
 Unknown effects conservatively hold the slot; reconciliation abstracts a fresh
 successful observation, not authority to infer success. Stop/keep-running status
 event details and update-hint values are collapsed. Deadlock checking is disabled
@@ -96,9 +109,12 @@ From this directory:
 /usr/bin/java -XX:+UseParallelGC -Xmx512m -cp "$TASK_TMP/tla2tools.jar" tlc2.TLC -workers 1 -fp 0 -seed 1 -metadir "$TASK_TMP/states-service-local" -config service-local.cfg LocalServiceSupervisor
 ```
 
-Repeat for `service-remote`, `foreground`, and `negative-skip-recheck`, using
-distinct `-metadir` paths outside the repo. The negative config restricts
-mutations to Restart and deliberately bypasses recheck; it checks safety only,
-not liveness of a constrained graph. Expected exit is 12 with a freshness
-counterexample; it is not a passing design. Positive configs check all listed
+Run all configs **sequentially**, with a private `java.io.tmpdir`; concurrent
+standard-module extraction has produced parser NPEs. Repeat for `service-remote`,
+`foreground`, `negative-skip-recheck`, and `negative-skip-status-fence`, using
+distinct `-metadir` paths outside the repo. Both negative configs restrict
+mutations to Restart and check safety only, not liveness of a constrained graph.
+The first bypasses recheck; the second retains recheck and bypasses status
+cancellation/completion fencing. Expected exit is 12 with the respective
+freshness/cache counterexample; neither is a passing design. Positive configs check all listed
 invariants and liveness. Use a durable job if expanded runs can exceed a minute.

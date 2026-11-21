@@ -682,7 +682,7 @@ class LocalControls:
                                else self.service.start(self.cancel))
                         if url is None:
                             raise LaunchError("The user manager is unavailable.")
-                        self.changed("running", url, True)
+                        readmission = self.changed("running", url, True) or {"state": "unknown", "incompatible": None}
                     elif command == "local.stop":
                         state = self.service.state()
                         self.service.check_legacy()
@@ -707,6 +707,8 @@ class LocalControls:
                     result = {"schema": 2, "service": snapshot}
                     if not read:
                         result["command"] = command
+                        if command in {"local.start", "local.restart"}:
+                            result["readmission"] = readmission
             except (OSError, LaunchError):
                 # The service may already have changed. Hold this exact owner;
                 # only an explicit fresh local.status can reconcile it.
@@ -1173,9 +1175,10 @@ def run_gui(prefix: Path, home: Path) -> int:
         dialog.destroy()
         return accepted
 
-    def local_changed(running: str, url: str | None = None, recheck: bool = False) -> None:
+    def local_changed(running: str, url: str | None = None, recheck: bool = False) -> dict | None:
         if app_scheme is not None:
-            app_scheme.local_service_changed(running, url, recheck, cancel)
+            return app_scheme.local_service_changed(running, url, recheck, cancel)
+        return None
 
     local_controls = LocalControls(service, prefix, requests, cancel, GLib.idle_add,
                                    confirm_local, local_changed)
