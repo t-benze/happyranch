@@ -345,6 +345,53 @@ def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline:
                             reserve_cancellation=reserve_cancellation)
 
 
+def native_cancel_fence_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,
+        run_id: str, compiled: object, authority: object, capture: object,
+        origin: str, deadline: float, native_pending: bool = False) -> str | None:
+    """Fence native source loss/Founder stop without a result-owned control.
+
+    The mixed owner authenticates the complete membership and native preparation
+    in this SAME writer. A prepared owner is outstanding even before SID binding.
+    """
+    from runtime.workflows.sequential_business_hold import generic_closed_visit
+    from runtime.workflows.sequential_initiator import wake_uncommitted
+    budget = _ReadBudget(deadline=deadline)
+    with _sql_budget(conn, budget):
+        run = _engine_context(conn, db, org_slug=org_slug, run_id=run_id, compiled=compiled,
+            authority=authority, capture=capture, budget=budget)
+        _require(run['engine_version'] == 2 and origin in ('founder_cancel', 'source_terminal') and type(native_pending) is bool,
+                 'native_cancel_origin_invalid')
+        source = _engine_rows(conn, 'tasks', budget, 'id=?', (run['source_task_id'],))
+        _require(len(source) == 1 and (origin != 'source_terminal' or
+            source[0]['status'] in ('failed', 'cancelled', 'superseded')), 'native_cancel_source_conflict')
+        if run['state'] == 'finished' or run['progress'] == 'cancelling':
+            return None  # An existing fence/terminal history has no fresh effect.
+        _require(run['state'] in ('running', 'held'), 'native_cancel_state_conflict')
+        visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run_id,))
+        visit = next((row for row in visits if row['id'] == run['active_visit_id']), None)
+        immediate = run['state'] == 'held' or (visit is not None and visit['session_id'] is None and not native_pending)
+        if immediate and visit is not None:
+            generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
+            conn.execute("UPDATE workflow_seq_visits SET state='cancelled',selected=0 WHERE id=?", (visit['id'],))
+        selected_visit = visit or max(visits, key=lambda row: row['ordinal'])
+        event_id = _append_event(conn, run,
+            kind='cancellation_finished' if immediate else 'cancelled',
+            operation_key='native-cancel-' + str(run['cas']),
+            payload=dict(origin=dict(kind=origin, source_task_id=run['source_task_id'], source_status=source[0]['status']),
+                before_cas=run['cas'], visit_id=selected_visit['id'], held_event_id=run['held_event_id']),
+            budget=budget, resulting_state='finished' if immediate else 'running', cancel=True)
+        if immediate:
+            _move(conn, run, event_id, state='finished', terminal_outcome='cancelled', progress=None,
+                active_visit_id=None, held_node_id=None, held_event_id=None)
+            event = _engine_rows(conn, 'workflow_seq_events', budget, 'id=?', (event_id,))[0]
+            wake_uncommitted(conn, run, event, compiled, {row['id']: row for row in visits}, budget)
+        else:
+            _require(run['state'] == 'running' and visit is not None, 'native_cancel_state_conflict')
+            _move(conn, run, event_id, progress='cancelling')
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    return event_id
+
+
 def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,
                                      run_id: str, expected_cas: int, compiled: object,
                                      authority: object, capture: object) -> str:

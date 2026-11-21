@@ -12,11 +12,13 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * States: Loading (skeleton), Empty (calm), Error-with-retry (§2.5.5).
  * NO persistent unread/read-state (B.3 deferred — no markRead/unread).
  *
- * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
+ * Composer: BROADCAST-ONLY ("Message the thread · @ to address an agent";
+ *   hint "Every participant sees messages in this thread.").
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { Archive, CircleCheck, CircleX, Info, RotateCcw, Send, TriangleAlert, UserMinus, UserPlus, type LucideIcon } from 'lucide-react';
 import { Avatar } from '@/design-system/primitives/Avatar';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
@@ -29,6 +31,8 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { StatValue } from '@/design-system/patterns/StatValue';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
+import { StatusBadge, STATUS_TONE, type TaskStatus } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi } from '@/lib/api';
@@ -85,6 +89,45 @@ function useNowMs(active: boolean): number {
     return () => clearInterval(id);
   }, [active]);
   return now;
+}
+
+/**
+ * Host-local calendar-day key ('YYYY-M-D') that advances at local midnight
+ * without any reply activity (THR-376 PR2 review R1). One timer is armed for
+ * the next local midnight and re-armed after it fires; a tab returning from
+ * the background/suspend re-checks immediately. No polling, no requests.
+ */
+function useLocalDayKey(): string {
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  const [key, setKey] = useState(today);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      // +50ms so the callback lands strictly after the local day boundary.
+      timer = setTimeout(() => {
+        setKey(today());
+        arm();
+      }, next.getTime() - now.getTime() + 50);
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      setKey(today());
+      if (timer !== undefined) clearTimeout(timer);
+      arm();
+    };
+    arm();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  return key;
 }
 
 // Segmented inbox filter (THREADS-02). 'done' = archived; 'all' = both, derived
@@ -149,21 +192,14 @@ function localeTimestamp(locale: Locale, iso: string): string {
 }
 
 /**
- * THR-376 Tt3 short message time (explicit locale, host timezone): time only
- * for today, month/day + time for earlier days, plus the year when it differs.
- * The full `localeTimestamp` stays available as the hover title.
+ * Transcript message time (explicit locale, host timezone). Time only: the
+ * THR-376 day separators carry the date. The full `localeTimestamp` stays
+ * available as the hover title.
  */
-function shortLocaleTimestamp(locale: Locale, iso: string, now: Date = new Date()): string {
+function messageTime(locale: Locale, iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const time: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(locale, time);
-  return d.toLocaleString(locale, {
-    ...time,
-    month: 'short',
-    day: 'numeric',
-    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
-  });
+  return d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
 }
 
 /**
@@ -219,33 +255,24 @@ function isActiveTaskStatus(status: string): boolean {
   return ACTIVE_TASK_STATUSES.has(status);
 }
 
-/**
- * Tint token pair for a linked-task chip (THR-061 a-thread-detail). Mirrors the
- * shared StatusBadge status→token mapping so the two surfaces read the same,
- * but packs the status word + id into ONE compact chip (which StatusBadge can't
- * express). Active states get a colored fill; settled terminals stay muted.
- */
-function taskChipClass(status: string): string {
-  switch (status) {
-    case 'in_progress':
-    case 'completed':
-      return 'bg-tier-green-tint text-status-open';
-    case 'pending':
-      return 'bg-tier-yellow-tint text-status-archiving';
-    case 'escalated':
-    case 'blocked':
-      return 'bg-tier-red-tint text-status-escalated';
-    case 'failed':
-      return 'bg-tier-red-tint text-status-abandoned';
-    default: // cancelled, superseded, archived, unknown
-      return 'border-border-default text-status-archived border';
-  }
-}
+// THR-376 rail section pattern (mockup .rail-lbl / .rail-link / .rail-row).
+// .rail-lbl: 11px/600 uppercase ink-2 — the shared eyebrow recipe.
+const RAIL_LABEL = 'text-eyebrow text-text-secondary mb-2 uppercase';
+const RAIL_LINK =
+  'border-border-default text-caption flex items-center gap-2 rounded-sm border px-2.5 py-1.75 transition-colors';
+const RAIL_ROW = 'text-body-sm flex items-center justify-between gap-2 py-1.25';
 
-// Chip status word — renders the stored status verbatim so the
-// founder sees the REAL stored status, not a paraphrase.
-function taskStatusLabel(status: string): string {
-  return status;
+/**
+ * Linked-task status pill: the shared StatusBadge (status → tone map), so the
+ * rail reads the same as Tasks/Jobs. A status outside the known task
+ * vocabulary renders verbatim in the neutral tone rather than guessing.
+ */
+function LinkedTaskStatus({ status }: { status: string }): JSX.Element {
+  return status in STATUS_TONE ? (
+    <StatusBadge status={status as TaskStatus} />
+  ) : (
+    <StatusBadge tone="neutral" label={status} />
+  );
 }
 
 /**
@@ -1067,22 +1094,25 @@ export function ThreadsPage(): JSX.Element {
               disabled={activeThread.data?.status !== 'open'}
               pending={submissionPending}
               errorMessage={composerError !== null ? renderThreadError(composerError, t) : null}
-              helper={t('threads.page.composer.helper')}
+              helper={t('threads.page.composer.placeholder')}
+              hint={t('threads.page.composer.hint')}
               labels={{
                 closedPlaceholder: t('threads.page.composer.closed'),
                 attachFiles: t('threads.page.composer.attach'),
                 textareaAria: t('threads.page.composer.textareaAria'),
                 send: t('threads.page.composer.send'),
                 sendTitle: t('threads.page.composer.sendTitle'),
+                stop: t('threads.page.composer.stop'),
                 abortReply: t('threads.page.composer.abort'),
                 aborting: t('threads.page.composer.aborting'),
                 removeAttachment: t('threads.page.composer.removeAttachment'),
                 mentionList: t('threads.newThread.mentionList'),
               }}
+              locale={locale}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}
-              // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
+              // "Stop" (abort replies) lives INSIDE the input box (THR-099 Phase A).
               // Renders only while replies are in flight; one click aborts EVERY
               // in-flight reply (thread-level mutation, unchanged).
               abortReplies={{
@@ -1220,16 +1250,20 @@ function DetailColumn({
   const freshTokens = useThreadFreshTokens(threadId);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
-  const backNav = (
-    <div className="bg-surface-sunken px-4 pt-3">
-      <Link
-        to={backHref}
-        className="text-text-muted hover:text-text-primary text-xs transition-colors"
-      >
-        {t('threads.page.detail.back')}
-      </Link>
-    </div>
+  // THR-376: mockup .crumb — chevron + "All threads", rendered inside the
+  // header block when the thread is loaded and on its own row otherwise.
+  const crumb = (
+    <Link
+      to={backHref}
+      className="text-caption text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 font-medium transition-colors"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+      {t('threads.page.detail.back')}
+    </Link>
   );
+  const backNav = <div className="px-3.5 pt-4 sm:px-7">{crumb}</div>;
 
   // Loading skeleton
   if (loading) {
@@ -1290,65 +1324,76 @@ function DetailColumn({
           stream and rail keep their own overflow-auto; nothing functional
           changes — presentational cap only. */}
       <div className="max-w-content mx-auto flex min-h-0 w-full flex-1 flex-col">
-      {backNav}
-      <ThreadHeader
-        threadId={thread.thread_id}
-        subject={thread.subject}
-        status={threadStatusOrFallback(thread.status)}
-        participants={thread.participants}
-        participantLabels={thread.participants.map((id, index) => <span key={id}>{index > 0 && ", "}<IdentityName canonicalId={id} founderNameOnly /></span>)}
-        archiveSummary={thread.summary}
-        dreamOriginated={isDreamOriginated}
-        renaming={renaming}
-        renameDraft={renameDraft}
-        onRenameDraftChange={onRenameDraftChange}
-        onRenameSave={onRenameSave}
-        onRenameCancel={onRenameCancel}
-        renameError={renameError}
-        renameSaving={renameSaving}
-        labels={{
-          statusOpen: t('threads.page.header.statusOpen'),
-          statusArchived: t('threads.page.header.statusArchived'),
-          noParticipants: t('threads.page.header.noParticipants'),
-          archiveSummary: t('threads.page.header.archiveSummary'),
-          titleInput: t('threads.page.header.titleInput'),
-          save: t('threads.page.header.save'),
-          cancel: t('threads.page.header.cancel'),
-          dreamBadge: t('threads.page.dreamBadge'),
-        }}
-        actions={
-          <div className="flex flex-wrap items-center gap-1">
-            {/* Invite moved into the Participants rail (a-thread-detail);
-                the header carries only Archive + archived-thread affordances.
-                THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
-                routing directly without duplicating actions in a menu. */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onRenameStart}
-              disabled={renaming}
-              title={t('threads.page.action.renameTitle')}
-            >
-              {t('threads.page.action.rename')}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onTogglePin(!thread.pinned)}
-              disabled={pinPending}
-              aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-              title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-            >
-              {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>{t('threads.page.action.archive')}</Button>
-            {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
-          </div>
-        }
-      />
-      <PinErrorBanner message={pinError} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
         <div className="flex min-h-64 min-w-0 shrink-0 flex-col md:min-h-0 md:flex-1">
+          {/* THR-376 mockup .td-grid: the header (.td-head) sits at the top of
+              the conversation column, so the rail runs the full height. */}
+          <ThreadHeader
+            threadId={thread.thread_id}
+            subject={thread.subject}
+            status={threadStatusOrFallback(thread.status)}
+            participants={thread.participants}
+            crumb={crumb}
+            // Count of the messages loaded for this thread (THR-376 .td-sub).
+            // null while the transcript is still loading: the sub-line shows
+            // the thread id alone, never the raw participant-id fallback.
+            messageCount={messagesLoading ? null : t('threads.page.header.messageCount', { count: messages.length })}
+            archiveSummary={thread.summary}
+            dreamOriginated={isDreamOriginated}
+            renaming={renaming}
+            renameDraft={renameDraft}
+            onRenameDraftChange={onRenameDraftChange}
+            onRenameSave={onRenameSave}
+            onRenameCancel={onRenameCancel}
+            renameError={renameError}
+            renameSaving={renameSaving}
+            labels={{
+              statusOpen: t('threads.page.header.statusOpen'),
+              statusArchived: t('threads.page.header.statusArchived'),
+              noParticipants: t('threads.page.header.noParticipants'),
+              archiveSummary: t('threads.page.header.archiveSummary'),
+              titleInput: t('threads.page.header.titleInput'),
+              save: t('threads.page.header.save'),
+              cancel: t('threads.page.header.cancel'),
+              dreamBadge: t('threads.page.dreamBadge'),
+            }}
+            actions={
+              <div className="flex flex-wrap items-center gap-1">
+                {/* Invite moved into the Participants rail (a-thread-detail);
+                    the header carries only Archive + archived-thread affordances.
+                    THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
+                    routing directly without duplicating actions in a menu. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onRenameStart}
+                  disabled={renaming}
+                  title={t('threads.page.action.renameTitle')}
+                >
+                  {t('threads.page.action.rename')}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onTogglePin(!thread.pinned)}
+                  disabled={pinPending}
+                  aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                  title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                >
+                  {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+                </Button>
+                {/* Mockup .btn.btn-sm: outlined small button with the archive icon. */}
+                <Button variant="outline" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+                    <path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4" />
+                  </svg>
+                  {t('threads.page.action.archive')}
+                </Button>
+                {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
+              </div>
+            }
+          />
+          <PinErrorBanner message={pinError} />
           <div className="max-h-96 min-h-32 flex-1 overflow-auto md:max-h-none md:min-h-0">
             <ThreadDetailTranscript
               messages={messages}
@@ -1359,67 +1404,84 @@ function DetailColumn({
               replyDelivery={replyDelivery}
             />
           </div>
-          <footer className="border-border-default bg-surface-sunken shrink-0 border-t p-3">
-            {composer}
+          {/* THR-376 .composer: border-top wrapper, padding 12/28/16 (14px sides
+              when narrow), content centred in the same 768px column as the
+              transcript (PR2 container-query padding, max-w-3xl). */}
+          <footer className="border-border-default @container shrink-0 border-t">
+            <div className="px-3.5 pt-3 pb-4 @xl:px-7">
+              <div className="mx-auto w-full max-w-3xl min-w-0">{composer}</div>
+            </div>
           </footer>
         </div>
         {/* Stack properties below the conversation on narrow screens; md restores
-            the 244px rail. Both panes stay mounted with every control. */}
+            the 300px rail (THR-376 mockup .td-grid `1fr 300px`, .rail padding 20,
+            sections 22px apart). Both panes stay mounted with every control. */}
         <aside
           aria-label={t('threads.page.rail.aria')}
-          className="border-border-default bg-surface-sunken flex w-full min-w-0 shrink-0 flex-col gap-3 overflow-auto border-t p-4 md:w-rail md:border-t-0 md:border-l"
+          className="border-border-default md:w-rail-wide flex w-full min-w-0 shrink-0 flex-col gap-5.5 overflow-auto border-t p-5 md:border-t-0 md:border-l"
         >
-          {/* Participants — LED + mono name + latest-response status (THR-061
-              a-thread-detail .prow). Status is derived from responder_status
-              (honest); the founder row shows the current name alone. Remove ✕ preserved. */}
+          {/* Participants — mockup .prow: 7px LED + mono 12px name + 11.5px
+              latest-response status. Status is derived from responder_status
+              (honest); the founder row carries a "founder" label because the
+              client knows the canonical `founder` id. No idle fallback. The
+              remove control is a 22px icon button revealed on row hover or
+              keyboard focus at md+ (always visible when the rail stacks); it
+              stays in the tab order and keeps its accessible name. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.participants')}</h3>
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.participants')}</h3>
             {thread.participants.length > 0 ? (
-              <ul className="space-y-0.5">
+              <ul>
                 {thread.participants.map((p) => {
                   // Latest responder state drives BOTH the LED color and the
                   // status label (honest, derived — no fabrication). The
-                  // founder shows their current name alone (canonical ID when
-                  // unnamed/unavailable) with no redundant role label.
+                  // founder shows their current name (canonical ID when
+                  // unnamed/unavailable).
                   const respStatus = statusByAgent.get(p) ?? null;
                   const led = participantLed(p, respStatus);
-                  const statusLabel = p !== 'founder' && respStatus ? responderStatusLabel(respStatus, t) : null;
+                  const statusLabel =
+                    p === 'founder'
+                      ? t('threads.page.rail.founderRole')
+                      : respStatus
+                        ? responderStatusLabel(respStatus, t)
+                        : null;
                   const displayName = <IdentityName canonicalId={p} founderNameOnly />;
                   return (
-                    <li key={p} className="flex items-center gap-2 py-1">
-                      <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
-                      <span className="text-text-primary truncate text-xs font-medium">{displayName}</span>
-                      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                        {statusLabel && <span className="text-text-muted text-caption">{statusLabel}</span>}
-                        {open && p !== 'founder' && (
-                          <button
-                            type="button"
-                            aria-label={t('threads.page.rail.removeParticipant', { name: p })}
-                            title={t('threads.page.rail.removeParticipant', { name: p })}
-                            onClick={() => onRemoveParticipant(p)}
-                            className="text-text-muted hover:text-feedback-danger rounded-sm px-1 text-xs leading-none transition-colors"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </span>
+                    <li key={p} className="group text-body-sm flex items-center gap-2.25 py-1.5">
+                      <span aria-hidden="true" className={`size-1.75 shrink-0 rounded-full ${led}`} />
+                      <span className="text-text-primary text-caption min-w-0 truncate font-mono">{displayName}</span>
+                      {statusLabel && (
+                        <span className="text-text-secondary text-task-meta ml-auto shrink-0">{statusLabel}</span>
+                      )}
+                      {open && p !== 'founder' && (
+                        <button
+                          type="button"
+                          aria-label={t('threads.page.rail.removeParticipant', { name: p })}
+                          title={t('threads.page.rail.removeParticipant', { name: p })}
+                          onClick={() => onRemoveParticipant(p)}
+                          className={`${statusLabel ? 'ml-1.5' : 'ml-auto'} text-text-secondary hover:bg-danger-soft hover:text-feedback-danger focus-visible:ring-ring inline-flex size-5.5 shrink-0 items-center justify-center rounded-sm transition-opacity focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none md:opacity-0 md:group-hover:opacity-100`}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="size-3.25">
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
                     </li>
                   );
                 })}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.none')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.none')}</p>
             )}
-            {/* Invite participant — moved from the header into the rail to
-                match a-thread-detail. Open-thread only; opens the InviteDialog. */}
+            {/* Invite participant — mockup .rail-btn (dashed, full-width,
+                left-aligned). Open-thread only; opens the InviteDialog. */}
             {open && (
               <button
                 type="button"
                 onClick={onInvite}
                 title={t('threads.page.rail.inviteTitle')}
-                className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors"
+                className="border-border-strong text-caption text-text-secondary hover:border-accent-default hover:bg-accent-soft hover:text-accent-text focus-visible:ring-ring mt-1.5 flex w-full items-center justify-start gap-1.75 rounded-sm border border-dashed px-2.5 py-1.75 font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="size-3.5 shrink-0">
                   <circle cx="9" cy="8" r="3" />
                   <path d="M3.5 20a5.5 5.5 0 0110 0M18 8v6M15 11h6" />
                 </svg>
@@ -1436,98 +1498,92 @@ function DetailColumn({
               responder strips keep terminal history. */}
           {replyDelivery.length > 0 && (
             <div aria-label={t('threads.page.rail.replyDelivery')}>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
-                {t('threads.page.rail.replyDelivery')}
-              </h3>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.replyDelivery')}</h3>
               <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
             </div>
           )}
 
-          {/* Linked tasks — compact COLORED CHIPS (status word + id in one
-              pill), THR-061 a-thread-detail. ACTIVE tasks
-              (in_progress/pending/escalated/blocked) sort to the top so the
-              head of the rail matches the design; server order is preserved
-              within each group (stable sort). ALL real linked tasks are shown —
-              nothing is dropped (honesty fence; the design sample has 2, real
-              threads have ~42). The chip list is capped to a bounded height with
-              an INTERNAL scroll so a busy thread's task list cannot push the
-              "This thread / Fresh tokens" panel below the fold — every chip stays
-              rendered and reachable by scrolling within the cap (LAYOUT bound, not
-              a data cull). The header count signals when there are more than fit.
-              Whether to collapse to active-only behind a "show all" expander
-              remains a product question flagged in the PR. */}
+          {/* Linked tasks — mockup .rail-link: bordered rows carrying the
+              shared StatusBadge + task EntityId (IdBadge), linking to the task
+              as before. No task title (not on the payload). ACTIVE tasks
+              (in_progress/pending/escalated/blocked) sort to the top; server
+              order is preserved within each group (stable sort). ALL real
+              linked tasks are shown — nothing is dropped. The list is capped to
+              a bounded height with an INTERNAL scroll so a busy thread's task
+              list cannot push "This thread" below the fold (layout bound, not
+              a data cull); the header count signals when there are more. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+            <h3 className={RAIL_LABEL}>
               {t('threads.page.rail.linkedTasks')}
               {threadTasks.data && threadTasks.data.length > 0 && (
                 <span className="text-text-disabled ml-1 tabular-nums normal-case">({formatCountFor(locale, threadTasks.data.length)})</span>
               )}
             </h3>
             {threadTasks.isLoading ? (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksLoading')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.tasksLoading')}</p>
             ) : threadTasks.isError ? (
-              <p className="text-feedback-danger text-xs">{t('threads.page.rail.tasksError')}</p>
+              <p className="text-feedback-danger text-body-sm">{t('threads.page.rail.tasksError')}</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              <ul className="flex max-h-24 flex-col gap-1.5 overflow-y-auto pr-1">
+              <ul className="flex max-h-44 flex-col gap-1.5 overflow-y-auto">
                 {[...threadTasks.data]
                   .sort(
                     (a, b) =>
                       (isActiveTaskStatus(a.status) ? 0 : 1) -
                       (isActiveTaskStatus(b.status) ? 0 : 1),
                   )
-                  .map((t) => (
-                    // Compact "status - current task ID" pill (founder THR-324):
-                    // no secondary chain-origin line; full status and ID wrap
-                    // rather than truncate in a narrow rail.
-                    <li
-                      key={t.id}
-                      className={`text-mono-sm flex w-full flex-wrap items-center gap-x-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
-                    >
-                      {isActiveTaskStatus(t.status) && (
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
-                      )}
-                      <span className="font-semibold">{taskStatusLabel(t.status)}</span>
-                      <span className="opacity-80">-</span>
-                      {slug ? (
-                        <Link to={`/orgs/${slug}/tasks/${t.id}`} className="font-mono opacity-80 hover:underline">
-                          {t.id}
-                        </Link>
-                      ) : (
-                        <span className="font-mono opacity-80">{t.id}</span>
-                      )}
-                    </li>
-                  ))}
+                  .map((t) => {
+                    const row = (
+                      <>
+                        <LinkedTaskStatus status={t.status} />
+                        <IdBadge id={t.id} kind="task" />
+                      </>
+                    );
+                    return (
+                      <li key={t.id}>
+                        {slug ? (
+                          <Link
+                            to={`/orgs/${slug}/tasks/${t.id}`}
+                            className={`${RAIL_LINK} hover:bg-surface-sunken focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none`}
+                          >
+                            {row}
+                          </Link>
+                        ) : (
+                          <div className={RAIL_LINK}>{row}</div>
+                        )}
+                      </li>
+                    );
+                  })}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksEmpty')}</p>
+              <p className="text-text-muted text-body-sm">{t('threads.page.rail.tasksEmpty')}</p>
             )}
           </div>
 
-          {/* This thread — meta card (THR-061 a-thread-detail). Fresh tokens ·
-              Cost · Opened. "Fresh tokens" is the REAL per-thread fresh/uncached
-              input total, wired over the existing tokens rollup and OMITTED when
-              the thread has no recorded usage (never a fabricated figure). Cost
-              stays a static honest "not metered" fence — no dollar meter exists
-              on main, so no number is invented. Status is shown in the header
+          {/* This thread — mockup .rail-row (13px, tabular numerals). Fresh
+              tokens · Cost · Opened. "Fresh tokens" is the REAL per-thread
+              fresh/uncached input total, wired over the existing tokens rollup
+              and OMITTED when the thread has no recorded usage (never a
+              fabricated figure). Cost stays a static honest "not metered" fence
+              — no dollar meter exists on main. Status is shown in the header
               pill, so it is not duplicated here. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.thisThread')}</h3>
-            <dl className="space-y-1">
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.thisThread')}</h3>
+            <dl>
               {typeof freshTokens.data === 'number' && (
-                <div className="flex items-center justify-between gap-2">
-                  <dt className="text-text-muted text-xs">{t('threads.page.rail.freshTokens')}</dt>
-                  <dd className="text-text-secondary text-xs">
+                <div className={RAIL_ROW}>
+                  <dt className="text-text-secondary">{t('threads.page.rail.freshTokens')}</dt>
+                  <dd className="text-text-primary tabular-nums">
                     <StatValue value={freshTokens.data} align="inline" locale={locale} />
                   </dd>
                 </div>
               )}
-              <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">{t('threads.page.rail.cost')}</dt>
-                <dd className="text-text-disabled text-xs">{t('threads.page.rail.notMetered')}</dd>
+              <div className={RAIL_ROW}>
+                <dt className="text-text-secondary">{t('threads.page.rail.cost')}</dt>
+                <dd className="text-text-primary tabular-nums">{t('threads.page.rail.notMetered')}</dd>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">{t('threads.page.rail.opened')}</dt>
-                <dd className="text-text-secondary text-xs">
+              <div className={RAIL_ROW}>
+                <dt className="text-text-secondary">{t('threads.page.rail.opened')}</dt>
+                <dd className="text-text-primary tabular-nums">
                   {new Date(thread.started_at).toLocaleDateString(locale, { month: 'short', day: 'numeric' })}
                 </dd>
               </div>
@@ -1539,12 +1595,12 @@ function DetailColumn({
               text entries (the transcript bubbles carry the download links). */}
           {artifacts.length > 0 && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.artifacts')}</h3>
-              <ul className="space-y-1">
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.artifacts')}</h3>
+              <ul>
                 {artifacts.map((a) => (
                   <li
                     key={a.thread_attachment_id ?? a.artifact_name}
-                    className="text-text-secondary block truncate text-xs"
+                    className="text-text-secondary text-body-sm block truncate py-0.5"
                     title={a.display_name}
                   >
                     {a.display_name}
@@ -1556,14 +1612,14 @@ function DetailColumn({
 
           {/* Thread ID */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.id')}</h3>
-            <p className="text-text-secondary font-mono text-xs">{thread.thread_id}</p>
+            <h3 className={RAIL_LABEL}>{t('threads.page.rail.id')}</h3>
+            <p className="text-text-secondary text-caption font-mono">{thread.thread_id}</p>
           </div>
 
           {/* Dream marker */}
           {isDreamOriginated && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.origin')}</h3>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.origin')}</h3>
               <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold">
                 <CrescentMoonBadge className="h-3 w-3" label={t('threads.page.dreamBadge')} />
                 {t('threads.page.rail.dream')}
@@ -1574,8 +1630,8 @@ function DetailColumn({
           {/* Archive summary */}
           {thread.summary && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.summary')}</h3>
-              <p className="text-text-secondary text-xs leading-relaxed">{thread.summary}</p>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.summary')}</h3>
+              <p className="text-text-secondary text-body-sm leading-relaxed">{thread.summary}</p>
             </div>
           )}
         </aside>
@@ -1602,6 +1658,8 @@ interface TranscriptProps {
 function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
   const { t, locale } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
+  // Re-renders the day separators when the local date rolls over.
+  const todayKey = useLocalDayKey();
 
   // Live pair-level obligations from the STORE projection (queued/running).
   // These replace inferred per-message invocation rows for conversational
@@ -1664,152 +1722,434 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     );
   }
 
+  const rows = buildTranscriptRows(messages);
+  const formatTime = (iso: string) => messageTime(locale, iso);
+  const formatTitle = (iso: string) => localeTimestamp(locale, iso);
+
   return (
-    <div className="flex h-full flex-col gap-2 overflow-auto px-4 py-3">
-      {messages.map((m) => {
-        const variant = messageVariant(m);
-        return (
-          <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System rows — full-width separator above an inline, wrapping
-                event description and trailing metadata, not a chat bubble.
-                Terminal responder history (incl. a system-row-anchored REPLY
-                range that settled) renders as the same light strip below the
-                divider (TASK-5553): ResponderStatusStrip filters to terminal
-                states only, so in-flight rows never duplicate the tail
-                TypingBubbles. */}
-            {variant === 'system' ? (
-              <>
-                <SystemDivider
-                  timestamp={m.created_at}
-                  systemPayload={m.system_payload}
-                  slug={slug}
-                />
-                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
-              </>
-            ) : (
-              // Turn = per-sender avatar square + chat-bubble body column
-              // (THR-061 a-thread-detail .turn). The responder strip aligns
-              // under the bubble because it lives inside the body column.
-              <div className="flex gap-3">
-                <TurnAvatar name={m.speaker} />
-                <div className="min-w-0 flex-1">
-                  <MessageBubble
-                    variant={variant}
-                    seq={m.seq}
-                    speaker={m.speaker}
-                    speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
-                    speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+    // THR-376 mockup .stream / .stream-inner: a centred column (nearest
+    // token max-w-3xl = 768px; mockup 780px) with 18px between turns. The
+    // padding follows the COLUMN width (container query), not the viewport:
+    // with both rails open at 768-800px the column is only ~250px wide.
+    // `relative` makes this scroller the containing block for the sr-only
+    // (position:absolute) speaker/system-event labels; without it they escape
+    // to the initial containing block and window-scroll the whole app (MEM-116).
+    <div className="@container relative h-full overflow-auto">
+      <div className="px-3.5 pt-1 pb-5 @xl:px-7 @xl:pt-2 @xl:pb-7">
+      <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col">
+        {rows.map((row, i) => {
+          if (row.type === 'day') {
+            return <DaySeparator key={`day-${row.key}`} iso={row.iso} todayKey={todayKey} />;
+          }
+          const m = row.message;
+          const variant = messageVariant(m);
+          const prev = rows[i - 1];
+          const prevIsEvent = prev?.type === 'message' && isEventRow(prev.message);
+          const key = `${m.seq}-${m.speaker}-${m.kind}`;
+          if (variant === 'system' || variant === 'decline') {
+            // System events and declines are quiet centred chips (mockup
+            // .evt); consecutive events sit 6px apart, otherwise 16px.
+            // Terminal/working responder receipts stay under the event.
+            return (
+              <div key={key} className={prevIsEvent ? 'mt-1.5' : 'mt-4'}>
+                {variant === 'decline' ? (
+                  <DeclineEvent message={m} formatTime={formatTime} formatTitle={formatTitle} />
+                ) : (
+                  <SystemEvent
                     timestamp={m.created_at}
-                    body={m.body_markdown}
-                    declineReason={m.decline_reason}
-                    attachments={m.attachments}
-                    labels={{
-                      declined: t('threads.page.message.declined'),
-                      mermaidLoading: t('common.mermaidLoading'),
-                      systemEvent: t('threads.page.system.event'),
-                    }}
-                    formatTimestamp={(iso) => shortLocaleTimestamp(locale, iso)}
-                    formatTimestampTitle={(iso) => localeTimestamp(locale, iso)}
-                    onAttachmentDownload={slug && threadId ? (attachment) => {
-                      if (attachment.thread_attachment_id) {
-                        artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
-                      } else {
-                        artifactsApi.downloadArtifact(slug, attachment.artifact_name);
-                      }
-                    } : undefined}
+                    systemPayload={m.system_payload}
+                    slug={slug}
+                    formatTime={formatTime}
+                    formatTitle={formatTitle}
                   />
-                  {m.kind === 'message' && (
-                    <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
-                  )}
-                </div>
+                )}
+                <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} align="center" />
               </div>
-            )}
-          </div>
-        );
-      })}
-      {pairLive.map((e) => (
-        // Same avatar-indented turn structure as real messages above so the
-        // in-flight bubble's left edge lines up with the message bubbles
-        // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-pair-${e.agent_name}`} className="flex gap-3">
-          <TurnAvatar name={e.agent_name} />
-          <div className="min-w-0 flex-1">
-            <TypingBubble
-              agentName={e.agent_name}
-              agentLabel={<IdentityName canonicalId={e.agent_name} />}
-              status={e.state === 'running' ? 'working' : 'queued'}
-              startedAt={e.started_at}
-              nowMs={nowMs}
-              // Honest store-projected caption: queued carries the coalesced
-              // count + inclusive range (never an active-subprocess claim),
-              // running carries the claimed immutable range.
-              caption={replyDeliveryCaption(e, t, nowMs)}
-              ariaLabel={typingAria(e.agent_name, e.state === 'running')}
-              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
-              // founder seq57). The generic `trailing` slot is intentionally left
-              // unused here — no abort control renders beside the replying row.
+            );
+          }
+          const bubble = (
+            <MessageBubble
+              variant={variant}
+              seq={m.seq}
+              speaker={m.speaker}
+              speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
+              speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+              timestamp={m.created_at}
+              body={m.body_markdown}
+              declineReason={m.decline_reason}
+              attachments={m.attachments}
+              labels={{
+                declined: t('threads.page.message.declined'),
+                mermaidLoading: t('common.mermaidLoading'),
+                systemEvent: t('threads.page.system.event'),
+              }}
+              formatTimestamp={formatTime}
+              formatTimestampTitle={formatTitle}
+              onAttachmentDownload={slug && threadId ? (attachment) => {
+                if (attachment.thread_attachment_id) {
+                  artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
+                } else {
+                  artifactsApi.downloadArtifact(slug, attachment.artifact_name);
+                }
+              } : undefined}
             />
-          </div>
-        </div>
-      ))}
-      {inferredInFlight.map((s) => (
-        // Same avatar-indented turn structure as real messages above so the
-        // in-flight bubble's left edge lines up with the message bubbles
-        // (avatar + gap), instead of sitting flush-left / full-width.
-        <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="flex gap-3">
-          <TurnAvatar name={s.agent_name} />
-          <div className="min-w-0 flex-1">
-            <TypingBubble
-              agentName={s.agent_name}
-              agentLabel={<IdentityName canonicalId={s.agent_name} />}
-              status={s.status as 'queued' | 'working'}
-              startedAt={s.started_at}
+          );
+          const receipts = m.kind === 'message' && (
+            <ResponderStatusStrip
+              statuses={m.responder_status ?? []}
               nowMs={nowMs}
-              caption={
-                s.status === 'working'
-                  ? t('threads.page.typing.replying', {
-                      elapsed: formatElapsed(s.started_at, nowMs ?? Date.now()),
-                    }).trimEnd()
-                  : t('threads.page.typing.queued')
-              }
-              ariaLabel={typingAria(s.agent_name, s.status === 'working')}
-              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
-              // founder seq57). The generic `trailing` slot is intentionally left
-              // unused here — no abort control renders beside the replying row.
+              align={variant === 'founder' ? 'end' : 'start'}
             />
+          );
+          if (variant === 'founder') {
+            // Founder turn (mockup .mine): right-aligned, no avatar, receipt
+            // pills right-aligned under the bubble.
+            return (
+              <div key={key} className="mt-4.5 min-w-0">
+                {bubble}
+                {receipts}
+              </div>
+            );
+          }
+          // Agent turn (mockup .msg): avatar + card column; the receipt
+          // strip lives inside the column so it aligns under the card.
+          return (
+            <div key={key} className="mt-4.5 flex min-w-0 gap-3">
+              <TurnAvatar name={m.speaker} />
+              <div className="min-w-0 flex-1">
+                {bubble}
+                {receipts}
+              </div>
+            </div>
+          );
+        })}
+        {pairLive.map((e) => (
+          // Same avatar-indented turn structure as agent turns above so the
+          // in-flight bubble lines up with the agent cards.
+          <div key={`typing-pair-${e.agent_name}`} className="mt-4.5 flex min-w-0 gap-3">
+            <TurnAvatar name={e.agent_name} />
+            <div className="min-w-0 flex-1">
+              <TypingBubble
+                agentName={e.agent_name}
+                agentLabel={<IdentityName canonicalId={e.agent_name} />}
+                status={e.state === 'running' ? 'working' : 'queued'}
+                startedAt={e.started_at}
+                nowMs={nowMs}
+                // Honest store-projected caption: queued carries the coalesced
+                // count + inclusive range (never an active-subprocess claim),
+                // running carries the claimed immutable range.
+                caption={replyDeliveryCaption(e, t, nowMs)}
+                ariaLabel={typingAria(e.agent_name, e.state === 'running')}
+                // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+                // founder seq57). The generic `trailing` slot is intentionally left
+                // unused here — no abort control renders beside the replying row.
+              />
+            </div>
           </div>
-        </div>
-      ))}
-      <div ref={endRef} />
+        ))}
+        {inferredInFlight.map((s) => (
+          <div key={`typing-inf-${s.agent_name}-${s.purpose}`} className="mt-4.5 flex min-w-0 gap-3">
+            <TurnAvatar name={s.agent_name} />
+            <div className="min-w-0 flex-1">
+              <TypingBubble
+                agentName={s.agent_name}
+                agentLabel={<IdentityName canonicalId={s.agent_name} />}
+                status={s.status as 'queued' | 'working'}
+                startedAt={s.started_at}
+                nowMs={nowMs}
+                caption={
+                  s.status === 'working'
+                    ? t('threads.page.typing.replying', {
+                        elapsed: formatElapsed(s.started_at, nowMs ?? Date.now()),
+                      }).trimEnd()
+                    : t('threads.page.typing.queued')
+                }
+                ariaLabel={typingAria(s.agent_name, s.status === 'working')}
+                // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+                // founder seq57). The generic `trailing` slot is intentionally left
+                // unused here — no abort control renders beside the replying row.
+              />
+            </div>
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      </div>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  System divider — full-width rule above wrapping event text      */
+/*  Day separators (THR-376 mockup .day)                               */
 /* ------------------------------------------------------------------ */
 
-interface SystemDividerProps {
+type TranscriptRow =
+  | { type: 'day'; key: string; iso: string }
+  | { type: 'message'; message: ThreadMessage };
+
+/** Host-local calendar-day key for a timestamp ('' when unparseable). */
+function localDayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/**
+ * Interleave a day separator before the first message of every host-local
+ * calendar day, computed client-side from created_at. Messages with an
+ * unparseable timestamp never open a new day.
+ */
+function buildTranscriptRows(messages: ThreadMessage[]): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  let lastDay = '';
+  for (const m of messages) {
+    const day = localDayKey(m.created_at);
+    if (day && day !== lastDay) {
+      rows.push({ type: 'day', key: day, iso: m.created_at });
+      lastDay = day;
+    }
+    rows.push({ type: 'message', message: m });
+  }
+  return rows;
+}
+
+function DaySeparator({ iso }: { iso: string; todayKey: string }): JSX.Element {
+  // todayKey (from useLocalDayKey) changes at local midnight; the new prop
+  // re-renders this separator so the label is recomputed against the clock.
+  const { t, locale } = useTranslation();
+  const d = new Date(iso);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const date = d.toLocaleDateString(locale, {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
+  const label =
+    d.toDateString() === now.toDateString()
+      ? t('threads.page.day.today', { date })
+      : d.toDateString() === yesterday.toDateString()
+        ? t('threads.page.day.yesterday', { date })
+        : date;
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      className="text-caption text-text-secondary mt-5.5 mb-1.5 flex items-center gap-3 font-semibold"
+    >
+      <span aria-hidden="true" className="bg-border-default h-px flex-1" />
+      <span aria-hidden="true" className="shrink-0">{label}</span>
+      <span aria-hidden="true" className="bg-border-default h-px flex-1" />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  System events — centred chips (THR-376 mockup .evt / .chip-evt)    */
+/* ------------------------------------------------------------------ */
+
+function isEventRow(m: ThreadMessage): boolean {
+  return m.kind === 'system' || m.kind === 'decline';
+}
+
+const EVENT_CHIP =
+  'text-caption text-text-secondary bg-surface-sunken border-border-default inline-flex max-w-full min-w-0 items-center gap-1.75 rounded-lg border py-0.75 pr-2.75 pl-2.25';
+const EVENT_TIME = 'text-mono-sm text-text-secondary shrink-0 font-mono';
+const EVENT_AGENT = 'text-mono-sm text-text-primary font-mono font-semibold';
+
+interface SystemEventProps {
   timestamp: string;
   systemPayload: Record<string, unknown> | null;
   slug?: string;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
 }
 
-function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
-  const { t, render, locale } = useTranslation();
+function SystemEvent({ timestamp, systemPayload, slug, formatTime, formatTitle }: SystemEventProps): JSX.Element {
+  const { t, render } = useTranslation();
+  const tag = String(systemPayload?.kind_tag ?? systemPayload?.event ?? '');
+  if (tag === 'task_escalated' && systemPayload) {
+    return (
+      <EscalationCard
+        payload={systemPayload}
+        slug={slug}
+        timestamp={timestamp}
+        formatTime={formatTime}
+        formatTitle={formatTitle}
+      />
+    );
+  }
   const description = describeSystem(systemPayload, slug, t, render);
+  const Icon = SYSTEM_EVENT_ICON[tag] ?? Info;
   return (
-    <div className="my-1 w-full min-w-0" title={localeTimestamp(locale, timestamp)}>
-      <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
-      <div className="text-text-muted text-mono-sm break-words font-mono">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
-          <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
-          <circle cx="9" cy="7" r="3" />
-          <path d="M22 21v-2a4 4 0 00-3-3.9" />
-        </svg>
-        <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
-        <span className="text-text-muted">{t('threads.page.system.suffix')}</span>
+    <div className="flex justify-center">
+      <span className={EVENT_CHIP}>
+        <Icon aria-hidden="true" className="text-text-muted size-3.25 shrink-0" />
+        {/* pre-wrap keeps authored line breaks/paragraphs (e.g. a
+            task_completed final_output_summary), as before the restyle. */}
+        <span className="min-w-0 break-words whitespace-pre-wrap">
+          <span className="sr-only">{t('threads.page.system.event')}: </span>
+          {description}
+        </span>
+        <time dateTime={timestamp} title={formatTitle(timestamp)} className={EVENT_TIME}>
+          {formatTime(timestamp)}
+        </time>
+      </span>
+    </div>
+  );
+}
+
+const SYSTEM_EVENT_ICON: Record<string, LucideIcon> = {
+  invited: UserPlus,
+  participant_added: UserPlus,
+  participant_removed: UserMinus,
+  archive_requested: Archive,
+  archived: Archive,
+  resumed: RotateCcw,
+  task_dispatched: Send,
+  task_completed: CircleCheck,
+  task_failed: CircleX,
+};
+
+/**
+ * Decline (kind=decline) as an attention chip (mockup .chip-evt.attn) with a
+ * "Why?" expander. The expander shows the decline_reason the client already
+ * has, verbatim; it is omitted when there is no reason.
+ */
+function DeclineEvent({
+  message,
+  formatTime,
+  formatTitle,
+}: {
+  message: ThreadMessage;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
+}): JSX.Element {
+  const { t, render } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const detailId = `decline-why-${message.seq}`;
+  const reason = message.decline_reason?.trim() || null;
+  return (
+    <>
+      <div className="flex justify-center">
+        <span className={EVENT_CHIP}>
+          <TriangleAlert aria-hidden="true" className="text-attention-text size-3.25 shrink-0" />
+          <span className="min-w-0 break-words">
+            {render('threads.page.decline.chip', {
+              agent: <span className={EVENT_AGENT}><IdentityName canonicalId={message.speaker} founderNameOnly /></span>,
+            })}
+          </span>
+          <time dateTime={message.created_at} title={formatTitle(message.created_at)} className={EVENT_TIME}>
+            {formatTime(message.created_at)}
+          </time>
+          {reason && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={detailId}
+              onClick={() => setOpen((v) => !v)}
+              className="text-info shrink-0 cursor-pointer font-semibold hover:underline"
+            >
+              {open ? t('threads.page.decline.hide') : t('threads.page.decline.why')}
+            </button>
+          )}
+        </span>
       </div>
+      {reason && (
+        <p
+          id={detailId}
+          hidden={!open}
+          className="text-caption text-text-secondary mx-auto mt-1.5 max-w-lg text-center leading-relaxed break-words whitespace-pre-wrap"
+        >
+          {reason}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * task_escalated as a card (mockup .esc): 3px attention left border, the
+ * payload reason clamped to two lines with Show more / Show less, and an
+ * Open task link. Built only from the task_escalated payload (task_id,
+ * reason); a missing field simply drops its part.
+ */
+function EscalationCard({
+  payload,
+  slug,
+  timestamp,
+  formatTime,
+  formatTitle,
+}: {
+  payload: Record<string, unknown>;
+  slug?: string;
+  timestamp: string;
+  formatTime: (iso: string) => string;
+  formatTitle: (iso: string) => string;
+}): JSX.Element {
+  const { t, render } = useTranslation();
+  const taskId = String(payload.task_id ?? '');
+  const reason = payload.reason ? String(payload.reason) : null;
+  const [open, setOpen] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const bodyRef = useRef<HTMLParagraphElement>(null);
+  const bodyId = `esc-body-${taskId || 'unknown'}-${timestamp}`;
+
+  // Show more only when the 2-line clamp actually hides text.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || open) return;
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [reason, open]);
+
+  return (
+    <div className="bg-surface-raised border-border-default border-l-attention mx-auto w-full max-w-xl rounded-md border border-l-3 px-3.5 py-2.75">
+      <div className="text-caption flex min-w-0 items-center gap-2">
+        <TriangleAlert aria-hidden="true" className="text-attention-text size-3.5 shrink-0" />
+        <span className="min-w-0 font-semibold break-words">
+          {render('threads.page.system.taskEscalated', {
+            task: <span className="font-mono">{taskId}</span>,
+          })}
+        </span>
+        <time dateTime={timestamp} title={formatTitle(timestamp)} className={`${EVENT_TIME} ml-auto`}>
+          {formatTime(timestamp)}
+        </time>
+      </div>
+      {reason && (
+        <p
+          ref={bodyRef}
+          id={bodyId}
+          className={`text-caption text-text-secondary mt-1.25 leading-relaxed break-words whitespace-pre-wrap ${open ? '' : 'line-clamp-2'}`}
+        >
+          {reason}
+        </p>
+      )}
+      {((reason && (clamped || open)) || (slug && taskId)) && (
+        <div className="text-caption mt-2 flex items-center gap-3">
+          {reason && (clamped || open) && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={bodyId}
+              onClick={() => setOpen((v) => !v)}
+              className="text-info cursor-pointer font-semibold hover:underline"
+            >
+              {open ? t('threads.page.escalation.showLess') : t('threads.page.escalation.showMore')}
+            </button>
+          )}
+          {slug && taskId && (
+            <Link to={`/orgs/${slug}/tasks/${taskId}`} className="text-info font-semibold hover:underline">
+              {t('threads.page.escalation.openTask')}
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1845,13 +2185,17 @@ function describeSystem(
     slug && taskId
       ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
       : taskId;
+  // Agent names in event chips: mono 600 ink (mockup .chip-evt b), verbatim.
+  const agentFor = (value: unknown): React.ReactNode => (
+    <span className={EVENT_AGENT}>{String(value)}</span>
+  );
   switch (tag) {
     case 'invited':
-      return t('threads.page.system.invited', { agent: String(payload.agent) });
+      return render('threads.page.system.invited', { agent: agentFor(payload.agent) });
     case 'participant_added':
-      return t('threads.page.system.participantAdded', { agent: String(payload.agent_name) });
+      return render('threads.page.system.participantAdded', { agent: agentFor(payload.agent_name) });
     case 'participant_removed':
-      return t('threads.page.system.participantRemoved', { agent: String(payload.agent_name) });
+      return render('threads.page.system.participantRemoved', { agent: agentFor(payload.agent_name) });
     case 'archive_requested':
       return t('threads.page.system.archiveRequested');
     case 'archived':

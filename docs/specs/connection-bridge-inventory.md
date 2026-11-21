@@ -1,8 +1,62 @@
 # Connection bridge command/event inventory
 
-Status: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair in this PR, 2026-11-19
+V1 inventory baseline: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair, 2026-11-19. S5 v2 has two source epochs: historical main 921f126e14d6dd5befc869ae77278134b20985ab, then PR #1769 (S5-L1 including the round-2 recovery fix), 2026-11-21.
 
 This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. **Linux: 16/19 commands implemented; Mac: 11/19 commands implemented.** Events are counted separately: Linux 2/2, Mac 1/2. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
+
+Linux Settings S2b PR-A / S4b PR-B transport inventory (TASK-18097 / TASK-18122):
+
+| Linux surface | Native implementation | Boundary / remaining owner |
+| --- | --- | --- |
+| Opt-in app scheme API target | `app_scheme_webkit.AppScheme.select_target`, `app_scheme.LocalDaemon` / `RemoteDaemon` | Native selects local, connecting/ready active remote, or none; the existing launcher still selects local. No bridge command added. |
+| Listener-free remote HTTP | `client_runtime.RemoteCall` / `RemoteResponse`, shared `remote_headers` | Existing `ClientSession.dial/release/_credential`; binary request, decoded streaming response, cancellation releases dial. Home connector unchanged. |
+| Target-bound transfers and errors | `Transfer`, `AppScheme.forward` | Shared 503/409 code envelope; selection cancels captured transfers. Main's post-forward 409 and native-pressure busy semantics differ from v2 (see S5 table). Compatibility is gated before every API transfer; candidates S5, remote window/default cutover and listener retirement S7. |
+| Host compatibility admission | `app_scheme._Target.bootstrap/reset`, `LocalDaemon`, `RemoteDaemon` | Health before local bearer bootstrap; remote through existing pinned adapter. 64 KiB / five seconds. Integer contract 1/1; invalid/missing/failed reachable health → 503 incompatible side host; min_client > 1 → side app; unreachable stays target_unreachable. No unknown case. |
+| Admission invalidation | `AppScheme.select_target/load_changed/close`, web-process loss, `RemoteDaemon.ready` | Reset on reselection, navigation, process loss, close and readiness transition. Launcher Restart/retry/reattach closes and creates a fresh local target. Same-instance remote reconnect owner must reselect or transition readiness; no such launcher callback yet. No S5 candidate switch. |
+
+## S5 v2 target contract and implementation status
+
+The new [v2 payload schema](../../protocol/native-connection-bridge.v2.json)
+and [v2 specification/status evidence](2026-11-17-web-native-bridge.md#12-settings-bridge-v2-status-errors-and-target-generation)
+define the target contract, not callable implementations. V1 is unchanged;
+the command/event totals below count v1 only. The historical Linux baseline is
+**main 921f126e** (PRs #1762, #1765, #1767); all Linux implementation rows and
+file/line citations in the S5 table refer to the later **PR #1769 source tree**
+(S5-L1 including the round-2 recovery fix). Mac is pending with no Mac work
+this wave; web is pending S5-W1. No native/live v2 acceptance is claimed.
+
+| Surface / code | Linux PR #1769 status | Mac status | Web status |
+| --- | --- | --- | --- |
+| `app.status` | Implemented S5-L1 (this PR), shared closed appState: `app_scheme_webkit.py:331–351` (`status`); trusted Main-document admission: `app_scheme_webkit.py:457–486` (`probe_document`). | Pending | Pending S5-W1 |
+| `app.stateChanged` | Implemented S5-L1 (this PR), same full status payload: `app_scheme_webkit.py:417–424` (`emit_state`). | Pending | Pending S5-W1 |
+| `app.dialogRequested` | S6-L Settings header entry delivers closed `{schema:2, dialog:"settings"}` to subscribed Main, dropping without replay when unavailable and exposing explicit Settings Retry; no target authority. Until S7-L1, the Connection button and “Access wasn't saved” badge instead open/re-present the existing native Connection window via `open_connection(None)` in default and `HAPPYRANCH_DESKTOP_APP_SCHEME=1` builds, without `app.dialogRequested`, a dialog subscription or Connection Retry. The schema retains `dialog:"connection"` for the planned topology. See [dialog event contract](2026-11-17-web-native-bridge.md#v2-dialog-request-event). | Pending; menu emission follows the same contract, no Mac work this wave | Pending S6-W1: strict payload validation, single-dialog owner gate and recovery entry; no open/closed notice |
+| `app.ownersChanged` / `app.lifecycleRequested` | Spec only S5-0c: closed schema-2 aggregate push + native close/Quit/relaunch gate request; latest admitted Main summary, correlated web keep/proceed, unknown/pending commit refusal and explicit recovery exit. S6-L/S7-L3 consume; no target/org authority. See [owner/lifecycle contract](2026-11-17-web-native-bridge.md#v2-owner-summary-and-native-lifecycle-gate). | Pending; same contract, no Mac work this wave | Pending S6-W2b: push all Main/Settings blocking counts, run the web gate and return its decision; no draft content |
+| `X-HappyRanch-Target` | Implemented S5-L1 (this PR): missing/stale generation refuses pre-forward; GET bootstrap exempt. Existing local/remote stripping retained: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:75–81` (`request_headers`), `client_runtime.py:139–151`. | Pending | Pending S5-W1 on every other scheme API request |
+| `503 no_target` | Emitted (`app_scheme_webkit.py:632–634`). | Pending | Pending S5-W1 |
+| `503 target_starting` | Emitted (`app_scheme.py:369–374,463–466`). | Pending | Pending S5-W1 |
+| `503 target_unreachable` | L-1 retained; S5-L1 post-forward failures use ordinary 502 codes: `app_scheme_webkit.py:618–756` (`forward`). | Pending | Pending S5-W1 |
+| `503 incompatible` | PR #1767 implements contract 1/1 health admission and host/app side (`app_scheme.py:319–350`). | Pending | Pending S5-W1 |
+| `503 busy` (host update_busy only) | L-4 implemented S5-L1: health update_busy only, transient and rechecked: `app_scheme.py:302–364` (`bootstrap`). | Pending | Pending S5-W1; W-1 transient/clear on success |
+| `409 target_changed` (not forwarded) | L-3 implemented S5-L1: first upstream HTTP send fence, independent of page delivery: `app_scheme_webkit.py:214–258` (`Transfer`), `app_scheme.py:173–182` (`_LocalConnection`), `app_scheme.py:159–170` (`_SendSocket`). | Pending | Pending S5-W1; W-2 mutations never auto-retry |
+| `429 too_many_requests` | Implemented S5-L1 for native cap/body cap and lock timeout; ordinary request error: `app_scheme_webkit.py:563–616` (`handle`), `app_scheme.py:302–364` (`bootstrap`). | Pending | Pending S5-W1 |
+| `499 cancelled` / stream error | L-3 implemented S5-L1: forwarded switch is 499 or a GIO stream error, never 409 or successful EOF: `app_scheme_webkit.py:618–756` (`forward`), `app_scheme_webkit.py:764–773` (`deliver`). | Pending | Pending S5-W1 |
+| Target+generation commit → cancel → event | Implemented S5-L1 under the same first-send lock: `app_scheme_webkit.py:373–389` (`_replace_target`). | Pending | Pending S5-W1 |
+| Refuse commit during non-GET / pending-unknown saves | Native gate implemented S5-L1 with named refusals: `app_scheme_webkit.py:353–371` (`select_target`). Missing owner evidence fails closed. Callable client.commitSwitch and owner registry integration remain S5-L2/S6-W2. | Pending | Pending S5-W1 / S6-W2 owner registry |
+| Reconnect/Restart compatibility and bearer | S5-L1 implemented: native health admission independent of page requests; observed transport loss requires fresh successful health/compatibility before ready, with bootstrap if needed (`app_scheme.py:302–364`). Reset clears bearer, 401 causes next-request re-bootstrap without replay: `app_scheme_webkit.py:391–410` (`refresh_status`), `app_scheme.py:198–206` (`reset`), `app_scheme.py:406–437` (`LocalDaemon.send`). | Pending | Pending S5-W1 |
+| `local.status` | Spec only S7-0: empty args; closed schema-2 `localStatusResult`, actual service/lifetime observations; Checking/Off/Fully on/Partly on/unknown, unsupported foreground. S7-L2 wires ServiceMode. See [local contract](2026-11-17-web-native-bridge.md#v2-local-service-commands). | Pending; no Mac work authorized | Pending S7-L2 local Settings; C5 this-computer scope even under remote selection |
+| `local.start` | Spec only S7-0: empty args; `localActionResult`; existing supervisor start/verified attachment, keep-running unchanged. Same local contract; one effect slot, named `busy` refusal and existing native consent. | Pending | Pending S7-L2 |
+| `local.stop` | Spec only S7-0: empty args; `localActionResult`; existing owned-service stop, interruption warning, keep-running unchanged; no remote effect. | Pending | Pending S7-L2 |
+| `local.restart` | Spec only S7-0: empty args; `localActionResult`; always-present supported service-only Restart, app/dialog stay open; compatibility recheck + existing loopback bearer bootstrap. No app relaunch/auth change. | Pending | Pending S7-L2; C6 service result/readiness/page load kept distinct |
+| `local.keepRunning.set` | Spec only S7-0: closed schema-2 `{schema:2, enabled:boolean}` → `localActionResult`; existing on/off supervisor queue and app-owned linger custody. | Pending | Pending S7-L2 |
+| `local.repair` | Spec only S7-0: empty args; `localActionResult`; existing Repair/on → `set_keep_running(true)`, not generic installation repair. | Pending | Pending S7-L2 |
+| `local.turnOff` | Spec only S7-0: empty args; `localActionResult`; existing Turn off/off → `set_keep_running(false)`, Cancel-default native warning; running service is not stopped. | Pending | Pending S7-L2 |
+| `local.update.status` | Spec only S7-0: empty args; closed schema-2 `localUpdateStatusResult` (`restart_required`, `not_detected`, `unknown`, `unsupported`); read-only best-effort hint, never compatibility proof/updater. | Pending | Pending S7-L2 |
+| `app.locale.set` | Spec only S8-0: closed schema-2 `{schema:2, locale:"en"\|"zh-CN"}` → `appLocaleSetResult`; atomic persistence acknowledged before Saved; failure keeps session choice with false; newer choice wins. Existing app.status/app.stateChanged carry locale. See [locale contract](2026-11-17-web-native-bridge.md#v2-app-locale-setter). S8-1-L wires TASK-18213 store; native menus/dialogs next app launch. | Pending; no Mac work authorized | Pending S8-1-W; live Main/dialog language, matching acknowledged Saved or session-only state |
+
+The spec's current implementation table also records each existing ordinary
+request/transport code and exact Linux source lines. V2 errors have only
+`detail.code`, plus optional `detail.side` for incompatible; existing v1
+command rejection envelopes remain separate.
 
 ## Facade and closed v1 list
 

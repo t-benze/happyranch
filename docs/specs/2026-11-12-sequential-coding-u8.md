@@ -1,5 +1,28 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
+> S7a annotation: for new generic @2 runs, U8's singular @1 task/run views are
+> superseded by additive plural/versioned reads. See the [current S7a contract](../agent-guides/contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2).
+> @1 remains explicitly historical and readable with its original bytes and
+> Final redaction. This document's delivered U8/UI and original-save recovery
+> history is preserved below; S7b owns generic UI adoption and bilingual copy.
+> @2 read hooks share the @1/original-save per-QueryClient/org admission
+> generation and abort set: a 403/404 blanks all sequential cached projections
+> and rejects pre-refusal responses/receipts. Finite 409 unavailable bodies are
+> evidence failures, not access refusals; positive-absence exceptions stay intact.
+>
+> S7b annotation (plural views): the Workflows Runs list, run detail and Task
+> banner now read only the S7a @2 projections. Every source/initiator/carrier/
+> visit run link is listed in the projection's stable run-ID order, never
+> collapsed to one. @2 runs show Running/Held/Finished, separate progress and the
+> terminal outcome only when Finished; Held always shows its localized finite
+> cause (`declared_edge` = agent-declared hold) with the original event/node/
+> visit. Outputs, outcomes and findings are labelled agent-reported; the
+> engine-authenticated label covers only native identity and terminal/outer
+> digests. @1 runs carry an explicit Historical label and the unchanged U8 @1
+> view (including R-M3-6 redaction) inside a history wrapper; Setup and @1
+> original-save custody are unchanged. See `docs/agent-guides/web-and-cli.md`
+> "S7b generic Workflows UI".
+
 > Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness) and by TASK-15595 (TASK-15588 finding: nested admitted-definition read states). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) delivered in source by TASK-15605, unsplit. U9 delivers the host Setup pointer repair and atomic reviewed-v2 public fresh-start cutover/old fresh @1/@2 refusal in source (TASK-15624; see the [U9 spec](2026-11-12-sequential-coding-u9.md)). Deployment and execution acceptance remain separate.
 > Current Source: docs/agent-guides/web-and-cli.md § U8a and § U8b; web/ARCHITECTURE.md § Sequential Workflows (U8a/U8b)
 

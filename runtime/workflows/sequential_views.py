@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal
 
 from runtime.workflows.sequential_contracts import (
     BindingClaim, Closed, Counters, DefinitionPin, InputValue, Limits, RoleRequirement,
-    RequiredInput, SettingsPin, effective_limits,
+    RequiredInput, SettingsPin, GenericDefinitionPin, effective_limits,
 )
 from runtime.workflows.sequential_definition import compile_definition, parse_result, parse_start
 from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents, _engine_rows
@@ -339,7 +339,8 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
         rows = _engine_rows(conn, 'workflow_seq_definitions', budget,
             'identity=?' if kind == 'definitions' else 'id=?',
             ('release/happyranch/coding' if kind == 'definitions' else selected,))
-        views = tuple(_definition(row, budget) for row in rows)
+        views = tuple(_definition(row, budget) for row in rows
+                      if row['compiler_pin'] == 'workflow-sequential-compiler@1')
         if kind == 'definition':
             if not views:
                 raise ProjectionRefusal('sequential_definition_not_found', 404)
@@ -348,6 +349,7 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
     if kind == 'settings':
         rows = _engine_rows(conn, 'workflow_seq_settings', budget, 'org_slug=? AND definition_identity=?',
                             (org.slug, selected))
+        rows = [row for row in rows if _decode(row['snapshot_bytes'], budget)['format'] == 'workflow-sequential-settings-storage@1']
         if not rows:
             raise ProjectionRefusal('sequential_settings_not_found', 404)
         row = max(rows, key=lambda item: item['generation'])
@@ -365,6 +367,9 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
         rows = _engine_rows(conn, 'workflow_seq_runs', budget,
                             'org_slug=?' if kind == 'runs' else 'org_slug=? AND id=?',
                             (org.slug,) if kind == 'runs' else (org.slug, selected))
+    rows = [row for row in rows if row.get('engine_version', 1) == 1]
+    if kind == 'task' and not rows:
+        return TaskWorkflowView(task_id=selected, run=None)
     if kind != 'runs' and len(rows) != 1:
         raise ProjectionRefusal('sequential_run_not_found', 404)
     values = [_run(conn, row, capture, budget) for row in rows]
@@ -447,5 +452,383 @@ async def read_projection(org: Any, *, kind: str, selected: str | None = None) -
             except SequentialRefusal as exc:
                 raise ProjectionRefusal(exc.code, 403 if exc.code in
                     ('role_unavailable', 'role_ineligible', 'sequential_authority_denied') else 409) from None
+            finally:
+                conn.rollback()
+
+
+# S7a: additive generic reads. @1 classes and entrypoints above stay unchanged.
+ProjectionCause = Literal['history_unverified', 'read_budget_exhausted', 'authority_unverified', 'authority_denied']
+GenericHoldCause = Literal[
+    'task_failed_without_result', 'task_timed_out_without_result', 'task_failed_after_result',
+    'task_timed_out_after_result', 'result_bad_shape', 'result_too_large', 'unknown_outcome',
+    'assignee_unavailable', 'revision_limit_exhausted', 'declared_edge', 'undeclared_outcome',
+    'limit_exhausted', 'settlement_unverified', 'output_evidence_mismatch', 'exhausted',
+    'required_input_unavailable', 'terminal_evidence_unavailable',
+]
+
+
+class ProjectionUnavailable(Closed):
+    format: Literal['workflow-sequential-unavailable@2'] = 'workflow-sequential-unavailable@2'
+    state: Literal['unavailable'] = 'unavailable'
+    code: ProjectionCause
+    org_slug: str
+
+
+class ProjectionFailure(Closed):
+    detail: ProjectionUnavailable
+
+
+class GenericHoldView(Closed):
+    event_id: str
+    node_id: str
+    visit_id: str
+    cause: GenericHoldCause
+
+
+class GenericRunView(Closed):
+    abi: Literal['@2'] = '@2'
+    history_label: Literal['current_v2'] = 'current_v2'
+    id: str
+    definition_id: str
+    definition: GenericDefinitionPin
+    settings_id: str
+    settings: SettingsPin
+    initiator_task_id: str
+    initiator_agent_id: str
+    state: Literal['running', 'held', 'finished']
+    terminal_outcome: Literal['completed', 'failed', 'cancelled'] | None
+    progress: Literal['queued', 'executing', 'result_pending_settlement', 'cancelling'] | None
+    active_visit_id: str | None
+    hold: GenericHoldView | None
+    visits: int
+    result_events: int
+    stored_events: int
+    recoveries: int
+    tasks: tuple[TaskLink, ...]
+
+
+class HistoricalRunView(Closed):
+    abi: Literal['@1'] = '@1'
+    history_label: Literal['historical_v1'] = 'historical_v1'
+    run: RunView
+
+
+class ProjectionRuns(Closed):
+    format: Literal['workflow-sequential-runs-view@2'] = 'workflow-sequential-runs-view@2'
+    org_slug: str
+    storage: Literal['absent', 'readable']
+    runs: tuple[GenericRunView | HistoricalRunView, ...]
+
+
+class TaskRunsView(Closed):
+    format: Literal['workflow-sequential-task-runs@2'] = 'workflow-sequential-task-runs@2'
+    org_slug: str
+    task_id: str
+    storage: Literal['absent', 'readable']
+    runs: tuple[GenericRunView | HistoricalRunView, ...]
+
+
+class SelectionValues(Closed):
+    model: str | None
+    reasoning_effort: str | None
+
+
+class SelectionOrigins(Closed):
+    model: Literal['agent_default', 'run', 'clear']
+    reasoning_effort: Literal['agent_default', 'run', 'clear']
+
+
+class NativeSelection(Closed):
+    model_override: str | None
+    reasoning_effort_override: str | None
+    override_source: Literal['founder', 'manager'] | None
+
+
+class AssignmentExecutor(Closed):
+    name: str
+    kind: str
+    workspace_adapter_id: str | None
+    command_adapter_id: str | None
+
+
+class AssignmentView(Closed):
+    principal_source: Literal['bundled', 'org', 'run', 'control']
+    id: str
+    node_id: str
+    role: str
+    generation: int
+    principal: str
+    predecessor_id: str | None
+    snapshot_digest: str
+    requested: dict[str, str | None]
+    origins: SelectionOrigins
+    selection: NativeSelection
+    effective: SelectionValues
+    executor: AssignmentExecutor
+
+
+class NativeProvenance(Closed):
+    kind: Literal['engine_authenticated'] = 'engine_authenticated'
+    task_id: str
+    principal: str
+    session_id: str | None
+    result_id: int | None
+    terminal_digest: str | None
+    outer_digest: str | None
+
+
+class GenericVisitView(Closed):
+    id: str
+    node_id: str
+    ordinal: int
+    state: str
+    selected: bool
+    assignment_id: str
+    assignment_generation: int
+    native: NativeProvenance
+    accepted_result_id: int | None
+    outcome: str | None
+    findings: tuple[str, ...]
+    content_provenance: Literal['agent_reported'] = 'agent_reported'
+
+
+class GenericOutputView(Closed):
+    id: str
+    visit_id: str
+    slot: str
+    contract: Literal['canonical-json-object@1', 'immutable-document@1']
+    content_digest: str
+    content_utf8: str
+    task_id: str
+    session_id: str
+    result_id: int
+    content_provenance: Literal['agent_reported'] = 'agent_reported'
+
+
+class ControlView(Closed):
+    id: str
+    event_id: str
+    event_sequence: int
+    operation_key: str
+    action: Literal['retry', 'rebrief', 'reassign', 'cancel']
+    actor_task_id: str
+    actor_principal: str
+    actor_session_id: str
+    actor_result_id: int
+    expected_cas: int
+    expected_held_event_id: str | None
+    new_visit_id: str | None
+    request_digest: str
+    receipt_digest: str
+
+
+class NativeCancellationView(Closed):
+    event_id: str
+    event_sequence: int
+    kind: Literal['cancelled', 'cancellation_finished']
+    origin: Literal['founder_cancel', 'source_terminal']
+    source_task_id: str
+    source_status: Literal['pending', 'in_progress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded']
+    visit_id: str
+    held_event_id: str | None
+
+
+class GenericRunDetail(Closed):
+    format: Literal['workflow-sequential-run-view@2'] = 'workflow-sequential-run-view@2'
+    org_slug: str
+    run: GenericRunView
+    definition_json: str
+    request: str
+    inputs: tuple[InputValue, ...]
+    assignments: tuple[AssignmentView, ...]
+    visits: tuple[GenericVisitView, ...]
+    controls: tuple[ControlView, ...]
+    native_cancellations: tuple[NativeCancellationView, ...]
+    outputs: tuple[GenericOutputView, ...]
+
+
+class HistoricalRunDetail(Closed):
+    format: Literal['workflow-sequential-history-view@2'] = 'workflow-sequential-history-view@2'
+    org_slug: str
+    abi: Literal['@1'] = '@1'
+    history_label: Literal['historical_v1'] = 'historical_v1'
+    detail: RunDetail
+
+
+def _projection_authority(conn: sqlite3.Connection, authority: Any, capture: Any,
+                          budget: _ReadBudget) -> None:
+    # Same capture validator as admission, without its durable writer/lease.
+    # Prepay decode/mirror work on the projection's original finite allowance.
+    from runtime.workflows.sequential_history import _WIRE_TOKENS
+
+    budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+    for _ in _WIRE_TOKENS.finditer(capture.ready.snapshot_bytes):
+        budget.step()
+    for row in capture.profile_mirror:
+        budget.candidate()
+        budget.reserve(512 + 128 * len(row))
+        for value in row:
+            budget.reserve(4 * len(value) + 512 if type(value) is str else 512)
+    budget.work(len(capture.profile_names) * (len(capture.profile_digests) + 1))
+    authority._validate_admission_uncommitted(conn, capture)
+    budget.check()
+
+
+def _generic_run_view(row: dict, start: Any, visits: list[dict], events: list[dict],
+                      budget: _ReadBudget) -> GenericRunView:
+    budget.work(len(events))
+    hold = None
+    if row['state'] == 'held':
+        event = next(item for item in events if item['id'] == row['held_event_id'])
+        body = _decode(event['event_bytes'], budget)
+        # Complete replay authenticates the causal event, including this reason.
+        cause = body['cause'] if event['kind'] == 'held' else body['decision']['reason']
+        hold = GenericHoldView(event_id=event['id'], node_id=row['held_node_id'],
+            visit_id=event['source_visit_id'], cause=cause)
+    links = (TaskLink(task_id=row['source_task_id'], relationship='source'),
+             TaskLink(task_id=row['carrier_task_id'], relationship='carrier'))
+    return GenericRunView(**{key: row[key] for key in
+        ('id', 'definition_id', 'settings_id', 'state', 'terminal_outcome', 'progress', 'active_visit_id')},
+        definition=start.definition, settings=start.settings, initiator_task_id=row['source_task_id'],
+        initiator_agent_id=row['source_principal'], hold=hold, visits=row['visit_count'],
+        result_events=sum(event['kind'] == 'transition' for event in events),
+        stored_events=row['event_count'], recoveries=row['recovery_count'],
+        tasks=links + tuple(TaskLink(task_id=v['task_id'], relationship='visit', visit_id=v['id']) for v in visits))
+
+
+def _generic_detail(conn: sqlite3.Connection, org: Any, row: dict, start: Any,
+                    run: GenericRunView, visits: list[dict], events: list[dict],
+                    budget: _ReadBudget) -> GenericRunDetail:
+    assignments = []
+    resolved = _decode(row['assignment_snapshot_bytes'], budget)
+    role_sources = {item['role']: item['origin'] for item in resolved['roles']}
+    for item in _engine_rows(conn, 'workflow_seq_assignments', budget, 'run_id=?', (run.id,)):
+        value = _decode(item['snapshot_bytes'], budget)
+        assignments.append(AssignmentView(principal_source=role_sources[value['role']] if item['generation'] == 1 else 'control',
+            **{key: item[key] for key in
+            ('id', 'node_id', 'generation', 'principal', 'predecessor_id', 'snapshot_digest')},
+            **{key: value[key] for key in ('role', 'requested', 'origins', 'selection', 'effective', 'executor')}))
+    evidence = _engine_rows(conn, 'workflow_seq_evidence', budget, 'run_id=?', (run.id,))
+    native, native_results = {}, {}
+    for item in evidence:
+        budget.step()
+        if item['kind'] in ('terminal', 'outer'):
+            native[(item['visit_id'], item['kind'])] = item['evidence_digest']
+            if item['visit_id'] is not None and item['kind'] == 'terminal':
+                body = _decode(item['evidence_bytes'], budget)
+                callback = body['callback']
+                native_results[item['visit_id']] = None if callback is None else callback['result_id']
+    from runtime.workflows.sequential_definition import parse_generic_result
+    visit_views = []
+    for visit in visits:
+        budget.step()
+        result = None if visit['result_bytes'] is None else _parse(visit['result_bytes'], parse_generic_result, budget)
+        visit_views.append(GenericVisitView(**{key: visit[key] for key in
+            ('id', 'node_id', 'ordinal', 'state', 'assignment_id', 'assignment_generation')},
+            selected=bool(visit['selected']), accepted_result_id=visit['result_id'],
+            native=NativeProvenance(**{key: visit[key] for key in
+                ('task_id', 'principal', 'session_id')}, result_id=native_results.get(visit['id'], visit['result_id']),
+                terminal_digest=native.get((visit['id'], 'terminal')), outer_digest=native.get((visit['id'], 'outer'))),
+            outcome=None if result is None else result.outcome,
+            findings=() if result is None else tuple(item.text for item in result.findings)))
+    sequences = {event['id']: event['sequence'] for event in events}
+    controls = tuple(ControlView(**{key: item[key] for key in ControlView.model_fields if key != 'event_sequence'},
+        event_sequence=sequences[item['event_id']])
+        for item in _engine_rows(conn, 'workflow_seq_controls', budget, 'run_id=?', (run.id,)))
+    cancellations = []
+    for event in events:
+        budget.step()
+        if event['kind'] in ('cancelled', 'cancellation_finished'):
+            body = _decode(event['event_bytes'], budget)
+            if 'origin' in body:
+                cancellations.append(NativeCancellationView(event_id=event['id'], event_sequence=event['sequence'],
+                    kind=event['kind'], origin=body['origin']['kind'],
+                    source_task_id=body['origin']['source_task_id'], source_status=body['origin']['source_status'],
+                    visit_id=body['visit_id'], held_event_id=body['held_event_id']))
+    outputs = tuple(GenericOutputView(**{key: item[key] for key in
+        ('id', 'visit_id', 'slot', 'contract', 'content_digest', 'task_id', 'session_id', 'result_id')},
+        content_utf8=item['content_bytes'].decode('utf8'))
+        for item in _engine_rows(conn, 'workflow_seq_outputs', budget, 'run_id=?', (run.id,)))
+    budget.work(len(assignments) * max(1, len(assignments).bit_length())
+                + len(controls) * max(1, len(controls).bit_length()))
+    definition = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (row['definition_id'],))[0]
+    return GenericRunDetail(org_slug=org.slug, run=run, definition_json=definition['definition_bytes'].decode('utf8'),
+        request=start.request, inputs=start.inputs, native_cancellations=tuple(cancellations),
+        assignments=tuple(sorted(assignments, key=lambda item: (item.node_id, item.generation))),
+        visits=tuple(visit_views), controls=tuple(sorted(controls, key=lambda item: item.event_sequence)), outputs=outputs)
+
+
+def _project_v2(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None,
+                capture: Any, budget: _ReadBudget, history: Any) -> Closed:
+    if not history.layout.sequential:
+        if kind == 'run':
+            raise ProjectionRefusal('sequential_run_not_found', 404)
+        return (TaskRunsView(org_slug=org.slug, task_id=selected, storage='absent', runs=()) if kind == 'task'
+                else ProjectionRuns(org_slug=org.slug, storage='absent', runs=()))
+    where, args = ('org_slug=?', (org.slug,))
+    if kind == 'task':
+        read_sequential_owner(conn, task_id=selected, org_slug=org.slug)
+        where += ' AND (source_task_id=? OR carrier_task_id=? OR id IN (SELECT run_id FROM workflow_seq_visits WHERE task_id=?))'
+        args += (selected, selected, selected)
+    elif kind == 'run':
+        where += ' AND id=?'
+        args += (selected,)
+    rows = _engine_rows(conn, 'workflow_seq_runs', budget, where, args)
+    budget.work(len(rows) * max(1, len(rows).bit_length()))
+    rows.sort(key=lambda item: item['id'])
+    if kind == 'run' and not rows:
+        raise ProjectionRefusal('sequential_run_not_found', 404)
+    values = []
+    from runtime.workflows.sequential_definition import parse_generic_start
+    for row in rows:
+        budget.step()
+        if row.get('engine_version', 1) == 1:
+            if kind == 'run':
+                return HistoricalRunDetail(org_slug=org.slug,
+                    detail=_project(conn, org, 'run', selected, capture, budget, history))
+            values.append(HistoricalRunView(run=_run(conn, row, capture, budget)[0]))
+            continue
+        start = _parse(row['start_bytes'], parse_generic_start, budget)
+        visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (row['id'],))
+        events = _engine_rows(conn, 'workflow_seq_events', budget, 'run_id=?', (row['id'],))
+        budget.work(len(visits) * max(1, len(visits).bit_length()))
+        visits.sort(key=lambda item: item['ordinal'])
+        run = _generic_run_view(row, start, visits, events, budget)
+        if kind == 'run':
+            return _generic_detail(conn, org, row, start, run, visits, events, budget)
+        values.append(run)
+    return (TaskRunsView(org_slug=org.slug, task_id=selected, storage='readable', runs=tuple(values)) if kind == 'task'
+            else ProjectionRuns(org_slug=org.slug, storage='readable', runs=tuple(values)))
+
+
+async def read_projection_v2(org: Any, *, kind: str, selected: str | None = None) -> Closed:
+    """Complete bounded history + current authority, rollback-only. No inbox reads with effects."""
+    budget = _ReadBudget()
+    authority = org.workflow_authority
+    capture = authority.capture_admission()
+    budget.check()
+    async with asyncio.timeout(max(0, budget.deadline - time.monotonic())), \
+            authority._async_writer_lock, org.teams_lock, org.db_lock:
+        with ExitStack() as fences:
+            for name in capture.profile_names:
+                budget.step()
+                fences.enter_context(authority._profile_coordinator.profile_read(name))
+            fences.enter_context(authority._publisher_lock)
+            fences.enter_context(org.db._lock)
+            conn = org.db._conn
+            if conn.in_transaction:
+                raise ProjectionRefusal('sequential_reader_transaction')
+            conn.execute('BEGIN')
+            try:
+                with _sql_budget(conn, budget):
+                    if kind == 'task' and conn.execute('SELECT 1 FROM tasks WHERE id=?', (selected,)).fetchone() is None:
+                        raise ProjectionRefusal('task_not_found', 404)
+                    _projection_authority(conn, authority, capture, budget)
+                history = read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
+                with _sql_budget(conn, budget):
+                    value = _project_v2(conn, org, kind, selected, capture, budget, history)
+                    budget.reserve(96 * len(_bytes(value.model_dump(mode='json'))) + 4096)
+                    _projection_authority(conn, authority, capture, budget)
+                    return value
             finally:
                 conn.rollback()

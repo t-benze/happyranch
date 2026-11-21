@@ -21,6 +21,92 @@ TABLES = ('workflow_seq_source_wait_sets', 'workflow_seq_source_memberships',
     'workflow_seq_consumption_receipts', 'workflow_seq_consumed_notifications')
 
 
+def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dict | None:
+    """Read dependencies in the caller's snapshot, without installing storage.
+
+    Complete qualification retains its existing budgets; indexed observations
+    use the existing bounded reader on that deadline. Invalid owned evidence never means
+    an empty wait set. Ordinary callers with genuinely absent storage retain
+    their historical behavior.
+    """
+    from runtime.workflows.sequential_history import read_sequential_history
+    from runtime.workflows.sequential_start import _ordinary_dependencies
+    _require(conn.in_transaction, 'initiator_requires_snapshot')
+    if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_task_ownership'").fetchone() is None:
+        return None
+    org_slug = getattr(db, '_task_ownership_org', None)
+    owner = selected_owner(conn, task_id, org_slug)
+    if owner[0] != 'seq_source_wait_set':
+        return None
+    budget = _ReadBudget()
+    read_sequential_history(conn, expected_org_slug=org_slug, deadline=budget.deadline)
+    with _sql_budget(conn, budget):
+        tasks = _rows(conn, 'tasks', budget, 'id=?', (task_id,))
+        _require(len(tasks) == 1, 'initiator_identity_conflict')
+        task = tasks[0]
+        _ordinary_dependencies(task, budget)
+        members = _rows(conn, 'workflow_seq_source_memberships', budget, 'wait_set_id=?', (owner[1],))
+        _require(bool(members), 'initiator_membership_missing')
+        runs = []
+        for member in members:
+            selected = _rows(conn, 'workflow_seq_runs', budget, 'id=?', (member['run_id'],))
+            _require(len(selected) == 1 and selected[0]['source_task_id'] == task_id,
+                     'initiator_membership_conflict')
+            runs.extend(selected)
+        carriers = {run['carrier_task_id'] for run in runs}
+        # Native joins retain only their current members. Historical settled
+        # children and structural carriers are never a lifetime veto.
+        join_ids = []
+        if task['active_fanout'] is not None:
+            join_ids = _decode(task['active_fanout'].encode('utf8'), budget)['children_ids']
+        elif task['active_chain'] is not None:
+            join_ids = [row[0] for row in conn.execute(
+                'SELECT id FROM tasks WHERE parent_task_id=? AND NOT EXISTS '
+                '(SELECT 1 FROM workflow_seq_runs r WHERE r.carrier_task_id=tasks.id) '
+                'ORDER BY created_at DESC,rowid DESC LIMIT 1', (task_id,))]
+        # Fetch bounded cells for cap+1 active rows only. Overflow is
+        # unavailable until work settles, never a permanent history veto.
+        placeholders = ','.join('?' for _ in join_ids) or 'NULL'
+        children = _rows(conn, 'tasks', budget, 'id IN (SELECT id FROM tasks WHERE '
+            "parent_task_id=? AND (status NOT IN ('completed','failed','cancelled','superseded') "
+            f'OR id IN ({placeholders})) AND NOT EXISTS '
+            '(SELECT 1 FROM workflow_seq_runs r WHERE r.carrier_task_id=tasks.id) LIMIT 257)',
+            (task_id, *join_ids))
+        _require(len(children) <= 256, 'initiator_dependency_bounds')
+        _require(set(join_ids) <= {child['id'] for child in children}, 'initiator_dependency_missing')
+        children.sort(key=lambda child: child['created_at'])
+        terminal = {'completed', 'failed', 'cancelled', 'superseded'}
+        ordinary = [child['id'] for child in children if child['id'] not in carriers
+            and child['status'] not in terminal]
+        # An unfinished native chain has future ordinary legs even when the
+        # current leg just landed; an event wake must retain that barrier.
+        if task['active_chain'] is not None:
+            ordinary.append(task_id)
+        inbox = _rows(conn, 'workflow_seq_inbox', budget, 'initiator_task_id=? AND NOT EXISTS '
+            '(SELECT 1 FROM workflow_seq_consumed_notifications c WHERE '
+            'c.initiator_task_id=workflow_seq_inbox.initiator_task_id '
+            'AND c.notification_id=workflow_seq_inbox.notification_id)', (task_id,))
+        unfinished = [run['id'] for run in runs if run['state'] != 'finished']
+        final_result = None
+        if not unfinished and not ordinary and task['current_session_id']:
+            results = _rows(conn, 'task_results', budget, 'task_id=? AND agent=? AND session_id=?',
+                (task_id, task['assigned_agent'], task['current_session_id']))
+            if len(results) == 1:
+                receipts = _rows(conn, 'workflow_seq_consumption_receipts', budget, 'result_id=?', (results[0]['id'],))
+                decision = results[0]['decision_json']
+                if receipts and decision and native_decision(decision.encode(), budget).get('action') in ('workflow_control', 'workflow_wait'):
+                    final_result = results[0]['id']
+        return dict(run_ids=[run['id'] for run in runs], unfinished_runs=unfinished,
+            ordinary_outstanding=ordinary, pending=bool(inbox) or final_result is not None,
+            ordinary_join_outstanding=task['active_chain'] is not None or any(
+                child['id'] in join_ids and child['status'] not in terminal for child in children),
+            continuation_result_id=final_result, carrier_task_ids=sorted(carriers),
+            ordinary_task_ids=[child['id'] for child in children],
+            runs=[dict(run_id=run['id'], state=run['state'], progress=run['progress'],
+                cas=run['cas'], held_event_id=run['held_event_id'], terminal_outcome=run['terminal_outcome'])
+                for run in runs])
+
+
 def _rows(conn: sqlite3.Connection, table: str, budget: _ReadBudget,
           where: str, args: tuple) -> list[dict]:
     from runtime.workflows.sequential_engine import _engine_rows
@@ -200,9 +286,11 @@ def _wake_body(run: dict, event: dict, compiled: Any, visits: dict[str, dict], b
             kind, state = ('failed' if edge['action'] == 'fail' else 'returned'), 'finished'
             outcome = 'failed' if edge['action'] == 'fail' else 'completed'
             cause = edge.get('code')
+    elif event['kind'] == 'cancellation_finished' and 'visit_id' in body and 'actor' not in body:
+        kind, state, outcome = 'cancellation_finished', 'finished', 'cancelled'
     if kind is None:
         return None
-    visit = visits.get(event['source_visit_id'])
+    visit = visits.get(event['source_visit_id'] or body.get('visit_id'))
     _require(visit is not None, 'initiator_wake_visit_conflict')
     node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
     return dict(format='workflow-sequential-initiator-wake@2', notification_id=_id('wake', event['id']),
@@ -390,6 +478,9 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
     from runtime.workflows.sequential_dispatch import _evidence
     from runtime.workflows.sequential_start import _source_outer_positive
     org, budget = dispatcher.org, _ReadBudget()
+    from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+    if fence_terminal_source(org, invocation.task.id):
+        return
     ready = []
     with dispatcher._writer() as conn, _sql_budget(conn, budget):
         wait = _audience(conn, invocation.task.id, invocation.agent, invocation.session_id, budget, current=False)
@@ -429,3 +520,23 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
     # queue insertion never acknowledges the source's inbox.
     for task_id in ready:
         dispatcher.notify_queued(task_id, org.orchestrator._queue)
+
+
+def finish_cancel_and_wake_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
+        run: dict, compiled: Any, authority: Any, capture: Any) -> str:
+    """Keep S4a's finish bytes intact; its member inbox FK is deferred like Held."""
+    from runtime.workflows.sequential_control import finish_cancellation_uncommitted
+    budget = _ReadBudget()
+    with _sql_budget(conn, budget):
+        visits = _rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run['id'],))
+        event = dict(id=_id('event', run['id'], str(run['event_count'] + 1)),
+            kind='cancellation_finished', sequence=run['event_count'] + 1,
+            source_visit_id=None, source_result_id=None)
+        raw = _bytes(dict(visit_id=run['active_visit_id']))
+        event.update(event_bytes=raw, event_digest=hashlib.sha256(raw).hexdigest())
+        conn.execute('PRAGMA defer_foreign_keys=ON')
+        wake_uncommitted(conn, run, event, compiled, {row['id']: row for row in visits}, budget)
+    event_id = finish_cancellation_uncommitted(conn, db, org_slug=org_slug, run_id=run['id'],
+        expected_cas=run['cas'], compiled=compiled, authority=authority, capture=capture)
+    budget.check()
+    return event_id

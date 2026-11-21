@@ -1,5 +1,52 @@
 # Linux release handbook
 
+## Native language preference store (S8-1-L-a)
+
+`packaging/linux/desktop/app_locale.py` supplies the unwired native preference
+store for the later Settings wiring slice. Its closed API is `load()`,
+`current()`, and `set(value)`, each returning a fresh
+`{"current": "en" | "zh-CN", "persisted": bool}` dictionary compatible with
+the shell locale snapshot. First access reads once; repeated loads preserve a
+session-only choice. Unsupported values (including non-strings) raise
+`ValueError` without changing state or disk.
+
+The installation-local file is `$XDG_CONFIG_HOME/happyranch/locale`, or
+`~/.config/happyranch/locale` when XDG is empty, unset or relative. Its content
+is ASCII `en` or `zh-CN`, optionally followed by one newline. Missing, corrupt,
+unknown, oversized (over 64 bytes), unreadable, symlinked or non-regular files
+fall back to the existing rule: `LANG.lower().startswith("zh")` selects
+`zh-CN`; everything else selects `en`, with `persisted: false`.
+
+The module copies the desktop lowercase `happyranch` directory and atomic
+write conventions locally, with descriptor-relative no-follow parent traversal
+and bounded nonblocking regular-file reads. A mode-0600 exclusive temporary
+file in the same directory is flushed, fsynced and atomically replaced; the
+`happyranch` directory is then fsynced. Before writing the file, every write
+fsyncs the containing directory of every path component after opening that child
+without following links, whether mkdir created it or found it already present.
+This runs from `/` through the config parent, so retries confirm any ancestor
+entry left by a failed sync, with no durability state cached between calls.
+For default `~/.config/happyranch`, it syncs `/`, every HOME ancestor, HOME and
+`~/.config`, then `happyranch` after replacement. For absolute XDG config paths,
+it syncs `/` and every directory through `XDG_CONFIG_HOME`, including containing
+directories of missing intermediate ancestors, then `happyranch` after
+replacement. The bound is `/`: the traversal may create any component below
+root, and there is no containing entry above root to confirm.
+`persisted: true` is returned only after these steps succeed. Write failure
+keeps the choice in memory with `persisted: false`; a failure after replacement
+may leave the new file visible without confirmed durability. One lock covers
+memory and disk throughout each call, ordering concurrent threads by lock
+acquisition. The assumption is one owning native process with stable
+environment; concurrent processes have no ordering guarantee.
+
+No shell or bridge wiring is included here. Later wiring will switch web
+content live; native menus and system dialogs follow the choice on next launch.
+For isolated verification, set `TMPDIR` and `XDG_CONFIG_HOME` to disposable
+directories outside real user config, then run from `packaging/linux/desktop`:
+`GSETTINGS_BACKEND=memory /usr/bin/python3 -B -m unittest test_app_locale -v`.
+Check a saved choice in a new process, a read-only config directory, corrupt
+files, and rapid threaded sets; no daemon or Product E2E is needed.
+
 ## Build the intermediate payload
 
 Founder authorizes one manual build workflow under THR-291.
@@ -246,6 +293,11 @@ For a smoke run, unpack outside the repository, use a new scratch
 `bin/happyranch --help` and `bin/happyranch-daemon`. Read the actual port from
 `<scratch-home>/daemon.port`, check `/api/v1/health` and `/`, and SIGTERM/wait that
 owned daemon process. Keep the live daemon and its home out of the test.
+
+Health includes additive `api_contract: {current: 1, min_client: 1}` and
+`release: "0.1.0+<source_sha>"`, using the payload's existing `build-info.json`
+beside `python/`. Source or missing/invalid build identity reports `"unreleased"`;
+see the [health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata).
 
 ## Inert Headscale custody prefix (3b-2f-1)
 
@@ -621,6 +673,244 @@ keeps its existing startup behavior and remote Enable refuses
 `release_home_invalid`. This changes no shared development-home creation, other
 file modes, systemd UMask or helper-owner safety checks (THR-327 seq613).
 
+### Native Main header (Settings S6-L)
+
+The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**
+entry actions. With the opt-in packaged Main scheme, its status pill reads the
+native `app.status` v2 projection: no selection, starting, connected,
+unavailable, busy, or incompatible with Host/app/unknown-side guidance. It
+preserves **This computer / 此电脑** versus the selected remote name and shows
+the candidate's separate sign-in/approval/ready-to-switch/failure/cancelled phase.
+Long names are ellipsized with full native tooltips. Native copy follows the
+launch locale; web locale changes do not relabel the native header until next
+launch.
+
+Content replacement preserves the native titlebar during startup, web loading,
+restart/error recovery and Retry. A newly launched Main installs its own header;
+GTK's child enumeration includes that header, so only content is removed.
+
+The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
+including no-target recovery. Losing the web document does not clear the warning.
+Its keyboard-accessible action opens or re-presents the existing native Connection
+window; its tooltip explains Retry saving and that a new invite may be needed.
+Only the native owner's confirmed save projection clears the badge; header
+actions do not write that state.
+
+Until the S7-L1 topology lands, the Connection button and “Access wasn't saved”
+badge use the temporary native route `open_connection(None)` to open or
+re-present the existing native Connection window in both default and
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1` builds. Neither entry emits
+`app.dialogRequested` or requires a dialog subscription or Connection Retry.
+
+Only the Settings header action delivers the `app.dialogRequested` JSON string
+`{"schema":2,"dialog":"settings"}`.
+The page facade, named-world relay and native subscriber keep this closed event
+separate from `app.stateChanged`. Delivery requires the current admitted Main
+document's dialog subscription, independently of target readiness. Navigation,
+revocation and WebKit loss retire both subscriptions. Unavailable requests are
+dropped without queue or replay, including in the legacy HTTP/fallback view.
+The header shows Settings as the requested destination plus an explicit Retry
+action; becoming available never retries automatically. The subscribed web Main owns
+the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
+Native entry starts no daemon, changes no target/generation, and neither commits
+nor cancels an attempt. The existing main-window strip and close/Quit policy
+remain in place for their later cutover slices.
+
+Focused native checks use the existing direct system-Python venue, with Node 24
+for executing the literal page/relay scripts in an isolated message-bus fixture:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+# In a disposable GTK3/WebKit2 4.1 desktop/Xvfb session (DISPLAY required):
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_titlebar.py -v
+```
+
+The first two headless checks cover rendered labels/actions and the event boundary.
+The titlebar regression drives shipping `run_gui` with real GTK, including its
+actual titlebar child enumeration, web content, restart failure, Retry and fresh
+Main processes in EN/ZH. Host lifecycle/helper operations are isolated. It uses
+a minimal static web fixture by default; set `HAPPYRANCH_TITLEBAR_WEB_DIST` to an
+absolute same-source built `web/dist` for the real Main bundle, and optionally
+`HAPPYRANCH_TITLEBAR_OUTPUT` to an existing directory for 760px screenshots and
+titlebar observation JSON.
+They do not establish GTK fit, native/web focus or WebKit process behavior;
+qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
+above has known failures and must be compared against the same base, never
+reported as passing from these focused results.
+
+### Opt-in packaged runtime UI (Settings S2a)
+
+The default runtime view still loads the verified local daemon's HTTP URL.
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1 ./bin/happyranch-app` opts the local main
+view into `happyranch-app://app/`, served directly from the payload's
+`web/dist` with no listening port. This is additive preparation for S7;
+remote runtime windows and the separate connection bridge are unchanged.
+The app still performs its existing daemon ownership/health checks first.
+
+The loader requires WebKitGTK **2.40+** in the WebKit2 **4.1** namespace
+(`URISchemeRequest.get_http_body` was introduced in 2.40). Qualification on
+the minimum engine remains **NOT RUN**; the available Linux venue is 2.52.6.
+The scheme is secure and CORS-enabled, without local-scheme privileges.
+Static responses use a startup file/hash allowlist, no-follow reads, CSP,
+`nosniff` and `no-store`; root assets/fonts and SPA deep links work, while
+traversal, symlinks, directory listing and `/api` fallback are refused. The
+build-manifest/cutover work remains in S1a/S7.
+
+Native bootstraps the verified loopback daemon and keeps its bearer only in
+memory. The page's bootstrap receives a dummy token. Local API forwarding
+allows only safe content/concurrency headers, reconstructs framing, injects
+the native bearer and refuses redirects.
+
+S2b PR-A also supplies a listener-free remote adapter (`client_runtime.RemoteCall`)
+and native target selection (`AppScheme.select_target`). The existing opt-in
+launcher still selects its verified local daemon. A native owner may select
+`LocalDaemon(port)`, `RemoteDaemon(active_session, ready=False/True)`, or `None`;
+passing `None` as the loader's verified port starts with no target. Selection
+is a native/UI-thread operation. S5-L1 gates voluntary commits through
+`select_target(target, owner_saves=...)`: missing/unknown owner evidence,
+pending saves, or current-generation non-GET transfers return a named refusal
+without changing target/generation. An empty tuple means a captured empty
+owner registry; it must not substitute for unavailable owner evidence. The
+client.commitSwitch command/active-candidate owner remains S5-L2 and web owner
+registry integration remains S6-W2. `ready=False` denotes
+a selected remote session still connecting; only its owner publishes readiness.
+The adapter calls that session's existing pinned-peer `dial`, `release` and
+native `_credential` callbacks, without constructing a proxy/listener. It shares
+the loopback proxy's authority-header stripping, injects the device credential,
+and reconstructs Content-Length from bounded payload bytes/streams. Response
+Content-Length/chunk framing is decoded incrementally, including SSE. Existing
+remote windows/listeners stay unchanged until S7; candidate/commit ownership
+remains S5. No enrollment or daemon authentication changes.
+
+Every scheme transfer captures its target before worker dispatch. Native
+selection atomically swaps target plus process-unique generation, cancels old
+generation transfers, then emits full app.stateChanged. A first upstream HTTP
+send fence distinguishes forwarding from page delivery: only a request with no
+upstream send can return `409 {"detail":{"code":"target_changed"}}`. An
+already-forwarded transfer interrupted before page headers returns 499 cancelled;
+an established stream errors through GIO, never successful EOF. Native never
+replays a mutation. No selected
+target, a connecting remote target, and unavailable transport return `503`
+with exactly `{"detail":{"code":"no_target"}}`, `target_starting`, or
+`target_unreachable` in the same envelope. Native concurrency/body caps and admission lock timeout use `429 too_many_requests`.
+`503 busy` is reserved for health update_busy.busy and is rechecked until clear.
+S4b-Linux PR-B gates every API transfer, including the page's dummy bootstrap,
+on native health admission. Browser authorization, cookies and native/
+forwarded identity headers are stripped before native injection. Only safe
+response headers reach WebKit; exception text and real credentials never do.
+
+S4b-Linux compatibility admission runs `GET /api/v1/health` on the selected
+instance before it can forward API traffic. The local request uses only the
+verified loopback port, **before bearer bootstrap**: the daemon health route is
+unauthenticated (`runtime/daemon/routes/health.py`, mounted without authentication
+dependencies in `runtime/daemon/app.py`). Remote health uses `RemoteCall` and the
+same pinned `ClientSession.dial/release/_credential` callbacks as ordinary
+traffic; the existing home connector still requires its device credential.
+There is no remote bearer-bootstrap fetch or alternate credential path.
+
+The app contracts are `CLIENT=1`, `MIN_DAEMON=1`. `api_contract` must be an
+object with actual integer `current` and `min_client` (Booleans fail). Admission
+requires `min_client <= 1 <= current` and `current >= 1`. Missing/invalid fields,
+unparseable/non-200/truncated health, or a reachable peer exceeding the 64 KiB
+body cap or the **five-second total health deadline** yield
+`503 {"detail":{"code":"incompatible","side":"host"}}`. Valid integer
+`min_client > 1` uses `side:"app"`. No current case uses `unknown`. Failure to
+connect/dial the target remains `503 target_unreachable`, is not cached as
+incompatible, and can be retried. Redirects are not followed. Health response
+bytes, upstream diagnostics, bearer and device credential are never returned
+as native errors or logged. Only the normal compatible health API response may
+be forwarded in answer to a page request for health.
+
+The health result (including incompatibility) is cached on that target instance.
+`AppScheme.select_target` gates commit, swaps target/generation, cancels captured
+old transfers and resets both old/new admission, even on reselection of the
+same object. Native status admission runs without requiring page API traffic,
+so a recovery page can receive ready/incompatible/busy state changes. `load-changed STARTED`,
+`web-process-terminated` and `close` invalidate admission; close also clears the
+local bearer. `RemoteDaemon.ready` transitions reset admission before the native
+owner publishes the new transport state. In the launcher, `message` closes the
+scheme before Restart; `show_web` closes any previous scheme and constructs a
+fresh `LocalDaemon` after service restart, initial attach, retry or child attach.
+A new instance always checks again at its next API bootstrap. There is currently
+no same-instance remote reconnect callback in this opt-in launcher: its future
+native owner must reselect the target or transition `ready` on reconnect. This
+is an integration assumption, not an automatic reconnect or S5 candidate switch.
+Cancellation during admission interrupts dial/headers/body and returns 499
+`cancelled`; native selection/reset before forwarding returns 409 target_changed.
+Concurrent admission wait is bounded and returns 429 too_many_requests. Reset
+clears the local bearer. A subsequent upstream 401 invalidates bearer and health
+admission; the next request performs native bootstrap, without replaying the
+401 request. Post-forward redirects and transport loss stay ordinary 502
+upstream_redirect / incomplete_body errors, never recovery codes. An incompatible cached
+instance performs no subsequent API forwarding or bearer-bootstrap fetch.
+
+The document-start fetch adapter serializes request bodies into bytes before
+calling WebKit, including Blob/FormData and S1a's byte multipart bodies.
+Unadapted body requests are rejected before `get_http_body`: S0 observed a
+native crash when calling that API on raw Blob/FormData. This adapter remains
+local to the opted-in view after S1a: S1a serializes multipart, while native
+JSON byte conversion/admission, request IDs and explicit abort messages still
+use this adapter; no web source changes are needed here. Body cap:
+64 MiB/10 seconds, at most two body transfers and 32 total API transfers.
+Native setup has a 15-second deadline; local upstream socket operations time out
+after 5 seconds before headers (remote request upload/headers share 10 seconds),
+and after 30 seconds during non-event response reads.
+Quiet `text/event-stream` reads have no idle timeout and deliver later events.
+Streams are incremental, capped at one hour, with a 10-second slow-reader limit.
+Abort, document navigation, process termination and view destruction cancel
+owned upstreams; downstream closure is checked every 100 ms even when SSE is idle.
+Failures before headers return closed JSON HTTP errors. After headers, timeout,
+lifetime expiry, abort, short Content-Length bodies and transport/chunk-framing
+failures produce a GIO input-stream error, never successful EOF. Known response
+lengths are passed to WebKit and delivered byte counts are validated; complete
+bodies close normally. The bounded AF_UNIX socket pair has no network listener;
+its unread completion marker produces a kernel read error on failed closure.
+No exception text or bearer is sent.
+
+Downloads use fetch → blob → `a.download`, followed by the native Save chooser
+with overwrite confirmation. Direct API attachment navigation is blocked;
+it does not reliably promote to a WebKit download. Off-origin HTTP(S) links
+open in the system browser. The opted-in view has persistent storage under
+`<desktop-home>/desktop-web`. S5-L1 exposes only app.status/app.stateChanged
+through the existing string call/on facade in the trusted Main document. The
+private controller registers its handler only in a named world; native probes
+the top document, empty frame tree and absence of a page-world native channel
+before admitting its isolated document token. TOP_FRAME relay, CSP and frame/CSP
+observation revoke on frame insertion. Navigation, process loss and close fence
+old messages/events. Reads queued during initial admission are bounded. Failed
+admission leaves the bridge unavailable. This does not migrate the separate
+Connection window or enable unfinished client commands.
+
+The full v2 appState supplies native generation, target, state, compatibility,
+local status, nullable candidate, access_unsaved and session locale. A selected
+remote never exposes a local prompt URL or remote address. Native owners supply
+sanitized remote id/name; active/candidate integration remains S5-L2, locale
+persistence remains S8. After an admitted target becomes unreachable, status
+refresh requires fresh successful health and compatibility checks before ready,
+and native bootstrap if its bearer is absent. Cached compatibility/bearer alone
+cannot establish recovery; no forwarded request is replayed. Every scheme API
+request requires the captured X-HappyRanch-Target header except
+GET /api/v1/auth/bootstrap. Native refuses a missing/mismatched generation before forwarding and strips it upstream. Browser
+mode and opt-in activation stay unchanged; web stamping/stale-drop is S5-W1.
+
+Focused standalone native checks (no GI/display/retired Python suite):
+
+```sh
+/usr/bin/python3 -B packaging/linux/desktop/test_app_scheme.py -v
+```
+
+Remote adapter and response-body checks use real loopback HTTP and system
+GIO/GLib (no display). The reset fixture closes directly without SHUT_WR and
+omits Content-Length, distinguishing TCP reset from a short orderly EOF.
+The quiet-stream case waits 31 seconds, exceeding the former 30-second cap:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_compatibility.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_response.py -v
+```
+
 The main window has a compact **Remote access** card, including while the
 release daemon is starting or unavailable. Open **Settings and devices** for
 home-network status, pending approval and the device list; opening it reads
@@ -774,6 +1064,47 @@ pre-start refusals create no shutdown obligation. A nonzero or timed-out stop
 shows a plain failure message and keeps the worker, window and desktop lock.
 Closing again requests one more bounded stop attempt; only successful shutdown
 permits exit and lock release. No process is signaled directly in service mode.
+
+### Linux active and candidate switching (Settings S5-L2)
+
+With the existing app-scheme opt-in, Main and the native Connection window now
+share one ClientUI/model owner. Main's admitted document can start an invitation
+or saved-computer attempt while its current target continues serving. Native
+dialogs retain invitation, approval and credential custody. The candidate uses
+the existing listener-free RemoteDaemon health/compatibility admission; it does
+not open a second runtime window or a loopback proxy. Its public identity is a
+generic name and opaque id, with phase and optional deadline only.
+
+`client.commitSwitch` requires a `ready_to_switch` candidate and uses the existing
+`select_target` gate. Refusals retain both targets and generation, with
+`owner_save_unknown`, `owner_save_pending` or `non_get_pending`. Candidate
+compatibility failures retain the active target and report `incompatible` with
+the existing host/app side. Cancel fences late completion and stops only the
+candidate. Success swaps target/generation, errors old-generation streams, then
+publishes status; old native-session cleanup is separately unknown until observed.
+Cleanup outcomes belong to each native session. A successful cleanup cannot clear
+another session's pending or failed cleanup; new Main attempts refuse while any
+owned cleanup is unknown or incomplete. Cancelling or failing a candidate restores
+the still-connected active projection, including its saved-computer reference and
+save intent. Session-only access keeps `access_unsaved` and the native Retry save
+action; a saved active connection keeps its saved-access metadata.
+
+Assumption/dependency: section 12 requires pending/unknown owner saves to refuse,
+but the current v2 schema defines no `app.owners` payload. Until S6-W2 supplies
+owner evidence, the injected native snapshot provider returns unknown and every
+voluntary commit/disconnect refuses. No owner wire format is added. Main view
+recreation reattaches the same committed session before navigation, with a fresh
+transport admission; it cancels an unfinished candidate. This is initial attachment
+of the same target, not a voluntary switch. Earlier S5-L2-pending descriptions in
+this handbook describe the preceding source epoch; native/live acceptance remains
+separate from this source implementation.
+
+Focused switch and admitted-document checks use the existing standalone venues:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_remote_runtime.py SwitchTests ClientDispatchTests -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py GTKTests.test_main_bridge_status_event_and_frame_navigation_refusal -v
+```
 
 ### Keep running after logout
 

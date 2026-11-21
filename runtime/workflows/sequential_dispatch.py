@@ -205,6 +205,8 @@ def _native_task(conn: sqlite3.Connection, task_id: str) -> dict:
 
 
 def _cancelled(conn: sqlite3.Connection, run: dict, visit: dict) -> bool:
+    if run.get('engine_version', 1) == 2 and _native_task(conn, run['source_task_id'])['status'] in ('failed', 'cancelled', 'superseded'):
+        return True
     return run['state'] == 'cancelled' or any(
         task['cancelled_at'] is not None or task['status'] == 'cancelled'
         for task in (_native_task(conn, key) for key in
@@ -465,9 +467,15 @@ class SequentialDispatcher:
             return  # D9: native owner retains uncertainty; never fabricate a held result.
         _check(running.request_id == request.logical_id and request.org == self.org.slug
                and request.agent_id == agent and request.retry_attempt == 0)
+        with self._reader() as conn:
+            observed, _, _ = self._entry(conn, task_id)
+        if observed.get('engine_version', 1) == 2:
+            from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+            fence_terminal_source(self.org, observed['source_task_id'])
         with self._writer() as conn:
             run, visit, _ = self._entry(conn, task_id)
-            if _cancelled(conn, run, visit):
+            cancelling = run.get('engine_version', 1) == 2 and run['progress'] == 'cancelling'
+            if _cancelled(conn, run, visit) and not cancelling:
                 return
             _check((visit['principal'], visit['session_id']) == (agent, session_id))
             result = _discover_result(conn, visit)
@@ -488,9 +496,11 @@ class SequentialDispatcher:
                 return
             if run.get('engine_version', 1) == 2:
                 now = datetime.now(timezone.utc).isoformat()
-                conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?',
+                conn.execute('UPDATE tasks SET status=CASE WHEN status=\'cancelled\' THEN status ELSE ? END,'
+                    'completed_at=COALESCE(completed_at,?),updated_at=?,block_kind=NULL WHERE id=?',
                     ('completed' if classification == 'success' else 'failed', now, now, task_id))
-                conn.execute("UPDATE workflow_seq_runs SET progress='result_pending_settlement' WHERE id=?", (run['id'],))
+                if not cancelling:
+                    conn.execute("UPDATE workflow_seq_runs SET progress='result_pending_settlement' WHERE id=?", (run['id'],))
                 _evidence(conn, run['id'], visit['id'], 'terminal', body)
                 validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
                     evidence_ids=(_evidence_id(run['id'], visit['id'], 'terminal'),))
@@ -536,6 +546,8 @@ class SequentialDispatcher:
         with self._reader() as conn:
             run, visit, compiled = self._entry(conn, invocation.task.id)
         if run.get('engine_version', 1) == 2:
+            from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+            fence_terminal_source(self.org, run['source_task_id'])
             self._generic_outer_settled(invocation, run, visit, compiled, native_entry, tracker_clear)
             return
         result_id = None
@@ -1295,7 +1307,7 @@ class SequentialDispatcher:
                                native_entry: dict, tracker_clear: bool) -> None:
         with self._writer() as conn:
             run, visit, compiled = self._entry(conn, invocation.task.id)
-            if run['state'] != 'running' or run['progress'] == 'cancelling' or _cancelled(conn, run, visit):
+            if run['state'] != 'running' or (_cancelled(conn, run, visit) and run['progress'] != 'cancelling'):
                 return
             terminal = _evidence(conn, run['id'], visit['id'], 'terminal')
             if terminal is None:
@@ -1310,7 +1322,19 @@ class SequentialDispatcher:
                 release_removed=True, release_owner=invocation.identity, execution_unknown=False))
             validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
                 evidence_ids=(_evidence_id(run['id'], visit['id'], 'outer'),))
-        # Positive outer COMMIT precedes capture and all accepted rows.
+        # Positive outer COMMIT precedes fresh authority and the finish writer.
+        if run['progress'] == 'cancelling':
+            from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
+            capture = self.org.workflow_authority.capture_admission()
+            with self.org.workflow_authority.admission_writer(capture) as conn:
+                run, _, compiled = self._entry(conn, invocation.task.id)
+                if run['state'] == 'running' and run['progress'] == 'cancelling':
+                    finish_cancel_and_wake_uncommitted(conn, self.org.db, org_slug=self.org.slug,
+                        run=run, compiled=compiled, authority=self.org.workflow_authority, capture=capture)
+            continuation = getattr(self.org.orchestrator, '_workflow_continuation', None)
+            if continuation is not None:
+                continuation.wake(run['source_task_id'])
+            return
         self._advance_generic(run['id'], visit_id=visit['id'])
 
     def _advance_generic(self, run_id: str, *, visit_id: str) -> Any:

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from runtime.models import BlockKind, TaskRecord, TaskStatus
-from runtime.orchestrator.task_terminal_readers import _child_landed_terminal_report
+from runtime.orchestrator.task_terminal_readers import _child_landed_terminal_report, workflow_dependency_state
 
 if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
@@ -68,6 +68,8 @@ def derive_child_wait(db: Database, parent: TaskRecord, budget: ChildWaitBudget)
                     return observation("unavailable")
                 if child.status in TERMINAL_STATES:
                     continue
+                if workflow_dependency_state(db, child_id) == 'unavailable':
+                    return observation('unavailable')
                 if _child_landed_terminal_report(reader, child) is not None:
                     landed = True
                 elif child.status == TaskStatus.PENDING:

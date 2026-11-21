@@ -285,11 +285,15 @@ class OrgState:
             self.orchestrator._workflow_drafts = self.workflow_drafts
             self.orchestrator._workflow_coding_dispatch = self.workflow_coding_dispatch
             self.orchestrator._workflow_sequential_dispatch = self.workflow_sequential_dispatch
+            from runtime.orchestrator.workflow_continuation import WorkflowContinuation
+            self.orchestrator._workflow_continuation = WorkflowContinuation(self)
             self.orchestrator._workflow_submissions = self.workflow_submissions
             self.orchestrator._workflow_reviews = self.workflow_reviews
         self.db._workflow_drafts = self.workflow_drafts
         self.db._workflow_coding_dispatch = self.workflow_coding_dispatch
         self.db._workflow_sequential_dispatch = self.workflow_sequential_dispatch
+        from runtime.orchestrator.workflow_continuation import WorkflowContinuation
+        self.db._workflow_continuation = WorkflowContinuation(self)
         self.db._workflow_reviews = self.workflow_reviews
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,

@@ -6,6 +6,17 @@
 > do not describe the whole current managed lane. Historical evidence remains
 > historical, and every unexecuted acceptance obligation stays explicit.
 
+## Public host compatibility metadata (THR-387 S4a)
+
+`GET /api/v1/health` is already remote-allowed. Its additive `api_contract`
+(`current=1`, `min_client=1`) and `release` (version+source SHA or `"unreleased"`)
+describe host compatibility without changing the endpoint set or access policy.
+Existing fields and conditional `host_sessions` remain; see the
+[health response and contract-bump rule](../web-and-cli.md#host-compatibility-health-metadata).
+Native readiness/reconnect/Restart compatibility checks are implemented on Linux
+in PR #1767 (merged `921f126e`); Mac checks remain pending. See the
+[Linux admission/reset boundaries](../../specs/2026-11-17-web-native-bridge.md#v2-compatibility-rule).
+
 ## macOS connector lifecycle slice (THR-360, C1+C2)
 
 The source `happyranch-connector` CLI selects systemd on Linux and a per-user

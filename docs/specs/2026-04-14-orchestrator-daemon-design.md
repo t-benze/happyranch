@@ -75,7 +75,7 @@ Local-only (`127.0.0.1` bind). Path prefix `/api/v1/`. Framework: **FastAPI + uv
 
 | Method | Path | Behavior |
 |---|---|---|
-| `GET` | `/api/v1/health` | Liveness ping. Returns `{"status": "ok", "active_runtime": "<path or null>"}`. |
+| `GET` | `/api/v1/health` | Liveness ping. Returns `status`, nullable `active_runtime`, `update_busy`, `api_contract: {current: 1, min_client: 1}`, `release` (version+source SHA or `"unreleased"`), and conditional `host_sessions`. See the [current health contract](../agent-guides/web-and-cli.md#host-compatibility-health-metadata). |
 | `POST` | `/api/v1/runtimes/register` | Body: `{"path": "..."}`. Creates `opc.yaml` marker at path, adds to registry, activates. |
 | `POST` | `/api/v1/runtimes/activate` | Body: `{"path": "..."}`. Sets active runtime. **Forbidden while any task is in a nonterminal state (`PENDING` or `IN_PROGRESS`)** — returns `409 active_tasks_in_flight` with the offending task IDs. Submitted-but-not-yet-running tasks count, because their runners hold a reference to the current runtime. The caller must wait for completion or escalate the offending tasks before switching. |
 | `GET` | `/api/v1/runtimes` | Lists registered runtimes, shows which is active. |

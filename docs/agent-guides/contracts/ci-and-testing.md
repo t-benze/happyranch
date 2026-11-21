@@ -177,7 +177,7 @@ See [the reset coverage gap record](../../operations/python-test-reset.md) and
 Source boundary enforcement: `python scripts/check_source_boundaries.py` and
 `python scripts/validate_source_boundaries.py` use only stdlib (local Python 3.12+).
 `--source-root <root>` on the checker selects isolated repository-shaped sources.
-Only infrastructure/orchestrator `*.py` are parsed; explicit daemon import/from
+The import rule inspects infrastructure/orchestrator `*.py`; explicit daemon import/from
 forms at module time are forbidden, including classes/ordinary flow. Syntactic
 top-level TYPE_CHECKING/typing aliases exempt true branches but not else;
 function/async-function/lambda nodes are skipped. No allowlist/opt-out, relative/

@@ -1786,3 +1786,14 @@ manager provenance and never inherit the initiator's tuple. This source-only
 preparation grants no public @2 start/control, configuration, launch or provider
 execution authority. The pure executor/options launch recheck is unmounted
 until S4b; durable drift-to-Held belongs to S4a/S4b. Coding remains Disabled.
+
+## Internal workflow continuation decisions (S6a)
+
+`workflow_control` and `workflow_wait` are internal parsed/served decisions;
+they are not yet available agent capabilities. Public sequential composition
+continues emitting Start@1 and public Start@2 remains unmounted. A workflow
+event does not finish your wider task or its ordinary parent. Native admission
+snapshots a bounded event page once for the actual SID; later prompt reads do
+not acknowledge it or include late arrivals. Final done refuses outstanding
+owned runs or ordinary dependencies. Preserve genuine current-session callback
+identity and the FINAL report-completion rule above.

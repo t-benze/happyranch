@@ -182,8 +182,9 @@ export const putCodingSettings = async (
   // The existing explicit-token option sends once, including on 401. This
   // consumes the ordinary Founder bearer without changing shared transport or
   // token custody. No automatic write retry/rebootstrap/reapply is requested.
+  // The bearer is prepared by request() after it pins the target (R3-2).
   const result = await request<CodingSettingsSave>(`/orgs/${slug}/settings/coding`, {
-    method: 'PUT', body, auth: { token: await getToken() },
+    method: 'PUT', body, auth: { token: getToken },
   });
   canonicalCodingBody(result);
   return result;

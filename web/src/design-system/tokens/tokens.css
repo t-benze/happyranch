@@ -319,6 +319,10 @@
 
   --spacing-rail: 244px;
   --spacing-rail-narrow: 56px;
+  /* THR-376 thread detail: the right properties rail (mockup .td-grid     */
+  /* `1fr 300px`). Page-content rail only; the 244px AppShell rail above   */
+  /* is unchanged.                                                         */
+  --spacing-rail-wide: 300px;
 
   /* ====================================================================== */
   /* CONTENT — Direction-A centered content cap (ds.css .wrap max-width)     */

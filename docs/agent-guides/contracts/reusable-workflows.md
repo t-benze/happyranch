@@ -1,5 +1,145 @@
 # Reusable workflow contracts
 
+## S7a: additive Founder read projections @2
+
+The existing @1 definition/settings/run/detail/singular-task-link APIs keep their
+original wire records, settings operations and R-M3-6 accepted Final redaction.
+They select @1 records in mixed storage; no generic record is cast into @1.
+The own-task start context remains Start@1. S7a adds only these Founder-bearer
+GETs under `/api/v1/orgs/{slug}`:
+
+| Route | Success format |
+| --- | --- |
+| `/workflows/sequential/views/v2/runs` | `workflow-sequential-runs-view@2` |
+| `/workflows/sequential/views/v2/runs/{run_id}` | `workflow-sequential-run-view@2` or historical wrapper |
+| `/tasks/{task_id}/sequential-workflows` | `workflow-sequential-task-runs@2` |
+
+Lists preserve every source/initiator, carrier or visit run link in stable run-ID
+order. An initiator owning several runs receives several entries. Generic entries
+carry `abi=@2`, `history_label=current_v2`, the immutable definition/settings pins,
+initiator IDs and recorded `running | held | finished` state. `terminal_outcome`
+is `completed | failed | cancelled` only for Finished; `progress` separately
+retains `queued | executing | result_pending_settlement | cancelling`. Held
+exposes its original event/node/visit and finite cause: native failed/timed-out
+before/after result, bad-shape/oversize/unknown outcome, unavailable assignee,
+revision limit, or the persisted generic reducer reason. `declared_edge` denotes
+a declared agent hold; the view does not infer a cause from content or counters.
+`result_events` counts result transitions; `stored_events` is the distinct storage sequence count.
+
+Generic detail includes the original admitted definition text, request/inputs,
+all immutable assignment generations and visit-to-assignment IDs, effective
+model/effort, requested values, field origins (`agent_default | run | clear`),
+native override source, executor and predecessor/digest. Agent selection source
+is `bundled | org | run` at admission or `control` for a replacement. Ordered
+retry/rebrief/reassign/cancel records retain original actor task/principal/SID/
+INTEGER result, operation/event IDs, held-event/CAS, new visit and request/receipt
+digests. Native source/founder cancellation events retain their distinct origin
+and source state without inventing a callback actor/result.
+
+Every generic output/outcome/finding is `agent_reported`. `engine_authenticated`
+labels only native task/principal/SID/result identity and original terminal/outer
+evidence digests authenticated by complete history. A rejected native callback
+keeps its native result ID separately from nullable `accepted_result_id`. It never verifies a reported
+repository head, review, QA or merge. Finished/completed means accepted generic
+terminal output and settlement. @1 entries are wrapped with `abi=@1` and
+`history_label=historical_v1`; detail uses `workflow-sequential-history-view@2`
+containing the unchanged `workflow-sequential-run-view@1`, including redaction.
+
+Reads authenticate complete S4a..S6b/retained history and current authority in a
+rollback-only snapshot on existing bounded readers, ledgers and one five-second
+deadline. No cap is raised. Positive absent storage returns `storage=absent` and
+an empty collection; valid installed storage returns `storage=readable`.
+Incoherent/budget/authority evidence returns non-success HTTP with closed
+`detail.format=workflow-sequential-unavailable@2`, `state=unavailable`, and
+`code=history_unverified | read_budget_exhausted | authority_unverified |
+authority_denied`. Native task404 precedes ownership classification. No read
+installs storage, acknowledges an inbox, enqueues work or mounts a public @2
+start/control/wait operation.
+
+TS mirrors and the OpenAPI/classification snapshots accompany the routes.
+Additive @2 hooks use org/selection query keys, abort/eviction on cleanup,
+request sequence and active-owner checks plus response org equality; stale
+successes/errors are rejected with `late_org_response`. The existing @1
+provider/settings original-save custody is unchanged. Helpers emit enums/keys
+only; UI adoption, strings and both locales belong to S7b.
+
+Focused private route checks use
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s7a=all`
+(and 3.14 or `--s7a=CASE`) for `plural_links`, `held_cause`, `history_label`,
+`unavailable`. These observe served responses and zero-write SQL/inventories,
+not live providers or UI. `late_org_response` runtime/proof is NOT RUN: Web
+Vitest is retired (THR-343), Product E2E is scheduled-only, and this unit adds no
+hook execution venue. Typecheck/source review is static evidence only.
+
+## S6b: source cancellation and terminal initiators @2
+
+The existing Founder task-cancel route recognises `seq_source_wait_set` and uses
+its mixed cancellation owner. The complete history and every membership are
+re-read in the same authority writer, including runs admitted by earlier source
+results/SIDs and already finished members. Cancelling a source or ordinary
+ancestor fences every unfinished owned run. Finished history stays unchanged.
+A result-owned S4a cancel of one run leaves the source and sibling runs alive.
+Its original member-scoped opaque Stop controls and native-owner aggregation
+are captured with the control transaction and delivered after COMMIT. Exact
+control replay never issues another Stop; lost originals remain unsettled.
+Callback exit also drains the committed handoff, so a result consumer that
+runs before callback-context exit cannot strand it. Both publishers take the
+same one-shot handoff under the Database lock and call Stop outside locks and
+transactions; rollback discards the original capture.
+Missing/malformed membership, hidden live work and native drift refuse the whole
+mutation with `sequential_cancellation_reconciliation_required` (409).
+
+The internal native first fence records `founder_cancel` or `source_terminal`
+and the original source task/status using existing event kinds. It has no
+control row, actor result or RetryClaim. Result-owned control authentication,
+request/receipt bytes and S4a's finish writer are unchanged. Held/pristine
+members finish in one slot; launched or prepared members retain
+Running/cancelling and their outstanding visit. A prepared journal/control is
+not pristine merely because no SID/PID is bound. Native overlays retain a
+visit's completion timestamp until original terminal observation supplies it.
+No fresh callback acceptance, output selection, graph successor, recovery
+replacement or launch crosses the fence. A precommitted exact step callback may
+replay unchanged; changed bytes refuse. Original positive native terminal and
+outer closure precede the existing finish writer, with cancellation-only digest
+validation even for empty/malformed business output. Member finish and its
+addressed inbox obligation commit together; full resulting-history validation
+uses the original complete-reader budgets and operation deadline.
+
+Existing source settlement, continuation rediscovery and native member tails
+observe failed/cancelled/superseded sources and use that same mixed writer.
+They never revive the source or infer another manager. Already-cancelling
+members with committed original terminal and outer proofs
+are revisited under the authority writer and finished by the existing finish
+owner. This drains an outer-before-fence race without accepting output or
+allocating a visit. Missing proofs retain the outstanding original owner.
+This drain uses the complete layout reader before reading @2 columns; retained
+schema1 and absent sequential storage keep ordinary settlement unchanged and
+are never installed or migrated. Invalid supported @2 storage still refuses.
+Unconsumed inbox and stored delivery rows remain immutable. Dependency observations derive
+`initiator_terminal` for a terminal source, or `unavailable` with
+`initiator_agent_unavailable` when the recorded agent is no longer an active,
+eligible manager. Addressed events stay pending; ordinary admission cannot
+turn an unavailable workflow observation into an empty child barrier.
+Eligibility restoration republishes only the original addressed source.
+
+Opaque native Stop runs after COMMIT outside locks. Original controls, trackers,
+journals, reservations and uncertainty are retained. Actual original owners
+supply closure; a Stop return, missing PID, ended SID or launcher exit cannot
+settle an aggregate. U6 Option B's ordinary/document UNSETTLED fallback remains.
+Pause delays new visit/initiator sessions while allowing committed cancellation
+and native closure; Resume preserves original limits and never revives a
+terminal source. No new founder/thread message, schema, public @2 admission or
+Coding activation is added; Coding remains Disabled and PR1252 stays held.
+
+Focused private verification is selected with
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s6b=all`
+(and `3.14`, or `--s6b=CASE`). The six cases are `cancel_vs_retry`,
+`cancel_source_all_runs`, `source_failed`, `initiator_unavailable`,
+`pause_resume` and `unknown_effect_kept`. They use real private SQL/cancel
+writers, the Founder route, persisted/reopened histories and test-side commit
+faults; provider launch is forbidden. Native host/provider acceptance remains a
+separate venue, never inferred from these synthetic native observations.
+
 ## S5: internal initiator inbox and plural admission @2
 
 The internal `prepare_generic_batch` / `admit_batch_uncommitted` boundary accepts
@@ -52,8 +192,8 @@ declared cause. It never
 completes the source or the ordinary parent. The inbox addresses the original
 source task/principal; queue insertion is never consumption. The @1 event,
 return, parent-wake and terminal thread-tail behavior is retained unchanged.
-Live initiator queue/session continuation belongs to S6a; owned-run cancellation
-belongs to S6b. Coding remains Disabled and PR1252 remains held.
+S6a supplies live initiator queue/session continuation; S6b above supplies
+owned-run cancellation. Coding remains Disabled and PR1252 remains held.
 
 `snapshot_delivery(conn, initiator_task_id, principal, session_id, cursor=...)`
 is called exactly once per genuinely admitted SID, inside its admission
@@ -78,9 +218,11 @@ On first processing it invokes the internal result consumer's effect writer on
 the SAME transaction, then records its effects and consumption receipt. Any
 exception rolls back result/effects/consumption together. Exact receipt replay
 returns original recorded effects without invoking the writer, even after later
-run/source-session transitions. Existing ordinary decisions consume their stored
-delivered page without extra historical decision keys. S6a owns the run_step
-call site and genuine result/transaction ownership; S5 does not mount it.
+run/source-session transitions. This S5 primitive also supports ordinary decision
+bytes without extra historical keys; the mounted S6a seam restricts consumption
+to completed workflow decisions and leaves ordinary native callbacks unacknowledged.
+S6a owns the run_step call site and genuine result/transaction ownership; S5
+does not mount it.
 
 Complete readers authenticate normalized membership, source outer proofs,
 causal inbox bytes, actual delivery membership and receipt/native-result equality
@@ -164,7 +306,7 @@ under the unchanged ledgers and cancellation reservation.
 (and 3.14, or `--s4b=CASE`) exercises private production writers/readers and
 rendered node data. It does not establish genuine provider/process containment or
 live admission. S5 supplies durable initiator wakes and inbox/wait sets; live source continuation
-belongs to S6a and cancellation delivery belongs to S6b. No live operations follow from
+is supplied by S6a and cancellation delivery by S6b above. No live operations follow from
 this source unit.
 
 ## S4a: Held and controls @2 (inactive consumer)
@@ -261,7 +403,7 @@ on their resulting uncommitted state with unchanged budgets and the operation's
 original deadline; cancellation omits only the future headroom reservation.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
-only positive closure permits its completion. Native cancellation delivery belongs to S6b;
+only positive closure permits its completion. S6b above supplies native cancellation delivery;
 S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
 S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
 Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
@@ -2607,3 +2749,55 @@ their original date; missing or unavailable evidence never means today's
 success. No raw integrity diagnostics cross the route. Setup/report evidence
 grants no workflow permission. English and Simplified Chinese share this
 behavior. No page, Audit UI, notification or required check is added.
+
+## S6a: internal decision continuations
+
+A version3 `seq_source_wait_set` initiator remains an ordinary native session
+owner. Pending addressed inbox events may admit that task while other runs and
+ordinary children continue. Native admission snapshots delivery once for each
+new SID; prompt reads use only its stored page, including an empty page. Late
+events remain pending. Queue coalescing does not consume an event or complete
+the initiating task. Native close/release retries its pending wake; startup
+reconstructs pending visit outboxes and initiator receipts. A drained control/wait
+receipt admits one further ordinary final-decision session without completing it. Unfinished ordinary chain/fanout state survives event entry.
+Resume and the existing Pause discovery sweep publish ready wait-set initiators
+through that same continuation owner and coalescing queue. A wake consumed during
+Pause remains pending for Resume; native generation/current-ownership and
+TaskInvocation fences still decide session admission.
+Resume acknowledges release only after actual delivery or an already-pending
+coalesced item. Queue admission refusal, including shutdown, retains the release
+generation; an initiator that is no longer ready needs no publication.
+
+Dependency observations fetch a bounded active set: unfinished ordinary children
+and retained native join members, excluding workflow carriers. Settled children
+outside the current join remain in history and cannot veto readiness, startup
+rediscovery or final done. Active-set overflow is unavailable/nonterminal; it
+ceases to block once that work settles.
+
+The internal closed decisions are `workflow_control` with `workflow` containing
+the existing `workflow-sequential-control@2` command, and `workflow_wait` with
+`run_ids` listing known owned runs. Both accept optional `consume_notifications`
+(maximum 32 distinct delivered IDs), retaining S5's stored-page consumption default
+and existing receipt validation. A wait requires a consumed event or an
+outstanding run/ordinary dependency. Public composition remains Start@1; @2
+start is unmounted and control/wait are not advertised as agent capabilities.
+
+Database retains ordinary callback authentication, cancellation/recovery, exact
+replay and v2 attempt/omission behavior. Its single attached continuation seam
+receives the actual INTEGER result after result/attempt insertion, before native
+COMMIT. Result, S4a effects and S5 consumption roll back together on refusal or
+error; absence of the seam refuses wait-set callbacks. Exact replay invokes no
+effects. Only completed start/control/wait decisions require workflow consumption.
+Blocked results (including waits on the initiator's own jobs), failed results and
+ordinary decisions pass through to unchanged native handling without acknowledging
+pending events. Their original native causes remain intact. Ordinary final done
+still rechecks dependencies inside that same writer. An ordinary delegate,
+fanout/parallel or then-chain dispatch while a retained native join is unfinished
+refuses with `workflow_seq_workflow_dispatch_join_outstanding` before COMMIT:
+the result and all effects roll back, the join bytes remain unchanged and no
+event is acknowledged. Ordinary dispatch without an unfinished join is unchanged.
+Workflow callbacks never mark the task completed. Shared terminal readers exclude
+start/control/wait even after drain, using the ordinary consumer's parser for
+structured decisions and legacy JSON in `output_summary` when `decision_json`
+is absent; owned live work or unavailable evidence
+prevents early parent release. Ordinary final-done status lag remains THR-211.

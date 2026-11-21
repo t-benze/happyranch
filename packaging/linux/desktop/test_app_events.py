@@ -1,0 +1,166 @@
+"""Closed Main event boundary: native replies and the shipped page/relay scripts."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from gi.repository import GLib
+import app_scheme_webkit as native
+
+
+class EventTests(unittest.TestCase):
+    def setUp(self):
+        self.app = native.AppScheme.__new__(native.AppScheme)
+        self.app.daemon, self.app.closed = None, False
+        self.app.initialize_state()
+        self.app.transfers = {}
+        self.app.controller = object()
+        self.app.GLib = GLib
+        self.app.JSC = SimpleNamespace(Value=SimpleNamespace(new_string=lambda _context, raw: raw))
+        self.delivered, self.errors = [], []
+        self.uri = native.ORIGIN + "/"
+        self.app.view = SimpleNamespace(get_uri=lambda: self.uri,
+            call_async_javascript_function=lambda *args: self.delivered.append(args[2].unpack()))
+        self.app.bridge_token = "native-probed-token"
+        self.reply = SimpleNamespace(return_value=lambda raw: None,
+                                     return_error_message=self.errors.append)
+
+    def subscribe(self, event, enabled=True, **extra):
+        item = {"token": self.app.bridge_token, "event": event, "enabled": enabled, **extra}
+        value = SimpleNamespace(is_string=lambda: True, to_string=lambda: json.dumps(item),
+                                get_context=lambda: None)
+        self.app.bridge_message(self.app.controller, value, self.reply)
+
+    def test_named_native_subscription_and_exact_payloads_without_target_effects(self):
+        generation, document = self.app.generation, self.app.document
+        self.subscribe("app.dialogRequested")
+        self.assertEqual(self.errors, [], "native must admit the closed dialog event")
+        self.subscribe("app.dialogRequested", False)
+        self.subscribe("app.stateChanged")
+        self.assertEqual(self.delivered[-1]["event"], "app.stateChanged")
+        self.assertFalse(self.app.request_dialog("settings"), "status subscription is not dialog admission")
+        self.delivered.clear()
+        self.subscribe("app.dialogRequested")
+        self.assertEqual(self.errors, [], "native must admit the closed dialog event")
+        self.assertEqual(self.delivered, [], "subscribing must not replay a dialog")
+        for dialog in ("connection", "settings"):
+            self.assertTrue(self.app.request_dialog(dialog))
+            self.assertEqual(self.delivered[-1], {"token": "native-probed-token", "event": "app.dialogRequested",
+                                                "raw": '{"schema":2,"dialog":"' + dialog + '"}'})
+        self.subscribe("app.stateChanged", False)
+        self.assertTrue(self.app.request_dialog("connection"), "unsubscribing status cannot disable dialogs")
+        self.subscribe("app.dialogRequested", False)
+        count = len(self.delivered)
+        self.app.emit_state()
+        self.assertFalse(self.app.request_dialog("settings"))
+        self.assertFalse(self.app.request_dialog("preferences"))
+        self.assertEqual(len(self.delivered), count)
+        self.assertEqual((self.app.generation, self.app.document, self.app.daemon, self.app.candidate),
+                         (generation, document, None, None))
+
+    def test_closed_subscription_and_document_retirement_drop_without_replay(self):
+        for item in ({"event": "app.unknown"}, {"enabled": 1}, {"token": "old-document"}, {"extra": True}):
+            self.subscribe("app.dialogRequested", **item) if "event" not in item else self.subscribe(item["event"])
+        self.assertEqual(len(self.errors), 4)
+        self.assertFalse(getattr(self.app, "dialog_subscribed", False))
+        self.subscribe("app.dialogRequested")
+        self.assertEqual(len(self.errors), 4, "valid event must reach its subscription branch")
+        self.assertTrue(self.app.request_dialog("settings"))
+        self.app.invalidate_document()
+        count = len(self.delivered)
+        self.assertFalse(self.app.request_dialog("connection"))
+        self.assertFalse(self.app.subscribed)
+        self.assertFalse(self.app.dialog_subscribed)
+        self.app.bridge_token = "new-document"
+        self.subscribe("app.dialogRequested")
+        self.assertEqual(len(self.delivered), count, "new document cannot replay a retired request")
+        self.uri = "http://127.0.0.1:43127/"
+        self.subscribe("app.dialogRequested", False)
+        self.assertEqual(len(self.errors), 5, "ordinary HTTP documents cannot change subscriptions")
+        self.app.closed = True
+        self.assertFalse(self.app.request_dialog("settings"))
+
+    def test_dialog_entry_is_independent_of_every_target_readiness_state(self):
+        self.subscribe("app.dialogRequested")
+        self.assertEqual(self.errors, [], "dialog subscription must be admitted")
+        for state in ("no_target", "target_starting", "ready", "unreachable", "incompatible", "busy"):
+            self.app.daemon = None if state == "no_target" else native.LocalDaemon(43127)
+            if self.app.daemon is not None:
+                self.app.daemon.state = state
+            before = self.app.status()
+            with self.subTest(state=state), patch.object(self.app, "select_target", side_effect=AssertionError("entry changed target")), \
+                    patch.object(self.app, "refresh_status", side_effect=AssertionError("entry started admission")):
+                self.assertTrue(self.app.request_dialog("connection"))
+                self.assertEqual(json.loads(self.delivered[-1]["raw"]), {"schema": 2, "dialog": "connection"})
+            self.assertEqual(self.app.status(), before)
+
+    def test_page_and_named_world_relay_keep_listeners_separate(self):
+        # VM supplies only browser plumbing. Both facades under test are the
+        # literal shipping scripts, with no copy of their event-routing logic.
+        script = r'''
+const vm = require('node:vm'), assert = require('node:assert/strict');
+const sources = JSON.parse(process.env.HR_EVENT_SCRIPTS);
+const listeners = [new Map(), new Map()], native = [], traffic = [];
+const contexts = listeners.map((handlers, index) => {
+  const context = {location:{origin:'happyranch-app://app'}, crypto:{randomUUID:()=> 'document-token'},
+    TextEncoder, MutationObserver:class {observe(){} disconnect(){}}, document:{},
+    addEventListener:(name, callback)=> {if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(callback);}};
+  context.window = context.top = context;
+  context.webkit = {messageHandlers:{appBridge:{postMessage:raw=> {native.push(JSON.parse(raw)); return Promise.resolve('{}');}}}};
+  return vm.createContext(context);
+});
+contexts.forEach((context, index)=> {
+  context.postMessage = (data, origin)=> {
+    traffic.push(data);
+    contexts.forEach((target, targetIndex)=> {
+      target.incomingData = data; target.incomingOrigin = origin;
+      vm.runInContext('for (const fn of messageCallbacks) fn({data:incomingData,origin:incomingOrigin,source:window})', target);
+    });
+  };
+  context.messageCallbacks = listeners[index].get('message') || [];
+});
+vm.runInContext(sources.page, contexts[0]);
+vm.runInContext(sources.relay, contexts[1]);
+contexts.forEach((context,index)=> context.messageCallbacks = listeners[index].get('message'));
+vm.runInContext(`globalThis.states=[];globalThis.dialogs=[];
+ try {
+ globalThis.offState=happyranchConnection.on('app.stateChanged', raw=>states.push(raw));
+ globalThis.offDialog=happyranchConnection.on('app.dialogRequested', raw=>dialogs.push(raw));
+ } catch(error) {globalThis.subscriptionError=error;}
+ assertUnknown = (()=>{try {happyranchConnection.on('app.unknown',()=>{});return false;}catch{return true;}})();`, contexts[0]);
+assert.equal(contexts[0].subscriptionError, undefined, 'page facade must accept dialog subscriptions');
+assert.equal(contexts[0].assertUnknown, true);
+assert.equal(native.length, 0, 'subscriptions await document admission');
+vm.runInContext(`hrAppBridge.emit('app.dialogRequested','premature');hrAppBridge.admit(hrAppBridge.token);`, contexts[1]);
+assert.equal(JSON.stringify(contexts[0].dialogs), '[]');
+assert.deepEqual(native.map(item=>item.event), ['app.stateChanged','app.dialogRequested']);
+vm.runInContext(`hrAppBridge.emit('app.stateChanged','state');hrAppBridge.emit('app.dialogRequested','dialog');hrAppBridge.emit('app.unknown','wrong');`, contexts[1]);
+assert.equal(JSON.stringify(contexts[0].states), '["state"]');
+assert.equal(JSON.stringify(contexts[0].dialogs), '["dialog"]');
+vm.runInContext(`offState();globalThis.other=happyranchConnection.on('app.dialogRequested', raw=>dialogs.push('other:'+raw));offDialog();`, contexts[0]);
+assert.equal(native.at(-1).enabled, true, 'one remaining dialog listener keeps its subscription');
+vm.runInContext(`hrAppBridge.emit('app.dialogRequested','again');`, contexts[1]);
+assert.equal(JSON.stringify(contexts[0].dialogs), '["dialog","other:again"]');
+vm.runInContext(`other();`, contexts[0]);
+assert.deepEqual(native.at(-1), {token:'document-token',event:'app.dialogRequested',enabled:false});
+vm.runInContext(`hrAppBridge.emit('app.dialogRequested','dropped');`, contexts[1]);
+assert.equal(JSON.stringify(contexts[0].dialogs), '["dialog","other:again"]');
+const before = native.length;
+vm.runInContext(`postMessage({channel:'hr-app-subscribe',event:'app.unknown',enabled:true},location.origin);`, contexts[0]);
+assert.equal(native.length, before);
+for (const fn of listeners[0].get('pagehide')) fn();
+vm.runInContext(`hrAppBridge.emit('app.dialogRequested','retired');`, contexts[1]);
+assert.equal(JSON.stringify(contexts[0].dialogs), '["dialog","other:again"]');
+console.log('page/relay: closed event names, admission, independent unsubscribe, drop, teardown OK');
+'''
+        result = subprocess.run(["node", "-e", script], env={**os.environ, "HR_EVENT_SCRIPTS": json.dumps(
+            {"page": native.APP_PAGE, "relay": native.APP_RELAY})}, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

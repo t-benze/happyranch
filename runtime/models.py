@@ -295,8 +295,11 @@ class ManagerSupersessionAttestation(BaseModel):
 
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede", "workflow_start"]
+    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede", "workflow_start", "workflow_control", "workflow_wait"]
     workflow: dict | None = None
+    workflows: list[dict] | None = None
+    run_ids: list[str] | None = None
+    consume_notifications: list[str] | None = None
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
@@ -317,6 +320,32 @@ class NextStep(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coding_start_is_closed(cls, value: object) -> object:
+        if isinstance(value, dict) and (value.get('action') in ('workflow_control', 'workflow_wait')
+                or (value.get('action') == 'workflow_start' and 'workflows' in value)):
+            action = value['action']
+            required = {'action', 'workflow' if action == 'workflow_control' else
+                'run_ids' if action == 'workflow_wait' else 'workflows'}
+            if not required <= value.keys() or value.keys() - required - {'consume_notifications'}:
+                raise ValueError('workflow_decision_fields_invalid')
+            for key in ('consume_notifications', 'run_ids'):
+                if key in value:
+                    ids = value[key]
+                    if (type(ids) is not list or len(ids) > (32 if key == 'consume_notifications' else 4096)
+                            or any(type(item) is not str or not item or '\x00' in item for item in ids)
+                            or len(set(ids)) != len(ids)):
+                        raise ValueError('workflow_decision_ids_invalid')
+            if action == 'workflow_control':
+                from runtime.workflows.sequential_control import parse_control
+                from runtime.workflows.sequential_history import _bytes
+                parse_control(_bytes(value['workflow']))
+            elif action == 'workflow_start':
+                from runtime.workflows.sequential_definition import parse_generic_start
+                from runtime.workflows.sequential_history import _bytes
+                if type(value['workflows']) is not list or not 1 <= len(value['workflows']) <= 8:
+                    raise ValueError('workflow_batch_bounds')
+                for command in value['workflows']:
+                    parse_generic_start(_bytes(command))
+            return value
         if isinstance(value, dict) and value.get("action") == "workflow_start":
             workflow = value.get("workflow")
             if isinstance(workflow, dict) and workflow.get("format") == "workflow-sequential-start@1":
@@ -324,17 +353,25 @@ class NextStep(BaseModel):
                 return SequentialStartDecision.model_validate(value).model_dump(mode="json")
             from runtime.workflows.coding_start_records import CodingStartDecision
             return CodingStartDecision.model_validate(value).model_dump()
-        if isinstance(value, dict) and "workflow" in value:
-            # Before this variant, workflow was an ignored legacy extra.
-            value = {key: item for key, item in value.items() if key != "workflow"}
+        if isinstance(value, dict):
+            # These names were ignored extras on historical ordinary decisions.
+            value = {key: item for key, item in value.items()
+                if key not in ('workflow', 'workflows', 'run_ids', 'consume_notifications')}
         return value
 
     @model_serializer(mode="wrap")
     def _closed_workflow_wire(self, handler: Any) -> dict:
+        if self.action in ('workflow_control', 'workflow_wait') or (self.action == 'workflow_start' and self.workflows is not None):
+            key = 'workflow' if self.action == 'workflow_control' else 'run_ids' if self.action == 'workflow_wait' else 'workflows'
+            result = {'action': self.action, key: getattr(self, key)}
+            if 'consume_notifications' in self.model_fields_set:
+                result['consume_notifications'] = self.consume_notifications
+            return result
         if self.action == "workflow_start":
             return {"action": self.action, "workflow": self.workflow}
         result = handler(self)
-        result.pop("workflow", None)
+        for key in ('workflow', 'workflows', 'run_ids', 'consume_notifications'):
+            result.pop(key, None)
         for key in ("model", "reasoning_effort"):
             if key not in self.model_fields_set:
                 result.pop(key, None)

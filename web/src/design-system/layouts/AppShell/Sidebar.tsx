@@ -2,29 +2,27 @@ import { useState } from 'react';
 import * as SelectPrimitive from '@radix-ui/react-select';
 import {
   Activity,
-  BookOpen,
+  Book,
+  Check,
+  ChartLine,
   ChevronDown,
   Clock,
+  FileText,
+  Folder,
+  GitFork,
+  House,
+  Lightbulb,
+  ListTodo,
   type LucideIcon,
-  ListChecks,
+  type LucideProps,
   MessageSquare,
-  Package,
-  Puzzle,
-  ScrollText,
+  Moon,
   Settings,
-  Sparkles,
+  SquareCheck,
   Terminal,
   Users,
-  Wallet,
-  Workflow,
-  Home as HomeIcon,
 } from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
-import {
-  SelectContent,
-  SelectItem,
-  SelectSeparator,
-} from '@/design-system/primitives/Select';
 import {
   Tooltip,
   TooltipContent,
@@ -37,6 +35,7 @@ import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hook
 import { Avatar } from '@/design-system/primitives/Avatar';
 
 import { useOrgsList } from '@/hooks/orgs';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { features } from '@/config/features';
@@ -72,6 +71,11 @@ export function Sidebar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
   const routes = useThreadRoutes();
+  // THR-387 S1b: a native recovery state met before any org is known (startup
+  // on `/`) would leave Settings disabled. Only then, Settings opens the
+  // org-less recovery Settings so client-only Preferences stays reachable.
+  // Ordinary browser mode never has a recovery state, so it is unchanged.
+  const recovery = useNativeRecovery();
 
   // BUG-08: Day-N comes from the SAME dashboard-summary query DashboardPage
   // consumes — React Query dedupes by key, so this is not a new data path.
@@ -116,7 +120,7 @@ export function Sidebar(): JSX.Element {
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
-      <section aria-label={t('shell.orgSwitcher')} className="shrink-0">
+      <section aria-label={t('shell.orgSwitcher')} className="flex shrink-0 flex-col">
         <SelectPrimitive.Root
           value={activeSlug ?? undefined}
           onValueChange={onOrgChange}
@@ -125,14 +129,18 @@ export function Sidebar(): JSX.Element {
           <SelectPrimitive.Trigger asChild aria-label={t('shell.activeOrg')}>
             <button
               type="button"
-              className="border-border-default border-l-accent-default hover:bg-surface-raised focus-visible:ring-accent-default flex w-full items-center gap-2 border-b border-l-2 px-2 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:px-4"
+              // THR-376 sidebar (TASK-18017): Pasture `.org` — an inset rounded
+              // block (margin 4px 12px 8px, padding 8px 10px, radius 12px,
+              // gap 10px, hover --surface). Below md the 56px icon rail keeps a
+              // tighter inset so the 30px brandmark still fits.
+              className="hover:bg-surface-raised focus-visible:ring-accent-default group mx-1 mt-1 mb-2 flex items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:mx-3 md:px-2.5"
             >
               <Brandmark />
               {/* TASK-5987: below md the rail collapses to icons only — the
                   wordmark + context line are hidden but stay in the DOM; the
                   combobox keeps its "Active org" label. */}
               <span className="min-w-0 flex-1 flex-col max-md:hidden md:flex">
-                <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
+                <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-normal font-extrabold tracking-[-0.03em]">
                   <span className="text-brand-foreground">Happy</span>
                   <span className="text-text-primary">Ranch</span>
                 </span>
@@ -140,13 +148,12 @@ export function Sidebar(): JSX.Element {
                     org_age_days from the dashboard summary; the team is the active
                     org slug. On a brand-new org (org_age_days 0/undefined) the day
                     token degrades away, leaving the bare slug — never "Day 0". */}
-                <span className="text-text-muted truncate text-[0.7rem] leading-tight">
+                {/* Pasture `.org-sub`: 11px, one --ink-3 colour throughout. */}
+                <span className="text-text-muted truncate text-[0.6875rem] leading-normal">
                   {activeSlug ? (
                     orgAgeDays && orgAgeDays > 0 ? (
                       <>
-                        <span className="text-text-secondary">
-                          {t('shell.dayCount', { count: orgAgeDays })}
-                        </span>{' '}
+                        <span>{t('shell.dayCount', { count: orgAgeDays })}</span>{' '}
                         · <span>{activeSlug}</span>
                       </>
                     ) : (
@@ -157,30 +164,38 @@ export function Sidebar(): JSX.Element {
                   )}
                 </span>
               </span>
-              <ChevronDown size={14} aria-hidden="true" className="text-text-secondary hidden shrink-0 md:block" />
+              {/* Pasture `.org .chev`: --ink-3, flips 180deg while the popover is open. */}
+              <ChevronDown
+                size={14}
+                aria-hidden="true"
+                className="text-text-muted hidden shrink-0 transition-transform duration-150 group-data-[state=open]:rotate-180 md:block"
+              />
             </button>
           </SelectPrimitive.Trigger>
-          <SelectContent>
+          <OrgSelectContent>
             {orgs.map((o) => (
-              <SelectItem key={o.slug} value={o.slug}>
+              <OrgSelectItem key={o.slug} value={o.slug} badge={identityInitials(o.slug)}>
                 {o.slug}
-              </SelectItem>
+              </OrgSelectItem>
             ))}
             {!isPrototype && (
               <>
-                <SelectSeparator />
-                <SelectItem value={ADD_ORG_VALUE}>{t('shell.addOrgOption')}</SelectItem>
+                <SelectPrimitive.Separator className="bg-border-default mx-0.5 my-1.25 h-px" />
+                <OrgSelectItem value={ADD_ORG_VALUE} badge="+" muted>
+                  {t('shell.addOrgOption')}
+                </OrgSelectItem>
               </>
             )}
-          </SelectContent>
+          </OrgSelectContent>
         </SelectPrimitive.Root>
       </section>
 
       <nav
         aria-label={t('shell.nav.primaryItems')}
-        className="relative flex min-h-0 flex-1 scroll-py-1 flex-col gap-0.5 overflow-y-auto px-3 pt-3 pb-1"
+        // Pasture `.nav`: padding 4px 12px 12px, rows stacked with no gap.
+        className="relative flex min-h-0 flex-1 scroll-py-1 flex-col overflow-y-auto px-3 pt-1 pb-3"
       >
-        <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
+        <SidebarNavItem {...sidebarLink('dashboard', true)} icon={House}>
           {t('shell.nav.home')}
         </SidebarNavItem>
         <SidebarNavItem
@@ -190,16 +205,16 @@ export function Sidebar(): JSX.Element {
         >
           {t('shell.nav.threads')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
+        <SidebarNavItem {...sidebarLink('tasks', true)} icon={SquareCheck}>
           {t('shell.nav.tasks')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('workflows', true)} icon={Workflow}>
+        <SidebarNavItem {...sidebarLink('workflows', true)} icon={WorkflowsIcon}>
           {t('shell.nav.workflows')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('jobs', true)} icon={Terminal}>
           {t('shell.nav.jobs')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
+        <SidebarNavItem {...sidebarLink('todos', true)} icon={ListTodo}>
           {t('shell.nav.todos')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
@@ -210,22 +225,22 @@ export function Sidebar(): JSX.Element {
             {t('shell.nav.workHours')}
           </SidebarNavItem>
         )}
-        <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
+        <SidebarNavItem {...sidebarLink('skills', true)} icon={Lightbulb}>
           {t('shell.nav.skills')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
+        <SidebarNavItem {...sidebarLink('kb', true)} icon={Book}>
           {t('shell.nav.knowledge')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
+        <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Folder}>
           {t('shell.nav.artifacts')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
+        <SidebarNavItem {...sidebarLink('audit', true)} icon={FileText}>
           {t('shell.nav.audit')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
+        <SidebarNavItem {...sidebarLink('dreams', true)} icon={Moon}>
           {t('shell.nav.dreams')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
+        <SidebarNavItem {...sidebarLink('usage', true)} icon={ChartLine}>
           {t('shell.nav.usage')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('health', true)} icon={Activity}>
@@ -234,8 +249,14 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       {/* Footer — Settings + account row (BUG-07). */}
-      <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
-        <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
+      {/* Pasture `.side-foot`: padding 10px 12px, gap 4px. */}
+      <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-2.5">
+        <SidebarNavItem
+          {...(!activeSlug && recovery
+            ? { to: '/settings', enabled: !isPrototype }
+            : sidebarLink('settings', true))}
+          icon={Settings}
+        >
           {t('shell.nav.settings')}
         </SidebarNavItem>
         {/* Account row — avatar + the human Founder's current name. */}
@@ -262,15 +283,92 @@ function AccountRowView({ name }: { name: string }): JSX.Element {
     <div
       tabIndex={0}
       aria-label={t('shell.account.label', { name, role: t('shell.account.founder') })}
-      className="focus-visible:ring-accent-default flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
+      // Pasture `.founder`: padding 6px 8px, radius-sm, hover --surface.
+      className="hover:bg-surface-raised focus-visible:ring-accent-default flex items-center gap-2.5 rounded-sm px-2 py-1.5 transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
-      <Avatar initials={identityInitials(name)} tone="founder" size="md" />
-      <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
-        <span className="text-text-primary truncate text-sm">{name}</span>
-        <span className="text-text-muted truncate text-xs">{t('shell.account.founder')}</span>
+      {/* Pasture `.avatar` is 26px; the primitive's md step is 30px. `!`
+          wins over the primitive's own size class without changing it. */}
+      <Avatar initials={identityInitials(name)} tone="founder" size="md" className="size-6.5!" />
+      <span className="min-w-0 flex-col max-md:hidden md:flex">
+        <span className="text-text-primary text-body-sm truncate font-semibold">{name}</span>
+        <span className="text-text-muted truncate text-[0.6875rem] leading-normal">
+          {t('shell.account.founder')}
+        </span>
       </span>
     </div>
   );
+}
+
+/**
+ * Sidebar-local org popover (Pasture `.org-pop`): --elevated fill, --border-2
+ * border, radius 12, padding 5, 4px below the header and inset 6px on each
+ * side. Built on Radix Select directly so the shared `SelectContent` /
+ * `SelectItem` (check on the left) stay unchanged for every other caller.
+ */
+function OrgSelectContent({ children }: { children: React.ReactNode }): JSX.Element {
+  return (
+    <SelectPrimitive.Portal>
+      <SelectPrimitive.Content
+        position="popper"
+        side="bottom"
+        align="start"
+        sideOffset={4}
+        alignOffset={6}
+        className="border-border-strong bg-surface-overlay text-text-primary shadow-pasture-lg data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 relative z-50 max-h-96 w-[calc(var(--radix-select-trigger-width)-(--spacing(3)))] min-w-48 overflow-hidden rounded-md border"
+      >
+        <SelectPrimitive.Viewport className="p-1.25">{children}</SelectPrimitive.Viewport>
+      </SelectPrimitive.Content>
+    </SelectPrimitive.Portal>
+  );
+}
+
+/**
+ * Pasture `.org-opt`: 24px initials badge (accent-soft / accent-text,
+ * 10.5px/700), name 13px/600, accent-text check on the RIGHT for the current
+ * org. `muted` is the "+ New organization" row's surface-2 / ink-3 badge.
+ */
+function OrgSelectItem({
+  value,
+  badge,
+  muted = false,
+  children,
+}: {
+  value: string;
+  badge: string;
+  muted?: boolean;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <SelectPrimitive.Item
+      value={value}
+      className="data-[highlighted]:bg-surface-sunken relative flex w-full cursor-pointer items-center gap-2.5 rounded-sm px-2.25 py-2 outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <span
+        aria-hidden="true"
+        className={`grid size-6 shrink-0 place-items-center rounded-sm text-[0.65625rem] leading-none font-bold ${
+          muted ? 'bg-surface-sunken text-text-muted' : 'bg-accent-soft text-accent-text'
+        }`}
+      >
+        {badge}
+      </span>
+      <span
+        className={`text-body-sm min-w-0 truncate font-semibold ${muted ? 'text-text-secondary' : 'text-text-primary'}`}
+      >
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      </span>
+      <SelectPrimitive.ItemIndicator className="text-accent-text ml-auto shrink-0">
+        <Check size={15} strokeWidth={2.4} aria-hidden="true" />
+      </SelectPrimitive.ItemIndicator>
+    </SelectPrimitive.Item>
+  );
+}
+
+/**
+ * Pasture's Workflows glyph is a three-node graph (two left nodes feeding one
+ * right node). Lucide `GitFork` turned a quarter-turn is the same layout.
+ */
+function WorkflowsIcon(props: LucideProps): JSX.Element {
+  return <GitFork {...props} className={`-rotate-90 ${props.className ?? ''}`} />;
 }
 
 function Brandmark(): JSX.Element {
@@ -315,7 +413,7 @@ export function SidebarNavItem({
   to: string;
   enabled: boolean;
   children: React.ReactNode;
-  icon: LucideIcon;
+  icon: LucideIcon | React.ComponentType<LucideProps>;
   tooltip?: string;
 }): JSX.Element {
   if (!enabled) {
@@ -324,7 +422,7 @@ export function SidebarNavItem({
         className="text-text-muted text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start md:gap-2.75 md:px-2.5 md:py-2"
         aria-disabled="true"
       >
-        <Icon size={16} aria-hidden="true" className="shrink-0" />
+        <Icon size={17} aria-hidden="true" className="shrink-0 opacity-85" />
         <span className="sr-only md:not-sr-only">{children}</span>
       </span>
     );
@@ -344,14 +442,15 @@ export function SidebarNavItem({
         // fill, accent-text ink, weight 600, no left bar; rows 13.5px/500.
         // THR-376 PR12: `.nav-item` padding 8px 10px and gap 11px from md up.
         // Below md the 56px icon rail keeps the base py-1.5 px-2 gap-2.5 rows.
-        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 md:gap-2.75 md:px-2.5 md:py-2 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent-default justify-center md:justify-start ${
+        `group flex items-center gap-2.5 rounded-sm px-2 py-1.5 md:gap-2.75 md:px-2.5 md:py-2 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent-default justify-center md:justify-start ${
           isActive
             ? 'bg-accent-soft text-accent-text font-semibold'
             : 'text-text-secondary font-medium hover:bg-surface-raised hover:text-text-primary'
         }`
       }
     >
-      <Icon size={16} aria-hidden="true" className="shrink-0" />
+      {/* Pasture `.nav-item .ico`: 17px at .85 opacity, full opacity when active. */}
+      <Icon size={17} aria-hidden="true" className="shrink-0 opacity-85 group-aria-[current=page]:opacity-100" />
       {/* TASK-5987: sr-only below md keeps the accessible name when the rail
           collapses to icons; md+ restores the visible label. */}
       <span className="sr-only md:not-sr-only">{children}</span>

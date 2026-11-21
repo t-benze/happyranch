@@ -5,6 +5,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useMatch,
   useParams,
   useSearchParams,
 } from 'react-router-dom';
@@ -14,6 +15,9 @@ import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
+import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeNotice } from '@/shared/connection/NativeNotice';
+import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
@@ -39,7 +43,14 @@ import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
-import { SettingsPage } from '@/features/settings/SettingsPage';
+import { RecoverySettingsPage, SettingsPage } from '@/features/settings/SettingsPage';
+import { SettingsDialogBody } from '@/features/settings/SettingsDialogBody';
+import {
+  DesktopDialogsProvider,
+  DesktopSettingsRoute,
+  MAIN_CONTENT_ID,
+} from '@/features/desktop-dialogs/DesktopDialogs';
+import { isDesktopShell } from '@/features/desktop-dialogs/desktopShell';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -47,11 +58,28 @@ import { features } from '@/config/features';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
+  const recovery = useNativeRecovery();
   const { t } = useTranslation();
+  // A native recovery state (desktop: no target, starting, incompatible, ...)
+  // is shown by the AppShell; it is not "no orgs", so never route to onboarding.
+  if (recovery) return <></>;
+  // THR-387 S5-W1 F3: only a successful (possibly empty) list routes; a
+  // pending or failed read is never "no orgs", so an existing install is
+  // never sent to onboarding on failure. A transient native failure
+  // (busy/throttled) is refetched automatically once it clears.
   if (orgsQuery.isLoading) {
     return <div className="text-text-secondary p-8">{t('shell.loading')}</div>;
   }
-  const first = orgsQuery.data?.orgs[0]?.slug;
+  if (orgsQuery.data === undefined) {
+    if (!orgsQuery.isError) return <div className="text-text-secondary p-8">{t('shell.loading')}</div>;
+    return (
+      <div className="text-text-secondary flex flex-col gap-3 p-8" data-root-orgs-error="">
+        <div className="text-text-primary text-base font-semibold">{t('shell.error.title')}</div>
+        <div className="text-xs">{t('shell.error.body')}</div>
+      </div>
+    );
+  }
+  const first = orgsQuery.data.orgs[0]?.slug;
   if (!first) {
     return <Navigate to="/onboarding" replace />;
   }
@@ -93,6 +121,12 @@ function OrgLayout(): JSX.Element {
 
 function AppShell(): JSX.Element {
   const location = useLocation();
+  // Settings fences only its target-backed sections itself, so local
+  // Settings -> Preferences stays usable during a recovery state. The
+  // org-less /settings/* is the recovery-only Settings for startup on `/`.
+  const orgSettingsRoute = useMatch('/orgs/:slug/settings/*') !== null;
+  const recoverySettingsRoute = useMatch('/settings/*') !== null;
+  const settingsRoute = orgSettingsRoute || recoverySettingsRoute;
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
@@ -101,10 +135,16 @@ function AppShell(): JSX.Element {
       <TopbarSlotsProvider>
         <div className="flex min-w-0 flex-1 flex-col">
           <AppBar />
-          <main className="flex-1 overflow-hidden">
-            <AppShellErrorBoundary resetKey={location.pathname}>
-              <Outlet />
-            </AppShellErrorBoundary>
+          {/* THR-387 S5-W1: non-blocking busy/throttled/not-sent/unknown notice. */}
+          <NativeNotice />
+          <main id={MAIN_CONTENT_ID} tabIndex={-1} className="flex-1 overflow-hidden focus:outline-none">
+            {/* THR-387 S1b: a native recovery state replaces the visible page
+                but keeps it mounted (hidden) so drafts and page state survive. */}
+            <NativeRecoveryFence bypass={settingsRoute}>
+              <AppShellErrorBoundary resetKey={location.pathname}>
+                <Outlet />
+              </AppShellErrorBoundary>
+            </NativeRecoveryFence>
           </main>
         </div>
       </TopbarSlotsProvider>
@@ -113,74 +153,86 @@ function AppShell(): JSX.Element {
 }
 
 export function AppRoutes(): JSX.Element {
+  // THR-387 S6-W1: in the desktop app, Main Settings routes open the one
+  // Settings dialog at that page; browser mode keeps the full-page routes.
+  const desktop = isDesktopShell();
   return (
-    <Routes>
-      {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
-          `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
-          and OrgSlugContext — keeping mock-only behaviour fully isolated
-          from the daemon-backed routes. */}
-      {!PROTOTYPES_DISABLED && prototypeRoutes()}
-      <Route element={<AppShell />}>
-        <Route index element={<RootRedirect />} />
-        {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
-            shell drives the container-level /orgs list + create routes, so a
-            slug is not yet chosen. Mounted in AppShell like the org-less index. */}
-        <Route path="onboarding" element={<OnboardingPage />} />
-        <Route path="/orgs/:slug" element={<OrgLayout />}>
-          <Route index element={<NavigateToHome />} />
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="threads" element={<ThreadsPage />} />
-          <Route path="threads/:thread_id" element={<ThreadsPage />} />
-          <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
-          <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
-          <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
-          <Route path="workflows/definitions/:definitionId" element={<SequentialWorkflowsPage view="definition" />} />
-          <Route path="workflows/runs/:runId" element={<SequentialWorkflowsPage view="run" />} />
-          <Route path="tasks" element={<TasksPage />} />
-          <Route path="tasks/:task_id" element={<TaskDetailPage />} />
-          <Route path="todos" element={<TodosPage />} />
-          <Route path="todos/:scheduleId" element={<TodosPage />} />
-          <Route path="kb" element={<KbPage />} />
-          <Route path="kb/:entrySlug/*" element={<KbPage />} />
+    <DesktopDialogsProvider renderSettingsBody={(slot) => <SettingsDialogBody {...slot} />}>
+      <Routes>
+        {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
+            `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
+            and OrgSlugContext — keeping mock-only behaviour fully isolated
+            from the daemon-backed routes. */}
+        {!PROTOTYPES_DISABLED && prototypeRoutes()}
+        <Route element={<AppShell />}>
+          <Route index element={<RootRedirect />} />
+          {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
+              shell drives the container-level /orgs list + create routes, so a
+              slug is not yet chosen. Mounted in AppShell like the org-less index. */}
+          <Route path="onboarding" element={<OnboardingPage />} />
+          <Route path="/orgs/:slug" element={<OrgLayout />}>
+            <Route index element={<NavigateToHome />} />
+            <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="threads" element={<ThreadsPage />} />
+            <Route path="threads/:thread_id" element={<ThreadsPage />} />
+            <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
+            <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
+            <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
+            <Route path="workflows/definitions/:definitionId" element={<SequentialWorkflowsPage view="definition" />} />
+            <Route path="workflows/runs/:runId" element={<SequentialWorkflowsPage view="run" />} />
+            <Route path="tasks" element={<TasksPage />} />
+            <Route path="tasks/:task_id" element={<TaskDetailPage />} />
+            <Route path="todos" element={<TodosPage />} />
+            <Route path="todos/:scheduleId" element={<TodosPage />} />
+            <Route path="kb" element={<KbPage />} />
+            <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
-          <Route path="audit" element={<AuditPage />} />
-          <Route path="skills" element={<SkillsPage />} />
-          {/* Static `new`/`validation` rank above the dynamic `:skillId` in
-              react-router v6, but keep them declared first for readability. */}
-          <Route path="skills/validation" element={<SkillValidationPage />} />
-          <Route path="skills/custom" element={<CustomSkillsPage />} />
-          <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
-          <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
-          <Route path="skills/:skillId" element={<SkillDetailPage />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="agents/:agent_name" element={<AgentsPage />} />
-          <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
-          <Route path="jobs" element={<JobsPage />} />
-          <Route path="jobs/:job_id" element={<JobDetailPage />} />
-          <Route path="health" element={<HealthPage />} />
-          <Route path="usage" element={<UsagePage />} />
-          {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
-              bookmark (and the dashboard deep-link) working via redirect. */}
-          <Route path="spend" element={<SpendRedirect />} />
-          <Route path="dreams" element={<DreamsPage />} />
-          {/* THR-035: the standalone Schedule surface folded into Work Hours.
-              Old bookmarks redirect to the Wakes view; the wake list now lives
-              as the `?view=wakes` tab of the Work Hours surface.
-              THR-305: with `work_hours_ui` off none of these routes exist, so
-              the direct and legacy URLs fall through to the not-found route. */}
-          {features.work_hours_ui && (
-            <>
-              <Route path="schedule" element={<ScheduleRedirect />} />
-              <Route path="work-hours" element={<WorkHoursSurface />} />
-              <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
-            </>
-          )}
-          <Route path="artifacts" element={<ArtifactsPage />} />
-          <Route path="settings/*" element={<SettingsPage />} />
+            <Route path="audit" element={<AuditPage />} />
+            <Route path="skills" element={<SkillsPage />} />
+            {/* Static `new`/`validation` rank above the dynamic `:skillId` in
+                react-router v6, but keep them declared first for readability. */}
+            <Route path="skills/validation" element={<SkillValidationPage />} />
+            <Route path="skills/custom" element={<CustomSkillsPage />} />
+            <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
+            <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
+            <Route path="skills/:skillId" element={<SkillDetailPage />} />
+            <Route path="agents" element={<AgentsPage />} />
+            <Route path="agents/:agent_name" element={<AgentsPage />} />
+            <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+            <Route path="jobs/:job_id" element={<JobDetailPage />} />
+            <Route path="health" element={<HealthPage />} />
+            <Route path="usage" element={<UsagePage />} />
+            {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
+                bookmark (and the dashboard deep-link) working via redirect. */}
+            <Route path="spend" element={<SpendRedirect />} />
+            <Route path="dreams" element={<DreamsPage />} />
+            {/* THR-035: the standalone Schedule surface folded into Work Hours.
+                Old bookmarks redirect to the Wakes view; the wake list now lives
+                as the `?view=wakes` tab of the Work Hours surface.
+                THR-305: with `work_hours_ui` off none of these routes exist, so
+                the direct and legacy URLs fall through to the not-found route. */}
+            {features.work_hours_ui && (
+              <>
+                <Route path="schedule" element={<ScheduleRedirect />} />
+                <Route path="work-hours" element={<WorkHoursSurface />} />
+                <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+              </>
+            )}
+            <Route path="artifacts" element={<ArtifactsPage />} />
+            <Route path="settings/*" element={desktop ? <DesktopSettingsRoute /> : <SettingsPage />} />
+          </Route>
+          {/* THR-387 S1b: recovery-only org-less Settings (Preferences reachable
+              during a startup recovery state with no known org). Outside
+              recovery it renders NotFound, as this URL did before. */}
+          <Route
+            path="settings/*"
+            element={desktop ? <DesktopSettingsRoute /> : <RecoverySettingsPage notFound={<NotFound />} />}
+          />
+          <Route path="*" element={<NotFound />} />
         </Route>
-        <Route path="*" element={<NotFound />} />
-      </Route>
-    </Routes>
+      </Routes>
+    </DesktopDialogsProvider>
   );
 }
 

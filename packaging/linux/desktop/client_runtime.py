@@ -1,6 +1,7 @@
 """Native runtime HTTP proxy. No command bridge, persistence, or bearer export."""
 from __future__ import annotations
 
+import io
 import json
 import re
 import secrets
@@ -29,12 +30,13 @@ class Wire:
     def __init__(self, stream: socket.socket, deadline: float) -> None:
         self.stream, self.deadline = stream, deadline
         self.buffer = bytearray()
+        self.idle_timeout: float | None = None
 
     def receive(self) -> bytes:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise ClientError("deadline")
-        self.stream.settimeout(remaining)
+        self.stream.settimeout(min(remaining, self.idle_timeout) if self.idle_timeout else remaining)
         return self.stream.recv(65536)
 
     def until(self, delimiter: bytes, limit: int) -> bytes:
@@ -134,6 +136,204 @@ class Wire:
                 size -= len(data)
 
 
+def remote_headers(headers: dict[str, str], credential: str, *, upgrade: bool = False) -> dict[str, str]:
+    """Shared native authority/framing policy for listener and in-process use."""
+    connection = {item.strip().lower() for item in headers.get("connection", "").split(",")}
+    stripped = {"authorization", "cookie", "proxy-authorization", "host", "connection",
+                "keep-alive", "upgrade", "te", "trailer", "expect", "forwarded", "via", "x-real-ip"} | connection
+    kept = {key: value for key, value in headers.items() if key not in stripped
+            and not key.startswith(("x-happyranch-", "x-tailscale-", "tailscale-", "x-tailnet-", "x-forwarded-", "proxy-"))}
+    # Framing cannot be nominated away by a Connection header.
+    for key in ("content-length", "transfer-encoding"):
+        if key in headers:
+            kept[key] = headers[key]
+    kept.update({"host": "home:443", "connection": "Upgrade" if upgrade else "close",
+                 "x-happyranch-device-credential": credential})
+    if upgrade:
+        kept["upgrade"] = "websocket"
+    return kept
+
+
+MAX_BODY = 64 * 1024 * 1024
+
+
+class RemoteCall:
+    """Listener-free single HTTP exchange over an existing pinned-session dial.
+
+    Native owns the three callbacks. close is independently callable, including
+    during dial/upload/headers, and releases each acquired dial exactly once.
+    """
+
+    def __init__(self, dial: Callable[[float, Callable[[socket.socket], bool]], socket.socket],
+                 release: Callable[[socket.socket], None], credential: Callable[[], str]) -> None:
+        self._dial, self._release, self._credential = dial, release, credential
+        self._lock = threading.Lock()
+        self._closed = False
+        self.sock: socket.socket | None = None
+
+    def _acquire(self, stream: socket.socket) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            self.sock = stream
+            return True
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            stream, self.sock = self.sock, None
+        if stream is not None:
+            # Wake blocked readers before transferring final custody to session.
+            try:
+                stream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._release(stream)
+
+    cancel = close
+
+    def send(self, method: str, target: str, headers: dict[str, str],
+             body: bytes | io.BufferedIOBase, *, deadline: float | None = None) -> RemoteResponse:
+        bounded = deadline is not None
+        deadline = min(deadline, time.monotonic() + 10) if bounded else time.monotonic() + 10
+        if (not re.fullmatch(r"[A-Z]+", method) or not target.startswith("/")
+                or target.startswith("//") or "#" in target
+                or any(ord(c) < 33 or ord(c) > 126 for c in target)):
+            raise ClientError("protocol")
+        headers = {k.lower(): v for k, v in headers.items()}
+        if (sum(len(k) + len(v) + 4 for k, v in headers.items()) > 32768
+                or any(not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", k)
+                       or any(ord(c) < 32 or ord(c) > 126 for c in v) for k, v in headers.items())):
+            raise ClientError("protocol")
+        if not isinstance(body, bytes):
+            data = bytearray()
+            while True:
+                with self._lock:
+                    if self._closed:
+                        raise ClientError("cancelled")
+                if time.monotonic() >= deadline:
+                    raise ClientError("deadline")
+                chunk = body.read(min(65536, MAX_BODY + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > MAX_BODY:
+                    raise ClientError("bodyTooLarge")
+            body = bytes(data)
+        if len(body) > MAX_BODY:
+            raise ClientError("bodyTooLarge")
+        if time.monotonic() >= deadline:
+            raise ClientError("deadline")
+        with self._lock:
+            if self._closed:
+                raise ClientError("cancelled")
+        try:
+            credential = self._credential()
+        except Exception:
+            raise ClientError("unavailable") from None
+        kept = remote_headers(headers, credential)
+        # Structured bodies are payload bytes, never caller-supplied HTTP framing.
+        kept.pop("transfer-encoding", None)
+        kept["content-length"] = str(len(body))
+        kept["accept-encoding"] = "identity"
+        try:
+            stream = self._dial(deadline, self._acquire)
+        except Exception:
+            self.close()
+            raise ClientError("unavailable") from None
+        with self._lock:
+            if self._closed:
+                raise ClientError("cancelled")
+        try:
+            wire = Wire(stream, deadline)
+            wire.send((f"{method} {target} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in kept.items())
+                       + "\r\n").encode("ascii"))
+            for offset in range(0, len(body), 65536):
+                wire.send(body[offset:offset + 65536])
+            # Ignore bounded informational responses, never an unsolicited upgrade.
+            for _ in range(8):
+                line, response_headers = wire.head(repeated=True)
+                if not re.fullmatch(r"HTTP/1\.[01] [1-5][0-9]{2}( [ -~]*)?", line):
+                    raise ClientError("protocol")
+                status = int(line.split(" ")[1])
+                if status == 101:
+                    raise ClientError("protocol")
+                if status >= 200:
+                    break
+            else:
+                raise ClientError("protocol")
+            wire.deadline = deadline if bounded else time.monotonic() + 3600
+            events = response_headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream"
+            wire.idle_timeout = None if events else 30
+            return RemoteResponse(self, wire, status, response_headers, method)
+        except BaseException:
+            self.close()
+            raise
+
+
+class RemoteResponse:
+    """Decode one framed response incrementally; malformed/short bodies error."""
+
+    def __init__(self, call: RemoteCall, wire: Wire, status: int,
+                 headers: dict[str, str], method: str) -> None:
+        self.call, self.wire, self.status, self.headers = call, wire, status, headers
+        self.socket = wire.stream
+        empty = method == "HEAD" or status in (204, 304)
+        self.length = 0 if empty else int(headers["content-length"]) if "content-length" in headers else None
+        self.remaining = self.length
+        self.chunked = not empty and "transfer-encoding" in headers
+        self.chunk_remaining = 0
+        self.ended = empty
+
+    def getheaders(self) -> list[tuple[str, str]]:
+        return list(self.headers.items())
+
+    def read1(self, size: int = 65536) -> bytes:
+        if self.ended or self.remaining == 0 or size <= 0:
+            return b""
+        if self.chunked and not self.chunk_remaining:
+            line = self.wire.until(b"\r\n", 128)
+            if not re.fullmatch(rb"[0-9a-fA-F]{1,8}\r\n", line):
+                raise ClientError("protocol")
+            self.chunk_remaining = int(line, 16)
+            if not self.chunk_remaining:
+                if self.wire.exact(2) != b"\r\n":
+                    raise ClientError("protocol")
+                self.ended = True
+                return b""
+        if not self.wire.buffer:
+            data = self.wire.receive()
+            if not data:
+                if self.chunked or self.remaining is not None:
+                    raise ClientError("protocol")
+                self.ended = True
+                return b""
+            self.wire.buffer.extend(data)
+        count = min(size, 65536, len(self.wire.buffer))
+        if self.chunked:
+            count = min(count, self.chunk_remaining)
+        elif self.remaining is not None:
+            count = min(count, self.remaining)
+        data = bytes(self.wire.buffer[:count])
+        del self.wire.buffer[:count]
+        if self.chunked:
+            self.chunk_remaining -= count
+            if not self.chunk_remaining and self.wire.exact(2) != b"\r\n":
+                raise ClientError("protocol")
+        elif self.remaining is not None:
+            self.remaining -= count
+        return data
+
+    def close(self) -> None:
+        self.call.close()
+
+    def __enter__(self) -> RemoteResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
 class RuntimeProxy:
     """One session's bounded loopback listener and all accepted client streams.
 
@@ -212,18 +412,7 @@ class RuntimeProxy:
                 raise ClientError("protocol")
             # Do not forward browser credentials, identity claims or connection-
             # nominated fields. Reconstruct framing and native authority once.
-            stripped = {"authorization", "cookie", "proxy-authorization", "host", "connection",
-                        "keep-alive", "upgrade", "te", "trailer", "expect", "forwarded", "via", "x-real-ip"} | connection
-            kept = {key: value for key, value in headers.items() if key not in stripped
-                    and not key.startswith(("x-happyranch-", "x-tailscale-", "tailscale-", "x-tailnet-", "x-forwarded-", "proxy-"))}
-            # Framing cannot be nominated away by a Connection header.
-            for key in ("content-length", "transfer-encoding"):
-                if key in headers:
-                    kept[key] = headers[key]
-            kept.update({"host": "home:443", "connection": "Upgrade" if upgrade else "close",
-                         "x-happyranch-device-credential": self._credential()})
-            if upgrade:
-                kept["upgrade"] = "websocket"
+            kept = remote_headers(headers, self._credential(), upgrade=upgrade)
             if "expect" in headers:
                 if headers["expect"].lower() != "100-continue":
                     raise ClientError("protocol")

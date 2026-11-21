@@ -4,7 +4,22 @@
  * Every ``lib/api/*`` module composes this. Feature folders never call
  * ``fetch`` directly — see ``web/ARCHITECTURE.md``.
  */
-import { clearToken, getToken } from '../auth';
+import { BootstrapError, BootstrapStaleError, clearToken, getToken } from '../auth';
+import {
+  clearNativeRecovery,
+  parseNativeRecovery,
+  reportNativeRecovery,
+  type NativeRecoveryState,
+} from '../nativeRecovery';
+import { clearTransientNativeNotice, reportNativeNotice } from '../native/notices';
+import {
+  captureTarget,
+  isNativeTarget,
+  isStaleTarget,
+  refreshAppStatus,
+  targetCustodyHeld,
+  targetHeaders,
+} from '../native/target';
 
 export const API_PREFIX = '/api/v1';
 
@@ -19,8 +34,11 @@ export interface RequestOptions {
    * When set, overrides the default master daemon bearer with a scoped token.
    * Used by loopback-only, scoped-token-gated routes (e.g. register-binary).
    * Sends ``Authorization: Bearer <token>`` instead of the cached bearer.
+   * A function is prepared only AFTER the target generation is pinned (R3-2),
+   * so a token awaited across a target switch never carries the operation to
+   * the new target. Either form is sent once, including on 401.
    */
-  auth?: { token: string };
+  auth?: { token: string | (() => Promise<string>) };
   /**
    * Opt-in single send. `false`: on a master-bearer 401 the cached bearer is
    * still cleared and re-acquired, but the request is NOT re-sent; the 401 is
@@ -40,6 +58,320 @@ export class ApiError extends Error {
   ) {
     super(`API ${status}${code ? ` (${code})` : ''}`);
   }
+}
+
+/**
+ * A native (desktop) recovery answer: exact `{"detail":{"code":C}}` with 503
+ * for no_target/target_starting/target_unreachable/incompatible/busy or 409
+ * for target_changed. It is still an `ApiError` (same status/code/detail) so
+ * existing per-feature error handling is unchanged; it is never an auth
+ * failure and never clears the bearer. See `lib/nativeRecovery.ts`.
+ */
+export class NativeRecoveryError extends ApiError {
+  constructor(public readonly recovery: NativeRecoveryState, detail: unknown) {
+    super(recovery.code === 'target_changed' ? 409 : 503, recovery.code, detail);
+  }
+}
+
+/**
+ * If `status`/`body` is exactly a native recovery answer, record it in the
+ * app-wide recovery store and return the typed error; otherwise null.
+ */
+export function nativeRecoveryErrorFor(status: number, body: unknown): NativeRecoveryError | null {
+  const recovery = parseNativeRecovery(status, body);
+  if (!recovery) return null;
+  if (recovery.code === 'busy') {
+    // W-1: host busy is transient and never page-blocking.
+    reportNativeNotice('busy');
+  } else if (!(recovery.code === 'target_changed' && isNativeTarget())) {
+    // Desktop 409 is handled by re-reading app.status (schemeFetch), not by
+    // a page state; browser mode keeps the S1b behavior.
+    reportNativeRecovery(recovery);
+  }
+  return new NativeRecoveryError(recovery, (body as { detail: unknown }).detail);
+}
+
+// ---------------------------------------------------------------------------
+// Native bridge v2 request fence (THR-387 S5-W1; spec §12)
+// ---------------------------------------------------------------------------
+
+/**
+ * A response (or failure) for a request captured under an older target
+ * generation. It is dropped: no cache write, toast or draft update. It is a
+ * `NativeRecoveryError` (409 target_changed) so latched read owners retry it
+ * like an explicit Retry; it is never recorded as a page recovery state.
+ */
+export class StaleTargetError extends NativeRecoveryError {
+  constructor() {
+    super({ code: 'target_changed' }, { code: 'target_changed' });
+  }
+}
+
+/**
+ * A change refused by native before it was forwarded (409 target_changed, or
+ * no generation known yet). It was not sent and is never retried
+ * automatically; the caller's draft is untouched.
+ */
+export class NotSentError extends NativeRecoveryError {
+  constructor() {
+    super({ code: 'target_changed' }, { code: 'target_changed' });
+  }
+}
+
+/**
+ * A forwarded change interrupted by a target switch (499 cancelled, a stream
+ * error, or a response that arrived after the switch). Its outcome is
+ * unknown; it is never retried automatically.
+ */
+export class ResultUnknownError extends ApiError {
+  constructor() {
+    super(499, 'cancelled', { code: 'cancelled' });
+  }
+}
+
+/** Native per-view cap / lock contention (429 too_many_requests); not host busy. */
+export class ThrottledError extends ApiError {
+  constructor() {
+    super(429, 'too_many_requests', { code: 'too_many_requests' });
+  }
+}
+
+/** Backoff for transient native answers on reads (GET only). */
+export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [500, 1000, 2000];
+
+/** Exactly `{"detail":{"code":C}}` (incompatible may add side); else null. */
+function nativeCodeOf(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== 'detail') return null;
+  const detail = (body as { detail: unknown }).detail;
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const code = (detail as { code?: unknown }).code;
+  if (typeof code !== 'string') return null;
+  const extra = Object.keys(detail).filter((k) => k !== 'code');
+  if (extra.length === 0 || (code === 'incompatible' && extra.length === 1 && extra[0] === 'side')) return code;
+  return null;
+}
+
+const PRE_FORWARD_503 = new Set(['no_target', 'target_starting', 'target_unreachable', 'incompatible', 'busy']);
+
+/** Native answered without forwarding (spec §12 error table). */
+function isPreForwardRefusal(status: number, code: string | null): boolean {
+  return (
+    (status === 409 && code === 'target_changed') ||
+    (status === 429 && code === 'too_many_requests') ||
+    (status === 503 && code !== null && PRE_FORWARD_503.has(code))
+  );
+}
+
+async function peekNativeCode(res: Response): Promise<string | null> {
+  if (res.status !== 409 && res.status !== 429 && res.status !== 499 && res.status !== 503) return null;
+  try {
+    return nativeCodeOf(JSON.parse(await res.clone().text()));
+  } catch {
+    return null;
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Outcome for a request whose captured generation is no longer current. */
+export function staleOutcome(read: boolean): Error {
+  if (read) return new StaleTargetError();
+  reportNativeNotice('result_unknown');
+  return new ResultUnknownError();
+}
+
+function notSent(): NotSentError {
+  reportNativeNotice('not_sent');
+  return new NotSentError();
+}
+
+/**
+ * Pin the target generation for one logical operation (F1). Call it before
+ * any preparatory await (bearer bootstrap, multipart preparation) and keep
+ * the result across the bearer re-send. Browser: always `browser`.
+ * Desktop with no known generation: a change is not sent; a read fails as a
+ * 409 recovery answer.
+ */
+export async function pinTarget(read: boolean): Promise<string> {
+  try {
+    return await captureTarget();
+  } catch {
+    if (!read) throw notSent();
+    reportNativeRecovery({ code: 'target_changed' });
+    throw new NativeRecoveryError({ code: 'target_changed' }, { code: 'target_changed' });
+  }
+}
+
+/**
+ * Re-validate a pinned generation immediately before a (re)send. Unchanged:
+ * the same pin. Changed: a change is never sent to the new target (Not sent;
+ * this send never left the page); a read re-pins once to the new generation
+ * (GETs may refetch under the new generation, spec §12).
+ */
+export async function repinBeforeSend(pinned: string, read: boolean): Promise<string> {
+  if (!isStaleTarget(pinned)) return pinned;
+  if (!read) throw notSent();
+  return pinTarget(true);
+}
+
+/**
+ * The bearer for an operation pinned under the current generation. A failed
+ * bootstrap whose error body arrived after a target switch (R2-3) published
+ * nothing; it is stale for a read and Not sent for a change (nothing left the
+ * page for the operation itself).
+ */
+export async function pinnedToken(read: boolean): Promise<string> {
+  return pinnedTokenFrom(getToken, read);
+}
+
+async function pinnedTokenFrom(prepare: () => Promise<string>, read: boolean): Promise<string> {
+  try {
+    return await prepare();
+  } catch (error) {
+    if (error instanceof BootstrapStaleError) throw read ? new StaleTargetError() : notSent();
+    throw error;
+  }
+}
+
+/**
+ * A failed read whose cause is transient native load (503 busy, 429
+ * too_many_requests, including the bearer bootstrap). The query client
+ * refetches these once the condition clears (F3); mutations never retry.
+ */
+export function isTransientNativeFailure(error: unknown): boolean {
+  if (error instanceof ThrottledError) return true;
+  if (error instanceof NativeRecoveryError) return error.recovery.code === 'busy';
+  if (error instanceof BootstrapError) {
+    const code = nativeCodeOf(error.detail);
+    return (error.status === 503 && code === 'busy') || (error.status === 429 && code === 'too_many_requests');
+  }
+  return false;
+}
+
+/** A successful forwarded response clears recovery and busy/throttled (W-2a). */
+export function noteForwardedSuccess(captured: string): void {
+  if (isStaleTarget(captured)) return;
+  clearNativeRecovery();
+  clearTransientNativeNotice();
+}
+
+export interface Fenced {
+  res: Response;
+  /** Generation captured at request start (`browser` without a bridge). */
+  captured: string;
+}
+
+/**
+ * Send one scheme API request under the captured target generation.
+ *
+ * - Captures the generation at start and sends `X-HappyRanch-Target` (desktop
+ *   only; never for GET /auth/bootstrap, which does not use this helper).
+ * - Stale (generation changed): GET -> StaleTargetError; others ->
+ *   ResultUnknownError. Nothing is retried.
+ * - 429 too_many_requests / 503 busy: non-blocking notice; GET retries with
+ *   backoff, others fail at once (not sent).
+ * - Desktop 409 target_changed: re-read app.status. GET refetches once if the
+ *   generation is unchanged (a changed generation is refetched by its new
+ *   owners); others -> NotSentError, never retried.
+ * - 499 cancelled on a non-GET -> ResultUnknownError.
+ * Everything else is returned for the caller's existing error handling.
+ */
+export async function schemeFetch(url: string, init: RequestInit, pinned?: string): Promise<Fenced> {
+  const read = (init.method ?? 'GET').toUpperCase() === 'GET';
+  const captured = pinned === undefined ? await pinTarget(read) : await repinBeforeSend(pinned, read);
+  // F2 editor custody: while an editor still shows an older target's data,
+  // no change is sent to the current target (the draft stays, Not sent).
+  if (!read && targetCustodyHeld()) throw notSent();
+  const headers = new Headers(init.headers);
+  for (const [k, v] of Object.entries(targetHeaders(captured))) headers.set(k, v);
+  let refetched = false;
+  for (let attempt = 0; ; attempt += 1) {
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers });
+    } catch (error) {
+      if (isStaleTarget(captured)) throw staleOutcome(read);
+      // F5: a native change whose transfer failed may already have been
+      // forwarded (upstream bytes can precede page delivery): unknown, never
+      // replayed. A caller's own abort keeps its error.
+      if (!read && isNativeTarget() && !init.signal?.aborted) throw staleOutcome(read);
+      throw error;
+    }
+    if (isStaleTarget(captured)) throw staleOutcome(read);
+    if (res.ok) {
+      noteForwardedSuccess(captured);
+      return { res, captured };
+    }
+    const code = await peekNativeCode(res);
+    // F4: the error body may finish after a switch; never publish a notice
+    // or recovery for the new target from an old body. A change the body
+    // proves native refused before forwarding is Not sent, else unknown.
+    if (isStaleTarget(captured)) {
+      if (!read && isPreForwardRefusal(res.status, code)) throw notSent();
+      throw staleOutcome(read);
+    }
+    const transient = (res.status === 429 && code === 'too_many_requests') || (res.status === 503 && code === 'busy');
+    if (transient) {
+      reportNativeNotice(res.status === 429 ? 'throttled' : 'busy');
+      if (read && attempt < TRANSIENT_RETRY_DELAYS_MS.length) {
+        try {
+          await sleep(TRANSIENT_RETRY_DELAYS_MS[attempt] as number, init.signal);
+        } catch (error) {
+          if (isStaleTarget(captured)) throw staleOutcome(read);
+          throw error;
+        }
+        if (isStaleTarget(captured)) throw staleOutcome(read);
+        continue;
+      }
+      if (res.status === 429) throw new ThrottledError();
+      throw new NativeRecoveryError({ code: 'busy' }, { code: 'busy' });
+    }
+    if (res.status === 409 && code === 'target_changed' && isNativeTarget()) {
+      await refreshAppStatus();
+      if (!read) throw notSent();
+      if (isStaleTarget(captured)) throw new StaleTargetError();
+      if (!refetched) {
+        refetched = true;
+        continue;
+      }
+      reportNativeRecovery({ code: 'target_changed' });
+      throw new NativeRecoveryError({ code: 'target_changed' }, { code: 'target_changed' });
+    }
+    if (res.status === 499 && code === 'cancelled') throw staleOutcome(read);
+    return { res, captured };
+  }
+}
+
+/**
+ * Read a fenced response body. A body read that fails, or that completes
+ * after a generation change, is stale (GET) or of unknown outcome (others).
+ */
+export async function fencedText(fenced: Fenced, read: boolean): Promise<string> {
+  let text: string;
+  try {
+    text = await fenced.res.text();
+  } catch (error) {
+    if (isStaleTarget(fenced.captured)) throw staleOutcome(read);
+    if (!read && isNativeTarget()) throw staleOutcome(read);
+    throw error;
+  }
+  if (isStaleTarget(fenced.captured)) throw staleOutcome(read);
+  return text;
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -82,14 +414,15 @@ async function doFetch(
   url: string,
   init: RequestInit,
   token: string,
-): Promise<Response> {
+  pinned: string,
+): Promise<Fenced> {
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (init.body !== undefined && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
   headers.set('Accept', 'application/json');
-  return fetch(url, { ...init, headers, credentials: 'same-origin' });
+  return schemeFetch(url, { ...init, headers, credentials: 'same-origin' }, pinned);
 }
 
 export async function request<T = unknown>(
@@ -106,30 +439,37 @@ export async function request<T = unknown>(
     init.body = JSON.stringify(opts.body);
   }
 
+  const read = (init.method ?? 'GET') === 'GET';
+  // F1: one generation for the whole logical operation, pinned before the
+  // bearer bootstrap and kept across the 401 re-send.
+  const pinned = await pinTarget(read);
   let token: string;
   if (opts.auth) {
-    // Scoped-token path: use the caller-supplied token.
-    token = opts.auth.token;
+    // Scoped-token path: use the caller-supplied token (prepared under the pin).
+    const supplied = opts.auth.token;
+    token = typeof supplied === 'string' ? supplied : await pinnedTokenFrom(supplied, read);
   } else {
-    token = await getToken();
+    token = await pinnedToken(read);
   }
-  let res = await doFetch(url, init, token);
+  let fenced = await doFetch(url, init, token, pinned);
 
-  if (res.status === 401 && !opts.auth) {
+  if (fenced.res.status === 401 && !opts.auth) {
     // Master-bearer retry (scoped tokens are single-use, so skip).
     clearToken();
-    token = await getToken();
+    token = await pinnedToken(read);
     if (opts.replayOnUnauthorized !== false) {
-      res = await doFetch(url, init, token);
+      // A change is never re-sent to a different target (repinBeforeSend).
+      fenced = await doFetch(url, init, token, fenced.captured);
     }
   }
+  const res = fenced.res;
 
   if (res.status === 204) {
     return undefined as T;
   }
 
   let body: unknown = null;
-  const text = await res.text();
+  const text = await fencedText(fenced, read);
   if (text) {
     try {
       body = JSON.parse(text);
@@ -139,7 +479,7 @@ export async function request<T = unknown>(
   }
 
   if (!res.ok) {
-    throw parseError(res.status, body);
+    throw nativeRecoveryErrorFor(res.status, body) ?? parseError(res.status, body);
   }
   return body as T;
 }

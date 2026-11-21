@@ -1,5 +1,23 @@
 # Web And CLI
 
+## Multipart uploads in the native app scheme
+
+The artifacts and task-attachment API clients use same-origin `/api/v1` paths.
+On `happyranch-app:` they encode FormData inside JavaScript with the platform
+multipart encoder, then send a Uint8Array and its explicit boundary-bearing
+Content-Type. This avoids WebKitGTK's Blob-backed scheme-request crash. Ordinary
+daemon-served browser uploads still send native FormData with browser-set headers.
+Both scheme uploads mirror the daemon's 10 MiB per-file limit before encoding,
+preserving the existing artifact/task upload error contracts. Serialization adds
+a multipart-sized byte buffer alongside the File and encoder buffers; the file
+cap bounds this extra allocation, not total process memory or concurrent uploads.
+No daemon security or native packaging behavior changes in this web slice.
+
+Focused serializer checks use the existing standalone Node test venue:
+`node --test web/scripts/multipart.test.mjs` (Node 24, repository root).
+They inspect exact framing and decode with the platform multipart parser;
+the retired Vitest suite remains retired.
+
 The separate, daemon-independent native connection shell is built with
 `cd web && npm run build:connection`; see [its boundary/import audit](../../web/connection/README.md).
 It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.
@@ -7,6 +25,315 @@ Native loading is packaged separately. Slice 5a adds the Linux host fallback:
 `happyranch connection status` and `connection host --help`. Slice 5b adds Linux
 `connection client --help` with terminal consent, foreground ownership and honest
 `runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). I5b delivers the seven Linux host lifecycle/invite CLI mappings with terminal-only invites and replacement confirmation; address refresh remains B13-deferred. Native/live acceptance remains pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
+
+Settings S2a adds an explicit Linux local-main-view opt-in,
+`HAPPYRANCH_DESKTOP_APP_SCHEME=1`, to serve packaged `web/dist` at
+`happyranch-app://app` and forward API/stream requests natively to the verified
+local daemon. The default HTTP path, remote path and separate connection
+bridge remain unchanged. See [loading, limits and native checks](../operations/linux-release-handbook.md#opt-in-packaged-runtime-ui-settings-s2a).
+
+## Native recovery states and compatibility page (THR-387 S1b-A)
+
+In the desktop app the native shell answers API/stream requests it does not
+forward with exactly `{"detail":{"code":C}}`: status 503 for `no_target`,
+`target_starting`, `target_unreachable`, `incompatible` (optional
+`detail.side` = `host`|`app`|`unknown`) and `busy`; status 409 for
+`target_changed`. `web/src/lib/nativeRecovery.ts` owns the parser and one
+app-wide recovery store. Only that exact shape is recognized: the body's only
+key is `detail`, whose only key is `code` (plus `side` for `incompatible`);
+any other 503/409, including daemon errors that share a status, behaves as
+before. An `incompatible` side outside the three values is treated as
+`unknown`. The daemon emits none of these codes, so daemon-served browser mode
+is unchanged.
+
+`request()` throws `NativeRecoveryError` (a subclass of `ApiError` with the
+same status/code/detail plus `recovery`), so existing per-feature handling
+still applies. The direct-fetch artifacts calls (upload, list, download,
+thread-attachment download, delete), `tasks.uploadTaskAttachment`, the bearer
+bootstrap and both SSE helpers (`subscribeSSE` and
+`features/jobs/jobEventsHook.ts`) record the same state. A recovery answer is
+never an auth failure: it never clears or re-acquires the bearer and never
+logs out; the 401 clear/re-bootstrap/replay path is unchanged. A stream that
+opens to a recovery answer stops (no retry), like other non-OK opens; network
+errors still retry. Streams are not resubscribed after Retry; a remount
+(navigation) reopens them. Since S5-W1 (next section), `busy` is a
+non-blocking notice and never this page state (W-1), any successful forwarded
+response clears the state (W-2a), and in the desktop app a 409
+`target_changed` re-reads `app.status` instead of setting the state.
+
+While a state is active, `NativeRecoveryFence` (in
+`shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
+content, which stays mounted but hidden so drafts and page state survive. The
+AppShell fences every routed page except `/orgs/:slug/settings/*`; Settings
+fences only its target-backed sections (Capacity, Organization, Executors,
+Coding) inside the page, so the Settings sub-nav and the client-only
+Preferences section stay visible and usable. Sidebar and the AppBar Language
+selector stay reachable, and the index route does not redirect to onboarding.
+A recovery state met before any org is known (startup on `/`) has no org for
+the Sidebar's Settings link, so only while a state is active AND no org is
+active, Sidebar Settings opens the org-less recovery-only Settings at
+`/settings/*` (`RecoverySettingsPage` in `features/settings/SettingsPage.tsx`;
+the AppShell fence is bypassed there too). It shows the same sub-nav; its index
+opens Preferences, which is client-only (reaching it and switching language
+send no request), and the target-backed sections show only the recovery panel
+and mount no panel or query. The AppBar titles it Settings only during
+recovery. Outside a recovery state nothing changes: Sidebar Settings stays
+disabled without an org, and `/settings/*` renders the ordinary not-found page
+and title as before. The page becomes the recovery Settings as soon as it
+observes a state while mounted, at mount or later, so a reload or direct URL
+at `/settings/preferences` (where the startup bootstrap meets the native
+answer only after the first render) opens Preferences once the answer
+arrives; until then it shows the not-found page. It adds no query observer,
+so this entry still sends no request. When Retry/Recheck clears the state
+from inside that page it navigates to `/`, which routes to the first org or
+shows the panel again.
+The full-page Settings descriptions in this paragraph (the in-page sub-nav,
+`RecoverySettingsPage`, its index and Retry navigation) are **browser mode**.
+In the desktop app (native mode, see the dialog section below) the same
+`/orgs/:slug/settings/*` and org-less `/settings/*` URLs, including the
+recovery-only Sidebar entry, open the Settings dialog at that page instead;
+its panes keep the same per-section recovery gates (Language stays usable,
+target-backed sections show the recovery panel), and runtime pages with no
+org in Main show the recovery panel.
+The panel content centers when it fits and otherwise starts at the scroll
+origin (short viewports or page zoom), keeping the action reachable by scroll. Copy (EN and
+zh-CN) follows handoff v2.4 §2/§5: `incompatible` side `host` → update
+HappyRanch on the selected computer (this app needs no update), `app` →
+update this app (the computer needs no update), `unknown` → compatibility
+unavailable with no guessed component. The machine code is shown verbatim as
+details. Retry/Recheck (`retryNativeRecovery`) clears the state, notifies
+read owners that keep their own latched failure (the Threads committed-page
+owner retries a read that failed with `NativeRecoveryError`, through its own
+generation-fenced path) and refetches active queries; a request that still
+meets the answer shows it again. No other read owner with a latched
+(skipToken/`enabled:false`) failure exists in `web/src`. The panel names
+Connection in copy only; it does not open the desktop dialogs below.
+
+`web/src/lib/apiContract.ts` is the web owner of `CLIENT_CONTRACT = 1`,
+`MIN_DAEMON = 1` and the pure `isCompatible(health)`: compatible iff
+`health.api_contract` exists with integer fields and
+`min_client <= CLIENT_CONTRACT <= current` and `current >= MIN_DAEMON`;
+missing or invalid metadata is incompatible. Bump rules mirror
+`runtime/daemon/api_contract.py`. Focused checks:
+`node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
+(Node 24, repository root; transform-types is needed for TS parameter
+properties).
+
+## Native bridge v2 target generation (THR-387 S5-W1)
+
+Web side of spec `docs/specs/2026-11-17-web-native-bridge.md` §12. The desktop
+app is detected only by origin `happyranch-app://app` with the
+`window.happyranchConnection` facade; every other page (daemon-served
+`happyranch web`, Mac) is browser mode: the generation is the constant
+`browser`, no header is sent and none of the logic below runs.
+
+- **Store** (`web/src/lib/native/target.ts`): seeded from `app.status` and
+  updated from `app.stateChanged` (closed v2 `appState`, parsed by
+  `native/appStatus.ts`; invalid payloads are ignored). A status reply is
+  applied only if no event arrived meanwhile. The store also drives the page
+  recovery state: `ready` clears it; `no_target`, `target_starting`,
+  `unreachable` and `incompatible` set the matching state; `busy` is a notice.
+- **Header**: `schemeFetch` in `lib/api/client.ts` (used by `request()`, the
+  artifacts and task-attachment direct fetches) and both SSE helpers send
+  `X-HappyRanch-Target` with the native-issued generation;
+  `GET /api/v1/auth/bootstrap` is exempt. Until native has reported a
+  generation, requests wait for the first `app.status`; if none is available
+  nothing is sent (reads show the `target_changed` state, changes fail as Not
+  sent).
+- **Pinning** (`pinTarget`/`repinBeforeSend`): `request()`, the artifacts
+  helpers and the task-attachment upload pin the generation once per logical
+  operation, before any preparatory await (bearer bootstrap, multipart
+  preparation), and keep it across the 401 clear/re-bootstrap/re-send. If the
+  generation changed before a send, a change is never sent to the new target:
+  this includes explicit-token callers (Workflow Setup and Coding settings
+  saves pass `auth: { token: getToken }`, so the bearer is prepared after the
+  pin and still sent once, including on 401, without clearing the bearer);
+  `NotSentError` / Not sent (that send never left the page; a 401 is a
+  definite refusal, so nothing was applied). A GET re-pins once and is sent
+  under the new generation. Browser mode keeps the unchanged single 401
+  re-send.
+- **Stale drop**: a GET whose captured generation is no longer current is
+  rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
+  a state): no cache write, toast or draft update. The generation is
+  rechecked after every asynchronous error-body read (client, both SSE
+  open handlers and the bearer bootstrap), so an old body never publishes a
+  notice or recovery state for the new target. The bootstrap is exempt from
+  the header only: one generation is captured when the shared in-flight
+  bootstrap starts (callers under a newer generation start their own
+  bootstrap instead of sharing an older one), and a failed body that finishes after a switch publishes
+  nothing (`BootstrapStaleError`); `pinnedToken` turns it into
+  `StaleTargetError` for a read and Not sent for a change (browser mode and
+  the stored bearer are unchanged). A change (non-GET) that is stale, answered 499
+  `cancelled`, whose fetch rejects (transport loss, even with no generation
+  event: upstream bytes may already have been forwarded) or whose body read
+  fails is `ResultUnknownError` with the Result unknown notice; it is never
+  retried. A caller's own abort keeps its `AbortError`; explicit pre-forward
+  refusals (409 `target_changed` Not sent, 503 codes, 429 Throttled) stay
+  distinct.
+- **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
+  hashes include the generation of the last switch; a change cancels queries,
+  moves each mounted observer to its new-generation key (one fetch under the
+  new generation), removes all old-generation queries, retries latched read
+  owners (as an explicit Retry) and aborts old-generation streams. Feature
+  query keys are unchanged and nothing remounts. `subscribeSSE` resubscribes
+  in place once the new generation is known; `useJobEventStream` re-runs its
+  stream effect for the new generation.
+- **Editor custody** (`custody` key prefixes; `AppProvider` passes
+  `['settings']`): a mounted observer of a custody key that already shows
+  data is NOT moved. It stays suspended on its older-target entry with the
+  same data object (no fetch, refetch or invalidation refetch, and no
+  new-target data ever lands in it), so data-gated editors such as the
+  Settings Organization form stay mounted and keep their drafts; old data is
+  never used as the new target's entry. While any custody hold exists, no
+  change (non-GET `schemeFetch`) is sent to the current target: Not sent,
+  draft kept. The pin is scoped to the observer's original logical query
+  key: same-key rerenders keep it, but when the owner gives the SAME observer
+  a different key (for example Settings following an org change in the
+  sidebar) that observer is released and the new key resolves and fetches
+  under the current generation. The hold ends when its last observer leaves
+  (navigation, unmount or such a re-key); a new mount reads the new target. A custody read still
+  loading at the switch moves like any other. Owner UI for the held state
+  (re-key, carry or discard the draft) is S6-W1.
+- **Transient recovery**: when busy/throttled clears (a native `ready`
+  status or a later successful forwarded response), active queries that
+  failed with a transient native error (503 `busy`, 429 `too_many_requests`,
+  including the bearer bootstrap) are refetched once. A read still pending
+  when the signal fires (a bootstrap busy body or the final GET backoff
+  attempt) is not missed: each query records the recovery epoch its fetch
+  started under, and a transient failure that settles after a newer signal
+  is refetched once. Mutations are never retried. `RootRedirect` routes only on a successful (possibly empty) org
+  list; a pending read shows Loading and a failed one the shell error copy, so
+  an existing install is never sent to onboarding on failure (browser mode
+  too).
+- **409 `target_changed`** (desktop): re-read `app.status`. A GET refetches
+  once when the generation is unchanged (a changed generation is dropped as
+  stale and refetched by its new owners); a change is `NotSentError` with the
+  Not sent notice and is never retried. A stream waits for the new generation
+  before resubscribing. Browser mode keeps the S1b behavior.
+- **429 `too_many_requests`** (native per-view cap) is `ThrottledError` /
+  the Throttled notice, distinct from **503 `busy`** (host busy, W-1). Both
+  are non-blocking: GETs and stream opens retry with backoff (0.5/1/2 s; 3
+  GET retries, streams capped at 5 s), changes fail at once and are never
+  retried. The next successful forwarded response clears busy/throttled and
+  the page recovery state (W-2a); a stale response clears nothing.
+- **Notice** (`shared/connection/NativeNotice.tsx`, mounted once above the
+  routed page): busy/throttled ("retrying") clear themselves; Not sent ("your
+  changes are still here") and Result unknown ("check the result before
+  trying again") stay until dismissed. It never hides the page and never
+  resends anything; owner-specific Check result reconciliation is S6-W2.
+- **Menu state and prompt URL**: `deriveConnectionMenuState` /
+  `useConnectionMenuState` expose the app.status-derived target, state,
+  candidate phase, local running state and Access-not-saved badge for the S6
+  dialogs (no UI here). Copy-paste CLI prompts in `shared/connect` use
+  `getPromptBaseUrl()`: the page origin in browser mode, otherwise
+  `local.prompt_base_url`; when that is null (remote target or not yet
+  known) no token is minted and the flow shows that prompts are available
+  only while using HappyRanch on this computer.
+
+Focused checks (Node 24, repository root):
+`node --experimental-transform-types --test web/scripts/native-bridge-v2.test.mjs`.
+They exercise the real transport/query modules with fetch, bridge and
+QueryObserver stubs (module coverage). `AppProvider`/`routes.tsx` wiring and
+rendered editors are not executed by them (JSX); live WebKitGTK/native
+behavior is not covered either.
+
+## Desktop Settings and Connection dialogs (THR-387 S6-W1)
+
+In the desktop app (handoff v2.4 §2–§3), Settings and Connection are web
+dialogs inside Main, in the same document. `web/src/features/desktop-dialogs/`
+owns the host: `DesktopDialogsProvider` (mounted around `AppRoutes` in
+`routes.tsx`) shows at most ONE top-level dialog; opening the other replaces it
+inside the same Radix root and never spawns a window. The one internal API is
+`useDesktopDialogs()` → `openDesktopDialog(request, invoker?)` /
+`requestDesktopDialogClose({ navigateTo? })`. The close button, Escape and
+in-pane links all go through `requestDesktopDialogClose`, the single seam
+where the S6-W2 owner registry / keep-discard gate will decide (before both
+closing and any Main navigation); today it closes immediately. Backdrop clicks
+do not dismiss. Focus stays inside the dialog (Main is inert), moves to the
+dialog heading on open and on every switch, and returns on final close to the
+recorded invoker, else to the Main recovery control when a recovery panel is
+shown, else to the Main content landmark (`MAIN_CONTENT_ID`). The invoker is
+the Main link the user activated to reach a Settings route (for example the
+Sidebar Settings link), recorded while it is still in the document; a cold
+deep link or native entry has none and uses the fallback, as does an invoker
+removed before close. A same-document link inside a dialog pane (Coding →
+Open Coding setup, Executors → Agents page, and with `work_hours_ui` the
+Organization → Work Hours link) is handled by the host: it sends the close
+request with that destination, so the dialog closes, Main shows the page and
+focus moves to the Main content landmark. Links to another origin, a new tab,
+a download or a modified click are left to the browser. Pure rules
+(one-at-a-time replacement, repeated entry, route-to-page mapping, native
+payload validation, in-pane link targets) live in `dialogModel.ts`; focused
+checks:
+`node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`.
+
+Native mode is `isDesktopShell()`: the `happyranch-app:` scheme or a
+`window.happyranchConnection` `call`/`on` facade. This is presentation only
+and grants no bridge capability. In native mode, Main `/orgs/:slug/settings/*`
+and the org-less `/settings/*` render `DesktopSettingsRoute`: it opens the
+Settings dialog at exactly the requested page (bare, legacy
+`assistant`/`system`/`agents` and unknown org pages select Capacity, as the
+page route redirects; org-less defaults to Language), then replaces the URL
+with the previous Main page of the same org, else `/orgs/:slug/dashboard`
+(or `/`). Browser mode keeps both full-page routes unchanged.
+
+Native entry: in native mode the provider subscribes once, at the Main shell
+(including recovery states), to `app.dialogRequested` through the existing
+`window.happyranchConnection.on()` facade and unsubscribes on teardown. The
+data must be exactly `{"schema":2,"dialog":"settings"|"connection"}`
+(`protocol/native-connection-bridge.v2.json#/$defs/dialogRequested`, bridge
+spec “v2 dialog request event”); malformed JSON, missing or extra keys, another
+schema or an unknown dialog are ignored without changing the current dialog.
+A valid event opens the named dialog through `openDesktopDialog` with no
+invoker (focus returns to the Main fallback). Settings keeps the page already
+shown, else opens Capacity when Main shows an org and Language when it does
+not. A shell whose `on()` refuses the event name simply has no native entry.
+
+The Settings dialog body is `features/settings/SettingsDialogBody.tsx`,
+composed by `routes.tsx` so neither feature imports the other. Its nav follows
+v2.4 §2: This app → Language; Runtime settings (with the current org named in
+full) → Capacity, Executors, Organization, Coding; Open Connection. Panes are
+the existing sections through `SettingsPane` (same loading/error/recovery
+gates as the page), so there is one Settings editor. Runtime pages with no
+org in Main show the recovery panel during a recovery state, otherwise an
+"open an organization" note. The "This computer" group shows only the C5
+scope note (“These controls affect this computer, not {host}.”) and only when
+a remote Host name is supplied; nothing supplies it until the S5-W1 status
+store lands, and the local controls page itself is S7-L2. The Connection
+dialog is a placeholder shell (S6-W3 moves the `web/connection` screens in)
+with a Settings cross-action. Until S7-L1, the Linux header Connection button
+and “Access wasn't saved” badge open/present the existing native Connection
+window in both default and app-scheme opt-in builds; Settings retains
+`app.dialogRequested` delivery and explicit Retry when unavailable.
+Layout (C4): at md and wider a large centered
+dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
+fills the Main content area, nav groups stack and items wrap above the page in
+one vertically scrolling column, and choosing a page scrolls it into view.
+Unsaved drafts are not yet protected on close/switch/page change (S6-W2).
+
+## Packaged main build: theme boot and resource manifest (Settings S1b-B)
+
+The main `npm run build` writes `web/dist/resource-manifest.json` with the
+same v1 format as the separate connection build: `version: 1`,
+`entry: "index.html"`, and path-sorted `resources` containing each emitted
+file's `path`, `bytes` and SHA-256 `sha256`. Public assets and source maps are
+included; the manifest excludes itself. Both Vite configs use
+`web/connection/resource-manifest.ts`. The main plugin uses Vite's resolved
+output directory, including an explicit `--outDir`.
+
+`index.html` loads `/theme-boot.js` as a blocking classic script in the head,
+before the app and styles can paint. It preserves the existing theme behavior:
+only saved `happyranch.theme=dark` sets `data-theme=dark`; missing, other or
+unreadable storage leaves the bootstrap's light default. There is no inline script or event
+handler in the built entry, so boot works with `script-src 'self'` without
+`unsafe-inline` or `unsafe-eval`. Styles still require the native main loader's
+`style-src 'self' 'unsafe-inline'`; the separate connection CSP is unchanged.
+
+Daemon browser serving already returns existing root-level dist files through
+its GET fallback, including the new script. Linux's opt-in `app_scheme.Bundle`
+currently inventories dist independently and serves the manifest as another
+listed file. Packaging adoption of this manifest belongs to the later cutover;
+emitting it does not switch loaders, admit a command bridge or alter API access.
 
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
@@ -1943,16 +2270,44 @@ reason text; their behavior is unchanged.
 
 ### Thread-detail system rows
 
-The live `ThreadDetailTranscript` renders system events through its local
-`SystemDivider`: one separator above a monospaced description, inline icon
-and task links, then trailing system-event metadata. Short and long rows use
-the transcript content width inside the existing padding. Text and unbroken
-identifiers wrap; the timestamp remains available in the row tooltip.
+The live `ThreadDetailTranscript` (THR-376 PR2) renders a centred stream
+(`max-w-3xl`) with 18px between turns:
+
+- **Day separators.** A separator precedes the first message of each
+  host-local calendar day, computed client-side from `created_at`: "Today ·
+  date", "Yesterday · date" or a localized date (year shown only outside the
+  current year). Messages with an unparseable timestamp never open a day.
+  Turn times are time-only; the full local timestamp stays in the tooltip.
+  The labels advance at local midnight without reply activity or reload: one
+  timer is armed for the next local midnight and re-armed after it fires, and
+  a tab returning to `visible` re-checks immediately. It makes no request.
+- **Founder turn.** A right-aligned accent-soft bubble with no avatar and the
+  meta on the right; the founder's current name (IdentityName, canonical
+  `founder`) remains as screen-reader text.
+- **Agent turn.** A `md` Avatar, a meta row (current name, `#seq`, time) and a
+  card body (surface, border, small shadow, `max-w-prose`). Markdown, mentions
+  and attachments keep their existing rendering.
+- **Responder receipts.** Pills under the founder message, from the existing
+  `responder_status` only: replied, declined, failed, founder-aborted and
+  **working**. Working receipts now show alongside the tail typing row
+  (restyled as an agent meta row plus a card-styled dots bubble); queued stays
+  off the strip.
+- **System events.** Centred chips with an inline icon, task links and the
+  time (`participant_added` reads "{agent} joined the thread"); a screen-reader
+  "system event" prefix replaces the old trailing metadata. Text and unbroken
+  identifiers wrap inside the chip.
+- **Declines.** `kind=decline` is an attention chip. A Why?/Hide expander shows
+  `decline_reason` verbatim and is omitted when there is no reason.
+- **Escalations.** `task_escalated` is a card with a 3px attention left
+  border, built only from the payload's `task_id` and `reason`. The reason is
+  clamped to two lines with Show more/Show less only when it actually
+  overflows, and Open task links to the task.
+
 `describeSystem` displays the complete supplied task-completion summary and
-escalation reason without a character limit, preserving line breaks and safely
-rendering HTML-like content as literal text. It does not expose additional
-payload fields. Ordinary message bubbles and terminal responder strips retain
-their separate rendering paths. CLI transcript formatting is unchanged.
+escalation reason without a character limit, preserving line breaks and
+paragraphs (`whitespace-pre-wrap`) and safely rendering HTML-like content as
+literal text. It does not expose additional payload fields. CLI transcript
+formatting is unchanged.
 
 ### Sidebar height and scrolling
 
@@ -3371,9 +3726,36 @@ contract test is retired; Web/Swift still consume the snapshot and route
 classification. This operator does not run tests.
 
 
+### Host compatibility health metadata
+
+Unauthenticated `GET /api/v1/health` returns `status`, nullable `active_runtime`,
+`update_busy`, `api_contract: {current: 1, min_client: 1}` and `release`.
+`host_sessions` remains conditional on a wired supervisor; the route retains
+`response_model_exclude_unset=True`. Existing fields keep their meanings.
+The endpoint is already remote-allowed; these additive fields change no routes,
+authentication, bind, CORS or remote allowlist.
+
+`runtime/daemon/api_contract.py` owns both contract numbers. Only breaking API
+changes raise `current`; additive fields/routes do not. Raise `min_client` only
+to cut off old clients. Native compatibility checks (Linux: PR #1767, merged `921f126e`; Mac: pending) use
+`min_client <= client contract <= current` and `current >= client min_daemon`;
+missing metadata means incompatible / Update Host. Metadata alone grants no access.
+
+`release` is `<installed distribution version>+<40-character lowercase source_sha>`
+(currently version `0.1.0`). Linux `build-payload.sh` writes the existing
+`build-info.json` beside the bundled `python/` prefix, located through
+`sys.prefix`, independently of cwd and daemon home. The daemon reads it once at
+module import, rejecting symlinks, non-regular files, files over 64 KiB, malformed
+JSON and invalid/all-zero SHAs. Only the validated version and SHA are public.
+Requests use the cached string without file, subprocess or Git work. Missing,
+unreadable or invalid identity, unavailable distribution version, and current
+frozen Mac builds (which supply no such build-info file) return exactly
+`"unreleased"`. This sentinel is never a release identifier. Changing build
+identity requires a new daemon process.
+
 ### Update readiness health field
 
-Public `GET /api/v1/health` adds exactly one read-only field, `update_busy`:
+Public `GET /api/v1/health` includes the read-only field `update_busy`:
 `{busy: boolean, unknown: boolean, counts: {host_active, host_queued,
 jobs_inflight, jobs_nonterminal, invocations_nonterminal}}`. Each count is
 an integer capped at 1000, or null when unavailable; counts may overlap and
@@ -4328,6 +4710,13 @@ breakpoint. The transcript has bounded scrolling; all properties and participant
 controls remain reachable in the detail scroll area. At desktop widths the
 properties retain their fixed rail. Resize and locale changes preserve the mounted
 composer, draft, attachments and selection; neither action submits a message.
+The composer (THR-376) sits in the same 768px centred column as the transcript
+under a top border; it keeps the auto-growing textarea, attach, @mention, Stop
+(abort every in-flight reply, shown with visible "Stop" text) and send controls,
+and adds a localized hint line that hides when the composer is narrow. Pending
+attachment chips above the box show the file name, the selected `File`'s size
+(shared `formatAttachmentSize`, locale-formatted number; no server field) and a
+remove control.
 
 <!-- TASK11932 current-ancestor correction and owner support boundary -->
 **Historical TASK11932 checkpoint.** Seq640 removes this producer/worker path;
@@ -4460,9 +4849,11 @@ Task details/list/roots and thread linked-task summaries carry nullable
 `originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
 keeps its creation meaning. Task grouping/column/detail use origin with literal
 fallback for older servers. The task detail rail cites the original task with a
-revisit arrow; a thread linked-task chip is one compact `status - TASK-…` pill
-showing only its full status and current task ID (linked to that task), with no
-secondary origin line or link (founder THR-324). CLI
+revisit arrow; a thread linked-task entry is one bordered rail row (THR-376
+`.rail-link`) carrying a separate shared `StatusBadge` (full status) and task
+`IdBadge` (current task ID), the whole row linked to that task, with no
+secondary origin line or link (founder THR-324). The complete linked-task list
+is rendered; a bounded height scrolls internally and nothing is dropped. CLI
 details separates `Thread`/`Origin task` from literal `Dispatched`. Summary fields are additive; the existing dict responses
 have no property schema in the path/method/parameter/status OpenAPI snapshot.
 See [the complete lineage/read contract](features-and-invariants.md#root-retry-source-thread-association).
@@ -5037,6 +5428,82 @@ NEW settings and old fresh @1/@2 refuse. No human/browser start is added.
 ACCESS-1/shared-OS-user/gh limitations,
 original Pause/receipt uncertainty/cancellation and historical families remain.
 
+
+## S7a generic read API (UI adoption belongs to S7b)
+
+Three additive existing-Founder-bearer GETs under `/api/v1/orgs/{slug}` expose
+`/workflows/sequential/views/v2/runs`, its `/{run_id}` detail, and
+`/tasks/{task_id}/sequential-workflows`. The plural response preserves every
+initiator run link. Generic records explicitly identify @2/current_v2 and expose
+Running/Held (original finite cause)/Finished (completed, failed or cancelled),
+internal progress including cancelling, immutable per-visit assignment/model/
+effort origins and ordered control actors/original IDs. Native cancellation
+origins stay distinct from result-owned controls. Detail includes the admitted
+definition text. Agent output/findings remain agent_reported; authenticated
+native identity/settlement never verifies a reported merge. @1 history uses an
+explicit historical_v1 wrapper and retains the original detail/redaction.
+Existing @1 routes, settings operations and Start@1 context remain readable;
+there is no browser start/control or @2 mutation route.
+
+Absent storage yields an explicitly absent empty collection. Failed evidence,
+coherence, budget or authority yields non-success HTTP and a finite unavailable
+body; the TS client retains finite 409 bodies and throws 403/404 for shared
+access fencing, never substitutes no runs. Additive hooks
+in `hooks/workflows.ts` key by org and selection, abort/evict on change, and
+reject stale/out-of-order responses (`late_org_response`) with active-owner,
+sequence, signal and response-org checks. They join the same per-QueryClient/org
+admission generation and abort set as @1 reads and original-save recovery:
+403/404 bumps that generation, aborts siblings, blanks every sequential cache
+entry and rejects older responses/receipts. Only post-refusal reads can succeed;
+finite 409 unavailable bodies do not advance admission. Positive absent storage,
+settings-not-saved and original-operation-absent exceptions stay unchanged.
+Transport-only refresh failures retain this mount's data with freshness flags.
+S7a helpers use enums/keys,
+with no new display strings. S7b supplies UI/providers and locales (below). See the
+[S7a contract](contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2)
+for wire formats, budgets and focused shell selectors. Web lint/typecheck is
+static API evidence; hook behavior is NOT RUN without a supported runtime venue
+(Vitest retired, Product E2E scheduled-only).
+
+## S7b generic Workflows UI (read-only @2 adoption)
+
+The Runs tab, run detail and Task-detail workflow banner read only the S7a
+plural hooks (`useSequentialRunsV2`, `useSequentialRunV2`,
+`useTaskSequentialWorkflows`). Lists and the banner render every run link and
+every source/carrier/visit task link in projection order; an initiator with
+several runs shows several entries. Generic @2 runs show `running | held |
+finished` with separate progress (`queued`, `executing`, `result pending
+settlement`, `cancelling`) and `terminal_outcome` only when Finished. Held always
+shows the localized finite cause plus the raw code and the original hold event,
+node and visit; `declared_edge` reads "agent-declared hold". No cause is inferred.
+
+Generic detail shows the definition/settings pins and verbatim admitted
+definition, request and inputs, every assignment generation (agent, selection
+source bundled/org/run/control, predecessor, effective/requested model and
+effort with `agent_default | run | clear` origins, native override and its
+source, executor), visit-to-assignment mapping, ordered control history with
+actor task/principal/SID/result and IDs, and native cancellation events with
+their distinct founder/source-terminal origin. Every outcome, finding and output
+is labelled Agent-reported and shown as a raw token; the Engine-authenticated
+label appears only on native task/principal/SID/result identity and terminal/
+outer digests. A native callback result that differs from the nullable
+`accepted_result_id` is shown separately as not accepted. A reported head,
+review, QA or merge is never shown as verified, approved or merged.
+
+`abi=@1` runs carry an explicit Historical (@1) label. Their detail renders the
+unchanged U8a @1 view (and its R-M3-6 redaction as served) inside a history
+wrapper, and their banner entry keeps the original @1 banner. Setup and @1
+original-save custody/recovery are unchanged. `storage=absent` shows an empty
+state; each closed `workflow-sequential-unavailable@2` code
+(`history_unverified`, `read_budget_exhausted`, `authority_unverified`,
+`authority_denied`) shows its own localized message, never an empty list.
+403/404 keep the shared access-refusal handling and task 404 hides the banner.
+A `late_org_response` rejection shows a loading status and never another org's
+data. @2 definitions are not linked to the @1 definition page. There is no
+start, retry, rebrief, reassign, cancel or wait control. All strings ship in
+`en` and `zh-CN`. `_mock-workflows.ts` exports typed deterministic
+`sequentialV2MockStates` fixtures; because the @2 hooks bypass `WorkflowsApi`,
+screenshot evidence serves them as daemon responses through harness mode A.
 
 ## U8a Workflows read journey (TASK-15582)
 

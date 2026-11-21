@@ -1,14 +1,15 @@
 /**
- * Composer — compact single-line 18px-rounded input with an INLINE attach icon and
- * a circular send button (THR-061 a-thread-detail). Per DESIGN.md
- * `components.textarea` + `components.button.primary`. Used at the foot of the
- * threads detail pane.
+ * Composer — THR-376 thread-detail `.composer-box`: a 12px-radius (`rounded-md`)
+ * input box with a 30px inline attach button, an auto-growing textarea, an
+ * optional "Stop" button and a 32px SQUARE primary send button. Focus anywhere
+ * in the box draws the accent border plus a 3px accent-soft ring. Used at the
+ * foot of the threads detail pane.
  *
- * The broadcast helper copy lives in the PLACEHOLDER ("Message the thread —
- * all participants see it"), so there is no separate helper line under the
- * input; only a send-error surfaces below the pill. The attach affordance is a
- * small inline paperclip icon (still labelled "Attach files") — the capability
- * is preserved, only the chrome is compacted.
+ * The broadcast copy lives in the PLACEHOLDER ("Message the thread · @ to
+ * address an agent"); an optional `hint` line ("Every participant sees
+ * messages in this thread.") sits under the box and hides when the composer
+ * itself is narrower than the `@md` container size. A send error surfaces
+ * below the box. The attach affordance keeps its "Attach files" label.
  *
  * Draft persistence: useThreadDraft stores partial messages in localStorage
  * keyed by (orgSlug, threadId) with a 300ms debounce. Drafts survive
@@ -17,10 +18,9 @@
  * Auto-grow, @-mention autocomplete, Enter-to-send (Shift+Enter for new
  * line) live in MentionTextarea so the same typing experience is reused
  * by other surfaces (e.g. NewThreadDialog). The optional abort-reply control
- * sits INSIDE the input pill as an icon-only trailing action next to the
- * circular send button (THR-099 Phase A, founder seq57 — reversing the earlier
- * "moved OUT" decision): a compact neutral/light-fill, thin-outline square
- * button with a centered red stop-square icon. It renders only while replies
+ * sits INSIDE the input box next to the send button (THR-099 Phase A, founder
+ * seq57): a 30px outlined danger button with a filled stop-square icon and
+ * visible "Stop" text (THR-376 `.stop-btn`). It renders only while replies
  * are in flight and is owned entirely by props (the parent holds the
  * thread-level abort mutation).
  */
@@ -30,6 +30,7 @@ import {
   MAX_THREAD_ATTACHMENTS,
   REMOVE_ATTACHMENT_LABEL,
   createSelectionIdFactory,
+  formatAttachmentSize,
 } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AddressOption } from './MentionAutocomplete';
@@ -57,6 +58,9 @@ export interface ComposerLabels {
   textareaAria?: string;
   send?: string;
   sendTitle?: string;
+  /** Visible text on the abort-replies button (accessible name). */
+  stop?: string;
+  /** Tooltip on the abort-replies button. */
   abortReply?: string;
   aborting?: string;
   removeAttachment?: string;
@@ -118,8 +122,16 @@ interface ComposerProps {
    * shown byte-for-byte). Pass `null`/omit to render no error slot.
    */
   errorMessage?: string | null;
-  /** Helper text shown below the textarea when no error is set. */
+  /**
+   * Broadcast copy used as the placeholder when no explicit `placeholder` is
+   * given (the historical name; it is not rendered as a separate line).
+   */
   helper?: string;
+  /**
+   * Optional one-line hint rendered under the input box (THR-376
+   * `.composer-hint`); hidden when the composer is narrower than `@md`.
+   */
+  hint?: string;
   /** Placeholder for the textarea. Defaults to a reasonable copy. */
   placeholder?: string;
   /**
@@ -144,11 +156,11 @@ interface ComposerProps {
    */
   orgSlug: string;
   /**
-   * Optional abort-reply trailing action rendered INSIDE the input pill, to the
-   * left of the circular send button (THR-099 Phase A) — an icon-only compact
-   * square button (red stop-square). It renders ONLY while `active` (replies in
-   * flight); it is disabled and its accessible name/tooltip read "Aborting…"
-   * while `isPending`, otherwise "Abort reply" (no visible text either way).
+   * Optional abort-reply trailing action rendered INSIDE the input box, to the
+   * left of the send button (THR-099 Phase A) — a 30px outlined danger button
+   * with a stop-square icon and visible text. It renders ONLY while `active`
+   * (replies in flight); it is disabled and reads "Aborting…" while
+   * `isPending`, otherwise "Stop" (tooltip "Abort reply").
    * `onAbort` aborts EVERY in-flight reply (the parent owns the thread-level
    * mutation — the pattern stays pure). Other Composer surfaces (NewThreadDialog,
    * the assistant dock) omit this prop.
@@ -156,6 +168,11 @@ interface ComposerProps {
   abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
   /** Optional localized product copy; omitted fields keep the English defaults. */
   labels?: ComposerLabels;
+  /**
+   * Locale for the attachment-chip file size (number formatting only, via the
+   * shared `formatAttachmentSize`). Omitted → unlocalized digits.
+   */
+  locale?: string;
 }
 
 export function Composer({
@@ -163,6 +180,7 @@ export function Composer({
   pending,
   errorMessage,
   helper,
+  hint,
   placeholder,
   onSend,
   attachments = [],
@@ -172,6 +190,7 @@ export function Composer({
   orgSlug,
   abortReplies,
   labels,
+  locale,
 }: ComposerProps): JSX.Element {
   const L = {
     closedPlaceholder: labels?.closedPlaceholder ?? 'Thread is closed.',
@@ -180,6 +199,7 @@ export function Composer({
     textareaAria: labels?.textareaAria ?? 'Compose follow-up',
     send: labels?.send ?? 'Send',
     sendTitle: labels?.sendTitle ?? 'Send (Enter)',
+    stop: labels?.stop ?? 'Stop',
     abortReply: labels?.abortReply ?? 'Abort reply',
     aborting: labels?.aborting ?? 'Aborting…',
     removeAttachment: labels?.removeAttachment ?? REMOVE_ATTACHMENT_LABEL,
@@ -253,39 +273,57 @@ export function Composer({
     (disabled ? L.closedPlaceholder : (helper ?? L.defaultPlaceholder));
 
   return (
-    <div className="flex flex-col gap-2">
-      {/* Pending attachment chips — above the pill so the input stays compact. */}
+    // `@container` lets the hint line respond to the composer's own width (the
+    // detail column can be narrow at md while both side rails are visible).
+    <div className="@container flex flex-col gap-2">
+      {/* Pending attachment chips — THR-376 `.attach-row` / `.achip`, above the
+          box so the input stays compact. Chip: --radius-sm (rounded-sm 8px),
+          border-2 (border-strong), surface (surface-raised), 12px text on an
+          18px line, padding 5/8/5/10, gap 7, max-width 240px → 30px tall.
+          Name truncates; the File's size (already held client-side) follows in
+          ink-2. Remove: 2px padding, 12px X, danger-soft/danger on hover. */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {attachments.map((item) => (
-            <span
-              key={item.id}
-              className="border-border-subtle bg-surface-raised text-caption inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
-            >
-              <span className="max-w-64 truncate">{item.file.name}</span>
-              <button
-                type="button"
-                className="text-text-muted hover:text-text-primary"
-                aria-label={L.removeAttachment}
-                onClick={() => removeAttachment(item.id)}
-                disabled={disabled || pending}
+          {attachments.map((item) => {
+            const size = formatAttachmentSize(item.file.size, locale);
+            return (
+              <span
+                key={item.id}
+                className="border-border-strong bg-surface-raised text-caption inline-flex max-w-60 min-w-0 items-center gap-1.75 rounded-sm border py-1.25 pr-2 pl-2.5 leading-4.5"
               >
-                <X className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            </span>
-          ))}
+                <span className="min-w-0 truncate">{item.file.name}</span>
+                {size !== null && (
+                  <span className="text-text-secondary shrink-0">{size}</span>
+                )}
+                <button
+                  type="button"
+                  className="text-text-secondary hover:bg-danger-soft hover:text-danger inline-flex shrink-0 rounded-sm p-0.5 transition-colors"
+                  aria-label={L.removeAttachment}
+                  onClick={() => removeAttachment(item.id)}
+                  disabled={disabled || pending}
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 
-      {/* Compact rounded input: inline attach icon + textarea + circular send.
-          Founder-approved 18px local extension — reads as a single-line input and
-          grows gracefully for the rare Shift+Enter multi-line draft. */}
-      <div className="border-border-default bg-surface-raised focus-within:border-accent-default flex items-end gap-1 rounded-lg border py-1 pr-1 pl-2 transition-colors">
+      {/* THR-376 .composer-box: border-2 (border-strong), --radius (rounded-md
+          12px), padding 9/10/9/6, gap 8; focus-within → accent border + 3px
+          accent-soft ring. Controls bottom-align so a Shift+Enter multi-line
+          draft grows upward while attach/stop/send stay on the last line.
+          Below the `@2xs` container size (the md column with both rails is
+          ~200px wide) the textarea takes its own full-width first row and the
+          controls wrap to a row beneath it, so the input never collapses to a
+          few characters wide. */}
+      <div className="border-border-strong bg-surface-raised focus-within:border-accent-default focus-within:ring-accent-soft flex flex-wrap items-end gap-2 rounded-md border py-2.25 pr-2.5 pl-1.5 transition-colors focus-within:ring-3">
         <label
-          className="text-text-muted hover:text-text-secondary hover:bg-surface-hover mb-0.5 inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors"
+          className="text-text-secondary hover:text-text-primary hover:bg-surface-hover mb-0.25 inline-flex h-7.5 w-7.5 shrink-0 cursor-pointer items-center justify-center rounded-sm transition-colors"
           title={L.attachFiles}
         >
-          <Paperclip className="h-4 w-4" aria-hidden="true" />
+          <Paperclip className="h-4.5 w-4.5" aria-hidden="true" />
           <input
             aria-label={L.attachFiles}
             type="file"
@@ -318,45 +356,49 @@ export function Composer({
           placeholder={composerPlaceholder}
           ariaLabel={L.textareaAria}
           mentionListLabel={labels?.mentionList}
-          className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
+          className="text-body text-text-primary placeholder:text-text-secondary order-first min-w-0 flex-1 basis-full resize-none @2xs:order-none @2xs:basis-0 bg-transparent py-1.25 focus:outline-none disabled:opacity-50"
         />
-        {/* Abort reply — icon-only trailing action INSIDE the pill, left of the
-            circular send (THR-099 abort-reply correction). Renders only while
-            replies are in flight. A compact neutral/light-fill, thin-outline
-            square button (matching the send button's h-9 footprint) whose
-            centered icon is a red stop-square; it carries NO visible text (the
-            "Abort reply" / "Aborting…" copy lives in the accessible name +
-            tooltip, not on-screen). One click still aborts EVERY in-flight
-            reply — the parent owns the thread-level mutation. */}
-        {abortReplies?.active && (
+        {/* Stop — THR-376 .stop-btn: 30px outlined danger button with a filled
+            stop-square and visible "Stop" text, left of send. Renders only while
+            replies are in flight; one click still aborts EVERY in-flight reply
+            (the parent owns the thread-level mutation). */}
+        <div className="ml-auto flex items-end gap-2">
+          {abortReplies?.active && (
+            <button
+              type="button"
+              onClick={abortReplies.onAbort}
+              disabled={abortReplies.isPending}
+              title={abortReplies.isPending ? L.aborting : L.abortReply}
+              className="border-border-strong bg-surface-raised text-feedback-danger hover:border-feedback-danger hover:bg-danger-soft text-label mb-0.25 inline-flex h-7.5 shrink-0 items-center gap-1.5 rounded-sm border px-2.5 font-semibold whitespace-nowrap transition-colors disabled:opacity-50"
+            >
+              <Square className="h-3 w-3" fill="currentColor" aria-hidden="true" />
+              {abortReplies.isPending ? L.aborting : L.stop}
+            </button>
+          )}
+          {/* Send — THR-376 .btn.btn-primary.btn-icon: 32px square, --radius-sm. */}
           <button
             type="button"
-            onClick={abortReplies.onAbort}
-            disabled={abortReplies.isPending}
-            aria-label={abortReplies.isPending ? L.aborting : L.abortReply}
-            title={abortReplies.isPending ? L.aborting : L.abortReply}
-            className="border-border-default bg-surface-raised text-feedback-danger hover:border-feedback-danger hover:bg-danger-soft mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-50"
+            onClick={submit}
+            disabled={disabled || !canSend || pending}
+            aria-label={L.send}
+            title={L.sendTitle}
+            className="bg-accent-default text-text-inverse hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors"
           >
-            <Square className="h-4 w-4" aria-hidden="true" />
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </button>
-        )}
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || !canSend || pending}
-          aria-label={L.send}
-          title={L.sendTitle}
-          className="bg-accent-default text-text-inverse hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
-        >
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </button>
+        </div>
       </div>
 
-      {/* Send error surfaces below the pill; the broadcast copy is the placeholder.
+      {/* Send error surfaces below the box; the broadcast copy is the placeholder.
           Rendered whenever an error is SET (non-null), not by text truthiness,
           so a raw diagnostic that is the empty string still owns its slot. */}
       {errorMessage != null && (
         <span className="text-caption text-feedback-danger">{errorMessage}</span>
+      )}
+      {/* THR-376 .composer-hint (11.5px ink-2 → text-caption text-secondary);
+          the mockup hides it on narrow layouts. */}
+      {hint && (
+        <p className="text-caption text-text-secondary hidden @md:block">{hint}</p>
       )}
     </div>
   );

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -16,17 +17,20 @@ SYNTHETIC = (
     "operator-fixture-east", "203.0.113.42", "203-0-113-42",
     "203-0-113-42.sslip.io",
 )
+# Keep Git writes and checker reads inside the synthetic repository.
+CHILD_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 FAILURES: list[str] = []
 
 
 def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=30)
+    return subprocess.run(command, cwd=cwd, env=CHILD_ENV, text=True, capture_output=True,
+                          timeout=30)
 
 
 def expect(label: str, command: list[str], root: Path, code: int, diagnostics: str = "",
            *, timeout: int = 30) -> None:
     try:
-        result = subprocess.run(command, cwd=root, text=True, capture_output=True,
+        result = subprocess.run(command, cwd=root, env=CHILD_ENV, text=True, capture_output=True,
                                 timeout=timeout)
     except subprocess.TimeoutExpired:
         # subprocess.run kills and reaps the child; never expose its output.

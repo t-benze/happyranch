@@ -32,6 +32,133 @@ def expect(label: str, command: list[str], code: int, fragments: tuple[str, ...]
         print(output.strip())
 
 
+def validate_asyncio_calls(root: Path, command: list[str]) -> None:
+    """Observe the real CLI across source roots, aliases and callable bodies."""
+    bad = "import asyncio\nloop = asyncio.get_event_loop()\n"
+    fixed = "import asyncio\nasync def work():\n    return asyncio.get_running_loop()\n"
+    for directory in ("runtime/daemon", "cli", "tests", "scripts", "app", "deploy",
+                      "packaging", "labs", "e2e", "new_source", ".github", ""):
+        relative = f"{directory}/asyncio_probe.py".lstrip("/")
+        write(root, relative, bad)
+        expect(f"asyncio coverage {relative}", command, 1,
+               (f"{relative}:3", "ASYNC001", "get_running_loop()", "asyncio.run()"))
+        write(root, relative, fixed)
+        expect(f"asyncio fixed {relative}", command, 0)
+        (root / relative).unlink()
+
+    relative = "scripts/asyncio_probe.py"
+    for label, text, lines in (
+        ("module alias and callable bodies",
+         "import asyncio as aio\n"
+         "def sync():\n    return aio.get_event_loop()\n"
+         "async def async_call():\n    return aio.get_event_loop()\n"
+         "class AtImport:\n    loop = aio.get_event_loop()\n"
+         "lazy = lambda: aio.get_event_loop()\n", (4, 6, 8, 9)),
+        ("from import aliases",
+         "from asyncio import get_event_loop as current\n"
+         "from asyncio import get_event_loop\n"
+         "current()\nget_event_loop()\n", (4, 5)),
+        ("local import and defaults",
+         "import asyncio\n"
+         "def local():\n    from asyncio import get_event_loop as current\n    return current()\n"
+         "def default(loop=asyncio.get_event_loop()):\n    pass\n", (5, 6)),
+        ("method global and comprehension iterable",
+         "import asyncio.events\n"
+         "class Holder:\n    asyncio = object()\n"
+         "    def method(self):\n        return asyncio.get_event_loop()\n"
+         "values = [x for x in asyncio.get_event_loop()]\n", (6, 7)),
+    ):
+        write(root, relative, text)
+        expect(f"asyncio {label}", command, 1,
+               tuple(f"{relative}:{line} -> ASYNC001" for line in lines))
+    for label, text, code in (
+        ('exception_binding_shadow_ok',
+         "import asyncio\n"
+         "class LocalError(Exception):\n"
+         "    def get_event_loop(self): return \"local\"\n"
+         "def work():\n"
+         "    try:\n"
+         "        raise LocalError()\n"
+         "    except LocalError as asyncio:\n"
+         "        return asyncio.get_event_loop()\n"
+         "assert work() == \"local\"\n", 0),
+        ('match_capture_shadow_ok',
+         "import asyncio\n"
+         "class Local:\n"
+         "    def get_event_loop(self): return \"local\"\n"
+         "def work(value):\n"
+         "    match value:\n"
+         "        case asyncio:\n"
+         "            return asyncio.get_event_loop()\n"
+         "assert work(Local()) == \"local\"\n", 0),
+        ('from_exception_shadow_ok',
+         "from asyncio import get_event_loop as current\n"
+         "class LocalError(Exception):\n"
+         "    def __call__(self): return \"local\"\n"
+         "def work():\n"
+         "    try:\n"
+         "        raise LocalError()\n"
+         "    except LocalError as current:\n"
+         "        return current()\n"
+         "assert work() == \"local\"\n", 0),
+        ('submodule_alias_bad',
+         "import asyncio.events as events\n"
+         "events.get_event_loop()\n", 1),
+        ('submodule_from_import_bad',
+         "from asyncio.events import get_event_loop\n"
+         "get_event_loop()\n", 1),
+        ('import_events_bad',
+         "from asyncio import events\n"
+         "events.get_event_loop()\n", 1),
+        ('match_star_capture_shadow_ok',
+         "import asyncio\n"
+         "def work(value):\n"
+         "    match value:\n"
+         "        case [*asyncio]:\n"
+         "            return asyncio.get_event_loop()\n", 0),
+        ('match_mapping_rest_shadow_ok',
+         "import asyncio\n"
+         "def work(value):\n"
+         "    match value:\n"
+         "        case {**asyncio}:\n"
+         "            return asyncio.get_event_loop()\n", 0),
+        ('match_nested_capture_shadow_ok',
+         "import asyncio\n"
+         "def work(value):\n"
+         "    match value:\n"
+         "        case {\"key\": [asyncio]}:\n"
+         "            return asyncio.get_event_loop()\n", 0),
+    ):
+        write(root, relative, text)
+        fragments = ((f"{relative}:3 -> ASYNC001", "get_running_loop()", "asyncio.run()")
+                     if code else ())
+        expect(f"asyncio {label}", command, code, fragments)
+    write(root, relative,
+          "import asyncio\n"
+          "def shadow(asyncio):\n    return asyncio.get_event_loop()\n"
+          "def local_shadow():\n    asyncio = object()\n    return asyncio.get_event_loop()\n"
+          "values = [asyncio.get_event_loop() for asyncio in []]\n"
+          "class Other:\n    def get_event_loop(self):\n        return None\n"
+          "Other().get_event_loop()\n"
+          "text = 'asyncio.get_event_loop()'\n"
+          "async def running():\n    return asyncio.get_running_loop()\n"
+          "asyncio.run(running())\n")
+    expect("asyncio fixed, unrelated and shadowed names", command, 0)
+    (root / relative).unlink()
+    write(root, "cli/invalid.py", "if :\n")
+    expect("asyncio refuses parse failure outside boundary layers", command, 2,
+           ("cannot read/parse cli/invalid.py",))
+    (root / "cli/invalid.py").unlink()
+    (root / "cli/linked").symlink_to(root / "runtime", target_is_directory=True)
+    expect("asyncio refuses directory link outside boundary layers", command, 2,
+           ("directory symlink in scan root",))
+    (root / "cli/linked").unlink()
+    for directory in (".venv", "node_modules", ".claude/worktrees/task", "output", "repos",
+                      "web/node_modules", "web/dist", "web/dist-connection"):
+        write(root, f"{directory}/asyncio_probe.py", bad)
+    expect("asyncio excludes dependency and task artifacts", command, 0)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="source-boundary-validation-") as temp:
         root = Path(temp)
@@ -39,6 +166,7 @@ def main() -> int:
         for layer in LAYERS:
             write(root, f"runtime/{layer}/probe.py", "import runtime.models\n")
         expect("source-only baseline", command, 0, ("2 Python files parsed",))
+        validate_asyncio_calls(root, command)
         for layer in LAYERS:
             relative = f"runtime/{layer}/probe.py"
             write(root, relative,
@@ -52,6 +180,17 @@ def main() -> int:
                     (3, "runtime.daemon.beta"), (3, "runtime.daemon.gamma"),
                     (4, "runtime.daemon.*"), (5, "runtime.daemon.delta"))))
             write(root, relative, "import runtime.models\n")
+
+        for relative in ("runtime/infrastructure/repos/probe.py",
+                         "runtime/orchestrator/build/probe.py"):
+            write(root, relative, "import runtime.daemon\n")
+            expect(f"nested source import boundary {relative}", command, 1,
+                   (f"{relative}:2 -> runtime.daemon",))
+            write(root, relative, "import asyncio\nasyncio.get_event_loop()\n")
+            expect(f"nested source asyncio boundary {relative}", command, 1,
+                   (f"{relative}:3 -> ASYNC001", "get_running_loop()", "asyncio.run()"))
+            (root / relative).unlink()
+            (root / relative).parent.rmdir()
 
         relative = "runtime/orchestrator/probe.py"
         write(root, relative,
@@ -103,7 +242,7 @@ def main() -> int:
                (f"{relative}:2 -> runtime.daemon.gate_rejection",))
         # Exercise the real all dispatcher with its exact wrapper bytes in an
         # isolated layout. Rejection must stop it before any npm/product work.
-        (root / "scripts").mkdir()
+        (root / "scripts").mkdir(exist_ok=True)
         for name in ("local_ci.sh", "check_source_boundaries.py", "validate_source_boundaries.py"):
             shutil.copyfile(REPO / "scripts" / name, root / "scripts" / name)
         expect("all propagates lint rejection", ["bash", str(root / "scripts/local_ci.sh"), "all"],

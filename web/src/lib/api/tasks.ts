@@ -3,7 +3,8 @@
  * Excluded (agent-subprocess-only): POST /tasks/{id}/completion,
  * POST /tasks/{id}/progress. See spec §2.
  */
-import { API_PREFIX, request } from './client';
+import { API_PREFIX, fencedText, nativeRecoveryErrorFor, pinnedToken, pinTarget, request, schemeFetch } from './client';
+import { prepareMultipartUpload } from './multipart';
 import type {
   TaskAttachmentRecord,
   TaskAttachmentRef,
@@ -177,25 +178,41 @@ export const uploadTaskAttachment = async (
   content_type: string | null;
   uploaded_by: string;
 }> => {
-  const { getToken } = await import('../auth');
-  const token = await getToken();
+  // F1: pin the target before the bearer and multipart preparation awaits.
+  const pinned = await pinTarget(false);
+  const token = await pinnedToken(false);
   const params = new URLSearchParams({ agent });
   const form = new FormData();
   form.set('file', file, file.name);
-  const res = await fetch(
+  const upload = await prepareMultipartUpload(
+    form,
+    Object.assign(new Error('Upload failed: 413'), { status: 413 }),
+  );
+  const fenced = await schemeFetch(
     `${API_PREFIX}/orgs/${slug}/tasks/attachments?${params.toString()}`,
     {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
+        ...upload.headers,
       },
-      body: form,
+      body: upload.body,
       credentials: 'same-origin',
     },
+    pinned,
   );
+  const res = fenced.res;
+  const text = await fencedText(fenced, false);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    const recovery = nativeRecoveryErrorFor(res.status, body);
+    if (recovery) throw recovery;
     const code = (body as Record<string, unknown> | null)?.code;
     const err: Error & { status: number } = Object.assign(
       new Error(`Upload failed: ${res.status}${code ? ` (${code})` : ''}`),
@@ -203,7 +220,7 @@ export const uploadTaskAttachment = async (
     );
     throw err;
   }
-  return res.json();
+  return JSON.parse(text);
 };
 
 export const listTaskAttachments = (
