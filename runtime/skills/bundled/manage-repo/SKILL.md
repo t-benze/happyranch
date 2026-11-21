@@ -3,20 +3,9 @@ name: manage-repo
 description: Add, remove, or update a repository in your AgentDef configuration (org/agents/<name>.md frontmatter). Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
 ---
 
-## Current names and permanent automation IDs
-
-Fresh prompts may show current Name · ID for this turn. Use the permanent ID
-from the injected parameters for callback agent/composer/speaker, task/session/
-invocation proofs, configuration and delegate/then/fanout targets. A name is
-human-addressing/presentation data, never actor authority. Human destination
-arguments and @mentions accept current names or IDs; former names refuse with
-the current name and do not forward. Founder is a separate human; recipient
-transport remains `@founder`. Metadata failure gives ID-only context.
-
-The manage-repo callback agent remains the permanent ID, and repository keys/URLs/configuration stay unchanged. Operator name resolution never rewrites this payload.
-
-
 # manage-repo
+
+`agent` is your permanent agent ID.
 
 Manage the repositories cloned into your `repos/` directory. You can **add** a new repo, **remove** an existing one, or **update** the URL of an existing repo (which deletes the old clone and re-clones from the new URL).
 
@@ -24,13 +13,13 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
 
 ## Usage
 
-1. **Write a JSON file** to `/tmp/manage-repo-<unique>.json` using the Write tool:
+1. **Write a JSON file** to `output/<task_id>/manage-repo.json` in your workspace (any absolute path works) using the Write tool:
 
    **Add a repo:**
    ```json
    {
      "action": "add",
-     "agent": "<your_agent_name>",
+     "agent": "<your_agent_id>",
      "repo_name": "web-app",
      "url": "https://github.com/t-benze/web-app.git"
    }
@@ -40,7 +29,7 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
    ```json
    {
      "action": "remove",
-     "agent": "<your_agent_name>",
+     "agent": "<your_agent_id>",
      "repo_name": "web-app"
    }
    ```
@@ -49,7 +38,7 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
    ```json
    {
      "action": "update",
-     "agent": "<your_agent_name>",
+     "agent": "<your_agent_id>",
      "repo_name": "web-app",
      "url": "https://github.com/t-benze/new-web-app.git"
    }
@@ -58,7 +47,7 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
 2. **Invoke as a single-line command:**
 
    ```bash
-   happyranch manage-repo --org {ORG_SLUG} --from-file /tmp/manage-repo-<unique>.json
+   happyranch manage-repo --org {ORG_SLUG} --from-file /absolute/workspace/output/<task_id>/manage-repo.json
    ```
 
    The `--from-file` form is mandatory for agent sessions. In Claude sessions,
@@ -67,38 +56,35 @@ Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, dig
 
 ## What happens
 
-- **add**: writes the entry to your `org/agents/<name>.md` frontmatter (`AgentDef.repos`), clones the repo into `repos/<name>/` (or `git pull --ff-only` if a clone already exists), and refreshes executor workspace metadata. Repo freshness is daemon-side (THR-103); no per-workspace git-pull hook is emitted.
+- **add**: writes the entry to your `org/agents/<name>.md` frontmatter (`AgentDef.repos`), clones the repo into `repos/<name>/` (or `git pull --ff-only` if a clone already exists), and refreshes executor workspace metadata.
 - **remove**: deletes the entry from your `org/agents/<name>.md` frontmatter, removes the `repos/<name>/` directory, and refreshes executor workspace metadata.
 - **update**: updates the URL in your `org/agents/<name>.md` frontmatter, deletes the old clone, re-clones from the new URL, and refreshes executor workspace metadata.
 
-Session-spawn `refresh_workspace_repos` attempts refresh under one 30-second
-batch deadline. Detached HEAD or missing/unusable/unreadable upstream refuses
-before pull; refused/unattempted repos stay false and the prompt warns of stale
-source. Every executed pull failure, including dirty/non-FF/partial recursive
-effects, retains native uncertainty; upstream lookup or equal parent summaries
-never certifies no effects. Each identity retains three supervised observations:
-batched refs/object format/commit availability, complete selected config, and
-authoritative origin transport (including legacy remote files). All changed-target
-checkpoints remain. Incomplete batched refs or a HEAD that peels differently use
-the original observations to preserve refusal/type-only admission semantics;
-this exceptional path can cost more calls. An advertised target equal to the admitted HEAD returns the
-settled fetch outcome after full identity and final branch/HEAD confirmation,
-without ancestry, merge or submodule work; original receipt closure still runs.
-Async thread/dream/wake/Todo paths await a joined
-offload inside their actual preparation-effects scope before cancellation and
-settlement; prior unknowns stay sticky. The enclosing runner retains its org
-lifetime through native finish, including failure. Unload refuses active runners
-and fences late starts on detached instances. Runtime registration (including
-the same root) and /runtime/use preflight all old orgs for task/runner
-holds before any close or registration/activation effect, returning409 if busy.
-Shutdown refuses replacement before construction. Idle replacement closes and
-fences all retired instances before publishing the new org map; a busy later org
-leaves earlier orgs open. Shutdown stops runner/new-org
-attachment admission and joins actual runners before DB close. Cancellation or
-timeout never establishes process quiescence. Runtime/race/recovery verification
-remains UNVERIFIED.
+**Warning:** remove/update deletes the whole clone, including task worktrees
+inside it and all local branches. The daemon refuses before changing the
+frontmatter while any linked worktree is dirty or has commits not reachable from
+any remote-tracking ref. Push/finish or clean up worktrees first. Missing/prunable
+worktrees and failed/timed-out Git checks also refuse; no force override exists.
+
+A failed clone/pull on add/update returns HTTP 502 after saving the frontmatter
+entry and refreshing workspace metadata. Inspect the saved entry and clone before
+acting again; fix a bad URL with **update**. Repeating **add** returns 409 because
+the entry already exists.
+
+Session spawn fast-forward-refreshes existing clones under a 30-second batch
+budget. If the prompt warns a repo is stale, fetch and read `origin/<branch>`
+explicitly; never reset the primary checkout.
 
 ## Error handling
 
-- If `happyranch` returns non-zero, retry once after 1 second.
-- `409` (duplicate repo on add) and `404` (repo not found on remove/update) are not retryable — check your `org/agents/<name>.md` frontmatter and adjust.
+- `422`: invalid repo key, invalid request fields, or missing URL on add/update.
+- `404`: workspace not found, agent not found, or repo not found on remove/update.
+- `409`: duplicate repo on add, or remove/update refused by the linked-worktree
+  safety check. The refusal lists offending paths and reasons; frontmatter and
+  clone remain unchanged. Existing writer/admission conflicts can also return 409.
+- `502`: the frontmatter entry WAS saved but clone/pull failed. The CLI displays
+  the failure and exits non-zero; this is not a successful repository change.
+
+Do not automatically retry this mutation on transport errors, 5xx, or other
+failures. After an ambiguous or failed result, inspect canonical state in your
+`org/agents/<name>.md` frontmatter and `repos/<name>/.git` before acting again.

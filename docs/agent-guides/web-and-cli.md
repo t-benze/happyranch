@@ -3547,6 +3547,32 @@ returned thread ID. Silent declines return status `declined` without a message
 sequence because they create no transcript row. Callback errors retain the
 existing nonzero exit and error output.
 
+### Repository mutation verification
+
+Repo remove/update deletes the whole clone and its local branches/task worktrees.
+Before saving frontmatter, linked worktrees must be clean and their HEAD commits
+reachable from a remote-tracking ref; missing/prunable entries and failed or
+expired Git probes return 409 with paths/reasons, leaving config and clone intact.
+Add/update clone or pull failure returns 502 after saving frontmatter and
+refreshing metadata; the CLI exits 1 and displays that saved-state warning.
+Inspect `org/agents/<agent-id>.md` and `repos/<name>/.git` after a failed or
+ambiguous result, then deliberately correct the URL with update if needed.
+Re-add of a saved entry is 409; there is no automatic mutation retry.
+
+Run focused in-process HTTP/CLI checks with real disposable Git clones:
+
+```bash
+python -B -m unittest scripts.test_manage_repo -v
+```
+
+This standalone selection covers repo preservation, failed pull/clone receipts,
+and CLI failure exits. It does not launch a daemon or collect the retired Python
+unit suite. Retained skill-platform coverage uses explicit file selectors:
+
+```bash
+uv run --frozen pytest tests/test_skill_cutover_completeness.py tests/test_system_contract_materialization.py tests/test_thr070_skill_freshness.py -v --tb=short
+```
+
 ### Retired System Assistant
 
 System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,

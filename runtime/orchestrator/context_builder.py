@@ -92,12 +92,16 @@ class ContextBuilder:
         if repo_dir.exists() and (repo_dir / ".git").exists():
             logger.info("Repo already cloned at %s, pulling latest", repo_dir)
             try:
-                subprocess.run(
+                pulled = subprocess.run(
                     ["git", "pull", "--ff-only"],
                     cwd=str(repo_dir),
                     capture_output=True,
                     timeout=60,
                 )
+                if pulled.returncode != 0:
+                    logger.warning("git pull failed at %s: %s", repo_dir,
+                                   pulled.stderr.decode(errors="replace"))
+                    return False
                 return True
             except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
                 logger.warning("git pull failed: %s", e)

@@ -637,9 +637,68 @@ async def manage_repo(
     if body.action in (RepoAction.add, RepoAction.update) and not body.url:
         raise HTTPException(status_code=422, detail=f"url required for {body.action!r}")
 
+    def check_linked_worktrees() -> None:
+        import subprocess
+        import time
+
+        repo_dir = workspace / "repos" / body.repo_name
+        if not (repo_dir / ".git").exists():
+            return
+        deadline = time.monotonic() + 30
+
+        def git_at(path: Path, *args: str) -> str:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("worktree check budget exhausted")
+            result = subprocess.run(
+                ["git", "--no-optional-locks", "-C", str(path), *args], capture_output=True,
+                text=True, timeout=min(5, remaining), check=True,
+            )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("worktree check budget exhausted")
+            return result.stdout
+
+        problems: list[str] = []
+        try:
+            records = git_at(repo_dir, "worktree", "list", "--porcelain", "-z").split("\0\0")
+            entries = [record.split("\0") for record in records if record]
+            if not entries or entries[0][0] != f"worktree {repo_dir.resolve()}":
+                raise ValueError("missing or unexpected primary worktree entry")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{repo_dir}: cannot verify linked worktrees ({type(exc).__name__})",
+            ) from exc
+        for entry in entries[1:]:
+            if not entry[0].startswith("worktree "):
+                problems.append(f"{repo_dir}: malformed linked worktree entry")
+                continue
+            linked = Path(entry[0].removeprefix("worktree "))
+            if not linked.is_dir() or any(field.startswith("prunable") for field in entry):
+                problems.append(f"{linked}: missing or prunable worktree; cannot verify safety")
+                continue
+            for args, reason in (
+                (("status", "--porcelain", "--untracked-files=all"), "uncommitted or untracked changes"),
+                (("rev-list", "HEAD", "--not", "--remotes"), "commits not reachable from any remote-tracking ref"),
+            ):
+                try:
+                    if git_at(linked, *args).strip():
+                        problems.append(f"{linked}: {reason}")
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    problems.append(f"{linked}: git {args[0]} check failed ({type(exc).__name__})")
+        if problems:
+            raise HTTPException(status_code=409, detail="Cannot delete clone: " + "; ".join(problems))
+
     async with _consumer_writer_interval(
         org, publisher="manage_repo", consumer=agent_name, preserve=True,
     ) as authority_change:
+        # Read-only Git probes run before canonical writes, outside teams_lock.
+        # The ordinary validation below still checks a fresh canonical definition.
+        if body.action in (RepoAction.remove, RepoAction.update):
+            with authority_change.validation():
+                current = prompt_loader.load_agent(paths, agent_name)
+                if current is not None and body.repo_name in current.repos:
+                    await _finish_consumer_write(asyncio.to_thread(check_linked_worktrees))
         async with org.teams_lock:
             with authority_change.validation():
                 ctx = ContextBuilder(org.settings, paths, slug=org.slug)
@@ -698,11 +757,13 @@ async def manage_repo(
                     raise
 
         async def finish_write() -> dict:
-            # Clone/remove repo dir as before
+            # Keep reconciliation inside the drained writer even on clone failure.
+            clone_failed = False
             if body.action == RepoAction.add:
                 cloned = await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
                 if not cloned:
                     authority_change.native_disposition.uncertain = True
+                    clone_failed = True
             elif body.action == RepoAction.remove:
                 repo_dir = workspace / "repos" / body.repo_name
                 if repo_dir.exists():
@@ -714,6 +775,7 @@ async def manage_repo(
                 cloned = await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
                 if not cloned:
                     authority_change.native_disposition.uncertain = True
+                    clone_failed = True
 
             # clone_repo can yield to the event loop.  Bootstrap from a fresh
             # canonical snapshot afterwards so an accepted whole-definition update
@@ -727,6 +789,13 @@ async def manage_repo(
                 ctx.ensure_workspace_ready, workspace, agent_name, fresh.system_prompt,
                 provider=fresh.executor,
             )
+            if clone_failed:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"repo {body.repo_name!r}: frontmatter entry WAS saved but "
+                           "clone/pull failed; inspect canonical config and repos/<name>/.git "
+                           "before acting again",
+                )
             return {"ok": True}
 
         return await _finish_consumer_write(finish_write())
