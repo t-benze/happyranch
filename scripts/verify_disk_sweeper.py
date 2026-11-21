@@ -6841,12 +6841,109 @@ def c61() -> dict:
     return dict(auth_refusals=3, founder_refused_by_stop=True, cli_posts=len(calls), timeout=7320)
 
 
+def c62() -> list[dict]:
+    """Registered scratch checkouts retain before either tree comparison."""
+    observations, failures = [], []
+    for boundary in (1, 2, 3, 4):
+        try:
+            with fixture() as f:
+                path = f.scratch('TASK-1')
+                repo = f.base / 'source'; repo.mkdir()
+                f.git(repo, 'init', '-q')
+                f.git(repo, 'config', 'user.name', 'Disposable fixture')
+                f.git(repo, 'config', 'user.email', 'fixture@example.invalid')
+                (repo / 'payload').write_text('committed\n')
+                f.git(repo, 'add', 'payload'); f.git(repo, 'commit', '-qm', 'fixture')
+                checkout = path / 'nested/head'
+                admin = repo / '.git/worktrees/head'
+                real_snapshot, calls, saved = ds.snapshot, [], []
+                def snapshot(root: Path, deadline: float, **kwargs: Any) -> dict[str, os.stat_result]:
+                    if root == path:
+                        calls.append(str(root))
+                        if len(calls) == boundary:
+                            f.git(repo, 'worktree', 'add', '--detach', str(checkout), 'HEAD')
+                            saved.append(candidate_contents(path, admin))
+                            saved.append({str(p): fs.signature(p.lstat()) for p in (admin, *admin.rglob('*'))})
+                    return real_snapshot(root, deadline, **kwargs)
+                with patch.object(ds, 'snapshot', snapshot):
+                    report = f.sweep()
+                target = row(report, path)
+                assert target['state'] == 'retained', (boundary, target)
+                assert target['reason'] == f'registered_worktree_in_scratch:{checkout / ".git"}', target
+                assert len(calls) == boundary and saved, (boundary, calls)
+                assert saved[0] == candidate_contents(path, admin)
+                assert saved[1] == {str(p): fs.signature(p.lstat()) for p in (admin, *admin.rglob('*'))}
+                assert ds._classification(target['reason']) == dict(finding='registered_worktree_in_scratch', hold='item', located_inspected=True)
+                assert report['coverage']['complete'] and report['outcome'] == 'complete', report
+                assert report['phases']['scratch']['removed_attributable_bytes'] == 0
+                observations.append(dict(snapshot=boundary, reason=target['reason'], coverage=report['coverage']))
+        except AssertionError as exc:
+            failures.append(dict(snapshot=boundary, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
+    return observations
+
+
+def c63() -> list[dict]:
+    """Uncertain regular scratch gitfiles retain with the exact location."""
+    observations, failures = [], []
+    for variant in ('unreadable', 'oversized', 'changed'):
+        try:
+            with fixture() as f:
+                path = f.scratch('TASK-1'); pointer = path / 'nested/.git'
+                pointer.write_bytes(b'gitdir: /not-a-real-fixture-target\n')
+                if variant == 'unreadable': pointer.chmod(0)
+                if variant == 'oversized': pointer.write_bytes(b'x' * 65537)
+                real_snapshot, saved = ds.snapshot, []
+                def snapshot(root: Path, deadline: float, **kwargs: Any) -> dict[str, os.stat_result]:
+                    value = real_snapshot(root, deadline, **kwargs)
+                    if root == path and not saved:
+                        if variant == 'changed':
+                            pointer.write_bytes(b'gitdir: /changed-fixture-target\n')
+                        if variant != 'unreadable': saved.append(candidate_contents(path))
+                    return value
+                before = fs.signature(pointer.lstat())
+                with patch.object(ds, 'snapshot', snapshot):
+                    report = f.sweep()
+                target = row(report, path)
+                assert target['state'] == 'retained', (variant, target)
+                assert target['reason'] == f'registered_worktree_in_scratch:{pointer}', target
+                assert pointer.exists() and (path / 'nested/payload').exists()
+                if variant != 'changed': assert fs.signature(pointer.lstat()) == before
+                if saved: assert saved[0] == candidate_contents(path)
+                assert report['coverage']['complete'] and report['outcome'] == 'complete', report
+                observations.append(dict(variant=variant, reason=target['reason']))
+        except AssertionError as exc:
+            failures.append(dict(variant=variant, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
+    return observations
+
+
+def c64() -> dict:
+    """Seq194 still removes readable non-worktree gitfiles and special leaves."""
+    with fixture() as f:
+        path = f.scratch('TASK-1'); disposable_contents(f, path)
+        modules = f.base / 'source/.git/modules/child'; modules.mkdir(parents=True)
+        sentinel = modules / 'sentinel'; sentinel.write_text('untouched')
+        pointer = path / 'nested/.git'; pointer.write_text(f'gitdir: {modules}\n')
+        os.link(pointer, path / 'nested/internal-hardlink')
+        dangling = path / 'nested/dangling'; dangling.mkdir()
+        (dangling / '.git').write_text(f'gitdir: {f.base / "source/.git/worktrees/missing"}\n')
+        before = candidate_contents(modules)
+        with no_endpoint_io(): report = f.sweep()
+        assert row(report, path)['state'] == 'removed' and not path.exists(), report
+        assert candidate_contents(modules) == before
+        assert report['coverage']['complete'] and report['outcome'] == 'complete', report
+        return dict(removed=True, nested_git_directory=True, non_worktree_gitfiles=3, socket_fifo='no endpoint I/O')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,62))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,65))
     selection.add_argument('--candidate-benchmark', action='store_true')
     parser.add_argument('--candidate-baseline', help='run selected cases against exact production commit')
     parser.add_argument('--benchmark-baseline', default='53391d91b0812a2ef6bd2e7126ea87c9d6991e7d')
@@ -6900,7 +6997,8 @@ if __name__=='__main__':
             purposes += ('Manual full-window refusal', 'Manual global stop and publication refusal', 'Daemon mutual exclusion',
                          'Manual scheduled eligibility parity', 'Manual real-worker budget propagation', 'Manual reports do not count as nights',
                          'Manual founder route and CLI transport')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55,c56,c57,c58,c59,c60,c61),purposes),1):
+            purposes += ('Registered linked worktrees in scratch and located coverage', 'Uncertain scratch gitfiles fail closed', 'Seq194 non-worktree scratch remains disposable')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55,c56,c57,c58,c59,c60,c61,c62,c63,c64),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

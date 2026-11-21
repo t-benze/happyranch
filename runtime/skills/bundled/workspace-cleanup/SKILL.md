@@ -343,7 +343,10 @@ none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
-after both task and structural root end. Socket/FIFO handling uses no-follow
+after both task and structural root end, except that a registered linked-worktree
+checkout (or an unreadable, oversized or changed regular `.git` file) retains
+that scratch root under THR307 seq405. Tasks creating worktrees in task-tmp must
+`git worktree remove` their exact worktrees before completion. Socket/FIFO handling uses no-follow
 stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
 metadata-only O_PATH descriptors, including post-unlink inode observation.
 Darwin never opens any leaf: immediately before unlink it checks the full
