@@ -198,6 +198,10 @@ class NativeHostTests(unittest.TestCase):
             self.window.client.model.host_prompt_document = None
 
     def test_invite_validator_and_secret_outputs(self) -> None:
+        # Keep the +301s invalid frame outside the 300s window across callbacks.
+        clock = patch.object(time, "time", return_value=time.time())
+        clock.start()
+        self.addCleanup(clock.stop)
         frame = dict(result="complete", invite=INVITE, expires_at=int(time.time()) + 200)
         invalid = ["{", json.dumps(frame) + " " * 6144, '"accepted"',
                    json.dumps(frame).replace('"result": "complete"', '"result":"complete","result":"complete"')]
