@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit cooperative offline Coding registration/admission; never installation.
+"""Cooperative offline generic Coding registration; original admission reads/replay only.
 
 SOURCE delivery grants no live operating authority. Public cutover remains OFF.
 Exit 0 observed success/read, 1 refused, 2 usage, 4 publication uncertain.
@@ -31,12 +31,12 @@ from runtime.infrastructure.workflow_schema import (  # noqa: E402
 )
 from runtime.workflows.coding_authority_history import _bounded_rows  # noqa: E402
 from runtime.workflows.sequential_contracts import Closed, DefinitionPin, Positive, Token  # noqa: E402
-from runtime.workflows.sequential_definition import CompiledDefinition, _json  # noqa: E402
+from runtime.workflows.sequential_definition import CompiledDefinition, GenericCompiledDefinition, _json  # noqa: E402
 from runtime.workflows.sequential_engine import _engine_rows, _identity as _record_id  # noqa: E402
 from runtime.workflows.sequential_history import (  # noqa: E402
     SequentialHistory, StorageSettings, _ReadBudget, _bytes, _decode, _sql_budget, read_sequential_history,
 )
-from runtime.workflows.sequential_release import read_coding_release  # noqa: E402
+from runtime.workflows.sequential_release import read_coding_release, read_generic_coding_release  # noqa: E402
 from runtime.workflows.sequential_builtin import inspect_definition  # noqa: E402
 
 # The existing offline operator, separate from Founder PUT/lookup's namespace.
@@ -216,7 +216,7 @@ def _offline(args: argparse.Namespace) -> tuple:
 
 
 def _inspect(conn: sqlite3.Connection, *, org: str, action: str, command: AdmissionCommand | None,
-             key: str | None, compiled: CompiledDefinition, budget: _ReadBudget) -> dict:
+             key: str | None, compiled: CompiledDefinition | GenericCompiledDefinition, budget: _ReadBudget) -> dict:
     history = _history(conn, org, budget.deadline)
     if not history.layout.sequential:
         raise ValueError('sequential_coding_storage_not_installed')
@@ -249,18 +249,7 @@ def _inspect(conn: sqlite3.Connection, *, org: str, action: str, command: Admiss
                 receipt=_decode(operation['receipt_bytes'], budget), write=None)
         if command is None:
             raise ValueError('sequential_coding_operation_not_found')
-        if current is None:
-            raise ValueError('sequential_coding_defaults_required')
-        if current['generation'] != command.expected_generation:
-            raise ValueError('sequential_coding_generation_stale')
-        if current['generation'] == 9223372036854775807:
-            raise ValueError('sequential_coding_generation_exhausted')
-        snapshot = StorageSettings.model_validate(_decode(current['snapshot_bytes'], budget))
-        # Copy only NEW saved defaults. No role resolution, old Explicit lookup,
-        # run re-pinning, resource override or automatic initial settings.
-        raw = _bytes(snapshot.model_copy(update={'admission': command.admission}).model_dump(mode='json'))
-        return dict(result, command=command.model_dump(mode='json'), write=dict(
-            definition_id=definition['id'], generation=current['generation'] + 1, raw=raw))
+        raise ValueError('sequential_coding_registration_only')
 
 
 def _write(conn: sqlite3.Connection, org: str, action: str, command: AdmissionCommand | None,
@@ -306,7 +295,9 @@ def operation(args: argparse.Namespace) -> dict:
     if args.action == 'admission':
         command = _command(args.from_file)
         key = command.operation_key
-    compiled = read_coding_release()  # Resource discovery precedes SQLite scopes.
+    # Original admission operations keep their exact @1 pin/receipt lookup.
+    # Only registration selects the generic catalog; no fresh admission writer.
+    compiled = read_generic_coding_release() if args.action == 'register' else read_coding_release()
     path = resolve_org_database(args.runtime_root, args.org)
     from runtime.infrastructure.org_access_fence import org_access
     with org_access(path.parent, exclusive=True, deadline=deadline):
@@ -411,7 +402,8 @@ def operation(args: argparse.Namespace) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('register', 'admission', 'admission-show'))
+    parser.add_argument('action', choices=('register', 'admission', 'admission-show'),
+        help='Register generic Coding only; admission/show accept original @1 operations, no fresh admission')
     parser.add_argument('--runtime-root', type=Path, required=True)
     parser.add_argument('--org', required=True)
     parser.add_argument('--confirm-cooperative-offline', action='store_true', help=(

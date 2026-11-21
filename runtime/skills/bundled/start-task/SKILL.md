@@ -492,9 +492,14 @@ stays Disabled; this paragraph grants no start, setup or live operation.
 
 ## Agent-owned Coding responsibilities (v3)
 
-Coding v3 is staged registration-only until S8b catalog cutover, absent from
-public discovery and fresh selection. Coding stays Disabled/unset; this grants
-no start, setup, roles or Allow. Apply these duties only when actually bound to
+S8b registers Coding v3 as generic Coding data only. Public Start@1 discovery
+and composition remain unchanged; public @2 start/composition stays closed
+pending separate authorization. Repository-resolve/bind/preflight and sequential
+finalize/journal transports refuse generic @2 selections; perform the authorized
+engineering duties below with existing tools. Original @1 replay, selected
+history and uncertain Final records retain their original rules; never reissue
+an uncertain Final. Coding stays Disabled/unset; no start, setup, roles or Allow
+follows from registration. Apply these duties only when actually bound to
 Coding v3 under `workflow-sequential-node-brief@2`, using its authored node data
 and addressed reports subject to trusted instructions and actual authorization.
 The generic callback@2 paragraph above controls: exactly format, outcome,

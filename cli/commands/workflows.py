@@ -554,10 +554,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
     from cli.commands.workflow_sequential_transport import cmd_workflow_sequential
-    sequential = workflow_sub.add_parser('sequential', help='Own live repository resolve/bind/read and LOCAL Final transport')
+    sequential = workflow_sub.add_parser('sequential', help='Start@1 composer and historical @1 engineering transports; no @2 domain actions')
     sequential_sub = sequential.add_subparsers(dest='sequential_command', required=True)
     for form in ('repository-preflight', 'repository-resolve', 'repository-bind', 'finalize'):
-        command = sequential_sub.add_parser(form)
+        command = sequential_sub.add_parser(form, help='Original @1 selected sessions only; unavailable to generic @2 runs')
         command.add_argument('--org', required=True)
         command.add_argument('--session-id', required=True)
         command.add_argument('--json', action='store_true', required=True)
