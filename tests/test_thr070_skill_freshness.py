@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 import runtime.orchestrator.workspace_adapters as wa_mod
@@ -404,74 +405,68 @@ class TestRepositoryRefreshNotesInPrompts:
 
 
 @pytest.mark.asyncio
-async def test_nonresumable_thread_nudge_forwards_failed_refresh_note(tmp_path, monkeypatch):
+async def test_nonresumable_thread_nudge_forwards_failed_refresh_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The shipping nudge rebuild carries the same failed-refresh context."""
     from runtime.daemon import thread_runner as runner
-    from runtime.infrastructure.database import Database
-    from runtime.models import (
-        ThreadInvocationPurpose,
-        ThreadMessageKind,
-        ThreadRecord,
-    )
-    from runtime.orchestrator._paths import OrgPaths
-    from tests.conftest import seed_test_agents
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.thread_move import current_thread_preparation
+    from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
+    from runtime.models import ThreadMessageKind, ThreadRecord
+    from scripts.test_agent_retirement import fixture
 
-    db = Database(tmp_path / "happyranch.db")
-    db.insert_thread(ThreadRecord(id="THR-REFRESH", subject="refresh proof"))
-    db.add_thread_participant("THR-REFRESH", "alice", added_by="founder")
-    db.append_thread_message(
-        thread_id="THR-REFRESH", speaker="founder",
-        kind=ThreadMessageKind.MESSAGE, body_markdown="Please inspect the repo.",
-    )
-    invocation = db.mint_thread_invocation(
-        thread_id="THR-REFRESH", agent_name="alice", triggering_seq=1,
-        purpose=ThreadInvocationPurpose.REPLY,
-    )
-    db._conn.execute(
-        "INSERT INTO thread_reply_delivery_state "
-        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
-        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ("THR-REFRESH", "alice", 0, 1, invocation.invocation_token,
-         "2026-01-01T00:00:00+00:00"),
-    )
-    db._conn.commit()
+    # Reuse the maintained no-lifespan synthetic OrgState fixture: actual runner
+    # lifetime, native ownership, roster and delivery stores, without providers.
+    async with fixture(tmp_path / "org", workers=("alice",)) as (org, _client):
+        db = org.db
+        db.insert_thread(ThreadRecord(id="THR-REFRESH", subject="refresh proof"))
+        db.add_thread_participant("THR-REFRESH", "alice", added_by="founder")
+        db.record_conversational_arrival(
+            thread_id="THR-REFRESH", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="Please inspect the repo.",
+            recipients=["alice"],
+        )
+        delivery = db.get_reply_delivery_state("THR-REFRESH", "alice")
+        token = delivery.queued_invocation_token
+        assert token
+        workspace = org.root / "workspaces" / "alice"
+        write_canonical_instruction_pair(workspace, "Synthetic initialized instructions.\n")
 
-    seed_test_agents(OrgPaths(root=tmp_path), ("alice",))
-    workspace = tmp_path / "workspaces" / "alice"
-    workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("executor: claude\n")
+        class RecordingExecutor:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
 
-    class RecordingExecutor:
-        def __init__(self):
-            self.prompts: list[str] = []
+            def run(self, **kwargs: Any) -> ExecutorResult:
+                self.prompts.append(kwargs["prompt"])
+                owner = current_thread_preparation()
+                assert owner is not None
+                owner.retry_schedule("provider", ())
+                owner.before_selflaunch()
+                kwargs["on_started"](424242)  # Synthetic start; no provider process.
+                if len(self.prompts) == 2:
+                    db.settle_conversational_reply(token=token, outcome="decline")
+                return ExecutorResult(success=True, returncode=0, session_id="synthetic",
+                    duration_seconds=0, provider_launched=True)
 
-        def run(self, **kwargs):
-            self.prompts.append(kwargs["prompt"])
-            return type("Result", (), {
-                "success": True, "returncode": 0, "error": "",
-                "agent_session_id": None, "duration_seconds": 0,
-                "stdout_tail": "", "stderr_tail": "", "token_usage": None,
-            })()
+        executor = RecordingExecutor()
+        # Isolate unrelated skill publication as in the maintained prompt tests;
+        # prompt construction, nudge handling and native delivery remain real.
+        monkeypatch.setattr(runner, "materialize_workspace_skills", lambda *a, **k: [])
+        monkeypatch.setattr(runner, "validate_workspace_skills_integrity", lambda *a, **k: None)
+        monkeypatch.setattr(runner, "resolve_managed_skills_index", lambda **k: "")
+        monkeypatch.setattr(runner, "refresh_workspace_repos", lambda *a, **k: {"repo": False})
+        monkeypatch.setattr(runner, "_RESUME_CAPABLE_EXECUTORS", frozenset())
+        monkeypatch.setattr(runner, "_build_executor_for_provider",
+            lambda provider, settings, paths: executor)
 
-    executor = RecordingExecutor()
-    monkeypatch.setattr(runner, "refresh_workspace_repos", lambda _: {"repo": False})
-    monkeypatch.setattr(runner, "_RESUME_CAPABLE_EXECUTORS", frozenset())
-    monkeypatch.setattr(
-        runner, "_build_executor_for_provider",
-        lambda provider, settings, paths: executor,
-    )
+        await runner.run_invocation(org_state=org, invocation_token=token, settings=org.settings)
 
-    org = type("Org", (), {"db": db, "root": tmp_path, "slug": "test"})()
-    await runner.run_invocation(
-        org_state=org, invocation_token=invocation.invocation_token,
-        settings=Settings(),
-    )
-
-    assert len(executor.prompts) == 2
-    for prompt in executor.prompts:
-        assert "Repository freshness at session start" in prompt
-        assert "repo did not fast-forward cleanly" in prompt
-    assert "ended without posting" in executor.prompts[1]
+        assert len(executor.prompts) == 2
+        for prompt in executor.prompts:
+            assert "Repository freshness at session start" in prompt
+            assert "repo did not fast-forward cleanly" in prompt
+        assert "ended without posting" in executor.prompts[1]
 
 
 # ── PART D: inject_system_contracts (THR-055 Phase 1) ────────────────
