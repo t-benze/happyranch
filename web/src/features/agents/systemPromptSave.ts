@@ -7,9 +7,16 @@
  * acknowledged AND a verification read matches the receipt. An acknowledged
  * PUT whose verification read fails (e.g. 503) or disagrees (another prompt
  * or revision) settles `unknown`: the owner stays held (non-discardable, new
- * saves refused, org/target switch and Quit blocked) until Check result or
- * Reload reconciles it. It never settles `saved` first and corrects itself
- * later, so a queued transition cannot observe a transient clean state.
+ * saves refused, org/target switch and Quit blocked) until a MATCHING read
+ * (Check result or Reload) resolves it. It never settles `saved` first and
+ * corrects itself later, so a queued transition cannot observe a transient
+ * clean state.
+ *
+ * Explicit reads (`reconcileSystemPromptRead`) keep the two unknown kinds
+ * apart: for an ACKNOWLEDGED-but-unverified save a failed or disagreeing read
+ * stays `unknown` (a different current value cannot prove an acknowledged
+ * write failed; another writer may have replaced it). Only a NEVER-acknowledged
+ * (lost) PUT may reconcile to `not_saved` on a disagreeing read.
  */
 import type { SaveOutcome } from '@/lib/owners/ownerRegistry';
 
@@ -33,12 +40,40 @@ export type PromptSaveResult<R extends PromptRead> =
   /** The PUT failed, or the verification read failed. */
   | { kind: 'error'; error: unknown };
 
+/** The sent text plus, once the PUT was acknowledged, its receipt. */
+export interface PromptSubmission {
+  system_prompt: string;
+  /** Non-null exactly when the PUT was acknowledged. */
+  acknowledged: PromptReceipt | null;
+}
+
+/**
+ * Outcome of an explicit read (Check result / Reload) for an unknown save.
+ * - Never acknowledged (lost PUT): stored == sent text -> saved, otherwise
+ *   not_saved (unchanged reconciliation; the revision guard refuses a stale
+ *   write, so the draft is kept as unsaved for an explicit retry).
+ * - Acknowledged but unverified: ONLY stored == sent text with the receipt's
+ *   revision resolves it (saved); any other read stays unknown.
+ * - No read or no submission: unknown.
+ */
+export function reconcileSystemPromptRead(
+  sent: PromptSubmission | null,
+  fresh: PromptRead | null | undefined,
+): 'saved' | 'not_saved' | 'unknown' {
+  if (!fresh || !sent) return 'unknown';
+  const sameText = fresh.system_prompt === sent.system_prompt;
+  if (sent.acknowledged === null) return sameText ? 'saved' : 'not_saved';
+  return sameText && fresh.revision === sent.acknowledged.revision ? 'saved' : 'unknown';
+}
+
 export async function saveAndVerifySystemPrompt<R extends PromptRead>(deps: {
   agentName: string;
   save: () => Promise<PromptReceipt>;
   read: () => Promise<R | null | undefined>;
   classifySaveError: (error: unknown) => 'failed' | 'unknown';
   validRevision: (value: unknown) => boolean;
+  /** Called as soon as the PUT is acknowledged, before the verification read. */
+  onAcknowledged?: (receipt: PromptReceipt) => void;
 }): Promise<{ outcome: SaveOutcome; result: PromptSaveResult<R> }> {
   let receipt: PromptReceipt;
   try {
@@ -46,6 +81,7 @@ export async function saveAndVerifySystemPrompt<R extends PromptRead>(deps: {
   } catch (error: unknown) {
     return { outcome: deps.classifySaveError(error), result: { kind: 'error', error } };
   }
+  deps.onAcknowledged?.(receipt);
   // Acknowledged, not yet verified: unknown until a matching read.
   let fresh: R | null | undefined;
   try {

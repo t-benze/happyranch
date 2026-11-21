@@ -8,7 +8,7 @@ import { useTranslation } from '@/hooks/i18n';
 import type { AgentSummary } from '@/lib/api/types';
 import type { MessageKey } from '@/lib/i18n';
 import { classifySystemPromptError } from './strings';
-import { saveAndVerifySystemPrompt } from './systemPromptSave';
+import { reconcileSystemPromptRead, saveAndVerifySystemPrompt, type PromptSubmission } from './systemPromptSave';
 
 interface Props {
   slug: string;
@@ -70,17 +70,14 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
   // unknown result refuses a new save until Reload / Check result reconciles it.
   // An acknowledged save whose verification read fails or disagrees settles
   // UNKNOWN (held) — never saved — so no transient clean state is published.
+  // For that ACKNOWLEDGED save only a matching explicit read resolves it; a
+  // failed or disagreeing Check result / Reload keeps it unknown. Only a
+  // never-acknowledged (lost) PUT may reconcile to not_saved (./systemPromptSave).
   const draftRef = useRef(draft);
   draftRef.current = draft;
-  const lastSubmission = useRef<{ system_prompt: string; expected_revision: string } | null>(null);
-  const reconcileFrom = (fresh: { system_prompt: string } | null | undefined): 'saved' | 'not_saved' | 'unknown' => {
-    const sent = lastSubmission.current;
-    if (!fresh || !sent) return 'unknown';
-    // The stored prompt is the submitted text: saved. Otherwise the submitted
-    // draft is not what is stored (the revision guard refuses a stale write),
-    // so it is kept as an unsaved draft for an explicit retry.
-    return fresh.system_prompt === sent.system_prompt ? 'saved' : 'not_saved';
-  };
+  const lastSubmission = useRef<PromptSubmission | null>(null);
+  const reconcileFrom = (fresh: { system_prompt: string; revision?: string | null } | null | undefined) =>
+    reconcileSystemPromptRead(lastSubmission.current, fresh);
   const owner = useConfigOwner({
     page: 'agents.systemPrompt',
     subject: agentName,
@@ -118,7 +115,8 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     setExpanded(true); setError(null); setDiagnostic(null); setSaved(false); setNeedsRead(false);
   };
   const cancel = () => {
-    if (busy.current) return;
+    // An unknown save (e.g. acknowledged but unverified) keeps its draft.
+    if (busy.current || owner.saveRefused) return;
     setBase(null); setDraft(''); setError(null); setDiagnostic(null); setNeedsRead(false);
   };
   const submit = async () => {
@@ -127,7 +125,8 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     const submission = { slug, agentName, body: { system_prompt: draft, expected_revision: base.revision } };
     const ticket = owner.begin();
     if (ticket === null) return;
-    lastSubmission.current = submission.body;
+    const sent: PromptSubmission = { system_prompt: submission.body.system_prompt, acknowledged: null };
+    lastSubmission.current = sent;
     busy.current = true; inspectionRequired.current = true;
     setPending(true); setError(null); setDiagnostic(null); setSaved(false);
     // Only a matching verification read settles the ticket as saved; an
@@ -142,6 +141,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
         read: () => read.mutateAsync({ slug: submission.slug, agentName: submission.agentName }),
         classifySaveError,
         validRevision,
+        onAcknowledged: (receipt) => { sent.acknowledged = receipt; },
       });
       outcome = done.outcome;
       const { result } = done;
@@ -215,7 +215,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
           className="bg-surface-sunken border-border-subtle w-full min-w-0 resize-y rounded-md border p-3 font-mono text-xs" />
         {snapshot && error === 'agents.prompt.rebased' && <pre className="mt-2 max-h-40 overflow-auto text-xs whitespace-pre-wrap">{snapshot.system_prompt}</pre>}
         <div className="bg-surface-raised sticky bottom-0 flex flex-wrap justify-end gap-2 py-2">
-          <Button variant="ghost" size="sm" disabled={pending} onClick={cancel}>{t('common.cancel')}</Button>
+          <Button variant="ghost" size="sm" disabled={pending || owner.saveRefused} onClick={cancel}>{t('common.cancel')}</Button>
           <Button size="sm" disabled={!canSave} onClick={() => void submit()}>{pending ? t('agents.prompt.saving') : t('agents.prompt.save')}</Button>
         </div>
       </> : visible && <pre className="bg-surface-sunken border-border-subtle max-h-48 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">{visible.system_prompt}</pre>}
