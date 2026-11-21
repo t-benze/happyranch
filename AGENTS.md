@@ -141,6 +141,12 @@ Details: [CI and testing contracts](docs/agent-guides/contracts/ci-and-testing.m
 
 ## Engineering delivery gates
 
+- **Coding practice rules (founder THR-386 seq28):** reviewers/QA tag finding categories;
+  second repeats become lint/static rules whose errors explain the fix, with bad
+  examples removed (no baselining unless justified). Risky lifecycle/restart/retry
+  changes include a TLA+ model in the same PR and TLC review evidence, not a CI gate.
+  The engineering manager reports monthly on THR-386; cut back if not paying off.
+  Full text: [coding practice rules](docs/agent-guides/contracts/coding-practice-rules.md).
 - **Code review gate (founder THR-355):** `code_reviewer` returns
   `REQUEST_CHANGES` only for defects with reachable production or invariant
   impact. Paperwork (docs wording, doc parity, test naming or wording, PR-body

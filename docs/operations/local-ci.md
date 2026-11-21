@@ -878,6 +878,42 @@ installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
 comparison; its successful capacity gate moves to I2. All caps/checks remain.
 
+### S9 reader parity keepers
+
+Use the existing commands, with frozen Python3.14:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --bounded-acquisition
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --sequential-freshness
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s8b=legacy_replay
+```
+
+S9 `generic_acquisition` / `legacy_budget_equality` extend A0's existing native
+acquisition keeper with retained `_Budget` and generic `_ReadBudget` variants.
+Two real acquisitions preserve fixed native values and nonzero original counters;
+a refused third acquisition withholds the whole payload, charges the rejected
+candidate and preserves the caller transaction. Expected final bytes/rows/work
+are independently fixed at `(29, 5, 20)`. The existing freshness keeper owns
+complete retained projection/reuse, original cumulative exhaustion and exact
+public-reader refusals; S8b `legacy_replay` owns original @1 history selection.
+
+Four authoring answers for both added ledger variants: (1) observable native
+projection, cumulative charges, withheld refused payload and cursor/transaction
+custody; (2) a realistic double candidate charge fails the fixed-counter
+assertions; (3) existing A0 rows use only the retained budget, while complete
+freshness tests do not isolate this generic/retained acquisition comparison;
+(4) no production export, flag, wrapper or other test-only seam is added.
+The PR records attributable RED, byte-exact production restoration and GREEN.
+
+`full_consumer_scan` is a source audit of current/versioned history consumers,
+not behavioral proof. S9 explicitly defers naming extraction because its full
+generic consumer migration exceeds the closed set. No extraction identity test
+or new verifier/venue is introduced; `scripts/verify_coding_readers.py` keeps its
+original bounded legacy-read responsibility unchanged. Full Python3.12/3.14
+schema verification belongs to the manager at the final reviewed head. Local
+Source Boundary Lint and Node24 Web static equivalents remain required; no
+retired Python units, general integration or ad hoc Product E2E is implied.
+
 ### A0b-2 requirement-to-case map (v3 section 4 and F1)
 
 This map identifies assertions in `scripts/test-workflow-schema-load.sh`; it is

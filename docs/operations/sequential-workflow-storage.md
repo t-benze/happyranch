@@ -1,5 +1,23 @@
 # Sequential workflow storage — operator draft
 
+## S9 reader and compatibility checkpoint
+
+The shared acquisition naming extraction is deferred; the original
+`coding_authority_history._Budget` / `_bounded_rows` / `_decoded` remain the
+common primitives. Complete and selected sequential reads retain versioned
+@1/@2 interpretation and the original legacy history projection. No reader,
+schema, table/column meaning, immutable pin, stored row/rowid or original-save
+lookup changes in S9. See the [reader map and deferral](../agent-guides/contracts/reusable-workflows.md#s9-final-reader-parity-and-naming-deferral).
+
+Ordinary SQL32M, separate A/B/C2M, original row/byte/traversal allowances, the
+five-second read deadline and ten-second all-org startup envelope remain.
+Naming deferral provides no budget reset or weaker history/FK/authority check.
+Schema1 with any @1 run/history still refuses automatic schema2 upgrade; backup,
+qualification, exact preservation and unchanged-on-failure guards remain.
+Backout disables fresh admission while preserving/draining admitted history;
+it cannot authorize an old binary over schema2, automatic restore or downgrade.
+This source checkpoint performs no live installation or database mutation.
+
 ## Backup directory permissions and diagnostics
 
 The automatic backup directory defaults to

@@ -3731,6 +3731,53 @@ returned thread ID. Silent declines return status `declined` without a message
 sequence because they create no transcript row. Callback errors retain the
 existing nonzero exit and error output.
 
+### Repository mutation verification
+
+Repo remove/update deletes the whole clone and its local branches/task worktrees.
+Before saving frontmatter, linked worktrees must be clean and their HEAD commits
+reachable from a remote-tracking ref; missing/prunable entries and failed or
+expired Git probes return 409 with paths/reasons, leaving config and clone intact.
+An existing clone with missing, unreadable or cyclic Git metadata also refuses;
+an absent clone directory can proceed. Submodule edits count as dirty despite
+local/global ignore settings.
+Add/update clone or pull failure returns 502 after saving frontmatter and
+refreshing metadata; the CLI exits 1 and displays that saved-state warning.
+Inspect `org/agents/<agent-id>.md` and `repos/<name>/.git` after a failed or
+ambiguous result. Re-add returns 409 because the entry is already saved; there
+is no automatic mutation retry. After a 502 from a failed clone:
+
+1. Check that the leftover `repos/<name>/` folder has no `.git` and contains
+   nothing you need (normally it is empty).
+2. From the agent workspace, remove only that leftover folder with
+   `rmdir repos/<name>` (substitute the stored repo key). This refuses a
+   non-empty folder; inspect and preserve its contents if it refuses.
+3. Write the manage-repo JSON payload with `action` set to `update`, your
+   permanent `agent` ID, the same `repo_name` and the correct `url`, then invoke:
+
+   ```bash
+   happyranch manage-repo --org {ORG_SLUG} --from-file /absolute/workspace/output/<task_id>/manage-repo.json
+   ```
+
+While the leftover folder exists without `.git`, update and remove return 409
+`cannot verify linked worktrees`. Once it is gone, the worktree check passes,
+update saves the corrected URL and the clone runs. Remove also works after
+deleting that leftover folder: use the same command with `action` set to
+`remove` and the same `agent` and `repo_name` to remove the saved entry instead.
+
+Run focused in-process HTTP/CLI checks with real disposable Git clones:
+
+```bash
+python -B -m unittest scripts.test_manage_repo -v
+```
+
+This standalone selection covers repo preservation, failed pull/clone receipts,
+and CLI failure exits. It does not launch a daemon or collect the retired Python
+unit suite. Retained skill-platform coverage uses explicit file selectors:
+
+```bash
+uv run --frozen pytest tests/test_skill_cutover_completeness.py tests/test_system_contract_materialization.py tests/test_thr070_skill_freshness.py -v --tb=short
+```
+
 ### Retired System Assistant
 
 System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
