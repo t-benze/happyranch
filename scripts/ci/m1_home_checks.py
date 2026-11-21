@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import signal
 import socket
@@ -82,6 +83,158 @@ def enable_refusal_logs() -> None:
 def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
     raw = command('systemctl', 'show', unit, '--property=' + ','.join(names)).stdout
     return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
+
+
+def diagnostic_command(args: list[str], cap: int) -> str:
+    """Five seconds and a byte cap; never return stderr or partial output."""
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as child:
+        try:
+            deadline, raw = time.monotonic() + 5, bytearray()
+            with selectors.DefaultSelector() as selector:
+                selector.register(child.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError('unavailable')
+                    part = os.read(child.stdout.fileno(), min(65536, cap + 1 - len(raw)))
+                    if not part:
+                        break
+                    raw.extend(part)
+                    if len(raw) > cap:
+                        raise ValueError('bounded')
+            if child.wait(timeout=max(.001, deadline - time.monotonic())):
+                raise ValueError('unavailable')
+            return raw.decode('utf-8', errors='strict')
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=1)
+
+
+def audit_logs() -> None:
+    # The fixture starts in a fresh WORK directory. Archive cells belong to
+    # this invocation; compare intent IDs privately, never export them.
+    with (WORK / 'diagnostic-audit-before').open('rb') as stream:
+        raw = stream.read(65537)
+    assert len(raw) <= 65536
+    baseline = json.loads(raw)
+    assert type(baseline) is list and len(baseline) <= 2048
+    baseline = set(baseline)
+    directories = [home_audit.AUDIT_PATH.parent]
+    with os.scandir(WORK) as entries:
+        for index, entry in enumerate(entries):
+            assert index < 64
+            if re.fullmatch(r'cell-[0-9]{1,20}', entry.name):
+                assert entry.is_dir(follow_symlinks=False) and len(directories) < 5
+                directories.append(Path(entry.path) / 'happyranch-remote-access')
+    rows, remaining = [], 2 * 1024 * 1024
+    for directory in directories:
+        assert stat.S_ISDIR(directory.lstat().st_mode)
+        for name in ('home-audit.jsonl.1', 'home-audit.jsonl'):
+            try:
+                fd = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            try:
+                info = os.fstat(fd)
+                assert (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                        and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (0, 0, 0o600)
+                        and info.st_size <= min(remaining, home_audit.MAX_FILE_BYTES))
+                with os.fdopen(fd, 'rb', closefd=False) as stream:
+                    raw = stream.read(min(remaining, home_audit.MAX_FILE_BYTES) + 1)
+                assert len(raw) <= min(remaining, home_audit.MAX_FILE_BYTES)
+                remaining -= len(raw)
+                for line in raw.splitlines():
+                    assert len(line) <= home_audit.MAX_RECORD_BYTES and len(rows) < 4096
+                    value = json.loads(line)
+                    assert type(value) is dict
+                    rows.append(value)
+            finally:
+                os.close(fd)
+    intents = {row['intent_id'] for row in rows if row.get('stage') == 'intent'
+               and type(row.get('intent_id')) is str and row['intent_id'] not in baseline}
+    projected = []
+    for row in rows:
+        if row.get('intent_id') not in intents:
+            continue
+        value = {}
+        for key, kind in (('event', home_audit.Event), ('phase', home_audit.Phase),
+                          ('component', home_audit.Component), ('stage', home_audit.Stage),
+                          ('outcome', home_audit.Outcome)):
+            value[key] = None if row.get(key) is None else kind(row[key]).value
+        projected.append(value)
+    for value in projected[:128]:
+        print(json.dumps(value, sort_keys=True))
+    print(json.dumps(dict(audit='ok', rows=min(len(projected), 128), truncated=len(projected) > 128)))
+
+
+def process_logs() -> None:
+    pid = int(diagnostic_command(['systemctl', 'show', HELPER, '--property=MainPID', '--value'], 32))
+    if pid <= 0:
+        print(json.dumps(dict(process_tree='absent')))
+        return
+    raw = diagnostic_command(['ps', '-eo', 'pid=,ppid=,state=,comm=,wchan=,etime='], 1024 * 1024)
+    processes = {}
+    for line in raw.splitlines():
+        fields = line.split()
+        assert len(processes) < 8192 and len(fields) == 6
+        assert fields[0].isascii() and fields[0].isdigit() and fields[1].isascii() and fields[1].isdigit()
+        assert all(len(value) <= 64 and value.isascii() for value in fields)
+        processes[int(fields[0])] = dict(zip(('pid', 'ppid', 'state', 'comm', 'wchan', 'etime'), fields))
+    assert pid in processes
+    selected, pending = set(), [pid]
+    # Include the helper's ancestors and descendants, without reading argv,
+    # environment, working directories or descriptors (even for discovery).
+    ancestor = pid
+    for _ in range(32):
+        if ancestor not in processes or ancestor in selected:
+            break
+        selected.add(ancestor)
+        ancestor = int(processes[ancestor]['ppid'])
+    truncated = ancestor in processes and ancestor not in selected
+    while pending and len(selected) < 256:
+        parent = pending.pop()
+        for child, value in processes.items():
+            if int(value['ppid']) == parent and child not in selected:
+                selected.add(child)
+                pending.append(child)
+                if len(selected) >= 256:
+                    break
+    for child in sorted(selected):
+        print(json.dumps(processes[child], sort_keys=True))
+    print(json.dumps(dict(process_tree='ok', rows=len(selected), truncated=truncated or bool(pending))))
+
+
+def unit_logs() -> None:
+    raw = diagnostic_command(['systemctl', 'list-units', '--all', 'happyranch*',
+                              '--plain', '--no-legend', '--no-pager'], 65536)
+    units = set()
+    for line in raw.splitlines():
+        name = line.split()[0]
+        assert len(name) <= 256 and re.fullmatch(r'happyranch[A-Za-z0-9_.@:-]*', name)
+        units.add(name)
+        assert len(units) <= 128
+    names = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID', 'Result',
+             'ExecMainStatus', 'FragmentPath', 'DropInPaths', 'NeedDaemonReload')
+    if units:
+        raw = diagnostic_command(['systemctl', 'show', *sorted(units), '--property=' + ','.join(names)], 262144)
+        # Keep exactly today's nonsecret property list, even if a manager
+        # unexpectedly supplies another property.
+        for line in raw.splitlines():
+            key, separator, value = line.partition('=')
+            if separator and key in names:
+                print(key + '=' + value)
+            elif not line:
+                print()
+    print(json.dumps(dict(units='ok', rows=len(units))))
+
+
+def lifecycle_logs() -> None:
+    for name, collect in (('audit', audit_logs), ('process_tree', process_logs), ('units', unit_logs)):
+        try:
+            collect()
+        except Exception:
+            print(json.dumps({name: 'unavailable'}))
 
 
 def absent(path: str | Path) -> None:
@@ -551,6 +704,7 @@ def main() -> None:
     args = parser.parse_args()
     actions = {'runner-custody': runner_custody,
                'enable-refusal-logs': enable_refusal_logs,
+               'lifecycle-logs': lifecycle_logs,
                'ready': ready, 'off': off, 'uninstall-refusal': uninstall_refusal,
                'health-diagnostics': health_diagnostics,
                'archive-off': archive_off, 'failed-fixture': failed_fixture,
@@ -659,6 +813,13 @@ def assert_clean() -> None:
     absent('/etc/happyranch/invite-issuer.json')
     absent(ACTIVATION_PATH)
     print('Clean package: no home config, activation, enrollment or managed fragments')
+    # Private correlation baseline for this disposable run, never uploaded.
+    try:
+        baseline = json.dumps([row['intent_id'] for row in audit_records()])
+        assert len(baseline.encode()) <= 65536
+        (WORK / 'diagnostic-audit-before').write_text(baseline)
+    except Exception:
+        pass  # Diagnostic preparation cannot change the acceptance result.
 
 
 def assert_staged() -> None:

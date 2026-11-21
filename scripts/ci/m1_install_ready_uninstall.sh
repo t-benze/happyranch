@@ -136,7 +136,8 @@ logs() {
       > "$M1_LOGS/$unit.properties.txt" || true
   done
   if [[ -x $python ]]; then
-    inspect enable-refusal-logs > "$M1_LOGS/enable-refusal.journal.jsonl"
+    inspect enable-refusal-logs > "$M1_LOGS/enable-refusal.journal.jsonl" || true
+    inspect lifecycle-logs > "$M1_LOGS/lifecycle.diagnostics.txt" || true
   fi
 }
 teardown() {
