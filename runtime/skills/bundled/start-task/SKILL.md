@@ -73,7 +73,7 @@ description: Use this skill at the start of every task. Parses task_id, session_
      so later own-output cleanup is not denied by their permissions.
    - Cite exact small record files (handoff, summary, verdict, receipt),
      not bare TASK folders or raw large dumps.
-   - Examples: [task output practice guide](../../../../docs/agent-guides/task-output-practice.md).
+   - Examples: task output practice guide (`docs/agent-guides/task-output-practice.md` in the happyranch repository).
    - For your **own terminal tasks only**, after 14 days remove regenerable
      leftovers. Delete log, JSON and stdout/stderr files over 1 MB (including
      `.gz` variants) once the whole task tree that wrote them has been terminal
@@ -269,7 +269,7 @@ description: Use this skill at the start of every task. Parses task_id, session_
    | `local_ci` | Forwarded when non-null; exactly `{"command":"scripts/local_ci.sh all","exit_code":0}` (`LocalCiEvidence` in `runtime/models.py`): no extra keys, string command, integer zero, never Boolean or string zero. |
 
    This field reference grants no test/run authority. Follow the applicable role
-   instructions and [repository CI contract](../../../../docs/operations/local-ci.md#git-hooks-and-evidence);
+   instructions and repository CI contract (`docs/operations/local-ci.md#git-hooks-and-evidence` in the happyranch repository);
    report actual commands and exit statuses in `summary`/output, and never label
    skipped or incomplete checks as passing.
 
@@ -494,7 +494,7 @@ description: Use this skill at the start of every task. Parses task_id, session_
   lost transport does not prove that no effect committed. Preserve the original
   body, operation key and unknown state; use the operation's documented readback.
 - Retry only where that operation's contract explicitly permits it. The
-  [jobs skill](../jobs/SKILL.md) forbids automatic submission retries; the
+  `jobs` skill forbids automatic submission retries; the
   [sequential rules](#bound-workflow-lane) forbid reissuing uncertain Final
   effects. [Preparation recovery](#refusal-and-preparation-recovery) keeps its
   original-key one-send contract. None inherits a generic retry allowance.
@@ -602,7 +602,7 @@ delegation, fanout, coding, approval or merge action is available in that lane.
 Historical author/revision/reviewer schemas are retained verbatim in
 [historical contracts](references/historical-contracts.md#retired-document-review-contracts),
 not as authority for fresh work. See the maintained
-[document-workflow contract](../../../../docs/agent-guides/contracts/document-workflows.md).
+document-workflow contract (`docs/agent-guides/contracts/document-workflows.md` in the happyranch repository).
 Active sequential document instructions are separate below.
 
 ## Bound workflow lane
@@ -660,18 +660,18 @@ Keep these live boundaries in every lane:
   ordinary dependencies.
 
 For an actual original @1/v2 binding, the active command contracts are
-[repository resolve/bind](../../../../docs/specs/2026-11-12-sequential-coding-u4c.md)
+repository resolve/bind (`docs/specs/2026-11-12-sequential-coding-u4c.md` in the happyranch repository)
 (`happyranch workflows sequential repository-resolve`, then `repository-bind`;
 `--org ORG --session-id SID --from-file ABS --json`) and
-[repository-preflight / LOCAL finalize](../../../../docs/specs/2026-11-11-sequential-coding-u7.md)
+repository-preflight / LOCAL finalize (`docs/specs/2026-11-11-sequential-coding-u7.md` in the happyranch repository)
 (`happyranch workflows sequential repository-preflight --org ORG --session-id SID --json`,
 `happyranch workflows sequential finalize --org ORG --session-id SID --from-file ABS --json`).
 Use only the closed command/body from the matching supplement under actual
 entitlement. Bind's explicitly permitted same-body reissue uses current bind
 semantics; it never permits reissuing Final. Preserve exact saved callback bytes.
 
-See [Coding role reports](../../../../docs/agent-guides/contracts/coding-workflow.md#coding-v3-role-reports--s8a-staged-registration),
-[original-pin cutover/replay rules](../../../../docs/operations/sequential-coding-cutover.md),
+See Coding role reports (`docs/agent-guides/contracts/coding-workflow.md#coding-v3-role-reports--s8a-staged-registration` in the happyranch repository),
+original-pin cutover/replay rules (`docs/operations/sequential-coding-cutover.md` in the happyranch repository),
 and [retained historical contracts](references/historical-contracts.md#coding-rollout-and-original-pin-contracts)
 only for the matching original binding or a specialist audit.
 
@@ -757,14 +757,14 @@ gates. This grants no agent deletion, manual cleanup fallback, historical sweep,
 live configuration, deploy/restart or end-of-task deletion-hook authority.
 
 For an explicitly assigned cleanup task consult the
-[workspace-cleanup skill](../workspace-cleanup/SKILL.md); for specialist/operator
-sweeper work consult the maintained [nightly sweeper spec](../../../../docs/specs/2026-10-15-nightly-disk-sweeper.md).
+`workspace-cleanup` skill; for specialist/operator
+sweeper work consult the maintained nightly sweeper spec (`docs/specs/2026-10-15-nightly-disk-sweeper.md` in the happyranch repository).
 Operator-only manual-backlog details belong to that contract, not ordinary task startup.
 
 ## Authorized memory-collection tasks only
 
 Only for explicitly authorized collection work, consult the
-[memory census contract](../../../../docs/agent-guides/contracts/memory-census.md)
+memory census contract (`docs/agent-guides/contracts/memory-census.md` in the happyranch repository)
 and its maintained collection/qualification references. Memory telemetry is
 observation-only: never infer production health/acceptance from a source report.
 Exhaustion or incomplete evidence is a refusal, never an empty completed census
@@ -880,7 +880,7 @@ are not covered by that rail — are documented in the **manage-agent** skill an
    deploy/restart, chain reset, extra attempt or recovery authority is granted.
 
 Specialist audits should use the maintained
-[runtime lifecycle contract](../../../../docs/agent-guides/contracts/runtime-lifecycle.md),
+runtime lifecycle contract (`docs/agent-guides/contracts/runtime-lifecycle.md` in the happyranch repository),
 the CLI's `cmd_preparation_recovery` / top-level parser in
 `cli/commands/tasks.py`, and the original-owner preparation implementation in
 `runtime/infrastructure/db/tasks.py`. A refusal audit is not settlement or retry authority.
