@@ -545,10 +545,10 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         assert ("worktree_guard" in body) or ("GUARD" in body), (
             "Source make-worktree SKILL.md must reference the worktree guard"
         )
-        assert "python \"$GUARD\" setup" in body or "worktree_guard setup" in body, (
+        assert "python3 \"$GUARD\" setup" in body or "worktree_guard setup" in body, (
             "Source make-worktree SKILL.md must contain guard setup command"
         )
-        assert "python \"$GUARD\" verify" in body or "worktree_guard verify" in body, (
+        assert "python3 \"$GUARD\" verify" in body or "worktree_guard verify" in body, (
             "Source make-worktree SKILL.md must contain guard verify command"
         )
 
@@ -586,8 +586,8 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
-        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
+        assert ("python3 \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python3 \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
 
@@ -607,8 +607,8 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
-        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
+        assert ("python3 \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python3 \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
 

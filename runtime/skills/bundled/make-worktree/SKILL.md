@@ -19,15 +19,20 @@ Read-only operations (Read, Grep, Glob) do not need a worktree.
 ## Setup
 
 ```bash
-# 1. Create the worktree from the primary checkout
+# 1. Fetch the requested base and create the worktree from its remote ref
 REPO_NAME="<repo_name>"
-cd repos/$REPO_NAME
+cd "repos/$REPO_NAME"
+git fetch origin <base>
+git rev-parse origin/<base>               # record this base SHA
 mkdir -p .claude/worktrees
-git worktree add .claude/worktrees/<task_id> -b task/<task_id>
+git worktree add .claude/worktrees/<task_id> -b task/<task_id> origin/<base>
+# Never reset the primary checkout.
 
 # 2. Compute canonical absolute roots
 cd .claude/worktrees/<task_id>
 WORKTREE_ROOT=$(pwd -P)                   # canonical absolute worktree root
+#    The primary checkout root is 3 parents above the task worktree
+#    (<primary>/.claude/worktrees/<task_id> → cd ../../.. → <primary>):
 PRIMARY_ROOT=$(cd ../../.. && pwd -P)      # canonical absolute primary checkout root
 echo "WORKTREE_ROOT=$WORKTREE_ROOT"
 echo "PRIMARY_ROOT=$PRIMARY_ROOT"
@@ -38,8 +43,6 @@ echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 #    The workspace root is 5 parents above the task worktree
 #    (<workspace>/repos/<repo>/.claude/worktrees/<task_id>):
 WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)
-#    The primary checkout root is 3 parents above the task worktree
-#    (<primary>/.claude/worktrees/<task_id> → cd ../../.. → <primary>):
 GUARD="$WORKSPACE_ROOT/.claude/skills/make-worktree/worktree_guard.py"
 if [ ! -f "$GUARD" ]; then
     GUARD="$WORKSPACE_ROOT/.agents/skills/make-worktree/worktree_guard.py"
@@ -54,7 +57,7 @@ fi
 
 # 4. Activate the worktree-root guard — this snapshots the primary checkout
 #    state so later steps can detect accidental primary-checkout edits.
-python "$GUARD" setup \
+python3 "$GUARD" setup \
     --worktree-root "$WORKTREE_ROOT" \
     --primary-root "$PRIMARY_ROOT" \
     --task-id "<task_id>"
@@ -65,13 +68,21 @@ python "$GUARD" setup \
 #    git -C "$WORKTREE_ROOT" diff --stat
 ```
 
+Shell variables do not persist between Bash calls. Copy the absolute
+`WORKTREE_ROOT` and `PRIMARY_ROOT` printed by setup and use those literal paths
+in later calls. To re-derive `GUARD` in a new call (replace `<workspace-root>`
+with its absolute path):
+
+```bash
+GUARD="<workspace-root>/.claude/skills/make-worktree/worktree_guard.py"; [ -f "$GUARD" ] || GUARD="<workspace-root>/.agents/skills/make-worktree/worktree_guard.py"
+```
+
 **After setup, absolute `repos/<repo>/...` paths are FORBIDDEN.**
 Every Read, Write, Edit, grep, glob, git, and test command that touches
 repo files MUST use `$WORKTREE_ROOT` (the worktree path) or a relative
-path rooted at the worktree. The canonical primary checkout root
-`$PRIMARY_ROOT` contains the `repos/<repo>/` path — that surface is the
-source of every known false-green verification incident. Use of the
-primary-checkout path that results in a guard failure on verify will be
+path rooted at the worktree. `repos/<repo>/` is the primary checkout
+(`$PRIMARY_ROOT`); editing it is the cause of false-green verification. Use of
+the primary-checkout path that results in a guard failure on verify will be
 treated as a task defect.
 
 ### Ownership on retries and continuations
@@ -93,20 +104,32 @@ rename resources as a workaround. When a retry needs its own worktree, create
 its matching task folder/branch. Reusing a predecessor's PR branch in a new
 task folder does not satisfy setup; report that conflict to the manager.
 
+For an existing worktree, use these three steps with literal absolute paths:
+
+1. Run `git -C <primary-root> worktree list --porcelain` and identify the exact
+   registered worktree, its folder and `task/<task_id>` branch.
+2. Read `<worktree-root>/.worktree-guard.json` and compare `task_id`,
+   `worktree_root` and `primary_root` with that registration and its canonical
+   roots. Stop and report any mismatch.
+3. Run `python3 <absolute-guard-path> verify --worktree-root <worktree-root>`
+   against the retained baseline; do not run `setup` again.
+
 ## Verify (before test, commit, and report)
 
 Before running tests, committing, or reporting completion, verify that
 no accidental primary-checkout edits have occurred:
 
 ```bash
-python "$GUARD" verify --worktree-root "$WORKTREE_ROOT"
+python3 "$GUARD" verify --worktree-root "$WORKTREE_ROOT"
 ```
 
 A successful verification prints `GUARD PASS`. A failure prints a loud
 diagnostic naming the primary root, the task worktree root, every
-changed primary-checkout path (categorized as tracked, staged, or
-untracked), and preservation-first recovery instructions that use
-safe `git diff` inspection and `patch` application — no destructive
+changed tracked, staged or non-ignored untracked primary-checkout path;
+gitignored files are not checked. Preservation-first recovery instructions use
+`git diff --binary HEAD` and `git apply --3way` with a patch stored in the
+worktree alongside the untracked-file tarball. Remove the recovery patch after
+successful application and inspection so it is not committed — no destructive
 `git checkout`, `git reset`, or `rm` commands are ever suggested.
 
 The guard does NOT inspect the task worktree diff — a zero-diff task
@@ -124,16 +147,11 @@ verifies the guard; without another ignore rule the file remains dirty.
 Aliased or unsafe excludes warn and are skipped without changing target bytes:
 a symlinked/non-directory `info` parent, a symlinked or multiply linked final
 file, or any non-regular final file. Setup and guard enforcement continue.
-Existing clones gain the rule only on their next guard setup; no bulk rollout
-or removal is promised. The 91 observed guard-only dirty worktrees were an
-observation, not a promise that later safety gates will permit removal.
 
 ## Repository Git process
 
-Guard setup and verification do not configure Git hooks. `setup` also
-self-heals the known stale mandatory pre-push-hook configuration in worktrees
-created before the 2026-08-07 PR #607 change, printing a notice when it clears
-that worktree's own injected configuration. Follow each repository's documented
+Guard setup and verification do not configure Git hooks. `setup` also clears a
+legacy worktree `core.hooksPath` if present. Follow each repository's documented
 Git-hook and publication-process requirements.
 `git push --no-verify` remains prohibited by engineering policy, and GitHub CI
 remains the authoritative clean-environment / matrix gate.
@@ -150,8 +168,13 @@ the owning agent workspace so the existing registered-workspace cleanup
 authority covers their bytes and concurrent agents cannot share a path:
 
 ```bash
+# Run from the workspace root.
+WORKSPACE_ROOT=$(pwd -P)
+PRIMARY_ROOT="$WORKSPACE_ROOT/repos/<repo>"
+: "${WORKSPACE_ROOT:?}" "${PRIMARY_ROOT:?}"
 SCRATCH_WORKTREES="$WORKSPACE_ROOT/.happyranch/scratch/worktrees"
 mkdir -p "$SCRATCH_WORKTREES"
+git -C "$PRIMARY_ROOT" fetch origin
 git -C "$PRIMARY_ROOT" worktree add "$SCRATCH_WORKTREES/<task-id>-<exact-sha>" <exact-sha>
 ```
 
@@ -172,6 +195,18 @@ still referenced by a live session/control/process/fd, explicitly deferred, or
 when any identity, ownership, probe, or deadline fact is unavailable or
 uncertain. Do not infer eligibility from a task-like directory name.
 
+Use these concrete Git and PR probes:
+
+```bash
+git -C <wt> status --porcelain                  # must be empty
+git -C <wt> branch -r --contains HEAD           # must be non-empty
+gh pr list --head task/<id> --state all --json state,mergedAt
+```
+
+An open PR or a closed PR without `mergedAt` requires preservation. These
+probes do not establish the other preservation facts above. Any fact you cannot
+observe means defer with a specific reason.
+
 Only after every preservation check succeeds, change to the primary checkout
 and remove that exact registered path without force:
 
@@ -182,20 +217,10 @@ git worktree remove .claude/worktrees/<task_id>
 
 Never delete the task branch. If a preservation check fails or removal returns
 nonzero, leave the worktree and branch intact and add
-`worktree-deferred: <specific reason>` to the completion report's
-`risks_flagged`. Make one bounded attempt only; do not schedule or perform a
-retry, force removal, historical scan, prune, or cache sweep.
+`worktree-deferred: <reason>` to the `risks` array in the completion JSON file
+(the server stores it as `risks_flagged`). Make one bounded attempt only; do not
+schedule or perform a retry, force removal, historical scan, prune, or cache sweep.
 
 ## Later root-terminal reconsideration
 
-A maker deferral preserves this task-owned worktree and must remain in the
-completion risks. After a future structural root reaches completed, failed,
-cancelled or superseded, its runtime owner can reconsider canonical registered
-worktrees in that parent tree. At that separate pass the old deferral is
-advisory; fresh exact-HEAD preservation, clean/ownership/recursive safety,
-current task/successor/job/host and unchanged same-user scanner evidence still
-govern. Dirty, local-only, open, active, held, protected or unknown paths retain.
-This grants the maker no extra deletion authority or historical sweep. The root
-owner records stable committed audit identity, bounded frontier/remainder and
-possible post-action anomalies; replay/missing finish never retries. Branches
-remain. Manual/daily age/ordinal/peer/history/cache gates stay separate.
+A recorded deferral may later be reconsidered by the runtime; this gives you no extra cleanup authority.
