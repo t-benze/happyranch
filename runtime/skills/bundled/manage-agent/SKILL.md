@@ -3,283 +3,222 @@ name: manage-agent
 description: Enroll, update, or terminate an agent. Write a JSON file and call happyranch manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
 ---
 
-
-## Retained preparation and admission
-
-`OrgState.load` retains the org-owned `team_move_operations` compatibility table.
-`install_team_move_schema` validates the existing layout/history and org identity,
-creates only the frozen literal table when absent, and validates before COMMIT.
-The active-row startup refusal is removed with the online operation/recovery
-surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
-task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
-ordinary participant/session-write, reply-delivery claim/probe and scheduler
-redelivery move checks, plus dead move-only projection/publication APIs.
-Reserved readers remain in Founder abort/attestation and callback/uncertainty
-settlement, delivery-release permission/recovery, the archived-thread retry chain
-and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
-history or stored move row is rewritten.
-
-C2 freezes thread retry initialization explicitly, including EMPTY
-budgets. New initial/fallback/nudge phase initialization is distinct from a
-frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
-their original history interpretation but refuse ambiguous new retry/reentry
-with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
-
-Historical task attribution remains separate from current launch eligibility.
-PR-3b removes the unused move-only task/workflow closure census. New execution
-still requires a current executable owner. Strict saved history, native identity,
-Pause and cleanup ownership remain; no historical record, team, callback or
-binding is rewritten.
-
-The SAME INTEGER thread invocation/agent/SID preparation owner spans native
-materialization, integrity, repository refresh and launch-spec/cache preparation,
-including helper-internal omissions and caught failures. Such uncertainty appends
-the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
-backend preparation/cleanup and native workspace/cache failures retain ownership.
-Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
-strict history reader, restart/reentry and census preserve that fact, independently
-of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
-launch-seam refusals before effects retain their native no-effect disposition;
-returned failure alone never proves compensation. No new schema/journal/backfill
-or generic producer identity is introduced. All behavior remains UNEXECUTED.
-
-Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
-through materialization, integrity (including retries), package omissions,
-repository refresh, attachment writes/cleanup, task scratch and builtin/custom
-cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
-preparation resumes; this never clears existing uncertainty.
-Preparation failure sets the existing local reservation cleanup flag BEFORE the
-fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
-the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
-worktree cleanup cannot clear it. Settlement persists that fact before release;
-failed saves retain local ownership and original plus persistence errors.
-Restart treats unclosed task `prepared` entries as unknown, including terminal
-rows and prepared recovery/retry owners; absence of first launch is no proof of
-preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
-Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
-backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
-
-## Current names and permanent automation IDs
-
-Fresh prompts may show current Name · ID for this turn. Use the permanent ID
-from the injected parameters for callback agent/composer/speaker, task/session/
-invocation proofs, configuration and delegate/then/fanout targets. A name is
-human-addressing/presentation data, never actor authority. Human destination
-arguments and @mentions accept current names or IDs; former names refuse with
-the current name and do not forward. Founder is a separate human; recipient
-transport remains `@founder`. Metadata failure gives ID-only context.
-
-Operator `identities rename` is separate from bound manage-agent. It uses positive expected_name_revision CAS with uncertain-failure readback. Manage-agent name/revision remain canonical ID/definition revision; it gains no rename authority.
-
-
 # manage-agent
 
-Native C3 preparation failure or ordinary process return never proves file,
-package or process cleanup. Unknown ownership remains in retained audit census.
-New retry budgets explicitly freeze even an empty schedule; missing legacy facts
-cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
-real preparation/spec/execution and is distinct from provider resume identity.
-Custom-skill authority validates before reservations; only explicit native
-validation/rollback/temporary-cleanup evidence can settle a refused writer.
-No history deletion, automatic recovery, apply or execution authority follows.
+## Purpose
 
-Team transfers and manager demotion remain outside manage-agent. Update retains
-the existing team/role. Retained C1 task/host holds preserve real callback/retry/
-cleanup ownership and change no permission generator or manage-agent admission.
-The online operator surface and D operation/recovery are removed.
-Admission refusal preserves pending work. Retry handoff retains each uncertain
-attempt separately; provider return is not containment proof. Pause attribution
-settles only after workflow reconciliation and an explicit safe outer-cleanup
-disposition; failed/unknown cleanup stays attributable. These source contracts
-remain behaviorally UNEXECUTED and grant no operational move authority.
-Retry attribution stays in the existing validated entry fields, with journal
-COMMIT before reservation handoff. Failed-tail reason/process diagnostics append
-to existing bounded cleanup suffix lines without erasing earlier facts or
-proving quiescence. Persistence refusal retains failed ownership and preserves
-an original exception. The closed Pause journal format is unchanged.
-C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
-preparation, then composes final claims and launch with the short gate, DB and
-host terminal ordering. All purposes and actual host/direct429, eviction and
-bounded-nudge paths participate. The existing thread audit owner stores strict
-bounded append-only attempt/deferral evidence; no schema or task-Pause format
-changes. Unknown prior retries stay blockers after later clean outcomes.
-Reserved callback/settlement readers still require the captured actual running
-owner under WAITING; they grant no new launch entitlement. The unused move-only
-capture/drain entrypoints are removed. Queue dedup spans queued/in-flight work;
-typed deferrals release
-notification ownership, and complete durable runnable discovery/redelivery keeps
-pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
-and raw reapers preserve held/C2-owned history. Ordinary participant/session writes
-no longer consult the move hold; native transaction and identity checks remain.
-The unused move-only census/drain/post-release entrypoints are removed. Reserved
-recovery, callback/settlement and delivery-release permission readers remain.
-Behavior remains UNEXECUTED,
-integration SKIPPED24342; no new product tests/fixtures or activation authority.
-Native archive admission no longer checks the move-only participant-write hold.
-Delivery discard, BOOTSTRAP reaping, status, participant resets, audits and the
-archive system message retain their single DB-owned transaction. Native refusal
-leaves obligations/history unchanged; transcript files/events follow COMMIT.
-Authentic provider eviction audit and compare-and-clear of the attempted stale
-SID commit before fallback phase selection/admission. Only the actual live
-producer's durable launched/settled initial attempt can record that observation
-under a winning hold. Its actual owner validation and reserved callback/settlement
-checks remain; ordinary participant/session-write move guards are removed.
-Watermarks, delivery ranges/tokens and runtime SID are retained;
-unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
-These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
-
+Manage the agent roster: **enroll** a new worker (requires founder approval),
+**update** an approved agent, or **terminate** a quiescent non-manager worker
+(archives its definition and workspace). manage-agent cannot transfer teams or
+demote managers; update keeps the agent's team and role.
 Do not substitute termination/re-enrollment, direct roster writes or ambient
 agent credentials. This prose grants no execution/permission change.
 
-For an `update`, first obtain the target's current `revision` from the active
-agent roster and include that exact value as `expected_revision` in the
-callback payload. A missing, null, malformed, or stale revision is rejected;
-reload and deliberately reapply only the intended field change rather than
-resubmitting an older whole definition.
-
-Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** a non-manager worker (archives its definition and workspace).
-
-## Canonical ID and naming ownership
-
-The `name` argument remains the permanent ID used by frontmatter, teams,
-workspaces and callbacks. New ID creation must pass the org's reconciled shared
-case-insensitive ASCII naming namespace. Naming-unavailable refuses new creation;
-original same-ID update/approve/reject/terminate guards and compensation remain.
-Default-only rejected reservations release; chosen/former labels and monotonic
-revisions survive absence and same-ID reenrollment. Admitted underscore-leading
-IDs retain their defaults/addresses, but editable labels require 1–64 ASCII
-letters/digits/underscore/hyphen with letter/digit first, without trimming.
-
-The bounded API provides org-local operator name editing and
-read/resolve projections. Agent roster/enrollment `name` and canonical `revision`
-retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
-additive metadata, null/unavailable when names cannot be read. Never use a label
-as manage-agent's name, callback actor or expected canonical-definition revision.
-Dream/wake/schedule/job creation, claims and launch no longer check the move hold.
-Shared C3 admission registers native source, permanent org/agent and owning session,
-rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
-Pending work stays native; recurring schedule occurrences retain distinct
-history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve lifecycle-owned uncertainty. The unused move-only C3 causal census is removed. Native lifecycle and writer
-history readers remain; terminal rows or missing trackers never prove cleanup. Native profile/workflow,
-roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
-membership, keeping their original synchronization and journals without a move-hold
-check. The nightly disk sweeper retains its separate native hold gate.
-Strict bounded version1 producer/writer audits append in existing audit_log;
-earlier uncertainty survives later clean outcomes. No extra table, permission
-or auth change. The online move/reset/publication service is removed;
-Shared C3 admission and native writer ownership remain.
-All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
-Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
-
-Operator rename accepts only addressable_name and positive expected_name_revision,
-with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
-change allowed tools, execution permissions, task/session principals or workspace
-ownership. Coherent naming is not proof that bootstrap/cleanup/rollback succeeded.
-Naming readiness follows structural naming admission, never global authority; see the identity-names core spec.
-One daemon controls each org; no naming-specific cross-process guard is required.
-
-## Authentication paths
-
-The daemon accepts (task_id + session_id) from your current task session. Use this while executing a task.
-
 ## Usage
 
-1. **Write a JSON file** to `/tmp/manage-agent-<unique>.json` using the Write tool.
+Write a JSON file to `/tmp/manage-agent-<unique>.json` using the Write tool.
+Use the `(task_id, session_id)` pair from your current task session.
 
-   **Task-path enroll:**
-   ```json
-   {
-     "action": "enroll",
-     "name": "content_writer",
-     "task_id": "<task_id>",
-     "session_id": "<session_id>",
-     "description": "Writes destination guides and travel articles",
-     "system_prompt": "You are the Content Writer. Your responsibilities are...",
-     "executor": "codex",
-     "repos": {"web-content": "https://github.com/t-benze/web-content.git"},
-     "allow_rules": ["gh api /repos/{owner}/{repo}/contents"]
-   }
-   ```
+**Task-path enroll:**
+```json
+{
+  "action": "enroll",
+  "name": "content_writer",
+  "task_id": "<task_id>",
+  "session_id": "<session_id>",
+  "description": "Writes destination guides and travel articles",
+  "system_prompt": "You are the Content Writer. Your responsibilities are...",
+  "executor": "claude",
+  "model": null,
+  "reasoning_effort": "high",
+  "repos": {"web-content": "https://github.com/t-benze/web-content.git"},
+  "allow_rules": ["gh api /repos/{owner}/{repo}/contents"]
+}
+```
 
-   **Update an existing agent:**
-   ```json
-   {
-     "action": "update",
-     "name": "content_writer",
-     "task_id": "<task_id>",
-     "session_id": "<session_id>",
-     "expected_revision": "<revision from this agent's GET /agents row>",
-     "description": "Updated description",
-     "system_prompt": "Updated system prompt...",
-     "executor": "claude"
-   }
-   ```
+Enrollment creates a pending request. The founder must run
+`happyranch approve-agent --org {ORG_SLUG} <name>` before the workspace is
+bootstrapped and the agent becomes available for delegation.
 
-   **Terminate an agent:**
-   ```json
-   {
-     "action": "terminate",
-     "name": "content_writer",
-     "task_id": "<task_id>",
-     "session_id": "<session_id>"
-   }
-   ```
+Read the active roster before composing an update:
+```bash
+happyranch agents list --org ORG --json
+```
+Example output (one response row; other fields omitted here):
+```json
+[
+  {
+    "name": "content_writer",
+    "team": "content",
+    "role": "worker",
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "repos": {"web-content": "https://github.com/t-benze/web-content.git"}
+  }
+]
+```
 
-2. **Invoke as a single-line command:**
+**Update an existing agent:**
+```json
+{
+  "action": "update",
+  "name": "content_writer",
+  "task_id": "<task_id>",
+  "session_id": "<session_id>",
+  "expected_revision": "<revision from happyranch agents list --org ORG --json>",
+  "description": "Updated description",
+  "system_prompt": "Updated system prompt...",
+  "executor": "claude",
+  "model": null,
+  "reasoning_effort": "high",
+  "allow_rules": ["gh api /repos/{owner}/{repo}/contents", "curl https://api.example.com"]
+}
+```
 
-   ```bash
-   happyranch manage-agent --org {ORG_SLUG} --from-file /tmp/manage-agent-<unique>.json
-   ```
+For update, copy that target's exact current 64-character lowercase hex
+`revision` into `expected_revision`. Missing, null or malformed values return
+`422 expected_revision_required`; stale values return `409 stale_agent_revision`.
+Read the roster again and deliberately reapply only the intended field change.
+Never fetch a newer revision merely to bless an already-composed stale
+whole-definition payload. The example's `allow_rules` must be the complete
+intended list: the roster read does **not** show `allow_rules`. Confirm the
+current list from authorized canonical content; if you cannot confirm it, do
+not send `allow_rules` and escalate instead. For `repos`, copy and edit the
+current roster row's dictionary.
 
-   The `--from-file` form is mandatory for agent sessions. In Claude sessions,
-   multi-line bash commands are rejected by the `Bash(happyranch:*)` permission rule
-   because newlines count as command separators.
+**Terminate an agent:**
+```json
+{
+  "action": "terminate",
+  "name": "content_writer",
+  "task_id": "<task_id>",
+  "session_id": "<session_id>"
+}
+```
 
-## Access control
+Invoke as a single-line command:
+```bash
+happyranch manage-agent --org {ORG_SLUG} --from-file /tmp/manage-agent-<unique>.json
+```
+The `--from-file` form is mandatory for agent sessions. In Claude sessions,
+multi-line bash commands are rejected by the `Bash(happyranch:*)` permission rule
+because newlines count as command separators. The read-only `agents list` verb
+also runs under this baseline rule; it does not grant manage-agent authority.
 
-Any **team manager** may use this skill to manage agents within their own team. The daemon validates the `(task_id, session_id)` pair matches an active session for a registered team manager. Other agents receive a `403 Forbidden`.
+## Field semantics
 
-### Team scoping
+These tables describe the JSON payload, not the optional CLI flag shorthand.
+`allow_rules` and `repos` updates replace the **whole value**, without merging:
+omit or supply null to keep the current value, supply a value to replace it,
+use `[]` to clear `allow_rules` and `{}` to clear `repos`.
+Each `allow_rules` entry must be non-empty, have no leading/trailing whitespace,
+and contain none of newline, CR, `;`, `|`, `&`, backtick, or the `$(` sequence.
 
-Managers may only enroll, update, or terminate agents within their own team:
+### Enroll
 
-- **enroll**: The new agent is assigned to the caller's team by default. Optionally, include `"target_team": "<team>"` in the payload — but if `target_team` differs from the caller's team, the request is rejected with `403 cross_team_forbidden`.
-- **update / terminate**: The target agent must already belong to the caller's team. Cross-team update or termination is rejected with `403 cross_team_forbidden`.
-- **terminate additional restriction**: Only non-manager workers may be terminated. Requests to terminate a team manager are rejected with `409 manager_terminate_forbidden`.
+| Field | Required? | Omitted / null | Supplied value |
+| --- | --- | --- | --- |
+| `action` | Yes | Invalid | `"enroll"` |
+| `name` | Yes | Invalid | New permanent ID; see Naming |
+| `task_id`, `session_id` | Both | CLI refuses before request | Current manager task/session pair |
+| `description`, `system_prompt` | Both, non-empty | 422 | Initial description and prompt |
+| `executor` | No | `claude` | Registered profile; empty string also defaults to `claude` |
+| `model` | No | Executor CLI default | Valid model override; empty string stores null |
+| `reasoning_effort` | No | No override | Valid effort string; empty string refused |
+| `allow_rules` | No | Empty list | Complete extra Bash-prefix list; `[]` empty |
+| `repos` | No | Empty dictionary | Repository name-to-URL dictionary; `{}` empty |
+| `target_team` | No | Caller's team | Must equal caller's team; empty string uses caller's team |
+| `expected_revision` | No | Unused | Unused on enroll |
 
-This prevents a Content Manager from enrolling agents into the engineering team, and vice versa.
+### Update
 
-## What happens
+| Field | Required? | Omitted / null | Supplied value |
+| --- | --- | --- | --- |
+| `action` | Yes | Invalid | `"update"` |
+| `name` | Yes | Invalid | Approved target's permanent ID |
+| `task_id`, `session_id` | Both | CLI refuses before request | Current manager task/session pair |
+| `expected_revision` | Yes | 422 | Current canonical definition revision; see update example |
+| `description`, `system_prompt` | No | Keep current | Replace string, including an empty string |
+| `executor` | No | Keep current | Registered profile; see bootstrap and model rules below |
+| `model` | No | Omitted: keep unless executor changes; null: clear | Valid override; empty string clears |
+| `reasoning_effort` | No | Omitted: keep unless executor changes; null: clear | Valid effort string; empty string refused |
+| `allow_rules` | No | Keep current | Whole-list replacement; `[]` clears; confirm complete list first |
+| `repos` | No | Keep current | Whole-dictionary replacement; `{}` clears; copy/edit roster value |
+| `target_team` | No | Unused | Ignored; update retains existing team and role |
 
-- **enroll**: Creates a pending enrollment request. `executor` is a registered executor profile name; if omitted, it defaults to `claude`. Supported profiles are the built-ins (`claude`, `codex`, `opencode`, `pi`) and custom profiles whose explicit `command_adapter_id: custom-adapter:<id>` resolves to a registered, conformance-passed, founder-approved adapter (see `docs/agent-guides/agent-executors-and-permissions.md`). You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
-- **update**: Updates the agent's description, system prompt, executor, model, reasoning_effort, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. A real executor change clears the old executor-specific model when `model` is omitted; include an explicit `model` value (or `null`) to choose the new executor's model (or its CLI default). An unchanged executor preserves omitted model and `reasoning_effort`; unrelated whole-definition writes preserve effort. A real CLI change clears omitted effort as well. Include explicit `reasoning_effort:null` to clear or a valid string to select. Built-ins accept case-preserving `[A-Za-z][A-Za-z0-9_-]{0,31}`, not static-list membership; custom values must belong to their approved finite declaration. Explicit empty strings refuse. The proposed executor/model/effort pair uses shared token/composition validation, not provider/account acceptance; invalid/unsupported/conflicting selections refuse before replacement. OpenCode explicit effort requires nonempty provider/model slash components, no whitespace/control/NUL, at most one # and a nonempty byte-equal embedded variant. Pi retains its finite recognized suffix set. Custom adapters require ordinary input-v2 opt-in; legacy input-v1 model:null behavior remains. See `docs/specs/2026-10-11-agent-reasoning-effort.md`. Only works on approved agents. Dynamic manager update/enrollment remain source-inspected only, NOT VERIFIED at runtime in the THR298 plain-input venue; setters are not substitute endpoint coverage.
-- **terminate**: Archives a quiescent, approved non-manager worker. The active agent file is moved to `org/agents/_terminated/<name>.md`, the workspace is moved to `workspaces/_terminated/<name>/`, and the worker is removed from its team. Historic tasks, audit rows, token records, thread messages/participants, schedules, wakes, dreams, and archived files are preserved. The agent name cannot be re-enrolled while the terminated record exists. Termination is refused when the worker has live work (non-terminal assigned tasks, started thread invocations, firing schedules, running wakes/dreams, or pending/running jobs) or when the target is a manager.
+Supplying a nonempty `system_prompt` or a non-null `executor` (even unchanged)
+regenerates the bootstrap when the workspace exists. A real executor change
+clears the old executor-specific model and effort when omitted; explicit
+`model` / `reasoning_effort` values (or null) select (or clear) overrides.
+An unchanged executor preserves omitted model/effort, as do unrelated writes.
+
+`executor` is a registered profile: built-ins `claude`, `codex`, `opencode`, `pi`,
+or custom profiles whose explicit `command_adapter_id: custom-adapter:<id>`
+resolves to a registered, conformance-passed, founder-approved adapter.
+Built-in effort accepts case-preserving `[A-Za-z][A-Za-z0-9_-]{0,31}`, not static
+list membership; custom values must belong to their approved finite declaration.
+The proposed executor/model/effort pair uses shared token/composition validation,
+not provider/account acceptance. OpenCode explicit effort requires nonempty
+provider/model slash components, no whitespace/control/NUL, at most one `#` and
+a nonempty byte-equal embedded variant. Pi retains its finite recognized suffix
+set. Custom adapters require ordinary input-v2 opt-in; legacy input-v1 model:null
+behavior remains. See `docs/specs/2026-10-11-agent-reasoning-effort.md` and
+`docs/agent-guides/agent-executors-and-permissions.md`.
+
+### Terminate
+
+| Field | Required? | Omitted / null | Supplied value |
+| --- | --- | --- | --- |
+| `action` | Yes | Invalid | `"terminate"` |
+| `name` | Yes | Invalid | Approved non-manager worker's permanent ID |
+| `task_id`, `session_id` | Both | CLI refuses before request | Current manager task/session pair |
+| `description`, `system_prompt`, `executor`, `model`, `reasoning_effort`, `allow_rules`, `repos`, `target_team`, `expected_revision` | No; omit | Unused | Schema validation still applies (including allow-rule constraints); not used by terminate |
+
+Termination moves the active definition to `org/agents/_terminated/<name>.md`,
+the workspace to `workspaces/_terminated/<name>/`, and removes the worker from
+its team. Historic tasks, audit rows, token records, thread messages/participants,
+schedules, wakes, dreams and archived files are preserved. The name cannot be
+re-enrolled while its terminated record exists. Live work prevents termination:
+non-terminal assigned tasks, started thread invocations, firing schedules,
+running wakes/dreams, or pending/running jobs.
+
+## Access
+
+Only a **team manager's active task session** may enroll, update or terminate
+agents within that manager's team. The daemon validates `(task_id, session_id)`;
+other agents receive 403. Enrollment defaults to the caller's team; a different
+`target_team` returns `403 cross_team_forbidden`. Update/terminate targets must
+already belong to that team. Managers cannot terminate managers
+(`409 manager_terminate_forbidden`). Recovery sessions are refused, as is a
+missing teams registry; see Errors.
+
+## Errors
+
+| Exit / HTTP status | Cause and response |
+| --- | --- |
+| CLI exit 1, no request | Mandatory `--from-file` payload has missing or partial `task_id` / `session_id`; fix the pair. |
+| 403 | No active team-manager session; `recovery_purpose_forbidden` for a manager recovery session; no teams registry (no active runtime); `cross_team_forbidden` for a different team. |
+| 404 | Agent not found, including pending/non-approved agents on terminate, or on update after a syntactically valid revision. Missing/malformed update revision is 422 first. |
+| 409 | `agent_name_unavailable` (active/pending/terminated name on enroll), `stale_agent_revision`, `manager_terminate_forbidden`, `agent_not_quiescent`, `archive_collision`, or profile-coordinator/naming conflicts (for example `profile_consumer_changed`, `profile_coordinator_unavailable`, `naming_unavailable`). Do not retry conflicts blindly. |
+| 409 (org dependency) | `no_active_runtime` when the daemon has no active runtime; org dependency resolution precedes manager authentication. |
+| 422 | Invalid permanent ID; enroll missing nonempty description/system_prompt; `invalid_executor`; allow-rule validation; `invalid_reasoning_effort` (invalid/unsupported/conflicting executor/model/effort); reserved headers in `system_prompt`; `expected_revision_required` for missing/null/malformed update revision; schema/type errors. Fix the payload. |
+
+404/409 responses are not retryable; resolve the cause first. For other nonzero
+returns, the existing retry limit is once after 1 second.
 
 ## Lasting permission grants (`allow_rules`)
 
-`allow_rules` is the only supported lasting-grant channel: an `update` payload
-may carry an `allow_rules` array that adds Bash prefixes beyond the baseline
-`happyranch` grant. This skill is team-manager gated — the daemon accepts it only
-from a manager's active task session, and the target must be in that manager's
-team (`403 cross_team_forbidden`). A worker cannot re-grant itself: the request
+`allow_rules` is the only supported lasting-grant channel for extra Bash prefixes
+beyond the baseline `happyranch` grant. It uses the whole-value update semantics
+above and is team-manager gated. A worker cannot re-grant itself: the request
 routes through its team manager. A manager changing its own rules (or another
-manager's) needs a **founder escalation**. `expected_revision` must be a fresh
-64-hex revision (`422 expected_revision_required`); a stale value is rejected
-(`409 stale_agent_revision`).
-
-An `allow_rules` update is not a live permission change on every executor:
+manager's) needs a **founder escalation**.
 
 | Executor | Effect of an `allow_rules` update |
 | --- | --- |
-| **Claude** | `--allowedTools` is rebuilt from `allow_rules` on every launch, so the new rule is live on the agent's next session. (The generated `.claude/settings.json` `permissions.allow` list is not honoured in headless `-p` mode.) |
+| **Claude** | `--allowedTools` is rebuilt from `allow_rules` on every launch, so the new rule is live on the agent's next session. Generated `.claude/settings.json` `permissions.allow` is not honoured in headless `-p` mode. |
 | **Codex** | The effective surface is the CLI sandbox flag; `allow_rules` is not wired into it. A lasting Codex grant needs a concrete founder escalation to the actual permission-model surface. |
-| **Pi** | `PiExecutor` has no HappyRanch-managed permission surface. A lasting Pi grant likewise needs a concrete founder escalation — separate from Codex. |
-| **opencode** | The effective surface is the generated `opencode.json`. An **`allow_rules`-only update does not re-run the workspace bootstrap** (regeneration is gated on a system-prompt or executor change), so the grant is inert until a bootstrap-forcing change or `happyranch init-agent`. This is an open limitation, not repaired here. |
+| **Pi** | `PiExecutor` has no HappyRanch-managed permission surface. A lasting Pi grant needs a concrete founder escalation, separate from Codex. |
+| **opencode** | The effective surface is generated `opencode.json`. An `allow_rules`-only update does not regenerate it. When the workspace exists, resending the current nonempty `system_prompt` with the complete `allow_rules` update forces bootstrap regeneration; supplying `executor` also forces it, even unchanged. `happyranch init-agent` is the separate bootstrap option. |
 
 Request the narrowest prefix plus the skill step that needs it and why a
 thread-authorized one-off job is insufficient. Authorization of one command
@@ -287,62 +226,6 @@ never expands ongoing permissions; no self-edit or new grant endpoint exists.
 For a one-off blocked operation, obtain required authorization in a thread
 BEFORE submitting an automatic **job** from an ordinary task session (see the
 **jobs** skill). Omit/set false for review_required; true is refused, never queued.
-
-## Agent naming
-
-Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo_agent`). No spaces, hyphens, or uppercase.
-
-## Error handling
-
-- If `happyranch` returns non-zero, retry once after 1 second.
-- `409` (duplicate/terminated name on enroll, non-approved agent on update/terminate, manager target, archive collision, or `agent_not_quiescent` conflicts) and `404` (agent not found) are not retryable.
-- `422 expected_revision_required` means an update omitted, supplied `null`,
-  or malformed its 64-character revision — read the active roster again and
-  compose the update from that row's matching canonical content and revision.
-- `409 stale_agent_revision` means another accepted update won. Read the
-  active roster again, deliberately reapply only the intended change to its
-  current content, and send that row's revision. Never fetch a newer revision
-  merely to bless an already-composed stale whole-definition payload.
-- Other `422` responses usually mean the payload is missing required auth
-  fields (task_id + session_id) — fix the JSON and retry.
-
-C3 writer disposition follows the actual authority/profile interval through
-native naming reconciliation and explicit leading validation. Stale rename or
-prompt CAS may settle only after successful native rollback/reconciliation;
-unfenced status alone proves nothing. Caught reconciliation/publication/clone
-failure, cancellation and partial effects retain unknown ownership. Skill scratch
-cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
-prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
-history is never cleared. These are source accounting rules, not behavioral
-verification or new execution/activation authority.
-
-
-Current-main C3 composition preserves automatic job admission: omitted/false
-review_required executes through native owner checks; true refuses before allocation,
-legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks native causal task ownership in the Pause transaction
-before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
-that exact completed no-launch refusal may settle; partial scratch/environment,
-output or process effects and earlier uncertainty remain in producer history.
-Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
-provenance alongside SAME native disposition, rollback and reconciliation rules;
-no removed whole-release naming fingerprint is restored.
-
-The scheduled daemon disk worker reserves a global native writer per admitted
-org before spawn, through supervision/reap/report. Held/unowned orgs defer with
-bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
-child admission and prune re-read the actual parent's active global writer ID
-through strict append-only history and validate the optional move layout/hold.
-An installed layout with missing/unknown ownership refuses before mutation; absent
-layout preserves native behavior. Missing/incomplete effect closure, interruption
-and partial mutation retain unknown writer evidence; a clean later provider result
-cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
-behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. Retained C3 admission/native-writer hooks grant no
-live move or cleanup authority.
-
 
 ## Founder-only retirement
 
@@ -361,3 +244,18 @@ All workers, including pending enrollments, must be resolved first
 team with pending/in-progress/escalated tasks (`team_has_open_tasks`).
 Human-managed teams have no agent manager and are outside this operation.
 Other teams, routing pointers and historical team-keyed policy rows stay intact.
+
+## Naming
+
+`name` is the permanent ID used by frontmatter, teams, workspaces and callbacks.
+It must match `^[a-z][a-z0-9_]*$` (for example `content_writer`, `seo_agent2`)
+and pass the org's shared case-insensitive ASCII naming namespace. Editable
+labels follow different rules: 1–64 ASCII letters/digits/underscore/hyphen,
+letter/digit first, without trimming. Never use a label as manage-agent's `name`
+or as its canonical definition revision.
+Operator `identities rename` is separate, requires positive
+`expected_name_revision` CAS with uncertain-failure readback, and grants no
+agent-session rename authority. The additive `addressable_name`, `name_revision`
+and `naming_status` roster fields do not change `name` or `revision` semantics.
+For the generic current Name / permanent ID and callback identity rules, see
+[start-task](../start-task/SKILL.md#current-names-and-permanent-automation-ids).
