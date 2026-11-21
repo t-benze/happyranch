@@ -41,6 +41,22 @@ pending an approved protected binding flow. The founder-host default `.deb` layo
 8765/`~/.happyranch` is always excluded. Linger remains a separate opt-in; remote enable never sets
 it.
 
+THR-327 seq613: the packaged Linux daemon launcher creates its release data
+folder (`$XDG_DATA_HOME/happyranch`, otherwise `~/.local/share/happyranch`, using
+the existing absolute-XDG resolver) explicitly at 0700 before daemon exec can
+publish lock/PID/discovery/readiness state. GUI-first startup applies the same
+creation before desktop.lock. The final leaf is created and opened without
+following a symlink, then verified by descriptor as a real directory owned by
+the current UID; a new folder must be exactly 0700. Only that new verified
+inode may have owner bits restored after umask filtering. Existing folders
+are never chmod/chown repaired: a symlink, non-directory, wrong owner or
+group/world-writable folder logs its path/problem and that it must be private
+to the user. This adds no daemon-startup veto for an existing unsafe folder;
+the existing Enable refusal remains `release_home_invalid`. Shared dev/home
+creation, daemon file modes, systemd UMask and every helper-owner validation
+predicate stay unchanged. Creating an XDG release folder does not extend the
+protected-binding policy described above.
+
 Read before drafting: TASK-16298 `design.md` rev2; TASK-16362 `architecture-review.md`; the [current
 contract](../agent-guides/contracts/remote-access-and-remote-jobs.md) and
 [RUNBOOK](../operations/remote-access-runbook.md). Baseline code facts:

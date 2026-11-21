@@ -401,6 +401,13 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   writable ancestors still refuse. The retained temporary-root installer venue
   covers this fixture repair and its redirected-path refusal with
   `python -B -m unittest scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_custody scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_redirect_refuses_before_changes -v`.
+  THR-327 seq613 removes the consumed seq607 release-home diagnostic by normal
+  revert. The pre-install absent-folder assertion remains. After packaged-daemon
+  discovery readiness and before first Enable, the harness only asserts that the
+  product-created data folder is a real directory owned by the runner UID with
+  mode exactly 0700. It never creates, chmods, chowns or otherwise normalizes that
+  folder. The first normal post-creation-fix hosted run starts a fresh stop count
+  at run 1; historical failures and diagnostic exclusions remain recorded.
   These messages do not change case predicates, U1's exact
   Off residue or the documented home-profile uninstall refusal.
 
@@ -3550,6 +3557,21 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
+
+THR-327 seq613 release-home creation is owned only by the packaged Linux
+desktop/daemon launcher, using its existing absolute-XDG/default resolver. It
+creates the final folder with explicit 0700 and no-follow verification of real
+directory type, current UID and exact 0700 before publishing any state, including
+GUI desktop.lock or execing the service daemon. Only a newly created verified
+inode may have umask-stripped owner bits restored through its descriptor. Existing
+unsafe folders are never chmod/chown repaired or accepted for remote access; a
+message names the folder and cause (including group/world writes) and says it
+must be private to the user. Existing daemon startup behavior is retained; Enable
+still refuses `release_home_invalid` under the unchanged helper-owner checks.
+Safe existing modes are retained. Shared ensure_daemon_home, non-release homes,
+other daemon file modes and systemd UMask are unchanged. XDG creation does not
+extend the helper's protected release-binding policy.
+
 The packaged entry exposes Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected plus I5a's seven public lifecycle/invite methods, with unchanged
 admission. Linux CLI consumers are I5b and bridge consumers are I5c;

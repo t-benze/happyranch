@@ -54,7 +54,22 @@ EOF
   systemctl --user start happyranch-daemon.service
   local attempt
   for ((attempt=0; attempt<60; attempt++)); do
-    [[ -s $HOME/.local/share/happyranch/daemon.port && -s $HOME/.local/share/happyranch/daemon.token ]] && return
+    if [[ -s $HOME/.local/share/happyranch/daemon.port && -s $HOME/.local/share/happyranch/daemon.token ]]; then
+      # Read-only product assertion: the daemon, never this fixture, creates it.
+      /usr/bin/python3 -I -B - <<'PY'
+import os
+from pathlib import Path
+import stat
+
+home = Path.home() / '.local/share/happyranch'
+info = home.lstat()
+assert stat.S_ISDIR(info.st_mode), 'release_home_not_directory'
+assert info.st_uid == os.getuid(), 'release_home_wrong_owner'
+assert stat.S_IMODE(info.st_mode) == 0o700, 'release_home_mode_not_0700'
+print('Packaged release home: owned real directory at 0700')
+PY
+      return
+    fi
     sleep 1
   done
   fail 'packaged release daemon did not publish discovery files'

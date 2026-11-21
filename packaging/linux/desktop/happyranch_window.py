@@ -44,11 +44,72 @@ def desktop_home(user_home: Path | None = None, *,
     return (data if data.is_absolute() else account / ".local/share") / "happyranch"
 
 
+def ensure_release_home(home: Path) -> None:
+    """Create only the release leaf privately; never repair an existing home.
+
+    Unsafe existing homes retain the daemon's existing startup behavior. The
+    unchanged privileged helper refuses Enable with release_home_invalid.
+    """
+    home.parent.mkdir(parents=True, exist_ok=True)
+    parent = os.open(home.parent, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    created = False
+    try:
+        try:
+            os.mkdir(home.name, mode=0o700, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            pass
+        info = os.stat(home.name, dir_fd=parent, follow_symlinks=False)
+        problem = None
+        if stat.S_ISLNK(info.st_mode):
+            problem = "is a symbolic link"
+        elif not stat.S_ISDIR(info.st_mode):
+            problem = "is not a directory"
+        elif info.st_uid != os.getuid():
+            problem = "is not owned by the current user"
+        elif info.st_mode & 0o022:
+            problem = "is group- or world-writable"
+        if problem is not None:
+            if created:
+                raise LaunchError(f"New release data folder {home} {problem}.")
+            print(f"happyranch-app: Remote access Enable refused (release_home_invalid): "
+                  f"{home} {problem}; the folder must be private to the user.", file=sys.stderr)
+            return
+        descriptor = os.open(home.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=parent)
+        try:
+            opened = os.fstat(descriptor)
+            if (not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.getuid()
+                    or opened.st_mode & 0o022
+                    or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)):
+                raise LaunchError(f"Release data folder {home} changed during creation checks.")
+            if created and stat.S_IMODE(opened.st_mode) != 0o700:
+                # Only our new, verified inode; never normalize an existing home.
+                os.fchmod(descriptor, 0o700)
+            verified = os.fstat(descriptor)
+            current = os.stat(home.name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(verified.st_mode) or verified.st_uid != os.getuid()
+                    or verified.st_mode & 0o022
+                    or (created and stat.S_IMODE(verified.st_mode) != 0o700)
+                    or (current.st_dev, current.st_ino) != (verified.st_dev, verified.st_ino)):
+                raise LaunchError(f"Release data folder {home} could not be verified as private to the user.")
+        finally:
+            os.close(descriptor)
+    except (OSError, LaunchError) as exc:
+        if created:
+            raise
+        print(f"happyranch-app: Remote access Enable refused (release_home_invalid): "
+              f"{home} could not be verified without following links ({type(exc).__name__}); "
+              "the folder must be private to the user.", file=sys.stderr)
+    finally:
+        os.close(parent)
+
+
 def acquire_lock(home: Path) -> IO[bytes] | None:
     """Keep the inode in place: unlinking a held flock creates a launch race."""
     if home.resolve() == (Path.home() / ".happyranch").resolve():
         raise LaunchError("The desktop window cannot use the development daemon home.")
-    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_release_home(home)
     lock = (home / "desktop.lock").open("ab")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1252,7 +1313,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.run_service:
         # systemd supplies its account home via %h; exec preserves MainPID.
-        env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(desktop_home(args.user_home)),
+        home = desktop_home(args.user_home)
+        try:
+            ensure_release_home(home)
+        except (OSError, LaunchError) as exc:
+            print(f"happyranch-app: {exc}", file=sys.stderr)
+            return 1
+        env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(home),
                    HAPPYRANCH_DAEMON_PORT="0", HAPPYRANCH_DAEMON_BIND_HOST="127.0.0.1")
         os.execve(args.prefix / "bin/happyranch-daemon", ["happyranch-daemon"], env)
     try:
@@ -1266,7 +1333,11 @@ def main() -> int:
                 if args.print_port:
                     raise
                 # The GUI's existing startup path presents the diagnostic.
-        home = home.expanduser().resolve()
+        home = home.expanduser()
+        if not args.print_port and args.daemon_home is None:
+            # Inspect the literal release leaf before GUI canonicalization.
+            ensure_release_home(home)
+        home = home.resolve()
         if args.print_port:
             service.home = home
             print(service.current_port())
