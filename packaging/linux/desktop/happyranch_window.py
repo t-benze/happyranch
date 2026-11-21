@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import http.client
 import html
+import importlib.util
 import json
 import logging
 import os
@@ -25,6 +26,13 @@ import time
 from typing import IO, Callable
 import urllib.error
 import urllib.request
+
+_locale = sys.modules.get("_happyranch_app_locale")
+if _locale is None:
+    _spec = importlib.util.spec_from_file_location("_happyranch_app_locale", Path(__file__).with_name("app_locale.py"))
+    _locale = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_locale)
+    sys.modules["_happyranch_app_locale"] = _locale
 
 
 class LaunchError(Exception):
@@ -988,7 +996,7 @@ def run_gui(prefix: Path, home: Path) -> int:
     gi.require_version("WebKit2", "4.1")
     from gi.repository import Gio, GLib, Gtk, WebKit2
 
-    chinese = os.environ.get("LANG", "").lower().startswith("zh")
+    chinese = _locale.load()["current"] == "zh-CN"
 
     def tr(en: str, zh: str) -> str:
         return zh if chinese else en

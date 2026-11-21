@@ -6,8 +6,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 import hashlib
 import io
+import importlib.util
 import json
 import logging
+import os
 import tempfile
 import threading
 import time
@@ -286,8 +288,18 @@ class GTKTests(unittest.TestCase):
 
     def test_main_bridge_status_event_and_frame_navigation_refusal(self) -> None:
         from app_scheme_webkit import AppScheme, ORIGIN
+        import app_scheme_webkit as main_owner
         with tempfile.TemporaryDirectory(prefix="hr-main-bridge-") as directory:
             root = Path(directory)
+            spec = importlib.util.spec_from_file_location("webkit_locale", Path(__file__).with_name("app_locale.py"))
+            store = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(store)
+            environment = patch.dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), LANG="en_US.UTF-8")
+            environment.start()
+            self.addCleanup(environment.stop)
+            dependency = patch.object(main_owner, "_locale", store, create=True)
+            dependency.start()
+            self.addCleanup(dependency.stop)
             bundle = root / "bundle"
             bundle.mkdir()
             (bundle / "index.html").write_text('<!doctype html><title>Synthetic Main</title><script src="/early.js"></script><p>Main</p>')
@@ -311,6 +323,32 @@ class GTKTests(unittest.TestCase):
                 self.assertEqual(evaluate("return window.early.schema;"), 2)
                 status = evaluate("return JSON.parse(await happyranchConnection.call('app.status','{}'));")
                 self.assertEqual((status["schema"], status["state"], status["target"]), (2, "no_target", None))
+                evaluate("window.localeLog=[];window.offLocale=happyranchConnection.on('app.stateChanged',raw=>localeLog.push(['event',JSON.parse(raw).locale]));return null;")
+                self.pump(lambda: evaluate("return localeLog.length;") == 1)
+                evaluate("localeLog=[];for(const locale of ['zh-CN','en']) happyranchConnection.call('app.locale.set',JSON.stringify({schema:2,locale})).then(raw=>localeLog.push(['reply',JSON.parse(raw).locale]));return null;")
+                self.pump(lambda: evaluate("return localeLog.length;") == 4)
+                self.assertEqual(evaluate("return localeLog;"), [
+                    ["reply", {"current": "zh-CN", "persisted": True}], ["event", {"current": "zh-CN", "persisted": True}],
+                    ["reply", {"current": "en", "persisted": True}], ["event", {"current": "en", "persisted": True}]])
+                self.pump(lambda: not main_owner._locale_process.busy)
+                path = root / "config/happyranch/locale"
+                self.assertEqual(path.read_bytes(), b"en\n")
+                with patch.object(store.os, "replace", side_effect=OSError("synthetic write failure")):
+                    evaluate("localeLog=[];happyranchConnection.call('app.locale.set','{\"schema\":2,\"locale\":\"zh-CN\"}').then(raw=>localeLog.push(['reply',JSON.parse(raw).locale]));return null;")
+                    self.pump(lambda: evaluate("return localeLog.length;") == 2)
+                self.assertEqual(evaluate("return localeLog;"), [[kind, {"current": "zh-CN", "persisted": False}] for kind in ("reply", "event")])
+                self.assertEqual(path.read_bytes(), b"en\n")
+                self.pump(lambda: not main_owner._locale_process.busy)
+                self.assertEqual(evaluate("try {await happyranchConnection.call('app.locale.set','{\"schema\":2,\"locale\":\"en\",\"locale\":\"zh-CN\"}');return null;}catch(raw){return JSON.parse(raw);}"),
+                    {"code": "invalidRequest", "effect": "none", "recovery": "none"})
+                self.assertEqual(evaluate("return localeLog.length;"), 2)
+                self.assertEqual(path.read_bytes(), b"en\n")
+                evaluate("offLocale();return null;")
+                self.pump(lambda: not scheme.subscribed)
+                self.assertEqual(evaluate("return JSON.parse(await happyranchConnection.call('app.locale.set','{\"schema\":2,\"locale\":\"en\"}')).locale;"),
+                    {"current": "en", "persisted": True})
+                self.pump(lambda: not main_owner._locale_process.busy)
+                self.assertEqual(evaluate("return localeLog.length;"), 2, "unsubscribed setter must drain without publication")
                 calls = []
                 def dispatch(command: str, document: object, finish: object, **args: object) -> None:
                     calls.append((command, document, args))
