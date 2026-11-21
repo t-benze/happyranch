@@ -18,6 +18,13 @@
  * editor releases the owner, but a pending/unknown save keeps holding
  * (detached) until it resolves.
  *
+ * Desktop (S6-W2b): a ticketed save is sent only after native acknowledged
+ * the owner summary that shows it pending (`@/lib/native/owners`). `track`
+ * awaits that receipt before `run()`; an editor that sends on its own after
+ * `begin()` awaits `sendable()` first. A refused/lost push settles the
+ * ticket `failed` with nothing sent (`OwnersReceiptError`). Browser mode
+ * admits at once.
+ *
  * Scope: an editor inside `<OwnerScope scope="settings" section=...>` (the
  * desktop Settings dialog pane) is a `settings` owner; anywhere else it is a
  * `main` owner.
@@ -31,6 +38,7 @@ import {
   type SaveOutcome,
   type SaveTicket,
 } from '@/lib/owners/ownerRegistry';
+import { awaitOwnersReceipt, OwnersReceiptError } from '@/lib/native/owners';
 import { useOwnerGateContext, useOwnerRecords } from './OwnerGate';
 
 interface OwnerScopeValue {
@@ -102,6 +110,12 @@ export interface ConfigOwner {
   /** The current draft revision (capture it where a request is built). */
   draftRevision: number;
   settle: (ticket: SaveTicket, outcome: SaveOutcome) => { current: boolean };
+  /**
+   * Desktop save admission after `begin()`: resolves true once native
+   * acknowledged the summary showing the save pending (browser: at once).
+   * False: send nothing and settle the ticket `failed`.
+   */
+  sendable: () => Promise<boolean>;
   /**
    * Run one save under a ticket (a fresh one, or `ticket` from an earlier
    * `begin()`); failures are classified, never thrown.
@@ -214,6 +228,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     (ticket: SaveTicket, outcome: SaveOutcome) => ({ current: registry.settleSave(ticket, outcome).current }),
     [registry],
   );
+  const sendable = useCallback(() => awaitOwnersReceipt(registry.getSnapshot()), [registry]);
   const track = useCallback(
     async <T,>(
       run: () => Promise<T>,
@@ -223,6 +238,12 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
       const ticket = given === undefined ? begin() : given;
       if (ticket === null) {
         return { ok: false as const, error: null, outcome: 'unknown' as const, current: true, refused: true };
+      }
+      // Desktop: the summary showing this save pending must be acknowledged
+      // first; otherwise nothing is sent and the draft stays unsaved.
+      if (!(await sendable())) {
+        const { current } = settle(ticket, 'failed');
+        return { ok: false as const, error: new OwnersReceiptError(), outcome: 'failed' as const, current, refused: false };
       }
       try {
         const value = await run();
@@ -234,7 +255,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
         return { ok: false as const, error, outcome, current, refused: false };
       }
     },
-    [begin, settle],
+    [begin, settle, sendable],
   );
 
   const records = useOwnerRecords();
@@ -244,5 +265,5 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
 
   const saveRefused = record?.status === 'unknown';
 
-  return { id, record, begin, draftRevision, settle, track, saveRefused, check, reconcile, checking, checkFailed };
+  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, check, reconcile, checking, checkFailed };
 }

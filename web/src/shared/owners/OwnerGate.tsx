@@ -9,7 +9,8 @@
  *   (`features/desktop-dialogs` calls `requestOwnerTransition`);
  * - in-app navigation (a router blocker, mounted only while some owner is
  *   not clean), including org switches;
- * - S6-W2b adds native close/Quit/target commit via `selectOwnerBlocking`.
+ * - native close/quit/relaunch (`app.lifecycleRequested`, S6-W2b): every owner;
+ *   `NativeOwnersBridge` also pushes the all-owner summary (`app.ownersChanged`).
  *
  * Gate outcome for the AFFECTED owners only (an editor the transition leaves
  * mounted is untouched; opening a dialog over a Main editor is not consent):
@@ -55,6 +56,7 @@ import {
   type OwnerRegistry,
 } from '@/lib/owners/ownerRegistry';
 import { navigationTransition, type OwnerGateEffect } from '@/lib/owners/ownerTransitions';
+import { NativeOwnersBridge } from './NativeOwnersBridge';
 import { ownerContextParams } from './ownerCopy';
 
 export { navigationTransition, orgOfPath, type OwnerGateEffect } from '@/lib/owners/ownerTransitions';
@@ -176,6 +178,7 @@ export function OwnerGateProvider({ children }: { children: ReactNode }): JSX.El
     <OwnerGateContext.Provider value={value}>
       {children}
       <OwnerRouterGuard interceptor={interceptor} holding={active !== null} />
+      <NativeOwnersBridge registry={registry} requestOwnerTransition={requestOwnerTransition} />
       {active && (
         <OwnerGatePrompt
           transition={active}

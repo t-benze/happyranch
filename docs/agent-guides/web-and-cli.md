@@ -314,8 +314,9 @@ mutations reject with `documentChanged`, effect `unknown` and recovery
 Read-only calls retain effect `none` / recovery `refresh`; new calls after
 retirement are refused before dispatch with that same no-effect shape.
 `app.ownersChanged` now supplies native commit/disconnect summary evidence,
-including `owner_edits_pending` after the unknown/pending refusals.
-Lifecycle request/decision handling remains S7-L3.
+including `owner_edits_pending` after the unknown/pending refusals; the web
+pushes it (S6-W2b, see the owner gate section below). Native lifecycle
+requests/decisions remain S7-L3.
 Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
@@ -367,7 +368,7 @@ keeps its editors mounted (error shown above) when a reread fails after data
 was loaded.
 
 `selectOwnerBlocking(owners, affects?)` is the pure aggregate S6-W2b pushes to
-native (`app.owners`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
+native (`app.ownersChanged`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
 is `hold` when an affected owner is pending/unknown, `prompt` when one is
 dirty/failed, else `none`, plus the affected non-clean owner list.
 
@@ -456,6 +457,45 @@ navigation (previously only Capacity and the team escalation policy page
 prompted), the C3 copy replaces the Organization failure line, and a changed
 read no longer overwrites unsent Organization edits. Focused checks:
 `node --experimental-transform-types --test web/scripts/owner-registry.test.mjs`.
+
+### Native owner summary push and lifecycle gate (THR-387 S6-W2b)
+
+Desktop only (`web/src/lib/native/owners.ts`, mounted by
+`shared/owners/NativeOwnersBridge.tsx` inside `OwnerGateProvider`); browser mode
+(no bridge) is a no-op. After subscribing to `app.lifecycleRequested`, the web
+pushes the closed v2 summary `{schema:2, blocking, counts}` of EVERY registered
+owner (Main and Settings, detached owners included; no org/page filter, so an
+old-org owner whose sent save is unresolved keeps counting after an org switch)
+through `call("app.ownersChanged", …)`: once initially, then on every registry
+change. Counts are the owners per status (dirty/failed/pending/unknown, capped at
+255); `blocking` is `selectOwnerBlocking(owners).level`. Calls are serialized
+(one in flight) and deduped only against the last ACKNOWLEDGED summary; a failed
+push clears it, so the next identical summary is sent again; there is no timer
+retry. The payload carries no page, org, computer, owner id, draft or error text
+and is never logged.
+
+Save admission: `useConfigOwner().track()` (and `sendable()`, which Agents detail
+and Capacity await after their own `begin()`) sends a registered save only after
+native acknowledged (`"{}"`) the summary showing it pending. A refused, lost or
+unanswered (5 s) push holds the save: nothing is sent and the ticket settles
+`failed`, so the existing C3 failed copy shows (Capacity shows the same sentence
+in its banner). The agent system prompt editor sends after its own `begin()` and
+does not await the receipt yet (outside the S6-W2b file scope; follow-up).
+
+Lifecycle: a strictly valid `app.lifecycleRequested` (exact keys, schema 2, ID
+`[A-Za-z0-9_-]{1,64}`, action close/quit/relaunch; anything else is ignored) runs
+the ONE contextual gate over every owner, with **Discard changes and close /
+quit / relaunch** (“放弃更改并关闭 / 退出 / 重启”). The gate outcome is answered once per
+ID on the same call with `gate:{requestId, decision}`: proceed only when the
+summary read at send time is `none` (otherwise keep); Keep editing, Back or
+another gate already open answer keep; a repeated ID only focuses the open gate.
+From a proceed answer no new save is admitted; a definitive refusal
+(`effect:"none"`) restores saving, a lost acknowledgement keeps the hold. A
+reload starts with empty module state and sends its own initial summary; nothing
+is replayed. Current Linux native accepts summaries but has no lifecycle listener
+(its `on()` throws, tolerated silently) and refuses gate-bearing summaries until
+S7-L3. Focused checks:
+`node --experimental-transform-types --test web/scripts/native-owners.test.mjs`.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 

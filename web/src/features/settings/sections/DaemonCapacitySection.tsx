@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useParams } from 'react-router-dom';
-import { useConfigOwner } from '@/shared/owners';
+import { ownerContextParams, useConfigOwner } from '@/shared/owners';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import {
@@ -852,6 +852,21 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     setSubmission(record);
     setOutcome({ kind: 'saving' });
+    // S6-W2b: send nothing until native acknowledged this save as pending.
+    // Held: the ticket settles failed and the edits stay unsaved.
+    if (!(await ownerRef.current.sendable())) {
+      ownerRef.current.settle(ticket, 'failed');
+      setSubmission(null);
+      const record = ownerRef.current.record;
+      setOutcome({
+        kind: 'rejected',
+        message: (locale) => {
+          const t = (key: MessageKey, params?: MessageParams): string => translate(locale, key, params);
+          return t('owners.save.failed', ownerContextParams(record ?? { page: 'settings.capacity', org: null, computer: null }, t));
+        },
+      });
+      return;
+    }
     // C3: THIS request object is what identifies this editor's own write; the
     // provider records the settlement it produced under it.
     const request: DaemonCapacityWrite = {

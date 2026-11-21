@@ -1050,6 +1050,8 @@ export const en = {
   'owners.gate.discard.changePage': 'Discard changes and change page',
   'owners.gate.discard.changeOrg': 'Discard changes and change organization',
   'owners.gate.discard.leave': 'Discard changes and leave this page',
+  'owners.gate.discard.quit': 'Discard changes and quit',
+  'owners.gate.discard.relaunch': 'Discard changes and relaunch',
   'owners.gate.holdTitle': 'Waiting for a save result',
   'owners.gate.holdBody': "A sent save can't be discarded. This continues when its result arrives.",
   'owners.gate.ownerPending': 'Waiting for the save result for {page} on {computer} · {org}.',

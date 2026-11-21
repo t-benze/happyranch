@@ -301,6 +301,12 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     try {
       setSaveError(null);
       const errors: SaveErrorItem[] = [];
+      // S6-W2b: send nothing until native acknowledged this save as pending.
+      // Held: the ticket settles failed (the owner notice says so).
+      if (!(await owner.sendable())) {
+        rawErrors.push({ status: 422 });
+        return;
+      }
 
       // Save executor if dirty — guard: don't send an executor that is no
       // longer selectable (e.g., refetched away or unavailable).
