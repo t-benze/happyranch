@@ -1464,14 +1464,26 @@ service-only `local.restart` is not that launch. No automatic app relaunch and
 no locale-triggered lifecycle/owner prompt. Session-only persistence failure
 does not promise that the next launch will retain the choice.
 
-**Implementation status.** Spec only. S8-1-L wires the native store into the
-bridge and next-launch native strings; S8-1-W wires the web's native locale
-authority and truthful pending/saved/session-only UI. TASK-18213's store at
-`870e34e62bd3a844abb0379be1f170dbb8d4cc48` matches atomic acknowledgement,
-failure=false and serialized writes; the adapter ordering above is later wiring,
-not a store mismatch. Browser-mode localStorage behavior stays as documented.
-No daemon route/auth/remote allowlist change, Mac edit/build or runtime/visual
-acceptance is claimed. The following examples validate against `appLocaleSet`
+**Implementation status.** Linux native wiring is implemented by S8-1-L-b,
+PR #1799 (merged `74eae6f4`): the admitted Main setter validates the closed request
+([app_scheme_webkit.py:652](../../packaging/linux/desktop/app_scheme_webkit.py#L652)),
+serializes store write, result delivery and full state publication across Main
+reconstruction ([app_scheme_webkit.py:474](../../packaging/linux/desktop/app_scheme_webkit.py#L474)),
+and reads current/persisted locale from the shared store
+([app_scheme_webkit.py:472](../../packaging/linux/desktop/app_scheme_webkit.py#L472)).
+The GTK launch translation closure reads the preference for native header/menus/dialogs
+on next app launch ([happyranch_window.py:999](../../packaging/linux/desktop/happyranch_window.py#L999));
+built-in native state names retain the launch locale. The existing TASK-18213
+store implementation is unchanged. Native/script checks and the real GTK/WebKit
+bridge test cover acknowledged true/false results, ordered rapid choices, refusal
+and retirement; new-process header checks cover saved preference precedence over
+LANG. Installed payload isolated imports pass; packaged/X11 visual acceptance
+remains unverified. S8-1-W remains pending for live web native locale authority
+and truthful pending/saved/session-only UI; browser-mode localStorage behavior
+stays as documented. No synchronous facade/wire field, daemon route/auth/remote
+allowlist change or Mac edit/build is included.
+
+The following examples validate against `appLocaleSet`
 or `appLocaleSetResult` as named, and the root schema.
 
 #### Valid: appLocaleSet chooses Simplified Chinese
