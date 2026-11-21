@@ -1971,6 +1971,13 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         db = Database(org_paths.db_path)
         settings = Settings(project_root=tmp_path)
 
+        # A generic Database has no org-owned routing marks. Install the real
+        # org fixture before task creation so the runner reaches materialization.
+        from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+        from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+        initialize_complete_org_schema(db, expected_org_slug="test-org", layout="J")
+        install_task_ownership(db, org_slug="test-org")
+
         # Create teams config so Orchestrator can resolve agent teams
         # Canonical admission must succeed before the original injected
         # materialization/compensation failure can exercise the real runner.
@@ -1995,6 +2002,8 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         workspace = org_paths.workspaces_dir / "dev_agent"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "task_history.md").write_text("# Task History\n")
+        from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
+        write_canonical_instruction_pair(workspace, "Synthetic runner instructions.\n")
         # Readiness marker so _run_agent passes WorkspaceNotInitialized check
         skill_marker = workspace / ".claude" / "skills" / "start-task"
         skill_marker.mkdir(parents=True, exist_ok=True)
@@ -2281,6 +2290,12 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         db = Database(org_paths.db_path)
         settings = Settings(project_root=tmp_path)
 
+        # Supply org-owned creation-time routing, as the source runner case does.
+        from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+        from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+        initialize_complete_org_schema(db, expected_org_slug="test-org", layout="J")
+        install_task_ownership(db, org_slug="test-org")
+
         # Canonical admission must succeed before the original injected
         # materialization/compensation failure can exercise the real runner.
         from dataclasses import replace
@@ -2304,6 +2319,8 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         workspace = org_paths.workspaces_dir / "dev_agent"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "task_history.md").write_text("# Task History\n")
+        from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
+        write_canonical_instruction_pair(workspace, "Synthetic runner instructions.\n")
         skill_marker = workspace / ".claude" / "skills" / "start-task"
         skill_marker.mkdir(parents=True, exist_ok=True)
         (skill_marker / "SKILL.md").write_text("# start-task\n")

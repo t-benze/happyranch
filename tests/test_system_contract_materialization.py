@@ -919,21 +919,20 @@ class TestConcurrentMaterialization:
     def test_task_path_permission_error_fail_closed_no_launch(
         self, tmp_path, monkeypatch,
     ):
-        """A realistic OSError at the production materialization binding
-        prevents executor launch, produces named actionable terminal failure,
-        and is persisted by the real task runner (run_step_impl).
+        """An ordinary directory at a canonical skill link path prevents launch
+        and persists a named actionable failure through the real task runner.
 
         Exercises the REAL task runner persistence path: sets up an
         Orchestrator with DB and workspace, creates a task, patches
         _build_executor to return a mock with run() spy, injects
-        OSError(errno 28) at _copy_skills_tree, and calls orch.run_step()
+        an ordinary directory at the start-task link, and calls orch.run_step()
         which drives run_step_impl — the actual runner that catches the
         exception, calls _fail, and persists the terminal FAILED state.
 
         Asserts:
         - After run_step returns, the persisted task is TaskStatus.FAILED.
-        - The persisted note contains the underlying "Errno 28" / "No space
-          left on device" cause, wrapped in the runner's
+        - The persisted note contains "ordinary_dir_at_link_path" and the
+          fail-closed refusal, wrapped in the runner's
           "agent invocation failed: ..." envelope.
         - mock_executor.run() is NEVER called — no subprocess launch when
           materialization fails."""
@@ -961,6 +960,11 @@ class TestConcurrentMaterialization:
         db = Database(org_paths.db_path)
         settings = Settings(project_root=tmp_path)
 
+        from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+        from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+        initialize_complete_org_schema(db, expected_org_slug="test", layout="J")
+        install_task_ownership(db, org_slug="test")
+
         from runtime.orchestrator.teams import TeamsRegistry
         # Local canonical roster/role setup reaches the original real
         # materializer fault; no admission guard is replaced or bypassed.
@@ -983,6 +987,7 @@ class TestConcurrentMaterialization:
         workspace = org_paths.workspaces_dir / "dev_agent"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "task_history.md").write_text("# Task History\n")
+        wa.write_canonical_instruction_pair(workspace, "Synthetic runner instructions.\n")
         # Readiness marker so _run_agent passes WorkspaceNotInitialized check
         skill_marker = workspace / ".claude" / "skills" / "start-task"
         skill_marker.mkdir(parents=True, exist_ok=True)
@@ -1013,7 +1018,7 @@ class TestConcurrentMaterialization:
             db.update_task(task_id, assigned_agent="dev_agent")
 
             # Drive the REAL task runner: run_step → run_step_impl which
-            # calls _run_agent. Materialization fails with OSError, the
+            # calls _run_agent. Canonical materialization refuses, the
             # except clause catches it, _fail persists terminal FAILED.
             orch.run_step(task_id)
 

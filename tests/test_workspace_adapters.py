@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -70,10 +73,44 @@ def fresh_repo_refresh():
         vars(workspace_adapters).update(original)
 
 
+@pytest.fixture
+def repo_refresh_attachment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_repo_refresh: None,
+) -> Iterator[None]:
+    from runtime.daemon.sessions import OrgFenceGuardian
+    from runtime.infrastructure.org_access_fence import (
+        OrgAccessFence, bind_org_fence, unbind_org_fence,
+    )
+
+    # The native producer fixture uses org "probe". Real host admission now
+    # requires its original attachment fence, even for a backend-contract double.
+    root = tmp_path / "runtime" / "orgs" / "probe"
+    root.mkdir(parents=True)
+    home = tmp_path / "daemon-home"
+    home.mkdir()
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
+    fence = OrgAccessFence.acquire(root)
+    bind_org_fence(fence)
+    guardians = set(OrgFenceGuardian._held)
+    try:
+        yield
+    finally:
+        # Only this case's synthetic resources, after the receipt assertions.
+        # The backend reaps every real local Git child before receipt corruption;
+        # verify that fact before releasing an intentionally retained guardian.
+        for guardian in set(OrgFenceGuardian._held) - guardians:
+            assert guardian.root == root
+            running = guardian.original_owner.running()
+            assert running is not None and running.process.returncode is not None
+            guardian.close_confirmed()
+        unbind_org_fence(fence)
+        fence.close()
+
+
 @pytest.mark.parametrize("backend_name,guaranteed", [
     ("macos-process-group", False), ("linux-systemd", True),
 ])
-def test_repo_refresh_supported_containment(tmp_path, monkeypatch, fresh_repo_refresh, backend_name, guaranteed):
+def test_repo_refresh_supported_containment(tmp_path, monkeypatch, repo_refresh_attachment, backend_name, guaranteed):
     """Gate coverage uses real Git/preparation; Linux label is a capability double."""
     from dataclasses import replace
 
@@ -101,11 +138,12 @@ def test_repo_refresh_supported_containment(tmp_path, monkeypatch, fresh_repo_re
             assert refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor) == {"sample": True}
             assert git(workspace / "repos/sample", "rev-parse", "HEAD") == target
             assert receipts and all(r.quiescent is True and not r.survivors for r in receipts)
+            assert owner._repository_preparations
             assert all(e.closed and not e.uncertain for e in owner._repository_preparations.values())
 
 
 @pytest.mark.parametrize("fault", ["non_quiescent", "survivor"])
-def test_repo_refresh_darwin_bad_receipt(tmp_path, monkeypatch, fresh_repo_refresh, fault):
+def test_repo_refresh_darwin_bad_receipt(tmp_path, monkeypatch, repo_refresh_attachment, fault):
     from dataclasses import replace
 
     from runtime.orchestrator.host_supervisor import build_default_host_supervisor
@@ -142,6 +180,7 @@ def test_repo_refresh_darwin_bad_receipt(tmp_path, monkeypatch, fresh_repo_refre
             assert refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor) == {"sample": False}
             assert len(injected) == 1
             assert owner.state.failed_cleanup
+            assert owner._repository_preparations
             assert all(e.uncertain and not e.closed for e in owner._repository_preparations.values())
 
 
