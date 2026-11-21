@@ -1,13 +1,15 @@
 /**
  * Desktop Settings dialog body (THR-387 S6-W1; handoff v2.4 §2, C4).
  *
- * Navigation follows v2.4 §2: This app → Language; Runtime settings →
- * Capacity, Executors, Organization, Coding; plus Open Connection. The panes
+ * Navigation follows v2.4 §2: This app → Language; This computer →
+ * HappyRanch on this computer; Runtime settings → Capacity, Executors,
+ * Organization, Coding; plus Open Connection. The panes
  * are the existing `features/settings` sections (`SettingsPane`), so there is
- * one Settings editor and no duplicate mutation path. "HappyRanch on this
- * computer" is S7-L2; its group shows only the C5 scope note, and only when a
- * remote Host name is known (none is known until the S5-W1 status store
- * lands).
+ * one Settings editor and no duplicate mutation path. This computer →
+ * "HappyRanch on this computer" (S7-L2, `./local`) is listed where native
+ * admits the `local.*` commands (Linux), including while a remote target is
+ * selected; then the group also shows the C5 scope note naming that Host
+ * (from native `app.status`).
  *
  * The desktop dialog host (`features/desktop-dialogs`) renders this body;
  * `routes.tsx` composes the two, so neither feature imports the other.
@@ -21,6 +23,7 @@ import {
   Gauge,
   Home as HomeIcon,
   Languages,
+  Monitor,
   Plug,
   Terminal,
   type LucideIcon,
@@ -33,17 +36,26 @@ import type { MessageKey } from '@/lib/i18n';
 import { OrgProvider } from '@/lib/orgSlug';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { useNativeAppStatus } from '@/lib/native/hooks';
 import { OwnerScope } from '@/shared/owners';
 import { SettingsPane, type SettingsSection } from './SettingsPage';
+import { LocalServicePage, useLocalCommandsAdmitted } from './local/LocalServicePage';
+
+/** Dialog pages: the Settings page sections plus desktop-only `local`. */
+export type SettingsDialogSection = SettingsSection | 'local';
 
 interface NavItem {
-  section: SettingsSection;
+  section: SettingsDialogSection;
   labelKey: MessageKey;
   icon: LucideIcon;
 }
 
 const APP_ITEMS: readonly NavItem[] = [
   { section: 'preferences', labelKey: 'desktopDialogs.settings.nav.language', icon: Languages },
+];
+
+const COMPUTER_ITEMS: readonly NavItem[] = [
+  { section: 'local', labelKey: 'desktopDialogs.settings.nav.local', icon: Monitor },
 ];
 
 const RUNTIME_ITEMS: readonly NavItem[] = [
@@ -55,11 +67,9 @@ const RUNTIME_ITEMS: readonly NavItem[] = [
 
 export interface SettingsDialogBodyProps {
   headingRef: RefObject<HTMLHeadingElement>;
-  section: SettingsSection;
-  onSelectSection: (section: SettingsSection) => void;
+  section: SettingsDialogSection;
+  onSelectSection: (section: SettingsDialogSection) => void;
   onOpenConnection: () => void;
-  /** Selected remote Host name for the C5 note; null while unknown. */
-  remoteHostName?: string | null;
 }
 
 export function SettingsDialogBody({
@@ -67,14 +77,17 @@ export function SettingsDialogBody({
   section,
   onSelectSection,
   onOpenConnection,
-  remoteHostName = null,
 }: SettingsDialogBodyProps): JSX.Element {
   const { t } = useTranslation();
+  const app = useNativeAppStatus();
+  // C5: the selected remote Host's display name, from native app.status.
+  const remoteHostName = app?.target?.kind === 'remote' ? app.target.name : null;
+  const localAdmitted = useLocalCommandsAdmitted();
   const orgMatch = useMatch('/orgs/:slug/*');
   const slug = orgMatch?.params.slug ?? null;
   const paneRef = useRef<HTMLDivElement>(null);
   // Compact layout stacks nav above the page: bring the chosen page into view.
-  const select = (next: SettingsSection): void => {
+  const select = (next: SettingsDialogSection): void => {
     onSelectSection(next);
     if (window.matchMedia('(min-width: 48rem)').matches) return;
     requestAnimationFrame(() => paneRef.current?.scrollIntoView({ block: 'start' }));
@@ -102,15 +115,16 @@ export function SettingsDialogBody({
             active={section}
             onSelect={select}
           />
-          {remoteHostName && (
-            <section className="mt-3 min-w-0">
-              <h3 className="text-overline text-text-secondary mb-1 px-1 tracking-wider break-words uppercase">
-                {t('desktopDialogs.settings.nav.thisComputer')}
-              </h3>
-              <p className="text-text-secondary px-1 text-xs break-words" data-testid="local-scope-note">
-                {t('desktopDialogs.settings.localScope', { host: remoteHostName })}
-              </p>
-            </section>
+          {localAdmitted !== false && (
+            <NavGroup
+              className="mt-3"
+              heading={t('desktopDialogs.settings.nav.thisComputer')}
+              context={remoteHostName ? t('desktopDialogs.settings.localScope', { host: remoteHostName }) : undefined}
+              contextTestId="local-scope-nav-note"
+              items={COMPUTER_ITEMS}
+              active={section}
+              onSelect={select}
+            />
           )}
           <NavGroup
             className="mt-3"
@@ -134,6 +148,12 @@ export function SettingsDialogBody({
         <div ref={paneRef} className="min-w-0 md:flex-1 md:overflow-y-auto" data-testid="desktop-settings-pane">
           {section === 'preferences' ? (
             <SettingsPane section="preferences" />
+          ) : section === 'local' ? (
+            localAdmitted === false ? (
+              <p className="text-text-secondary p-8 text-sm">{t('settings.local.notAvailable')}</p>
+            ) : (
+              <LocalServicePage />
+            )
           ) : (
             <Routes>
               <Route
@@ -161,6 +181,7 @@ export function SettingsDialogBody({
 function NavGroup({
   heading,
   context,
+  contextTestId,
   items,
   active,
   onSelect,
@@ -168,9 +189,10 @@ function NavGroup({
 }: {
   heading: string;
   context?: string;
+  contextTestId?: string;
   items: readonly NavItem[];
-  active: SettingsSection;
-  onSelect: (section: SettingsSection) => void;
+  active: SettingsDialogSection;
+  onSelect: (section: SettingsDialogSection) => void;
   className?: string;
 }): JSX.Element {
   const { t } = useTranslation();
@@ -179,7 +201,11 @@ function NavGroup({
       <h3 className="text-overline text-text-secondary mb-1 px-1 tracking-wider break-words uppercase">
         {heading}
       </h3>
-      {context && <p className="text-text-muted mb-1 px-1 text-xs break-all">{context}</p>}
+      {context && (
+        <p className={`text-text-muted mb-1 px-1 text-xs ${contextTestId ? 'break-words' : 'break-all'}`} data-testid={contextTestId}>
+          {context}
+        </p>
+      )}
       <ul className="flex flex-wrap gap-0.5 md:block md:space-y-0.5">
         {items.map((item) => {
           const isActive = item.section === active;
