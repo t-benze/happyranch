@@ -12,7 +12,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  */
 import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { OwnerSaveNotice, useConfigOwner, useOwnerGate } from '@/shared/owners';
 import {
   Dialog,
   DialogContent,
@@ -68,6 +68,16 @@ export function EligibilityEditorDialog({
     dirty: open && JSON.stringify(draft) !== JSON.stringify({ mode: wh.agents.mode, include: wh.agents.include, exclude: wh.agents.exclude }),
     draft,
   });
+  // Direct close paths (close button, Escape, Cancel) ask the owner gate
+  // first: unsent edits get Keep editing / Discard, a sent save holds.
+  const { requestOwnerTransition } = useOwnerGate();
+  const requestOpenChange = (next: boolean): void => {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: () => onOpenChange(false) });
+  };
 
   const resulting = useMemo(
     () => eligibleSet(allAgents, { mode, include, exclude }),
@@ -95,7 +105,7 @@ export function EligibilityEditorDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={requestOpenChange}>
       <DialogContent className="max-w-lg" closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('workHours.eligibilityEditor.title')}</DialogTitle>
@@ -180,7 +190,7 @@ export function EligibilityEditorDialog({
             </>
           ) : (
             <>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
               <Button onClick={() => setConfirming(true)} disabled={mutation.isPending}>

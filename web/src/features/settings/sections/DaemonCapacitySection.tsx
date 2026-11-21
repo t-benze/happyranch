@@ -538,8 +538,10 @@ export function DaemonCapacitySection(): JSX.Element {
   const blocker = useBlocker(dirty);
 
   // THR-387 S6-W2a: config owner `settings.capacity`. Its documented leave
-  // dialog stays the router guard while it is the only unsaved owner; the
-  // shared owner gate covers dialog close/switch, page and org changes.
+  // dialog stays the router guard only while Capacity is the only unsaved
+  // owner AND has unsent edits (dirty/failed). A sent pending/unknown save
+  // goes to the shared hold (no Discard); the shared owner gate also covers
+  // dialog close/switch, page and org changes (`sharedRouterGuardNeeded`).
   const { slug: ownerOrg } = useParams<{ slug: string }>();
   const owner = useConfigOwner({
     page: 'settings.capacity',
@@ -833,6 +835,10 @@ export function DaemonCapacitySection(): JSX.Element {
       return;
     }
     if (!workers.ok || !cap.ok) return;
+    // Capacity is write-locked while unresolved, so a ticket is always issued
+    // here; without one nothing may be sent.
+    const ticket = ownerRef.current.begin();
+    if (ticket === null) return;
 
     // Capture the submission immutably BEFORE the await, so the callback reports
     // what was sent — never what is in the fields when the response lands.
@@ -855,7 +861,6 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     ownWriteRef.current = { request, pending: true, observedDuring: null };
     let accepted = false;
-    const ticket = ownerRef.current.begin();
     let settled = false;
     const settle = (outcome: 'saved' | 'failed' | 'unknown'): void => {
       if (settled) return;
@@ -1648,16 +1653,20 @@ export function DaemonCapacitySection(): JSX.Element {
             >
               {t('settings.capacity.dialog.stay')}
             </Button>
-            <Button
-              size="sm"
-              className={`${PRIMARY_TONE} ${FOCUS_RING}`}
-              onClick={() => {
-                restoreFocusRef.current = null;
-                if (blocker.state === 'blocked') blocker.proceed();
-              }}
-            >
-              {t('settings.capacity.dialog.discardContinue')}
-            </Button>
+            {/* A sent save whose result is pending/unknown is never
+                discardable (shared owner rule); only Stay is offered. */}
+            {owner.record?.status !== 'pending' && owner.record?.status !== 'unknown' && (
+              <Button
+                size="sm"
+                className={`${PRIMARY_TONE} ${FOCUS_RING}`}
+                onClick={() => {
+                  restoreFocusRef.current = null;
+                  if (blocker.state === 'blocked') blocker.proceed();
+                }}
+              >
+                {t('settings.capacity.dialog.discardContinue')}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

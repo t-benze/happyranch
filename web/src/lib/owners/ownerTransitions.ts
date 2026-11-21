@@ -35,4 +35,3 @@ export function navigationTransition(
     affects: (owner) => (owner.scope === 'main' ? pageChange : orgChange),
   };
 }
-

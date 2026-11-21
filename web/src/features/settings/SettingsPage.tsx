@@ -282,17 +282,21 @@ export function SettingsPane({ section }: { section: SettingsSection }): JSX.Ele
   if (!recovery && settingsQuery.isLoading) {
     return <div className="text-text-secondary p-8 text-sm">{t('settings.page.loading')}</div>;
   }
-  if (!recovery && settingsQuery.isError) {
-    return (
-      <div className="text-feedback-danger p-8 text-sm">
-        {t('settings.page.loadError')}
-        {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
-      </div>
-    );
-  }
+  // A failed REREAD (e.g. a Check result read) keeps the previously read
+  // data, so the editors stay mounted with the error shown above them, as on
+  // the full page (S6-W2a: an editor's draft and unresolved save result must
+  // survive a read failure). Only a failed FIRST read shows the error alone.
+  const loadError = !recovery && settingsQuery.isError && (
+    <div className="text-feedback-danger p-8 text-sm">
+      {t('settings.page.loadError')}
+      {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
+    </div>
+  );
+  if (loadError && !settingsQuery.data) return loadError;
   const data = settingsQuery.data;
   return (
     <NativeRecoveryFence>
+      {loadError}
       {section === 'daemon-capacity' && data && <DaemonCapacityPanel />}
       {section === 'organization' && data && <OrganizationPanel org={data.org} />}
       {section === 'executors' && data && <ExecutorsPanel />}

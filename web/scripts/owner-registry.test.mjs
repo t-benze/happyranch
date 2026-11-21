@@ -9,11 +9,14 @@ const {
   createOwnerRegistry,
   selectOwnerBlocking,
   classifySaveError,
+  sharedRouterGuardNeeded,
 } = await import('../src/lib/owners/ownerRegistry.ts');
 const { navigationTransition, orgOfPath } = await import('../src/lib/owners/ownerTransitions.ts');
 
 const ORG = { scope: 'settings', page: 'settings.organization', org: 'studio', computer: null, section: 'organization' };
 const MAIN = { scope: 'main', page: 'agents.agent', subject: 'dev', org: 'studio', computer: null };
+const CAPACITY = { scope: 'settings', page: 'settings.capacity', org: 'studio', computer: null, section: 'daemon-capacity', ownNavigationGuard: true };
+const POLICY = { scope: 'main', page: 'agents.escalationPolicy', subject: 'mgr', org: 'studio', computer: null, ownNavigationGuard: true };
 
 function status(registry, id) {
   return registry.getSnapshot().find((owner) => owner.id === id)?.status;
@@ -144,4 +147,83 @@ test('navigation: page change affects Main owners; org change affects Main and S
   assert.equal(same.affects(m), false);
   assert.equal(orgOfPath('/orgs/studio'), 'studio');
   assert.equal(orgOfPath('/settings/preferences'), null);
+});
+
+// ── PR #1775 review round 1 (TASK-18190) ──
+
+test('R1-7: an unknown result refuses a new save; only reconciliation re-permits one', () => {
+  const r = createOwnerRegistry();
+  r.register('a', ORG);
+  r.setDraft('a', { dirty: true, revision: 1 });
+  r.settleSave(r.beginSave('a'), 'unknown');
+  assert.equal(r.beginSave('a'), null, 'unknown is not retry authority');
+  assert.equal(status(r, 'a'), 'unknown');
+  r.reconcile('a', 'unknown');
+  assert.equal(r.beginSave('a'), null, 'a still-unknown check keeps refusing');
+  r.reconcile('a', 'not_saved');
+  assert.equal(status(r, 'a'), 'failed');
+  const retry = r.beginSave('a');
+  assert.notEqual(retry, null, 'a confirmed failure permits an ordinary retry');
+  assert.equal(status(r, 'a'), 'pending');
+});
+
+test('R1-2: a ticket bound to the revision the request was built from keeps a newer draft unsaved', () => {
+  const r = createOwnerRegistry();
+  r.register('a', ORG);
+  r.setDraft('a', { dirty: true, revision: 1 }); // patch built from revision 1
+  r.setDraft('a', { dirty: true, revision: 2 }); // edited while identities resolve
+  const ticket = r.beginSave('a', 1);
+  assert.equal(ticket.revision, 1);
+  assert.deepEqual(r.settleSave(ticket, 'saved'), { current: false, known: true });
+  assert.equal(status(r, 'a'), 'dirty');
+});
+
+test('R1-4: release forgets a resolved owner but keeps a pending/unknown one detached until resolved', () => {
+  const r = createOwnerRegistry();
+  r.register('clean', MAIN);
+  r.release('clean');
+  assert.equal(r.has('clean'), false);
+  r.register('dirty', MAIN);
+  r.setDraft('dirty', { dirty: true, revision: 1 });
+  r.release('dirty');
+  assert.equal(r.has('dirty'), false, 'unsent edits of an unmounted editor are gone');
+
+  r.register('a', ORG);
+  r.setDraft('a', { dirty: true, revision: 1 });
+  const ticket = r.beginSave('a');
+  r.release('a');
+  assert.equal(r.has('a'), true);
+  assert.equal(r.getSnapshot()[0].detached, true);
+  assert.equal(selectOwnerBlocking(r.getSnapshot()).level, 'hold', 'a sent save keeps holding after teardown');
+  r.settleSave(ticket, 'unknown');
+  assert.equal(status(r, 'a'), 'unknown');
+  assert.equal(r.discard('a'), false);
+  r.reconcile('a', 'saved');
+  assert.equal(r.has('a'), false, 'forgotten once reconciled');
+  assert.equal(selectOwnerBlocking(r.getSnapshot()).level, 'none');
+});
+
+test('R1-6/R1-8: shared router guard composes self-guarded editors', () => {
+  const r = createOwnerRegistry();
+  r.register('cap', CAPACITY);
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), false);
+  r.setDraft('cap', { dirty: true, revision: 1 });
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), false, 'sole self-guarded dirty editor keeps its own dialog');
+  const ticket = r.beginSave('cap');
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), true, 'a pending save never goes to a private Discard');
+  r.settleSave(ticket, 'unknown');
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), true, 'an unknown save never goes to a private Discard');
+  r.reconcile('cap', 'not_saved');
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), false);
+  r.register('policy', POLICY);
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), true, 'two private guards would shadow each other');
+  r.unregister('cap');
+  r.setDraft('policy', { dirty: true, revision: 1 });
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), false, 'sole dirty policy page keeps its own dialog');
+  r.register('s', ORG);
+  r.setDraft('s', { dirty: true, revision: 1 });
+  assert.equal(sharedRouterGuardNeeded(r.getSnapshot()), true, 'another unsaved owner mounts the shared blocker');
+  const [policy] = r.getSnapshot();
+  const leave = navigationTransition({ pathname: '/orgs/studio/agents/mgr/team-escalation-policy', search: '' }, { pathname: '/orgs/studio/dashboard', search: '' });
+  assert.deepEqual(selectOwnerBlocking(r.getSnapshot(), leave.affects).owners.map((o) => o.id), [policy.id], 'the shared blocker includes the policy draft');
 });

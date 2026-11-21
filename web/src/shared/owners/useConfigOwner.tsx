@@ -10,6 +10,14 @@
  * when the user edited during the save: the caller must then keep the newer
  * draft (never overwrite it with the saved response).
  *
+ * A save must be ticketed with the draft it is BUILT from: an editor that
+ * awaits anything before sending (identity resolution) calls `begin()` first
+ * and passes that ticket to `track`. While a prior result is unknown no
+ * ticket is issued (`begin()` returns null, `track` resolves `refused`
+ * without running): Check result must reconcile it first. Unmounting the
+ * editor releases the owner, but a pending/unknown save keeps holding
+ * (detached) until it resolves.
+ *
  * Scope: an editor inside `<OwnerScope scope="settings" section=...>` (the
  * desktop Settings dialog pane) is a `settings` owner; anywhere else it is a
  * `main` owner.
@@ -73,15 +81,38 @@ export interface ConfigOwnerOptions {
 
 export type TrackResult<T> =
   | { ok: true; value: T; current: boolean }
-  | { ok: false; error: unknown; outcome: Exclude<SaveOutcome, 'saved'>; current: boolean };
+  | {
+      ok: false;
+      error: unknown;
+      outcome: Exclude<SaveOutcome, 'saved'>;
+      current: boolean;
+      /** True when nothing was sent: a prior result is still unknown. */
+      refused: boolean;
+    };
 
 export interface ConfigOwner {
   id: string;
   record: OwnerRecord | null;
-  begin: () => SaveTicket;
+  /**
+   * Ticket a save for the current draft (or for `revision`, a draft revision
+   * captured earlier with `draftRevision`); null while a prior result is
+   * unknown.
+   */
+  begin: (revision?: number) => SaveTicket | null;
+  /** The current draft revision (capture it where a request is built). */
+  draftRevision: number;
   settle: (ticket: SaveTicket, outcome: SaveOutcome) => { current: boolean };
-  /** Run one save under a ticket; failures are classified, never thrown. */
-  track: <T>(run: () => Promise<T>, classify?: (error: unknown) => 'failed' | 'unknown') => Promise<TrackResult<T>>;
+  /**
+   * Run one save under a ticket (a fresh one, or `ticket` from an earlier
+   * `begin()`); failures are classified, never thrown.
+   */
+  track: <T>(
+    run: () => Promise<T>,
+    classify?: (error: unknown) => 'failed' | 'unknown',
+    ticket?: SaveTicket | null,
+  ) => Promise<TrackResult<T>>;
+  /** True while a prior result is unknown: no new save may be sent. */
+  saveRefused: boolean;
   /** Run Check result (no-op without `checkResult`). */
   check: () => Promise<void>;
   /** Record an editor-owned reconciliation of an unknown result. */
@@ -124,7 +155,8 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
   useEffect(() => {
     registry.register(id, JSON.parse(identityKey));
   }, [registry, id, identityKey]);
-  useEffect(() => () => registry.unregister(id), [registry, id]);
+  // Teardown releases the owner; a pending/unknown save stays held.
+  useEffect(() => () => registry.release(id), [registry, id]);
   useEffect(() => {
     registry.setDraft(id, { dirty, revision: draftRevision });
   }, [registry, id, dirty, draftRevision, identityKey]);
@@ -160,26 +192,38 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
       check: () => check(),
     });
     return () => {
-      handlers.delete(id);
+      // A detached owner keeps its Check result (the provider prunes the
+      // handlers of owners that are gone).
+      if (!registry.has(id)) handlers.delete(id);
     };
-  }, [handlers, id, check]);
+  }, [handlers, id, check, registry]);
   const canCheck = checkResult !== undefined;
   useEffect(() => {
     registry.setCanCheck(id, canCheck);
   }, [registry, id, canCheck]);
 
-  const begin = useCallback(() => {
-    // Report the current draft first so the ticket names this exact revision.
-    registry.setDraft(id, { dirty: latest.current.dirty, revision: revision.current.value });
-    return registry.beginSave(id);
-  }, [registry, id]);
+  const begin = useCallback(
+    (sentRevision?: number) => {
+      // Report the current draft first so the registry knows the newest revision.
+      registry.setDraft(id, { dirty: latest.current.dirty, revision: revision.current.value });
+      return registry.beginSave(id, sentRevision);
+    },
+    [registry, id],
+  );
   const settle = useCallback(
     (ticket: SaveTicket, outcome: SaveOutcome) => ({ current: registry.settleSave(ticket, outcome).current }),
     [registry],
   );
   const track = useCallback(
-    async <T,>(run: () => Promise<T>, classify: (error: unknown) => 'failed' | 'unknown' = classifySaveError) => {
-      const ticket = begin();
+    async <T,>(
+      run: () => Promise<T>,
+      classify: (error: unknown) => 'failed' | 'unknown' = classifySaveError,
+      given?: SaveTicket | null,
+    ): Promise<TrackResult<T>> => {
+      const ticket = given === undefined ? begin() : given;
+      if (ticket === null) {
+        return { ok: false as const, error: null, outcome: 'unknown' as const, current: true, refused: true };
+      }
       try {
         const value = await run();
         const { current } = settle(ticket, 'saved');
@@ -187,7 +231,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
       } catch (error) {
         const outcome = classify(error);
         const { current } = settle(ticket, outcome);
-        return { ok: false as const, error, outcome, current };
+        return { ok: false as const, error, outcome, current, refused: false };
       }
     },
     [begin, settle],
@@ -198,5 +242,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
 
   const reconcile = useCallback((outcome: 'saved' | 'not_saved') => registry.reconcile(id, outcome), [registry, id]);
 
-  return { id, record, begin, settle, track, check, reconcile, checking, checkFailed };
+  const saveRefused = record?.status === 'unknown';
+
+  return { id, record, begin, draftRevision, settle, track, saveRefused, check, reconcile, checking, checkFailed };
 }

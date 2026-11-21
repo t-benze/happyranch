@@ -277,11 +277,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
 
   const onSave = useCallback(async () => {
     if (!slug || !isDirty || !canSave || !selectedExecutor || saveInFlight.current) return;
+    // One owner ticket for the whole save; any unclassifiable failure makes
+    // the result unknown, otherwise a refusal is a confirmed failure. No
+    // ticket while a prior result is unknown: nothing is sent.
+    const ticket = owner.begin();
+    if (ticket === null) return;
     saveInFlight.current = true;
     setSaving(true);
-    // One owner ticket for the whole save; any unclassifiable failure makes
-    // the result unknown, otherwise a refusal is a confirmed failure.
-    const ticket = owner.begin();
     const rawErrors: unknown[] = [];
     try {
       setSaveError(null);
@@ -848,7 +850,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
               {t('agents.detail.reset')}
             </Button>
-            <Button size="sm" onClick={onSave} disabled={saving || !canSave}>
+            <Button size="sm" onClick={onSave} disabled={saving || !canSave || owner.saveRefused}>
               {saving ? t('agents.detail.saving') : t('agents.detail.save')}
             </Button>
           </div>

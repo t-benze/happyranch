@@ -50,6 +50,7 @@ import { useTranslation } from '@/hooks/i18n';
 import {
   createOwnerRegistry,
   selectOwnerBlocking,
+  sharedRouterGuardNeeded,
   type OwnerRecord,
   type OwnerRegistry,
 } from '@/lib/owners/ownerRegistry';
@@ -152,6 +153,16 @@ export function OwnerGateProvider({ children }: { children: ReactNode }): JSX.El
     else transition.cancel?.();
   }, []);
 
+  // Forget the callbacks of owners the registry dropped (detached owners
+  // keep theirs until their save resolves).
+  useEffect(
+    () =>
+      registry.subscribe(() => {
+        for (const id of [...handlers.keys()]) if (!registry.has(id)) handlers.delete(id);
+      }),
+    [registry, handlers],
+  );
+
   const setNavigationInterceptor = useCallback((next: NavigationInterceptor | null) => {
     interceptor.current = next;
   }, []);
@@ -164,7 +175,7 @@ export function OwnerGateProvider({ children }: { children: ReactNode }): JSX.El
   return (
     <OwnerGateContext.Provider value={value}>
       {children}
-      <OwnerRouterGuard interceptor={interceptor} />
+      <OwnerRouterGuard interceptor={interceptor} holding={active !== null} />
       {active && (
         <OwnerGatePrompt
           transition={active}
@@ -179,16 +190,38 @@ export function OwnerGateProvider({ children }: { children: ReactNode }): JSX.El
 }
 
 /**
- * Mounts the router blocker only while some owner without its own leave guard
- * is not clean. React Router honours only the LAST registered blocker, so the
- * shared one is re-registered (keyed remount) whenever a self-guarded owner
- * (Capacity) mounts; while mounted it evaluates every owner, Capacity too.
+ * Mounts the router blocker while `sharedRouterGuardNeeded`. React Router
+ * honours only the LAST registered blocker, so the shared one is
+ * re-registered (keyed remount) whenever a self-guarded owner mounts; while
+ * mounted it evaluates every owner, self-guarded ones too.
+ *
+ * While a gate transition is open (`holding`) a mounted blocker stays mounted
+ * under the same key, even when the last owner resolves: the gate's
+ * `proceed()`/`reset()` must reach the SAME blocker that blocked the
+ * navigation (an unmounted blocker is deleted from the router, and a later
+ * proceed is an invalid blocker transition).
  */
-function OwnerRouterGuard({ interceptor }: { interceptor: { current: NavigationInterceptor | null } }): JSX.Element | null {
+function OwnerRouterGuard({
+  interceptor,
+  holding,
+}: {
+  interceptor: { current: NavigationInterceptor | null };
+  holding: boolean;
+}): JSX.Element | null {
   const owners = useOwnerRecords();
-  const blocking = selectOwnerBlocking(owners, (owner) => !owner.ownNavigationGuard).level !== 'none';
-  const selfGuarded = owners.filter((owner) => owner.ownNavigationGuard).map((owner) => owner.id).join(' ');
-  return blocking ? <OwnerRouterBlocker key={selfGuarded} interceptor={interceptor} /> : null;
+  const mounted = useRef<string | null>(null);
+  const needed = sharedRouterGuardNeeded(owners);
+  const selfGuarded = owners
+    .filter((owner) => owner.ownNavigationGuard && !owner.detached)
+    .map((owner) => owner.id)
+    .join(' ');
+  let key: string | null;
+  if (holding && mounted.current !== null) key = mounted.current;
+  else key = needed ? selfGuarded : null;
+  useEffect(() => {
+    mounted.current = key;
+  });
+  return key === null ? null : <OwnerRouterBlocker key={key} interceptor={interceptor} />;
 }
 
 function OwnerRouterBlocker({ interceptor }: { interceptor: { current: NavigationInterceptor | null } }): null {

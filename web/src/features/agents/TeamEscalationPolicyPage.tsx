@@ -8,15 +8,35 @@ import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
 import { useTeamsList } from '@/hooks/teams';
 import { TeamEscalationPolicyCard } from './TeamEscalationPolicyCard';
 import { useTranslation } from '@/hooks/i18n';
+import { useConfigOwner } from '@/shared/owners';
 
 export function TeamEscalationPolicyPage(): JSX.Element {
-  const { agent_name: agentName } = useParams<{ agent_name: string }>();
+  const { agent_name: agentName, slug } = useParams<{ agent_name: string; slug: string }>();
   const agents = useAgentsList();
   const routes = useAgentsRoutes();
   const { t, render } = useTranslation();
   const teams = useTeamsList();
   const [dirty, setDirty] = useState(false);
   const blocker = useBlocker(dirty);
+  // THR-387 S6-W2a: the policy draft is a Main config owner. Its own leave
+  // dialog stays the router guard while it is the only unsaved owner; when
+  // another owner is unsaved too the shared gate (registered last) names it
+  // with the others, so the shared blocker never shadows this draft.
+  // Discard remounts the card (its draft lives there), e.g. on an org change
+  // that keeps this route mounted.
+  const [draftKey, setDraftKey] = useState(0);
+  useConfigOwner({
+    page: 'agents.escalationPolicy',
+    subject: agentName ?? null,
+    org: slug ?? null,
+    dirty,
+    draft: dirty,
+    ownNavigationGuard: true,
+    onDiscard: () => {
+      setDirty(false);
+      setDraftKey((key) => key + 1);
+    },
+  });
 
   if (agents.isLoading || teams.isLoading) return <div className="text-text-muted p-8">{t('agents.policy.loadingAgent')}</div>;
   const agent = agents.data?.agents.find((item) => item.name === agentName);
@@ -36,7 +56,7 @@ export function TeamEscalationPolicyPage(): JSX.Element {
           <h1 id="team-policy-page-heading" className="font-display text-text-primary text-2xl font-medium">{t('agents.policy.title')}</h1>
           <p className="text-text-muted mt-1 text-sm">{policyAgent.team} · <IdentityName canonicalId={policyAgent.name} /></p>
         </header>
-        <TeamEscalationPolicyCard agent={policyAgent} onDirtyChange={setDirty} />
+        <TeamEscalationPolicyCard key={`${slug ?? ''}/${policyAgent.name}/${draftKey}`} agent={policyAgent} onDirtyChange={setDirty} />
       </section>
       <Dialog open={blocker.state === 'blocked'} onOpenChange={(open) => { if (!open && blocker.state === 'blocked') blocker.reset(); }}>
         <DialogContent aria-label={t('agents.policy.discardAria')} closeLabel={t('common.close')}>

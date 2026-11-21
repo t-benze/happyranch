@@ -39,6 +39,16 @@
  * failure never marks a newer in-flight save failed. A sent save is never
  * discardable: `discard` refuses while pending or unknown.
  *
+ * Unknown results refuse new mutations: `beginSave` returns null while the
+ * owner has an unreconciled unknown save. Only same-owner reconciliation
+ * (Check result → `reconcile`) can clear it; `not_saved` turns it into a
+ * confirmed failure, which permits an ordinary retry.
+ *
+ * Editor teardown: `release` (the editor unmounted) forgets a clean/dirty
+ * owner, but an owner with a pending or unknown save stays registered,
+ * DETACHED, until that save settles or is reconciled. It keeps holding the
+ * gate (and S6-W2b's native close/Quit) meanwhile; it is then forgotten.
+ *
  * Aggregate (`selectOwnerBlocking`): `level` is `hold` when any affected owner
  * is pending/unknown (cannot be discarded or escaped), `prompt` when any is
  * dirty/failed (Keep editing / Discard), else `none`. `owners` lists the
@@ -58,6 +68,7 @@ export type OwnerPage =
   | 'settings.executors'
   | 'settings.coding'
   | 'agents.agent'
+  | 'agents.escalationPolicy'
   | 'skills.assignment'
   | 'skills.customCreate'
   | 'skills.customDetail'
@@ -75,8 +86,8 @@ export interface OwnerIdentity {
   section?: string | null;
   /**
    * True for an editor with its own router leave guard (Capacity's documented
-   * leave dialog). The shared router blocker then stays unmounted while such
-   * owners are the only non-clean ones; dialog/page/org gates still count it.
+   * leave dialog, the team escalation policy page). See
+   * `sharedRouterGuardNeeded`; dialog/page/org gates always count it.
    */
   ownNavigationGuard?: boolean;
 }
@@ -92,6 +103,8 @@ export interface OwnerRecord extends OwnerIdentity {
   savedRevision: number | null;
   /** True when a Check result reconciliation is available for `unknown`. */
   canCheck: boolean;
+  /** True when the editor unmounted while a save was pending/unknown. */
+  detached: boolean;
 }
 
 export interface SaveTicket {
@@ -124,6 +137,7 @@ interface MutableOwner extends OwnerIdentity {
   failedSeq: number | null;
   unknownSeqs: Set<number>;
   canCheck: boolean;
+  detached: boolean;
 }
 
 export function deriveStatus(owner: {
@@ -170,16 +184,44 @@ export function selectOwnerBlocking(
   return { level, owners: listed };
 }
 
+/**
+ * Whether the shared router blocker must be mounted. React Router consults
+ * only the LAST registered blocker, so editors with their own leave guard
+ * (`ownNavigationGuard`: Capacity, the team escalation policy page) keep
+ * theirs only while exactly one such editor is mounted, it is the only
+ * non-clean owner and its state is dirty/failed. In every other case the
+ * shared blocker mounts (re-registered last) and evaluates every owner:
+ * a sent pending/unknown save is never left to a private Discard, and two
+ * private guards never shadow each other.
+ */
+export function sharedRouterGuardNeeded(owners: readonly OwnerRecord[]): boolean {
+  const selfGuarded = owners.filter((owner) => owner.ownNavigationGuard && !owner.detached);
+  const sole = selfGuarded.length === 1 ? selfGuarded[0]!.id : null;
+  return (
+    selectOwnerBlocking(owners, (owner) => !(owner.id === sole && isPromptStatus(owner.status))).level !== 'none'
+  );
+}
+
 export interface OwnerRegistry {
   register: (id: string, identity: OwnerIdentity) => void;
   /** Update identity fields (e.g. the computer label) of a live owner. */
   identify: (id: string, identity: OwnerIdentity) => void;
   unregister: (id: string) => void;
+  /**
+   * The editor unmounted: forget the owner unless a save is pending or its
+   * result is unknown, in which case it stays (detached) until resolved.
+   */
+  release: (id: string) => void;
+  /** True while the owner (attached or detached) is registered. */
+  has: (id: string) => boolean;
   /** Editor report: whether unsent edits exist and the draft revision. */
   setDraft: (id: string, draft: { dirty: boolean; revision: number }) => void;
   setCanCheck: (id: string, canCheck: boolean) => void;
-  /** Tag a save with the draft revision it is sent for. */
-  beginSave: (id: string) => SaveTicket;
+  /**
+   * Tag a save with the draft revision it is sent for. Returns null (no
+   * ticket: the caller must not send) while a prior result is unknown.
+   */
+  beginSave: (id: string, revision?: number) => SaveTicket | null;
   settleSave: (ticket: SaveTicket, outcome: SaveOutcome) => SettleResult;
   /**
    * Reconcile an unknown result (Check result). `saved` acknowledges every
@@ -220,6 +262,7 @@ export function createOwnerRegistry(): OwnerRegistry {
         sentRevision: owner.sentRevision,
         savedRevision: owner.savedRevision,
         canCheck: owner.canCheck,
+        detached: owner.detached,
       }));
     for (const listener of [...listeners]) listener();
   };
@@ -232,6 +275,11 @@ export function createOwnerRegistry(): OwnerRegistry {
     owner.computer === identity.computer &&
     (owner.section ?? null) === (identity.section ?? null) &&
     (owner.ownNavigationGuard ?? false) === (identity.ownNavigationGuard ?? false);
+
+  /** Forget a detached owner once nothing is outstanding. */
+  const dropResolved = (owner: MutableOwner): void => {
+    if (owner.detached && owner.inFlight.size === 0 && owner.unknownSeqs.size === 0) owners.delete(owner.id);
+  };
 
   return {
     register(id, identity) {
@@ -256,6 +304,7 @@ export function createOwnerRegistry(): OwnerRegistry {
         failedSeq: null,
         unknownSeqs: new Set(),
         canCheck: false,
+        detached: false,
       });
       publish();
     },
@@ -268,6 +317,20 @@ export function createOwnerRegistry(): OwnerRegistry {
     unregister(id) {
       if (owners.delete(id)) publish();
     },
+    release(id) {
+      const owner = owners.get(id);
+      if (!owner) return;
+      if (owner.inFlight.size === 0 && owner.unknownSeqs.size === 0) {
+        owners.delete(id);
+      } else {
+        // The sent save outlives its editor: keep holding until resolved.
+        owner.detached = true;
+        owner.dirty = false;
+        owner.failedSeq = null;
+      }
+      publish();
+    },
+    has: (id) => owners.has(id),
     setDraft(id, draft) {
       const owner = owners.get(id);
       if (!owner) return;
@@ -284,9 +347,13 @@ export function createOwnerRegistry(): OwnerRegistry {
       owner.canCheck = canCheck;
       publish();
     },
-    beginSave(id) {
+    beginSave(id, revision) {
       const owner = owners.get(id);
-      const ticket: SaveTicket = { ownerId: id, revision: owner?.draftRevision ?? 0, seq: ++seq };
+      // An unknown result is not retry authority: reconcile it first.
+      if (owner && owner.unknownSeqs.size > 0) return null;
+      // `revision`: the draft the request was BUILT from, when the editor
+      // awaited something (identity resolution) before sending.
+      const ticket: SaveTicket = { ownerId: id, revision: revision ?? owner?.draftRevision ?? 0, seq: ++seq };
       if (!owner) return ticket;
       owner.inFlight.set(ticket.seq, ticket.revision);
       owner.latestSeq = ticket.seq;
@@ -321,6 +388,7 @@ export function createOwnerRegistry(): OwnerRegistry {
           owner.failedSeq = null;
         }
       }
+      dropResolved(owner);
       publish();
       return { current, known: true };
     },
@@ -335,6 +403,7 @@ export function createOwnerRegistry(): OwnerRegistry {
         owner.savedRevision = owner.sentRevision;
         if (owner.draftRevision === owner.sentRevision) owner.dirty = false;
       }
+      dropResolved(owner);
       publish();
     },
     discard(id) {

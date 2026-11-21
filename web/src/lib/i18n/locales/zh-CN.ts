@@ -841,6 +841,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'owners.page.settings.executors': '执行器设置',
   'owners.page.settings.coding': '编码设置',
   'owners.page.agents.agent': '智能体 {subject}',
+  'owners.page.agents.escalationPolicy': '{subject} 的团队上报策略',
   'owners.page.skills.assignment': '{subject} 的技能分配',
   'owners.page.skills.customCreate': '新建自定义技能',
   'owners.page.skills.customDetail': '自定义技能 {subject}',

@@ -205,6 +205,23 @@ unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
 for: a success for an older revision never marks a newer draft saved (the
 editor keeps the newer draft and the owner stays dirty); an older failure
 never marks a newer in-flight save failed; a sent save is never discardable.
+An editor that awaits anything before sending (Organization resolves typed
+dreaming names to IDs) binds the save to the draft revision the request was
+BUILT from, so an edit made meanwhile stays unsaved. While an owner's result
+is unknown it gets no new save ticket (`beginSave` returns null, callers
+disable Save): only same-owner **Check result** can clear it, and only a
+confirmed failure (`not_saved`) permits an ordinary retry. Check result
+compares the complete submitted payload: Organization compares every sent
+field including the resolved dreaming include/exclude IDs (as sets);
+custom-skill create needs a catalog row whose name, sent description and
+current `content_hash` (SHA-256 of the sent SKILL.md) all match — an existing
+slug alone keeps the result unknown; a new version needs a newly listed
+version with the sent content hash; metadata, eligibility and
+retire/restore/purge reread the skill. Editor teardown releases its owner, but
+an owner with a pending/unknown save stays registered (detached) and keeps
+holding until that save settles or is reconciled; the desktop Settings pane
+keeps its editors mounted (error shown above) when a reread fails after data
+was loaded.
 
 `selectOwnerBlocking(owners, affects?)` is the pure aggregate S6-W2b pushes to
 native (`app.owners`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
@@ -232,18 +249,29 @@ read) and **Back to {page}** to cancel the transition; when the results arrive
 the gate re-evaluates and runs the transition or shows the prompt. A repeated
 request while the gate is open focuses it; there is never a second prompt. The
 Settings dialog pane is keyed by org, so an old-org draft is never shown under
-another org. Capacity keeps its documented leave dialog as its router guard
-while it is the only unsaved owner (React Router honours one blocker: the
-shared blocker re-registers last and covers Capacity too whenever another
-owner is unsaved).
+another org; the Main custom-skill create/detail routes remount on an
+org/skill change (`KeyedByParams` in `routes.tsx`) and Main editors reset their
+draft on Discard. React Router honours only the last registered blocker:
+editors with their own leave dialog (Capacity, the team escalation policy
+page, both registered with `ownNavigationGuard`) keep it only while exactly
+one such editor is mounted, it is the only unsaved owner and it has unsent
+edits (`sharedRouterGuardNeeded`). Otherwise the shared blocker mounts,
+re-registers last and covers them too, so a sent pending/unknown Capacity
+save gets the non-discardable hold (Capacity's own dialog also offers no
+Discard then) and the policy draft is never shadowed. A mounted shared
+blocker stays mounted while its gate is open, so the gate's proceed/reset
+always reaches the blocker that blocked the navigation. The Work Hours tier
+and eligibility dialogs ask the gate before their close button, Escape and
+Cancel.
 
 Registered editors: Settings Organization form (`settings.organization`) and
 its Work Hours toggle and eligibility editor (`settings.workHours`, all
 `PUT /orgs/{slug}/settings/org`), Capacity, Executors binary registration and
 custom-profile removal, Main Agents detail (executor, model/reasoning effort
 via `PUT …/agents/{name}/model`, repos), Skills assignment, custom-skill
-create, and custom-skill metadata/version/eligibility/lifecycle writes, and
-the Main Work Hours tier editor (`work-hours-config/TierEditorDialog`, behind
+create, and custom-skill metadata/version/eligibility/lifecycle writes, the
+team escalation policy page draft (`agents.escalationPolicy`), and the Main
+Work Hours tier editor (`work-hours-config/TierEditorDialog`, behind
 `work_hours_ui`). Coding has no writer on main (read-only original-save
 lookup). Save results use `OwnerSaveNotice` (C3): “Couldn't save {page} on
 {computer} · {org}. Your changes are still here and aren't saved.” / “无法保存

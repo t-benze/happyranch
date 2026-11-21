@@ -117,6 +117,37 @@ function buildFieldState(org: OrgSettings): FieldState {
 }
 
 /**
+ * Check result (S6-W2a): whether a reread org snapshot matches EVERY field of
+ * the submitted patch, including the resolved dreaming include/exclude IDs
+ * (as sets). Any difference means the save did not (fully) apply.
+ */
+function patchApplied(patch: OrgSettingsPatch, org: OrgSettings): boolean {
+  const sameSet = (a: readonly string[], b: readonly string[]) =>
+    JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  if ('session_timeout_seconds' in patch && patch.session_timeout_seconds !== org.session_timeout_seconds) return false;
+  const dreaming = patch.dreaming;
+  if (dreaming) {
+    const saved = org.dreaming;
+    if (dreaming.enabled !== undefined && dreaming.enabled !== saved.enabled) return false;
+    if (dreaming.schedule && (dreaming.schedule.time !== saved.schedule.time || dreaming.schedule.timezone !== saved.schedule.timezone)) return false;
+    if (dreaming.catch_up_on_startup !== undefined && dreaming.catch_up_on_startup !== saved.catch_up_on_startup) return false;
+    const agents = dreaming.agents;
+    if (agents) {
+      if (agents.mode !== undefined && agents.mode !== saved.agents.mode) return false;
+      if (agents.include !== undefined && !sameSet(agents.include, saved.agents.include)) return false;
+      if (agents.exclude !== undefined && !sameSet(agents.exclude, saved.agents.exclude)) return false;
+    }
+  }
+  const threads = patch.threads;
+  if (threads) {
+    if (threads.enabled !== undefined && threads.enabled !== org.threads.enabled) return false;
+    if (threads.invocation_timeout_seconds !== undefined && threads.invocation_timeout_seconds !== org.threads.invocation_timeout_seconds) return false;
+  }
+  if (patch.reviewer_agents !== undefined && JSON.stringify(patch.reviewer_agents) !== JSON.stringify(org.reviewer_agents ?? [])) return false;
+  return true;
+}
+
+/**
  * Filter a comma-separated agent-name string to only tokens present in the
  * given roster. Non-roster tokens are silently dropped. Used at the save
  * boundary so that actively-typed (uncommitted) non-roster names never reach
@@ -154,8 +185,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const [identityError, setIdentityError] = useState<ThreadErrorDetail | null>(null);
   const savingLatch = useRef(false);
   const readOrgSettings = useReadOrgSettingsNow();
-  /** What the latest save sent, for Check result. */
-  const submittedRef = useRef<FieldState | null>(null);
+  /** The complete patch the latest save sent, for Check result. */
+  const submittedRef = useRef<OrgSettingsPatch | null>(null);
   const fieldsRef = useRef(fields);
   fieldsRef.current = fields;
 
@@ -252,11 +283,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const sent = submittedRef.current;
       if (!sent) return 'unknown';
       const snapshot = await readOrgSettings();
-      const server = buildFieldState(snapshot.org);
-      // Dreaming include/exclude are resolved to IDs before sending, so they
-      // are not compared; every other sent field is.
-      const comparable = (f: FieldState) => ({ ...f, dreamInclude: '', dreamExclude: '' });
-      return JSON.stringify(comparable(server)) === JSON.stringify(comparable(sent)) ? 'saved' : 'not_saved';
+      // The complete submitted payload, resolved dreaming IDs included.
+      return patchApplied(sent, snapshot.org) ? 'saved' : 'not_saved';
     },
   });
   const workHoursOwner = useConfigOwner({
@@ -350,10 +378,15 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
   const handleSave = useCallback(async () => {
     if (savingLatch.current || !orgSlug) return;
+    // No new save while a prior result is unknown (Check result first).
+    if (owner.saveRefused) return;
     const generation = orgGeneration.current;
     savingLatch.current = true; setIdentityError(null);
     setSaveState({ phase: 'saving' });
-    const sentFields = fields;
+    // The draft revision this patch is BUILT from. The ticket is bound to it
+    // even though identity resolution is awaited first: an edit made during
+    // resolution is a newer draft and stays unsaved.
+    const builtRevision = owner.draftRevision;
     try {
       const patch = buildPatch();
       // Picker selections are IDs. Typed current names resolve before the existing ID-valued patch.
@@ -362,8 +395,10 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const exclude = await resolve(fields.dreamExclude);
       if (patch.dreaming?.agents) { patch.dreaming.agents.include = include; patch.dreaming.agents.exclude = exclude; }
       if (orgGeneration.current !== generation) return;
-      submittedRef.current = sentFields;
-      const result = await owner.track(() => mutation.mutateAsync(patch));
+      const ticket = owner.begin(builtRevision);
+      if (ticket === null) { setSaveState({ phase: 'idle' }); return; }
+      submittedRef.current = patch;
+      const result = await owner.track(() => mutation.mutateAsync(patch), undefined, ticket);
       if (orgGeneration.current !== generation) return;
       if (!result.ok) throw result.error;
       const fresh = buildFieldState(result.value.org);
@@ -689,7 +724,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <button
             type="button"
             onClick={handleSave}
-            disabled={saveState.phase === 'saving'}
+            disabled={saveState.phase === 'saving' || owner.saveRefused}
             className="bg-accent-default text-text-inverse hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}

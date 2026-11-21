@@ -209,7 +209,9 @@ export function SkillAssignmentPanel({
       setQueue({});
       setReviewOpen(false);
       setApplied(true);
-    } else {
+    } else if (!result.refused) {
+      // A refused apply sent nothing (a prior result is still unknown; the
+      // owner notice offers its reconciliation).
       setApplyError(classifySkillError(result.error, 'skills.assign.applyError'));
     }
   }

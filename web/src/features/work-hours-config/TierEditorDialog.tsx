@@ -13,7 +13,7 @@
  * Impact preview: org/team saves first show "affects N agents" before writing.
  */
 import { useParams } from 'react-router-dom';
-import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { OwnerSaveNotice, useConfigOwner, useOwnerGate } from '@/shared/owners';
 import { useMemo, useState } from 'react';
 import {
   Dialog,
@@ -191,6 +191,16 @@ export function TierEditorDialog({
     dirty: open && JSON.stringify(draft) !== JSON.stringify(initialDraft),
     draft,
   });
+  // Direct close paths (close button, Escape, Cancel) ask the owner gate
+  // first: unsent edits get Keep editing / Discard, a sent save holds.
+  const { requestOwnerTransition } = useOwnerGate();
+  const requestOpenChange = (next: boolean): void => {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: () => onOpenChange(false) });
+  };
 
   const effectiveMode = mode ?? inherited.mode;
   const isContinuous = effectiveMode === 'continuous';
@@ -276,7 +286,7 @@ export function TierEditorDialog({
     t('workHours.tier.inheritedGhost', { value, source: sourceLabel(leaf) });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={requestOpenChange}>
       <DialogContent className="max-w-xl min-w-0" closeLabel={t('common.close')}>
         <DialogHeader className="min-w-0 pr-6">
           <DialogTitle className="min-w-0 break-words">{title}</DialogTitle>
@@ -465,7 +475,7 @@ export function TierEditorDialog({
             </>
           ) : (
             <>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
               <Button onClick={handleSaveClick} disabled={mutation.isPending}>
