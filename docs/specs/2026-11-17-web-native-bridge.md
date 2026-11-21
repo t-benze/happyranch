@@ -937,3 +937,260 @@ claimed here. No open/closed notice or target/generation authority is added.
 ```json
 {"schema":2}
 ```
+
+### v2 owner summary and native lifecycle gate
+
+THR-387 S5-0c / TASK-18199 specifies **`app.ownersChanged`**, a web-to-native
+push through `call("app.ownersChanged", JSON.stringify(summary))`. Its data
+is `#/$defs/ownersChanged` in the [v2 schema](../../protocol/native-connection-bridge.v2.json):
+exactly `schema:2`, `blocking:"none"|"prompt"|"hold"`, closed `counts` and an
+optional closed `gate` decision described below. This is the concrete wire
+contract for the earlier plan/section-12 placeholder `app.owners`; no query or
+third facade function is introduced. Native resolves the call with the JSON
+string `"{}"` only after accepting the summary; that acknowledges receipt,
+never a save, discard, lifecycle effect or target commit.
+
+**Vocabulary and aggregation.** Summarize ALL registered Main and Settings
+owners together, including detached owners whose sent save is unresolved;
+never filter to the visible dialog, page or selected organization. The
+`selectOwnerBlocking(owners)` vocabulary documented by PR #1775 is the input
+contract, not a dependency on that PR's internal records or error classifier.
+
+| Owner state | Meaning | Normal close / Quit / relaunch / `client.commitSwitch` |
+| --- | --- | --- |
+| `clean` | No unsent draft or unresolved save | Allows the owner gate |
+| `confirmed` | Save confirmed for the current draft revision | Allows the owner gate |
+| `dirty` | Unsent changes remain | Web keep/discard prompt required |
+| `failed` | Save definitively refused; unsent changes remain | Same web keep/discard prompt required |
+| `pending` | Save sent, no result yet | Hold; wait, never discard the sent save |
+| `unknown` | Sent save's effect cannot be established | Hold; same-owner Check result or named unavailable recovery, never assume failure |
+
+`counts` has exactly `dirty`, `failed`, `pending`, `unknown`, each a JSON
+integer from 0 to 255 (Booleans are invalid). Each is the number of owners in
+that state, saturated at 255; saturation must never omit a positive state.
+Clean/confirmed owners contribute zero to these counts; zero owners is a valid
+`none` summary. Pending or unknown > 0 requires `blocking:"hold"`; otherwise
+dirty or failed > 0 requires `"prompt"`; otherwise `"none"`. The schema rejects
+inconsistent levels. A newer unsent revision stays dirty after an older save
+succeeds; it cannot be summarized as confirmed. Unmounting an editor, a failed
+read or a lost transport cannot remove its pending/unknown contribution.
+
+**Publish and admission.** Web sends the initial complete summary as soon as
+the admitted Main shell's registry and lifecycle subscription are ready, then
+on every change to these aggregate counts/level. Serialize calls in observation
+order; await native receipt of a pending summary BEFORE sending its save. A
+failed push holds transitions and save dispatch; never retry the save as a
+side effect of republishing. Native stores only the latest accepted summary
+for the current admitted top-level packaged `happyranch-app://app` Main
+document, independent of API/target readiness. Use §7's existing bounded,
+duplicate-free parser, `call`/`on` and structured named-world relay. Transport
+document identity, not a field supplied by web, fences late calls/replies.
+No iframe, auxiliary connection document, remote/daemon HTML or browser can
+publish. A summary is advisory owner evidence; native rechecks it and its own
+current-generation non-GET transfers at effect admission. It never authorizes
+a target/generation/org/capability, starts the daemon or changes a candidate.
+
+**Native lifecycle request and web decision.** A push cannot ask web to open
+its contextual gate. The one additional message kind is
+**`app.lifecycleRequested`**, delivered with `on("app.lifecycleRequested", handler)`
+and `#/$defs/lifecycleRequested`: exactly `{schema:2, requestId, action}`, where
+`action` is `"close"|"quit"|"relaunch"`. Native creates a fresh opaque request ID
+(1–64 ASCII letters/digits/underscore/hyphen, never reused in the app process)
+only for a native user action, bound to that Main document and captured action.
+This ID correlates consent; it is not a capability or an operation/owner ID.
+
+For every normal native lifecycle request, even with `blocking:"none"`, native
+waits for this web gate. Emit only to the current admitted subscriber; drop
+when unavailable, never queue/replay across subscription or document changes.
+Native keeps at most one outstanding request; repeats focus the existing web
+gate using the same ID/action, never replace it with a different action.
+Web runs its ONE contextual gate over all Main and Settings owners: dirty-only
+(or failed) owners get **Keep editing** (default; Escape/close means keep) /
+**Discard changes and close / quit / relaunch**, naming page, computer, org and
+the exact unsent loss. Native never decides which drafts to discard. A hold
+shows waiting / Check result; Back to the page cancels the transition without
+discarding or cancelling a sent save. Recheck current draft revisions before
+discard; a changed draft invalidates prior consent. Preserve focus and serialize
+with any existing dialog/navigation gate rather than opening a second prompt.
+
+Web returns the decision via the SAME `app.ownersChanged` call, adding
+`gate:{requestId,decision:"keep"|"proceed"}`. Keep cancels only that request and
+retains owners. Proceed follows a successful gate and requires current counts
+all zero / `blocking:"none"`; with no blocking owners it needs no discard
+prompt. Web freezes new edits/saves from this final recheck through native's
+effect admission; on refusal/cancellation it restores editing. Native consumes
+the decision once only for its matching outstanding document/ID, rechecks the
+latest summary, any retained uncertainty and non-GET transfers, then either
+admits the captured normal lifecycle action before acknowledging the decision,
+or refuses without effect. Lost acknowledgement is never proof of cancellation.
+A count update alone never completes a lifecycle request; proceed is not a
+standing approval. Drop/keep/revocation releases the transition freeze. Existing
+keep-running policy and relaunch prerequisites still apply; closing a dialog
+or Connection presentation does not disconnect/cancel a connection attempt.
+
+`client.commitSwitch` keeps its existing explicit call: web runs the same
+all-owner gate before calling it, publishes the post-gate summary and awaits
+receipt, keeping edits/saves frozen through commit admission or refusal.
+Native refuses with `owner_save_unknown`
+when evidence is missing/unknown (including a retained unresolved-save latch),
+else `owner_save_pending` while pending is positive, else `owner_edits_pending`
+while dirty/failed requires the web prompt; all have no switch effect. Existing
+`non_get_pending` also refuses while current-generation non-GET transfers remain.
+Only `none` plus the existing native preconditions allows commit. Native never
+auto-commits on a summary/decision update, and refusal never retries a mutation.
+
+**Missing evidence, reload and WebKit death.** Before the first summary,
+assume unknown, not an empty registry. Invalidation, replacement/reload or
+WebKit death immediately retires the summary, subscription and outstanding
+gate; late data/decisions cannot clear that state. The new document must
+subscribe and publish its own initial summary. If no save was unresolved and
+no non-GET transfer remains, its valid summary may establish readiness. If
+the retired document reported pending/unknown, or native observed an unfinished
+non-GET, retain only a coarse unresolved-save latch: a new empty registry is
+not proof about an earlier save. Normal lifecycle and commit remain held for
+the rest of that app process; this minimal summary cannot prove an earlier
+document's save outcome. Only the explicit recovery exit below remains; a new
+`none` summary or an elapsed timeout cannot clear the latch. No persistence or
+replay of draft data or automatic re-send is introduced by this contract.
+
+The user must still be able to leave. Native always offers a separate explicit
+recovery exit when the web gate is unavailable or a hold cannot be resolved,
+including an unresponsive web process: **Stay** is the default; an explicit
+close/Quit/relaunch-anyway confirmation warns that unsent edits may be lost
+and a sent save may still take effect, cannot be assumed cancelled, and needs
+Check result in the original context. This bypasses only waiting for web to
+exit, never the `client.commitSwitch` precondition, and never labels a pending
+save saved/failed/discarded. No automatic candidate commit, mutation retry or
+silent recovery occurs. This explicit last-resort loss warning prevents an
+unavailable web process from trapping the user forever while preserving the
+truth about a pending save; ordinary keep/discard cannot dismiss a hold.
+
+**Invalid input and minimization.** Native rejects malformed/duplicate-key JSON,
+wrong schema, missing/extra keys, bad types/enums/counts, inconsistent blocking,
+or unknown/stale/consumed gate IDs with the existing closed `invalidRequest`
+(`effect:"none"`, `recovery:"none"`) rejection string, without echoing data or
+applying any part of the summary/decision. From the current document, invalid
+summary input also marks owner evidence unknown (last good `none` cannot remain
+clearance); foreign/retired-document input is rejected without changing the
+current document's evidence. Web ignores an invalid lifecycle event, including
+extra keys, without opening a gate or sending a decision. Unsupported names
+remain unavailable until implemented; absence is never clean owner evidence.
+The summary has no page/subject, org/computer label, owner/revision/operation ID,
+target, generation, capability, draft content, error text or secret. Section 6
+applies: do not log payloads or use a registry dump. Counts are deliberately
+coarse; the web alone retains context and renders localized loss/result copy.
+
+**Implementation status.** Spec only: **S6-W2b (web)** implements initial/change
+pushes and lifecycle subscription/decisions; **S6-L / S7-L3 (native)** consume
+the summary and implement the lifecycle event, gate, failure/recovery rules
+and commit admission mapping. S5-L2 #1772's production commit remains blocked
+until owner evidence is wired. This PR changes no runtime dispatcher, route,
+auth, allowlist or v1 contract. Linux/WebKit/browser behavior and Mac work are
+NOT RUN. PR #1775's `app.owners` wording is an aggregate placeholder; its
+separately owned follow-up should point to this concrete wire contract.
+
+The following are JSON values inside facade strings, without transport envelopes.
+Validate summary examples against `ownersChanged` and lifecycle examples against
+`lifecycleRequested`, as well as the root `oneOf`.
+
+#### Valid: no blocking owners
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Valid: unsent edits require the web prompt
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":1,"pending":0,"unknown":0}}
+```
+
+#### Valid: pending and unknown dominate dirty
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":1,"failed":0,"pending":1,"unknown":1}}
+```
+
+#### Valid: native requests Quit
+
+```json
+{"schema":2,"requestId":"q1","action":"quit"}
+```
+
+#### Valid: Keep editing for q1 (only while q1 is outstanding)
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"keep"}}
+```
+
+#### Valid: gate completed for q1 (only while q1 is outstanding)
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"proceed"}}
+```
+
+#### Invalid: unknown cannot be downgraded to none
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":1}}
+```
+
+#### Invalid: Boolean is not a count
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":true,"unknown":0}}
+```
+
+#### Invalid: missing failed count
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: extra organization authority
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"org":"example"}
+```
+
+#### Invalid: nested draft content
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":0,"pending":0,"unknown":0,"draft":"synthetic"}}
+```
+
+#### Invalid: proceed while pending
+
+```json
+{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0},"gate":{"requestId":"q1","decision":"proceed"}}
+```
+
+#### Invalid: unbounded count
+
+```json
+{"schema":2,"blocking":"prompt","counts":{"dirty":256,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: wrong summary schema
+
+```json
+{"schema":1,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}
+```
+
+#### Invalid: unknown lifecycle action
+
+```json
+{"schema":2,"requestId":"q1","action":"commitSwitch"}
+```
+
+#### Invalid: extra lifecycle target authority
+
+```json
+{"schema":2,"requestId":"q1","action":"close","target":"local"}
+```
+
+#### Invalid: unknown gate decision
+
+```json
+{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"q1","decision":"discardAll"}}
+```
