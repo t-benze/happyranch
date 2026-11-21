@@ -82,8 +82,9 @@ actor-isolated probe. Compilation errors leave GUI availability unknown.
 The suite then runs `swift build` with the supervisor suite's private HOME,
 TMPDIR, SwiftPM and module-cache pattern. It retrieves only hash-pinned Node24
 using the existing toolchain pins/transfer code, into the build scratch, then
-runs `npm ci` and `npm run build` on a scratch copy of `web`. It does not install
-host tools. Every invocation has a 50s external timeout (40s native timeout):
+runs `npm ci` and `npm run build` on a scratch copy of `web`, with its imported
+`protocol/native-connection-bridge.v1.json` at the same relative path. It does
+not install host tools. Every invocation has a 50s external timeout (40s native timeout):
 
 ```sh
 # After the suite's private scratch build, the executable takes these arguments.

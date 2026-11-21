@@ -249,6 +249,8 @@ def run(report: dict[str, Any]) -> None:
         assets = scratch / 'assets'
         shutil.copytree(ROOT / 'web', assets / 'web', ignore=shutil.ignore_patterns('node_modules', 'dist', '*.tsbuildinfo'))
         shutil.copytree(ROOT / 'spikes/settings-s0', assets / 'spikes/settings-s0')
+        (assets / 'protocol').mkdir()
+        shutil.copy2(ROOT / 'protocol/native-connection-bridge.v1.json', assets / 'protocol')
         for name, argv in (('node_version', ['node', '--version']), ('npm_version', ['npm', '--version']),
                            ('npm_ci', ['npm', 'ci']), ('web_build', ['npm', 'run', 'build'])):
             code, _ = command(name, argv, 180, assets / 'web')
