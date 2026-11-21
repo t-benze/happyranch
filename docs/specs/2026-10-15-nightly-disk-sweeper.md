@@ -497,8 +497,9 @@ bounded to 65536 bytes and checked against its snapshot identity/signature.
 An absolute `gitdir:` target beneath an existing `.git/worktrees/<name>` admin
 entry (checked no-follow, never modified) retains the scratch root with
 `registered_worktree_in_scratch:<absolute .git path>`. Unreadable, oversized or
-changed regular `.git` files fail closed with that same located reason. This
-check precedes tree-mismatch comparison on the fresh snapshot. Nested `.git`
+changed regular `.git` files (during reads or between snapshots) fail closed
+with that same located reason. This check precedes tree-mismatch comparison
+on the fresh snapshot. Nested `.git`
 directories, readable submodule-style/non-worktree or dangling gitfiles, sockets
 and FIFOs remain disposable. Tasks creating worktrees in task-tmp must remove
 their exact registered worktrees with `git worktree remove` before completion;
@@ -1026,8 +1027,8 @@ worktrees at each of the four admission snapshots: the initial/fresh inventory
 pair and the repeated pre-mutation pair. It checks exact-path retention before
 tree mismatch, unchanged scratch/admin content and admin signatures, zero
 removal credit and complete located coverage. Case63 checks real unreadable,
-oversized and snapshot-to-read changed regular gitfiles with the same reason
-and coverage. Case64 preserves seq194 removal for nested `.git` directories,
+oversized, snapshot-to-read changed and between-snapshot changed regular gitfiles
+with the same reason and coverage. Case64 preserves seq194 removal for nested `.git` directories,
 non-worktree/submodule/dangling gitfiles (including an internal hardlink), sockets
 and FIFOs, with outside content untouched and no endpoint I/O; case1 remains
 the existing independent seq194 removal/allocation keeper.

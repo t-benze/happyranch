@@ -1575,10 +1575,12 @@ def _retain_registered_scratch_worktrees(path: Path, tree: dict[str, os.stat_res
                 continue
             # A linked-worktree gitdir is an entry under .git/worktrees.
             # Submodule and dangling gitfiles remain disposable under seq194.
-            for admin in (target, *target.parents):
+            parts = target.parts
+            for index, part in enumerate(parts[:-2]):
                 check(deadline)
-                if admin.parent.name != 'worktrees' or admin.parent.parent.name != '.git':
+                if part != '.git' or parts[index + 1] != 'worktrees':
                     continue
+                admin = Path(*parts[:index + 3])
                 try:
                     with directory(admin.parent, deadline) as parent:
                         os.stat(admin.name, dir_fd=parent, follow_symlinks=False)
@@ -1648,6 +1650,12 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if candidate['phase'] == 'scratch':
         _retain_registered_scratch_worktrees(path, latest, deadline)
+        for relative, before in tree.items():
+            check(deadline)
+            if relative and Path(relative).name == '.git' and stat.S_ISREG(before.st_mode):
+                after = latest.get(relative)
+                if after is None or signature(before) != signature(after):
+                    raise Retain(f'registered_worktree_in_scratch:{path / relative}')
     if candidate['phase'] == 'worktree':
         for relative in sorted(latest):
             check(deadline)

@@ -6873,7 +6873,7 @@ def c62() -> list[dict]:
                 assert len(calls) == boundary and saved, (boundary, calls)
                 assert saved[0] == candidate_contents(path, admin)
                 assert saved[1] == {str(p): fs.signature(p.lstat()) for p in (admin, *admin.rglob('*'))}
-                assert ds._classification(target['reason']) == dict(finding='registered_worktree_in_scratch', hold='item', located_inspected=True)
+                assert ds._classification(target['reason']) == dict(finding='registered_worktree_in_scratch', hold='item', located_inspected=True), ds._classification(target['reason'])
                 assert report['coverage']['complete'] and report['outcome'] == 'complete', report
                 assert report['phases']['scratch']['removed_attributable_bytes'] == 0
                 observations.append(dict(snapshot=boundary, reason=target['reason'], coverage=report['coverage']))
@@ -6887,15 +6887,19 @@ def c62() -> list[dict]:
 def c63() -> list[dict]:
     """Uncertain regular scratch gitfiles retain with the exact location."""
     observations, failures = [], []
-    for variant in ('unreadable', 'oversized', 'changed'):
+    for variant in ('unreadable', 'oversized', 'changed', 'changed_between_snapshots'):
         try:
             with fixture() as f:
                 path = f.scratch('TASK-1'); pointer = path / 'nested/.git'
                 pointer.write_bytes(b'gitdir: /not-a-real-fixture-target\n')
                 if variant == 'unreadable': pointer.chmod(0)
                 if variant == 'oversized': pointer.write_bytes(b'x' * 65537)
-                real_snapshot, saved = ds.snapshot, []
+                real_snapshot, saved, calls = ds.snapshot, [], []
                 def snapshot(root: Path, deadline: float, **kwargs: Any) -> dict[str, os.stat_result]:
+                    if root == path:
+                        calls.append(str(root))
+                        if variant == 'changed_between_snapshots' and len(calls) == 2:
+                            pointer.write_bytes(b'gitdir: /changed-fixture-target\n')
                     value = real_snapshot(root, deadline, **kwargs)
                     if root == path and not saved:
                         if variant == 'changed':
@@ -6909,8 +6913,10 @@ def c63() -> list[dict]:
                 assert target['state'] == 'retained', (variant, target)
                 assert target['reason'] == f'registered_worktree_in_scratch:{pointer}', target
                 assert pointer.exists() and (path / 'nested/payload').exists()
-                if variant != 'changed': assert fs.signature(pointer.lstat()) == before
-                if saved: assert saved[0] == candidate_contents(path)
+                if not variant.startswith('changed'): assert fs.signature(pointer.lstat()) == before
+                if saved and variant != 'changed_between_snapshots': assert saved[0] == candidate_contents(path)
+                if variant == 'changed_between_snapshots':
+                    assert len(calls) == 2 and pointer.read_bytes() == b'gitdir: /changed-fixture-target\n'
                 assert report['coverage']['complete'] and report['outcome'] == 'complete', report
                 observations.append(dict(variant=variant, reason=target['reason']))
         except AssertionError as exc:
