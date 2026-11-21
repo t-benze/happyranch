@@ -21,7 +21,9 @@ The module copies the desktop lowercase `happyranch` directory and atomic
 write conventions locally, with descriptor-relative no-follow parent traversal
 and bounded nonblocking regular-file reads. A mode-0600 exclusive temporary
 file in the same directory is flushed, fsynced and atomically replaced; the
-directory is fsynced too (including parents after directory creation).
+directory is fsynced too (including parents after directory creation). Every
+write also fsyncs the config parent containing the `happyranch` entry, even when
+that subdirectory already exists, so a retry confirms a previously failed sync.
 `persisted: true` is returned only after these steps succeed. Write failure
 keeps the choice in memory with `persisted: false`; a failure after replacement
 may leave the new file visible without confirmed durability. One lock covers

@@ -49,14 +49,16 @@ def _open_directory(create: bool) -> int:
         raise ValueError("nonabsolute config directory")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        for component in path.parts[1:]:
+        for index, component in enumerate(path.parts[1:], 1):
             if component == "..":
                 raise ValueError("nonliteral config directory")
             if create:
                 try:
                     os.mkdir(component, 0o700, dir_fd=fd)
                 except FileExistsError:
-                    pass
+                    if index == len(path.parts) - 1:
+                        # An earlier creation may have failed to sync this entry.
+                        os.fsync(fd)
                 else:
                     os.fsync(fd)
             child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,

@@ -133,14 +133,16 @@ class LocaleTests(unittest.TestCase):
             self.directory.chmod(0o700)
 
     def test_write_failure_stages_and_durability_reporting(self) -> None:
+        directory_stat = self.directory.stat()
         for stage in ("file_sync", "replace", "directory_sync"):
             with self.subTest(stage=stage):
                 self.store.set("en")
                 sync = os.fsync
 
                 def fail_sync(fd: int) -> None:
-                    directory = stat.S_ISDIR(os.fstat(fd).st_mode)
-                    if (stage == "directory_sync" and directory) or (stage == "file_sync" and not directory):
+                    target = os.fstat(fd)
+                    directory = stat.S_ISDIR(target.st_mode)
+                    if (stage == "directory_sync" and os.path.samestat(target, directory_stat)) or (stage == "file_sync" and not directory):
                         raise OSError("synthetic sync failure")
                     sync(fd)
 
@@ -151,14 +153,49 @@ class LocaleTests(unittest.TestCase):
                 self.assertEqual(self.path.read_bytes(), b"zh-CN\n" if stage == "directory_sync" else b"en\n")
                 self.assertEqual(list(self.directory.iterdir()), [self.path])
 
+        self.path.unlink()
+        self.directory.rmdir()
+        parent_stat = self.config.stat()
+        sync = os.fsync
+        parent_attempts = []
+        successful_parent_syncs = []
+
+        def fail_parent_once(fd: int) -> None:
+            parent = os.path.samestat(os.fstat(fd), parent_stat)
+            if parent:
+                parent_attempts.append(fd)
+                if len(parent_attempts) == 1:
+                    raise OSError("synthetic parent sync failure")
+            sync(fd)
+            if parent:
+                successful_parent_syncs.append(os.fstat(fd))
+
+        with patch.object(os, "fsync", side_effect=fail_parent_once):
+            self.assertEqual(self.store.set("zh-CN"), {"current": "zh-CN", "persisted": False})
+            self.assertEqual(len(parent_attempts), 1)
+            self.assertEqual(successful_parent_syncs, [])
+            self.assertTrue(self.directory.is_dir())
+            self.assertFalse(self.path.exists())
+            self.assertEqual(self.store.load(), {"current": "zh-CN", "persisted": False})
+            self.assertEqual(self.store.set("en"), {"current": "en", "persisted": True})
+            self.assertEqual(len(successful_parent_syncs), 1,
+                             "retry acknowledged persistence without syncing the config parent")
+        self.assertEqual(self.path.read_bytes(), b"en\n")
+        self.assertEqual(self.store.current(), {"current": "en", "persisted": True})
+        self.assertEqual(list(self.directory.iterdir()), [self.path])
+
     def test_atomic_replacement_and_sync_boundaries(self) -> None:
         self.store.set("en")
         replace, sync = os.replace, os.fsync
         events = []
 
         def observe_sync(fd: int) -> None:
-            events.append("directory_sync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_sync")
             sync(fd)
+            target = os.fstat(fd)
+            if os.path.samestat(target, self.config.stat()):
+                events.append("parent_sync")
+            else:
+                events.append("directory_sync" if stat.S_ISDIR(target.st_mode) else "file_sync")
 
         def observe_replace(source: str, destination: str, **kwargs: object) -> None:
             self.assertEqual(self.path.read_bytes(), b"en\n")
@@ -169,7 +206,7 @@ class LocaleTests(unittest.TestCase):
 
         with patch.object(os, "fsync", side_effect=observe_sync), patch.object(os, "replace", side_effect=observe_replace):
             self.assertEqual(self.store.set("zh-CN"), {"current": "zh-CN", "persisted": True})
-        self.assertEqual(events, ["file_sync", "replace", "directory_sync"])
+        self.assertEqual(events, ["parent_sync", "file_sync", "replace", "directory_sync"])
         self.assertEqual(self.path.read_bytes(), b"zh-CN\n")
 
     def test_threaded_newer_set_cannot_be_overwritten(self) -> None:
