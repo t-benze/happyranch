@@ -247,8 +247,8 @@ inside the same Radix root and never spawns a window. The one internal API is
 `useDesktopDialogs()` → `openDesktopDialog(request, invoker?)` /
 `requestDesktopDialogClose({ navigateTo? })`. The close button, Escape and
 in-pane links all go through `requestDesktopDialogClose`, the single seam
-where the S6-W2 owner registry / keep-discard gate will decide (before both
-closing and any Main navigation); today it closes immediately. Backdrop clicks
+where the S6-W2a contextual owner gate decides (before both closing and any
+Main navigation; see the next section). Backdrop clicks
 do not dismiss. Focus stays inside the dialog (Main is inert), moves to the
 dialog heading on open and on every switch, and returns on final close to the
 recorded invoker, else to the Main recovery control when a recovery panel is
@@ -320,7 +320,142 @@ Layout (C4): at md and wider a large centered
 dialog with a left nav rail; below md (for example 760×560 at 200%) the dialog
 fills the Main content area, nav groups stack and items wrap above the page in
 one vertically scrolling column, and choosing a page scrolls it into view.
-Unsaved drafts are not yet protected on close/switch/page change (S6-W2).
+Unsaved drafts and sent saves are protected on close/switch/page change by
+the owner gate below.
+
+## Config owner registry and contextual owner gate (THR-387 S6-W2a)
+
+Handoff v2.4 §3 and corrections C1–C3. `web/src/lib/owners/ownerRegistry.ts`
+is a pure registry (one per app document, created by `OwnerGateProvider` in
+`routes.tsx`, browser and desktop mode alike). Every config editor that can
+hold unsent edits or a sent save registers an owner through
+`useConfigOwner()` (`web/src/shared/owners/`) while it is mounted, with
+`{scope: main|settings, page, subject?, org, computer, section?}`. `settings`
+owners are panes of the desktop Settings dialog (`<OwnerScope>` in
+`SettingsDialogBody`); everything else is `main`. `computer` is null for This
+computer (localized at render) until the S5 native status store supplies a
+selected remote name. Status is derived: `pending` (a sent save has no result)
+> `unknown` (transport/authority lost, 5xx, 408, `409 target_changed`, an
+unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
+`confirmed` > `clean`. A save is tagged with the draft revision it was sent
+for: a success for an older revision never marks a newer draft saved (the
+registry reports `current: false` and the owner stays dirty); an older failure
+never marks a newer in-flight save failed; a sent save is never discardable.
+The registry does not protect a draft by itself: each editor must either honour
+`current` or refuse draft edits while its save is pending. Organization,
+custom-skill metadata and the Work Hours tier/eligibility dialogs honour it (a
+dialog closes only when the acknowledged draft is still current; a newer draft
+typed via Back stays open and dirty against the saved value); Agents detail
+refuses repository add/remove while its save is in flight (executor/model/effort
+already did), and the system prompt editor disables its textarea while sending.
+An editor that awaits anything before sending (Organization resolves typed
+dreaming names to IDs) binds the save to the draft revision the request was
+BUILT from, so an edit made meanwhile stays unsaved. While an owner's result
+is unknown it gets no new save ticket (`beginSave` returns null, callers
+disable Save): only same-owner **Check result** can clear it, and only a
+confirmed failure (`not_saved`) permits an ordinary retry. Check result
+compares the complete submitted payload: Organization compares every sent
+field including the resolved dreaming include/exclude IDs (as sets);
+custom-skill create needs a catalog row whose name, sent description and
+current `content_hash` (SHA-256 of the sent SKILL.md) all match — an existing
+slug alone keeps the result unknown; a new version needs a newly listed
+version with the sent content hash; metadata, eligibility and
+retire/restore/purge reread the skill. Editor teardown releases its owner, but
+an owner with a pending/unknown save stays registered (detached) and keeps
+holding until that save settles or is reconciled; the desktop Settings pane
+keeps its editors mounted (error shown above) when a reread fails after data
+was loaded.
+
+`selectOwnerBlocking(owners, affects?)` is the pure aggregate S6-W2b pushes to
+native (`app.owners`) and S6-L/S7-L3 use for close/Quit/target commit: `level`
+is `hold` when an affected owner is pending/unknown, `prompt` when one is
+dirty/failed, else `none`, plus the affected non-clean owner list.
+
+The ONE gate (`OwnerGateProvider`) is asked before: the desktop dialog close
+request (affects every Settings owner, plus Main owners when an in-pane link
+changes Main's page), a switch to Connection (Settings owners), a Settings
+page change (owners of the page being left), and every in-app navigation
+through a router blocker that is mounted only while some owner is not clean
+(Main owners when the path or query changes; Settings owners too when the org
+changes, so an org switch gathers Main AND Settings owners into one prompt).
+Opening a dialog over a Main editor is not consent: while an owner is not
+clean, desktop Main navigation to a Settings route opens the dialog in place
+instead of unmounting Main's page. Outcomes: nothing affected → the
+transition runs; dirty/failed → one prompt naming each owner's page · computer
+· org, **Keep editing** (default focus, Escape and the close button) or
+**Discard changes and close / open Connection / change page / change
+organization / leave this page**, which rechecks all owners and discards only
+unsent edits; pending/unknown → a waiting panel that cannot be escaped or
+discarded (no close button, Escape does nothing), naming each owner, with
+**Check result** for unknown owners that can reconcile (a fresh same-context
+read) and **Back to {page}** to cancel the transition; when the results arrive
+the gate re-evaluates and runs the transition or shows the prompt. A repeated
+request while the gate is open focuses it; there is never a second prompt. An
+old-org draft is never shown or saved under another org, which each editor
+proves individually rather than by assuming an unmount: the desktop Settings
+dialog panes and the browser Settings page panels (Capacity, Organization,
+Executors) are keyed by org; the Main custom-skill create/detail routes remount
+on an org/skill change (`KeyedByParams` in `routes.tsx`); the team escalation
+policy card is keyed by org/agent; and every draft-holding owner resets its
+draft on Discard (`onDiscard`: Organization, Executors binary path, Capacity,
+custom-skill create/metadata/version/eligibility, agent detail including the
+typed Add repository fields, the agent system prompt, skill assignment,
+policy). Agents detail also resets its whole draft, including repository
+staging, when the org or agent changes. The Work Hours tier and eligibility dialogs belong to the
+org they were opened for: Discard closes them, and any org change closes them
+before they can render or save under the new org. A reread (Check result,
+lifecycle, a save's refresh) moves an editor's saved baseline but never
+overwrites a newer unsent draft: custom-skill metadata adopts the reread
+values only while its draft still equals the previous baseline, so a newer
+draft stays dirty and leaving still prompts. React Router honours only the last registered blocker:
+editors with their own leave dialog (Capacity, the team escalation policy
+page, both registered with `ownNavigationGuard`) keep it only while exactly
+one such editor is mounted, it is the only unsaved owner and it has unsent
+edits (`sharedRouterGuardNeeded`). Otherwise the shared blocker mounts,
+re-registers last and covers them too, so a sent pending/unknown Capacity
+save gets the non-discardable hold (Capacity's own dialog also offers no
+Discard then) and the policy draft is never shadowed. A mounted shared
+blocker stays mounted while its gate is open, so the gate's proceed/reset
+always reaches the blocker that blocked the navigation. The Work Hours tier
+and eligibility dialogs ask the gate before their close button, Escape and
+Cancel.
+
+Registered editors: Settings Organization form (`settings.organization`) and
+its Work Hours toggle and eligibility editor (`settings.workHours`, all
+`PUT /orgs/{slug}/settings/org`), Capacity, Executors binary registration and
+custom-profile removal, Main Agents detail (executor, model/reasoning effort
+via `PUT …/agents/{name}/model`, repos, and the typed-but-not-added Add
+repository fields), the agent system prompt editor as its own owner
+(`agents.systemPrompt`, `PUT …/agents/{name}/system-prompt`; an unsent draft
+prompts, a sent save holds even after the editor unmounts; a save settles as
+saved only when the PUT is acknowledged AND the verification read matches the
+receipt — an acknowledged save whose verification read fails or disagrees
+settles unknown (held, not discardable, new saves refused, editor Cancel
+disabled), never saved first; for that acknowledged save only a matching read
+(Check result or the editor's Reload returning the sent text with the receipt
+revision) settles it as saved and lets a queued transition continue — a failed
+or disagreeing read keeps it unknown and held with the draft kept, because a
+different current value cannot prove an acknowledged write failed; only a
+never-acknowledged (lost) PUT may reconcile on a disagreeing read to a confirmed
+failure with the draft kept), Skills assignment, custom-skill
+create, and custom-skill metadata/version/eligibility/lifecycle writes, the
+team escalation policy page draft (`agents.escalationPolicy`), and the Main
+Work Hours tier editor (`work-hours-config/TierEditorDialog`, behind
+`work_hours_ui`). Coding has no writer on main (read-only original-save
+lookup). Not registered inside Agents detail: the addressable-name editor
+(`shared/identities/AddressableNameEditor`, its own drafts keyed by
+org/kind/agent, so a draft is never sent to another org, but leaving does not
+prompt for it), the one-shot Retire confirmation dialog and knowledge instill
+operations (operations, not config drafts). Save results use `OwnerSaveNotice` (C3): “Couldn't save {page} on
+{computer} · {org}. Your changes are still here and aren't saved.” / “无法保存
+{computer} · {org} 的{page}。你的更改仍保留在这里，尚未保存。”; unknown keeps Check
+result; connection-attempt errors keep their own copy. Capacity keeps its
+existing per-cause save copy and reconciliation. Browser mode: the only change
+is that genuine unsaved edits and outstanding saves are now gated on in-app
+navigation (previously only Capacity and the team escalation policy page
+prompted), the C3 copy replaces the Organization failure line, and a changed
+read no longer overwrites unsent Organization edits. Focused checks:
+`node --experimental-transform-types --test web/scripts/owner-registry.test.mjs`.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 
@@ -2524,7 +2659,7 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 - **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
 - **Model and reasoning effort** — editable per-agent selection beside Executor, with plain text, localized default, built-in token syntax and approved custom limits. CLI switches clear the draft pair. Locale changes preserve draft/focus/actions without a save.
 
-Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
+Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing. The editor is a registered config owner (`agents.systemPrompt`, see the owner gate above): leaving, switching agent or org with an unsent draft asks Keep editing / Discard; a sent save holds the gate until its result, also after the editor unmounts. Only an acknowledged PUT followed by a matching verification read settles it as saved; a failed (for example 503) or disagreeing verification read settles it unknown, so the gate keeps holding (no Discard, no Cancel, no new save; org/target switch and Quit stay held) until a matching read: Check result or Reload returning the sent text with the receipt revision settles it as saved. A failed or disagreeing Check result or Reload keeps that acknowledged save unknown with the draft kept. Only a never-acknowledged (lost) PUT reconciles on an explicit read by text: equal settles it as saved, otherwise it becomes a confirmed failure with the draft kept. While any save result is unknown (acknowledged-unverified or lost), editor Cancel is disabled so the draft cannot be cleared. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
 
 Missing/malformed revisions return422 `expected_revision_required`; stale bases return409 `stale_agent_revision` with `current_revision`; absent active targets return404 `agent_not_found`. Reconciliation400 includes `system_prompt_reconciliation_failed`, a bounded diagnostic and actual canonical/workspace compensation statuses (`restored`, `not_owned`, `failed`, `not_required`). Audit500 reports `system_prompt_audit_failed` / `possibly_committed`, never an invented rollback. A canonical receipt does not prove workflow readiness or retained-provider adoption. Founder THR-280 seq21 waives C16 empirical genuine Claude/Codex/Pi/OpenCode adoption, including retained sessions and finite genuine Codex recovery episodes: FOUNDER-WAIVED / NOT EXECUTED, never PASS. Prompt delivery across launch/resume, all four adapters, full/delta/hole/fallback and finite callback-recovery orchestration remains required. Deterministic external CLI stubs can establish input transport/orchestration, not model adoption; THR-211 seq371 forbids real test-generated provider sessions in every venue.
 

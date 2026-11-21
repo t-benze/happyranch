@@ -20,6 +20,8 @@
  * registry (executors.json) keyed by the profile name — the same gating as
  * built-ins (THR-107 seq155). No PATH-based fallback is used.
  */
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useState } from 'react';
 import { CheckCircle2, RefreshCw, Terminal, Trash2, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
@@ -125,21 +127,38 @@ function ProfileRow({
   const adapter = findAdapter(profile, adapters);
   const executable = adapter?.executable ?? null;
 
+  // THR-387 S6-W2a: a sent removal is an Executors owner until it settles.
+  const { slug } = useParams<{ slug: string }>();
+  const owner = useConfigOwner({
+    page: 'settings.executors',
+    subject: profile.name,
+    org: slug ?? null,
+    dirty: false,
+    draft: null,
+  });
+
   const onConfirmRemove = async (): Promise<void> => {
     setError(null);
-    try {
-      await remove.mutateAsync(profile.name);
-    } catch (err) {
-      // 404 = the name is no longer a custom profile (removed out from under
-      // us). The end state we wanted — profile gone — already holds, so treat
-      // it as success: force a refetch (the mutation's onSuccess didn't run)
-      // and collapse. Any other failure surfaces inline, no opaque error.
-      if (err instanceof ApiError && err.status === 404) {
-        void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
-      } else {
-        setError(errMessage(err, 'settings.executors.profiles.removeFailed'));
-        return;
+    const result = await owner.track(async () => {
+      try {
+        await remove.mutateAsync(profile.name);
+      } catch (err) {
+        // 404 = the name is no longer a custom profile (removed out from under
+        // us). The end state we wanted — profile gone — already holds, so treat
+        // it as success: force a refetch (the mutation's onSuccess didn't run)
+        // and collapse.
+        if (err instanceof ApiError && err.status === 404) {
+          void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
+          return;
+        }
+        throw err;
       }
+    });
+    if (!result.ok) {
+      // Any other failure surfaces inline, no opaque error; an unknown result
+      // is shown by the owner notice.
+      if (result.outcome === 'failed') setError(errMessage(result.error, 'settings.executors.profiles.removeFailed'));
+      return;
     }
     setConfirming(false);
   };
@@ -244,6 +263,7 @@ function ProfileRow({
         )}
       </div>
 
+      <OwnerSaveNotice owner={owner} className="mt-2" />
       {error !== null && (
         <p
           className="text-feedback-danger mt-2 flex items-center gap-1.5 text-sm"

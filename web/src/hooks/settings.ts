@@ -4,7 +4,12 @@
  * One-liner forwarders into `useData().settings` so compositions never
  * reach into `design-system/providers/` directly.
  */
+import { useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useParams } from 'react-router-dom';
 import { useData } from '@/design-system/providers/DataContext';
+import { getSettings } from '@/lib/api/settings';
+import type { SettingsSnapshot } from '@/lib/api/types';
 
 // Re-export the mint helper so compositions never import from @/lib/api directly.
 export { mintRegistrationToken } from '@/lib/api/settings';
@@ -46,3 +51,22 @@ export const useNextWakes:ReturnType<
   typeof useData
 >['settings']['useNextWakes'] = (agent, count) =>
   useData().settings.useNextWakes(agent, count);
+
+/**
+ * THR-387 S6-W2a: fresh same-org read of the org settings for Check result
+ * (owner reconciliation of an unknown save). Bypasses the 30s staleTime and
+ * writes the ['settings', slug] cache like the ordinary read.
+ */
+export function useReadOrgSettingsNow(): () => Promise<SettingsSnapshot> {
+  const { slug = '' } = useParams<{ slug: string }>();
+  const qc = useQueryClient();
+  return useCallback(
+    () =>
+      qc.fetchQuery({
+        queryKey: ['settings', slug],
+        queryFn: () => getSettings(slug),
+        staleTime: 0,
+      }),
+    [qc, slug],
+  );
+}

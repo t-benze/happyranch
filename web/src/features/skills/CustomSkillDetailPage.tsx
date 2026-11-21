@@ -6,12 +6,14 @@ import { Input } from '@/design-system/primitives/Input';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { isCustomSkillForbidden, isCustomSkillStaleRevision, type EligibilityRule, useAddCustomSkillVersion, useCustomSkill, useCustomSkillDiff, useCustomSkillEligibility, useCustomSkillVersions, usePatchCustomSkill, usePreviewCustomSkillEligibility, usePurgeCustomSkill, useRestoreCustomSkill, useRetireCustomSkill, useSaveCustomSkillEligibility } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import type { MessageKey } from '@/lib/i18n';
 import { formatDateShapeFor } from '@/lib/i18n/format';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { skillStatusBadge } from './skillStatus';
 import { CustomSkillsState } from './CustomSkillsPage';
 import { classifySkillError, renderSkillError, renderSkillErrorInContext, type SkillErrorView, type Translate } from './strings';
+import { skillMdHash } from './skillMdHash';
 
 /** Eligibility status line held locale-neutral so it re-translates in place. */
 type EligibilityMessage = { key: MessageKey } | { error: SkillErrorView; context: MessageKey };
@@ -22,6 +24,10 @@ function renderEligibilityMessage(message: EligibilityMessage, t: Translate): st
 
 const emptyRule = (): EligibilityRule => ({ scope_type: 'agent', scope_target: '', effect: 'allow' });
 
+type LifecycleAction = 'retire' | 'restore' | 'purge';
+
+// THR-387 S6-W2a: routes.tsx keys this page by org and skill, so a context
+// change (after Discard consent) never carries one draft into another.
 export function CustomSkillDetailPage(): JSX.Element {
   const { t, render, locale } = useTranslation();
   const { slug, skillId } = useParams<{ slug: string; skillId: string }>();
@@ -31,7 +37,25 @@ export function CustomSkillDetailPage(): JSX.Element {
   const [confirmingPurge, setConfirmingPurge] = useState(false); const [typedSlug, setTypedSlug] = useState('');
   const initializedRulesForSkill = useRef<string>();
   const diff = useCustomSkillDiff(skillId, a, b);
-  useEffect(() => { if (detail.data) { setName(detail.data.name ?? ''); setDescription(detail.data.description ?? ''); } }, [detail.data]);
+  // The metadata draft is separate from the saved baseline (THR-387 S6-W2a):
+  // a reread (Check result, lifecycle, a save's refresh) moves the baseline
+  // and adopts it only while the draft still equals the previous baseline. A
+  // newer unsent draft is never overwritten; it stays dirty against the new
+  // baseline, so leaving still prompts.
+  const metadataDraft = useRef({ name, description });
+  metadataDraft.current = { name, description };
+  const metadataBaseline = useRef<{ name: string; description: string } | null>(null);
+  useEffect(() => {
+    if (!detail.data) return;
+    const next = { name: detail.data.name ?? '', description: detail.data.description ?? '' };
+    const previous = metadataBaseline.current;
+    metadataBaseline.current = next;
+    const draft = metadataDraft.current;
+    if (previous === null || (draft.name === previous.name && draft.description === previous.description)) {
+      setName(next.name);
+      setDescription(next.description);
+    }
+  }, [detail.data]);
   useEffect(() => {
     if (!eligibility.data) return;
     setRevision(eligibility.data.revision);
@@ -40,6 +64,76 @@ export function CustomSkillDetailPage(): JSX.Element {
       initializedRulesForSkill.current = skillId;
     }
   }, [eligibility.data, skillId]);
+  // THR-387 S6-W2a: Skills config owners for this custom skill — unsent
+  // metadata, an unsent new version, an unsent eligibility policy, and the
+  // sent lifecycle actions (retire/restore/permanent removal).
+  // While a result is unknown no new request is sent (`track` refuses);
+  // each owner's Check result rereads the skill first.
+  const ownerSubject = detail.data?.slug ?? skillId ?? null;
+  const sentMetadata = useRef<{ name: string; description: string } | null>(null);
+  const sentVersion = useRef<{ hash: Promise<string | null>; before: Set<string> | null } | null>(null);
+  const sentRules = useRef<string | null>(null);
+  const sentLifecycle = useRef<LifecycleAction | null>(null);
+  const metadataOwner = useConfigOwner({
+    page: 'skills.customDetail', subject: ownerSubject, org: slug ?? null,
+    dirty: !!detail.data && (name !== (detail.data.name ?? '') || description !== (detail.data.description ?? '')),
+    draft: { name, description },
+    onDiscard: () => { setName(detail.data?.name ?? ''); setDescription(detail.data?.description ?? ''); },
+    checkResult: async () => {
+      const read = await detail.refetch();
+      const sent = sentMetadata.current;
+      if (read.isError || !read.data || sent === null) return 'unknown';
+      // A reread that differs means the PATCH did not apply (a retry is the same idempotent PATCH).
+      return read.data.name === sent.name && (read.data.description ?? '') === sent.description ? 'saved' : 'not_saved';
+    },
+  });
+  const versionOwner = useConfigOwner({
+    page: 'skills.customDetail', subject: ownerSubject, org: slug ?? null,
+    dirty: skillMd !== '', draft: skillMd,
+    onDiscard: () => setSkillMd(''),
+    checkResult: async () => {
+      const sent = sentVersion.current;
+      const read = await versions.refetch();
+      if (sent === null || sent.before === null || read.isError || !read.data) return 'unknown';
+      const hash = await sent.hash;
+      if (hash === null) return 'unknown';
+      // Versions are append-only: no version with the sent content means it
+      // did not apply; a NEW one proves it; one that existed before proves nothing.
+      const matching = read.data.versions.filter((version) => version.content_hash === hash);
+      if (matching.length === 0) return 'not_saved';
+      return sent.before.has(hash) ? 'unknown' : 'saved';
+    },
+  });
+  const eligibilityOwner = useConfigOwner({
+    page: 'skills.customDetail', subject: ownerSubject, org: slug ?? null,
+    dirty: !!eligibility.data && JSON.stringify(rules) !== JSON.stringify(eligibility.data.rules),
+    draft: rules,
+    onDiscard: () => { if (eligibility.data) setRules(eligibility.data.rules); },
+    checkResult: async () => {
+      const read = await eligibility.refetch();
+      if (read.isError || !read.data || sentRules.current === null) return 'unknown';
+      // The save is revision-checked, so a retry after "not saved" cannot
+      // overwrite a newer policy.
+      return JSON.stringify(read.data.rules) === sentRules.current ? 'saved' : 'not_saved';
+    },
+  });
+  const lifecycleOwner = useConfigOwner({
+    page: 'skills.customDetail', subject: ownerSubject, org: slug ?? null, dirty: false, draft: null,
+    checkResult: async () => {
+      const action = sentLifecycle.current;
+      const read = await detail.refetch();
+      if (action === null || read.isError || !read.data) return 'unknown';
+      const applied = action === 'purge'
+        ? read.data.state === 'permanently_removed'
+        : action === 'retire' ? read.data.retired_at !== null : read.data.retired_at === null;
+      return applied ? 'saved' : 'not_saved';
+    },
+  });
+  const runLifecycle = (action: LifecycleAction, run: () => Promise<unknown>): void => {
+    if (lifecycleOwner.saveRefused) return;
+    sentLifecycle.current = action;
+    void lifecycleOwner.track(run);
+  };
   const back = <Link to={`/orgs/${slug ?? ''}/skills/custom`} className="text-text-secondary hover:text-text-primary text-body-sm mb-4 inline-flex items-center gap-1.5"><ArrowLeft size={15} />{t('skills.backToCustom')}</Link>;
   if (detail.isLoading) return <div className="mx-auto max-w-5xl p-8">{back}<div className="border-border-subtle bg-surface-subtle h-64 animate-pulse rounded-md border" /></div>;
   if (isCustomSkillForbidden(detail.error)) return <CustomSkillsState icon={<Shield size={28} />} title={t('skills.founderRequired.title')} body={t('skills.founderRequired.body')} />;
@@ -48,14 +142,15 @@ export function CustomSkillDetailPage(): JSX.Element {
   if (skill.state === 'permanently_removed') return <div className="mx-auto max-w-5xl p-8">{back}<section className="border-border-default bg-surface-raised rounded-md border p-8"><h1 className="text-text-primary text-lg font-semibold">{t('skills.status.permanentlyRemoved')}</h1><p className="text-text-secondary mt-2 text-sm">{render('skills.customDetail.removedBody', { slug: <span className="font-mono">{skill.slug}</span> })}</p><p className="text-text-secondary mt-2 text-sm">{t('skills.customDetail.removedLogical')}</p><dl className="text-mono-sm text-text-secondary mt-4"><dt>{t('skills.customDetail.purgeId')}</dt><dd>{skill.purge_id}</dd><dt className="mt-2">{t('skills.customDetail.completed')}</dt><dd>{skill.purged_at ? formatDateShapeFor(locale, new Date(skill.purged_at), 'dateTime') : null}</dd></dl></section></div>;
   const hidden = skill.hidden_reason === 'no_eligibility_policy';
   const runPreview = async () => { setMessage(null); try { await preview.mutateAsync({ skillId: skillId as string, rules }); } catch (error) { setMessage({ error: classifySkillError(error, 'skills.customDetail.previewFailed'), context: 'skills.customDetail.previewFailed' }); } };
-  const commitEligibility = async () => { if (revision === null) return; setMessage(null); try { const result = await saveEligibility.mutateAsync({ skillId: skillId as string, rules, revision }); setRevision(result.revision); setMessage({ key: 'skills.customDetail.eligibilitySaved' }); } catch (error) { if (isCustomSkillStaleRevision(error)) { await eligibility.refetch(); setMessage({ key: 'skills.customDetail.eligibilityStale' }); } else setMessage({ error: classifySkillError(error, 'skills.customDetail.saveFailed'), context: 'skills.customDetail.saveFailed' }); } };
+  const commitEligibility = async () => { if (revision === null) return; setMessage(null); try { if (eligibilityOwner.saveRefused) return; sentRules.current = JSON.stringify(rules); const tracked = await eligibilityOwner.track(() => saveEligibility.mutateAsync({ skillId: skillId as string, rules, revision })); if (!tracked.ok) { if (tracked.refused) return; throw tracked.error; } setRevision(tracked.value.revision); setMessage({ key: 'skills.customDetail.eligibilitySaved' }); } catch (error) { if (isCustomSkillStaleRevision(error)) { await eligibility.refetch(); setMessage({ key: 'skills.customDetail.eligibilityStale' }); } else setMessage({ error: classifySkillError(error, 'skills.customDetail.saveFailed'), context: 'skills.customDetail.saveFailed' }); } };
   return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-12 md:py-8">{back}
-    <header className="border-border-default bg-surface-raised rounded-md border p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="mb-2 flex items-center gap-2"><span className="bg-accent-soft text-accent-text text-2xs rounded-full px-2 py-0.5 font-bold tracking-wide uppercase">{t('skills.source.custom')}</span><StatusBadge {...skillStatusBadge(hidden ? 'no_eligibility_policy' : skill.validation_state ?? 'unknown', t)} />{skill.retired_at && <span className="text-mono-sm text-text-secondary">{t('skills.retired')}</span>}</div><h1 className="text-text-primary font-mono text-lg font-semibold">{skill.name}</h1><p className="text-text-secondary text-body-sm mt-2">{skill.description || t('skills.noDescription')}</p></div><div className="flex gap-2"><Button variant={skill.retired_at ? 'secondary' : 'destructive'} onClick={() => skill.retired_at ? restore.mutate(skillId as string) : retire.mutate({ skillId: skillId as string })} disabled={retire.isPending || restore.isPending}>{skill.retired_at ? <><RotateCcw />{t('skills.customDetail.restore')}</> : t('skills.customDetail.retire')}</Button>{skill.retired_at && <Button variant="destructive" onClick={() => setConfirmingPurge(true)}><Trash2 />{t('skills.customDetail.permanentlyRemove')}</Button>}</div></div></header>
-    {confirmingPurge && <section role="dialog" aria-modal="true" aria-labelledby="purge-title" className="border-danger bg-surface-raised mt-4 rounded-md border p-6"><h2 id="purge-title" className="text-text-primary font-semibold">{t('skills.customDetail.purgeTitle', { slug: skill.slug })}</h2><p className="text-text-secondary mt-2 text-sm">{t('skills.customDetail.purgeBody')}</p><label className="mt-4 block text-sm">{render('skills.customDetail.purgeConfirm', { slug: <span className="font-mono">{skill.slug}</span> })}<Input autoFocus value={typedSlug} onChange={(e) => setTypedSlug(e.target.value)} /></label>{purge.isError && <p role="alert" className="text-danger mt-2 text-sm">{renderSkillErrorInContext(classifySkillError(purge.error, 'skills.customDetail.purgeFailed'), 'skills.customDetail.purgeFailed', t)}</p>}<div className="mt-4 flex gap-2"><Button variant="destructive" disabled={typedSlug !== skill.slug || purge.isPending} onClick={() => purge.mutate({ skillId: skillId as string, typedSlug })}>{t(purge.isPending ? 'skills.customDetail.removing' : 'skills.customDetail.permanentlyRemove')}</Button><Button variant="secondary" onClick={() => setConfirmingPurge(false)} disabled={purge.isPending}>{t('common.cancel')}</Button></div></section>}
-    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 className="text-text-primary text-sm font-semibold">{t('skills.customDetail.metadata')}</h2><div className="mt-3 grid gap-3 md:grid-cols-2"><label className="text-sm">{t('skills.create.name')}<Input value={name} onChange={(e) => setName(e.target.value)} /></label><label className="text-sm">{t('skills.create.descriptionLabel')}<Input value={description} onChange={(e) => setDescription(e.target.value)} /></label></div><Button className="mt-3" variant="secondary" onClick={() => patch.mutate({ skillId: skillId as string, body: { name, description } })} disabled={patch.isPending}>{t('skills.customDetail.saveMetadata')}</Button></section>
+    <header className="border-border-default bg-surface-raised rounded-md border p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="mb-2 flex items-center gap-2"><span className="bg-accent-soft text-accent-text text-2xs rounded-full px-2 py-0.5 font-bold tracking-wide uppercase">{t('skills.source.custom')}</span><StatusBadge {...skillStatusBadge(hidden ? 'no_eligibility_policy' : skill.validation_state ?? 'unknown', t)} />{skill.retired_at && <span className="text-mono-sm text-text-secondary">{t('skills.retired')}</span>}</div><h1 className="text-text-primary font-mono text-lg font-semibold">{skill.name}</h1><p className="text-text-secondary text-body-sm mt-2">{skill.description || t('skills.noDescription')}</p></div><div className="flex gap-2"><Button variant={skill.retired_at ? 'secondary' : 'destructive'} onClick={() => skill.retired_at ? runLifecycle('restore', () => restore.mutateAsync(skillId as string)) : runLifecycle('retire', () => retire.mutateAsync({ skillId: skillId as string }))} disabled={retire.isPending || restore.isPending || lifecycleOwner.saveRefused}>{skill.retired_at ? <><RotateCcw />{t('skills.customDetail.restore')}</> : t('skills.customDetail.retire')}</Button>{skill.retired_at && <Button variant="destructive" onClick={() => setConfirmingPurge(true)} disabled={lifecycleOwner.saveRefused}><Trash2 />{t('skills.customDetail.permanentlyRemove')}</Button>}</div></div></header><OwnerSaveNotice owner={lifecycleOwner} className="mt-4" />
+    {confirmingPurge && <section role="dialog" aria-modal="true" aria-labelledby="purge-title" className="border-danger bg-surface-raised mt-4 rounded-md border p-6"><h2 id="purge-title" className="text-text-primary font-semibold">{t('skills.customDetail.purgeTitle', { slug: skill.slug })}</h2><p className="text-text-secondary mt-2 text-sm">{t('skills.customDetail.purgeBody')}</p><label className="mt-4 block text-sm">{render('skills.customDetail.purgeConfirm', { slug: <span className="font-mono">{skill.slug}</span> })}<Input autoFocus value={typedSlug} onChange={(e) => setTypedSlug(e.target.value)} /></label>{purge.isError && <p role="alert" className="text-danger mt-2 text-sm">{renderSkillErrorInContext(classifySkillError(purge.error, 'skills.customDetail.purgeFailed'), 'skills.customDetail.purgeFailed', t)}</p>}<div className="mt-4 flex gap-2"><Button variant="destructive" disabled={typedSlug !== skill.slug || purge.isPending || lifecycleOwner.saveRefused} onClick={() => runLifecycle('purge', () => purge.mutateAsync({ skillId: skillId as string, typedSlug }))}>{t(purge.isPending ? 'skills.customDetail.removing' : 'skills.customDetail.permanentlyRemove')}</Button><Button variant="secondary" onClick={() => setConfirmingPurge(false)} disabled={purge.isPending}>{t('common.cancel')}</Button></div></section>}
+    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 className="text-text-primary text-sm font-semibold">{t('skills.customDetail.metadata')}</h2><div className="mt-3 grid gap-3 md:grid-cols-2"><label className="text-sm">{t('skills.create.name')}<Input value={name} onChange={(e) => setName(e.target.value)} /></label><label className="text-sm">{t('skills.create.descriptionLabel')}<Input value={description} onChange={(e) => setDescription(e.target.value)} /></label></div><Button className="mt-3" variant="secondary" onClick={() => { if (metadataOwner.saveRefused) return; sentMetadata.current = { name, description }; void metadataOwner.track(() => patch.mutateAsync({ skillId: skillId as string, body: { name, description } })); }} disabled={patch.isPending || metadataOwner.saveRefused}>{t('skills.customDetail.saveMetadata')}</Button><OwnerSaveNotice owner={metadataOwner} className="mt-3" /></section>
     <section aria-labelledby="current-guidance-heading" className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 id="current-guidance-heading" className="text-text-primary text-sm font-semibold">{t('skills.customDetail.currentGuidance')}</h2><p className="text-text-secondary text-body-sm mt-1">{t('skills.customDetail.currentGuidanceDesc')}</p><dl className="text-mono-sm text-text-secondary mt-3 flex flex-wrap gap-x-4 gap-y-1"><div><dt className="inline">{t('skills.customDetail.currentVersion')} </dt><dd className="inline">v{skill.current_version_id}</dd></div><div><dt className="inline">{t('skills.customDetail.contentHash')} </dt><dd className="inline">{skill.content_hash ?? t('skills.customDetail.unavailable')}</dd></div></dl>{skill.skill_md_cache == null ? <p className="text-text-secondary text-body-sm mt-3">{t('skills.customDetail.noSkillMd')}</p> : <pre className="bg-surface-sunken text-mono-sm mt-3 max-h-80 overflow-auto rounded-md p-3">{skill.skill_md_cache}</pre>}</section>
-    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 className="text-text-primary text-sm font-semibold">{t('skills.customDetail.addVersion')}</h2><p className="text-text-secondary text-body-sm mt-1">{t('skills.customDetail.addVersionDesc')}</p><Textarea className="mt-3" value={skillMd} onChange={(e) => setSkillMd(e.target.value)} placeholder={t('skills.customDetail.skillMdPlaceholder')} /><Button className="mt-3" onClick={() => addVersion.mutate({ skillId: skillId as string, skill_md: skillMd })} disabled={!skillMd || addVersion.isPending}>{t('skills.customDetail.saveVersion')}</Button></section>
+    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 className="text-text-primary text-sm font-semibold">{t('skills.customDetail.addVersion')}</h2><p className="text-text-secondary text-body-sm mt-1">{t('skills.customDetail.addVersionDesc')}</p><Textarea className="mt-3" value={skillMd} onChange={(e) => setSkillMd(e.target.value)} placeholder={t('skills.customDetail.skillMdPlaceholder')} /><Button className="mt-3" onClick={() => { if (versionOwner.saveRefused) return; sentVersion.current = { hash: skillMdHash(skillMd), before: versions.data ? new Set(versions.data.versions.map((version) => version.content_hash)) : null }; void versionOwner.track(() => addVersion.mutateAsync({ skillId: skillId as string, skill_md: skillMd })); }} disabled={!skillMd || addVersion.isPending || versionOwner.saveRefused}>{t('skills.customDetail.saveVersion')}</Button><OwnerSaveNotice owner={versionOwner} className="mt-3" /></section>
     <EligibilityEditor rules={rules} setRules={setRules} preview={preview.data} loading={eligibility.isLoading} revision={revision} onPreview={runPreview} onSave={commitEligibility} saving={saveEligibility.isPending} message={message ? renderEligibilityMessage(message, t) : null} />
+    <OwnerSaveNotice owner={eligibilityOwner} className="mt-3" />
     <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6"><h2 className="text-text-primary text-sm font-semibold">{t('skills.customDetail.versions')}</h2>{versions.isLoading ? <div className="bg-surface-subtle mt-3 h-16 animate-pulse rounded-md" /> : versions.isError ? <p className="text-attention-text mt-3 text-sm">{renderSkillErrorInContext(classifySkillError(versions.error, 'skills.customDetail.versionsError'), 'skills.customDetail.versionsError', t)}</p> : <><div className="mt-3 flex flex-wrap gap-3"><label className="text-sm">{t('skills.customDetail.before')}<select className="border-border-default bg-surface-raised ml-2 rounded-md border p-2" value={a ?? ''} onChange={(e) => setA(e.target.value === '' ? undefined : Number(e.target.value))}><option value="">{t('skills.customDetail.chooseVersion')}</option>{versions.data?.versions.map((v) => <option key={v.id} value={v.id}>v{v.id}</option>)}</select></label><label className="text-sm">{t('skills.customDetail.after')}<select className="border-border-default bg-surface-raised ml-2 rounded-md border p-2" value={b ?? ''} onChange={(e) => setB(e.target.value === '' ? undefined : Number(e.target.value))}><option value="">{t('skills.customDetail.chooseVersion')}</option>{versions.data?.versions.map((v) => <option key={v.id} value={v.id}>v{v.id}</option>)}</select></label></div><ul className="text-text-secondary text-body-sm mt-4 space-y-2">{versions.data?.versions.map((v) => <li key={v.id} className="border-border-subtle flex flex-wrap justify-between gap-2 border-t pt-2"><span>v{v.id} · {v.validation_state ?? t('skills.customDetail.validationUnknown')}</span><span className="text-mono-sm">{v.content_hash}</span></li>)}</ul>{diff.isFetching && <p className="text-text-secondary mt-3 text-sm">{t('skills.customDetail.loadingDiff')}</p>}{diff.data && <pre className="bg-surface-sunken text-mono-sm mt-3 max-h-80 overflow-auto rounded-md p-3">{diff.data.diff.join('\n') || t('skills.customDetail.noChanges')}</pre>}{diff.isError && <p className="text-attention-text mt-3 text-sm">{renderSkillErrorInContext(classifySkillError(diff.error, 'skills.customDetail.diffError'), 'skills.customDetail.diffError', t)}</p>}</>}</section>
   </div></div>;
 }

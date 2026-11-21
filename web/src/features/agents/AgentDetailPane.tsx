@@ -1,3 +1,5 @@
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { classifySaveError } from '@/lib/owners/ownerRegistry';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
@@ -133,7 +135,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   const [retireOpen, setRetireOpen] = useState(false);
   const retireOpenerRef = useRef<HTMLButtonElement>(null);
 
-  // Reset dirty state when agent changes
+  // Reset dirty state when the agent or org changes: the editor (including
+  // Add repository staging) is bound to one org + agent.
   useEffect(() => {
     setRetireOpen(false);
     setDirty({});
@@ -142,9 +145,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setShowRepoAdd(false);
     setRepoAddName('');
     setRepoAddUrl('');
-  }, [agentName]);
+  }, [agentName, slug]);
 
   const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined || dirty.repos !== undefined;
+  const repoStagingDirty = showRepoAdd && (repoAddName.trim() !== '' || repoAddUrl.trim() !== '');
 
   // A display placeholder is never an executor identity for a draft or request.
   const selectedExecutor = dirty.executor ?? agent?.executor;
@@ -230,7 +234,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setSaveError(null);
   }, [effortSupported, selectedExecutor]);
 
+  // Repository draft actions refuse while a save is in flight: a newer draft
+  // can never be cleared by the older save's success.
   const onRepoRemove = useCallback((key: string) => {
+    if (saveInFlight.current) return;
     setDirty((prev) => {
       const current = prev.repos ?? { ...repos };
       const next = { ...current };
@@ -245,7 +252,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   const onRepoAdd = useCallback(() => {
     const name = repoAddName.trim();
     const url = repoAddUrl.trim();
-    if (!name || !url) return;
+    if (saveInFlight.current || !name || !url) return;
     setDirty((prev) => {
       const current = prev.repos ?? { ...repos };
       return { ...prev, repos: { ...current, [name]: url } };
@@ -256,13 +263,41 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setSaveError(null);
   }, [repoAddName, repoAddUrl, repos]);
 
+  // THR-387 S6-W2a: Main Agents config owner (executor / model + reasoning
+  // effort via PUT .../agents/{name}/model / repos) for this agent.
+  const owner = useConfigOwner({
+    page: 'agents.agent',
+    subject: agentName,
+    org: slug ?? null,
+    // Typed-but-not-added Add repository fields are part of this draft.
+    dirty: isDirty || repoStagingDirty,
+    draft: {
+      ...dirty,
+      removedRepos: dirty.removedRepos ? [...dirty.removedRepos] : undefined,
+      repoStaging: showRepoAdd ? { name: repoAddName, url: repoAddUrl } : null,
+    },
+    onDiscard: () => {
+      setDirty({});
+      setSaveError(null);
+      setShowRepoAdd(false);
+      setRepoAddName('');
+      setRepoAddUrl('');
+    },
+  });
+
   const hasSelectionDraft = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined;
   const canSave = agentReady && (!hasSelectionDraft || selectionReady);
 
   const onSave = useCallback(async () => {
     if (!slug || !isDirty || !canSave || !selectedExecutor || saveInFlight.current) return;
+    // One owner ticket for the whole save; any unclassifiable failure makes
+    // the result unknown, otherwise a refusal is a confirmed failure. No
+    // ticket while a prior result is unknown: nothing is sent.
+    const ticket = owner.begin();
+    if (ticket === null) return;
     saveInFlight.current = true;
     setSaving(true);
+    const rawErrors: unknown[] = [];
     try {
       setSaveError(null);
       const errors: SaveErrorItem[] = [];
@@ -272,6 +307,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       if (dirty.executor && dirty.executor !== agent?.executor) {
         if (!liveSelectableNames.has(dirty.executor)) {
           errors.push({ kind: 'executorUnavailable', name: dirty.executor });
+          rawErrors.push({ status: 422 });
           setSaveError(errors);
           return;
         } else {
@@ -281,6 +317,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
               body: { executor: dirty.executor },
             });
           } catch (err: unknown) {
+            rawErrors.push(err);
             errors.push({ kind: 'executor', view: classifyAgentError(err, 'agents.error.saveFailed') });
             // Preserve dirty state on error — user can retry.
             setSaveError(errors);
@@ -301,6 +338,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             },
           });
         } catch (err: unknown) {
+            rawErrors.push(err);
           errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
         }
       }
@@ -318,6 +356,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 body: { action: 'remove', repo_name: key },
               });
             } catch (err: unknown) {
+            rawErrors.push(err);
               errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.removeFailed') });
             }
           }
@@ -331,6 +370,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 body: { action: 'add', repo_name: key, url },
               });
             } catch (err: unknown) {
+            rawErrors.push(err);
               errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.addFailed') });
             }
           }
@@ -344,6 +384,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 body: { action: 'update', repo_name: key, url },
               });
             } catch (err: unknown) {
+            rawErrors.push(err);
               errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.updateFailed') });
             }
           }
@@ -356,10 +397,15 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
         setDirty({});
       }
     } finally {
+      // No request was sent for a locally refused executor: nothing unknown.
+      const outcome = rawErrors.some((err) => classifySaveError(err) === 'unknown')
+        ? 'unknown'
+        : rawErrors.length > 0 ? 'failed' : 'saved';
+      owner.settle(ticket, outcome);
       saveInFlight.current = false;
       setSaving(false);
     }
-  }, [slug, isDirty, canSave, dirty, agentName, agent, selectedExecutor, setExecutor, setModel, manageRepo, liveSelectableNames]);
+  }, [slug, isDirty, canSave, dirty, agentName, agent, selectedExecutor, setExecutor, setModel, manageRepo, liveSelectableNames, owner]);
 
   const onReset = useCallback(() => {
     if (saveInFlight.current) return;
@@ -596,6 +642,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 </a>
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => onRepoRemove(key)}
                   className="text-text-muted hover:text-tier-red ml-0.5 transition-colors"
                   aria-label={t('agents.detail.removeRepo', { name: key })}
@@ -623,7 +670,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 onChange={(e) => setRepoAddUrl(e.target.value)}
               />
               <div className="flex gap-2">
-                <Button size="sm" onClick={onRepoAdd} disabled={!repoAddName.trim() || !repoAddUrl.trim()}>
+                <Button size="sm" onClick={onRepoAdd} disabled={saving || !repoAddName.trim() || !repoAddUrl.trim()}>
                   {t('agents.detail.repoAdd')}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setShowRepoAdd(false)}>
@@ -795,7 +842,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       {isDirty && (
         <footer className="border-border-default bg-surface-sunken flex items-center justify-between gap-3 border-t px-4 py-3">
           <div className="flex items-center gap-2">
-            {saveError && (
+            {(owner.record?.status === 'failed' || owner.record?.status === 'unknown') ? (
+              <OwnerSaveNotice
+                owner={owner}
+                className="text-xs"
+                detail={saveError ? saveError.map((item) => renderSaveError(item, t)).join('; ') : null}
+              />
+            ) : saveError && (
               <div className="text-tier-red flex items-center gap-1.5 text-xs">
                 <AlertCircle size={12} />
                 <span>{t('agents.detail.saveError', { message: saveError.map((item) => renderSaveError(item, t)).join('; ') })}</span>
@@ -811,7 +864,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
               {t('agents.detail.reset')}
             </Button>
-            <Button size="sm" onClick={onSave} disabled={saving || !canSave}>
+            <Button size="sm" onClick={onSave} disabled={saving || !canSave || owner.saveRefused}>
               {saving ? t('agents.detail.saving') : t('agents.detail.save')}
             </Button>
           </div>

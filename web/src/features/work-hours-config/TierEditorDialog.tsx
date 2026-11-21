@@ -12,7 +12,9 @@
  *
  * Impact preview: org/team saves first show "affects N agents" before writing.
  */
-import { useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { OwnerSaveNotice, useConfigOwner, useOwnerGate } from '@/shared/owners';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -170,6 +172,47 @@ export function TierEditorDialog({
   const [errors, setErrors] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
 
+  // THR-387 S6-W2a: Main Work Hours config owner while the editor holds
+  // edits (the existing Main writer; no new editor).
+  const { slug } = useParams<{ slug: string }>();
+  // The draft belongs to the org it was opened for. A same-route org change
+  // never carries it into another org: Discard consent closes the editor, and
+  // any org change closes it before it can render or save there.
+  const openedOrg = useRef(slug);
+  if (!open) openedOrg.current = slug; // while closed, follow the route
+  const boundOrg = openedOrg.current;
+  const orgChanged = open && slug !== boundOrg;
+  useEffect(() => {
+    if (orgChanged) onOpenChange(false);
+  }, [orgChanged, onOpenChange]);
+  const draft = { mode, start, end, timezone, interval, days, catchUp };
+  const initialDraft = {
+    mode: current?.mode ?? null,
+    start: current?.window.start ?? null,
+    end: current?.window.end ?? null,
+    timezone: current?.window.timezone ?? null,
+    interval: current?.interval ?? null,
+    days: current?.days ?? null,
+    catchUp: current?.catch_up_on_startup ?? null,
+  };
+  const owner = useConfigOwner({
+    page: 'workHours.tier',
+    org: boundOrg ?? null,
+    dirty: open && !orgChanged && JSON.stringify(draft) !== JSON.stringify(initialDraft),
+    draft,
+    onDiscard: () => onOpenChange(false),
+  });
+  // Direct close paths (close button, Escape, Cancel) ask the owner gate
+  // first: unsent edits get Keep editing / Discard, a sent save holds.
+  const { requestOwnerTransition } = useOwnerGate();
+  const requestOpenChange = (next: boolean): void => {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: () => onOpenChange(false) });
+  };
+
   const effectiveMode = mode ?? inherited.mode;
   const isContinuous = effectiveMode === 'continuous';
 
@@ -210,14 +253,16 @@ export function TierEditorDialog({
 
   async function doSave() {
     setErrors([]);
-    try {
-      await mutation.mutateAsync({ working_hours: buildPatch() });
-      setConfirming(false);
+    const result = await owner.track(() => mutation.mutateAsync({ working_hours: buildPatch() }));
+    setConfirming(false);
+    if (result.ok) {
       onSaved();
-      onOpenChange(false);
-    } catch (err: unknown) {
-      setConfirming(false);
-      setErrors(extractServerErrors(err));
+      // Close only when the acknowledged draft is still the current one. A
+      // newer draft typed while the save was pending (via Back) stays open and
+      // dirty against the saved value, which is now the baseline.
+      if (result.current) onOpenChange(false);
+    } else if (result.outcome === 'failed') {
+      setErrors(extractServerErrors(result.error));
     }
   }
 
@@ -255,7 +300,7 @@ export function TierEditorDialog({
     t('workHours.tier.inheritedGhost', { value, source: sourceLabel(leaf) });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open && !orgChanged} onOpenChange={requestOpenChange}>
       <DialogContent className="max-w-xl min-w-0" closeLabel={t('common.close')}>
         <DialogHeader className="min-w-0 pr-6">
           <DialogTitle className="min-w-0 break-words">{title}</DialogTitle>
@@ -264,6 +309,7 @@ export function TierEditorDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <OwnerSaveNotice owner={owner} className="" />
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
@@ -443,7 +489,7 @@ export function TierEditorDialog({
             </>
           ) : (
             <>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
               <Button onClick={handleSaveClick} disabled={mutation.isPending}>

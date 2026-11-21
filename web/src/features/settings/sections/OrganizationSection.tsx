@@ -22,6 +22,15 @@ import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, nam
  * ALL org fields are live-apply. None require restart.
  *
  * Unsaved-changes guard: prompts on nav-away via beforeunload.
+ *
+ * THR-387 S6-W2a: the form is a config owner (`settings.organization`) and
+ * the Work Hours toggle a second one (`settings.workHours`), so the owner
+ * gate holds a pending/unknown save and prompts for unsent edits. A save is
+ * tagged with the draft revision it was sent for: when the user kept editing
+ * during the save, the success updates the saved baseline only and the newer
+ * draft stays unsaved. A failed save shows the C3 copy; an unknown result
+ * offers Check result (a fresh same-org read compared with what was sent). A
+ * changed org read never overwrites unsent edits.
  */
 import { forwardRef, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
@@ -37,7 +46,8 @@ import { EligibilityEditorDialog } from '@/shared/work-hours/EligibilityEditorDi
 import { SavedBanner } from '@/shared/work-hours/SavedBanner';
 import { extractServerErrors } from '@/shared/work-hours/extractServerErrors';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
-import { useUpdateOrgSettings } from '@/hooks/settings';
+import { useReadOrgSettingsNow, useUpdateOrgSettings } from '@/hooks/settings';
+import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useAgentsList } from '@/hooks/agents';
 import {
   Select,
@@ -107,6 +117,37 @@ function buildFieldState(org: OrgSettings): FieldState {
 }
 
 /**
+ * Check result (S6-W2a): whether a reread org snapshot matches EVERY field of
+ * the submitted patch, including the resolved dreaming include/exclude IDs
+ * (as sets). Any difference means the save did not (fully) apply.
+ */
+function patchApplied(patch: OrgSettingsPatch, org: OrgSettings): boolean {
+  const sameSet = (a: readonly string[], b: readonly string[]) =>
+    JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  if ('session_timeout_seconds' in patch && patch.session_timeout_seconds !== org.session_timeout_seconds) return false;
+  const dreaming = patch.dreaming;
+  if (dreaming) {
+    const saved = org.dreaming;
+    if (dreaming.enabled !== undefined && dreaming.enabled !== saved.enabled) return false;
+    if (dreaming.schedule && (dreaming.schedule.time !== saved.schedule.time || dreaming.schedule.timezone !== saved.schedule.timezone)) return false;
+    if (dreaming.catch_up_on_startup !== undefined && dreaming.catch_up_on_startup !== saved.catch_up_on_startup) return false;
+    const agents = dreaming.agents;
+    if (agents) {
+      if (agents.mode !== undefined && agents.mode !== saved.agents.mode) return false;
+      if (agents.include !== undefined && !sameSet(agents.include, saved.agents.include)) return false;
+      if (agents.exclude !== undefined && !sameSet(agents.exclude, saved.agents.exclude)) return false;
+    }
+  }
+  const threads = patch.threads;
+  if (threads) {
+    if (threads.enabled !== undefined && threads.enabled !== org.threads.enabled) return false;
+    if (threads.invocation_timeout_seconds !== undefined && threads.invocation_timeout_seconds !== org.threads.invocation_timeout_seconds) return false;
+  }
+  if (patch.reviewer_agents !== undefined && JSON.stringify(patch.reviewer_agents) !== JSON.stringify(org.reviewer_agents ?? [])) return false;
+  return true;
+}
+
+/**
  * Filter a comma-separated agent-name string to only tokens present in the
  * given roster. Non-roster tokens are silently dropped. Used at the save
  * boundary so that actively-typed (uncommitted) non-roster names never reach
@@ -143,6 +184,11 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const identityPreflight = usePreflightAddresses();
   const [identityError, setIdentityError] = useState<ThreadErrorDetail | null>(null);
   const savingLatch = useRef(false);
+  const readOrgSettings = useReadOrgSettingsNow();
+  /** The complete patch the latest save sent, for Check result. */
+  const submittedRef = useRef<OrgSettingsPatch | null>(null);
+  const fieldsRef = useRef(fields);
+  fieldsRef.current = fields;
 
   // ── Operating controls (work-hours enablement + eligibility) ──
   const { slug: orgSlug } = useParams<{ slug: string }>();
@@ -166,28 +212,37 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     workHoursToggleRef.current?.focus();
   }, []);
 
+  const workHoursSentRef = useRef<boolean | null>(null);
   async function setEnabled(next: boolean) {
     setWhError(null);
-    try {
-      await mutation.mutateAsync({ working_hours: { enabled: next } });
-      setWhSaved(true);
-    } catch (err: unknown) {
-      setWhError(extractServerErrors(err).join('; '));
-    }
+    workHoursSentRef.current = next;
+    const result = await workHoursOwner.track(() => mutation.mutateAsync({ working_hours: { enabled: next } }));
+    if (result.ok) setWhSaved(true);
+    // An unknown result is shown (with Check result) by the owner notice.
+    else if (result.outcome === 'failed') setWhError(extractServerErrors(result.error).join('; '));
   }
 
   // Reset fields when org data changes externally
+  // A changed read (another org, or a fresh read of this one) re-bases the
+  // form. Unsent edits of the SAME org are kept (S6-W2a: a reread never
+  // overwrites a draft); another org always starts from its own values.
   const prevOrgRef = useRef(org);
+  const prevSlugRef = useRef(orgSlug);
+  const lastSavedRef = useRef(lastSaved);
+  lastSavedRef.current = lastSaved;
   useEffect(() => {
     if (prevOrgRef.current !== org) {
       prevOrgRef.current = org;
+      const sameOrg = prevSlugRef.current === orgSlug;
+      prevSlugRef.current = orgSlug;
       const fresh = buildFieldState(org);
-      setFields(fresh);
+      const hasDraft = JSON.stringify(fieldsRef.current) !== JSON.stringify(lastSavedRef.current);
+      if (!sameOrg || !hasDraft) setFields(fresh);
       setLastSaved(fresh);
       setReviewerConfig(reviewerConfiguration(org));
-      setSaveState({ phase: 'idle' });
+      if (!sameOrg || !hasDraft) setSaveState({ phase: 'idle' });
     }
-  }, [org]);
+  }, [org, orgSlug]);
 
   const rosterNames = useMemo(
     () => new Set(agentsList.map((a) => a.name)),
@@ -214,6 +269,34 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       !sameReviewers(fields.reviewers, lastSaved.reviewers)
     );
   }, [fields, lastSaved, rosterNames, identityOptions]);
+
+  const owner = useConfigOwner({
+    page: 'settings.organization',
+    org: orgSlug ?? null,
+    dirty,
+    draft: fields,
+    onDiscard: () => {
+      setFields({ ...lastSavedRef.current });
+      setSaveState({ phase: 'idle' });
+    },
+    checkResult: async () => {
+      const sent = submittedRef.current;
+      if (!sent) return 'unknown';
+      const snapshot = await readOrgSettings();
+      // The complete submitted payload, resolved dreaming IDs included.
+      return patchApplied(sent, snapshot.org) ? 'saved' : 'not_saved';
+    },
+  });
+  const workHoursOwner = useConfigOwner({
+    page: 'settings.workHours',
+    org: orgSlug ?? null,
+    dirty: false,
+    draft: null,
+    checkResult: async () => {
+      const snapshot = await readOrgSettings();
+      return snapshot.org.working_hours.enabled === workHoursSentRef.current ? 'saved' : 'not_saved';
+    },
+  });
 
   // ── Generic chain reviewer (B3) ──
   // The picker needs a known roster: loading and read failure disable it and
@@ -295,9 +378,15 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
   const handleSave = useCallback(async () => {
     if (savingLatch.current || !orgSlug) return;
+    // No new save while a prior result is unknown (Check result first).
+    if (owner.saveRefused) return;
     const generation = orgGeneration.current;
     savingLatch.current = true; setIdentityError(null);
     setSaveState({ phase: 'saving' });
+    // The draft revision this patch is BUILT from. The ticket is bound to it
+    // even though identity resolution is awaited first: an edit made during
+    // resolution is a newer draft and stays unsaved.
+    const builtRevision = owner.draftRevision;
     try {
       const patch = buildPatch();
       // Picker selections are IDs. Typed current names resolve before the existing ID-valued patch.
@@ -306,13 +395,19 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const exclude = await resolve(fields.dreamExclude);
       if (patch.dreaming?.agents) { patch.dreaming.agents.include = include; patch.dreaming.agents.exclude = exclude; }
       if (orgGeneration.current !== generation) return;
-      const data = await mutation.mutateAsync(patch);
+      const ticket = owner.begin(builtRevision);
+      if (ticket === null) { setSaveState({ phase: 'idle' }); return; }
+      submittedRef.current = patch;
+      const result = await owner.track(() => mutation.mutateAsync(patch), undefined, ticket);
       if (orgGeneration.current !== generation) return;
-      const fresh = buildFieldState(data.org);
-      setFields(fresh);
+      if (!result.ok) throw result.error;
+      const fresh = buildFieldState(result.value.org);
+      // Saved applies only to the revision that was sent: a newer draft
+      // entered during the save stays in the form, unsaved.
+      if (result.current) setFields(fresh);
       setLastSaved(fresh);
-      setReviewerConfig(reviewerConfiguration(data.org));
-      setSaveState({ phase: 'saved' });
+      setReviewerConfig(reviewerConfiguration(result.value.org));
+      setSaveState(result.current ? { phase: 'saved' } : { phase: 'idle' });
     } catch (err: unknown) {
       if (orgGeneration.current !== generation) return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -320,7 +415,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       if (naming) { setIdentityError(naming); setSaveState({ phase: 'idle' }); }
       else setSaveState({ phase: 'error', message: msg });
     } finally { savingLatch.current = false; }
-  }, [buildPatch, mutation, orgSlug, identityPreflight, fields.dreamInclude, fields.dreamExclude, agentsList]);
+  }, [buildPatch, mutation, orgSlug, identityPreflight, fields, agentsList, owner]);
 
   // Unsaved-changes guard on nav-away
   useEffect(() => {
@@ -337,11 +432,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     <section>
       <div className="mb-4"><AddressableNameEditor kind="founder" canonicalId="founder" /></div>
       {identityError && <p role="alert" className="text-feedback-danger mb-4 text-sm">{renderThreadErrorDetail(identityError, t)}</p>}
-      {saveState.phase === 'error' && (
-        <div className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded-sm border p-3 text-sm">
-          {t('settings.organization.saveFailed', { detail: saveState.message })}
-        </div>
-      )}
+      {/* C3 failed / unknown + Check result / pending (S6-W2a). */}
+      <OwnerSaveNotice owner={owner} detail={saveState.phase === 'error' ? saveState.message : null} />
       {saveState.phase === 'saved' && (
         <div className="border-tier-green bg-feedback-success/10 text-tier-green mb-4 rounded-sm border p-3 text-sm">
           {t('settings.organization.saved')}
@@ -573,6 +665,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           {whSaved && (
             <SavedBanner message={t('settings.organization.workHoursSaved')} />
           )}
+          <OwnerSaveNotice owner={workHoursOwner} />
           {whError && (
             <div
               role="alert"
@@ -631,7 +724,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <button
             type="button"
             onClick={handleSave}
-            disabled={saveState.phase === 'saving'}
+            disabled={saveState.phase === 'saving' || owner.saveRefused}
             className="bg-accent-default text-text-inverse hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}
