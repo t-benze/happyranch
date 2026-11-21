@@ -339,8 +339,15 @@ selected remote name. Status is derived: `pending` (a sent save has no result)
 unreadable answer) > `failed` (a 4xx refusal, draft still unsaved) > `dirty` >
 `confirmed` > `clean`. A save is tagged with the draft revision it was sent
 for: a success for an older revision never marks a newer draft saved (the
-editor keeps the newer draft and the owner stays dirty); an older failure
+registry reports `current: false` and the owner stays dirty); an older failure
 never marks a newer in-flight save failed; a sent save is never discardable.
+The registry does not protect a draft by itself: each editor must either honour
+`current` or refuse draft edits while its save is pending. Organization,
+custom-skill metadata and the Work Hours tier/eligibility dialogs honour it (a
+dialog closes only when the acknowledged draft is still current; a newer draft
+typed via Back stays open and dirty against the saved value); Agents detail
+refuses repository add/remove while its save is in flight (executor/model/effort
+already did), and the system prompt editor disables its textarea while sending.
 An editor that awaits anything before sending (Organization resolves typed
 dreaming names to IDs) binds the save to the draft revision the request was
 BUILT from, so an edit made meanwhile stays unsaved. While an owner's result
@@ -391,8 +398,10 @@ Executors) are keyed by org; the Main custom-skill create/detail routes remount
 on an org/skill change (`KeyedByParams` in `routes.tsx`); the team escalation
 policy card is keyed by org/agent; and every draft-holding owner resets its
 draft on Discard (`onDiscard`: Organization, Executors binary path, Capacity,
-custom-skill create/metadata/version/eligibility, agent detail, skill
-assignment, policy). The Work Hours tier and eligibility dialogs belong to the
+custom-skill create/metadata/version/eligibility, agent detail including the
+typed Add repository fields, the agent system prompt, skill assignment,
+policy). Agents detail also resets its whole draft, including repository
+staging, when the org or agent changes. The Work Hours tier and eligibility dialogs belong to the
 org they were opened for: Discard closes them, and any org change closes them
 before they can render or save under the new org. A reread (Check result,
 lifecycle, a save's refresh) moves an editor's saved baseline but never
@@ -415,12 +424,21 @@ Registered editors: Settings Organization form (`settings.organization`) and
 its Work Hours toggle and eligibility editor (`settings.workHours`, all
 `PUT /orgs/{slug}/settings/org`), Capacity, Executors binary registration and
 custom-profile removal, Main Agents detail (executor, model/reasoning effort
-via `PUT …/agents/{name}/model`, repos), Skills assignment, custom-skill
+via `PUT …/agents/{name}/model`, repos, and the typed-but-not-added Add
+repository fields), the agent system prompt editor as its own owner
+(`agents.systemPrompt`, `PUT …/agents/{name}/system-prompt`; an unsent draft
+prompts, a sent save holds even after the editor unmounts, an unknown result
+reconciles through Check result or the editor's Reload by comparing the stored
+prompt with the sent text), Skills assignment, custom-skill
 create, and custom-skill metadata/version/eligibility/lifecycle writes, the
 team escalation policy page draft (`agents.escalationPolicy`), and the Main
 Work Hours tier editor (`work-hours-config/TierEditorDialog`, behind
 `work_hours_ui`). Coding has no writer on main (read-only original-save
-lookup). Save results use `OwnerSaveNotice` (C3): “Couldn't save {page} on
+lookup). Not registered inside Agents detail: the addressable-name editor
+(`shared/identities/AddressableNameEditor`, its own drafts keyed by
+org/kind/agent, so a draft is never sent to another org, but leaving does not
+prompt for it), the one-shot Retire confirmation dialog and knowledge instill
+operations (operations, not config drafts). Save results use `OwnerSaveNotice` (C3): “Couldn't save {page} on
 {computer} · {org}. Your changes are still here and aren't saved.” / “无法保存
 {computer} · {org} 的{page}。你的更改仍保留在这里，尚未保存。”; unknown keeps Check
 result; connection-attempt errors keep their own copy. Capacity keeps its

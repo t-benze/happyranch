@@ -108,7 +108,10 @@ export function EligibilityEditorDialog({
     setConfirming(false);
     if (result.ok) {
       onSaved();
-      onOpenChange(false);
+      // Close only when the acknowledged draft is still the current one. A
+      // newer draft typed while the save was pending (via Back) stays open and
+      // dirty against the saved value, which is now the baseline.
+      if (result.current) onOpenChange(false);
     } else if (result.outcome === 'failed') {
       setErrors(extractServerErrors(result.error));
     }

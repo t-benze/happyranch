@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { useReadAgentSystemPrompt, useSetAgentSystemPrompt } from '@/hooks/agents';
+import { useConfigOwner } from '@/shared/owners';
+import { classifySaveError, type SaveOutcome } from '@/lib/owners/ownerRegistry';
 import { useTranslation } from '@/hooks/i18n';
 import type { AgentSummary } from '@/lib/api/types';
 import type { MessageKey } from '@/lib/i18n';
@@ -61,7 +63,40 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
 
   const visible = snapshot ?? agent;
   const available = !!slug && !readUnavailable && (!!snapshot || (!loading && !failed)) && !!visible && validRevision(visible.revision);
-  const canSave = !!base && !pending && !needsRead && available && draft.trim() !== '' && draft !== base.system_prompt;
+  // THR-387 S6-W2a: this writer is its own owner (separate from the parent
+  // pane's model/repository draft). An unsent prompt draft prompts on leave or
+  // org change; a sent save holds until it settles (also after teardown); an
+  // unknown result refuses a new save until Reload / Check result reconciles it.
+  // `needsRead` is part of the draft so a kept draft re-reports dirty after an
+  // acknowledged save whose verification read did not confirm it.
+  const lastSubmission = useRef<{ system_prompt: string; expected_revision: string } | null>(null);
+  const reconcileFrom = (fresh: { system_prompt: string } | null | undefined): 'saved' | 'not_saved' | 'unknown' => {
+    const sent = lastSubmission.current;
+    if (!fresh || !sent) return 'unknown';
+    // The stored prompt is the submitted text: saved. Otherwise the submitted
+    // draft is not what is stored (the revision guard refuses a stale write),
+    // so it is kept as an unsaved draft for an explicit retry.
+    return fresh.system_prompt === sent.system_prompt ? 'saved' : 'not_saved';
+  };
+  const owner = useConfigOwner({
+    page: 'agents.systemPrompt',
+    subject: agentName,
+    org: slug || null,
+    dirty: base !== null && draft !== base.system_prompt,
+    draft: base ? { draft, revision: base.revision, needsRead } : null,
+    onDiscard: () => {
+      if (busy.current) return;
+      setBase(null); setDraft(''); setError(null); setDiagnostic(null); setNeedsRead(false);
+    },
+    checkResult: async () => {
+      try {
+        return reconcileFrom(await read.mutateAsync({ slug, agentName }));
+      } catch {
+        return 'unknown';
+      }
+    },
+  });
+  const canSave = !!base && !pending && !needsRead && !owner.saveRefused && available && draft.trim() !== '' && draft !== base.system_prompt;
 
   const beginEdit = () => {
     if (!available || !visible || !validRevision(visible.revision)) return;
@@ -78,10 +113,21 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     if (!canSave || !base || busy.current || inspectionRequired.current) return;
     // Freeze body, base and URL identity before either network operation.
     const submission = { slug, agentName, body: { system_prompt: draft, expected_revision: base.revision } };
+    const ticket = owner.begin();
+    if (ticket === null) return;
+    lastSubmission.current = submission.body;
+    let outcome: SaveOutcome | null = null;
     busy.current = true; inspectionRequired.current = true;
     setPending(true); setError(null); setDiagnostic(null); setSaved(false);
     try {
-      const receipt = await save.mutateAsync(submission);
+      let receipt: Awaited<ReturnType<typeof save.mutateAsync>>;
+      try {
+        receipt = await save.mutateAsync(submission);
+        outcome = 'saved';
+      } catch (err: unknown) {
+        outcome = classifySaveError(err);
+        throw err;
+      }
       if (!mounted.current) return;
       const fresh = await read.mutateAsync({ slug: submission.slug, agentName: submission.agentName });
       if (!mounted.current) return;
@@ -99,6 +145,8 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
         setDiagnostic(typeof text === 'string' ? text : null);
       }
     } finally {
+      // Settle even after teardown: the detached owner keeps holding until here.
+      owner.settle(ticket, outcome ?? 'unknown');
       if (mounted.current) { busy.current = false; setPending(false); }
     }
   };
@@ -112,6 +160,11 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
         setReadUnavailable(true); setError('agents.prompt.unavailable'); setNeedsRead(true); return;
       }
       setSnapshot(fresh); setReadUnavailable(false); inspectionRequired.current = false;
+      // Reload is the explicit inspection of an unknown save: reconcile it.
+      if (owner.saveRefused) {
+        const outcome = reconcileFrom(fresh);
+        if (outcome !== 'unknown') owner.reconcile(outcome);
+      }
       // Explicit inspection/rebase preserves the authored draft. Background
       // polling can never grant it a different revision.
       if (base) setBase({ system_prompt: fresh.system_prompt, revision: fresh.revision });

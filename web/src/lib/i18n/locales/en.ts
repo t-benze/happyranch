@@ -1027,6 +1027,7 @@ export const en = {
   'owners.page.settings.executors': 'Executors',
   'owners.page.settings.coding': 'Coding',
   'owners.page.agents.agent': 'Agent {subject}',
+  'owners.page.agents.systemPrompt': 'System prompt for agent {subject}',
   'owners.page.agents.escalationPolicy': 'Team escalation policy for {subject}',
   'owners.page.skills.assignment': 'Skill assignment for {subject}',
   'owners.page.skills.customCreate': 'New custom skill',

@@ -68,6 +68,7 @@ export type OwnerPage =
   | 'settings.executors'
   | 'settings.coding'
   | 'agents.agent'
+  | 'agents.systemPrompt'
   | 'agents.escalationPolicy'
   | 'skills.assignment'
   | 'skills.customCreate'

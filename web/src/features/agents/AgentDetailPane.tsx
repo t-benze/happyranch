@@ -135,7 +135,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   const [retireOpen, setRetireOpen] = useState(false);
   const retireOpenerRef = useRef<HTMLButtonElement>(null);
 
-  // Reset dirty state when agent changes
+  // Reset dirty state when the agent or org changes: the editor (including
+  // Add repository staging) is bound to one org + agent.
   useEffect(() => {
     setRetireOpen(false);
     setDirty({});
@@ -144,9 +145,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setShowRepoAdd(false);
     setRepoAddName('');
     setRepoAddUrl('');
-  }, [agentName]);
+  }, [agentName, slug]);
 
   const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined || dirty.repos !== undefined;
+  const repoStagingDirty = showRepoAdd && (repoAddName.trim() !== '' || repoAddUrl.trim() !== '');
 
   // A display placeholder is never an executor identity for a draft or request.
   const selectedExecutor = dirty.executor ?? agent?.executor;
@@ -232,7 +234,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setSaveError(null);
   }, [effortSupported, selectedExecutor]);
 
+  // Repository draft actions refuse while a save is in flight: a newer draft
+  // can never be cleared by the older save's success.
   const onRepoRemove = useCallback((key: string) => {
+    if (saveInFlight.current) return;
     setDirty((prev) => {
       const current = prev.repos ?? { ...repos };
       const next = { ...current };
@@ -247,7 +252,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   const onRepoAdd = useCallback(() => {
     const name = repoAddName.trim();
     const url = repoAddUrl.trim();
-    if (!name || !url) return;
+    if (saveInFlight.current || !name || !url) return;
     setDirty((prev) => {
       const current = prev.repos ?? { ...repos };
       return { ...prev, repos: { ...current, [name]: url } };
@@ -264,11 +269,19 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     page: 'agents.agent',
     subject: agentName,
     org: slug ?? null,
-    dirty: isDirty,
-    draft: { ...dirty, removedRepos: dirty.removedRepos ? [...dirty.removedRepos] : undefined },
+    // Typed-but-not-added Add repository fields are part of this draft.
+    dirty: isDirty || repoStagingDirty,
+    draft: {
+      ...dirty,
+      removedRepos: dirty.removedRepos ? [...dirty.removedRepos] : undefined,
+      repoStaging: showRepoAdd ? { name: repoAddName, url: repoAddUrl } : null,
+    },
     onDiscard: () => {
       setDirty({});
       setSaveError(null);
+      setShowRepoAdd(false);
+      setRepoAddName('');
+      setRepoAddUrl('');
     },
   });
 
@@ -629,6 +642,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 </a>
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => onRepoRemove(key)}
                   className="text-text-muted hover:text-tier-red ml-0.5 transition-colors"
                   aria-label={t('agents.detail.removeRepo', { name: key })}
@@ -656,7 +670,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
                 onChange={(e) => setRepoAddUrl(e.target.value)}
               />
               <div className="flex gap-2">
-                <Button size="sm" onClick={onRepoAdd} disabled={!repoAddName.trim() || !repoAddUrl.trim()}>
+                <Button size="sm" onClick={onRepoAdd} disabled={saving || !repoAddName.trim() || !repoAddUrl.trim()}>
                   {t('agents.detail.repoAdd')}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setShowRepoAdd(false)}>
