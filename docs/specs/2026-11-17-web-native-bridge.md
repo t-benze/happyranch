@@ -540,12 +540,11 @@ Backend signal gaps in §8 remain tracked Engineering/TASK-16779 dependencies. S
 ## 12. Settings bridge v2: status, errors and target generation
 
 THR-387 S5-0 / TASK-18133; target contract from TASK-18102 §§1.1–1.4 and
-TASK-18131. This section defines the next version; it does **not** claim that
-Linux, Mac or web implements it. The implementation table below is pinned to
-Linux main **`921f126e14d6dd5befc869ae77278134b20985ab`** (PRs #1762, #1765,
-#1767), rather than the earlier plan's WIP. Mac is pending (no Mac work this
-wave); web is pending S5-W1. The v1 file, facade and deployed admission remain
-unchanged. The proposed Main-view bridge/cutover supersedes the earlier
+TASK-18131. This section defines the next version. Which platforms implement
+it is recorded only in [Current implementation status](#current-implementation-status)
+below: Linux per PR #1769 (S5-L1), web per the S5-W1 PR (TASK-18159); Mac is
+pending (no Mac work this wave). The v1 file, facade and deployed admission
+remain unchanged. The proposed Main-view bridge/cutover supersedes the earlier
 separate-view placement only when its separately owned implementation lands.
 
 ### v2 status payload
@@ -632,8 +631,8 @@ cancel queries and remove target-scoped queries; desktop query keys include
 generation. Open drafts survive recovery rereads. On 409, re-read `app.status`;
 GET queries may refetch once under the new generation, mutations never retry.
 SSE stops and resubscribes only after the new generation is known. Browser's
-generation is the constant `browser` and does not trigger this logic. These are
-pending S5-W1 requirements, not a description of main's web implementation.
+generation is the constant `browser` and does not trigger this logic. The web
+implementation status is in the table below.
 
 ### v2 compatibility rule
 
@@ -729,12 +728,13 @@ and date-time values. The final two examples must be rejected.
 
 The historical Linux inventory baseline is main `921f126e14d6dd5befc869ae77278134b20985ab`
 (PRs #1762, #1765 and #1767). The table below describes the later **PR #1769
-source epoch** (S5-L1, including the round-2 recovery fix); every file/line
+source revision** (S5-L1, including the round-2 recovery fix); every file/line
 citation in this table refers to that PR source tree, not the historical main
 baseline. This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
 `packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
-**pending (no Mac work this wave)** and web is **pending S5-W1**. Existing v1 bridge result errors
+**pending (no Mac work this wave)**. Web status is summarized after the table
+(S5-W1). Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
 | Code / rule | Linux PR #1769 status and file:line evidence |
@@ -770,12 +770,24 @@ baseline. This is source inspection, not live/native acceptance. `AS` =
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
-W-1/W-2 remain web-owner requirements: native 429 must stay an ordinary error;
-host busy must be transient and clear on successful forwarding; stale responses
-must not revive recovery, and mutations never auto-retry on 409. Merged S1b-A
-PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec slice itself changes no implementation, tests, required checks or
-CI triggers. Live Linux, Mac and web v2 behavior is
-**NOT RUN** by this specification change.
+**Web (S5-W1, TASK-18159).** The web consumes this contract as described in
+[`docs/agent-guides/web-and-cli.md`](../agent-guides/web-and-cli.md#native-bridge-v2-target-generation-thr-387-s5-w1):
+generation store and `X-HappyRanch-Target` echo (`web/src/lib/native/target.ts`,
+`web/src/lib/api/client.ts` `schemeFetch`, `sse.ts`, `features/jobs/jobEventsHook.ts`),
+stale drop, query/stream cleanup on change (`web/src/lib/native/queryClient.ts`),
+409/429/499 handling and the app.status-derived page state. W-1 (host busy is a
+transient notice and clears on successful forwarding), W-2a (recovery clears on a
+later successful forwarded response; stale responses neither clear nor revive it)
+and W-2b (mutations never auto-retry on 409) are implemented with focused checks in
+`web/scripts/native-bridge-v2.test.mjs`. Review round 1 (TASK-18178) added
+per-operation generation pinning across the 401 re-send, error-body generation
+rechecks, Result unknown for native mutation transport loss, Settings editor
+custody across a switch and transient read recovery. Review round 3 (TASK-18189)
+added a per-generation bearer bootstrap (a newer generation never shares an older
+pending bootstrap) and pinning before explicit-token bearer preparation. This is source/unit evidence only. Merged
+S1b-A PR #1764 is not counted as S5-W1 v2 implementation. The S5-0 schema/spec
+slice itself changed no implementation, tests, required checks or CI triggers.
+Live Linux, Mac and web v2 behavior is **NOT RUN** by these changes.
 
 ### v2 dialog request event
 

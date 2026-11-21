@@ -3810,6 +3810,17 @@ export const en = {
   "recovery.incompatible.unknown.title": "Compatibility unavailable",
   "recovery.incompatible.unknown.body": "This app couldn’t confirm that it works with HappyRanch on the selected computer. Recheck, or choose another computer in Connection.",
   "recovery.incompatible.otherComputer": "You can also choose another computer in Connection.",
+  // --- THR-387 S5-W1: native bridge v2 request notices + prompt URL ---
+  "nativeNotice.dismiss": "Dismiss",
+  "nativeNotice.busy.title": "The selected computer is busy.",
+  "nativeNotice.busy.body": "Retrying automatically. Anything you were saving was not sent, and your draft is still unsaved.",
+  "nativeNotice.throttled.title": "Too many requests at once.",
+  "nativeNotice.throttled.body": "Retrying automatically. Anything you were saving was not sent, and your draft is still unsaved. Try again in a moment.",
+  "nativeNotice.notSent.title": "Not sent.",
+  "nativeNotice.notSent.body": "The connection changed before your change was sent. Your changes are still here, unsaved.",
+  "nativeNotice.resultUnknown.title": "Result unknown.",
+  "nativeNotice.resultUnknown.body": "The connection changed while your change was being sent, so it may or may not have been saved. Check the result before trying again.",
+  "onboarding.connect.promptUnavailable": "A connection prompt is available only while this app is using HappyRanch on this computer. Connect CLIs on the computer that runs HappyRanch.",
 } as const satisfies Catalog;
 
 export default en;

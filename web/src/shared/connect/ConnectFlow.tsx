@@ -23,6 +23,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
+import { usePromptBaseUrl } from '@/lib/native/hooks';
 import {
   BUILTINS,
   buildConnectPrompt,
@@ -114,6 +115,28 @@ export function ConnectFlow({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Desktop without a local prompt URL (remote target / not yet known) */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The copy-paste prompt needs native's verified local daemon URL
+ * (app.status `local.prompt_base_url`). It is null for a remote target (a
+ * remote address is never disclosed), so no token is minted and no prompt is
+ * shown.
+ */
+function PromptUnavailable({ skipSlot }: { skipSlot?: ReactNode }): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <div className="mt-8 max-w-lg">
+      <p className="text-text-secondary text-base leading-relaxed" role="status" data-connect-prompt-unavailable="">
+        {t('onboarding.connect.promptUnavailable')}
+      </p>
+      {skipSlot && <div className="mt-8 flex flex-wrap items-center gap-3">{skipSlot}</div>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  BUILT-IN — dropdown → mint binary token → copy prompt → poll       */
 /* ------------------------------------------------------------------ */
 
@@ -130,7 +153,7 @@ export function BuiltinConnect({
 }): JSX.Element {
   const { t } = useTranslation();
   const [kind, setKind] = useState<Kind | ''>('');
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const apiBase = usePromptBaseUrl();
 
   const flow = useRuntimeConnect({
     requirePresent: true,
@@ -138,11 +161,13 @@ export function BuiltinConnect({
     onConnected,
   });
 
+  if (apiBase === null) return <PromptUnavailable skipSlot={skipSlot} />;
+
   if (flow.state === 'waiting') {
     return (
       <WaitingBody
         name={flow.name}
-        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'binary')}
+        prompt={buildConnectPrompt(flow.name, flow.token, apiBase, 'binary')}
         expired={flow.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}
@@ -231,7 +256,7 @@ export function AdapterConnect({
 }): JSX.Element {
   const { t, render, locale } = useTranslation();
   const [nameInput, setNameInput] = useState(fixedName ?? '');
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const apiBase = usePromptBaseUrl();
 
   const flow = useDirectConnect({ onConnected });
 
@@ -243,13 +268,15 @@ export function AdapterConnect({
     if (nameValid) flow.start(name);
   };
 
+  if (apiBase === null) return <PromptUnavailable skipSlot={skipSlot} />;
+
   // Waiting state — the candidate CLI creates the wrapper and POSTs /connect
   if (flow.state.stage === 'waiting') {
     const s = flow.state;
     return (
       <AdapterWaitingBody
         name={s.name}
-        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination, locale)}
+        prompt={buildDirectConnectPrompt(s.name, s.token, apiBase, s.wrapperDestination, locale)}
         expired={s.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}
@@ -288,7 +315,7 @@ export function AdapterConnect({
     return (
       <AdapterRetryableBody
         name={s.name}
-        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination, locale)}
+        prompt={buildDirectConnectPrompt(s.name, s.token, apiBase, s.wrapperDestination, locale)}
         reason={s.reason}
         onRerun={flow.rerunExistingPrompt}
         onBack={flow.back}

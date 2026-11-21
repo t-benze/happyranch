@@ -16,6 +16,7 @@ import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlot
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { useNativeRecovery } from '@/hooks/nativeRecovery';
+import { NativeNotice } from '@/shared/connection/NativeNotice';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
@@ -62,10 +63,23 @@ function RootRedirect(): JSX.Element {
   // A native recovery state (desktop: no target, starting, incompatible, ...)
   // is shown by the AppShell; it is not "no orgs", so never route to onboarding.
   if (recovery) return <></>;
+  // THR-387 S5-W1 F3: only a successful (possibly empty) list routes; a
+  // pending or failed read is never "no orgs", so an existing install is
+  // never sent to onboarding on failure. A transient native failure
+  // (busy/throttled) is refetched automatically once it clears.
   if (orgsQuery.isLoading) {
     return <div className="text-text-secondary p-8">{t('shell.loading')}</div>;
   }
-  const first = orgsQuery.data?.orgs[0]?.slug;
+  if (orgsQuery.data === undefined) {
+    if (!orgsQuery.isError) return <div className="text-text-secondary p-8">{t('shell.loading')}</div>;
+    return (
+      <div className="text-text-secondary flex flex-col gap-3 p-8" data-root-orgs-error="">
+        <div className="text-text-primary text-base font-semibold">{t('shell.error.title')}</div>
+        <div className="text-xs">{t('shell.error.body')}</div>
+      </div>
+    );
+  }
+  const first = orgsQuery.data.orgs[0]?.slug;
   if (!first) {
     return <Navigate to="/onboarding" replace />;
   }
@@ -121,6 +135,8 @@ function AppShell(): JSX.Element {
       <TopbarSlotsProvider>
         <div className="flex min-w-0 flex-1 flex-col">
           <AppBar />
+          {/* THR-387 S5-W1: non-blocking busy/throttled/not-sent/unknown notice. */}
+          <NativeNotice />
           <main id={MAIN_CONTENT_ID} tabIndex={-1} className="flex-1 overflow-hidden focus:outline-none">
             {/* THR-387 S1b: a native recovery state replaces the visible page
                 but keeps it mounted (hidden) so drafts and page state survive. */}

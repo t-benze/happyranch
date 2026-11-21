@@ -56,7 +56,10 @@ never an auth failure: it never clears or re-acquires the bearer and never
 logs out; the 401 clear/re-bootstrap/replay path is unchanged. A stream that
 opens to a recovery answer stops (no retry), like other non-OK opens; network
 errors still retry. Streams are not resubscribed after Retry; a remount
-(navigation) reopens them.
+(navigation) reopens them. Since S5-W1 (next section), `busy` is a
+non-blocking notice and never this page state (W-1), any successful forwarded
+response clears the state (W-2a), and in the desktop app a 409
+`target_changed` re-reads `app.status` instead of setting the state.
 
 While a state is active, `NativeRecoveryFence` (in
 `shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
@@ -115,6 +118,124 @@ missing or invalid metadata is incompatible. Bump rules mirror
 `node --experimental-transform-types --test web/scripts/native-recovery.test.mjs`
 (Node 24, repository root; transform-types is needed for TS parameter
 properties).
+
+## Native bridge v2 target generation (THR-387 S5-W1)
+
+Web side of spec `docs/specs/2026-11-17-web-native-bridge.md` §12. The desktop
+app is detected only by origin `happyranch-app://app` with the
+`window.happyranchConnection` facade; every other page (daemon-served
+`happyranch web`, Mac) is browser mode: the generation is the constant
+`browser`, no header is sent and none of the logic below runs.
+
+- **Store** (`web/src/lib/native/target.ts`): seeded from `app.status` and
+  updated from `app.stateChanged` (closed v2 `appState`, parsed by
+  `native/appStatus.ts`; invalid payloads are ignored). A status reply is
+  applied only if no event arrived meanwhile. The store also drives the page
+  recovery state: `ready` clears it; `no_target`, `target_starting`,
+  `unreachable` and `incompatible` set the matching state; `busy` is a notice.
+- **Header**: `schemeFetch` in `lib/api/client.ts` (used by `request()`, the
+  artifacts and task-attachment direct fetches) and both SSE helpers send
+  `X-HappyRanch-Target` with the native-issued generation;
+  `GET /api/v1/auth/bootstrap` is exempt. Until native has reported a
+  generation, requests wait for the first `app.status`; if none is available
+  nothing is sent (reads show the `target_changed` state, changes fail as Not
+  sent).
+- **Pinning** (`pinTarget`/`repinBeforeSend`): `request()`, the artifacts
+  helpers and the task-attachment upload pin the generation once per logical
+  operation, before any preparatory await (bearer bootstrap, multipart
+  preparation), and keep it across the 401 clear/re-bootstrap/re-send. If the
+  generation changed before a send, a change is never sent to the new target:
+  this includes explicit-token callers (Workflow Setup and Coding settings
+  saves pass `auth: { token: getToken }`, so the bearer is prepared after the
+  pin and still sent once, including on 401, without clearing the bearer);
+  `NotSentError` / Not sent (that send never left the page; a 401 is a
+  definite refusal, so nothing was applied). A GET re-pins once and is sent
+  under the new generation. Browser mode keeps the unchanged single 401
+  re-send.
+- **Stale drop**: a GET whose captured generation is no longer current is
+  rejected with `StaleTargetError` (a `NativeRecoveryError`, never recorded as
+  a state): no cache write, toast or draft update. The generation is
+  rechecked after every asynchronous error-body read (client, both SSE
+  open handlers and the bearer bootstrap), so an old body never publishes a
+  notice or recovery state for the new target. The bootstrap is exempt from
+  the header only: one generation is captured when the shared in-flight
+  bootstrap starts (callers under a newer generation start their own
+  bootstrap instead of sharing an older one), and a failed body that finishes after a switch publishes
+  nothing (`BootstrapStaleError`); `pinnedToken` turns it into
+  `StaleTargetError` for a read and Not sent for a change (browser mode and
+  the stored bearer are unchanged). A change (non-GET) that is stale, answered 499
+  `cancelled`, whose fetch rejects (transport loss, even with no generation
+  event: upstream bytes may already have been forwarded) or whose body read
+  fails is `ResultUnknownError` with the Result unknown notice; it is never
+  retried. A caller's own abort keeps its `AbortError`; explicit pre-forward
+  refusals (409 `target_changed` Not sent, 503 codes, 429 Throttled) stay
+  distinct.
+- **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
+  hashes include the generation of the last switch; a change cancels queries,
+  moves each mounted observer to its new-generation key (one fetch under the
+  new generation), removes all old-generation queries, retries latched read
+  owners (as an explicit Retry) and aborts old-generation streams. Feature
+  query keys are unchanged and nothing remounts. `subscribeSSE` resubscribes
+  in place once the new generation is known; `useJobEventStream` re-runs its
+  stream effect for the new generation.
+- **Editor custody** (`custody` key prefixes; `AppProvider` passes
+  `['settings']`): a mounted observer of a custody key that already shows
+  data is NOT moved. It stays suspended on its older-target entry with the
+  same data object (no fetch, refetch or invalidation refetch, and no
+  new-target data ever lands in it), so data-gated editors such as the
+  Settings Organization form stay mounted and keep their drafts; old data is
+  never used as the new target's entry. While any custody hold exists, no
+  change (non-GET `schemeFetch`) is sent to the current target: Not sent,
+  draft kept. The pin is scoped to the observer's original logical query
+  key: same-key rerenders keep it, but when the owner gives the SAME observer
+  a different key (for example Settings following an org change in the
+  sidebar) that observer is released and the new key resolves and fetches
+  under the current generation. The hold ends when its last observer leaves
+  (navigation, unmount or such a re-key); a new mount reads the new target. A custody read still
+  loading at the switch moves like any other. Owner UI for the held state
+  (re-key, carry or discard the draft) is S6-W1.
+- **Transient recovery**: when busy/throttled clears (a native `ready`
+  status or a later successful forwarded response), active queries that
+  failed with a transient native error (503 `busy`, 429 `too_many_requests`,
+  including the bearer bootstrap) are refetched once. A read still pending
+  when the signal fires (a bootstrap busy body or the final GET backoff
+  attempt) is not missed: each query records the recovery epoch its fetch
+  started under, and a transient failure that settles after a newer signal
+  is refetched once. Mutations are never retried. `RootRedirect` routes only on a successful (possibly empty) org
+  list; a pending read shows Loading and a failed one the shell error copy, so
+  an existing install is never sent to onboarding on failure (browser mode
+  too).
+- **409 `target_changed`** (desktop): re-read `app.status`. A GET refetches
+  once when the generation is unchanged (a changed generation is dropped as
+  stale and refetched by its new owners); a change is `NotSentError` with the
+  Not sent notice and is never retried. A stream waits for the new generation
+  before resubscribing. Browser mode keeps the S1b behavior.
+- **429 `too_many_requests`** (native per-view cap) is `ThrottledError` /
+  the Throttled notice, distinct from **503 `busy`** (host busy, W-1). Both
+  are non-blocking: GETs and stream opens retry with backoff (0.5/1/2 s; 3
+  GET retries, streams capped at 5 s), changes fail at once and are never
+  retried. The next successful forwarded response clears busy/throttled and
+  the page recovery state (W-2a); a stale response clears nothing.
+- **Notice** (`shared/connection/NativeNotice.tsx`, mounted once above the
+  routed page): busy/throttled ("retrying") clear themselves; Not sent ("your
+  changes are still here") and Result unknown ("check the result before
+  trying again") stay until dismissed. It never hides the page and never
+  resends anything; owner-specific Check result reconciliation is S6-W2.
+- **Menu state and prompt URL**: `deriveConnectionMenuState` /
+  `useConnectionMenuState` expose the app.status-derived target, state,
+  candidate phase, local running state and Access-not-saved badge for the S6
+  dialogs (no UI here). Copy-paste CLI prompts in `shared/connect` use
+  `getPromptBaseUrl()`: the page origin in browser mode, otherwise
+  `local.prompt_base_url`; when that is null (remote target or not yet
+  known) no token is minted and the flow shows that prompts are available
+  only while using HappyRanch on this computer.
+
+Focused checks (Node 24, repository root):
+`node --experimental-transform-types --test web/scripts/native-bridge-v2.test.mjs`.
+They exercise the real transport/query modules with fetch, bridge and
+QueryObserver stubs (module coverage). `AppProvider`/`routes.tsx` wiring and
+rendered editors are not executed by them (JSX); live WebKitGTK/native
+behavior is not covered either.
 
 ## Desktop Settings and Connection dialogs (THR-387 S6-W1)
 
