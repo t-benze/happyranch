@@ -41,6 +41,22 @@ pending an approved protected binding flow. The founder-host default `.deb` layo
 8765/`~/.happyranch` is always excluded. Linger remains a separate opt-in; remote enable never sets
 it.
 
+THR-327 seq613: the packaged Linux daemon launcher creates its release data
+folder (`$XDG_DATA_HOME/happyranch`, otherwise `~/.local/share/happyranch`, using
+the existing absolute-XDG resolver) explicitly at 0700 before daemon exec can
+publish lock/PID/discovery/readiness state. GUI-first startup applies the same
+creation before desktop.lock. The final leaf is created and opened without
+following a symlink, then verified by descriptor as a real directory owned by
+the current UID; a new folder must be exactly 0700. Only that new verified
+inode may have owner bits restored after umask filtering. Existing folders
+are never chmod/chown repaired: a symlink, non-directory, wrong owner or
+group/world-writable folder logs its path/problem and that it must be private
+to the user. This adds no daemon-startup veto for an existing unsafe folder;
+the existing Enable refusal remains `release_home_invalid`. Shared dev/home
+creation, daemon file modes, systemd UMask and every helper-owner validation
+predicate stay unchanged. Creating an XDG release folder does not extend the
+protected-binding policy described above.
+
 Read before drafting: TASK-16298 `design.md` rev2; TASK-16362 `architecture-review.md`; the [current
 contract](../agent-guides/contracts/remote-access-and-remote-jobs.md) and
 [RUNBOOK](../operations/remote-access-runbook.md). Baseline code facts:
@@ -1015,7 +1031,46 @@ its exact head.
 | 3c invite issuance | Local root-only Headscale mint + connector private invite IPC, v2 DNS URL + CA/fingerprint/dial_ip; after 2/3b, within approved R2. | Synthetic local mint/idempotency/uncertainty/cleanup; fresh auth, v2 exact schema/CA size and round-trip, v1/IP-URL/unknown-field refusal, home_endpoint unchanged, effective countdown, no user mint capability, redaction/replay/expiry. |
 | 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring after merged #1568/#1569; verify their installed behavior. | Existing standalone desktop checks; native GTK states/actions from §7, including prompt cancellation, countdown and partial cleanup. Separate fresh polkit prompts at enable, invite, actual-device comparison/approval, turn off and revoke; route-policy renewal paused + Retry. Home card/address refresh; no admin-key prompt. No host service actions for maker. |
 | 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process strict CONNECT verifier + ephemeral local fallback roots/proxy/resolver, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
-| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Hosted fixtures remain home/synthetic; outside-home app acceptance is separately founder-run after G1–G3 and hardening below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
+| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, immediate Disable with native health.json and numeric temp already present (I5e/I5f/I5g), interrupted recovery and route-policy renewal failure closed. Case 6 checks exact Turn off residue and the fixed post-Off uninstall refusal without inventory/service mutation; home-profile uninstall remains deferred (U1). Hosted fixtures remain home/synthetic; outside-home app acceptance is separately founder-run after G1–G3 and hardening below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
+
+I6a's M1 driver installs the `.deb` and starts the unchanged packaged release
+daemon in the runner user manager. Its live unprivileged system-bus caller uses
+exact public Enable/ReplaceFailed/Disable/RetryPolicyRenewal signatures and
+interactive authorization; admission is checked separately from protected
+completion state and a fresh helper owner/process is recorded for each call.
+No test-side provision/prepare/publish, operator JSON, CLI pairing or enrollment
+input is allowed. Any unavailable refusal followed by retry remains explicit.
+Interruption is a native signal after independently confirmed complete staging;
+missing that boundary fails the case. A policy-custody fault plus disposable
+wall-clock advance expires the unchanged cached envelope; the check observes old
+serving processes gone, external sidecar stopped and identity ingress closed,
+even if systemd has begun a non-READY restart. Clock/custody restoration and
+public renewal precede normal-supervision recovery and the final Disable.
+
+After both the immediate and final Disable, five root:root 0644 renderer-exact
+fragments remain inert without enablement/drop-ins; release binding and
+policy/provision remain. All B6 removed members, including sidecar diagnostics,
+must be absent for complete Off after successful revoke. Q2's failed-revoke
+retention is not a pass. The post-Off uninstall refusal must preserve byte/inode
+inventory and issue no systemd mutation; no legacy uninstall fixture is added.
+Proven-Off fixture cells may be archived root-only until disposal, never called
+product cleanup. Uploaded evidence excludes config/state/keys/raw journals.
+Enable admission/capture catch-alls may journal fixed internal stage names and
+the exception class only. The harness exports a bounded allowlisted excerpt
+under the [M1 runbook](../operations/remote-access-runbook.md#manual-home-m1-i6a),
+without exception text, paths, values or changes to public refusal categories.
+**Disposable authentication simulation does not prove a real desktop dialog.**
+These cases require new exact-head hosted evidence; historical M1 receipts do
+not qualify them, and no trigger, required check or Product E2E run is added.
+
+The pre-dispatch real deb build/extraction in the existing temp-root venue must
+return installer `(clean, absent)` and pass `HomeUnitGate` without native
+effects, under I5h's exact packaged-helper byte/custody recognition. Otherwise
+dispatch stops. Every assertion has a fixed nonsecret message; inventory
+messages expose only owner state/detail enums and allowlisted fixed members
+(unknown members become `unrecognized-member`). Environment messages expose
+presence/equality only. The six case predicates, exact Off residue and fixed
+post-Off uninstall refusal remain unchanged; home-profile uninstall is deferred.
 
 **Round-7 B falsifiable transport/admission matrix.** Required separately on Linux 1b and the
 native unsigned Mac home-bridge 5b; client logs alone are not refusal evidence. Use synthetic

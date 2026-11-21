@@ -178,6 +178,25 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
         v.observers.close()
 
 
+def test_clean_enable_capture_without_headscale_account(composition: Any) -> None:
+    v = composition
+    assert v.io._headscale_shape() is None
+    native = v.io._run
+    scans = []
+
+    def run(args: list[str], **kwargs: Any) -> tuple[int, str]:
+        if args == ['ps', '-eo', 'ruid=,euid=,suid=,fuid=']:
+            scans.append(args)
+            return 0, '1001 1001 1001 1001\n'
+        return native(args, **kwargs)
+
+    v.io._run = run
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert json.loads(expected)['prestate'] == 'clean'
+    assert scans and not v.head.present
+    assert not v.calls and not v.account_creations
+
+
 @pytest.mark.parametrize('prestate', ['clean', 'staged-inert', 'prepared'])
 def test_composed_enable_real_owners(composition: Any, monkeypatch: pytest.MonkeyPatch, prestate: str) -> None:
     v = composition

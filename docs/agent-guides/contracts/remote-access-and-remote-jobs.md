@@ -352,7 +352,80 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   After both notify services are READY and the existing drift checks succeed, the installer unlinks the fixed source and credstore link and fsyncs both directories. Any failure after staging also attempts this cleanup, including reload/enable/start/drift and stop failures; start/drift failure still requests target stop. Cleanup refusal is an explicit installation error naming the two fixed paths and requiring operator revocation/inspection. Stale enrollment residue refuses reinstall before commands; uninstall removes safe source/link residue before stopping services, with or without `--purge`. A crash or unsafe replaced entry may leave residue requiring explicit operator care; there is no journal or racing-root-writer fence. Retry requires a freshly issued key. The temporary source is the bounded single-use enrollment handoff, not persistent configuration storage. M1 below exercised the initial systemd credential handoff; consumed-state restart and reboot acceptance remain **UNEXECUTED** and outside M1.
 
 - **Managed remote access N0/N1/N2 amendment (THR-097 seq360/seq374/seq379/seq392).** The managed transport value is `embedded`: packaged macOS tsnet/userspace WireGuard is designed to connect to the Linux sidecar in `app/linux/tsnet-sidecar/`, which proxies raw TCP only to the N2 Python connector's explicit `managed` listener on literal `127.0.0.1`. `runtime/remote_access/managed_provider.py` reuses the existing pairing and locked gateway pipeline; the connector alone owns application identity, credentials, epoch, allow-list/route policy and revocation and injects the daemon bearer only on the final `127.0.0.1:<resolved-port>` hop. The N1 core fail-closes credential redemption/listener startup and removes external admission before active connections and engine state; persisted N2 revocation likewise stops the listener first, then seals/closes active flows, then performs downstream runtime cleanup, retaining failed cleanup handles for idempotent retry. Supervisor provider start, READY publication, persisted-revocation reconciliation, and shutdown share one re-entrant lifecycle boundary: either provider start completes first and stop follows it, or stop/revocation completes first and late start is refused/idempotent; partial start is cleaned without retained provider/registry state. Shutdown observably stops the listener, closes registered active flows, and drops cached registry/pairing runtime state exactly once, so repeated shutdown leaves no listener, active flow, or runtime residue. N2 adds no address selector or fallback and exposes readiness only after the existing connector gates pass and the loopback listener binds. The checksum-pinned N1 dependency/license artifacts are unchanged. The original N1/N2 slices defined the core/ingress boundary; the later THR-327 managed Linux command, composite supervision, installer and enrollment handoff are now shipped. M1 below passed the bounded initial systemd lifecycle. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery and deployment remain **UNEXECUTED** and outside M1; broader provisioning/distribution and N3–N6 obligations remain open. Neither endpoint requires system Tailscale; wildcard, LAN/plaintext, public-Tailscale, and public-DERP fallbacks remain forbidden. TASK-6298/TASK-6289 remains unchanged Supported-DIY, and Unit 4B-2 remains independent.
-- **Manual managed M1 (THR-327 seq187): PASSED.** [Hosted run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282) completed successfully on 2026-11-11 at main `455c9c5b689fa25f625e2df8cae1b551c2a1de86` (short `455c9c5b`), through install, both READY services, paired HTTP 200, product uninstall/purge and every residue assertion. This receipt belongs to that source head; later heads are not claimed rerun. `.github/workflows/managed-m1.yml` runs only on `workflow_dispatch` on a disposable Ubuntu 24.04 hosted runner. Its short Bash driver, `scripts/ci/m1_install_ready_uninstall.sh`, accepts an absent `/run/happyranch-tsnet-sidecar` or a retained real directory owned by `happyranch:happyranch` containing only an optional regular, non-symlink `health.json`, and provisions the rendered units' binaries/config, a disposable Headscale cell and expected peer, and a synthetic loopback HTTP backend; it invokes the product installer with a fresh single-use ten-minute file key, observes both notify services active/running, checks drift, makes a paired connector-loopback request, then uninstalls with `--purge` and checks documented residue. Payload, configuration, service logs and account are retained as the installer documents; runner disposal removes the fixture. Before the request and in always-run diagnostics, the script records runtime-directory owner/mode/type and loaded runtime directives; diagnostics also include manager reload timestamps alongside plain unit journals/status/cat and installer streams before stopping fixtures and uploading logs. This is separate from required lint/static checks and daily Product E2E. The passing run removed unit files/target enablement, enrollment source/link/operator input, persistent service state and both runtime directories. **M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment remain UNEXECUTED and outside M1.** The HTTP request enters the connector on loopback and uses a synthetic backend; it does not traverse the tailnet data path or run the full daemon, and initial startup/uninstall does not prove restart/reboot recovery.
+- **Manual managed M1 (I6a home journey).** The existing manual-only
+  `managed-m1.yml` driver builds/installs the `.deb`, starts the unchanged packaged
+  release daemon under the runner user manager, and uses the CLI's exact fixed
+  public system-bus Enable/ReplaceFailed/Disable/RetryPolicyRenewal calls with a
+  live unprivileged caller. No operator JSON, expected-peer input, enrollment-key
+  file, CLI pairing or test-side provision/prepare/publish is used. Each operation
+  records a fresh helper bus owner/process; an unavailable race refusal may be
+  retried only after name release and remains explicit. Admission is not success.
+  Six cases cover clean Enable to exact hardening/loaded-unit/notify READY;
+  immediate Disable after native health.json plus synthetic numeric temp already
+  exist (I5e/I5f/I5g); recognized FAILED manual fragments through bounded fresh-auth
+  replacement and Enable; native interruption after complete provisioning and
+  recovery; refused renewal with unchanged policy/provenance plus cached expiry
+  closing ingress; and exact Off residue with the fixed post-Off uninstall refusal
+  preserving byte/inode inventory and making no native manager mutation (U1).
+  The expiry fixture advances only the disposable clock, observes original serving
+  processes gone, external sidecar stopped and ingress closed despite non-READY
+  restart attempts, then restores clock/custody and uses public renewal plus normal
+  supervision before final Disable. A missed interruption boundary fails the case.
+  Both immediate and final Off retain five renderer-exact root:root 0644 inert
+  fragments, no enablement/drop-ins, release binding and policy/provision; all B6
+  removed members including sidecar diagnostics must be absent after successful
+  revoke. Failed revoke with persisted trust/sidecar state keeps Q2 partial cleanup.
+  **Home-profile uninstall remains deferred**, with no legacy uninstall fixture.
+  Proven-Off cells may be archived root-only for independent fixtures; this is not
+  product cleanup. Only nonsecret categorical results/helper identities and selected
+  properties are uploaded, never config/state/keys/raw journals. Enable's existing
+  admission/capture catch-alls also journal fixed internal stage names and the
+  exception class, without messages, paths or values and without changing caller
+  refusal categories. The harness retains only the bounded allowlisted excerpt
+  specified in the [M1 runbook](../../operations/remote-access-runbook.md#manual-home-m1-i6a);
+  diagnostic delivery/collection failure preserves refusal. **Disposable
+  authentication simulation does not prove a real desktop dialog.** New exact-head
+  hosted evidence is required for these cases. Historical [run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)
+  at `455c9c5b689fa25f625e2df8cae1b551c2a1de86` passed the earlier operator-profile
+  initial READY/paired-loopback/uninstall journey only; it does not qualify I6a.
+  M2/M3/M4, Product E2E, native desktop dialogs and deployment remain separate.
+  Before dispatch, real package build/extraction in the retained temp-root venue
+  must classify `(clean, absent)` and pass `HomeUnitGate` with no native effects;
+  I5h recognizes only the exact package-owned helper bytes/custody. A non-clean
+  result stops dispatch. All fixture assertions carry nonsecret messages;
+  inventory diagnostics contain owner state/detail enums and allowlisted fixed
+  paths (otherwise `unrecognized-member`), and environment diagnostics only
+  presence/equality. Public admission refusals report only an allowlisted helper
+  or D-Bus error name (otherwise `unrecognized`), never an error body; refusal
+  and retry predicates are unchanged. A clean-package refusal also reports its
+  exception class and at most eight trusted installer function/line locations. Before the clean
+  assertion, the test collector prints numeric UID/GID, full octal modes and
+  available numeric ACLs for `/`, `/etc`, `/etc/happyranch` and its entries,
+  and cleanup-links roots with their literal ancestors (including `/lib`).
+  For the exact directory ownership/mode refusal only, it reports the fixed
+  InstallerError message, actual descriptor path, metadata, expected owner/modes
+  and failing predicates. It never reads configuration contents or emits other
+  exception values, arbitrary locals or native service output; the temporary
+  trace is restored before asserting the unchanged inventory result.
+  GitHub's disposable image makes `/usr/share` and its D-Bus descendants writable
+  with default ACLs. After package install, the harness validates real root:root
+  literal parents, then removes extended/default ACLs and sets exactly
+  `/usr/share`, `/usr/share/dbus-1` and `/usr/share/dbus-1/system-services` to 0755,
+  nonrecursively. A redirected or wrongly owned path refuses before changes.
+  Service files and unrelated directories remain untouched. This test-only
+  preparation retains every product ownership/mode check; ordinary hosts with
+  writable ancestors still refuse. The retained temporary-root installer venue
+  covers this fixture repair and its redirected-path refusal with
+  `python -B -m unittest scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_custody scripts.mac_native.test_connector_installer.ManagedLinuxDebInstaller.test_m1_runner_dbus_redirect_refuses_before_changes -v`.
+  THR-327 seq613 removes the consumed seq607 release-home diagnostic by normal
+  revert. The pre-install absent-folder assertion remains. After packaged-daemon
+  discovery readiness and before first Enable, the harness only asserts that the
+  product-created data folder is a real directory owned by the runner UID with
+  mode exactly 0700. It never creates, chmods, chowns or otherwise normalizes that
+  folder. The first normal post-creation-fix hosted run starts a fresh stop count
+  at run 1; historical failures and diagnostic exclusions remain recorded.
+  These messages do not change case predicates, U1's exact
+  Off residue or the documented home-profile uninstall refusal.
 
 - **Manual managed M3 same-boot recovery (THR-327): UNEXECUTED.** Acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains unexecuted until the main-only manual workflow passes. The harness reuses M2 provisioning, READY, paired real-daemon tailnet request, logs, teardown and purge residue checks. It tests connector SIGKILL, sidecar SIGKILL with the same Headscale node ID/IP/count and consumed enrollment (no new preauthkey), connector SIGSTOP/watchdog, intentional stop/start, shipped start-limit exhaustion/reset/start, daemon-fixture restart without reinstall, then uninstall/purge. Each recovery requires both notify services active/running and a paired tailnet HTTP 200, with per-step MainPID, NRestarts, Result and journal evidence. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; `BindsTo=` leaving the sidecar stopped is a failure. Both units’ rate accounting is reset at the start of steps 1–4 and 6 to isolate faults. Reboot is outside M3 and remains **UNEXECUTED**.
 
@@ -1255,10 +1328,11 @@ service starts on demand. Uninstall stops/removes both units, socket enablement,
 socket endpoint, and `release-daemon.json`; config/provenance/token files remain
 retained. Install has no automatic partial-failure recovery.
 
-M1 uses a synthetic backend and M2 the actual daemon under the hosted runner's
-user manager. Their CI-equivalent root-owned unit occupies the exact packaged
-FragmentPath, uses the source-wheel interpreter instead of the packaged binary,
-and has no drop-ins. Both bind a random loopback port in test-owned data homes.
+Home M1 uses the unchanged packaged release daemon under the runner user
+manager and its exact packaged FragmentPath, with no drop-ins. M2's legacy
+fixture uses the actual daemon under the hosted runner's user manager; its
+CI-equivalent root-owned unit occupies the exact packaged FragmentPath with a
+source-wheel interpreter and no drop-ins. Both use random loopback ports.
 M2 additionally points the port file at a non-MainPID listener and requires
 `socket_not_owned`. These are manual acceptance workflows, separate from the
 required lints. Earlier M1/M2 receipts above attest only their recorded heads.
@@ -1578,6 +1652,12 @@ job, process or control group. A bounded `ps -eo ruid=,euid=,suid=,fuid=` snapsh
 must contain no process with that UID (real/effective/saved/filesystem); failed,
 malformed or oversized observations refuse. These are sampled observations under
 the existing cooperative root-writer discipline, not an atomic process fence.
+
+For clean Enable admission before the Headscale account exists, there is no
+owner UID to match. Only that UID-membership comparison is skipped; the same
+systemd property checks and bounded `ps` command, exit status and four-column
+ASCII numeric row validation still apply. A receipt-bound cleanup retains its
+recorded UID comparison even after the account has been deleted.
 
 Delete user first, then only the receipted group if still present and unshared.
 E defines partial failure: successful userdel followed by failed groupdel keeps
@@ -3499,6 +3579,21 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
+
+THR-327 seq613 release-home creation is owned only by the packaged Linux
+desktop/daemon launcher, using its existing absolute-XDG/default resolver. It
+creates the final folder with explicit 0700 and no-follow verification of real
+directory type, current UID and exact 0700 before publishing any state, including
+GUI desktop.lock or execing the service daemon. Only a newly created verified
+inode may have umask-stripped owner bits restored through its descriptor. Existing
+unsafe folders are never chmod/chown repaired or accepted for remote access; a
+message names the folder and cause (including group/world writes) and says it
+must be private to the user. Existing daemon startup behavior is retained; Enable
+still refuses `release_home_invalid` under the unchanged helper-owner checks.
+Safe existing modes are retained. Shared ensure_daemon_home, non-release homes,
+other daemon file modes and systemd UMask are unchanged. XDG creation does not
+extend the helper's protected release-binding policy.
+
 The packaged entry exposes Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected plus I5a's seven public lifecycle/invite methods, with unchanged
 admission. Linux CLI consumers are I5b and bridge consumers are I5c;
@@ -3510,6 +3605,12 @@ I4b-2 adds RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-
 action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
+Its native runner selects the existing account tools `useradd`, `userdel` and
+`groupdel` by their fixed `/usr/sbin/` paths: the empty environment's default
+`/bin:/usr/bin` search cannot find them on Debian/Ubuntu. Account arguments,
+ownership validation and deadlines are unchanged. The M1 READY checker reports
+an absent activation receipt as `home_activation_receipt_missing`; READY still
+requires the receipt's `ready` phase and all existing independent checks.
 It captures protected activation G/O (including absence), initial Enable config
 generation, and B17 inventory/journal generation. There is no bus-supplied UID,
 path or generation. Already-designed enable/replace-failed/disable polkit actions
@@ -3563,6 +3664,12 @@ I3a's native polkit CheckAuthorization callback with the captured unique bus sen
 and exact action. Linux CLI consumers are I5b and bridge consumers are I5c;
 RefreshHomeAddress remains absent and B13-deferred. Admission is unchanged;
 the terminal/cancellation rules retain the same slot through the entire worker.
+The slot is captured before authorization; its callback constructs the worker
+under the helper lock, then starts it only after leaving that lock. The slot stays
+captured across unlock/start, so another caller still refuses as busy; the worker
+retains current-caller revalidation and the nonblocking effect/settlement guards.
+Worker startup failure uses the existing locked error/clear handling. Genuine
+effect or settlement uncertainty retains its existing sealed-slot behavior.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains

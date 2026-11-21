@@ -12,6 +12,8 @@ import threading
 import time
 import ssl
 import hashlib
+import io
+import subprocess
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +30,108 @@ from scripts.test_installer_token_custody import fixture as renewal_fixture, ren
 from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
 from scripts.test_installer_token_custody import staged_inventory
 
+REAL_THREAD = threading.Thread
+
+
+def test_clean_enable_empty_environment_account_tools(
+        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.remote_access import service_manager
+
+    v, m = composition, mount
+    native = v.io._run
+    entered, proceed = threading.Event(), threading.Event()
+    probes, child_exits, workers = [], [], []
+    m.message.get_member = lambda: 'Enable'
+    m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', os.getuid())
+
+    def run(argv: list[str], **kwargs: Any) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if name in ('useradd', 'userdel', 'groupdel'):
+            entered.set()
+            assert proceed.wait(2), 'local account-tool probe was not released'
+            try:
+                # Exercise the shipped executable selection without modifying
+                # host accounts; only the existing synthetic NSS is mutated.
+                result = subprocess.run([argv[0], '--help'], env={}, cwd='/',
+                    capture_output=True, timeout=2, check=False)
+                code = result.returncode
+            except FileNotFoundError:
+                code = 127
+            probes.append((argv[0], code))
+            if code or argv[1:] == ['--help']:
+                return code, ''
+        return native([name, *argv[1:]] if name in ('useradd', 'userdel', 'groupdel') else argv, **kwargs)
+
+    def installer(*, layout: str, manager: Any, run: Any) -> Any:
+        assert layout == 'deb'
+        v.io._run, v.io.manager = run, manager
+        return v.io
+
+    monkeypatch.setattr(service_manager, '_default_run', run)
+    monkeypatch.setattr(backend, 'ManagedInstaller', installer)
+
+    def effect(step: str, expected: str, remaining: float, **kwargs: Any) -> dict:
+        request = dict(method='Enable', uid=os.getuid(), step=step,
+            expected=expected, deadline=time.monotonic() + remaining)
+        output = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+            patch.setattr(sys, 'stdout', output)
+            code = backend.helper_main()
+        child_exits.append(code)
+        if code:
+            raise m.h._helper_generation.GenerationUnavailable()
+        return json.loads(output.getvalue())
+
+    m.reader.effect.side_effect = effect
+
+    def worker(*, target: Any, args: tuple, **kwargs: Any) -> Any:
+        thread = REAL_THREAD(target=target, args=args, **kwargs)
+        workers.append(thread)
+        return thread
+
+    monkeypatch.setattr(m.h.threading, 'Thread', worker)
+    # The composition's observation servers already use their captured real
+    # thread factory; only the public helper's lifecycle worker is collected.
+    m.admit()
+    try:
+        assert entered.wait(2), 'accepted worker never reached account preparation'
+        capture = m.helper.lifecycle_operation.capture
+        assert m.helper.inflight is capture and child_exits == []
+        loop = SimpleNamespace(quit=Mock())
+        m.helper.last_activity = -100  # Idle time alone cannot retire an effect.
+        assert m.helper._idle(loop) is True
+        loop.quit.assert_not_called()
+        assert m.helper.inflight is capture and m.helper.name_owned
+    finally:
+        proceed.set()
+        for thread in workers:
+            thread.join(timeout=4)
+    assert all(not thread.is_alive() for thread in workers)
+    rows = [json.loads(line) for line in m.helper.audit.path.read_text().splitlines()]
+    print(json.dumps(dict(probes=probes, child_exits=child_exits,
+        outcome=m.helper.lifecycle_result, receipt_present=v.receipts.current() is not None,
+        audit_stages=[row['stage'] for row in rows], slot_released=m.helper.inflight is None), sort_keys=True))
+    assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}, 'clean Enable child did not publish READY'
+    assert child_exits == [0] and len(probes) == 2 and all(code == 0 for _, code in probes)
+    assert v.receipts.current().phase == 'ready'
+    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+    assert m.helper.inflight is None
+    for tool in ('userdel', 'groupdel'):
+        assert v.io._run([tool, '--help'], timeout=2) == (0, ''), tool
+    print(json.dumps(dict(cleanup_tool_probes=probes[2:]), sort_keys=True))
+
+
+def test_m1_ready_missing_receipt_is_named_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.ci import m1_home_checks as checker
+
+    monkeypatch.setattr(checker, 'HomeActivationStore', lambda: SimpleNamespace(current=lambda: None))
+    with pytest.raises(AssertionError, match='home_activation_receipt_missing'):
+        checker.ready()
+
 
 class Variant:
     def __init__(self, signature: str, value: Any) -> None:
@@ -42,6 +146,74 @@ PUBLIC_LIFECYCLE = {
     'RetryPolicyRenewal': 'retry-policy-renewal', 'IssueInvite': 'issue-invite',
     'CancelInvite': 'cancel-invite', 'RecoverInvite': 'recover-invite',
 }
+
+
+def test_enable_admission_diagnostic_preserves_refusal(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    import syslog
+
+    sent = Mock()
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    mount.message.get_member = lambda: 'Enable'
+    mount.reader.current_generation.side_effect = RuntimeError('synthetic-secret /private/path :12345')
+    mount.helper._dispatch(mount.message)
+    mount.helper._error.assert_called_once_with(mount.message, 'unavailable')
+    assert not mount.helper.authority.call.called and not mount.reader.effect.called
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-enable-refusal origin=helper stage=dispatch.admission.capture exception=RuntimeError')
+    assert capsys.readouterr() == ('', '')
+
+
+def test_m1_enable_journal_exports_only_bounded_allowlist(
+        monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    from scripts.ci import m1_home_checks as collector
+
+    message = ('remote-access-enable-refusal origin=child '
+               'stage=child.dispatch.capture.clean-residue.custody-directory exception=OSError')
+    records = [dict(_SYSTEMD_UNIT='unrelated.service', MESSAGE=message),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message + ' synthetic-secret /private :12345'),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE='synthetic-secret /private :12345'),
+                dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message.replace('capture', 'private-path'))]
+    records += [dict(_SYSTEMD_UNIT=collector.HELPER, MESSAGE=message)] * 40
+    run = Mock(return_value=SimpleNamespace(returncode=0,
+        stdout='\n'.join(json.dumps(row) for row in records) + '\ninvalid-json synthetic-secret'))
+    monkeypatch.setattr(collector, 'command', run)
+    collector.enable_refusal_logs()
+    output = capsys.readouterr().out
+    lines = [json.loads(line) for line in output.splitlines()]
+    assert lines[:-1] == [dict(unit=collector.HELPER, diagnostic=message)] * 32
+    assert lines[-1] == dict(journal='ok', matched=32, truncated=False)
+    assert 'synthetic-secret' not in output and '/private' not in output and '12345' not in output
+    assert len(output) < 16384
+    args, kwargs = run.call_args
+    assert '--lines=160' in args and '--output-fields=_SYSTEMD_UNIT,MESSAGE' in args
+    assert kwargs == {'check': False}
+    run.return_value = SimpleNamespace(returncode=0, stdout='é' * 140000 + '\n' + json.dumps(records[-1]))
+    collector.enable_refusal_logs()
+    assert json.loads(capsys.readouterr().out) == dict(journal='ok', matched=0, truncated=True)
+    run.return_value = SimpleNamespace(returncode=1, stdout='synthetic-secret')
+    collector.enable_refusal_logs()
+    assert json.loads(capsys.readouterr().out) == dict(journal='unavailable', matched=0, truncated=False)
+
+
+@pytest.mark.parametrize('journal_fails', [False, True])
+def test_enable_child_diagnostic_preserves_closed_exit(
+        monkeypatch: pytest.MonkeyPatch, capsys: Any, journal_fails: bool) -> None:
+    import syslog
+
+    sent = Mock(side_effect=OSError('synthetic-journal-secret') if journal_fails else None)
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    request = dict(method='Enable', uid=1000, step='capture', expected=None,
+                   deadline=time.monotonic() + 30)
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(backend.HomeActivationStore, 'current',
+                        Mock(side_effect=OSError('synthetic-secret /private/path :12345')))
+    assert backend.helper_main() == 1
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
+    assert capsys.readouterr() == ('', '')
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
@@ -231,6 +403,55 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     v = SimpleNamespace(h=h, helper=helper, reader=reader, effects=effects, admit=admit,
                         message=message, renew=renew, statvfs=statvfs)
     return v
+
+
+@pytest.mark.parametrize('schedule', ['immediate', 'after_authorization'])
+def test_worker_settles_after_accepted_enable(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, schedule: str) -> None:
+    v = mount
+    queued, completed = [], []
+    v.message.get_member = lambda: 'Enable'
+
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        return {'outcome': 'ready', 'residue': []}
+
+    v.reader.effect.side_effect = effect
+
+    def run_worker(target: Any, args: tuple) -> None:
+        worker = REAL_THREAD(target=target, args=args, daemon=True)
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive(), 'bounded local worker did not return'
+        completed.append(True)
+
+    def new_thread(*, target: Any, args: tuple, **kwargs: Any) -> SimpleNamespace:
+        def start() -> None:
+            assert v.helper.inflight is v.helper.lifecycle_operation.capture
+            v.helper._reply.assert_called_once_with(v.message, 'accepted')
+            if schedule == 'immediate':
+                # A legal scheduling order: run the real worker to return before
+                # Thread.start returns to the authorizing callback.
+                run_worker(target, args)
+            else:
+                queued.append((target, args))
+        return SimpleNamespace(start=start)
+
+    monkeypatch.setattr(v.h.threading, 'Thread', new_thread)
+    v.admit()
+    for target, args in queued:
+        run_worker(target, args)
+    v.helper._reply.assert_called_once_with(v.message, 'accepted')
+    print(json.dumps(dict(schedule=schedule, worker_returned=bool(completed),
+        slot_released=v.helper.inflight is None, audit_exists=v.helper.audit.path.exists(),
+        effect_calls=v.reader.effect.call_count, outcome=v.helper.lifecycle_result['outcome']), sort_keys=True))
+    assert completed == [True]
+    assert v.helper.inflight is None, 'accepted worker returned but its global slot stayed sealed'
+    assert v.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
+    assert v.reader.effect.call_count == 1
+    rows = [json.loads(line) for line in v.helper.audit.path.read_text().splitlines()]
+    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+    v.helper._error.assert_not_called()
 
 
 @pytest.mark.parametrize('method', PUBLIC_LIFECYCLE)
