@@ -5,7 +5,7 @@ description: Use this skill before any git commit, git checkout, or file edit in
 
 # make-worktree
 
-Per Claude Code convention, worktrees live inside the repo at `.claude/worktrees/<task_id>/` and use a branch named `task/<task_id>`.
+Per Claude Code convention, worktrees live inside the repo at `.claude/worktrees/<task_id>/` and use a branch named `task/<task_id>`. The read-only review recipe below may detach only after normal guard setup on that branch.
 
 ## When to invoke
 
@@ -92,7 +92,8 @@ folder basename must equal that owning task ID and the checked-out branch must
 be exactly `task/<task_id>`. Missing IDs, foreign folder/branch IDs, detached or
 unavailable branches, and `-final`/renamed paths that disagree fail before any
 snapshot, exclude or stale-hook config write. Never omit the ID or substitute
-the PR branch's task ID to bypass a mismatch.
+the PR branch's task ID to bypass a mismatch. The read-only review recipe below
+retains its original guard after detaching; never run `setup` while detached.
 
 Ownership describes the resource's canonical task folder, not the current
 session, retry link or PR. A continuation using an existing worktree keeps its
@@ -162,28 +163,67 @@ Two sessions on the same agent role may try to create different worktrees simult
 
 ## Temporary review, QA, and scratch worktrees
 
-When a review, QA run, or diagnostic needs an additional disposable worktree,
-never create temporary review or QA worktrees under `/tmp`. Put them beneath
-the owning agent workspace so the existing registered-workspace cleanup
-authority covers their bytes and concurrent agents cannot share a path:
+Use the reviewing task's **own** canonical worktree slot, not the author's task
+ID or a `<task>-<sha>` suffix. This recipe requires the actual owning ID to be
+`TASK-<digits>`; never relabel another ID to fit the sweeper's filter. Never use
+`/tmp` or `.happyranch/task-tmp` for a linked worktree. A registered worktree in
+task-tmp prevents that scratch root's removal.
+
+A reviewer task normally has no maker worktree. If it already has one, preserve
+it and report the conflict; do not detach it, reset it, re-snapshot its guard or
+allocate a second suffixed slot. An existing branch or admin entry also means
+stop and report, even if the folder is absent. Inspect `git worktree list
+--porcelain` first; any unavailable ownership evidence means stop.
 
 ```bash
 # Run from the workspace root.
 WORKSPACE_ROOT=$(pwd -P)
 PRIMARY_ROOT="$WORKSPACE_ROOT/repos/<repo>"
-: "${WORKSPACE_ROOT:?}" "${PRIMARY_ROOT:?}"
-SCRATCH_WORKTREES="$WORKSPACE_ROOT/.happyranch/scratch/worktrees"
-mkdir -p "$SCRATCH_WORKTREES"
-git -C "$PRIMARY_ROOT" fetch origin
-git -C "$PRIMARY_ROOT" worktree add "$SCRATCH_WORKTREES/<task-id>-<exact-sha>" <exact-sha>
+REVIEW_TASK_ID="<own TASK-id>"
+REVIEW_SHA="<full immutable commit SHA>"
+WORKTREE_ROOT="$PRIMARY_ROOT/.claude/worktrees/$REVIEW_TASK_ID"
+for review_slot in "$WORKTREE_ROOT" "$PRIMARY_ROOT/.git/worktrees/$REVIEW_TASK_ID"; do
+    if [ -e "$review_slot" ] || [ -L "$review_slot" ]; then
+        echo "STOP: existing worktree/admin slot: $review_slot" >&2
+        exit 1
+    fi
+done
+git -C "$PRIMARY_ROOT" fetch origin || exit 1
+mkdir -p "$PRIMARY_ROOT/.claude/worktrees" || exit 1
+# -b refuses an existing task branch; never use -B or force.
+git -C "$PRIMARY_ROOT" worktree add "$WORKTREE_ROOT" -b "task/$REVIEW_TASK_ID" "$REVIEW_SHA" || exit 1
+if [ "$(git -C "$WORKTREE_ROOT" rev-parse --absolute-git-dir)" != "$PRIMARY_ROOT/.git/worktrees/$REVIEW_TASK_ID" ]; then
+    echo "STOP: unexpected admin mapping; preserve and report" >&2
+    exit 1
+fi
+GUARD="$WORKSPACE_ROOT/.claude/skills/make-worktree/worktree_guard.py"
+[ -f "$GUARD" ] || GUARD="$WORKSPACE_ROOT/.agents/skills/make-worktree/worktree_guard.py"
+python3 "$GUARD" setup --worktree-root "$WORKTREE_ROOT" --primary-root "$PRIMARY_ROOT" --task-id "$REVIEW_TASK_ID" || exit 1
+git -C "$WORKTREE_ROOT" checkout --detach "$REVIEW_SHA" || exit 1
+python3 "$GUARD" verify --worktree-root "$WORKTREE_ROOT"
 ```
 
-Use the immutable commit SHA in both the directory suffix and `git worktree
-add`. If the workspace-owned directory cannot be created, stop with the error;
-never fall back to `/tmp`. At the end of the review or QA run, remove only the
-exact registered worktree with `git worktree remove <exact-path>` after
-checking its status. Do not infer cleanup eligibility from a task-like name or
-Unix ownership.
+Run guard setup while attached, then retain that original baseline and use
+`verify` before tests and reporting. Do not edit or commit from the detached
+review checkout. Use its absolute path for all review/test commands. Creation,
+mapping or guard failure means stop, preserve the result and report the error;
+never fall back to another location or fabricate a guard.
+
+The existing nightly sweeper can consider this canonical worktree only after
+the reviewing task and its own structural root have ended, with matching
+assigned/session workspace evidence and no active root job. Detached HEAD is
+supported, but clean status, reachability from a kept branch/remote, recursive
+one-hour age, registration, containment and native-writer/hold gates still
+apply. End-of-task maker assessment follows Cleanup below; a task-like name or
+Unix ownership alone grants no removal authority.
+
+Legacy `.happyranch/scratch/worktrees/<task>-<sha>` checkouts are not nightly
+candidates and are not moved or deleted by this change. A valid stable legacy
+registration present at discovery does not itself hold the clone; a new
+non-TASK admin name during or after discovery can hold the clone. Unsafe or
+uncertain legacy metadata can also hold discovery. Any later exact-path owner
+removal must satisfy existing cleanup authority and preservation checks. Never
+prune or scan legacy worktrees as part of this recipe.
 
 ## Cleanup
 
@@ -219,7 +259,8 @@ Never delete the task branch. If a preservation check fails or removal returns
 nonzero, leave the worktree and branch intact and add
 `worktree-deferred: <reason>` to the `risks` array in the completion JSON file
 (the server stores it as `risks_flagged`). Make one bounded attempt only; do not
-schedule or perform a retry, force removal, historical scan, prune, or cache sweep.
+schedule or perform a retry, force removal, historical scan or cache sweep.
+Neither this skill nor the sweeper/cleanup contract authorizes `git worktree prune`.
 
 ## Later root-terminal reconsideration
 

@@ -47,8 +47,8 @@ removal; neither cleanup path grants prune authority.
 Legacy worktrees under `<workspace>/.happyranch/scratch/worktrees/<task>-<sha>`
 are outside candidate discovery and remain untouched by this change. A valid,
 stable legacy registration present throughout discovery does not by itself hold
-the clone. A new non-TASK admin name appearing during discovery fails the
-additions proof; appearing after discovery it raises
+the clone. A new non-TASK admin name appearing between discovery censuses fails
+the additions proof; appearing after discovery it raises
 `unknown_registration_arrival` in the shallow shared observation and holds the
 clone. Unsafe or uncertain legacy metadata can also hold discovery. The sweeper
 never migrates, repairs, prunes or removes these legacy registrations. Any later
