@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useSettings } from '@/hooks/settings';
-import { useTranslation } from '@/hooks/i18n';
+import { useI18n, useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
@@ -364,12 +364,12 @@ function CodingPanel(): JSX.Element {
 }
 
 function PreferencesPanel(): JSX.Element {
-  const { t } = useTranslation();
+  const { t, authority } = useI18n();
   return (
     <div className="max-w-2xl min-w-0 p-4 break-words sm:p-8">
       <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.preferences.title')}</h2>
       <p className="text-text-secondary mb-8 text-sm">
-        {t('settings.panel.preferences.description')}
+        {t(authority === 'native' ? 'settings.panel.preferences.native.description' : 'settings.panel.preferences.description')}
       </p>
       <PreferencesSection />
     </div>

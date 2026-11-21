@@ -26,7 +26,8 @@ import { clearTransientNativeNotice, reportNativeNotice } from './notices';
 export const BROWSER_GENERATION = 'browser';
 export const TARGET_HEADER = 'X-HappyRanch-Target';
 const APP_ORIGIN = 'happyranch-app://app';
-const STATUS_TIMEOUT_MS = 5000;
+/** Bound for a native call's reply (`app.status`, `app.locale.set`). */
+export const STATUS_TIMEOUT_MS = 5000;
 
 export interface NativeBridge {
   call(command: string, data: string): Promise<string>;

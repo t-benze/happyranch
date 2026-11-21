@@ -109,8 +109,14 @@ export type LocaleWriteFailureReason =
   | 'rejected'
   | 'native-unavailable';
 
+/**
+ * `session-only` is a native acknowledgement with `persisted: false` (THR-387
+ * S8-1-W): the live choice applies, but the installation preference was not
+ * saved. The browser adapter never returns it.
+ */
 export type LocaleWriteOutcome =
   | { status: 'durable' }
+  | { status: 'session-only' }
   | { status: 'failed'; reason: LocaleWriteFailureReason };
 
 export type LocaleWriteResult = LocaleWriteOutcome | Promise<LocaleWriteOutcome>;
@@ -119,7 +125,58 @@ export type LocaleWriteResult = LocaleWriteOutcome | Promise<LocaleWriteOutcome>
 export interface LocaleSnapshot {
   saved: unknown;
   native?: unknown;
+  /** Native only: whether `native` is the saved installation preference. */
+  persisted?: boolean;
   systemLanguages?: readonly string[];
+}
+
+/** One native locale report (`app.status` / `app.stateChanged` `locale`). */
+export interface NativeLocaleReport {
+  /** Raw value; only a supported locale is applied. */
+  current: unknown;
+  persisted: boolean;
+}
+
+/** Persistence status the provider exposes for the active locale. */
+export type LocalePersistenceStatus = 'idle' | 'pending' | 'durable' | 'session-only' | 'failed';
+
+/** What the provider holds when a native locale report arrives. */
+export interface NativeLocaleView {
+  /** The latest local choice this session, or null before the first one. */
+  choice: Locale | null;
+  /** True while the latest choice's acknowledgement is outstanding. */
+  pending: boolean;
+  persistence: LocalePersistenceStatus;
+}
+
+export type NativeReportDecision =
+  | { kind: 'ignore' }
+  | { kind: 'adopt'; locale: Locale; persistence: 'durable' | 'session-only' }
+  | { kind: 'settle'; persistence: 'durable' | 'session-only' | 'failed' };
+
+/**
+ * Decide what a native locale report does (THR-387 S8-1-W; bridge spec §12
+ * "v2 app locale setter"). Pure, so the rules are checked without React:
+ * - invalid locale, or a local choice still pending: ignore (an older snapshot
+ *   can never restore old copy or show Saved while a newer choice is pending);
+ * - no local choice yet (late first `app.status`, startup/reopen): adopt the
+ *   native locale with its saved / session-only state;
+ * - otherwise the report is native's latest known state, and the persistence
+ *   claim for the latest choice follows it (the live choice is never rolled
+ *   back): the same locale with `persisted: true` is Saved, `persisted: false`
+ *   is session-only, and another locale is failed (native will not relaunch in
+ *   the shown language; Retry re-applies it). A report never needs to belong
+ *   to the latest attempt: an older attempt's late report is overridden by the
+ *   next one, so the end state follows native's final report.
+ */
+export function reconcileNativeReport(view: NativeLocaleView, report: NativeLocaleReport): NativeReportDecision {
+  if (!isLocale(report.current) || view.pending) return { kind: 'ignore' };
+  if (view.choice === null) {
+    return { kind: 'adopt', locale: report.current, persistence: report.persisted ? 'durable' : 'session-only' };
+  }
+  const persistence =
+    report.current !== view.choice ? 'failed' : report.persisted ? 'durable' : 'session-only';
+  return persistence === view.persistence ? { kind: 'ignore' } : { kind: 'settle', persistence };
 }
 
 /**
@@ -138,6 +195,12 @@ export interface LocalePreferenceAdapter {
   /** Must not throw; callers still guard with `readAdapterSnapshot`. */
   readSnapshot(): LocaleSnapshot;
   write(locale: Locale): LocaleWriteResult;
+  /**
+   * Native only: deliver each later native locale report (first `app.status`,
+   * then `app.stateChanged`). Returns its unsubscribe. The browser adapter has
+   * none; its cross-tab input stays the same-origin `storage` event.
+   */
+  subscribe?(listener: (report: NativeLocaleReport) => void): () => void;
 }
 
 /** The declared ownership of an adapter, defaulting to `browser`. */

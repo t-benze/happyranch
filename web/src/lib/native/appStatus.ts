@@ -141,6 +141,16 @@ export function parseAppState(raw: unknown): AppState | null {
 }
 
 /**
+ * Display name for a target or candidate (THR-387 S8-1-W, bridge Q5). Native
+ * names the built-in local computer in its launch language, so the web uses
+ * its own live-locale `localName` where the semantic `kind` is `local`; an
+ * authored remote name stays verbatim. Display strings are never matched.
+ */
+export function appEntryName(entry: { kind: 'local' | 'remote'; name: string }, localName: string): string {
+  return entry.kind === 'local' ? localName : entry.name;
+}
+
+/**
  * Connection/settings menu state derived from `app.status` (S5-W1 item 7).
  * Presentation only: the S6 Connection/Settings dialogs consume it. Names are
  * display text; there is no address, invite or credential here.

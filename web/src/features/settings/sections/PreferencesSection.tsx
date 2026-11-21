@@ -12,8 +12,15 @@
  * THR-118 W5 enables English/zh-CN throughout mounted product presentation.
  * A saved preference takes priority; otherwise full-mode browser-language
  * resolution applies. The disclosure explains that choice in both languages.
+ *
+ * Desktop app (native authority, THR-387 S8-1-W): the same pane uses the
+ * native copy. Saved appears only after native acknowledges a saved write;
+ * pending, failed (danger) and session-only (neutral) stay distinct, and the
+ * last two offer Retry, which asks native to save the current choice again.
+ * The browser branch is unchanged.
  */
 import { useId } from 'react';
+import { Button } from '@/design-system/primitives/Button';
 import { useI18n } from '@/hooks/i18n';
 import type { Locale } from '@/lib/i18n';
 
@@ -23,17 +30,28 @@ const LANGUAGE_OPTIONS: ReadonlyArray<{ value: Locale; label: string }> = [
 ];
 
 export function PreferencesSection(): JSX.Element {
-  const { locale, setLocale, persistence, t } = useI18n();
+  const { locale, setLocale, persistence, authority, t } = useI18n();
   const descriptionId = useId();
+  const native = authority === 'native';
 
-  const status =
-    persistence === 'pending'
+  const status = native
+    ? persistence === 'pending'
+      ? t('settings.preferences.status.pending')
+      : persistence === 'durable'
+        ? t('settings.preferences.native.status.durable')
+        : persistence === 'failed'
+          ? t('settings.preferences.native.status.failed')
+          : persistence === 'session-only'
+            ? t('settings.preferences.native.status.sessionOnly')
+            : ''
+    : persistence === 'pending'
       ? t('settings.preferences.status.pending')
       : persistence === 'durable'
         ? t('settings.preferences.status.durable')
         : persistence === 'failed'
           ? t('settings.preferences.status.failed')
           : '';
+  const retryable = native && (persistence === 'failed' || persistence === 'session-only');
 
   return (
     <div className="min-w-0 space-y-4 break-words" data-testid="settings-preferences">
@@ -42,10 +60,10 @@ export function PreferencesSection(): JSX.Element {
           {t('common.language')}
         </legend>
         <p id={descriptionId} className="text-text-secondary text-sm">
-          {t('settings.preferences.languageHelp')}
+          {t(native ? 'settings.preferences.native.languageHelp' : 'settings.preferences.languageHelp')}
         </p>
         <p className="text-text-secondary text-sm">
-          {t('settings.preferences.coverageDisclosure')}
+          {t(native ? 'settings.preferences.native.coverageDisclosure' : 'settings.preferences.coverageDisclosure')}
         </p>
         <div className="flex flex-col gap-2">
           {LANGUAGE_OPTIONS.map((option) => (
@@ -80,6 +98,17 @@ export function PreferencesSection(): JSX.Element {
       >
         {status}
       </p>
+      {retryable ? (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          data-testid="settings-preferences-retry"
+          onClick={() => setLocale(locale)}
+        >
+          {t('common.retry')}
+        </Button>
+      ) : null}
     </div>
   );
 }

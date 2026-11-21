@@ -3,6 +3,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { I18nProvider } from '@/hooks/i18n';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import type { LocaleResolution } from '@/lib/i18n';
+import { appLocalePreferenceAdapter } from '@/lib/native/locale';
 import { AppRoutes } from './routes';
 
 export { makeQueryClient };
@@ -25,8 +26,10 @@ export interface AppProps {
  * hands `App` the one startup resolution.
  */
 export function AppShell({ initialLocale }: AppProps = {}): JSX.Element {
+  // Native authority behind the desktop bridge; the browser adapter otherwise.
+  const [localeAdapter] = useState(appLocalePreferenceAdapter);
   return (
-    <I18nProvider mode="full" initialResolution={initialLocale}>
+    <I18nProvider mode="full" adapter={localeAdapter} initialResolution={initialLocale}>
       <AppProvider>
         <AppRoutes />
       </AppProvider>

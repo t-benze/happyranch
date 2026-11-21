@@ -954,6 +954,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.panel.preferences.title': '偏好设置',
   'settings.panel.preferences.description':
     '仅适用于此浏览器的个人设置，不会保存到组织。',
+  // THR-387 S8-1-W: desktop (native authority) Language pane header.
+  'settings.panel.preferences.native.description':
+    '仅适用于此电脑上本应用的个人设置，不会保存到组织。',
   'settings.nav.coding': "编码",
   // THR-387 S6-W1 desktop Settings/Connection dialogs.
   'desktopDialogs.close': '关闭',
@@ -1105,6 +1108,17 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.preferences.status.durable': '已保存在此浏览器中。',
   'settings.preferences.status.failed': '无法保存在此浏览器中。该语言仅在本次会话中生效。',
   'settings.preferences.coverageDisclosure': '支持英语和简体中文。优先使用你保存的语言；未保存时使用浏览器语言。',
+  // THR-387 S8-1-W: desktop (native authority) Language pane.
+  'settings.preferences.native.languageHelp':
+    "应用页面和网页对话框会立即切换语言。原生菜单和系统对话框将在下次启动应用时切换。",
+  'settings.preferences.native.coverageDisclosure':
+    "支持英语和简体中文。此选择保存在此电脑上的应用中，不会影响所连接的电脑或其他人。",
+  'settings.preferences.native.status.durable':
+    "已保存在此电脑上的应用中。",
+  'settings.preferences.native.status.failed':
+    "无法保存语言选择。在退出应用前将继续使用此语言。",
+  'settings.preferences.native.status.sessionOnly':
+    "未保存。在退出应用前将使用此语言。",
   // @w2c-end:preferences
 
 

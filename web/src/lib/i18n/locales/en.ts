@@ -1003,6 +1003,9 @@ export const en = {
   'settings.panel.preferences.title': 'Preferences',
   'settings.panel.preferences.description':
     'Personal settings for this browser. They are not saved to the organization.',
+  // THR-387 S8-1-W: desktop (native authority) Language pane header.
+  'settings.panel.preferences.native.description':
+    'Personal settings for this app on this computer. They are not saved to the organization.',
   'settings.nav.coding': "Coding",
   // THR-387 S6-W1 desktop Settings/Connection dialogs.
   'desktopDialogs.close': 'Close',
@@ -1157,6 +1160,17 @@ export const en = {
     'Could not save in this browser. The language applies to this session only.',
   'settings.preferences.coverageDisclosure':
     'English and Simplified Chinese are available. Your saved choice comes first; otherwise, we follow your browser language.',
+  // THR-387 S8-1-W: desktop (native authority) Language pane.
+  'settings.preferences.native.languageHelp':
+    "App pages and dialogs change language now. Native menus and system dialogs change the next time you launch the app.",
+  'settings.preferences.native.coverageDisclosure':
+    "English and Simplified Chinese are available. This choice is saved for this app on this computer, not for the computer you connect to or other people.",
+  'settings.preferences.native.status.durable':
+    "Saved for this app on this computer.",
+  'settings.preferences.native.status.failed':
+    "Couldn't save your language choice. It applies until you quit the app.",
+  'settings.preferences.native.status.sessionOnly':
+    "Not saved. This language applies until you quit the app.",
   // @w2c-end:preferences
 
 
