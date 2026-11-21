@@ -38,7 +38,9 @@ export type PromptSaveResult<R extends PromptRead> =
   /** Acknowledged, but the verification read was empty or disagreed. */
   | { kind: 'unverified'; fresh: R | null | undefined }
   /** The PUT failed, or the verification read failed. */
-  | { kind: 'error'; error: unknown };
+  | { kind: 'error'; error: unknown }
+  /** S6-W2b: native did not acknowledge the pending summary; nothing was sent. */
+  | { kind: 'held' };
 
 /** The sent text plus, once the PUT was acknowledged, its receipt. */
 export interface PromptSubmission {
@@ -74,7 +76,15 @@ export async function saveAndVerifySystemPrompt<R extends PromptRead>(deps: {
   validRevision: (value: unknown) => boolean;
   /** Called as soon as the PUT is acknowledged, before the verification read. */
   onAcknowledged?: (receipt: PromptReceipt) => void;
+  /**
+   * S6-W2b save admission (the owner's `sendable()`): awaited before the PUT.
+   * False holds the save: it settles `failed` and nothing is sent.
+   */
+  sendable?: () => Promise<boolean>;
 }): Promise<{ outcome: SaveOutcome; result: PromptSaveResult<R> }> {
+  if (deps.sendable && !(await deps.sendable())) {
+    return { outcome: 'failed', result: { kind: 'held' } };
+  }
   let receipt: PromptReceipt;
   try {
     receipt = await deps.save();

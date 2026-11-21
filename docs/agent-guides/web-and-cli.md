@@ -474,13 +474,12 @@ push clears it, so the next identical summary is sent again; there is no timer
 retry. The payload carries no page, org, computer, owner id, draft or error text
 and is never logged.
 
-Save admission: `useConfigOwner().track()` (and `sendable()`, which Agents detail
-and Capacity await after their own `begin()`) sends a registered save only after
+Save admission: `useConfigOwner().track()` (and `sendable()`, which Agents detail,
+Capacity and the agent system prompt editor await after their own `begin()`) sends a registered save only after
 native acknowledged (`"{}"`) the summary showing it pending. A refused, lost or
 unanswered (5 s) push holds the save: nothing is sent and the ticket settles
 `failed`, so the existing C3 failed copy shows (Capacity shows the same sentence
-in its banner). The agent system prompt editor sends after its own `begin()` and
-does not await the receipt yet (outside the S6-W2b file scope; follow-up).
+in its banner; the system prompt editor shows it under the editor).
 
 Lifecycle: a strictly valid `app.lifecycleRequested` (exact keys, schema 2, ID
 `[A-Za-z0-9_-]{1,64}`, action close/quit/relaunch; anything else is ignored) runs

@@ -369,3 +369,79 @@ test('reload: a fresh document module sends its own initial summary and never re
   assert.equal(sent.length, 2, 'identical initial summary is sent again by the new document');
   assert.ok(sent.every((s) => s.gate === undefined), 'no gate answer for the old document ID');
 });
+
+// ---- S6-W2b: agent system prompt save (SystemPromptEditor) ----
+const { saveAndVerifySystemPrompt } = await import('../src/features/agents/systemPromptSave.ts');
+const { classifySaveError } = await import('../src/lib/owners/ownerRegistry.ts');
+const PROMPT_OWNER = { scope: 'main', page: 'agents.systemPrompt', subject: 'dev', org: 'studio', computer: null };
+const REV_B = 'b'.repeat(64);
+const PROMPT_RECEIPT = { agent: 'dev', system_prompt: 'new prompt', revision: REV_B };
+const validRevision = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+/** The editor's submit flow: begin, then the production helper with the owner's `sendable()`. */
+async function runPromptSave({ reply, read, puts = [] }) {
+  const owners = await freshOwners();
+  const fake = fakeBridge({ reply });
+  __setNativeBridgeForTests(fake.bridge);
+  const r = createOwnerRegistry();
+  r.subscribe(() => void owners.publishOwners(r.getSnapshot()));
+  r.register('prompt', PROMPT_OWNER);
+  r.setDraft('prompt', { dirty: true, revision: 1 });
+  const ticket = r.beginSave('prompt');
+  const done = await saveAndVerifySystemPrompt({
+    agentName: 'dev',
+    save: async () => {
+      // What native had acknowledged when the PUT was sent.
+      puts.push({ callsBefore: fake.calls.length });
+      return PROMPT_RECEIPT;
+    },
+    read,
+    classifySaveError,
+    validRevision,
+    sendable: () => owners.awaitOwnersReceipt(r.getSnapshot()),
+  });
+  r.settleSave(ticket, done.outcome);
+  const status = r.getSnapshot().find((o) => o.id === 'prompt')?.status;
+  return { done, puts, status, fake };
+}
+
+test('system prompt save: no PUT until native acknowledged the pending summary; refused/lost holds it (failed, nothing sent)', async () => {
+  const matching = async () => ({ system_prompt: 'new prompt', revision: REV_B });
+  // Receipt withheld, then acknowledged: the PUT starts only after the hold ack.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const withheld = [];
+  const pending = runPromptSave({ reply: (i) => (i === 2 ? gate.then(() => '{}') : '{}'), read: matching, puts: withheld });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.equal(withheld.length, 0, 'no PUT while the receipt is withheld');
+  release();
+  const acked = await pending;
+  assert.equal(acked.puts.length, 1, 'one PUT after the ack');
+  assert.equal(acked.fake.owners()[2].blocking, 'hold', 'the acknowledged summary showed the save pending');
+  assert.ok(acked.puts[0].callsBefore >= 3, 'PUT sent after the hold summary call');
+  assert.equal(acked.done.outcome, 'saved');
+  assert.equal(acked.status, 'confirmed');
+
+  for (const [label, reply] of [
+    ['refused', (i) => (i === 2 ? Promise.reject(REFUSED) : '{}')],
+    ['lost', (i) => (i === 2 ? Promise.reject(LOST) : '{}')],
+  ]) {
+    const run = await runPromptSave({ reply, read: matching });
+    assert.equal(run.puts.length, 0, `${label}: nothing sent`);
+    assert.equal(run.done.outcome, 'failed', label);
+    assert.deepEqual(run.done.result, { kind: 'held' }, label);
+    assert.equal(run.status, 'failed', `${label}: ticket settled failed`);
+  }
+});
+
+test('system prompt save: #1775 kept — an acknowledged save whose verification read fails or disagrees stays held (unknown)', async () => {
+  for (const [label, read] of [
+    ['read fails 503', async () => { throw Object.assign(new Error('unavailable'), { status: 503 }); }],
+    ['read disagrees', async () => ({ system_prompt: 'other client', revision: 'c'.repeat(64) })],
+  ]) {
+    const run = await runPromptSave({ reply: () => '{}', read });
+    assert.equal(run.puts.length, 1, `${label}: sent after the receipt`);
+    assert.equal(run.done.outcome, 'unknown', label);
+    assert.equal(run.status, 'unknown', `${label}: held, not saved`);
+  }
+});
