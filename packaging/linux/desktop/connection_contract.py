@@ -1,4 +1,4 @@
-"""Packaged connection assets and closed, dependency-free v1 validation."""
+"""Packaged resource manifests and closed, dependency-free v1 validation."""
 from __future__ import annotations
 
 import hashlib
@@ -10,14 +10,8 @@ import re
 import stat
 import time
 from typing import Any
-from urllib.parse import urlsplit
 
-ORIGIN = "happyranch-shell://connection"
-ENTRY = ORIGIN + "/index.html"
-CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
-       "font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; "
-       "base-uri 'none'; form-action 'none'")
-MAX_ASSET = 16 * 1024 * 1024
+MAX_ASSET = 64 * 1024 * 1024
 CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt",
                    "client.disconnect", "client.retry", "client.health", "client.savedComputers",
                    "client.connectSaved", "client.retrySave", "client.removeSaved"}
@@ -153,7 +147,7 @@ class Assets:
         if (type(manifest) is not dict or set(manifest) != {"version", "entry", "resources"}
                 or type(manifest["version"]) is not int or manifest["version"] != 1
                 or manifest["entry"] != "index.html" or type(manifest["resources"]) is not list
-                or not 1 <= len(manifest["resources"]) <= 256):
+                or not 1 <= len(manifest["resources"]) <= 4096):
             raise ValueError("invalid resource manifest")
         self.resources = {}
         total = 0
@@ -169,11 +163,15 @@ class Assets:
                 raise ValueError("invalid resource record")
             total += item["bytes"]
             self.resources[name] = item
-        if "index.html" not in self.resources or total > 32 * 1024 * 1024:
+        if "index.html" not in self.resources or total > 256 * 1024 * 1024:
             raise ValueError("invalid resource budget")
         actual = set()
+        entries = 0
         for parent, directories, files in os.walk(self.root, followlinks=False):
             for name in directories + files:
+                entries += 1
+                if entries > 8192:
+                    raise ValueError("resource inventory limit")
                 path = Path(parent) / name
                 mode = path.lstat().st_mode
                 if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
@@ -221,14 +219,6 @@ class Assets:
             raise ValueError("resource digest mismatch")
         return data
 
-    def resolve(self, uri: str) -> bytes:
-        # Comparing the literal URL also rejects escapes, credentials, ports,
-        # query strings, fragments, doubled slashes and URL normalization tricks.
-        path = urlsplit(uri).path.removeprefix("/")
-        literal_path(path)
-        if uri != ORIGIN + "/" + path:
-            raise ValueError("unknown origin")
-        return self.asset(path)
 
 
 class Protocol:
@@ -286,14 +276,6 @@ class Protocol:
             raise ValueError("invalid null")
         for child in schema.get("allOf", ()):
             self.validate(value, child)
-
-    def request(self, raw: str, *, origin: str, main_frame: bool) -> dict:
-        if origin != ORIGIN or main_frame is not True:
-            raise ValueError("untrusted document")
-        value = parse_json(raw, 4096)
-        self.validate(value, self.schema["$defs"]["request"])
-        self.validate(value["args"], self.commands[value["command"]]["args"])
-        return value
 
     def result(self, command: str, value: dict) -> dict:
         self.validate(value, self.commands[command]["result"])

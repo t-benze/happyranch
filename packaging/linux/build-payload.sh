@@ -52,9 +52,9 @@ if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --q
 fi
 SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 umask 077
-# Do not inherit TMPDIR or discover an enclosing project/.venv. uv --no-config
+# Use TMPDIR for the build root; do not discover an enclosing project/.venv. uv --no-config
 # disables user/system/project overrides; Linux runtime has no local uv sources.
-WORK="$(mktemp -d /tmp/happyranch-linux-build.XXXXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/happyranch-linux-build.XXXXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir "$WORK/source" "$WORK/python-install" "$WORK/uv-cache" "$WORK/tmp" "$WORK/output"
 git -C "$REPO_ROOT" archive "$SOURCE_SHA" | tar -x -C "$WORK/source"
@@ -150,7 +150,7 @@ PYCOPY
 # Repair after copying all interpreter/dependency ELFs, before payload execution.
 "$MANAGED_PYTHON" -I "$WORK/source/packaging/linux/python-elf-stack.py" \
     "$PAYLOAD/python" --fix --mdwe
-(cd "$WORK/source/web" && npm ci --cache "$WORK/npm-cache" && npm run build && npm run build:connection)
+(cd "$WORK/source/web" && npm ci --cache "$WORK/npm-cache" && npm run build)
 cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 # Keep the private module cache removable by the EXIT trap. Go otherwise makes
 # downloaded module directories read-only, causing a completed build to fail.
@@ -212,7 +212,6 @@ cp "$WORK/source/packaging/linux/desktop/app_scheme.py" \
 cp "$WORK/source/packaging/linux/desktop/connection_contract.py" \
     "$WORK/source/packaging/linux/desktop/connection_cli.py" \
     "$WORK/source/packaging/linux/desktop/client_cli.py" \
-    "$WORK/source/packaging/linux/desktop/connection_window.py" \
     "$WORK/source/packaging/linux/desktop/host_bridge.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/client_store.py" \
     "$PAYLOAD/share/happyranch/desktop/"
@@ -222,13 +221,6 @@ cp "$WORK/source/packaging/linux/desktop/client_session.py" \
     "$WORK/source/packaging/linux/desktop/client_ui.py" \
     "$WORK/source/runtime/remote_access/invite_v2.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/protocol/native-connection-bridge.v1.json" "$PAYLOAD/share/happyranch/desktop/"
-cp -a "$WORK/source/web/dist-connection" "$PAYLOAD/share/happyranch/desktop/connection"
-"$MANAGED_PYTHON" -I - "$WORK/source/packaging/linux/desktop/connection_contract.py" \
-    "$PAYLOAD/share/happyranch/desktop/connection" <<'CONNECTION'
-import runpy, sys
-from pathlib import Path
-runpy.run_path(sys.argv[1])['Assets'](Path(sys.argv[2]))
-CONNECTION
 cp "$WORK/source/packaging/linux/desktop/happyranch.desktop.in" "$PAYLOAD/share/applications/"
 # Reuse the existing clay brand artwork; no generated/new icon design.
 for size in 16 32 64 128 256 512 1024; do

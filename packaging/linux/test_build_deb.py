@@ -434,15 +434,13 @@ class DebPackageTests(unittest.TestCase):
             'python/lib/module.py': '# fixture source',
             'python/lib/__pycache__/module.cpython-312.pyc': 'generated cache',
             'share/happyranch/desktop/happyranch_window.py': '# fixture',
-            'share/happyranch/desktop/connection_window.py': '# inert fixture',
             'share/happyranch/desktop/host_bridge.py': '# inert fixture',
             'share/happyranch/desktop/connection_contract.py': '# inert fixture',
             'share/happyranch/desktop/native-connection-bridge.v1.json': '{}',
-            'share/happyranch/desktop/connection/index.html': '<html>connection fixture</html>',
-            'share/happyranch/desktop/connection/resource-manifest.json': json.dumps({
+            'web/dist/resource-manifest.json': json.dumps({
                 'version': 1, 'entry': 'index.html', 'resources': [{
-                    'path': 'index.html', 'bytes': len(b'<html>connection fixture</html>'),
-                    'sha256': hashlib.sha256(b'<html>connection fixture</html>').hexdigest()}]}),
+                    'path': 'index.html', 'bytes': len(b'<html>fixture</html>'),
+                    'sha256': hashlib.sha256(b'<html>fixture</html>').hexdigest()}]}),
             'licenses/HappyRanch-LICENSE': 'original license fixture',
             'licenses/nested/NOTICE': 'original dependency notice',
             'licenses/headscale-LICENSE': BUILDER.with_name('headscale-LICENSE').read_text(),
@@ -628,7 +626,7 @@ class DebPackageTests(unittest.TestCase):
                               'gir1.2-webkit2-4.1', 'git, ca-certificates', 'libc6 (>= 2.35)', 'libgcc-s1'):
                     self.assertIn(field, fields)
                 self.assertEqual(subprocess.check_output(['dpkg-deb', '-f', deb, 'Depends'], text=True).strip(),
-                                 'python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, gir1.2-secret-1, '
+                                 'python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.40), gir1.2-secret-1, '
                                  'git, ca-certificates, libc6 (>= 2.35), libgcc-s1')
                 listing = subprocess.check_output(['dpkg-deb', '-c', deb], text=True)
                 self.assertTrue(all(' root/root ' in line for line in listing.splitlines()))
@@ -774,26 +772,31 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('incomplete desktop payload: ' + missing, result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
-    def test_invalid_connection_payload_is_refused(self) -> None:
-        for index, case in enumerate(('missing', 'size', 'digest', 'extra')):
+    def test_tampered_main_manifest_is_refused(self) -> None:
+        for index, case in enumerate(('missing', 'size', 'digest', 'extra', 'symlink', 'manifest')):
             with self.subTest(case=case):
                 archive = self.payload(version=f'0.4.{index}')
                 root = self.work / f'happyranch-0.4.{index}-linux-x86_64'
-                connection = root / 'share/happyranch/desktop/connection'
+                connection = root / 'web/dist'
                 entry = connection / 'index.html'
                 if case == 'missing':
-                    entry.unlink()
+                    (connection / 'resource-manifest.json').unlink()
                 elif case == 'size':
                     entry.write_text('truncated')
                 elif case == 'digest':
                     entry.write_bytes(b'X' * entry.stat().st_size)
-                else:
+                elif case == 'extra':
                     (connection / 'unlisted.js').write_text('unlisted')
+                elif case == 'symlink':
+                    entry.rename(root / 'outside.html')
+                    entry.symlink_to('../../outside.html')
+                else:
+                    (connection / 'resource-manifest.json').write_text('{}')
                 with tarfile.open(archive, 'w:gz') as stream:
                     stream.add(root, arcname=root.name)
                 result = self.build(archive)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('invalid connection resource manifest or assets', result.stderr)
+                self.assertIn('invalid main resource manifest or assets', result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
     def test_version_mapping(self) -> None:

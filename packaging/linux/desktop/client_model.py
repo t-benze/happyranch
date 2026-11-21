@@ -50,7 +50,6 @@ class ClientModel:
         self.confirmation = 0
         self.confirmation_document = None
         self.confirming_target, self.host_prompt_document = False, None
-        self.load_succeeded = False
         self.workers = set()
         self.worker_lock = threading.Lock()
         self.store = _store.SecretStore(_native)
@@ -163,7 +162,7 @@ class ClientModel:
         if self.main is not None:
             if self.active_session is not None and self.active_projection is None:
                 self.active_projection = (self.save_intent, self.active_ref, self.saved_access,
-                    self.stage, self.runtime, self.access, self.observation, self.load_succeeded, self.target)
+                    self.stage, self.runtime, self.access, self.observation, self.target)
             self.switch_candidate = {"kind": "remote", "id": uuid.uuid4().hex,
                 "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
                 "phase": "signing_in", "deadline": None}
@@ -272,7 +271,6 @@ class ClientModel:
         self.token += 1
         token = self.token
         self.document = document
-        self.load_succeeded = False
         self.expiry, self._cleanup = None, "notApplicable"
         self.observation = "known"
         self.active_ref, self.save_intent = None, False
@@ -426,39 +424,39 @@ class ClientModel:
 
     def open(self, token: int) -> None:
         self.changed("opening")
-        if self.main is not None:
-            session = self.session
-            candidate = self.switch_candidate
-            if candidate is None:
-                # Legacy native controls share the same owner, never a second
-                # runtime window once Main owns routing.
-                self.switch_candidate = candidate = {"kind": "remote", "id": uuid.uuid4().hex,
-                    "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
-                    "phase": "signing_in", "deadline": None}
-            target = self.bridge_types.RemoteDaemon(session, ready=True,
-                target_id=candidate["id"], name=candidate["name"])
-            stop = self.candidate_stop
-            def prepare() -> object:
-                try:
-                    target.bootstrap(stop)
-                    return target, None
-                except self.bridge_types.SchemeError as error:
-                    detail = {"code": error.code}
-                    if error.code == "incompatible":
-                        detail["side"] = error.side
-                    return None, detail
-            def prepared(result: object, error: str | None) -> None:
-                target, detail = result if not error else (None, {"code": "target_unreachable"})
-                if detail:
-                    self.candidate_error = detail
-                    self.fail("runtimeUnavailable")
-                else:
-                    self.candidate_target = target
-                    self.switch_candidate["phase"] = "ready_to_switch"
-                    self.changed()
-            self.work(token, prepare, prepared)
+        if self.main is None or self.main.closed:
+            self.fail("runtimeUnavailable")
             return
-        self.work(token, self.session.open_runtime, lambda url, e: self.opened(token, url, e))
+        session = self.session
+        candidate = self.switch_candidate
+        if candidate is None:
+            # Legacy native controls share the same owner, never a second
+            # runtime window once Main owns routing.
+            self.switch_candidate = candidate = {"kind": "remote", "id": uuid.uuid4().hex,
+                "name": "远程电脑" if self.main.locale["current"] == "zh-CN" else "Remote computer",
+                "phase": "signing_in", "deadline": None}
+        target = self.bridge_types.RemoteDaemon(session, ready=True,
+            target_id=candidate["id"], name=candidate["name"])
+        stop = self.candidate_stop
+        def prepare() -> object:
+            try:
+                target.bootstrap(stop)
+                return target, None
+            except self.bridge_types.SchemeError as error:
+                detail = {"code": error.code}
+                if error.code == "incompatible":
+                    detail["side"] = error.side
+                return None, detail
+        def prepared(result: object, error: str | None) -> None:
+            target, detail = result if not error else (None, {"code": "target_unreachable"})
+            if detail:
+                self.candidate_error = detail
+                self.fail("runtimeUnavailable")
+            else:
+                self.candidate_target = target
+                self.switch_candidate["phase"] = "ready_to_switch"
+                self.changed()
+        self.work(token, prepare, prepared)
 
     def computers(self) -> list | None:
         if self.saved_observation != "known" and not self.records:
@@ -535,7 +533,7 @@ class ClientModel:
         self.token += 1
         token = self.token
         self.document, self.active_ref = document, ref
-        self.expiry, self.load_succeeded = None, False
+        self.expiry = None
         self.target = plain(record.home_id)
         self.changed("validating")
         def consent(yes: bool) -> None:
@@ -597,33 +595,6 @@ class ClientModel:
                        "removalIncomplete" if error else None, "unknown" if error else "confirmed")
             self.work(token, lambda: self.store.delete(record), removed, settle=True)
         self.ui.saved_target(record, True, confirmed)
-
-    def opened(self, token: int, url: str | None, error: str | None) -> None:
-        if error:
-            self.fail("runtimeUnavailable")
-            return
-        self.ui.open_runtime(url, token)
-        self.ui.later(30000, lambda: self.load_timeout(token))
-
-    def load_timeout(self, token: int) -> bool:
-        if self.valid(token) and self.stage == "opening" and not self.load_succeeded:
-            self.loaded(token, False)
-        return False
-
-    def loaded(self, token: int, success: bool) -> None:
-        if not self.valid(token) or self.stage not in ("opening", "connected", "saving"):
-            return
-        if self.stage == "saving" and success:
-            return
-        if success:
-            self.load_succeeded = True
-        if self.hold:
-            self.defer(lambda: self.loaded(token, success))
-        elif not success:
-            self.fail("runtimeUnavailable")
-        else:
-            self.runtime, self.access = "available", "allowed"
-            self.changed("connected")
 
     def confirm_stop(self, finish: object, document: object = None) -> None:
         # Native runtime controls bypass Requests, including its mutation slot.
@@ -698,7 +669,6 @@ class ClientModel:
         if session is not None:
             self.session_cleanups[session] = "unknown"
         self.ui.dismiss()
-        self.ui.close_runtime()
         self.changed("stopping")
         def stopped(_result: object, error: str | None) -> None:
             self.cleanup_finished(session, error)
@@ -706,7 +676,7 @@ class ClientModel:
                 self._cleanup = "incomplete" if error else "confirmed"
                 if self.active_session is not None and self.active_projection is not None:
                     (self.save_intent, self.active_ref, self.saved_access, self.stage, self.runtime, self.access,
-                     self.observation, self.load_succeeded, self.target) = self.active_projection
+                     self.observation, self.target) = self.active_projection
                     self.active_projection = None
                     self.changed()
                 else:
@@ -765,7 +735,6 @@ class ClientModel:
                 self.token += 1
                 cleanup_token = self.token
                 self.changed("stopping")
-                self.ui.close_runtime()
                 self.session_cleanups[session] = "unknown"
                 def stopped(_r: object, cleanup_error: str | None) -> None:
                     self.cleanup_finished(session, cleanup_error)

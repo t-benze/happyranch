@@ -1,13 +1,11 @@
-"""Small native sensitive dialogs and a separate, bridge-free runtime window."""
+"""Native sensitive dialogs for the Main Connection owner."""
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 from pathlib import Path
-import re
 import threading
 import time
-from urllib.parse import urlsplit
 
 _spec = importlib.util.spec_from_file_location("client_model", Path(__file__).with_name("client_model.py"))
 _model = importlib.util.module_from_spec(_spec)
@@ -18,17 +16,14 @@ class ClientUI:
     def __init__(self, app: object, parent: object, prefix: Path, tr: object) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
-        gi.require_version("WebKit2", "4.1")
-        from gi.repository import GLib, Gtk, WebKit2
-        self.GLib, self.Gtk, self.W = GLib, Gtk, WebKit2
+        from gi.repository import GLib, Gtk
+        self.GLib, self.Gtk = GLib, Gtk
         self.app, self.parent, self.tr = app, parent, tr
         self.model = _model.ClientModel(prefix, self)
-        self.prompt = self.wait = self.runtime_window = self.runtime_view = None
+        self.prompt = self.wait = None
         self.listener = None
         self.document = None
         self.prompt_cancel = None
-        self.notice = self.retry_save = None
-        self.show_controls = None
 
     def idle(self, callback: object) -> None:
         self.GLib.idle_add(callback)
@@ -40,10 +35,6 @@ class ClientUI:
         self.model.attach_main(main, bridge_types)
 
     def changed(self) -> None:
-        if self.notice:
-            unsaved = self.model.saved_access != "saved"
-            self.notice.set_visible(unsaved)
-            self.retry_save.set_visible(unsaved and self.model.save_intent)
         if self.listener:
             self.listener()
 
@@ -200,7 +191,7 @@ class ClientUI:
             "expired": ("Approval deadline passed. Ask the Host for a new invite.", "批准期限已过。请向主机索取新邀请。"),
             "newInviteRequired": ("Approval could not be completed. Ask the Host for a new invite.", "无法完成批准。请向主机索取新邀请。"),
             "networkUnavailable": ("Connection failed. A new invite is required.", "连接失败。需要新的邀请。"),
-            "runtimeUnavailable": ("The runtime UI did not load. Check the connection and try again.", "运行界面未能加载。请检查连接后重试。"),
+            "runtimeUnavailable": ("The runtime interface is unavailable. Check Main and the connection before retrying.", "运行界面不可用。请检查主界面和连接后重试。"),
             "keychainLocked": ("Unlock this computer's login keyring, then retry.", "请解锁此电脑的登录密钥环，然后重试。"),
             "keychainDenied": ("Keyring access was denied. Check native permissions before retrying.", "密钥环访问被拒绝。请检查原生权限后重试。"),
             "savedUnavailable": ("Saved reconnect is unavailable. Check the connection and saved access before retrying.", "无法使用已保存的访问权限重新连接。请检查连接和保存的权限后重试。"),
@@ -218,89 +209,12 @@ class ClientUI:
         dialog.connect("response", closed)
         dialog.show_all()
 
-    def open_runtime(self, url: str, token: int) -> None:
-        if re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/", url or "") is None or not 0 < urlsplit(url).port <= 65535:
-            self.model.loaded(token, False)
-            return
-        self.close_runtime()
-        Gtk, W = self.Gtk, self.W
-        window = Gtk.ApplicationWindow(application=self.app, title=self.tr("Remote runtime", "远程运行界面"))
-        window.set_default_size(1100, 800)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        # Native chrome remains visible even after the connection window closes.
-        notice = Gtk.Label(label=self.tr(
-            "Session only · Access is not saved. Reopening may require a new invite and Host approval.",
-            "仅限当前会话 · 访问权限未保存。重新打开可能需要新邀请和主机批准。"))
-        notice.set_line_wrap(True)
-        notice.get_accessible().set_name(notice.get_text())
-        notice.set_no_show_all(True)
-        box.pack_start(notice, False, False, 8)
-        retry_save = Gtk.Button(label=self.tr("Retry save…", "重试保存…"))
-        retry_save.set_no_show_all(True)
-        retry_save.connect("clicked", lambda *_: self.show_controls() if self.show_controls else None)
-        box.pack_start(retry_save, False, False, 0)
-        self.notice, self.retry_save = notice, retry_save
-        stop = Gtk.Button(label=self.tr("Disconnect", "断开连接"))
-        stop.connect("clicked", lambda *_: self.model.confirm_stop(lambda *_: None) if not self.prompt else self.prompt.present())
-        box.pack_start(stop, False, False, 0)
-        view = W.WebView(web_context=W.WebContext.new_ephemeral(), user_content_manager=W.UserContentManager())
-        box.pack_start(view, True, True, 0)
-        window.add(box)
-        self.runtime_window, self.runtime_view = window, view
-        admitted = False
-        failed = False
-        def policy(_view: object, decision: object, kind: object) -> bool:
-            nonlocal admitted
-            uri = decision.get_request().get_uri()
-            allowed = urlsplit(uri)[:2] == urlsplit(url)[:2]
-            if kind == W.PolicyDecisionType.RESPONSE and decision.is_main_frame_main_resource():
-                allowed = allowed and decision.get_response().get_status_code() in range(200, 300)
-                if self.model.stage == "opening":
-                    allowed = allowed and uri == url
-                    admitted = allowed
-            if allowed:
-                decision.use()
-            else:
-                decision.ignore()
-                self.model.loaded(token, False)
-            return True
-        def loaded(_view: object, event: object) -> None:
-            if event == W.LoadEvent.REDIRECTED and self.model.stage == "opening":
-                failure()
-            if event == W.LoadEvent.FINISHED and admitted and not failed and view.get_uri() == url:
-                self.model.loaded(token, True)
-        def failure(*_args: object) -> bool:
-            nonlocal failed
-            failed = True
-            self.model.loaded(token, False)
-            return True
-        view.connect("decide-policy", policy)
-        view.connect("load-changed", loaded)
-        view.connect("load-failed", failure)
-        view.connect("web-process-terminated", failure)
-        view.connect("create", lambda *_: None)
-        view.connect("permission-request", lambda _v, request: (request.deny(), True)[1])
-        window.connect("delete-event", lambda *_: (self.model.confirm_stop(lambda *_: None) if not self.prompt else self.prompt.present(), True)[1])
-        window.show_all()
-        self.changed()
-        view.load_uri(url)
-
-    def close_runtime(self) -> None:
-        self.notice = self.retry_save = None
-        window, self.runtime_window = self.runtime_window, None
-        view, self.runtime_view = self.runtime_view, None
-        if view:
-            view.stop_loading()
-        if window:
-            window.destroy()
-
     def shutdown(self) -> None:
         self.model.token += 1
         sessions = [session for session in (self.model.session, self.model.active_session) if session is not None]
         self.model.session = self.model.active_session = None
         self.model.candidate_stop.set()
         self.dismiss()
-        self.close_runtime()
         deadline = time.monotonic() + 20
         # Do not tear down the credential owner during write/readback.
         if self.model.saving:

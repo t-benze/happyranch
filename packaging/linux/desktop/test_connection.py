@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from connection_contract import Assets, ENTRY, ORIGIN, Protocol, parse_json
+from connection_contract import Assets, Protocol, parse_json
 
 
 class ConnectionBoundaryTests(unittest.TestCase):
@@ -28,17 +28,12 @@ class ConnectionBoundaryTests(unittest.TestCase):
 
     def test_asset_boundary(self) -> None:
         assets = Assets(self.root)
-        self.assertEqual(assets.resolve(ENTRY), b"<html>synthetic packaged entry</html>")
-        for uri in (ORIGIN + "/../index.html", ORIGIN + "/%2e%2e/index.html",
-                    ORIGIN + "/unknown.js", ORIGIN + "/resource-manifest.json",
-                    ORIGIN + "/index.html?x=1", ORIGIN + "/index.html#fragment",
-                    "file:///index.html", "https://connection/index.html",
-                    "happyranch-shell://connection:80/index.html"):
-            with self.subTest(uri=uri), self.assertRaises(ValueError):
-                assets.resolve(uri)
+        self.assertEqual(assets.asset("index.html"), b"<html>synthetic packaged entry</html>")
+        with self.assertRaises(ValueError):
+            assets.asset("unknown.js")
         self.entry.write_bytes(b"changed after admission")
         with self.assertRaises(ValueError):
-            assets.resolve(ENTRY)
+            assets.asset("index.html")
 
     def test_manifest_boundary(self) -> None:
         for field, wrong in (("bytes", True), ("bytes", 1), ("sha256", "0" * 64),
@@ -65,29 +60,13 @@ class ConnectionBoundaryTests(unittest.TestCase):
             with self.assertRaises((ValueError, OSError)):
                 Assets(self.root)
             with self.assertRaises((ValueError, OSError)):
-                assets.resolve(ENTRY)
+                assets.asset("index.html")
 
-    def request(self, command: str = "host.status", args: object = None) -> str:
-        return json.dumps({"protocol": "happyranch.connection", "version": 1,
-                           "requestId": "r1", "command": command, "args": {} if args is None else args})
-
-    def test_request_boundary(self) -> None:
-        good = self.request()
-        self.assertEqual(self.protocol.request(good, origin=ORIGIN, main_frame=True)["command"], "host.status")
-        for raw in ("{", good + " " * 4096, good.replace('"version": 1', '"version": true'),
-                    good.replace('"args": {}', '"args": {"x":1,"x":2}'),
-                    good.replace('"args": {}', '"args": {"x":NaN}'),
-                    self.request("unknown.command"), self.request(args={"deviceId": "arbitrary"}),
-                    self.request(args=[])):
-            with self.subTest(raw=raw[:80]), self.assertRaises((ValueError, UnicodeError)):
-                self.protocol.request(raw, origin=ORIGIN, main_frame=True)
-        for origin, main in (("null", True), ("https://connection", True), (ORIGIN, False)):
-            with self.subTest(origin=origin, main_frame=main), self.assertRaises(ValueError):
-                self.protocol.request(good, origin=origin, main_frame=main)
-        with self.assertRaises(ValueError):
-            self.protocol.request({}, origin=ORIGIN, main_frame=True)
-        with self.assertRaises(ValueError):
-            parse_json("[" * 18 + "0" + "]" * 18, 4096)
+    def test_json_boundary(self) -> None:
+        for raw in ('{', '{"x":1,"x":2}', '{"x":NaN}', '[' * 18 + '0' + ']' * 18,
+                    '{}' + ' ' * 4096):
+            with self.subTest(raw=raw[:80]), self.assertRaises(ValueError):
+                parse_json(raw, 4096)
 
     def test_projection_boundary(self) -> None:
         hello = self.protocol.hello()
@@ -134,9 +113,9 @@ class ConnectionBoundaryTests(unittest.TestCase):
                 self.protocol.host(json.dumps({**raw, **change}))
         for command in ("host.enable", "host.turnOff", "host.createInvite"):
             self.assertIn({"command": command, "availability": "available"}, hello["capabilities"])
-            self.protocol.request(self.request(command), origin=ORIGIN, main_frame=True)
+            self.protocol.validate({}, self.protocol.commands[command]["args"])
             with self.assertRaises(ValueError):
-                self.protocol.request(self.request(command, {"invite": "synthetic"}), origin=ORIGIN, main_frame=True)
+                self.protocol.validate({"invite": "synthetic"}, self.protocol.commands[command]["args"])
         raw["devices"][0]["label"] = "\u202ebidi"
         with self.assertRaises(ValueError):
             self.protocol.host(json.dumps(raw))

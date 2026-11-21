@@ -35,7 +35,7 @@ dist = args.dist_dir if args.dist_dir is not None else args.payload.absolute().p
 if not dist.is_absolute() or dist.resolve() != dist:
     parser.error('--dist-dir must be a literal absolute path')
 
-with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as temporary:
+with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
     work = Path(temporary)
     with tarfile.open(args.payload, 'r:gz') as archive:
         members = archive.getmembers()
@@ -127,7 +127,6 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'licenses/headscale/go-runtime/LICENSE',
                      'python/bin/python3', 'web/dist/index.html',
                      'share/happyranch/desktop/happyranch_window.py',
-                     'share/happyranch/desktop/connection_window.py',
                      'share/happyranch/desktop/host_bridge.py',
                      'share/happyranch/desktop/connection_contract.py',
                      'share/happyranch/desktop/native-connection-bridge.v1.json',
@@ -138,9 +137,9 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     # Use the packager's trusted validator, never execute supplied payload code.
     try:
         runpy.run_path(str(packaging / 'desktop/connection_contract.py'))['Assets'](
-            payload / 'share/happyranch/desktop/connection')
+            payload / 'web/dist')
     except (OSError, ValueError, UnicodeError):
-        parser.error('invalid connection resource manifest or assets')
+        parser.error('invalid main resource manifest or assets')
 
     for name in ('happyranch-home-ca', 'happyranch-home-admin'):
         materializer = payload / 'libexec/remote-access' / name
@@ -239,7 +238,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         'Section: devel\nPriority: optional\n'
         'Homepage: https://github.com/t-benze/happyranch\n'
         f'Installed-Size: {installed_size}\n'
-        'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, gir1.2-secret-1, '
+        'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.40), gir1.2-secret-1, '
         'git, ca-certificates, libc6 (>= 2.35), libgcc-s1\n'
         'Description: desktop and command-line workspace\n'
         ' Native GTK and WebKit window for the local HappyRanch web interface,\n'

@@ -18,9 +18,11 @@ import happyranch_window as native
 
 
 class HeaderTests(unittest.TestCase):
-    def exercise(self, check, chinese=False, app_scheme=True, saved_locale=None, system_chinese=None):
+    def exercise(self, check, chinese=False, app_scheme=True, saved_locale=None, system_chinese=None,
+                 scheme_failure=False):
         from gi.repository import Gio
         callbacks, timers, widgets = queue.Queue(), [], []
+        self.loaded_uris = []
         test = self
 
         class Widget:
@@ -42,6 +44,8 @@ class HeaderTests(unittest.TestCase):
                 self.children.remove(child)
             def set_label(self, value):
                 self.label = value
+            def load_uri(self, uri):
+                test.loaded_uris.append(uri)
             def get_label(self):
                 return self.label
             def set_visible(self, value):
@@ -57,7 +61,7 @@ class HeaderTests(unittest.TestCase):
         self.data = {"schema": 2, "state": "no_target", "target": None,
                      "incompatible": None, "candidate": None, "access_unsaved": False}
         self.requests, self.available, self.owner_available = [], True, True
-        self.connections, self.presented = [], []
+        self.connections = []
         def request(dialog):
             self.requests.append(dialog)
             return self.available
@@ -79,7 +83,8 @@ class HeaderTests(unittest.TestCase):
                 except queue.Empty:
                     continue
                 callback(*args)
-                if any("load-failed" in w.signals for w in widgets):
+                if any("load-failed" in w.signals for w in widgets) or any(
+                        "packaged web interface" in w.label or "打包的网页界面" in w.label for w in widgets):
                     break
             try:
                 self.assertIn("设置" if chinese else "Settings", self.labels(), "Main header needs both named dialog actions")
@@ -113,7 +118,7 @@ class HeaderTests(unittest.TestCase):
             shutdown_pending=False, lifetime_state=lambda: "off", update_installed=lambda _prefix: False)
         fixture = ModuleType("header_fixture")
         fixture.scheme = scheme
-        fixture.connections, fixture.presented = self.connections, self.presented
+        fixture.connections = self.connections
         fixture.ClientUI = lambda *_args: SimpleNamespace(model=SimpleNamespace(),
             attach_main=lambda *_args: None, shutdown=lambda: None)
         with tempfile.TemporaryDirectory() as scratch:
@@ -132,16 +137,18 @@ class HeaderTests(unittest.TestCase):
             shutil.copy2(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json", installed)
             (installed / "app_scheme_webkit.py").write_text(
                 "from header_fixture import scheme\nORIGIN='happyranch-app://app'\n"
-                "def AppScheme(*args, **kwargs): return scheme\n")
+                + ("def AppScheme(*args, **kwargs): raise ValueError('unavailable')\n" if scheme_failure else
+                   "def AppScheme(*args, **kwargs): return scheme\n"))
             (installed / "client_ui.py").write_text(
                 "from header_fixture import ClientUI\n")
+            # Regression canary: any revived native fallback is observable.
             (installed / "connection_window.py").write_text(
-                "from header_fixture import ClientUI, connections, presented\n"
+                "from header_fixture import ClientUI, connections\n"
                 "from types import SimpleNamespace\n"
                 "class ConnectionWindow:\n"
                 " def __init__(self,*args):\n"
                 "  self.closed=False\n"
-                "  self.window=SimpleNamespace(present=lambda: presented.append(self))\n"
+                "  self.window=SimpleNamespace(present=lambda: None)\n"
                 "  connections.append(self)\n"
                 " def close(self): self.closed=True\n")
             with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository, "header_fixture": fixture}), \
@@ -198,8 +205,8 @@ class HeaderTests(unittest.TestCase):
                     self.assertIn(badge, self.labels())
                     self.assertTrue(any("Work Host" in label for label in self.labels()))
                     self.click(badge)
-                    self.assertEqual(len(self.connections), 1)
-                    self.assertEqual(self.requests, [])
+                    self.assertEqual(self.connections, [])
+                    self.assertEqual(self.requests, ["connection"])
                     self.data.update(target=None, candidate=None, state="no_target")
                     self.refresh()
                     self.assertIn(badge, self.labels())
@@ -220,54 +227,58 @@ class HeaderTests(unittest.TestCase):
                     retry = "设置暂不可用 · 重试" if chinese else "Settings unavailable · Retry"
                     self.click(connection)
                     self.click(settings)
-                    self.assertEqual(len(self.connections), 1)
-                    self.assertEqual(self.requests, ["settings"])
+                    self.assertEqual(self.requests, ["connection", "settings"])
                     original = dict(self.data)
                     self.available = False
                     self.click(settings)
                     self.assertIn(retry, self.labels())
                     self.available = True
                     self.refresh()
-                    self.assertEqual(self.requests, ["settings", "settings"], "no automatic replay")
+                    self.assertEqual(self.requests, ["connection", "settings", "settings"], "no automatic replay")
                     self.click(retry)
                     self.assertEqual(self.requests[-1], "settings")
                     self.assertNotIn(retry, self.labels())
                     self.assertEqual(self.data, original)
                 self.exercise(check, chinese)
 
-    def test_connection_entries_open_native_in_default_and_opt_in_builds(self):
+    def test_connection_entries_request_main_in_both_flag_environments(self):
         for app_scheme in (False, True):
             for chinese in (False, True):
                 for entry in ("button", "badge"):
                     with self.subTest(app_scheme=app_scheme, chinese=chinese, entry=entry):
                         def check():
-                            connection, settings = ("连接", "设置") if chinese else ("Connection", "Settings")
+                            self.assertEqual(self.loaded_uris, ["happyranch-app://app/"])
+                            connection = "连接" if chinese else "Connection"
                             badge = "访问权限未保存" if chinese else "Access wasn't saved"
-                            retry = "设置暂不可用 · 重试" if chinese else "Settings unavailable · Retry"
-                            original = dict(self.data)
+                            retry = "连接暂不可用 · 重试" if chinese else "Connection unavailable · Retry"
                             self.data["access_unsaved"] = True
                             self.refresh()
+                            original = dict(self.data)
                             self.available = False
-                            # Default builds have no app.status to reveal the badge;
-                            # exercise its wired action without inventing status.
-                            self.click(connection if entry == "button" else badge, visible=app_scheme or entry == "button")
-                            self.assertEqual(len(self.connections), 1)
-                            self.assertEqual(self.requests, [])
-                            self.assertFalse(any("Retry" in label or "重试" in label for label in self.labels()))
-                            self.click(connection if entry == "button" else badge, visible=app_scheme or entry == "button")
-                            self.assertEqual(self.presented, self.connections, "reopen presents the existing native window")
-                            self.assertEqual(len(self.connections), 1)
-                            self.assertEqual(self.requests, [])
-                            self.assertFalse(any("Retry" in label or "重试" in label for label in self.labels()))
-                            self.data["access_unsaved"] = original["access_unsaved"]
+                            self.click(connection if entry == "button" else badge)
+                            self.assertEqual(self.requests, ["connection"])
+                            self.assertEqual(self.connections, [], "no native fallback")
+                            self.assertIn(retry, self.labels())
+                            self.available = True
+                            self.refresh()
+                            self.assertEqual(self.requests, ["connection"], "no automatic replay")
+                            self.click(retry)
+                            self.assertEqual(self.requests, ["connection", "connection"])
+                            self.assertNotIn(retry, self.labels())
                             self.assertEqual(self.data, original)
-                            if not app_scheme:
-                                self.click(settings)
-                                self.assertIn(retry, self.labels())
-                                self.click(retry)
-                                self.assertIn(retry, self.labels())
-                                self.assertEqual(self.requests, [], "default Settings cannot deliver without the scheme")
                         self.exercise(check, chinese, app_scheme)
+
+    def test_scheme_load_failure_has_error_and_no_native_fallback(self):
+        for chinese in (False, True):
+            with self.subTest(chinese=chinese):
+                def check():
+                    self.assertEqual(self.loaded_uris, [])
+                    error = "无法加载打包的网页界面。" if chinese else "The packaged web interface could not load."
+                    self.assertTrue(any(label.startswith(error) for label in self.labels()), self.labels())
+                    self.click("连接" if chinese else "Connection")
+                    self.assertEqual(self.connections, [])
+                    self.assertEqual(self.requests, [])
+                self.exercise(check, chinese, app_scheme=False, scheme_failure=True)
 
 
 if __name__ == "__main__":
