@@ -544,6 +544,10 @@ def helper_main() -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ActivationRefused()
+            # The fixed child has an empty environment: Python's default
+            # executable search omits /usr/sbin on Debian/Ubuntu.
+            if argv[0] in ('useradd', 'userdel', 'groupdel'):
+                argv = ['/usr/sbin/' + argv[0], *argv[1:]]
             return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
         manager = SystemdServiceManager(system=True, run=run)
         io = ManagedInstaller(layout='deb', manager=manager, run=run)

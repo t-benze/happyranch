@@ -3605,6 +3605,12 @@ I4b-2 adds RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-
 action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
+Its native runner selects the existing account tools `useradd`, `userdel` and
+`groupdel` by their fixed `/usr/sbin/` paths: the empty environment's default
+`/bin:/usr/bin` search cannot find them on Debian/Ubuntu. Account arguments,
+ownership validation and deadlines are unchanged. The M1 READY checker reports
+an absent activation receipt as `home_activation_receipt_missing`; READY still
+requires the receipt's `ready` phase and all existing independent checks.
 It captures protected activation G/O (including absence), initial Enable config
 generation, and B17 inventory/journal generation. There is no bus-supplied UID,
 path or generation. Already-designed enable/replace-failed/disable polkit actions

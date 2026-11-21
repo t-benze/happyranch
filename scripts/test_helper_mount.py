@@ -13,6 +13,7 @@ import time
 import ssl
 import hashlib
 import io
+import subprocess
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,6 +31,106 @@ from scripts.test_home_activation_backend import composition, corrupt_compositio
 from scripts.test_installer_token_custody import staged_inventory
 
 REAL_THREAD = threading.Thread
+
+
+def test_clean_enable_empty_environment_account_tools(
+        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.remote_access import service_manager
+
+    v, m = composition, mount
+    native = v.io._run
+    entered, proceed = threading.Event(), threading.Event()
+    probes, child_exits, workers = [], [], []
+    m.message.get_member = lambda: 'Enable'
+    m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', os.getuid())
+
+    def run(argv: list[str], **kwargs: Any) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if name in ('useradd', 'userdel', 'groupdel'):
+            entered.set()
+            assert proceed.wait(2), 'local account-tool probe was not released'
+            try:
+                # Exercise the shipped executable selection without modifying
+                # host accounts; only the existing synthetic NSS is mutated.
+                result = subprocess.run([argv[0], '--help'], env={}, cwd='/',
+                    capture_output=True, timeout=2, check=False)
+                code = result.returncode
+            except FileNotFoundError:
+                code = 127
+            probes.append((argv[0], code))
+            if code or argv[1:] == ['--help']:
+                return code, ''
+        return native([name, *argv[1:]] if name in ('useradd', 'userdel', 'groupdel') else argv, **kwargs)
+
+    def installer(*, layout: str, manager: Any, run: Any) -> Any:
+        assert layout == 'deb'
+        v.io._run, v.io.manager = run, manager
+        return v.io
+
+    monkeypatch.setattr(service_manager, '_default_run', run)
+    monkeypatch.setattr(backend, 'ManagedInstaller', installer)
+
+    def effect(step: str, expected: str, remaining: float, **kwargs: Any) -> dict:
+        request = dict(method='Enable', uid=os.getuid(), step=step,
+            expected=expected, deadline=time.monotonic() + remaining)
+        output = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+            patch.setattr(sys, 'stdout', output)
+            code = backend.helper_main()
+        child_exits.append(code)
+        if code:
+            raise m.h._helper_generation.GenerationUnavailable()
+        return json.loads(output.getvalue())
+
+    m.reader.effect.side_effect = effect
+
+    def worker(*, target: Any, args: tuple, **kwargs: Any) -> Any:
+        thread = REAL_THREAD(target=target, args=args, **kwargs)
+        workers.append(thread)
+        return thread
+
+    monkeypatch.setattr(m.h.threading, 'Thread', worker)
+    # The composition's observation servers already use their captured real
+    # thread factory; only the public helper's lifecycle worker is collected.
+    m.admit()
+    try:
+        assert entered.wait(2), 'accepted worker never reached account preparation'
+        capture = m.helper.lifecycle_operation.capture
+        assert m.helper.inflight is capture and child_exits == []
+        loop = SimpleNamespace(quit=Mock())
+        m.helper.last_activity = -100  # Idle time alone cannot retire an effect.
+        assert m.helper._idle(loop) is True
+        loop.quit.assert_not_called()
+        assert m.helper.inflight is capture and m.helper.name_owned
+    finally:
+        proceed.set()
+        for thread in workers:
+            thread.join(timeout=4)
+    assert all(not thread.is_alive() for thread in workers)
+    rows = [json.loads(line) for line in m.helper.audit.path.read_text().splitlines()]
+    print(json.dumps(dict(probes=probes, child_exits=child_exits,
+        outcome=m.helper.lifecycle_result, receipt_present=v.receipts.current() is not None,
+        audit_stages=[row['stage'] for row in rows], slot_released=m.helper.inflight is None), sort_keys=True))
+    assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}, 'clean Enable child did not publish READY'
+    assert child_exits == [0] and len(probes) == 2 and all(code == 0 for _, code in probes)
+    assert v.receipts.current().phase == 'ready'
+    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+    assert m.helper.inflight is None
+    for tool in ('userdel', 'groupdel'):
+        assert v.io._run([tool, '--help'], timeout=2) == (0, ''), tool
+    print(json.dumps(dict(cleanup_tool_probes=probes[2:]), sort_keys=True))
+
+
+def test_m1_ready_missing_receipt_is_named_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.ci import m1_home_checks as checker
+
+    monkeypatch.setattr(checker, 'HomeActivationStore', lambda: SimpleNamespace(current=lambda: None))
+    with pytest.raises(AssertionError, match='home_activation_receipt_missing'):
+        checker.ready()
 
 
 class Variant:

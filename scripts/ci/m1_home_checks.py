@@ -310,7 +310,9 @@ def runner_custody() -> None:
 
 
 def ready() -> None:
-    assert HomeActivationStore().current().phase == 'ready', 'home activation phase must be ready'
+    receipt = HomeActivationStore().current()
+    assert receipt is not None, 'home_activation_receipt_missing'
+    assert receipt.phase == 'ready', 'home activation phase must be ready'
     candidate = ManagedInstaller(layout='deb').inventory()
     assert candidate.state == 'owned-activated', inventory_message(candidate)
     fragments()
