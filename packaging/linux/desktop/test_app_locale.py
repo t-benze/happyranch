@@ -155,47 +155,62 @@ class LocaleTests(unittest.TestCase):
 
         self.path.unlink()
         self.directory.rmdir()
-        parent_stat = self.config.stat()
         sync = os.fsync
-        parent_attempts = []
-        successful_parent_syncs = []
+        cases = (
+            ("happyranch_entry", self.config, self.config, self.directory),
+            ("default_config_ancestor", None, self.root, self.root / ".config"),
+            ("xdg_outer_ancestor", self.root / "xdg-outer/middle/config",
+             self.root, self.root / "xdg-outer"),
+            ("xdg_inner_ancestor", self.root / "xdg-inner/middle/deeper/config",
+             self.root / "xdg-inner/middle", self.root / "xdg-inner/middle/deeper"),
+        )
+        for name, xdg, parent_path, entry in cases:
+            with self.subTest(retry=name), patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg) if xdg else ""}):
+                parent_path.mkdir(parents=True, exist_ok=True)
+                parent_stat = parent_path.stat()
+                directory = (xdg if xdg else self.root / ".config") / "happyranch"
+                path = directory / "locale"
+                store = self.fresh()
+                parent_attempts = []
+                successful_parent_syncs = []
+                self.assertFalse(entry.exists())
 
-        def fail_parent_once(fd: int) -> None:
-            parent = os.path.samestat(os.fstat(fd), parent_stat)
-            if parent:
-                parent_attempts.append(fd)
-                if len(parent_attempts) == 1:
-                    raise OSError("synthetic parent sync failure")
-            sync(fd)
-            if parent:
-                successful_parent_syncs.append(os.fstat(fd))
+                def fail_parent_once(fd: int) -> None:
+                    parent = os.path.samestat(os.fstat(fd), parent_stat)
+                    if parent:
+                        self.assertTrue(entry.is_dir(), "failure must follow directory creation")
+                        parent_attempts.append(os.fstat(fd))
+                        if len(parent_attempts) == 1:
+                            raise OSError("synthetic parent sync failure")
+                    sync(fd)
+                    if parent:
+                        successful_parent_syncs.append(os.fstat(fd))
 
-        with patch.object(os, "fsync", side_effect=fail_parent_once):
-            self.assertEqual(self.store.set("zh-CN"), {"current": "zh-CN", "persisted": False})
-            self.assertEqual(len(parent_attempts), 1)
-            self.assertEqual(successful_parent_syncs, [])
-            self.assertTrue(self.directory.is_dir())
-            self.assertFalse(self.path.exists())
-            self.assertEqual(self.store.load(), {"current": "zh-CN", "persisted": False})
-            self.assertEqual(self.store.set("en"), {"current": "en", "persisted": True})
-            self.assertEqual(len(successful_parent_syncs), 1,
-                             "retry acknowledged persistence without syncing the config parent")
-        self.assertEqual(self.path.read_bytes(), b"en\n")
-        self.assertEqual(self.store.current(), {"current": "en", "persisted": True})
-        self.assertEqual(list(self.directory.iterdir()), [self.path])
+                with patch.object(os, "fsync", side_effect=fail_parent_once):
+                    self.assertEqual(store.set("zh-CN"), {"current": "zh-CN", "persisted": False})
+                    self.assertEqual(len(parent_attempts), 1)
+                    self.assertEqual(successful_parent_syncs, [])
+                    self.assertTrue(entry.is_dir())
+                    self.assertFalse(path.exists())
+                    self.assertEqual(store.load(), {"current": "zh-CN", "persisted": False})
+                    self.assertEqual(store.set("en"), {"current": "en", "persisted": True})
+                    self.assertEqual(len(successful_parent_syncs), 1,
+                                     "retry acknowledged persistence without syncing the actual ancestor parent")
+                self.assertEqual(path.read_bytes(), b"en\n")
+                self.assertEqual(store.current(), {"current": "en", "persisted": True})
+                self.assertEqual(list(directory.iterdir()), [path])
 
     def test_atomic_replacement_and_sync_boundaries(self) -> None:
         self.store.set("en")
         replace, sync = os.replace, os.fsync
         events = []
+        parent_stats = [parent.stat() for parent in reversed(self.directory.parents)]
 
         def observe_sync(fd: int) -> None:
             sync(fd)
             target = os.fstat(fd)
-            if os.path.samestat(target, self.config.stat()):
-                events.append("parent_sync")
-            else:
-                events.append("directory_sync" if stat.S_ISDIR(target.st_mode) else "file_sync")
+            events.append(("directory_sync", target.st_dev, target.st_ino)
+                          if stat.S_ISDIR(target.st_mode) else "file_sync")
 
         def observe_replace(source: str, destination: str, **kwargs: object) -> None:
             self.assertEqual(self.path.read_bytes(), b"en\n")
@@ -206,7 +221,10 @@ class LocaleTests(unittest.TestCase):
 
         with patch.object(os, "fsync", side_effect=observe_sync), patch.object(os, "replace", side_effect=observe_replace):
             self.assertEqual(self.store.set("zh-CN"), {"current": "zh-CN", "persisted": True})
-        self.assertEqual(events, ["parent_sync", "file_sync", "replace", "directory_sync"])
+        directory_stat = self.directory.stat()
+        self.assertEqual(events, [("directory_sync", parent.st_dev, parent.st_ino) for parent in parent_stats]
+                         + ["file_sync", "replace",
+                            ("directory_sync", directory_stat.st_dev, directory_stat.st_ino)])
         self.assertEqual(self.path.read_bytes(), b"zh-CN\n")
 
     def test_threaded_newer_set_cannot_be_overwritten(self) -> None:

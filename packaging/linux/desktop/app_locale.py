@@ -12,8 +12,11 @@ Missing/invalid/unsafe/unreadable files fall back to the unchanged LANG rule:
 LANG.lower().startswith("zh") -> zh-CN, otherwise en. Reads are bounded to 64
 bytes, nonblocking, regular-file only, with no symlink traversal. Writes use a
 private same-directory temporary file, flush/fsync, atomic replace and directory
-fsync. A post-replace sync failure can leave new bytes visible, but returns
-persisted=False because durability was not confirmed.
+fsync. Every write also fsyncs every containing directory from / through the
+config parent after opening each child without following links, even if that
+child already existed, confirming entries left by earlier failed writes. A
+post-replace sync failure can leave new bytes visible, but returns persisted=False
+because durability was not confirmed.
 
 One native process owns this module with stable environment after first access.
 A single lock covers state AND disk I/O: threaded calls are linearized in lock
@@ -49,20 +52,23 @@ def _open_directory(create: bool) -> int:
         raise ValueError("nonabsolute config directory")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        for index, component in enumerate(path.parts[1:], 1):
+        for component in path.parts[1:]:
             if component == "..":
                 raise ValueError("nonliteral config directory")
             if create:
                 try:
                     os.mkdir(component, 0o700, dir_fd=fd)
                 except FileExistsError:
-                    if index == len(path.parts) - 1:
-                        # An earlier creation may have failed to sync this entry.
-                        os.fsync(fd)
-                else:
-                    os.fsync(fd)
+                    pass
             child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=fd)
+            try:
+                if create:
+                    # Any entry may survive an earlier failed creation sync.
+                    os.fsync(fd)
+            except BaseException:
+                os.close(child)
+                raise
             os.close(fd)
             fd = child
         return fd

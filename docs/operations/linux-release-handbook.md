@@ -21,9 +21,17 @@ The module copies the desktop lowercase `happyranch` directory and atomic
 write conventions locally, with descriptor-relative no-follow parent traversal
 and bounded nonblocking regular-file reads. A mode-0600 exclusive temporary
 file in the same directory is flushed, fsynced and atomically replaced; the
-directory is fsynced too (including parents after directory creation). Every
-write also fsyncs the config parent containing the `happyranch` entry, even when
-that subdirectory already exists, so a retry confirms a previously failed sync.
+`happyranch` directory is then fsynced. Before writing the file, every write
+fsyncs the containing directory of every path component after opening that child
+without following links, whether mkdir created it or found it already present.
+This runs from `/` through the config parent, so retries confirm any ancestor
+entry left by a failed sync, with no durability state cached between calls.
+For default `~/.config/happyranch`, it syncs `/`, every HOME ancestor, HOME and
+`~/.config`, then `happyranch` after replacement. For absolute XDG config paths,
+it syncs `/` and every directory through `XDG_CONFIG_HOME`, including containing
+directories of missing intermediate ancestors, then `happyranch` after
+replacement. The bound is `/`: the traversal may create any component below
+root, and there is no containing entry above root to confirm.
 `persisted: true` is returned only after these steps succeed. Write failure
 keeps the choice in memory with `persisted: false`; a failure after replacement
 may leave the new file visible without confirmed durability. One lock covers
