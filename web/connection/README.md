@@ -1,11 +1,11 @@
 # Packaged connection shell (slices 1a / 1b-LINUX / 1b-MAC)
 
-The SPA dialog (`web/src/features/connection/`, THR-387 S6-W3) implements the
-desktop Connection contents, and its copy lives in the SPA `connection.*`
-catalogs. It is not yet the primary surface: until the S7-L1 cutover the Linux
-header Connection button and badge still open the native Connection window, so
-this shell and `src/strings.ts` stay packaged until S7-L1 retires that window
-(see `docs/agent-guides/web-and-cli.md`).
+Linux S7-L1 no longer builds or packages this shell. Main and its Connection
+dialog use `web/src/features/connection/` and the SPA `connection.*` catalogs.
+See the [Linux release handbook](../../docs/operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1).
+Mac still builds and packages this shell through `app/mac/scripts/build-app.sh`.
+The main SPA build also imports this directory's `resource-manifest.ts`, so the
+shared source and `build:connection` command remain.
 
 See the maintained [bridge command/event inventory](../../docs/specs/connection-bridge-inventory.md) for current platform and CLI coverage.
 Any PR changing the schema command/event list or a platform's command implementation must update that inventory in the same PR.
@@ -220,6 +220,11 @@ system prompt). These render nothing fake and remain slice 2 / TASK-16779 work.
 
 ## Linux native loader (slice 1b-LINUX)
 
+Historical implementation notes below describe the retired Linux shell.
+S7-L1 uses the [Connection dialog in Main](../../docs/operations/linux-release-handbook.md#main-app-scheme-and-connection-dialog-s7-l1);
+Linux no longer ships this loader or its assets. Mac's loader below still consumes
+this shell.
+
 The native titlebar **Connection / 连接** button opens `connection_window.py`
 independently of daemon startup, failure or runtime-page loading. The existing
 remote-access card remains during development. No handler or user script is
@@ -284,14 +289,7 @@ credential, selection or mutation call is implemented.
 
 Standalone invocation against an already-built/staged prefix (no daemon start):
 
-```sh
-/usr/bin/python3 -I /absolute/prefix/share/happyranch/desktop/connection_window.py --prefix /absolute/prefix --locale en
-# --locale zh-CN localizes native chrome; use Language for the web view.
-/usr/bin/python3 -B packaging/linux/desktop/test_connection.py
-/usr/bin/python3 -B packaging/linux/test_build_deb.py DebPackageTests -v
-python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
-bash -n packaging/linux/build-payload.sh packaging/linux/build-deb.sh
-```
+For current Linux build and verification commands, use the release handbook linked above.
 
 ## Mac native loader (slice 1b-MAC)
 

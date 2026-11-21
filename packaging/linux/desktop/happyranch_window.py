@@ -993,8 +993,7 @@ def run_gui(prefix: Path, home: Path) -> int:
     # Lazy imports keep lifecycle functions runnable without GI or a display.
     import gi
     gi.require_version("Gtk", "3.0")
-    gi.require_version("WebKit2", "4.1")
-    from gi.repository import Gio, GLib, Gtk, WebKit2
+    from gi.repository import Gio, GLib, Gtk
 
     chinese = _locale.load()["current"] == "zh-CN"
 
@@ -1014,36 +1013,14 @@ def run_gui(prefix: Path, home: Path) -> int:
     requests = queue.Queue()
     controls = None
     remote = None
-    connection_windows = []
     client_ui = None
     app_scheme = None
 
     def request_dialog(dialog: str) -> bool:
-        if dialog == "connection":
-            open_connection(None)
-            return True
         if app_scheme is None or not app_scheme.request_dialog(dialog):
             return False
         app_scheme.view.grab_focus()
         return True
-
-    def open_connection(_button: object) -> None:
-        nonlocal client_ui
-        connection_windows[:] = [existing for existing in connection_windows if not existing.closed]
-        for existing in connection_windows:
-            if not existing.closed:
-                existing.window.present()
-                return
-        # Keep the installed module local to this native control. The daemon's
-        # WebView below receives no content manager, user scripts or forwarding.
-        import importlib.util
-        path = prefix / "share/happyranch/desktop/connection_window.py"
-        spec = importlib.util.spec_from_file_location("connection_window", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if client_ui is None:
-            client_ui = module.ClientUI(app, window, prefix, tr)
-        connection_windows.append(module.ConnectionWindow(app, window, prefix, tr, client_ui))
 
     def attach_remote(box: object) -> None:
         nonlocal remote
@@ -1158,37 +1135,35 @@ def run_gui(prefix: Path, home: Path) -> int:
         if app_scheme is not None:
             app_scheme.close()
             app_scheme = None
-        view = None
-        if os.environ.get("HAPPYRANCH_DESKTOP_APP_SCHEME") == "1":
-            # url is released only by the existing service/child ownership and
-            # health proof. Do not accept a caller-selected upstream address.
-            import importlib.util
-            from urllib.parse import urlsplit
-            endpoint = urlsplit(url)
-            try:
-                if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
-                    raise ValueError("invalid verified endpoint")
-                path = prefix / "share/happyranch/desktop/app_scheme_webkit.py"
-                spec = importlib.util.spec_from_file_location("app_scheme_webkit", path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
-                                              local_mode="foreground" if fallback else "service")
-                if client_ui is None:
-                    client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
-                    client_module = importlib.util.module_from_spec(client_spec)
-                    client_spec.loader.exec_module(client_module)
-                    client_ui = client_module.ClientUI(app, window, prefix, tr)
-                client_ui.attach_main(app_scheme, module)
-                host_spec = importlib.util.spec_from_file_location("host_bridge", path.with_name("host_bridge.py"))
-                host_module = importlib.util.module_from_spec(host_spec)
-                host_spec.loader.exec_module(host_module)
-                app_scheme.host_adapter = host_module.shared_bridge(client_ui, prefix, tr)
-                app_scheme.connection_protocol = app_scheme.host_adapter.protocol
-                view, url = app_scheme.view, module.ORIGIN + "/"
-            except (OSError, ValueError, ImportError):
-                show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
-                return False
+        # url is released only by the existing service/child ownership and
+        # health proof. Do not accept a caller-selected upstream address.
+        import importlib.util
+        from urllib.parse import urlsplit
+        endpoint = urlsplit(url)
+        try:
+            if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
+                raise ValueError("invalid verified endpoint")
+            path = prefix / "share/happyranch/desktop/app_scheme_webkit.py"
+            spec = importlib.util.spec_from_file_location("app_scheme_webkit", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
+                                          local_mode="foreground" if fallback else "service")
+            if client_ui is None:
+                client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
+                client_module = importlib.util.module_from_spec(client_spec)
+                client_spec.loader.exec_module(client_module)
+                client_ui = client_module.ClientUI(app, window, prefix, tr)
+            client_ui.attach_main(app_scheme, module)
+            host_spec = importlib.util.spec_from_file_location("host_bridge", path.with_name("host_bridge.py"))
+            host_module = importlib.util.module_from_spec(host_spec)
+            host_spec.loader.exec_module(host_module)
+            app_scheme.host_adapter = host_module.shared_bridge(client_ui, prefix, tr)
+            app_scheme.connection_protocol = app_scheme.host_adapter.protocol
+            view, url = app_scheme.view, module.ORIGIN + "/"
+        except (OSError, ValueError, ImportError):
+            show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
+            return False
         # GtkBin's child excludes the titlebar. Retain the old content until
         # attach_remote has reparented the existing remote panel out of it.
         content = window.get_child()
@@ -1203,8 +1178,6 @@ def run_gui(prefix: Path, home: Path) -> int:
         box.pack_start(controls, False, False, 0)
         attach_remote(box)
         box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
-        if view is None:
-            view = WebKit2.WebView()
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
             return True
@@ -1372,8 +1345,6 @@ def run_gui(prefix: Path, home: Path) -> int:
     try:
         return app.run([])
     finally:
-        for connection_window in connection_windows:
-            connection_window.close()
         if client_ui is not None:
             client_ui.shutdown()
         if remote is not None:

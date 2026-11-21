@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from gi.repository import Gio, GLib
 import client_model as owner
 from connection_contract import Protocol, Requests
 
@@ -19,7 +20,7 @@ class UI:
         self.queue = queue.Queue()
         self.timers = []
         self.snapshots, self.errors = [], []
-        self.opened = self.prompt = None
+        self.prompt = None
         self.model = owner.ClientModel(Path("/synthetic"), self)
 
     def idle(self, callback):
@@ -66,11 +67,22 @@ class UI:
     def dismiss(self):
         pass
 
-    def open_runtime(self, url, token):
-        self.opened = (url, token)
+    @property
+    def opened(self):
+        return self.model.candidate_target or self.model.active_target
 
-    def close_runtime(self):
-        self.opened = None
+    def attach_main(self):
+        import app_scheme_webkit as bridge
+        main = bridge.AppScheme.__new__(bridge.AppScheme)
+        main.daemon, main.closed = None, False
+        main.transfers, main.cancelled = {}, {}
+        main.initialize_state()
+        main.Gio, main.GLib = Gio, GLib
+        main.emit_state = lambda: None
+        main.locale = {"current": "en", "persisted": False}
+        self.model.attach_main(main, bridge)
+        self.model.owner_snapshot = lambda: ()
+        return main
 
     def confirm_stop(self, target, callback):
         self.confirmed = callback
@@ -119,10 +131,6 @@ class Session:
             assert self.release.wait(2)
         return not self.pending
 
-    def open_runtime(self):
-        self.call("open")
-        return "http://127.0.0.1:12345/"
-
     def health(self):
         self.call("health")
         if self.health_error:
@@ -138,6 +146,16 @@ class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.ui = UI()
         self.model = self.ui.model
+        self.ui.attach_main()
+        import app_scheme_webkit as bridge
+        def bootstrap(target, stop=None):
+            target.session.call("prepare")
+            if getattr(target.session, "prepare_error", False):
+                raise bridge.SchemeError(503, "target_unreachable")
+            target.state = "ready"
+        patcher = patch.object(bridge.RemoteDaemon, "bootstrap", bootstrap)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.session = Session(None)
         if type(self) is LifecycleTests:
             patcher = patch.object(self.model.store, "list", return_value=({}, "none", "known"))
@@ -165,6 +183,11 @@ class LifecycleTests(unittest.TestCase):
         self.start()
         self.ui.pump(lambda: self.ui.opened is not None)
 
+    def commit(self):
+        replies = []
+        self.model.commit_switch(lambda *result: replies.append(result))
+        return replies[-1]
+
     def address_case(self, **changes):
         from test_client_store import record
         saved = record()
@@ -187,7 +210,7 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(self.session.calls, [])
             self.ui.recovery_consent(True)
             self.ui.pump(lambda: self.ui.opened is not None)
-            self.assertEqual([name for name, _ in self.session.calls], ["recover", "open"])
+            self.assertEqual([name for name, _ in self.session.calls], ["recover", "prepare"])
             load.assert_called_once_with(saved)
             updated = save.call_args.args[0]
             self.assertEqual(updated.dial_ip, self.invite.dial_ip)
@@ -255,7 +278,7 @@ class LifecycleTests(unittest.TestCase):
             self.ui.consent(True, False)
             self.ui.pump(lambda: self.ui.opened is not None)
             self.assertEqual([name for name, _ in self.session.calls],
-                             ["stop", "join", "pair", "complete", "open"])
+                             ["stop", "join", "pair", "complete", "prepare"])
             save.assert_not_called()
 
     def test_consent_workers_load_and_secret_free_projection(self):
@@ -263,7 +286,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.model.snapshot()["stage"], "opening")
         self.assertEqual(self.model.snapshot()["runtime"], "unknown")
         token = self.model.token
-        self.model.loaded(token, True)
+        self.commit()
         self.assertEqual(self.model.snapshot()["stage"], "connected")
         self.assertEqual(self.model.snapshot()["runtime"], "available")
         self.assertTrue(all(thread != "MainThread" for _, thread in self.session.calls))
@@ -284,11 +307,10 @@ class LifecycleTests(unittest.TestCase):
         self.model.detach("document")
         self.ui.pump(lambda: self.model.stage == "idle")
         self.session.release.set()
-        self.model.loaded(old, True)
         self.ui.pump(lambda: not self.model.workers)
         while not self.ui.queue.empty():
             self.ui.queue.get_nowait()()
-        self.assertNotIn("open", [name for name, _ in self.session.calls])
+        self.assertNotIn("prepare", [name for name, _ in self.session.calls])
         self.assertEqual(self.model.stage, "idle")
         self.assertIsNone(self.ui.opened)
 
@@ -302,14 +324,14 @@ class LifecycleTests(unittest.TestCase):
         self.ui.pump(lambda: not self.model.workers)
         while not self.ui.queue.empty():
             self.ui.queue.get_nowait()()
-        self.model.loaded(token, True)
+        self.assertEqual(self.commit()[1], "target_starting")
         self.assertEqual(self.model.stage, "opening")
-        next(callback for ms, callback in self.ui.timers if ms == 30000)()
         self.ui.confirmed(False)
+        self.commit()
         self.assertEqual(self.model.stage, "connected")
         self.assertEqual(health[-1][0]["access"], "allowed")
         self.assertEqual(replies[-1][0]["effect"], "none")
-        self.model.confirm_stop(lambda *r: replies.append(r))
+        self.model.confirm_stop(lambda *r: replies.append(r), document="document")
         stale_confirmation = self.ui.confirmed
         self.model.detach("document")
         stale_confirmation(True)
@@ -321,7 +343,7 @@ class LifecycleTests(unittest.TestCase):
         self.ui.pump(lambda: self.model.stage == "failed")
         self.assertEqual(replies[-1][1:], ("outcomeUnknown", "unknown"))
         self.assertEqual(self.model.cleanup, "incomplete")
-        self.model.loaded(token, True)
+        self.commit()
         self.assertEqual(self.model.stage, "failed")
 
     def test_pending_deadline_and_health_denial(self):
@@ -333,17 +355,17 @@ class LifecycleTests(unittest.TestCase):
         next(callback for ms, callback in self.ui.timers if ms == 1000)()
         self.ui.pump(lambda: self.model.stage == "failed")
         self.assertIn("expired", self.ui.errors)
-        self.assertNotIn("open", [name for name, _ in self.session.calls])
+        self.assertNotIn("prepare", [name for name, _ in self.session.calls])
         self.session.pending = False
         self.opening()
-        self.model.loaded(self.model.token, True)
+        self.commit()
         self.session.health_error = "revoked"
         replies = []
         self.model.health(lambda *r: replies.append(r))
         self.ui.pump(lambda: self.model.stage == "failed")
         self.assertEqual(replies[-1][0]["access"], "revokedConfirmed")
         self.assertEqual(replies[-1][0]["runtime"], "unknown")
-        self.assertIsNone(self.ui.opened)
+        self.assertEqual(self.model.main.daemon.state, "unreachable")
         self.assertIsNone(self.model.session)
 
     def test_completion_and_hold_expire_at_original_deadline(self):
@@ -351,6 +373,7 @@ class LifecycleTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.ui = UI()
                 self.model = self.ui.model
+                self.ui.attach_main()
                 self.session = Session(None)
                 release = self.session.release = threading.Event()
                 self.addCleanup(release.set)
@@ -378,7 +401,7 @@ class LifecycleTests(unittest.TestCase):
                     self.ui.pump(lambda: not self.model.workers)
                     while not self.ui.queue.empty():
                         self.ui.queue.get_nowait()()
-                self.assertNotIn("open", [name for name, _ in self.session.calls])
+                self.assertNotIn("prepare", [name for name, _ in self.session.calls])
                 if boundary == "timer":
                     self.assertEqual(cutoff_stage, "failed")
                 self.assertEqual(self.model.stage, "failed")
@@ -386,18 +409,36 @@ class LifecycleTests(unittest.TestCase):
                 self.assertIsNone(self.ui.opened)
                 self.assertIsNone(self.model.session)
 
-    def test_load_failure_and_timeout_stop(self):
-        for timeout in (False, True):
-            with self.subTest(timeout=timeout):
-                self.opening()
-                if timeout:
-                    self.model.load_timeout(self.model.token)
+    def test_main_unavailable_refuses_without_proxy(self):
+        for unavailable in ("missing", "closed"):
+            with self.subTest(unavailable=unavailable):
+                self.ui = UI()
+                self.model = self.ui.model
+                self.ui.attach_main()
+                if unavailable == "missing":
+                    self.model.main = None
                 else:
-                    self.model.loaded(self.model.token, False)
-                self.ui.pump(lambda: self.model.stage == "failed")
+                    self.model.main.closed = True
+                self.session = Session(None)
+                self.model.session = self.session
+                with patch.object(self.session, "open_runtime", create=True,
+                                  return_value="http://127.0.0.1:12345/") as proxy:
+                    self.model.open(self.model.token)
+                    self.ui.pump(lambda: self.model.stage == "failed" or proxy.called
+                                 or self.model.candidate_target is not None)
+                    proxy.assert_not_called()
+                    self.assertEqual(self.model.stage, "failed")
+                self.assertEqual([name for name, _ in self.session.calls], ["stop"])
                 self.assertIn("runtimeUnavailable", self.ui.errors)
                 self.assertIsNone(self.ui.opened)
-                self.assertIsNone(self.model.session)
+
+    def test_candidate_prepare_failure_stops(self):
+        self.session.prepare_error = True
+        self.start()
+        self.ui.pump(lambda: self.model.stage == "failed")
+        self.assertIn("runtimeUnavailable", self.ui.errors)
+        self.assertIsNone(self.model.candidate_target)
+        self.assertIn("stop", [name for name, _ in self.session.calls])
 
     def test_invalid_native_target_never_launches(self):
         self.invite.home_id = "\u202euntrusted-host"
@@ -410,6 +451,7 @@ class LifecycleTests(unittest.TestCase):
 
 
 class SavedLifecycleTests(unittest.TestCase):
+    commit = LifecycleTests.commit
     start = LifecycleTests.start
 
     def setUp(self):
@@ -442,7 +484,7 @@ class SavedLifecycleTests(unittest.TestCase):
         self.assertTrue(self.session.intent)
         self.assertEqual(self.model.saved_access, "notSaved")
         self.assertEqual(self.model.stage, "opening")
-        self.model.loaded(self.model.token, True)
+        self.commit()
         self.fake.mode = "ok"
         replies = []
         self.model.save(self.model.token, finish=lambda *r: replies.append(r))
@@ -474,9 +516,8 @@ class SavedLifecycleTests(unittest.TestCase):
         self.assertNotIn("stop", [name for name, _ in self.session.calls])
         release.set()
         self.ui.pump(lambda: bool(replies))
-        self.model.loaded(old, True)
         self.assertEqual((self.model.stage, self.model.saved_access), ("idle", "saved"))
-        self.assertNotIn("open", [name for name, _ in self.session.calls])
+        self.assertNotIn("prepare", [name for name, _ in self.session.calls])
         self.assertEqual(replies[-1][0]["effect"], "confirmed")
         self.assertEqual(len(self.fake.items), 1)
 
@@ -485,11 +526,11 @@ class SavedLifecycleTests(unittest.TestCase):
             for hold in (False, True):
                 with self.subTest(mode=mode, hold=hold):
                     self.ui = UI()
+                    self.ui.attach_main()
                     self.model, self.session = self.ui.model, Session(None)
                     self.fake.mode = "write-failed"
                     self.save_start()
                     self.ui.pump(lambda: self.ui.opened is not None)
-                    self.model.loaded(self.model.token, True)
                     entered, release = threading.Event(), threading.Event()
                     self.addCleanup(release.set)
                     create = self.fake.create
@@ -505,8 +546,7 @@ class SavedLifecycleTests(unittest.TestCase):
                     token = self.model.token
                     if hold:
                         self.model.confirm_stop(lambda *_: None)
-                    self.model.loaded(token, False)  # WebKit load/process failure
-                    self.model.loaded(token, True)  # A later callback cannot heal it.
+                    self.model.fail("runtimeUnavailable")  # Candidate failure during custody write
                     self.assertNotIn("stop", [n for n, _ in self.session.calls])
                     release.set()
                     self.ui.pump(lambda: bool(replies))
@@ -538,7 +578,7 @@ class SavedLifecycleTests(unittest.TestCase):
         self.ui.confirmed(False)
         self.ui.pump(lambda: self.ui.opened is not None)
         self.assertEqual(self.model.stage, "opening")
-        self.model.loaded(self.model.token, True)
+        self.commit()
         self.assertEqual(self.model.stage, "connected")
 
     def test_saved_resume_document_load_fences_and_truthful_remove(self):
@@ -558,9 +598,9 @@ class SavedLifecycleTests(unittest.TestCase):
         self.model.connect_saved(ref, "new-document", lambda *r: replies.append(r))
         self.ui.saved_consent(True)
         self.ui.pump(lambda: self.ui.opened is not None)
-        self.assertEqual([n for n, _ in self.session.calls], ["restore", "open"])
+        self.assertEqual([n for n, _ in self.session.calls], ["restore", "prepare"])
         self.assertEqual(self.model.stage, "opening")
-        self.model.loaded(self.model.token, True)
+        self.commit()
         self.assertEqual(self.model.stage, "connected")
         self.model.stop()
         self.ui.pump(lambda: self.model.stage == "idle")

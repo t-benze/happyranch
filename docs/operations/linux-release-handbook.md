@@ -1,5 +1,51 @@
 # Linux release handbook
 
+## Main app scheme and Connection dialog (S7-L1)
+
+Linux Main always loads the installed `web/dist` at `happyranch-app://app/`
+for local and remote targets. No environment opt-in is required. Header
+Connection and the labelled Access wasn't saved warning request the SPA
+Connection dialog through `app.dialogRequested`; unavailable delivery shows
+the named retry action without automatic replay. No native connection-screen
+fallback or second Remote runtime window is available. Native sensitive
+consent, invite display and credential dialogs remain in `client_ui.py` and
+`host_bridge.py`; the same Main owner retains candidate/active state.
+
+The GUI uses the in-process RemoteDaemon adapter and opens no RuntimeProxy
+listener. If Main is absent or closed, a remote open reports runtime unavailable
+and cleans up its candidate. Foreground CLI use still owns its RuntimeProxy and
+prints `Runtime reachable: <url>` on its controlling terminal.
+
+If WebKit or the packaged bridge fails, retain the honest load error. Use the
+installed CLI in a terminal: `happyranch connection host --help` or
+`happyranch connection client --help`, then the existing `status`,
+`accept-invite` or `connect-saved` actions described below. These commands do not
+require WebKit; invitations/consent stay terminal-only. No successful connection
+or saved access is promised. Reinstall a qualified release if its assets fail.
+
+Payloads include `host_bridge.py`, `client_ui.py`, `connection_contract.py` and
+the unchanged `native-connection-bridge.v1.json`. Linux no longer builds or
+ships `desktop/connection/`, `connection_window.py` or `dist-connection`.
+Mac still packages the shared web Connection shell.
+
+`build-deb.sh` validates the main `web/dist/resource-manifest.json` using the
+packager's trusted `connection_contract.Assets`, never supplied Python code.
+The reader bounds the manifest to 1 MiB, 4096 listed resources, 64 MiB per file,
+256 MiB total and 8192 inventory entries. It rejects duplicate/nonliteral paths,
+symlinks/nonregular files, missing/unlisted files, incorrect sizes and hashes.
+The runtime's existing Bundle inventory/no-follow delivery checks remain.
+Both builders honor `TMPDIR` for scratch; choose a short writable non-`/tmp`
+directory when the host's `/tmp` quota is exhausted.
+
+Inspect the built package with `dpkg-deb -c /absolute/package.deb`: confirm
+`host_bridge.py` and the v1 JSON exist and the retired paths above do not.
+Extract with `dpkg-deb -x /absolute/package.deb /absolute/fresh-directory` and
+validate its main manifest using the trusted source reader. The focused
+`test_build_deb.py DebPackageTests.test_tampered_main_manifest_is_refused -v`
+case exercises refusal of missing/altered manifests, file tampering, extras
+and a contained symlink. This is maker verification; installed launch, minimum
+engine, native focus and genuine remote-pair acceptance remain QA work.
+
 ## Native language preference (S8-1-L)
 
 `packaging/linux/desktop/app_locale.py` supplies the native preference
@@ -470,7 +516,10 @@ The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/client_session.py`,
 `share/happyranch/desktop/client_runtime.py`,
 `share/happyranch/desktop/client_model.py`,
-`share/happyranch/desktop/client_ui.py`, the verbatim shared pure codec
+`share/happyranch/desktop/client_ui.py`,
+`share/happyranch/desktop/host_bridge.py`,
+`share/happyranch/desktop/connection_contract.py`,
+`share/happyranch/desktop/native-connection-bridge.v1.json`, the verbatim shared pure codec
 `share/happyranch/desktop/invite_v2.py`,
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
@@ -637,23 +686,24 @@ fingerprints, network state and diagnostics. Exit 0 completed/cancelled, 1 close
 error, 2 grammar. Mac Client CLI is unavailable/deferred pending Mac builds.
 Source tests do not establish packaged/cross-device acceptance.
 
-The packaged connection window now exposes session-only client status, invite,
+The Connection dialog in Main exposes session-only client status, invite,
 cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
 own invite paste, exact Host consent and comparison phrases; worker threads own
-blocking session calls. Only the expected runtime root's successful WebKit load
-reports Connected. A separate ephemeral runtime view has no control bridge and
-keeps a visible native session-only notice after the connection window closes.
-Closing controls cancels an unfinished attempt; closing the runtime asks for
-local disconnect. Cancel never promises Host revocation or membership removal.
+blocking session calls. A ready candidate requires native health/compatibility
+admission and explicit commit to Main. No separate runtime view is opened.
+The labelled native Access wasn't saved warning remains on Main after the
+dialog closes. The existing owner handling governs dialog close and target
+changes; Main close/Quit cutover remains a later slice. Cancel never promises
+Host revocation or membership removal.
 Native save consent enables same-node reconnect through GI Secret. Only the
 default login collection is accepted, with exact home/control/node/profile binding,
 verified readback and local absence after deletion. Locked/denied/unavailable or
 failed saving keeps the session usable with a persistent accessible native warning;
-its Retry save action opens the static controls even after that view closes.
+Retry save remains available in the Connection dialog.
 No plaintext, file or substitute credential store is used. One unreadable saved
 item does not hide readable peers. Remove is local-only and never claims Host
 revocation. Cancel during saving waits for write/readback before teardown, while
-fencing later connection/load callbacks. The runtime proxy answers bootstrap with an unrelated session
+fencing later connection/load callbacks. The foreground CLI runtime proxy answers bootstrap with an unrelated session
 token, strips browser authority headers, and injects the device bearer only
 on the private helper hop. Session stop seals admission and closes owned streams
 before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
@@ -702,7 +752,7 @@ which continues to run bundled CPython 3.12.10.
 ### Native Main header (Settings S6-L)
 
 The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**
-entry actions. With the opt-in packaged Main scheme, its status pill reads the
+entry actions. With the packaged Main scheme, its status pill reads the
 native `app.status` v2 projection: no selection, starting, connected,
 unavailable, busy, or incompatible with Host/app/unknown-side guidance. It
 preserves **This computer / 此电脑** versus the selected remote name and shows
@@ -717,25 +767,20 @@ GTK's child enumeration includes that header, so only content is removed.
 
 The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
 including no-target recovery. Losing the web document does not clear the warning.
-Its keyboard-accessible action opens or re-presents the existing native Connection
-window; its tooltip explains Retry saving and that a new invite may be needed.
+Its keyboard-accessible action requests the Connection dialog in Main;
+its tooltip explains Retry saving and that a new invite may be needed.
 Only the native owner's confirmed save projection clears the badge; header
 actions do not write that state.
 
-Until the S7-L1 topology lands, the Connection button and “Access wasn't saved”
-badge use the temporary native route `open_connection(None)` to open or
-re-present the existing native Connection window in both default and
-`HAPPYRANCH_DESKTOP_APP_SCHEME=1` builds. Neither entry emits
-`app.dialogRequested` or requires a dialog subscription or Connection Retry.
-
-Only the Settings header action delivers the `app.dialogRequested` JSON string
-`{"schema":2,"dialog":"settings"}`.
+The Connection button and “Access wasn't saved” badge deliver the
+`app.dialogRequested` JSON string `{"schema":2,"dialog":"connection"}`.
+The Settings header action delivers `{"schema":2,"dialog":"settings"}`.
 The page facade, named-world relay and native subscriber keep this closed event
 separate from `app.stateChanged`. Delivery requires the current admitted Main
 document's dialog subscription, independently of target readiness. Navigation,
 revocation and WebKit loss retire both subscriptions. Unavailable requests are
-dropped without queue or replay, including in the legacy HTTP/fallback view.
-The header shows Settings as the requested destination plus an explicit Retry
+dropped without queue or replay.
+The header shows the requested destination plus an explicit Retry
 action; becoming available never retries automatically. The subscribed web Main owns
 the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
 Native entry starts no daemon, changes no target/generation, and neither commits
@@ -777,11 +822,11 @@ recovery `nativeRecovery`, never replaying them. This is conservative even befor
 admission, since posting supplies no no-effect receipt. Read-only calls retain
 effect `none` / recovery `refresh`, as do new calls refused after retirement.
 `host_bridge.py` is installed and required in the desktop payload. Main and the
-native Connection window share its dedicated bus, one busy slot and bounded
-Status waiters.
+Connection dialog share its dedicated bus, one busy slot and bounded
+Status waiters through the Main owner.
 Subscriptions receive a full snapshot and poll Status every three seconds
 while a subscribing window is visible; document retirement drops late events.
-The native Connection window and temporary header entry remain until S7-L1.
+The header now requests the Connection dialog in Main; the legacy window is retired.
 
 `app.ownersChanged` admits the closed v2 aggregate summary for the current Main
 document. Commit/disconnect consult it: missing/unknown, pending, then dirty or
@@ -802,14 +847,12 @@ PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/lin
 Real helper/polkit mutations require a disposable venue; synthetic transport
 checks do not establish installed helper acceptance.
 
-### Opt-in packaged runtime UI (Settings S2a)
+### Packaged runtime UI (Settings S2a / S7-L1)
 
-The default runtime view still loads the verified local daemon's HTTP URL.
-`HAPPYRANCH_DESKTOP_APP_SCHEME=1 ./bin/happyranch-app` opts the local main
-view into `happyranch-app://app/`, served directly from the payload's
-`web/dist` with no listening port. This is additive preparation for S7;
-remote runtime windows and the separate connection bridge are unchanged.
+Main loads `happyranch-app://app/`, served directly from the payload's
+`web/dist` with no listening port, for both local and remote targets.
 The app still performs its existing daemon ownership/health checks first.
+The Connection dialog uses that same trusted packaged document.
 
 The loader requires WebKitGTK **2.40+** in the WebKit2 **4.1** namespace
 (`URISchemeRequest.get_http_body` was introduced in 2.40). Qualification on
@@ -817,8 +860,7 @@ the minimum engine remains **NOT RUN**; the available Linux venue is 2.52.6.
 The scheme is secure and CORS-enabled, without local-scheme privileges.
 Static responses use a startup file/hash allowlist, no-follow reads, CSP,
 `nosniff` and `no-store`; root assets/fonts and SPA deep links work, while
-traversal, symlinks, directory listing and `/api` fallback are refused. The
-build-manifest/cutover work remains in S1a/S7.
+traversal, symlinks, directory listing and `/api` fallback are refused. The main build manifest is validated during Debian packaging (S7-L1).
 
 Native bootstraps the verified loopback daemon and keeps its bearer only in
 memory. The page's bootstrap receives a dummy token. Local API forwarding
@@ -826,7 +868,7 @@ allows only safe content/concurrency headers, reconstructs framing, injects
 the native bearer and refuses redirects.
 
 S2b PR-A also supplies a listener-free remote adapter (`client_runtime.RemoteCall`)
-and native target selection (`AppScheme.select_target`). The existing opt-in
+and native target selection (`AppScheme.select_target`). The existing
 launcher still selects its verified local daemon. A native owner may select
 `LocalDaemon(port)`, `RemoteDaemon(active_session, ready=False/True)`, or `None`;
 passing `None` as the loader's verified port starts with no target. Selection
@@ -896,7 +938,7 @@ owner publishes the new transport state. In the launcher, `message` closes the
 scheme before Restart; `show_web` closes any previous scheme and constructs a
 fresh `LocalDaemon` after service restart, initial attach, retry or child attach.
 A new instance always checks again at its next API bootstrap. There is currently
-no same-instance remote reconnect callback in this opt-in launcher: its future
+no same-instance remote reconnect callback in this launcher: its future
 native owner must reselect the target or transition `ready` on reconnect. This
 is an integration assumption, not an automatic reconnect or S5 candidate switch.
 Cancellation during admission interrupts dial/headers/body and returns 499
@@ -942,8 +984,7 @@ the top document, empty frame tree and absence of a page-world native channel
 before admitting its isolated document token. TOP_FRAME relay, CSP and frame/CSP
 observation revoke on frame insertion. Navigation, process loss and close fence
 old messages/events. Reads queued during initial admission are bounded. Failed
-admission leaves the bridge unavailable. This does not migrate the separate
-Connection window or enable unfinished client commands.
+admission leaves the bridge unavailable. S6-W3-L admits the reviewed Connection commands on Main; S7-L1 retires the separate window.
 
 The full v2 appState supplies native generation, target, state, compatibility,
 local status, nullable candidate, access_unsaved and the store's current/persisted
@@ -956,7 +997,7 @@ and native bootstrap if its bearer is absent. Cached compatibility/bearer alone
 cannot establish recovery; no forwarded request is replayed. Every scheme API
 request requires the captured X-HappyRanch-Target header except
 GET /api/v1/auth/bootstrap. Native refuses a missing/mismatched generation before forwarding and strips it upstream. Browser
-mode and opt-in activation stay unchanged; web stamping/stale-drop is S5-W1.
+mode stays unchanged; web stamping/stale-drop is S5-W1.
 
 Focused standalone native checks (no GI/display/retired Python suite):
 
@@ -1131,8 +1172,7 @@ permits exit and lock release. No process is signaled directly in service mode.
 
 ### Linux active and candidate switching (Settings S5-L2)
 
-With the existing app-scheme opt-in, Main and the native Connection window now
-share one ClientUI/model owner. Main's admitted document can start an invitation
+Main and its Connection dialog share one ClientUI/model owner. Main's admitted document can start an invitation
 or saved-computer attempt while its current target continues serving. Native
 dialogs retain invitation, approval and credential custody. The candidate uses
 the existing listener-free RemoteDaemon health/compatibility admission; it does
@@ -1448,7 +1488,7 @@ updates/security and universe enabled) and Bookworm (12, with security updates):
 | `python3 (>= 3.10)` | System interpreter for the GI window; daemon/CLI use bundled CPython3.12 | [Jammy](https://packages.ubuntu.com/jammy/python3), [Bookworm](https://packages.debian.org/bookworm/python3) |
 | `python3-gi` | System PyGObject binding | [Jammy](https://packages.ubuntu.com/jammy/python3-gi), [Bookworm](https://packages.debian.org/bookworm/python3-gi) |
 | `gir1.2-gtk-3.0` | GTK3 namespace and transitive shared libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-gtk-3.0), [Bookworm](https://packages.debian.org/bookworm/gir1.2-gtk-3.0) |
-| `gir1.2-webkit2-4.1` | WebKit2 4.1 namespace/engine and transitive libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-webkit2-4.1), [Bookworm](https://packages.debian.org/bookworm/gir1.2-webkit2-4.1) |
+| `gir1.2-webkit2-4.1 (>= 2.40)` | WebKit2 4.1 namespace/engine and transitive libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-webkit2-4.1), [Bookworm](https://packages.debian.org/bookworm/gir1.2-webkit2-4.1) |
 | `gir1.2-secret-1` | Secret Service GI 1 and transitive libsecret runtime; a user-session provider is separately required | Package prerequisite declared for slice 8b; stock distro/package acceptance pending |
 | `git` | Runtime repository/worktree operations | [Jammy](https://packages.ubuntu.com/jammy/git), [Bookworm](https://packages.debian.org/bookworm/git) |
 | `ca-certificates` | HTTPS trust for runtime clients and git | [Jammy](https://packages.ubuntu.com/jammy/ca-certificates), [Bookworm](https://packages.debian.org/bookworm/ca-certificates) |

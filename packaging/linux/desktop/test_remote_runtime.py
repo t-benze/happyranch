@@ -1002,8 +1002,7 @@ class SwitchTests(PeerFixture):
 
     def check_active_projection(self, cancel: bool) -> None:
         from test_client_store import record
-        from connection_window import ConnectionWindow, ENTRY
-        from connection_contract import Protocol, Requests
+        from connection_contract import Protocol
         writes = []
         self.model.store.save = writes.append
         for saved in (False, True):
@@ -1055,27 +1054,20 @@ class SwitchTests(PeerFixture):
                 if saved:
                     continue
                 active.saved_record = record
-                # Exercise the unchanged ConnectionWindow.message retrySave
-                # dispatcher with its real protocol and mutation admission.
-                window = ConnectionWindow.__new__(ConnectionWindow)
-                window.manager, window.active, window.closed = object(), True, False
-                window.generation, window.unavailable_reason = 1, None
-                window.view = SimpleNamespace(get_uri=lambda: ENTRY)
+                # Exercise Main's admitted retrySave dispatcher and real protocol.
+                window = self.main
+                window.controller, window.bridge_token = object(), "admitted-token"
+                window.view = SimpleNamespace(get_uri=lambda: transport.ORIGIN + "/")
                 window.JSC = SimpleNamespace(Value=SimpleNamespace(new_string=lambda _context, raw: raw))
-                window.protocol = Protocol(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json")
-                window.requests = Requests()
-                window.client = SimpleNamespace(model=self.model)
-                window.client_document = object()
+                window.connection_protocol = Protocol(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json")
                 replies = []
-                raw = json.dumps(dict(protocol="happyranch.connection", version=1,
-                    requestId="retry-active", command="client.retrySave", args={}))
+                raw = json.dumps(dict(token=window.bridge_token, command="client.retrySave", data="{}"))
                 value = SimpleNamespace(is_string=lambda: True, to_string=lambda: raw, get_context=lambda: None)
                 reply = SimpleNamespace(return_value=lambda raw: replies.append(json.loads(raw)),
                     return_error_message=lambda raw: self.fail(raw))
-                window.message(window.manager, value, reply)
+                window.bridge_message(window.controller, value, reply)
                 self.ui.pump(lambda: bool(replies))
-                self.assertTrue(replies[0]["ok"], replies[0])
-                self.assertEqual(replies[0]["result"]["effect"], "confirmed")
+                self.assertEqual(replies[0]["effect"], "confirmed")
                 self.assertEqual(self.model.stage, "connected")
                 self.assertEqual(self.model.saved_access, "saved")
                 self.assertFalse(self.main.access_unsaved)
