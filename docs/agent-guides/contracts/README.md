@@ -12,6 +12,7 @@ OpenAPI snapshot still own runtime rules.
 | --- | --- |
 | [reusable-workflows.md](reusable-workflows.md) | Sequential U1 source contracts: immutable definitions, bounded graph validation, common pure reducer and data-driven briefs; execution and admission pending |
 | [coding-workflow.md](coding-workflow.md) | Ordered coding workflow: built-in definition, storage/setup, start, development → review → QA → final manager, revisions, successor, cancellation, Founder settings, guided host setup, K0–K3 history |
+| [coding-practice-rules.md](coding-practice-rules.md) | Repeat findings into lint rules, design-time formal models and monthly engineering check-in (THR-386 seq28) |
 | [document-workflows.md](document-workflows.md) | Workflow schema F–I, cutover, activation/draft ownership, authority publication (U2A/U2B), document-review templates, handoff (H), reviewer staging, human receipts, revision C1, owner return/replay, joined approval |
 | [authority-policy.md](authority-policy.md) | THR-181 escalation policy/hook, THR-229 v2 dual-text policy checkpoints, THR-277/279 refusal routing and display, THR-299/291 continuation receipts |
 | [task-orchestration.md](task-orchestration.md) | Creation-time task ownership, attachment claims and correction budget, verified retry transactions, delegated retry failures, root Pause/Resume, human-team failed recovery, root retry thread association |
