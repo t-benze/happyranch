@@ -98,6 +98,9 @@ export function EligibilityEditorDialog({
     setList(list.includes(name) ? list.filter((n) => n !== name) : [...list, name]);
   }
 
+  // Receipt admission counts as saving, like the request itself.
+  const saving = mutation.isPending || owner.busy;
+
   async function doSave() {
     setErrors([]);
     const result = await owner.track(() =>
@@ -197,8 +200,8 @@ export function EligibilityEditorDialog({
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 {t('workHours.dialog.back')}
               </Button>
-              <Button onClick={() => void doSave()} disabled={mutation.isPending}>
-                {mutation.isPending ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
+              <Button onClick={() => void doSave()} disabled={saving}>
+                {saving ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
           ) : (
@@ -206,7 +209,7 @@ export function EligibilityEditorDialog({
               <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={() => setConfirming(true)} disabled={mutation.isPending}>
+              <Button onClick={() => setConfirming(true)} disabled={saving}>
                 {t('workHours.dialog.reviewImpact')}
               </Button>
             </>

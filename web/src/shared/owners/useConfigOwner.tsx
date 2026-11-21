@@ -23,7 +23,9 @@
  * awaits that receipt before `run()`; an editor that sends on its own after
  * `begin()` awaits `sendable()` first. A refused/lost push settles the
  * ticket `failed` with nothing sent (`OwnersReceiptError`). Browser mode
- * admits at once.
+ * admits at once. `track` is single-flight per owner: from its start until
+ * the save settles `busy`/`isBusy()` are true, `begin()` returns null and a
+ * second `track` is refused.
  *
  * Scope: an editor inside `<OwnerScope scope="settings" section=...>` (the
  * desktop Settings dialog pane) is a `settings` owner; anywhere else it is a
@@ -94,7 +96,7 @@ export type TrackResult<T> =
       error: unknown;
       outcome: Exclude<SaveOutcome, 'saved'>;
       current: boolean;
-      /** True when nothing was sent: a prior result is still unknown. */
+      /** True when nothing was sent: a prior result is still unknown, or another save of this owner is in flight. */
       refused: boolean;
     };
 
@@ -104,7 +106,7 @@ export interface ConfigOwner {
   /**
    * Ticket a save for the current draft (or for `revision`, a draft revision
    * captured earlier with `draftRevision`); null while a prior result is
-   * unknown.
+   * unknown or while a `track()` save of this owner is in flight.
    */
   begin: (revision?: number) => SaveTicket | null;
   /** The current draft revision (capture it where a request is built). */
@@ -127,6 +129,18 @@ export interface ConfigOwner {
   ) => Promise<TrackResult<T>>;
   /** True while a prior result is unknown: no new save may be sent. */
   saveRefused: boolean;
+  /**
+   * True from the moment `track()` starts until its save settles (receipt
+   * admission and the request): count it as pending and disable the submit
+   * control and the fields it sends.
+   */
+  busy: boolean;
+  /**
+   * Synchronous form of `busy` for handlers: check it before replacing any
+   * submission record (what a Check result compares against), so a refused
+   * reentrant submit leaves the original record intact.
+   */
+  isBusy: () => boolean;
   /** Run Check result (no-op without `checkResult`). */
   check: () => Promise<void>;
   /** Record an editor-owned reconciliation of an unknown result. */
@@ -216,8 +230,17 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     registry.setCanCheck(id, canCheck);
   }, [registry, id, canCheck]);
 
+  // S6-W2b: one track() save at a time per owner. The latch is set
+  // synchronously before the receipt wait and held through the request; it is
+  // released once the save settles (held by a refused/lost receipt, saved,
+  // failed or unknown). While it is held begin() returns null and track()
+  // refuses, so a reentrant submit can start no second ticket and send nothing.
+  const inFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const isBusy = useCallback(() => inFlight.current, []);
   const begin = useCallback(
     (sentRevision?: number) => {
+      if (inFlight.current) return null;
       // Report the current draft first so the registry knows the newest revision.
       registry.setDraft(id, { dirty: latest.current.dirty, revision: revision.current.value });
       return registry.beginSave(id, sentRevision);
@@ -235,24 +258,33 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
       classify: (error: unknown) => 'failed' | 'unknown' = classifySaveError,
       given?: SaveTicket | null,
     ): Promise<TrackResult<T>> => {
-      const ticket = given === undefined ? begin() : given;
+      // A given ticket comes from begin() in the same synchronous turn, which
+      // already refused while the latch was held.
+      const ticket = inFlight.current ? null : given === undefined ? begin() : given;
       if (ticket === null) {
         return { ok: false as const, error: null, outcome: 'unknown' as const, current: true, refused: true };
       }
-      // Desktop: the summary showing this save pending must be acknowledged
-      // first; otherwise nothing is sent and the draft stays unsaved.
-      if (!(await sendable())) {
-        const { current } = settle(ticket, 'failed');
-        return { ok: false as const, error: new OwnersReceiptError(), outcome: 'failed' as const, current, refused: false };
-      }
+      inFlight.current = true;
+      setBusy(true);
       try {
-        const value = await run();
-        const { current } = settle(ticket, 'saved');
-        return { ok: true as const, value, current };
-      } catch (error) {
-        const outcome = classify(error);
-        const { current } = settle(ticket, outcome);
-        return { ok: false as const, error, outcome, current, refused: false };
+        // Desktop: the summary showing this save pending must be acknowledged
+        // first; otherwise nothing is sent and the draft stays unsaved.
+        if (!(await sendable())) {
+          const { current } = settle(ticket, 'failed');
+          return { ok: false as const, error: new OwnersReceiptError(), outcome: 'failed' as const, current, refused: false };
+        }
+        try {
+          const value = await run();
+          const { current } = settle(ticket, 'saved');
+          return { ok: true as const, value, current };
+        } catch (error) {
+          const outcome = classify(error);
+          const { current } = settle(ticket, outcome);
+          return { ok: false as const, error, outcome, current, refused: false };
+        }
+      } finally {
+        inFlight.current = false;
+        setBusy(false);
       }
     },
     [begin, settle, sendable],
@@ -265,5 +297,5 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
 
   const saveRefused = record?.status === 'unknown';
 
-  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, check, reconcile, checking, checkFailed };
+  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed };
 }

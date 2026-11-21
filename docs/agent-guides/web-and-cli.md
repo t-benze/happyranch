@@ -480,6 +480,16 @@ native acknowledged (`"{}"`) the summary showing it pending. A refused, lost or
 unanswered (5 s) push holds the save: nothing is sent and the ticket settles
 `failed`, so the existing C3 failed copy shows (Capacity shows the same sentence
 in its banner; the system prompt editor shows it under the editor).
+Receipt admission counts as pending. `track()` is single-flight per owner: a
+synchronous latch is set before the receipt wait and held through the request,
+and released when the save settles (held, saved, failed or unknown). While it
+is held `owner.busy`/`owner.isBusy()` are true, `begin()` returns null and a
+second `track()` is refused with nothing sent. Editors disable their submit
+control on `busy` as they do on the request's pending state (custom-skill
+Create also disables its fields), and check `isBusy()` before replacing the
+payload a Check result compares against, so a refused reentrant submit never
+replaces an unresolved payload. Editors that call `begin()`/`sendable()`
+themselves keep their own latch.
 
 Lifecycle: a strictly valid `app.lifecycleRequested` (exact keys, schema 2, ID
 `[A-Za-z0-9_-]{1,64}`, action close/quit/relaunch; anything else is ignored) runs

@@ -186,7 +186,8 @@ export function SkillAssignmentPanel({
   );
   const changes = reviewChanges(assignments, queue);
   const pendingCount = changeCount(assignments, queue);
-  const applying = assign.isPending;
+  // Receipt admission counts as applying, like the requests themselves.
+  const applying = assign.isPending || owner.busy;
 
   function toggle(a: AgentAssignmentFacts): void {
     setApplied(false);

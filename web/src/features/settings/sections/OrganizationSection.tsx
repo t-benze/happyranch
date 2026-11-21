@@ -214,7 +214,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
   const workHoursSentRef = useRef<boolean | null>(null);
   async function setEnabled(next: boolean) {
-    setWhError(null);
+    if (workHoursOwner.isBusy()) return; setWhError(null); // one save at a time: keep the sent value (Check result)
     workHoursSentRef.current = next;
     const result = await workHoursOwner.track(() => mutation.mutateAsync({ working_hours: { enabled: next } }));
     if (result.ok) setWhSaved(true);

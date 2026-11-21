@@ -137,6 +137,9 @@ function ProfileRow({
     draft: null,
   });
 
+  // Receipt admission counts as removing, like the request itself.
+  const removing = remove.isPending || owner.busy;
+
   const onConfirmRemove = async (): Promise<void> => {
     setError(null);
     const result = await owner.track(async () => {
@@ -218,10 +221,10 @@ function ProfileRow({
               type="button"
               variant="destructive"
               onClick={() => void onConfirmRemove()}
-              disabled={remove.isPending}
+              disabled={removing}
               data-testid={`profile-confirm-remove-${profile.name}`}
             >
-              {remove.isPending
+              {removing
                 ? t('settings.executors.profiles.removing')
                 : t('settings.executors.profiles.confirmRemove')}
             </Button>
@@ -232,7 +235,7 @@ function ProfileRow({
                 setConfirming(false);
                 setError(null);
               }}
-              disabled={remove.isPending}
+              disabled={removing}
             >
               {t('common.cancel')}
             </Button>
