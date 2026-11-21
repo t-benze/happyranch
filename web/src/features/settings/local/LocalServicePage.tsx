@@ -551,8 +551,8 @@ function KeepRunningRow({
           }`}
         >
           <span
-            className={`shadow-pasture-sm inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-              value === 'on' ? 'translate-x-4' : value === 'partial' ? 'translate-x-2.5' : 'translate-x-0.5'
+            className={`shadow-pasture-sm inline-block h-3.5 w-3.5 rounded-full transition-transform ${
+              value === 'on' ? 'bg-primary-foreground translate-x-4' : value === 'partial' ? 'bg-text-muted translate-x-2.5' : 'bg-text-muted translate-x-0.5'
             }`}
           />
         </button>
