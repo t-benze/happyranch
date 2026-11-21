@@ -1,5 +1,42 @@
 # Reusable workflow contracts
 
+## S9 final reader parity and naming deferral
+
+The shared acquisition primitives remain in
+`runtime/workflows/coding_authority_history.py`: `_Budget`, `_bounded_rows` and
+`_decoded`. **The proposed `sequential_acquisition.py` extraction is deferred.**
+Current generic consumers outside S9's closed set include
+`sequential_initiator.py`, `sequential_builtin.py`, `sequential_views.py`,
+`sequential_return.py` and `sequential_business_hold.py`; cancellation, recovery
+and legacy Coding consumers also retain direct imports. A partial rename would
+leave mixed ownership, while a complete consumer migration exceeds this unit.
+No new wrapper, re-export or replacement budget is introduced. The full
+consumer inventory is source evidence, not behavioral proof.
+
+| Source path (under `runtime/`) | Current and historical responsibility |
+| --- | --- |
+| `workflows/sequential_contracts.py`, `sequential_definition.py`, `sequential_reducer.py`, `sequential_briefs.py` | Version-selected @1 and generic @2 ABI, compilation, reduction and briefs. |
+| `workflows/sequential_history.py`, `sequential_run_validation.py`, `sequential_start_metadata.py` | Complete and selected history, exact original metadata, generic @2 relationships and original @1 projections. |
+| `workflows/sequential_start.py`, `sequential_engine.py`, `sequential_dispatch.py`, `sequential_task_transport.py`, `sequential_document_access.py` | Admission, progression and native task/result/outer transport, with historical @1 dispatch retained. |
+| `workflows/sequential_assignments.py`, `sequential_control.py`, `sequential_business_hold.py`, `sequential_initiator.py`, `sequential_return.py` | Internal @2 assignment/control history, Held causes, plural wait sets, inbox and initiator return. |
+| `orchestrator/workflow_continuation.py`, `workflows/sequential_cancel.py`, `sequential_cancel_owners.py`, `sequential_cancellation_tail.py`, `sequential_legacy_cancel.py`, `sequential_mixed_cancel.py`, `sequential_mixed_history.py`, `recovery.py` | Ordinary continuation and version-selected cancellation/recovery; original settlement and uncertainty remain causal. |
+| `workflows/sequential_builtin.py`, `sequential_release.py`, `sequential_settings.py`, `sequential_views.py`, `sequential_venue.py`; `infrastructure/workflow_sequential_*.py`, `workflow_schema_load.py` | Registration, public @1 selection, versioned settings/read views, venue, schema/ownership/bootstrap and load reuse. |
+| `workflows/sequential_repository_subject.py`, `sequential_repository_records.py`, `sequential_repository_preflight.py`, `sequential_repository_command.py`, `sequential_coding_*.py`; `workflows/coding_*.py` and private Coding readers | Historical repository/Coding authority and domain proofs only; no generic @2 repository/merge capability. |
+
+The acquisition caps, native classes, refusal categories, original cumulative
+charges and complete legacy projection stay unchanged. Generic `_ReadBudget`
+still extends the retained ledger with its documented complete-read allowances;
+retained history uses its own original narrower ledger and charges actual deltas
+on success and refusal. Load reuse still pins the original default class,
+methods and policy constants and imports proved work once per caller.
+
+The [existing schema-shell keepers](../../operations/local-ci.md#s9-reader-parity-keepers)
+cover bounded acquisitions/refusals/charges and complete history/replay. They do
+not prove a naming extraction, semantic Coding role adherence or live acceptance.
+Public @2 start/composition remains closed; Coding stays Disabled/unset. Source
+completion does not retire then/fanout or authorize the founder-reserved pilot,
+setup/Allow, deployment/restart, live DB changes or thread notifications.
+
 ## S8b registration and transport boundary (THR-336)
 
 Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible

@@ -7,6 +7,23 @@ loads. The approved design is TASK-16078 design v6 (SHA256
 reviewed in TASK-16087. Root TASK-16061's `i1-split-ruling.md` separates the
 install gates (I1a) from the daily read-only advisory report (I1b).
 
+## S9 final reader checkpoint
+
+S9 defers `sequential_acquisition.py`: current generic consumers beyond the
+closed extraction set still share the original `coding_authority_history`
+primitives. Coding authority/history and complete/selected sequential readers
+remain in their existing owners, with exact native projections and original
+logical/SQL/deadline charges. The unpublished load's default-policy identities
+and once-per-caller reuse accounting are unchanged. See the
+[final reader map](../agent-guides/contracts/reusable-workflows.md#s9-final-reader-parity-and-naming-deferral).
+
+This is a source/doc parity checkpoint, not a new bootstrap phase or installer.
+S2b's schema2 target, nonempty schema1 refusal, verified backup/preservation,
+unchanged-on-failure, full installation integrity and all-org startup limits
+remain. Registration adds generic Coding v3 data only; public @2 start stays
+closed and Coding stays Disabled/unset. Live qualification, setup/roles/Allow,
+deployment/restart and pilot remain separately authorized operations.
+
 ## S2b automatic schema2 qualification
 
 The existing A4 startup owner now targets schema2 through the S2a installer.

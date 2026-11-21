@@ -15284,6 +15284,38 @@ gate_cases = (
     ('shared-work-overflow', None, {'traversed': 16384}, 8192, 8, 'unfetched', (0, 0, 1)),
     ('local-row-overflow', None, {}, 0, 8, 'withheld', (0, 1, 1)),
 )
+# S9 extends this keeper across retained and generic caller ledgers. The
+# expected native values and cumulative charges are fixed independently of the
+# implementation; no extraction/import identity is asserted.
+s9_acquisition_failures = []
+for budget_type in (_Budget, _ReadBudget):
+    with GateConnection(':memory:') as conn:
+        conn.fetched, conn.closed_cursors = [], 0
+        conn.execute('CREATE TABLE gate_cells (' + ','.join(gate_columns) + ')')
+        conn.execute('INSERT INTO gate_cells VALUES (' + ','.join(gate_literals) + ')')
+        budget = budget_type(consumed=13, accepted_rows=2, traversed=5)
+        try:
+            for expected in ((21, 3, 12), (29, 4, 19)):
+                rows = list(_bounded_rows(conn, 'gate_cells', gate_columns, gate_allowed, budget))
+                assert rows == [(*gate_values, *gate_types)], 'native projection changed'
+                assert (budget.consumed, budget.accepted_rows, budget.traversed) == expected, 'cumulative charge changed'
+            try:
+                list(_bounded_rows(conn, 'gate_cells', gate_columns, gate_allowed, budget, maximum=0))
+            except CodingAuthorityHistoryError as exc:
+                assert str(exc) == 'coding_authority_history_invalid', 'refusal category changed'
+            else:
+                raise AssertionError('overflow acquisition accepted')
+            assert (budget.consumed, budget.accepted_rows, budget.traversed) == (29, 5, 20), 'refused candidate charge changed'
+            assert conn.fetched[-1][1:7] == (0, None, None, None, None, None), 'refused payload escaped'
+            assert conn.closed_cursors == 3 and conn.in_transaction, 'cursor or caller transaction lost'
+        except AssertionError as exc:
+            s9_acquisition_failures.append((budget_type.__name__, str(exc)))
+            print('FAIL S9 generic_acquisition/legacy_budget_equality:', budget_type.__name__, str(exc), flush=True)
+        else:
+            print('PASS S9 generic_acquisition/legacy_budget_equality:', budget_type.__name__, 'charges (29, 5, 20)', flush=True)
+    conn.close()
+assert not s9_acquisition_failures, s9_acquisition_failures
+
 for label, replacement, initial, maximum, cap, phase, deltas in gate_cases:
     with GateConnection(':memory:') as conn:
         conn.fetched, conn.closed_cursors = [], 0

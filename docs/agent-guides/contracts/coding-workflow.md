@@ -1,5 +1,21 @@
 # Coding workflow contracts
 
+## S9 retained Coding reader boundary
+
+S9 defers the shared-reader naming extraction: common bounded primitives still
+live in `coding_authority_history.py`. Coding issuance, admission, publication,
+mapping, capability, source, native and cancellation history remain with their
+original Coding readers. The sequential complete reader preserves their
+original projection, exact bytes/IDs, narrower cumulative allowances, refusals
+and unknown Final effects. Generic names or outputs confer no Coding authority.
+See [the final reader map](reusable-workflows.md#s9-final-reader-parity-and-naming-deferral).
+
+The role-report contract below is the current generic Coding data convention;
+the historical domain capabilities apply only to actual old bindings. S9 grants
+no public @2 start, setup/roles/Allow, live pilot or uncertain-merge retry. Coding
+remains Disabled/unset; genuine role adherence and the scratch merge are NOT RUN
+and founder-reserved.
+
 <a id="coding-v3-role-reports--s8a-staged-registration"></a>
 
 ## Coding v3 role reports — S8b registration

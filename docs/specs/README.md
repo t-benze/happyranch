@@ -82,15 +82,15 @@
 | [2026-11-11-darwin-cleanup-process-use.md](2026-11-11-darwin-cleanup-process-use.md) | current | THR-346 | Darwin cleanup process-use observations — THR-346 S4 |
 | [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 | Knowledge Distill & Instill v1 |
 | [2026-11-11-sequential-coding-u4.md](2026-11-11-sequential-coding-u4.md) | unlisted; retained reference | THR-336 | Sequential Coding U4: task-owned repository resolution |
-| [2026-11-11-sequential-coding-u5.md](2026-11-11-sequential-coding-u5.md) | current U5 design; U5a policy and U5b1 assessment producers | THR-336 | Sequential Coding U5: current evidence and local Final capability |
-| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6b2b mounted | THR-336 | Sequential Coding U6: cancellation and mixed-history closure |
-| [2026-11-11-sequential-coding-u7.md](2026-11-11-sequential-coding-u7.md) | current U7 design; U7a–U7d source delivered | THR-336 | Sequential Coding U7: common transport and agent initiation |
+| [2026-11-11-sequential-coding-u5.md](2026-11-11-sequential-coding-u5.md) | historical domain evidence/LOCAL Final; generic Coding uses agent reports | THR-336 | Sequential Coding U5: retained evidence and local Final capability |
+| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | retained cancellation/mixed history; generic @2 cancellation extended by S6b | THR-336 | Sequential Coding U6: cancellation and mixed-history closure |
+| [2026-11-11-sequential-coding-u7.md](2026-11-11-sequential-coding-u7.md) | retained @1 transport/start; generic @2 transport extended by S4–S6 | THR-336 | Sequential Coding U7: common transport and agent initiation |
 | [2026-11-11-thread-invocation-resolution.md](2026-11-11-thread-invocation-resolution.md) | unlisted; retained reference | THR-339 | Thread invocation resolution — 2026-11-11 addendum |
-| [2026-11-12-sequential-coding-u4c.md](2026-11-12-sequential-coding-u4c.md) | current | THR-336 | Sequential Coding U4c: selected Developer repository transport |
-| [2026-11-12-sequential-coding-u8.md](2026-11-12-sequential-coding-u8.md) | current U8 design; U8a read journey + U8b Setup source | THR-336 | Sequential Coding U8: common Workflows journey and task integration |
-| [2026-11-12-sequential-coding-u9.md](2026-11-12-sequential-coding-u9.md) | current U9 contract; U9a + complete atomic U9b source | THR-336 | Sequential Coding U9: release selection and atomic fresh-start cutover |
+| [2026-11-12-sequential-coding-u4c.md](2026-11-12-sequential-coding-u4c.md) | historical repository-domain transport; generic @2 refused by S8b | THR-336 | Sequential Coding U4c: selected Developer repository transport |
+| [2026-11-12-sequential-coding-u8.md](2026-11-12-sequential-coding-u8.md) | retained @1 views/setup; plural generic @2 reads extended by S7 | THR-336 | Sequential Coding U8: common Workflows journey and task integration |
+| [2026-11-12-sequential-coding-u9.md](2026-11-12-sequential-coding-u9.md) | retained @1 selection/cutover; S8b generic registration only | THR-336 | Sequential Coding U9: release selection and atomic fresh-start cutover |
 | [2026-11-13-task-model-reasoning-overrides.md](2026-11-13-task-model-reasoning-overrides.md) | unlisted; retained reference | THR-356 | Per-task model and reasoning effort (THR-356) |
-| [2026-11-14-automatic-workflow-setup.md](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2 source | THR-336 | Automatic workflow setup — incremental delivery |
+| [2026-11-14-automatic-workflow-setup.md](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2/A4 and S2b source; S9 reader naming deferred | THR-336 | Automatic workflow setup — incremental delivery |
 | [2026-11-16-one-click-remote-access.md](2026-11-16-one-click-remote-access.md) | unlisted; retained reference | THR-327 | One-click remote access and one invite (THR-327) |
-| [2026-11-16-workflow-replace-chain-design.md](2026-11-16-workflow-replace-chain-design.md) | proposal; kept as unclear | THR-336 | Workflow replacement of dispatch chains: technical design and migration plan |
+| [2026-11-16-workflow-replace-chain-design.md](2026-11-16-workflow-replace-chain-design.md) | R1/S1–S8b source; S9 parity with naming deferred; live acceptance open | THR-336 | Workflow replacement of dispatch chains: technical design and migration plan |
 | [org-portability-reference-consumers.md](org-portability-reference-consumers.md) | current (design reference for THR-187 Step 0 only); kept as unclear | THR-187 | Org Portability — DB-to-Filesystem Reference Consumers (THR-187 Step 0 Evidence Gate) |
