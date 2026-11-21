@@ -8,6 +8,7 @@ import { useTranslation } from '@/hooks/i18n';
 import type { AgentSummary } from '@/lib/api/types';
 import type { MessageKey } from '@/lib/i18n';
 import { classifySystemPromptError } from './strings';
+import { saveAndVerifySystemPrompt } from './systemPromptSave';
 
 interface Props {
   slug: string;
@@ -67,8 +68,10 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
   // pane's model/repository draft). An unsent prompt draft prompts on leave or
   // org change; a sent save holds until it settles (also after teardown); an
   // unknown result refuses a new save until Reload / Check result reconciles it.
-  // `needsRead` is part of the draft so a kept draft re-reports dirty after an
-  // acknowledged save whose verification read did not confirm it.
+  // An acknowledged save whose verification read fails or disagrees settles
+  // UNKNOWN (held) — never saved — so no transient clean state is published.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const lastSubmission = useRef<{ system_prompt: string; expected_revision: string } | null>(null);
   const reconcileFrom = (fresh: { system_prompt: string } | null | undefined): 'saved' | 'not_saved' | 'unknown' => {
     const sent = lastSubmission.current;
@@ -90,7 +93,16 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     },
     checkResult: async () => {
       try {
-        return reconcileFrom(await read.mutateAsync({ slug, agentName }));
+        const fresh = await read.mutateAsync({ slug, agentName });
+        const outcome = reconcileFrom(fresh);
+        // A matching read settles normally: the stored prompt is the sent
+        // text, so the editor leaves edit mode unless a newer draft was typed.
+        if (outcome === 'saved' && fresh && validRevision(fresh.revision) && mounted.current
+            && draftRef.current === lastSubmission.current?.system_prompt) {
+          setSnapshot(fresh); setReadUnavailable(false); inspectionRequired.current = false;
+          setBase(null); setDraft(''); setNeedsRead(false); setError(null); setDiagnostic(null); setSaved(true);
+        }
+        return outcome;
       } catch {
         return 'unknown';
       }
@@ -116,37 +128,39 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     const ticket = owner.begin();
     if (ticket === null) return;
     lastSubmission.current = submission.body;
-    let outcome: SaveOutcome | null = null;
     busy.current = true; inspectionRequired.current = true;
     setPending(true); setError(null); setDiagnostic(null); setSaved(false);
+    // Only a matching verification read settles the ticket as saved; an
+    // acknowledged save whose read fails or disagrees settles UNKNOWN (held)
+    // until Check result / Reload reconciles it (see ./systemPromptSave). The
+    // read runs even after teardown: the detached owner holds until it settles.
+    let outcome: SaveOutcome = 'unknown';
     try {
-      let receipt: Awaited<ReturnType<typeof save.mutateAsync>>;
-      try {
-        receipt = await save.mutateAsync(submission);
-        outcome = 'saved';
-      } catch (err: unknown) {
-        outcome = classifySaveError(err);
-        throw err;
-      }
-      if (!mounted.current) return;
-      const fresh = await read.mutateAsync({ slug: submission.slug, agentName: submission.agentName });
-      if (!mounted.current) return;
-      if (!fresh || receipt.agent !== submission.agentName || !validRevision(receipt.revision)
-          || fresh.system_prompt !== receipt.system_prompt || fresh.revision !== receipt.revision) {
-        if (!fresh || !validRevision(fresh.revision)) setReadUnavailable(true);
-        setError('agents.prompt.verifyFailed'); setNeedsRead(true); return;
-      }
-      setSnapshot(fresh); setBase(null); setDraft(''); setSaved(true);
-    } catch (err: unknown) {
+      const done = await saveAndVerifySystemPrompt({
+        agentName: submission.agentName,
+        save: () => save.mutateAsync(submission),
+        read: () => read.mutateAsync({ slug: submission.slug, agentName: submission.agentName }),
+        classifySaveError,
+        validRevision,
+      });
+      outcome = done.outcome;
+      const { result } = done;
       if (mounted.current) {
-        setError(classifySystemPromptError(err)); setNeedsRead(true);
-        const detail = (err as { detail?: unknown } | null)?.detail;
-        const text = typeof detail === 'string' ? detail : (detail as { error?: unknown } | null)?.error;
-        setDiagnostic(typeof text === 'string' ? text : null);
+        if (result.kind === 'verified') {
+          setSnapshot(result.fresh); setBase(null); setDraft(''); setSaved(true);
+        } else if (result.kind === 'unverified') {
+          if (!result.fresh || !validRevision(result.fresh.revision)) setReadUnavailable(true);
+          setError('agents.prompt.verifyFailed'); setNeedsRead(true);
+        } else {
+          setError(classifySystemPromptError(result.error)); setNeedsRead(true);
+          const detail = (result.error as { detail?: unknown } | null)?.detail;
+          const text = typeof detail === 'string' ? detail : (detail as { error?: unknown } | null)?.error;
+          setDiagnostic(typeof text === 'string' ? text : null);
+        }
       }
     } finally {
       // Settle even after teardown: the detached owner keeps holding until here.
-      owner.settle(ticket, outcome ?? 'unknown');
+      owner.settle(ticket, outcome);
       if (mounted.current) { busy.current = false; setPending(false); }
     }
   };
