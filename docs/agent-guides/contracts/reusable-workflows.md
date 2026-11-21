@@ -408,6 +408,10 @@ cancellation stays available. Fence/finish consume the reservation without
 business-content acceptance. A cancelling run keeps its reservation against
 other runs' non-cancel writes. The rule can refuse a hold/retry before the
 ordinary reader itself exhausts; it is not a callback-size or event-cap increase.
+Every registered definition row is charged on each complete read: parsing
+reserves 48 times its byte size plus 512 bytes, then charges the decoded copy.
+The staged S8a Coding v3 row therefore reduces remaining history capacity by
+its accounted parse cost, including while public discovery still selects v2.
 This cancellation-headroom guarantee is preserved across all @2 writers only.
 Unchanged @1 writers on the same org, such as
 `SequentialDispatcher._record_business_hold`, are not budget-aware and can

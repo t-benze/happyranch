@@ -2998,9 +2998,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sy
                 command = f.command
                 s4startreplay(f, command, later=False)
                 if case == 'start_replay_cancel_boundary':
-                    # Exact reviewer prefix: four full documents, then 300000
-                    # bytes, all finished by the real Held/cancel writers.
-                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                    # Edge for the registered v2 + staged v3 set: four full documents,
+                    # then a tail, all finished by the real Held/cancel writers.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 278528)):
                         if index:
                             command = dict(f.command, operation_key='history-' + str(index))
                             f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
@@ -3026,6 +3026,41 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or not sy
                     assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
                     s4startreplay(f, command, later=True)
                 assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+            if case == 'start_replay_cancel_boundary':
+                from runtime.infrastructure.workflow_schema import _schema_snapshot, sequential_storage_inventory
+
+                with s4fixture(document=True) as f:
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                        if index:
+                            command = dict(f.command, operation_key='history-' + str(index))
+                            f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
+                        s4closed(f, f.ids.visit_id, summary=s4document(size), terminal='success')
+                        s4tryhold(f)
+                        if index < 4:
+                            s4apply(f, s4command(f, 'cancel'))
+                    command = dict(f.command, operation_key='replayed-start')
+                    cancel = s4command(f, 'cancel')
+                    # Refuse while the tail run still needs cancellation, then
+                    # at the original prefix with all five history runs closed.
+                    for phase in ('held', 'cancelled'):
+                        with _schema_snapshot(f.conn):
+                            before = sequential_storage_inventory(f.conn)
+                        try:
+                            f.admit(command, task_suffix='-replayed-start')
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_seq_read_bytes_exhausted', ('over-edge wrong refusal', phase, str(exc))
+                        else:
+                            raise AssertionError(('over-edge replayed-start unexpectedly admitted', phase))
+                        assert not f.conn.in_transaction, 'over-edge admission retained transaction'
+                        with _schema_snapshot(f.conn):
+                            assert sequential_storage_inventory(f.conn) == before, ('over-edge admission changed schema/rows/rowids', phase)
+                        if phase == 'held':
+                            receipt = s4apply(f, cancel)
+                        assert s4apply(f, cancel) == receipt, 'over-edge cancellation receipt changed'
+                        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        assert (run['state'], run['terminal_outcome'], run['active_visit_id']) == ('finished', 'cancelled', None), 'over-edge cancellation unavailable'
+                        assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        print('PASS S4a', case, 'over-edge', phase, 'workflow_seq_read_bytes_exhausted; zero committed writes; full row/rowid rollback; cancellation available', flush=True)
             continue
         if case.startswith('capacity_'):
             s4capacity(case)
