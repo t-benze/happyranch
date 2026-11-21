@@ -5154,14 +5154,14 @@ def _kill_jobs_for_terminating_task(
             raise
         finally:
             if root_transitions:
-                current_owner = False
+                recovery_owner_current = False
                 if recovery_owner is not None:
                     agent, session_id, result_row_id, terminal_status = recovery_owner
-                    current_owner = db.consumed_task_completion_recovery_owner_is_current(
+                    recovery_owner_current = db.consumed_task_completion_recovery_owner_is_current(
                         task_id=task_id, agent=agent, recovery_session_id=session_id,
                         result_row_id=result_row_id, terminal_status=terminal_status)
                 await _await_root_worktree_batch(orch, root_transitions,
-                    teardown_incomplete=drain_failed or not current_owner)
+                    teardown_incomplete=drain_failed or not recovery_owner_current)
 
     try:
         loop = asyncio.get_running_loop()
