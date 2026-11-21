@@ -1,6 +1,6 @@
 ---
 name: reflection
-description: Use this skill when asked mid-thread to reflect on your recent work. Produces an opening report (recent tasks, learnings, frictions) posted as a thread reply, and captures learnings + optional KB entries via direct `happyranch learning add` / `happyranch kb add` calls at the end.
+description: Use this skill when asked mid-thread to reflect on your recent work. Produces an opening report (recent tasks, learnings, frictions) posted as a thread reply, and captures learnings + optional KB entries via direct `happyranch memory add` / `happyranch kb add` calls at the end.
 ---
 
 # reflection
@@ -9,21 +9,21 @@ Triggered on-demand when the founder asks you to "reflect" inside a thread turn.
 
 ## Identity
 
-Read your agent name from your workspace directory name (or the `# Agent:` header of your bootstrap `CLAUDE.md`/`AGENTS.md`) if you don't already know it. Every `happyranch learning ...` and `happyranch kb ...` call takes `--agent <your_name>` where required.
+Use the permanent agent ID supplied in the current invocation; do not derive it from a displayed name or workspace directory. Every `happyranch memory ...` and `happyranch kb ...` call takes `--agent <your_agent_id>` where required.
 
 ## START — opening report as a thread reply
 
-1. **Find the window for the report.** Scan `task_history.md` for your most recent reflection (look for "reflection" — or the legacy "review" — in the briefs/outcomes). If no prior reflection exists, use "all-time, capped at 30 days."
+1. **Find the window for the report.** Use an explicitly identified prior reflection timestamp from available thread context. If unavailable, state that the prior boundary is unknown and choose a window capped at 30 days. Do not infer a reflection from a generic "review" match in task history.
 
 2. **Gather inputs:**
-   - `task_history.md` (in the workspace root).
-   - Per-agent learnings — `learnings/_index.md` (drill into individual `LRN-NNN-<slug>.md` entries dated within the window).
-   - `happyranch audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
+   - `task_history.md` (in the workspace root; at most 50 recent task records).
+   - Private memory — `memory/_index.md`; use `happyranch memory list --org {ORG_SLUG} --agent <your_agent_id>` and the `memory get` / `memory search` commands with the same permanent ID for full `MEM-NNN` entries in the window. `LRN-` IDs and the `learning` CLI alias are compatibility forms only.
+   - `happyranch audit --org {ORG_SLUG} --agent <your_agent_id> --since <window_start>`.
 
 3. **Emit the opening report as a thread reply.** Use exactly these section headings, in this order:
 
    ## Since last reflection
-   Window dates and one-line counts by terminal status.
+   Window dates and one-line counts by terminal status. Use complete windowed audit/listing evidence when available; otherwise label counts as the observed sample, not exhaustive window totals.
 
    ## Notable tasks
    3–5 items you picked for significance (not just most recent). One-line takeaway each.
@@ -37,7 +37,7 @@ Read your agent name from your workspace directory name (or the `# Agent:` heade
    ## Suggested topics
    2–3 things you think are worth discussing.
 
-4. **Wait for the founder.** The rest is a normal conversation.
+4. **Post and end the turn.** Follow the maintained [thread reply payload contract](../thread/SKILL.md#reply): use the supplied invocation identity, write the reply payload to an absolute file and call single-line `happyranch threads reply --org {ORG_SLUG} --thread-id <id> --from-file <absolute-path>`. End this turn after the callback; continue only when a new founder message arrives. Do not sleep or invent a task completion callback.
 
 ## END — direct learning/KB capture (no endpoint)
 
@@ -45,10 +45,10 @@ When the founder indicates the reflection is done:
 
 1. **Summarize.** In your own head, list: what was discussed, what decisions got reached, what remains open.
 
-2. **Extract learnings.** A learning is a durable, non-obvious operational fact you'll want on future tasks. Skip things already recorded. For each learning, write a YAML payload:
+2. **Extract learnings.** A learning is a durable, non-obvious operational fact you'll want on future tasks. Search memory for semantic duplicates before choosing a new slug. Each successful add creates a validated, stamped structured `MEM` entry; an existing slug returns HTTP 409. There is no semantic duplicate detector. For each new learning, write a YAML payload:
 
    ```
-   slug: lrn-<slug>
+   slug: <slug>
    title: <title>
    topic: <topic>
    tags: [tag1, tag2]
@@ -66,16 +66,29 @@ When the founder indicates the reflection is done:
    Then call:
 
    ```bash
-   happyranch learning add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/lrn-<slug>.yaml
+   happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-<slug>.yaml
    ```
 
-3. **Identify KB-worthy material.** Prefer durable, cross-agent knowledge with an expected useful lifespan of at least 12 months; keep agent-private lessons in memory. Write `/tmp/kb-<slug>.md` with YAML frontmatter and a markdown body, then call:
+3. **Identify KB-worthy material.** Prefer durable, cross-agent knowledge with an expected useful lifespan of at least 12 months; keep agent-private lessons in memory. Write `/tmp/kb-<slug>.md` with the four required YAML frontmatter fields and a markdown body:
+
+   ```markdown
+   ---
+   slug: example-rule
+   title: Example durable rule
+   type: reference
+   topic: workflow
+   ---
+
+   Durable cross-agent guidance goes here.
+   ```
+
+   Then call:
 
    ```bash
-   happyranch kb add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/kb-<slug>.md
+   happyranch kb add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/kb-<slug>.md
    ```
 
-4. **Post a final thread reply** summarizing outcomes: what was discussed, decisions reached, learnings/KB entries written. This replaces the lost transcript.
+4. **Post a final thread reply** summarizing outcomes: what was discussed, decisions reached, learnings/KB entries written. Use the same [thread reply contract](../thread/SKILL.md#reply), supplied invocation identity and absolute payload file, then end the turn. This replaces the lost transcript.
 
 ## Why single-line call + temp file
 
@@ -90,6 +103,6 @@ This is skill-level enforcement. The reflection skill has no task-path auth; the
 ## What NOT to do
 
 - Don't start tasks (`happyranch run ...`) from inside a reflection. If something actionable comes up, tell the founder explicitly.
-- Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter.
+- Don't add semantic duplicates under a new slug; search first. Slug collisions return 409, but different slugs can still duplicate a lesson.
 - Don't treat KB entries as a catch-all for in-reflection notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.
 - Don't call `happyranch talk start|end|resume|abandon` — those endpoints no longer exist. This skill replaces the talk flow entirely.
