@@ -57,7 +57,6 @@ import {
   type DesktopDialogState,
   type DesktopSettingsSection,
 } from './dialogModel';
-import { ConnectionDialogBody } from './ConnectionDialogBody';
 import { isDesktopShell } from './desktopShell';
 import { orgOfPath, useOwnerGate, type OwnerGateEffect } from '@/shared/owners';
 import type { OwnerRecord } from '@/lib/owners/ownerRegistry';
@@ -104,6 +103,12 @@ export interface DesktopSettingsBodySlot {
   onOpenConnection: () => void;
 }
 
+/** What the host gives the Connection dialog body it is composed with (S6-W3). */
+export interface DesktopConnectionBodySlot {
+  headingRef: RefObject<HTMLHeadingElement>;
+  onOpenSettings: () => void;
+}
+
 const DesktopDialogsContext = createContext<DesktopDialogsContextValue | null>(null);
 
 export function useDesktopDialogs(): DesktopDialogsApi {
@@ -128,10 +133,13 @@ function restoreFocus(target: HTMLElement | null): void {
 export function DesktopDialogsProvider({
   children,
   renderSettingsBody,
+  renderConnectionBody,
 }: {
   children: ReactNode;
   /** The Settings dialog body (features/settings), composed by routes.tsx. */
   renderSettingsBody: (slot: DesktopSettingsBodySlot) => ReactNode;
+  /** The Connection dialog body (features/connection), composed by routes.tsx. */
+  renderConnectionBody: (slot: DesktopConnectionBodySlot) => ReactNode;
 }): JSX.Element {
   const [state, setState] = useState<DesktopDialogState>(CLOSED);
   const returnTarget = useRef<HTMLElement | null>(null);
@@ -289,6 +297,7 @@ export function DesktopDialogsProvider({
         onSwitch={openDesktopDialog}
         onCloseRequest={requestDesktopDialogClose}
         renderSettingsBody={renderSettingsBody}
+        renderConnectionBody={renderConnectionBody}
       />
     </DesktopDialogsContext.Provider>
   );
@@ -301,8 +310,10 @@ function DesktopDialogHost({
   onSwitch,
   onCloseRequest,
   renderSettingsBody,
+  renderConnectionBody,
 }: {
   renderSettingsBody: (slot: DesktopSettingsBodySlot) => ReactNode;
+  renderConnectionBody: (slot: DesktopConnectionBodySlot) => ReactNode;
   state: DesktopDialogState;
   returnTarget: RefObject<HTMLElement | null>;
   focusMainOnClose: { current: boolean };
@@ -381,12 +392,11 @@ function DesktopDialogHost({
             onSelectSection: (section) => onSwitch({ dialog: 'settings', section }),
             onOpenConnection: () => onSwitch({ dialog: 'connection' }),
           })}
-        {state.dialog === 'connection' && (
-          <ConnectionDialogBody
-            headingRef={headingRef}
-            onOpenSettings={() => onSwitch({ dialog: 'settings' })}
-          />
-        )}
+        {state.dialog === 'connection' &&
+          renderConnectionBody({
+            headingRef,
+            onOpenSettings: () => onSwitch({ dialog: 'settings' }),
+          })}
       </DialogContent>
     </Dialog>
   );

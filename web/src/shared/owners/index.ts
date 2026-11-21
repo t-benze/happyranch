@@ -3,6 +3,7 @@ export {
   OwnerGateProvider,
   useOwnerGate,
   useOwnerRecords,
+  useOwnerSnapshotReader,
   navigationTransition,
   orgOfPath,
   type OwnerGateEffect,

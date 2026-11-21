@@ -300,8 +300,9 @@ org in Main show the recovery panel during a recovery state, otherwise an
 scope note (“These controls affect this computer, not {host}.”) and only when
 a remote Host name is supplied; nothing supplies it until the S5-W1 status
 store lands, and the local controls page itself is S7-L2. The Connection
-dialog is a placeholder shell (S6-W3 moves the `web/connection` screens in)
-with a Settings cross-action. Until S7-L1, the Linux header Connection button
+dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
+`routes.tsx` through `renderConnectionBody` exactly like Settings (see
+“Connection dialog contents” below). Until S7-L1, the Linux header Connection button
 and “Access wasn't saved” badge open/present the existing native Connection
 window in both default and app-scheme opt-in builds; Settings retains
 `app.dialogRequested` delivery and explicit Retry when unavailable.
@@ -323,6 +324,79 @@ fills the Main content area, nav groups stack and items wrap above the page in
 one vertically scrolling column, and choosing a page scrolls it into view.
 Unsaved drafts and sent saves are protected on close/switch/page change by
 the owner gate below.
+
+### Connection dialog contents (THR-387 S6-W3)
+
+The Connection dialog (`web/src/features/connection/`) replaces the S6-W1
+placeholder. It reads native state only and keeps no second store:
+
+- **Sources.** The one #1774 app-status store (`useNativeAppStatus`) supplies
+  the active target, state, candidate phase/deadline, `incompatible` and
+  `access_unsaved`. The v1 `client.*`/`host.*` commands admitted on Main
+  (#1782) go through `web/src/lib/native/connection.ts` (`callConnection`,
+  closed v1 parsers, `ConnectionRefusal`/`failureOf`, `subscribeHostState`),
+  which uses the same bridge accessor as `target.ts`, so
+  `__setNativeBridgeForTests` covers it. Nothing reads
+  `window.happyranchConnection` directly. `client.status` is read on open and
+  once per `app.stateChanged` (coalesced), with one `client.savedComputers`
+  discovery on open. `host.status` is read on open and `host.stateChanged`
+  applies newer sequences only. Results stay in component state.
+- **Close is not Cancel or Disconnect.** Closing only unmounts the body;
+  native keeps the attempt. Reopening re-reads `app.status`, `client.status`
+  and `host.status` and replays no action.
+- **Order.** The live attempt comes first (Switch / Cancel on top, so Cancel
+  is visible on open at 380×280 CSS px), then the current connection, the
+  “Access wasn't saved” detail, Connect another computer (Paste invite, saved
+  computers with Connect / Remove local access) and Host management.
+- **Candidate.** Each phase is named (Signing in, Waiting for approval, Ready
+  to switch, Connection failed, Cancelled) with “Connecting to {name}…
+  You're still using {active}.”, the deadline and the v1 steps. A candidate
+  is never labelled Connected; Ready to switch needs the explicit Switch.
+- **Switch and Disconnect.** Both ask the contextual owner gate over EVERY
+  owner first (new effects `switchTarget` / `disconnect`: “Discard changes and
+  switch computer / disconnect”). After consent the body rechecks that the
+  candidate is still ready, awaits native's receipt for the current owner
+  summary (`awaitOwnersReceipt`), freezes saves with `holdOwnerSaves()`
+  (`lib/native/owners.ts`), calls `client.commitSwitch` / `client.disconnect`,
+  and releases the freeze when native answers. If the receipt is lost,
+  nothing is sent (`connection.refusal.receipt`). Every refusal has named copy
+  with no automatic retry: `owner_save_pending`, `owner_save_unknown`,
+  `owner_edits_pending` (each lists the affected owners), `non_get_pending`,
+  `target_starting`, `target_unreachable`, `incompatible` + side,
+  `documentChanged` / `stateChanged`, `busy`. An unknown effect says the
+  result couldn't be confirmed, never “not switched”.
+- **Cancel attempt.** `client.cancelAttempt` is busy-exempt. The owner gate
+  also renders an optional “Cancel connection attempt” row
+  (`OwnerGate.tsx` `CandidateCancelRow`, M13) while an attempt is in flight or
+  ready. It does not resolve the gate, discard drafts or bypass a hold.
+- **Outcomes (M9).** Native `effect`/`recovery` drive the copy: `unknown`
+  gives result-unknown copy plus Check again; “nothing changed” only for
+  `effect: "none"`. Explicit retry reuses the same command and record while
+  that record is still listed.
+- **Compatibility (C6).** For a remote Host-side mismatch: “Update {Host}”
+  (with or without metadata; the reported contract range is shown) plus
+  Recheck (an `app.status` re-read) and “Choose another computer”. For a local
+  service mismatch: update the service, restart only the service, then recheck
+  (guidance only). For an app-side mismatch: update the desktop app. Unknown
+  side: “Compatibility unavailable”. There are no Restart or Relaunch
+  buttons (M12).
+- **Access wasn't saved.** Shown while `access_unsaved`. Retry protected
+  saving (`client.retrySave`) is offered while the client is connected;
+  otherwise the dialog explains that connecting again needs a new invite. This
+  copy is separate from the C3 save-failure copy.
+- **Host management.** Uses `host.status` / `host.stateChanged` and
+  enable / turn off / create invite / approve / reject / next device / revoke.
+  Turn off and Revoke ask for in-dialog confirmation, then native consent. An
+  uncertain action whose re-read failed is shown as “not confirmed”, with no
+  lifecycle controls. The section is hidden when `host.status` answers
+  `unsupportedCommand` (Mac: no host role; no `bridge.hello`, M8).
+- **Locale.** All copy is in the `connection.*` catalogs (EN + zh-CN). Keys
+  were moved verbatim from `web/connection/src/strings.ts` (that window
+  stays until S7-L1). Native-generic names are shown as given, except
+  “Saved computer N”, which is re-localized (M15).
+
+Pure rules live in `connectionModel.ts`. Focused checks:
+`node --experimental-transform-types --test web/scripts/connection-dialog.test.mjs`.
 
 ## Config owner registry and contextual owner gate (THR-387 S6-W2a)
 

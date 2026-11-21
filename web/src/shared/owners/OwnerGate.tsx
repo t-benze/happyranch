@@ -48,6 +48,10 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
+import type { AppCandidate } from '@/lib/native/appStatus';
+import { callConnection } from '@/lib/native/connection';
+import { useNativeAppStatus } from '@/lib/native/hooks';
 import {
   createOwnerRegistry,
   selectOwnerBlocking,
@@ -102,6 +106,15 @@ export function useOwnerGateContext(): OwnerGateContextValue {
 export function useOwnerRecords(): readonly OwnerRecord[] {
   const { registry } = useOwnerGateContext();
   return useSyncExternalStore(registry.subscribe, registry.getSnapshot, registry.getSnapshot);
+}
+
+/**
+ * Read the live owner records at CALL time (not render time): a gate
+ * `proceed()` runs right after Discard, before React re-renders.
+ */
+export function useOwnerSnapshotReader(): () => readonly OwnerRecord[] {
+  const { registry } = useOwnerGateContext();
+  return registry.getSnapshot;
 }
 
 /** The gate API for transition owners (dialog host, org switcher, ...). */
@@ -426,6 +439,7 @@ function OwnerGatePrompt({
             );
           })}
         </ul>
+        <CandidateCancelRow />
         <DialogFooter className="flex-wrap">
           {hold ? (
             <Button size="sm" className={WRAP} data-owner-gate-default onClick={cancel}>
@@ -444,5 +458,66 @@ function OwnerGatePrompt({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const CANDIDATE_PHASE: Record<AppCandidate['phase'], MessageKey> = {
+  signing_in: 'connection.candidate.badge.signingIn',
+  awaiting_approval: 'connection.candidate.badge.awaitingApproval',
+  ready_to_switch: 'connection.candidate.badge.readyToSwitch',
+  failed: 'connection.candidate.badge.failed',
+  cancelled: 'connection.candidate.badge.cancelled',
+};
+
+/**
+ * M13 (handoff §3): while a gate blocks (for example Settings -> Open
+ * Connection with unsent edits), an active connection attempt stays
+ * cancellable here. `client.cancelAttempt` runs natively (with its own
+ * consent); this row never resolves the gate, discards drafts or bypasses a
+ * sent-result hold. Shown only while native reports an attempt in flight or
+ * ready to switch.
+ */
+function CandidateCancelRow(): JSX.Element | null {
+  const { t } = useTranslation();
+  const app = useNativeAppStatus();
+  const [running, setRunning] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const candidate = app?.candidate ?? null;
+  if (!candidate || (candidate.phase !== 'signing_in' && candidate.phase !== 'awaiting_approval' && candidate.phase !== 'ready_to_switch')) {
+    return null;
+  }
+  return (
+    <div
+      data-testid="owner-gate-candidate"
+      className="border-border-default bg-surface-raised text-text-primary rounded-md border p-3 text-sm break-words"
+    >
+      <p>{t('connection.candidate.gateRow', { name: candidate.name, phase: t(CANDIDATE_PHASE[candidate.phase]) })}</p>
+      <p className="text-text-secondary mt-1 text-xs">{t('connection.candidate.gateHint')}</p>
+      <Button
+        size="sm"
+        variant="outline"
+        className={`mt-2 ${WRAP}`}
+        aria-busy={running || undefined}
+        data-command="client.cancelAttempt"
+        onClick={() => {
+          if (running) return;
+          setRunning(true);
+          // The outcome arrives through app.stateChanged (phase -> cancelled).
+          void callConnection('client.cancelAttempt')
+            .catch(() => undefined)
+            .finally(() => {
+              if (alive.current) setRunning(false);
+            });
+        }}
+      >
+        {t(running ? 'connection.candidate.cancelling' : 'connection.candidate.cancel')}
+      </Button>
+    </div>
   );
 }

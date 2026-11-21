@@ -1,5 +1,10 @@
 # Packaged connection shell (slices 1a / 1b-LINUX / 1b-MAC)
 
+In the desktop app the primary Connection surface is now the SPA dialog
+(`web/src/features/connection/`, THR-387 S6-W3), whose copy moved to the SPA
+`connection.*` catalogs. This shell and `src/strings.ts` stay until S7-L1
+retires the native Connection window.
+
 See the maintained [bridge command/event inventory](../../docs/specs/connection-bridge-inventory.md) for current platform and CLI coverage.
 Any PR changing the schema command/event list or a platform's command implementation must update that inventory in the same PR.
 

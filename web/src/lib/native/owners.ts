@@ -115,6 +115,8 @@ let chain: Promise<unknown> = Promise.resolve();
 let lastAcked: string | null = null;
 let lastQueued: { key: string; result: Promise<PushOutcome>; settled: boolean } | null = null;
 let frozen = false;
+/** Target-switch/disconnect save holds (S6-W3): no save is admitted while any is held. */
+let switchHolds = 0;
 const seenRequests = new Set<string>();
 const answeredRequests = new Set<string>();
 
@@ -191,17 +193,38 @@ export function publishOwners(records: readonly OwnerRecord[]): Promise<PushOutc
 export async function awaitOwnersReceipt(records: readonly OwnerRecord[]): Promise<boolean> {
   const native = nativeBridge();
   if (!native) return true;
-  if (frozen) return false;
+  if (frozen || switchHolds > 0) return false;
   const key = serializeOwnersSummary(toOwnersSummary(records));
   // Share the push already queued for this exact summary (no second call).
   const queued = lastQueued && lastQueued.key === key && !lastQueued.settled ? lastQueued.result : null;
   const outcome = queued ? await queued : await publishOwners(records);
-  return outcome === 'acked' && !frozen;
+  return outcome === 'acked' && !frozen && switchHolds === 0;
 }
 
-/** True after a proceed answer until a definitive refusal (no save is admitted). */
+/**
+ * True after a proceed answer until a definitive refusal, and while a
+ * target switch/disconnect holds saves (no save is admitted).
+ */
 export function ownersFrozen(): boolean {
-  return frozen;
+  return frozen || switchHolds > 0;
+}
+
+/**
+ * Freeze saves for a native target commit (`client.commitSwitch` /
+ * `client.disconnect`, S6-W3; bridge spec "web pauses affected mutations for
+ * the final switch"). While held, `awaitOwnersReceipt` admits no save, so the
+ * acknowledged summary native gates on cannot change under the commit.
+ * Returns an idempotent release; the caller releases when native answers
+ * (refusal or success). Browser mode: a no-op hold.
+ */
+export function holdOwnerSaves(): () => void {
+  switchHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    switchHolds -= 1;
+  };
 }
 
 /**
@@ -276,6 +299,7 @@ export function __resetNativeOwnersForTests(): void {
   lastAcked = null;
   lastQueued = null;
   frozen = false;
+  switchHolds = 0;
   seenRequests.clear();
   answeredRequests.clear();
 }
