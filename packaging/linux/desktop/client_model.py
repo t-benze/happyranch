@@ -66,7 +66,7 @@ class ClientModel:
         self.active_projection = None
         self.switch_candidate = self.candidate_target = self.candidate_error = None
         self.candidate_stop = threading.Event()
-        self.owner_snapshot = lambda: None
+        self.owner_snapshot = lambda: self.main.owner_snapshot() if self.main is not None else None
 
     @property
     def cleanup(self) -> str:
@@ -86,6 +86,7 @@ class ClientModel:
     def attach_main(self, main: object, bridge_types: object) -> None:
         """Attach the same native owner before a fresh Main document is loaded."""
         if self.main is not None and self.main is not main:
+            main.owner_uncertain |= self.main.owner_uncertain
             if self.switch_candidate and self.switch_candidate["phase"] not in ("failed", "cancelled"):
                 self.stop()
             self.main.client_dispatch = None
@@ -120,6 +121,15 @@ class ClientModel:
             finish(self.snapshot())
         elif command == "client.savedComputers":
             self.discover(finish)
+        elif command == "client.health":
+            self.health(finish)
+        elif command == "client.removeSaved":
+            self.remove_saved(computerRef, document, finish)
+        elif command == "client.retrySave":
+            if self.stage == "connected" and self.saved_access != "saved":
+                self.save(self.token, finish=finish)
+            else:
+                finish(None, "stateChanged")
         elif command in ("client.acceptInvite", "client.retry", "client.connectSaved"):
             if (self.session or self.saving or self.storage_busy or self.reading or self.hold or self.ui.prompt
                     or self.host_prompt_document is not None or self.stage not in ("idle", "failed", "connected")

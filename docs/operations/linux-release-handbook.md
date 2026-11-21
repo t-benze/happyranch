@@ -730,6 +730,38 @@ qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
 above has known failures and must be compared against the same base, never
 reported as passing from these focused results.
 
+### Main Connection bridge admission (S6-W3-L)
+
+With `HAPPYRANCH_DESKTOP_APP_SCHEME=1`, the admitted top-level Main document
+also accepts the eight existing v1 `host.*` commands, `host.stateChanged`,
+`client.health`, `client.removeSaved` and `client.retrySave`. Results and events
+are raw v1 bodies, validated by the existing Protocol; mutation errors retain
+their native effect/recovery, including unknown outcomes. `host_bridge.py` is
+installed and required in the desktop payload. Main and the native Connection
+window share its dedicated bus, one busy slot and bounded Status waiters.
+Subscriptions receive a full snapshot and poll Status every three seconds
+while a subscribing window is visible; document retirement drops late events.
+The native Connection window and temporary header entry remain until S7-L1.
+
+`app.ownersChanged` admits the closed v2 aggregate summary for the current Main
+document. Commit/disconnect consult it: missing/unknown, pending, then dirty or
+failed owners refuse with `owner_save_unknown`, `owner_save_pending`, then
+`owner_edits_pending`; current non-GET transfers still gate effects. Invalid
+current summaries retire clearance, and document loss with unresolved work
+retains a process-lifetime unknown latch. No lifecycle keep/proceed decisions
+are consumed here (S7-L3); unknown/unissued gate IDs are refused.
+
+Focused checks, with Node 24 on PATH:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_host_bridge.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
+PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
+```
+
+Real helper/polkit mutations require a disposable venue; synthetic transport
+checks do not establish installed helper acceptance.
+
 ### Opt-in packaged runtime UI (Settings S2a)
 
 The default runtime view still loads the verified local daemon's HTTP URL.

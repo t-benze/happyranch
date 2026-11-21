@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import importlib.util
 import json
 import mimetypes
-import math
 from pathlib import Path
 import re
 import tempfile
-import time
 from typing import Callable
 
 # The desktop is launched with system Python -I. Resolve this installed sibling
@@ -25,6 +22,10 @@ _spec = importlib.util.spec_from_file_location("client_ui", Path(__file__).with_
 _client = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_client)
 ClientUI = _client.ClientUI
+_spec = importlib.util.spec_from_file_location("host_bridge", Path(__file__).with_name("host_bridge.py"))
+_host = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_host)
+InviteSheet = _host.InviteSheet
 
 # Fixed code only. Native data returns through JSC strings or GVariant arguments.
 PAGE = r"""(() => {
@@ -146,106 +147,6 @@ FRAME_PROBE = r"""() => {
 }"""
 
 
-class InviteSheet:
-    """Native-memory-only invite display; never connected to web serialization."""
-
-    def __init__(self, owner: object, text: str, expires_at: int, deadline: float) -> None:
-        self.owner, self.text, self.expires_at = owner, text, expires_at
-        self.closed, self.copied, self.source = False, False, None
-        Gtk, tr = owner.Gtk, owner.tr
-        self.dialog = Gtk.Dialog(title=tr("Invite a device", "邀请设备"),
-                                 transient_for=owner.window, modal=True, destroy_with_parent=True)
-        self.dialog.set_default_size(480, 240)
-        content = self.dialog.get_content_area()
-        content.set_spacing(12)
-        content.set_border_width(16)
-        self.label = Gtk.Label(label=text)
-        # GTK selection exports PRIMARY and supplies an untracked Copy action.
-        # Only the explicit Copy button may export invite text.
-        self.label.set_selectable(False)
-        self.label.set_can_focus(False)
-        self.label.set_line_wrap(True)
-        self.label.set_max_width_chars(64)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_min_content_height(96)
-        scroll.add(self.label)
-        content.pack_start(scroll, True, True, 0)
-        explanation = Gtk.Label(label=tr(
-            "The Linux owner will also need to approve the device. Closing does not cancel this invite. "
-            "Clipboard history and other apps may retain copied text.",
-            "Linux 机主还需要批准此设备。关闭不会取消此邀请。剪贴板历史及其他应用可能保留复制的文本。"))
-        explanation.set_line_wrap(True)
-        explanation.set_max_width_chars(64)
-        content.pack_start(explanation, False, False, 0)
-        self.expiry = Gtk.Label()
-        content.pack_start(self.expiry, False, False, 0)
-        self.copy = self.dialog.add_button(tr("Copy", "复制"), Gtk.ResponseType.APPLY)
-        self.dialog.add_button(tr("Close", "关闭"), Gtk.ResponseType.CLOSE)
-        self.dialog.set_default_response(Gtk.ResponseType.CLOSE)
-        self.dialog.connect("response", self.response)
-        self.dialog.connect("destroy", lambda *_args: self.close())
-        self.clipboard = Gtk.Clipboard.get_default(owner.window.get_display())
-        # Construction can itself take time. Recheck immediately before showing
-        # any bytes, in addition to the shared terminal-frame validator.
-        self.tick()
-        if time.monotonic() >= deadline or time.time() >= expires_at:
-            self.close()
-            raise ValueError("late native invite")
-        self.dialog.show_all()
-        self.source = owner.GLib.timeout_add(250, self.tick)
-
-    def clear_text(self) -> None:
-        try:
-            if self.copied and self.text and self.clipboard.wait_for_text() == self.text:
-                self.clipboard.clear()
-        except Exception:
-            pass  # Best effort; never expose clipboard or backend error text.
-        self.copied = False
-        self.text = ""
-        self.label.set_text("")
-        self.copy.set_sensitive(False)
-
-    def tick(self) -> bool:
-        if self.closed:
-            return False
-        remaining = max(0, math.ceil(self.expires_at - time.time()))
-        if not remaining:
-            if self.source is not None:
-                self.owner.GLib.source_remove(self.source)
-            self.source = None
-            self.clear_text()
-            self.expiry.set_text(self.owner.tr("Invite expired", "邀请已过期"))
-            return False
-        absolute = datetime.fromtimestamp(self.expires_at).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-        self.expiry.set_text(self.owner.tr("Expires at {time} ({left} remaining)",
-                                          "到期时间：{time}（剩余 {left}）").format(
-            time=absolute, left=f"{remaining // 60}:{remaining % 60:02d}"))
-        return True
-
-    def response(self, _dialog: object, response: int) -> None:
-        if response == self.owner.Gtk.ResponseType.APPLY:
-            if self.tick() and self.text:
-                try:
-                    self.clipboard.set_text(self.text, -1)
-                    self.copied = True
-                except Exception:
-                    pass
-        else:
-            self.close()
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        if self.source is not None:
-            self.owner.GLib.source_remove(self.source)
-            self.source = None
-        self.clear_text()
-        if self.owner.invite_sheet is self:
-            self.owner.invite_sheet = None
-        self.dialog.destroy()
-
-
 class ConnectionWindow:
     def __init__(self, app: object, parent: object, prefix: Path,
                  tr: Callable[[str, str], str], client: object = None) -> None:
@@ -261,21 +162,19 @@ class ConnectionWindow:
         self.owns_client = client is None
         self.client = client or ClientUI(app, parent, prefix, tr)
         self.client.show_controls = self.show_controls
+        self.host_adapter = None
         self.client_document = object()
         self.requests = _contract.Requests()
         self.subscribed, self.event_pending, self.event_sequence = False, False, 0
-        self.host_subscribed, self.host_event_pending, self.host_sequence = False, False, 0
-        self.host_timer, self.host_snapshot = None, None
-        self.host_status_waiters = None
-        self.invite_sheet = None
+        self.host_subscribed = False
         self.window = Gtk.ApplicationWindow(application=app, title=tr("Connection", "连接"))
         if parent is not None:
             self.window.set_transient_for(parent)
         self.window.set_default_size(720, 640)
         self.window.connect("destroy", lambda *_args: self.close())
-        self.view = self.manager = self.connection = None
+        self.view = self.manager = None
         self.cancellable = Gio.Cancellable()
-        self.generation, self.active, self.closed, self.busy = 1, False, False, False
+        self.generation, self.active, self.closed = 1, False, False
         self.registered, self.probing = False, True
         self.filter_dir = None
         self.unavailable_reason = None
@@ -285,6 +184,7 @@ class ConnectionWindow:
         try:
             self.assets = Assets(prefix / "share/happyranch/desktop/connection")
             self.protocol = Protocol(prefix / "share/happyranch/desktop/native-connection-bridge.v1.json")
+            self.host_adapter = _host.shared_bridge(self.client, prefix, tr)
             self.context = WebKit2.WebContext.new_ephemeral()
             security = self.context.get_security_manager()
             for name in ("register_uri_scheme_as_secure", "register_uri_scheme_as_cors_enabled",
@@ -501,12 +401,13 @@ class ConnectionWindow:
                     raise ValueError("subscription")
                 if subscription["subscription"] == "host.stateChanged":
                     self.host_subscribed = subscription["enabled"]
-                    if self.host_subscribed and self.host_timer is None:
-                        self.host_timer = self.GLib.timeout_add_seconds(3, self.poll_host)
-                        self.poll_host()
-                    elif not self.host_subscribed and self.host_timer is not None:
-                        self.GLib.source_remove(self.host_timer)
-                        self.host_timer = None
+                    if self.host_subscribed:
+                        generation = self.generation
+                        self.host_adapter.subscribe(self,
+                            current=lambda: self.host_current() and generation == self.generation,
+                            visible=self.window.get_visible, emit=self.deliver_host_event, window=self.window)
+                    else:
+                        self.host_adapter.unsubscribe(self)
                 else:
                     self.subscribed = subscription["enabled"]
                     self.client.listener = self.queue_event if self.subscribed else None
@@ -626,105 +527,30 @@ class ConnectionWindow:
             if self.active and self.generation == generation:
                 self.unavailable("event delivery")
 
-    def poll_host(self) -> bool:
-        if not self.active or self.closed or not self.host_subscribed:
-            return False
-        if not self.busy and self.window.get_visible():
-            self.host_request("Status", lambda *_args: None)
-        return True
+    def host_current(self) -> bool:
+        return self.active and not self.closed and self.view.get_uri() == ENTRY
 
-    def observe_host(self, snapshot: dict) -> None:
-        self.host_snapshot = snapshot
-        if self.host_subscribed and not self.host_event_pending:
-            self.host_event_pending = True
-            self.GLib.idle_add(self.send_host_event, self.generation)
-
-    def send_host_event(self, generation: int) -> bool:
-        self.host_event_pending = False
-        if (not self.active or self.closed or not self.host_subscribed
-                or self.generation != generation or self.view.get_uri() != ENTRY):
-            return False
-        self.host_sequence += 1
-        data = dict(version=1, sequence=self.host_sequence, observedAt=_client._model.timestamp(),
-                    snapshot=self.host_snapshot)
-        self.protocol.validate(data, self.protocol.events["host.stateChanged"])
-        raw = json.dumps(data, ensure_ascii=False)
-        if len(raw.encode("utf-8")) > 32768:
-            self.unavailable("event bound")
-            return False
+    def deliver_host_event(self, raw: str) -> None:
         arguments = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw)})
         self.view.call_async_javascript_function(
             "window.postMessage({channel:'hr-connection-event',name:'host.stateChanged',raw}, location.origin);",
-            -1, arguments, WORLD, ENTRY, self.cancellable, self.event_delivered, generation)
-        return False
+            -1, arguments, WORLD, ENTRY, self.cancellable, self.event_delivered, self.generation)
 
     def host_request(self, method: str, finish: Callable) -> None:
-        if self.busy:
-            # Only identical read-only Status operations share the original
-            # deadline. Mutations (including their follow-up read) never queue.
-            if (method == "Status" and self.host_status_waiters is not None
-                    and len(self.host_status_waiters) < 8):
-                self.host_status_waiters.append(finish)
-            else:
-                finish(None, "busy")
-            return
-        mutation = method in _contract.HOST_MUTATIONS
-        if mutation and not self.host_desktop_available():
-            finish(None, "unavailable", "none", "nativePermission")
-            return
-        model = self.client.model
-        if mutation and (self.client.prompt or model.confirming_target or model.host_prompt_document is not None):
-            finish(None, "busy")
-            return
-        self.busy = True
-        if mutation:
-            model.host_prompt_document = self.client_document
-        waiters = [] if method == "Status" else None
-        self.host_status_waiters = waiters
-
-        def complete(*outcome: object) -> None:
-            self.busy = False
-            if model.host_prompt_document is self.client_document:
-                model.host_prompt_document = None
-            self.host_status_waiters = None
-            finish(*outcome)
-            if waiters is not None:
-                for waiter in waiters:
-                    waiter(*outcome)
-                waiters.clear()
-
         generation = self.generation
-
         def current() -> bool:
-            return (self.active and not self.closed and self.generation == generation
-                    and self.view.get_uri() == ENTRY)
-
-        _contract.request_host(self, method, complete, current, self.observe_host,
-                               display_invite=self.show_invite)
-
-    def host_desktop_available(self) -> bool:
-        display = self.window.get_display()
-        return display is not None and not display.is_closed()
-
-    def show_invite(self, text: str, expires_at: int, deadline: float) -> None:
-        if self.invite_sheet is not None:
-            self.invite_sheet.close()
-        self.invite_sheet = InviteSheet(self, text, expires_at, deadline)
+            return self.host_current() and generation == self.generation
+        def done(*outcome: object) -> None:
+            if current():
+                finish(*outcome)
+        self.host_adapter.host_request(method, done, owner=self, current=current, window=self.window)
 
     def detach(self) -> None:
         self.active = False
         self.generation += 1
-        if self.invite_sheet is not None:
-            self.invite_sheet.close()
-        if self.client.model.host_prompt_document is self.client_document:
-            self.client.model.host_prompt_document = None
-        if self.host_status_waiters is not None:
-            self.host_status_waiters.clear()
-            self.host_status_waiters = None
+        if self.host_adapter is not None:
+            self.host_adapter.detach(self)
         self.subscribed = self.host_subscribed = False
-        if self.host_timer is not None:
-            self.GLib.source_remove(self.host_timer)
-            self.host_timer = None
         if self.client.listener == self.queue_event:
             self.client.listener = None
         self.client.model.detach(self.client_document)
@@ -734,9 +560,6 @@ class ConnectionWindow:
                 self.manager.unregister_script_message_handler_in_world(CHANNEL, WORLD)
                 self.registered = False
             self.manager.remove_all_scripts()
-        if self.connection is not None:
-            self.connection.close(None, None, None)
-            self.connection = None
 
     def unavailable(self, reason: str) -> None:
         if self.closed or self.unavailable_reason:

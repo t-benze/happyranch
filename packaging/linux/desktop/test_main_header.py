@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import queue
+import shutil
 import tempfile
 from types import ModuleType, SimpleNamespace
 import sys
@@ -16,6 +17,7 @@ import happyranch_window as native
 
 class HeaderTests(unittest.TestCase):
     def exercise(self, check, chinese=False, app_scheme=True):
+        from gi.repository import Gio
         callbacks, timers, widgets = queue.Queue(), [], []
         test = self
 
@@ -89,6 +91,7 @@ class HeaderTests(unittest.TestCase):
         gi, repository = ModuleType("gi"), ModuleType("gi.repository")
         gi.require_version = lambda *_args: None
         repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
+            Cancellable=Gio.Cancellable,
             SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
         repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
             unix_signal_add=lambda *_args: None, source_remove=lambda *_args: None,
@@ -109,11 +112,15 @@ class HeaderTests(unittest.TestCase):
         fixture = ModuleType("header_fixture")
         fixture.scheme = scheme
         fixture.connections, fixture.presented = self.connections, self.presented
-        fixture.ClientUI = lambda *_args: SimpleNamespace(attach_main=lambda *_args: None, shutdown=lambda: None)
+        fixture.ClientUI = lambda *_args: SimpleNamespace(model=SimpleNamespace(),
+            attach_main=lambda *_args: None, shutdown=lambda: None)
         with tempfile.TemporaryDirectory() as scratch:
             prefix = Path(scratch)
             installed = prefix / "share/happyranch/desktop"
             installed.mkdir(parents=True)
+            for name in ("host_bridge.py", "connection_contract.py"):
+                shutil.copy2(Path(__file__).with_name(name), installed / name)
+            shutil.copy2(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json", installed)
             (installed / "app_scheme_webkit.py").write_text(
                 "from header_fixture import scheme\nORIGIN='happyranch-app://app'\n"
                 "def AppScheme(*args, **kwargs): return scheme\n")

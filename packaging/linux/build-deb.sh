@@ -128,6 +128,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'python/bin/python3', 'web/dist/index.html',
                      'share/happyranch/desktop/happyranch_window.py',
                      'share/happyranch/desktop/connection_window.py',
+                     'share/happyranch/desktop/host_bridge.py',
                      'share/happyranch/desktop/connection_contract.py',
                      'share/happyranch/desktop/native-connection-bridge.v1.json',
                      'share/applications/happyranch.desktop.in', 'licenses/HappyRanch-LICENSE'):

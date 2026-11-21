@@ -30,7 +30,24 @@ _spec.loader.exec_module(_contract)
 WORLD = "happyranch.app.v2"
 CLIENT_COMMANDS = frozenset({"client.status", "client.acceptInvite", "client.retry",
                              "client.savedComputers", "client.connectSaved", "client.cancelAttempt",
-                             "client.commitSwitch", "client.disconnect"})
+                             "client.commitSwitch", "client.disconnect", "client.health",
+                             "client.removeSaved", "client.retrySave"})
+
+
+def owners_summary(value: object) -> dict:
+    """Closed v2 ownersChanged summary; lifecycle decisions belong to S7-L3."""
+    if (type(value) is not dict or set(value) != {"schema", "blocking", "counts"}
+            or type(value["schema"]) is not int or value["schema"] != 2):
+        raise ValueError("invalid owner summary")
+    counts = value["counts"]
+    if (type(counts) is not dict or set(counts) != {"dirty", "failed", "pending", "unknown"}
+            or any(type(v) is not int or not 0 <= v <= 255 for v in counts.values())):
+        raise ValueError("invalid owner counts")
+    blocking = ("hold" if counts["pending"] or counts["unknown"] else
+                "prompt" if counts["dirty"] or counts["failed"] else "none")
+    if value["blocking"] != blocking:
+        raise ValueError("inconsistent owner summary")
+    return value
 # The launcher loads installed siblings afresh after Restart. Keep this native
 # counter in the process module registry, rather than reusing module-local IDs.
 _generation_state = ModuleType("_happyranch_app_generations")
@@ -118,7 +135,7 @@ APP_PAGE = r"""(() => {
   if (window !== top || location.origin !== 'happyranch-app://app') return;
   let active = true, sequence = 0;
   const pending = new Map(), listeners = new Map([
-    ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()]]);
+    ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()], ['host.stateChanged', new Set()]]);
   const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
   addEventListener('message', event => {
@@ -139,12 +156,21 @@ APP_PAGE = r"""(() => {
   const call = (command, data) => new Promise((resolve, reject) => {
     if (!active) return reject(fail('documentChanged'));
     const empty = ['app.status','client.status','client.acceptInvite','client.retry',
-      'client.savedComputers','client.cancelAttempt','client.commitSwitch','client.disconnect'];
+      'client.savedComputers','client.cancelAttempt','client.commitSwitch','client.disconnect',
+      'client.health','client.retrySave','host.status','host.enable','host.turnOff','host.createInvite',
+      'host.approveDevice','host.rejectDevice','host.nextDevice','host.revokeDevice'];
     let args;
     try { args = JSON.parse(data); } catch { return reject(fail('unsupportedCommand')); }
-    const saved = command === 'client.connectSaved' && args && !Array.isArray(args)
-      && Object.keys(args).length === 1 && typeof args.computerRef === 'string';
-    if (!(empty.includes(command) && data === '{}') && !saved) return reject(fail('unsupportedCommand'));
+    const saved = ['client.connectSaved','client.removeSaved'].includes(command) && args && !Array.isArray(args)
+      && Object.keys(args).length === 1 && typeof args.computerRef === 'string'
+      && args.computerRef.length > 0 && args.computerRef.length <= 256;
+    const counts = args?.counts;
+    const owners = command === 'app.ownersChanged' && args && !Array.isArray(args)
+      && Object.keys(args).sort().join(',') === 'blocking,counts,schema' && args.schema === 2
+      && counts && !Array.isArray(counts) && Object.keys(counts).sort().join(',') === 'dirty,failed,pending,unknown'
+      && Object.values(counts).every(n=>Number.isInteger(n) && n >= 0 && n <= 255)
+      && args.blocking === (counts.pending || counts.unknown ? 'hold' : counts.dirty || counts.failed ? 'prompt' : 'none');
+    if (!(empty.includes(command) && data === '{}') && !saved && !owners) return reject(fail('unsupportedCommand'));
     if (pending.size >= 8) return reject(fail('busy'));
     const id = 'r' + (++sequence);
     pending.set(id, {resolve, reject});
@@ -184,7 +210,7 @@ APP_RELAY = r"""(() => {
     admitted = true;
     for (const entry of queued.splice(0)) send(entry.item).then(entry.resolve, entry.reject);
   }, emit:(event, raw) => {
-    if (active && admitted && ['app.stateChanged','app.dialogRequested'].includes(event))
+    if (active && admitted && ['app.stateChanged','app.dialogRequested','host.stateChanged'].includes(event))
       window.postMessage({channel:'hr-app-event', event, raw}, location.origin);
   }});
   const revoke = () => {
@@ -207,7 +233,7 @@ APP_RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-app://app') return;
     const item = event.data;
-    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested'].includes(item.event)
+    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested','host.stateChanged'].includes(item.event)
         && typeof item.enabled === 'boolean') {
       send({event:item.event, enabled:item.enabled}).catch(() => {}); return;
     }
@@ -216,7 +242,9 @@ APP_RELAY = r"""(() => {
     }
     if (item?.channel !== 'hr-app-call' || !['app.status','client.status','client.acceptInvite',
         'client.retry','client.savedComputers','client.connectSaved','client.cancelAttempt',
-        'client.commitSwitch','client.disconnect'].includes(item.command) || typeof item.data !== 'string'
+        'client.commitSwitch','client.disconnect','client.health','client.removeSaved','client.retrySave',
+        'host.status','host.enable','host.turnOff','host.createInvite','host.approveDevice','host.rejectDevice',
+        'host.nextDevice','host.revokeDevice','app.ownersChanged'].includes(item.command) || typeof item.data !== 'string'
         || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
     let raw, ok = true;
     try { raw = await send({command:item.command, data:item.data}); }
@@ -224,10 +252,18 @@ APP_RELAY = r"""(() => {
       ok = false;
       let detail;
       try { detail = JSON.parse(error.message); } catch {}
-      const codes = ['owner_save_unknown','owner_save_pending','non_get_pending','incompatible',
-        'target_starting','target_unreachable','busy','stateChanged','documentChanged','unsupportedCommand'];
+      // Lost transport after dispatch cannot establish that a mutation had no effect.
+      if (!detail) detail = {code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'};
+      const codes = ['owner_save_unknown','owner_save_pending','owner_edits_pending','non_get_pending','incompatible',
+        'target_starting','target_unreachable','busy','stateChanged','documentChanged','unsupportedCommand',
+        'permissionDenied','unavailable','outcomeUnknown','notOwned','removalIncomplete','invalidRequest',
+        'expired','identityChanged','unsupportedVersion','notLocalShell','invalidInvite','newInviteRequired',
+        'networkUnavailable','trustMismatch','runtimeUnavailable','accessDenied','revokedConfirmed',
+        'keychainLocked','keychainDenied','saveFailed'];
       const result = {code:codes.includes(detail?.code) ? detail.code : 'invalidRequest',
-        effect:'none', recovery:'refresh'};
+        effect:['none','unknown','confirmed'].includes(detail?.effect) ? detail.effect : 'unknown',
+        recovery:['none','refresh','explicitRetry','newInviteOnHost','nativeRecovery','nativePermission','operatorRecovery'].includes(detail?.recovery)
+          ? detail.recovery : 'nativeRecovery'};
       if (result.code === 'incompatible' && ['host','app','unknown'].includes(detail.side)) result.side = detail.side;
       raw = JSON.stringify(result);
     }
@@ -345,6 +381,11 @@ class AppScheme:
         self.bridge_token = None
         self.subscribed = False
         self.dialog_subscribed = False
+        self.host_subscribed = False
+        self.host_adapter = None
+        self.owners = None
+        self.owner_uncertain = False
+        self.owners_unresolved = False
         self.status_refresh = None
         self.status_stop = None
         self.local = {"supported": local_mode == "service", "mode": local_mode,
@@ -386,12 +427,14 @@ class AppScheme:
         process loss and close invalidate transfers independently of this gate.
         """
         with self.target_lock:
-            if owner_saves is None or any(state == "unknown" for state in owner_saves):
+            if self.owner_uncertain or owner_saves is None or any(state == "unknown" for state in owner_saves):
                 return "owner_save_unknown"
             if any(state == "pending" for state in owner_saves):
                 return "owner_save_pending"
-            if any(state not in {"idle", "saved", "failed"} for state in owner_saves):
+            if any(state not in {"idle", "saved", "dirty", "failed"} for state in owner_saves):
                 return "owner_save_unknown"
+            if any(state in {"dirty", "failed"} for state in owner_saves):
+                return "owner_edits_pending"
             if any(t.generation == self.generation and not t.finished and t.method != "GET"
                    for t in self.transfers.values()):
                 return "non_get_pending"
@@ -438,10 +481,31 @@ class AppScheme:
         threading.Thread(target=work, daemon=True, name="app-status-admission").start()
 
     def invalidate_document(self) -> None:
+        self.retire_owners()
+        self.stop_host(retire=True)
         self.document += 1
         self.bridge_token, self.subscribed = None, False
         self.dialog_subscribed = False
         self._replace_target(self.daemon)
+
+    def owner_snapshot(self) -> tuple[str, ...] | None:
+        if self.owners is None or self.owner_uncertain:
+            return None
+        return tuple(state for state, count in self.owners["counts"].items() if count)
+
+    def retire_owners(self) -> None:
+        self.owner_uncertain |= self.owners_unresolved or any(
+            t.generation == self.generation and not t.finished and t.method != "GET"
+            for t in self.transfers.values())
+        self.owners = None
+
+    def stop_host(self, *, retire: bool = False) -> None:
+        if self.host_adapter is not None:
+            if retire:
+                self.host_adapter.detach(self)
+            else:
+                self.host_adapter.unsubscribe(self)
+        self.host_subscribed = False
 
     def emit_state(self) -> None:
         self.emit_event("app.stateChanged", json.dumps(self.status()))
@@ -455,7 +519,8 @@ class AppScheme:
 
     def emit_event(self, event: str, raw: str) -> bool:
         subscribed = (self.subscribed if event == "app.stateChanged" else
-                      self.dialog_subscribed if event == "app.dialogRequested" else False)
+                      self.dialog_subscribed if event == "app.dialogRequested" else
+                      self.host_subscribed if event == "host.stateChanged" else False)
         if not subscribed or self.bridge_token is None or self.closed:
             return False
         args = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw),
@@ -467,6 +532,7 @@ class AppScheme:
         return True
 
     def bridge_message(self, manager: object, value: object, reply: object) -> bool:
+        owner_command = False
         try:
             if manager != self.controller or self.closed or not self.bridge_token or not value.is_string():
                 raise ValueError("unavailable document")
@@ -476,38 +542,89 @@ class AppScheme:
             item = _contract.parse_json(value.to_string(), 4096)
             if type(item) is not dict or item.get("token") != self.bridge_token:
                 raise ValueError("stale document")
+            if item.get("command") == "app.ownersChanged":
+                owner_command = True
+                self.owners = None  # Invalid current-document input cannot retain clean clearance.
+                if set(item) != {"token", "command", "data"} or type(item["data"]) is not str:
+                    raise ValueError("invalid owner push")
+                self.owners = owners_summary(_contract.parse_json(item["data"], 1024))
+                self.owners_unresolved = bool(self.owners["counts"]["pending"] or self.owners["counts"]["unknown"])
+                reply.return_value(self.JSC.Value.new_string(value.get_context(), "{}"))
+                return True
             if set(item) == {"token", "command", "data"} and item["command"] == "app.status" and item["data"] == "{}":
                 self.refresh_status()
                 result = self.status()
-            elif (set(item) == {"token", "command", "data"} and item["command"] in CLIENT_COMMANDS
-                  and callable(self.client_dispatch) and type(item["data"]) is str):
+            elif (set(item) == {"token", "command", "data"}
+                  and item["command"] in CLIENT_COMMANDS | _contract.HOST_METHODS.keys()
+                  and type(item["data"]) is str):
+                host = item["command"] in _contract.HOST_METHODS
                 args = _contract.parse_json(item["data"], 1024)
-                if item["command"] == "client.connectSaved":
+                if item["command"] in ("client.connectSaved", "client.removeSaved"):
                     if (type(args) is not dict or set(args) != {"computerRef"}
                             or type(args["computerRef"]) is not str or not 0 < len(args["computerRef"]) <= 256):
                         raise ValueError("invalid saved reference")
                 elif args != {} or item["data"] != "{}":
                     raise ValueError("unexpected arguments")
                 document, token = self.document, self.bridge_token
-                def finish(result: object = None, error: str | dict | None = None, _effect: str = "none") -> None:
+                def finish(result: object = None, error: str | dict | None = None, effect: str = "none",
+                           recovery: str | None = None) -> None:
                     if self.closed or document != self.document or token != self.bridge_token:
-                        reply.return_error_message('{"code":"documentChanged","effect":"none","recovery":"refresh"}')
+                        reply.return_error_message(json.dumps({"code": "documentChanged",
+                            "effect": "unknown" if host and item["command"] != "host.status" else "none",
+                            "recovery": "nativeRecovery" if host else "refresh"}))
                     elif error:
                         detail = error if type(error) is dict else {"code": error}
-                        reply.return_error_message(json.dumps({**detail, "effect": "none", "recovery": "refresh"}))
+                        detail = {**detail, "effect": effect, "recovery": recovery or (
+                            "nativeRecovery" if effect == "unknown" else
+                            "nativePermission" if detail["code"] == "permissionDenied" else "refresh")}
+                        if host:
+                            try:
+                                self.connection_protocol.validate(detail, self.connection_protocol.schema["$defs"]["error"])
+                            except ValueError:
+                                detail = {"code": "unavailable", "effect": "unknown", "recovery": "nativeRecovery"}
+                        reply.return_error_message(json.dumps(detail))
                     else:
+                        if item["command"] in {"client.health", "client.retrySave", "client.removeSaved"} or host:
+                            try:
+                                result = self.connection_protocol.result(item["command"], result)
+                            except (ValueError, TypeError, UnicodeError):
+                                reply.return_error_message('{"code":"unavailable","effect":"unknown","recovery":"nativeRecovery"}')
+                                return
                         reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
-                if args:
+                if host:
+                    if self.host_adapter is None:
+                        finish(None, "unavailable")
+                    else:
+                        self.host_adapter.host_request(_contract.HOST_METHODS[item["command"]], finish,
+                            owner=self, current=lambda: not self.closed and document == self.document
+                                and token == self.bridge_token, window=self.view.get_toplevel())
+                elif not callable(self.client_dispatch):
+                    finish(None, "unavailable")
+                elif args:
                     self.client_dispatch(item["command"], document, finish, **args)
                 else:
                     self.client_dispatch(item["command"], document, finish)
                 return True
             elif (set(item) == {"token", "event", "enabled"}
-                  and item["event"] in ("app.stateChanged", "app.dialogRequested") and type(item["enabled"]) is bool):
+                  and item["event"] in ("app.stateChanged", "app.dialogRequested", "host.stateChanged") and type(item["enabled"]) is bool):
                 if item["event"] == "app.stateChanged":
                     self.subscribed = item["enabled"]
-                else:
+                elif item["event"] == "app.dialogRequested":
                     self.dialog_subscribed = item["enabled"]
+                else:
+                    self.host_subscribed = item["enabled"]
+                    if self.host_adapter is None:
+                        raise ValueError("host unavailable")
+                    if self.host_subscribed:
+                        document, token = self.document, self.bridge_token
+                        def current() -> bool:
+                            return not self.closed and document == self.document and token == self.bridge_token
+                        self.host_adapter.subscribe(self, current=current,
+                            visible=lambda: self.view.get_toplevel().get_visible(),
+                            emit=lambda raw: self.emit_event("host.stateChanged", raw) if current() else False,
+                            window=self.view.get_toplevel())
+                    else:
+                        self.stop_host()
                 result = {}
                 if item["event"] == "app.stateChanged" and self.subscribed:
                     self.emit_state()
@@ -521,7 +638,8 @@ class AppScheme:
                 raise ValueError("unsupported command")
             reply.return_value(self.JSC.Value.new_string(value.get_context(), json.dumps(result)))
         except (SchemeError, ValueError, TypeError, UnicodeError, RecursionError):
-            reply.return_error_message('{"code":"invalidRequest","effect":"none","recovery":"refresh"}')
+            reply.return_error_message(json.dumps({"code": "invalidRequest", "effect": "none",
+                                                  "recovery": "none" if owner_command else "refresh"}))
         return True
 
     def probe_document(self) -> None:
@@ -562,6 +680,8 @@ class AppScheme:
     def close(self) -> None:
         if self.closed:
             return
+        self.retire_owners()
+        self.stop_host(retire=True)
         self.closed = True
         if self.status_stop is not None:
             self.status_stop.set()

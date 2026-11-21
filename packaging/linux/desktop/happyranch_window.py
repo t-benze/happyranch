@@ -1172,6 +1172,11 @@ def run_gui(prefix: Path, home: Path) -> int:
                     client_spec.loader.exec_module(client_module)
                     client_ui = client_module.ClientUI(app, window, prefix, tr)
                 client_ui.attach_main(app_scheme, module)
+                host_spec = importlib.util.spec_from_file_location("host_bridge", path.with_name("host_bridge.py"))
+                host_module = importlib.util.module_from_spec(host_spec)
+                host_spec.loader.exec_module(host_module)
+                app_scheme.host_adapter = host_module.shared_bridge(client_ui, prefix, tr)
+                app_scheme.connection_protocol = app_scheme.host_adapter.protocol
                 view, url = app_scheme.view, module.ORIGIN + "/"
             except (OSError, ValueError, ImportError):
                 show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
