@@ -179,8 +179,8 @@ No model/store/schema field is added and no stored status/block_kind/note change
 Ordinary EN/ZH qualifiers use validated current projections, never delegated
 alone or partial recall. Missing/legacy/malformed evidence leaves list/shared
 badges and agent cards unqualified; detail adds a subordinate child-status-
-unavailable explanation. Header, rail, chain timeline and both actual agent
-TaskCard callers share the mapping. A different displayed severity rollup cannot
+unavailable explanation. Header, rail and both actual agent TaskCard callers
+share the mapping (the Task detail chain timeline was removed, THR-358). A different displayed severity rollup cannot
 inherit the parent's qualifier. Existing job waiting copy is preserved.
 Pause UI and inherited hold explanations remain detail-only; list and agent
 cards receive no pause label, control, disclosure or overview request.
