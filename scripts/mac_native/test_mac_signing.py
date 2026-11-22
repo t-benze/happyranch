@@ -41,7 +41,7 @@ def extract_functions(source: str) -> str:
 
 
 def functions(script: str) -> str:
-    # Same actual-function extraction venue as test_connector_bundle.py.
+    # Extract the actual shell functions for portable checks.
     return extract_functions((ROOT / script).read_text())
 
 

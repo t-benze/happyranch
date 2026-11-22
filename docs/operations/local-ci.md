@@ -367,7 +367,6 @@ remain separate. General integration stays SKIPPED under THR-243 seq42.
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_launchd -v
 python -B -m unittest scripts.mac_native.test_connector_installer -v
-python -B -m unittest scripts.mac_native.test_connector_bundle -v
 ```
 
 The installer selection also includes `ManagedLinuxDebInstaller`: unit bytes
@@ -591,26 +590,22 @@ transfer-diagnostic and tool-evidence checks run with
 This focused manual venue remains outside retired Python units and required
 lint/static CI. The separate `SUITE=packaged` checks a scratch-installed app;
 see the [suite contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
-Its portable harness checks run with
-`python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
-eight steps NOT_RUN/SKIPPED, never native PASS.
-
-The same portable `test_packaged` venue covers the relocated PYZ census data
+The removed portable harness covered the relocated PYZ census data
 path, lazy libproc loading without `ctypes.util`, a real Linux process-group
 probe with empty PATH, session PID/start identity and private-group predicates,
 bounded/redacted backend refusal retention, and refusal before session launch
-with mandatory finalization. The synthetic bundle fixture never executes a Mac
+with mandatory finalization. The synthetic bundle fixture never executed a Mac
 binary. Native libproc/sysctl, frozen Darwin selection and packaged teardown are
 NOT RUN on Linux. Survivor snapshots retain state and second-resolution
 `ps lstart`; missing evidence fails rather than implying no leftovers.
-The real `suite.run` fixture also covers marker timeout, malformed/invalid marker,
+The real `suite.run` fixture also covered marker timeout, malformed/invalid marker,
 and descendants surviving daemon shutdown in private groups or after group escape.
-It checks that unavailable or changed daemon ancestry remains UNKNOWN, even after
-a later empty census; no Mac binary or provider is executed.
+It checked that unavailable or changed daemon ancestry remains UNKNOWN, even after
+a later empty census; no Mac binary or provider was executed.
 
-The same venue now drives the real census parser, child command runner,
+The removed harness also drove the real census parser, child command runner,
 `run`, verified ZIP retention and EXIT collector with SYNTHETIC source-derived
-macOS rows (including Apple's documented `?` state) and malformed rows. It checks
+macOS rows (including Apple's documented `?` state) and malformed rows. It checked
 sampling/final census failure, actual child exit/output retention, timeout group
 kill/reap, initial refusal and same/later-step failure. No captured raw ps rows
 were found in builds 34–37 or THR104/MEM531 evidence. Rejections retain up to 16
@@ -620,9 +615,9 @@ empties later row copies with `report_truncated: true` as needed to fit the
 serialized report in 58,000 bytes, protecting the first bounded exact row per
 distinct payload digest independently of report dict order and preserving
 every snapshot's UNKNOWN status/metadata under the unchanged report/collector
-caps. The maximum-row regression drives both repeated and distinct SYNTHETIC
+caps. The maximum-row regression drove both repeated and distinct SYNTHETIC
 16×512-byte payloads through initial-daemon, post-cancel and late step-6 helper
-failures and teardown snapshots into the real collector CLI. It checks all
+failures and teardown snapshots into the real collector CLI. It checked all
 distinct first-row prefixes, including the earliest helper payload stored after
 a later failing step result, plus the build/command results and verified ZIP
 after scratch removal. No six-field redaction is applied. See the
@@ -631,9 +626,9 @@ for `census_error`, `command_result`, `command_result_key`, `build_output` and
 `retained_product`. A census failure keeps the child result and fails the step;
 a partial census never proves process absence. Empty comm remains unsupported.
 
-The portable packaged tests also exercise HTTP error metadata, malformed JSON,
+The removed portable packaged tests also exercised HTTP error metadata, malformed JSON,
 readiness diagnostics and workspace-only ZIP retention through the unchanged
-Jenkins EXIT trap. They use synthetic HTTP/filesystem fixtures. An explicitly
+Jenkins EXIT trap. They used synthetic HTTP/filesystem fixtures. An explicitly
 authorized Linux source-daemon rehearsal can additionally import the suite's
 `Api`, `health_and_web` and `connect_deterministic` request code with private
 HOME/daemon-home/runtime/cache/temp and freshly built web assets. Check the
