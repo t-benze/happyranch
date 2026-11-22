@@ -367,7 +367,6 @@ remain separate. General integration stays SKIPPED under THR-243 seq42.
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_launchd -v
 python -B -m unittest scripts.mac_native.test_connector_installer -v
-python -B -m unittest scripts.mac_native.test_connector_bundle -v
 ```
 
 The installer selection also includes `ManagedLinuxDebInstaller`: unit bytes
@@ -591,11 +590,7 @@ transfer-diagnostic and tool-evidence checks run with
 This focused manual venue remains outside retired Python units and required
 lint/static CI. The separate `SUITE=packaged` checks a scratch-installed app;
 see the [suite contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
-Its portable harness checks run with
-`python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
-eight steps NOT_RUN/SKIPPED, never native PASS.
-
-The same portable `test_packaged` venue covers the relocated PYZ census data
+The removed portable harness covered the relocated PYZ census data
 path, lazy libproc loading without `ctypes.util`, a real Linux process-group
 probe with empty PATH, session PID/start identity and private-group predicates,
 bounded/redacted backend refusal retention, and refusal before session launch

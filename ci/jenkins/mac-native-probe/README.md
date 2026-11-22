@@ -695,8 +695,7 @@ step1 FAIL, and post-cancel/pre-stop UNKNOWN still fails teardown. Later failure
 never discard the prior build result or verified ZIP. The existing collector
 preserves these additive fields; its 64KiB cap and Jenkins config are unchanged.
 
-Portable manual harness checks (outside retired Python units/required CI):
-`python3 -B -m unittest scripts.mac_native.test_packaged -v`. These cover Linux
+The removed portable manual harness checks (outside retired Python units/required CI) covered Linux
 skip fields, census selection, command failure/output/time bounds, patch-bearing
 freezer argv, child-only Go cache flags, exact-source resource/ZIP mutation
 rejection, complete failure-list collection, completed app location and final
