@@ -9,6 +9,8 @@ Separate Founder Allow/Disable uses the saved exact pin and shared identity-wide
 CAS. Admission preserves dirty role drafts; Disable affects only new starts and
 never changes admitted-run pins. Pending/uncertain operations retain their original
 kind/key/body, with read-only original lookup and explicit conflict adoption.
+Pending/uncertain badges name the original Allow/Disable action; admission conflicts
+ask to re-read/adopt current settings and retry that action. Save keeps its own copy.
 
 The [setup/admission contract](reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission)
 owns routes, closed formats, refusal codes, recovery and fixture commands. Existing

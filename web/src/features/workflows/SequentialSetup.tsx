@@ -162,6 +162,8 @@ function SetupForm({ slug, def, pin }: { slug: string; def: SetupDefView; pin: P
   const locked = fence?.phase === 'sending' || fence?.phase === 'uncertain';
   const sending = fence?.phase === 'sending';
   const uncertain = fence?.phase === 'uncertain';
+  const admissionAction = fence?.command.format === 'workflow-sequential-admission@1'
+    ? t(fence.command.admission === 'Allowed' ? 'seqwf.setup.allow' : 'seqwf.setup.disable') : null;
   const lookup = fence && memory.lookup?.key === fence.command.operation_key ? memory.lookup.state : null;
 
   const roleNodes = (role: string) => def.nodes.filter(n => n.role === role);
@@ -338,14 +340,14 @@ function SetupForm({ slug, def, pin }: { slug: string; def: SetupDefView; pin: P
     {!locked && memory.outcome.kind === 'conflict' && <section role="alert" className="border-attention bg-attention-soft rounded-lg border px-4 py-3 text-sm">
       <h2 className="text-text-primary font-medium">{t('seqwf.setup.conflict')}</h2>
       {adoptable && current
-        ? <p className="mt-1">{t('seqwf.setup.conflictBody', { generation: current.generation })}</p>
-        : <p className="mt-1">{t('seqwf.setup.conflictWaiting', { generation: adoptFloor - 1 })}</p>}
+        ? <p className="mt-1">{t(admissionAction ? 'seqwf.setup.admissionConflictBody' : 'seqwf.setup.conflictBody', { generation: current.generation, action: admissionAction ?? '' })}</p>
+        : <p className="mt-1">{t(admissionAction ? 'seqwf.setup.admissionConflictWaiting' : 'seqwf.setup.conflictWaiting', { generation: adoptFloor - 1, action: admissionAction ?? '' })}</p>}
       <p className="text-text-muted mt-1 font-mono text-xs">{memory.outcome.code}</p>
       {fence?.phase === 'conflict' && <p className="text-text-muted mt-1 text-xs wrap-anywhere">{t('seqwf.setup.expectedGeneration', { generation: fence.command.expected_generation })} · {fence.command.operation_key}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" onClick={adopt} aria-disabled={!adoptable} className="aria-disabled:opacity-50">{t('seqwf.setup.adopt')}</Button>
         {!adoptable && <Button size="sm" variant="outline" onClick={() => void settings.refetch()}>{t('workflows.refresh')}</Button>}
-        <span className="text-text-muted text-xs">{adoptable ? t('seqwf.setup.adoptHelp') : t('seqwf.setup.adoptWaitingHelp', { generation: adoptFloor - 1 })}</span>
+        <span className="text-text-muted text-xs">{adoptable ? t(admissionAction ? 'seqwf.setup.admissionAdoptHelp' : 'seqwf.setup.adoptHelp', { action: admissionAction ?? '' }) : t('seqwf.setup.adoptWaitingHelp', { generation: adoptFloor - 1 })}</span>
       </div>
     </section>}
 
@@ -360,7 +362,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: SetupDefView; pin: P
         <h2 id="seqwf-setup-agents" className="text-text-primary font-medium">{t('seqwf.setup.defaults')}</h2>
         <span className="text-text-muted text-xs">{t('seqwf.setup.defaultsHint', { count: def.roles.length })}</span>
         {draft.dirty && !locked && <span className="bg-info-soft rounded-md px-2 py-0.5 text-xs">{t('seqwf.setup.unsaved')}</span>}
-        {locked && <span className="bg-attention-soft rounded-md px-2 py-0.5 text-xs">{t('seqwf.setup.locked')}</span>}
+        {locked && <span className="bg-attention-soft rounded-md px-2 py-0.5 text-xs">{t(admissionAction ? 'seqwf.setup.admissionLocked' : 'seqwf.setup.locked', { action: admissionAction ?? '' })}</span>}
       </header>
       <div className="border-border-default border-b px-4 py-3 text-sm">
         <p>{t('seqwf.setup.defaultsBody')}</p>
@@ -397,7 +399,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: SetupDefView; pin: P
         <Button size="sm" variant="outline" onClick={discard} aria-disabled={locked || !draft.dirty} className="aria-disabled:opacity-50">{t('seqwf.setup.discard')}</Button>
         <span className="text-text-muted text-xs">{t('seqwf.setup.saveNote')}</span>
       </div>
-      {!locked && (incomplete || clash || conflictPending) && <p className="text-text-muted px-4 pb-3 text-xs">{t(conflictPending ? 'seqwf.setup.blockedConflict' : incomplete ? 'seqwf.setup.blockedIncomplete' : 'seqwf.setup.blockedClash')}</p>}
+      {!locked && (incomplete || clash || conflictPending) && <p className="text-text-muted px-4 pb-3 text-xs">{t(conflictPending ? admissionAction ? 'seqwf.setup.admissionBlockedConflict' : 'seqwf.setup.blockedConflict' : incomplete ? 'seqwf.setup.blockedIncomplete' : 'seqwf.setup.blockedClash', { action: admissionAction ?? '' })}</p>}
     </section>}
 
     <section aria-labelledby="seqwf-setup-admission" className="border-border-default bg-surface-raised rounded-lg border px-4 py-3 text-sm">

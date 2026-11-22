@@ -44,6 +44,7 @@ export function createWorkflowSetupFixture(seed, baseAgent, org) {
     releaseLookup() { const values = heldLookups.splice(0); values.forEach(f => f()); },
     releaseReads() { const values = heldReads.splice(0); values.forEach(f => f()); },
     heldCount: () => held.length,
+    heldReadCount: () => heldReads.length,
     handle(req, res, path, row) {
       if (path === '/api/v1/orgs') { json(res, 200, { orgs: [org, OTHER].map(slug => ({ slug, root: `/private/${slug}` })), broken: [] }); return true; }
       if (/\/runtime\/workflow-setup\/orgs\//.test(path)) {
@@ -68,7 +69,12 @@ export function createWorkflowSetupFixture(seed, baseAgent, org) {
       }
       if (leaf.endsWith('/views/v2/settings')) {
         const value = copy(current[slug]);
-        const finish = () => value ? json(res, 200, value) : fail(res, 404, 'sequential_settings_not_found');
+        row.readGeneration = value?.generation ?? null;
+        row.responseReleased = false;
+        const finish = () => {
+          row.responseReleased = true;
+          return value ? json(res, 200, value) : fail(res, 404, 'sequential_settings_not_found');
+        };
         if (readMode === 'hold') heldReads.push(finish);
         else if (readMode === 'denied') fail(res, 403, 'synthetic_denied');
         else if (readMode === 'error') fail(res, 503, 'synthetic_read_error');
@@ -240,12 +246,14 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
     }
   }
   if (want('W02')) {
-    for (const first of ['save','allow']) {
+    for (const first of ['save','allow','disable']) {
       beginCase(`W02-${first}`, 'same-turn shared fence survives unmount and isolates org completion');
-      const page = await open(); await dirty(page); f.setMutation('hold');
+      const page = await open({ state: first === 'disable' ? 'Allowed' : 'Disabled' }); await dirty(page); f.setMutation('hold');
       const from = ledger.length;
       await evaluate(page, `(() => { const first=${button(first)}, save=${button('save')}, allow=${button('allow')}, disable=${button('disable')}; first.click(); first.click(); save.click(); allow.click(); disable.click(); first.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true })); first.dispatchEvent(new KeyboardEvent('keyup', { key:'Enter', bubbles:true })); })()`);
       await waitTrue(page, text(label('sending')), 'sending fence');
+      check('pending badge names the original action', await evaluate(page, text(first === 'save' ? label('locked') : tr('en','seqwf.setup.admissionLocked',{action:label(first)}))), true);
+      if (first !== 'save') check('pending admission never uses the Save lock', await evaluate(page, `!(${text(label('locked'))})`), true);
       check('same-turn actions send once', puts(from).length, 1);
       const original = copy(puts(from)[0]);
       for (const key of ['save','allow','disable']) check(`${key} locked`, await evaluate(page, locked(key)), true);
@@ -263,7 +271,7 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
       check('A completion cannot release B fence',await evaluate(page,locked('allow')),true);
       f.release(); await pause(100);
       await navigate(page, org);
-      check('A completion returns to its own org', await waitTrue(page, text(tr('en',first === 'allow' ? 'seqwf.setup.admissionConfirmed' : 'seqwf.setup.saved',{generation:2})), 'own receipt'), true);
+      check('A completion returns to its own org', await waitTrue(page, text(tr('en',first !== 'save' ? 'seqwf.setup.admissionConfirmed' : 'seqwf.setup.saved',{generation:2})), 'own receipt'), true);
       check('one mutation in originating org', puts(from).filter(r => r.path.includes(`/${org}/`)).length, 1);
       check('original kind/body/key unchanged', puts(from)[0].body, original.body);
       await closePage(page); endCase();
@@ -277,6 +285,8 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
       const rows = await mutation(page, first);
       check('original refused basis is one', rows[0]?.body.expected_generation, 1);
       check('conflict visible', await waitTrue(page, text(label('conflict')), 'conflict'), true);
+      check('conflict recovery names the original operation',await waitTrue(page,text(tr('en',first === 'save' ? 'seqwf.setup.conflictBody' : 'seqwf.setup.admissionConflictBody',{generation:4,action:label(first)})),'operation-specific conflict'),true);
+      if (first === 'allow') check('admission adoption asks to retry Allow',await evaluate(page,text(tr('en','seqwf.setup.admissionAdoptHelp',{action:label(first)}))),true);
       const from = ledger.length;
       await evaluate(page, `${button('allow')}.click(); ${button('save')}.click(); ${button('disable')}.click()`);
       check('other action cannot escape conflict', puts(from).length, 0);
@@ -294,12 +304,52 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
       await closePage(page); endCase();
     }
   }
+  if (want('W03') || want('W03-inflight')) {
+    for (const action of ['save','allow']) {
+      beginCase(`W03-inflight-${action}`, 'older current GET stays held across own receipt and cannot lower committed defaults or CAS');
+      const page = await open();
+      f.setCurrent(f.view(2)); await crossTabSwitch(page,'en');
+      check('cached current starts at g2',await waitTrue(page,`${section('current')}.textContent.includes('Generation 2 ·')`,'cached g2'),true);
+      await dirty(page);
+      const older = f.view(1); f.setCurrent(older);
+      f.setRead('hold');
+      const from = ledger.length;
+      await crossTabSwitch(page,'en'); // Existing foreground refresh starts the older current GET.
+      const oldRead = ledger.slice(from).find(r => r.path.endsWith('/views/v2/settings'));
+      check('older g1 current GET is already held before mutation',[f.heldReadCount(),oldRead?.readGeneration,oldRead?.responseReleased],[1,1,false]);
+      f.setMutation('hold');
+      const rows = await mutation(page,action);
+      check('own mutation starts from cached g2',rows[0]?.body.expected_generation,2);
+      f.releaseOne();
+      // Invalidation may cancel/reissue the original GET. Keep that refetch stale
+      // too: an up-to-date response must not mask a missing committed floor.
+      f.setCurrent(older);
+      check('own g3 receipt arrives before releasing older GET',await waitTrue(page,text(tr('en',action === 'save' ? 'seqwf.setup.saved' : 'seqwf.setup.admissionConfirmed',{generation:3})),'own committed receipt'),true);
+      check('original older GET still unreleased after receipt',oldRead?.responseReleased,false);
+      const deadline = Date.now() + 5000;
+      while (f.heldReadCount() < 2 && Date.now() < deadline) await pause(20);
+      check('original and invalidation refetch remain stale and held',ledger.slice(from).filter(r => r.path.endsWith('/views/v2/settings')).map(r => [r.readGeneration,r.responseReleased]),[[1,false],[1,false]]);
+      f.setRead('ok'); f.releaseReads();
+      check('original older response is now released',oldRead?.responseReleased,true);
+      check('shipping UI observes stale current separately from own receipt',await waitTrue(page,text(label('currentOlder')),'older current after own receipt'),true);
+      await pause(150);
+      check('late current cannot replace submitted roles',await evaluate(page,`${SELECT('qa')}.value === 's3_review' && ${SELECT('reviewer')}.value === 's3_alt'`),true);
+      // Allow keeps the existing dirty draft; Save marks it clean.
+      if (action === 'save') { await pick(page,'qa','s3_alt'); await pick(page,'reviewer','s3_review'); }
+      f.setMutation('ok');
+      const next = await mutation(page,'save');
+      check('next explicit Save never regresses below committed g3',next[0]?.body.expected_generation,3);
+      await closePage(page); endCase();
+    }
+  }
   if (want('W04')) {
-    for (const action of ['save','allow']) for (const failure of ['lost','malformed']) {
+    for (const action of ['save','allow','disable']) for (const failure of ['lost','malformed']) {
       beginCase(`W04-${action}-${failure}`, 'uncertain custody resolves only the exact original operation');
-      const page = await open(); await dirty(page); f.setMutation(failure);
+      const page = await open({ state: action === 'disable' ? 'Allowed' : 'Disabled' }); await dirty(page); f.setMutation(failure);
       const original = (await mutation(page, action))[0];
       check('unknown outcome visible', await waitTrue(page, `Boolean(document.getElementById('seqwf-setup-uncertain'))`, 'uncertain'), true);
+      check('uncertain badge names the original action',await evaluate(page,text(action === 'save' ? label('locked') : tr('en','seqwf.setup.admissionLocked',{action:label(action)}))),true);
+      if (action !== 'save') check('uncertain admission never uses the Save lock',await evaluate(page,`!(${text(label('locked'))})`),true);
       await navigate(page, OTHER);
       check('uncertain original never enters another org',await evaluate(page,`!(${text(original.body.operation_key)})`),true);
       await navigate(page,org);
@@ -319,10 +369,10 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
       check('uncertain body/key survives remount', await waitTrue(page, text(original.body.operation_key), 'restored original'), true);
       f.setLookup('ok'); await fire(page, 'check');
       check('exact original releases custody', await waitTrue(page, `!document.getElementById('seqwf-setup-uncertain')`, 'confirmed original'), true);
-      check('only original-kind GETs while uncertain', ledger.slice(from).filter(r => r.method === 'GET' && r.path.endsWith('/operations')).every(r => r.path.endsWith(action === 'allow' ? '/settings/admission/operations' : '/settings/v2/operations')), true);
+      check('only original-kind GETs while uncertain', ledger.slice(from).filter(r => r.method === 'GET' && r.path.endsWith('/operations')).every(r => r.path.endsWith(action !== 'save' ? '/settings/admission/operations' : '/settings/v2/operations')), true);
       check('no automatic mutation/retry', puts(from).length, 0);
       check('original result is separate from newer current', await evaluate(page, text(tr('en','seqwf.setup.currentNewer'))), true);
-      if (action === 'allow') check('admission recovery leaves dirty draft', await evaluate(page, text(label('unsaved'))), true);
+      if (action !== 'save') check('admission recovery leaves dirty draft', await evaluate(page, text(label('unsaved'))), true);
       await closePage(page); endCase();
     }
     beginCase('W04-late-refusal', 'late original success after access refusal stays refused');
@@ -355,6 +405,15 @@ export async function runWorkflowSetupCases(h, { org, fixture: f, selected = 'al
         }
         const expected = { loading:'seqwf.loading',empty:'seqwf.definitionsEmpty',error:'seqwf.error',denied:'seqwf.denied',none:'seqwf.setup.notConfigured',Disabled:'seqwf.setup.admissionDisabled',Allowed:'seqwf.setup.admissionAllowed',pending:'seqwf.setup.sending',conflict:'seqwf.setup.conflict',uncertain:'seqwf.setup.uncertain','lookup-absent':'seqwf.setup.lookupAbsent','lookup-error':'seqwf.setup.lookupError','lookup-confirmed':'seqwf.setup.admissionConfirmed' }[state];
         check('owned state text translated', await waitTrue(page,text(tr(locale,expected,{generation:2})), 'localized state'), true);
+        if (['pending','uncertain','lookup-absent','lookup-error'].includes(state)) {
+          check('localized admission lock names Allow',await evaluate(page,text(tr(locale,'seqwf.setup.admissionLocked',{action:label('allow',locale)}))),true);
+          check('localized admission lock never claims Save',await evaluate(page,`!(${text(label('locked',locale))})`),true);
+        }
+        if (state === 'conflict') {
+          check('localized conflict asks to re-read and retry Allow',await evaluate(page,text(tr(locale,'seqwf.setup.admissionConflictBody',{generation:4,action:label('allow',locale)}))),true);
+          check('localized adoption retries Allow using current generation',await evaluate(page,text(tr(locale,'seqwf.setup.admissionAdoptHelp',{action:label('allow',locale)}))),true);
+          check('localized admission conflict never asks to save again',await evaluate(page,`!document.body.textContent.includes(${quote(locale === 'en' ? 'before saving again' : '再次保存前')})`),true);
+        }
         check('locale and theme', await evaluate(page,'[document.documentElement.lang,document.documentElement.dataset.theme]'), [locale,theme]);
         check('no document horizontal overflow', await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'),true);
         const target = state.startsWith('lookup-') ? state==='lookup-confirmed'?'#seqwf-setup-receipt':'#seqwf-setup-uncertain' : ['pending','conflict','uncertain'].includes(state) ? state === 'pending' ? `[role="status"]` : state === 'uncertain' ? '#seqwf-setup-uncertain' : '[role="alert"]' : ['Disabled','Allowed','none'].includes(state) ? '#seqwf-setup-admission' : 'main';
