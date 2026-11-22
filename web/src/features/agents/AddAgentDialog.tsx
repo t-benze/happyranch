@@ -37,6 +37,8 @@ import { useCreateAgent } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { useExecutorOptions } from '@/hooks/executor-options';
 import { useTranslation } from '@/hooks/i18n';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -135,7 +137,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
     (role === 'worker'
       ? !teamsQuery.isLoading && !teamsQuery.isError && teams.some((entry) => entry.name === team)
       : !!newTeam);
-  const canSubmit = fieldsOk && !create.isPending;
+  // S8-2b: enrolling an agent is configuration; read-only on a remote Host.
+  const remoteHost = useRemoteReadOnly(REMOTE_OPS.createAgent);
+  const canSubmit = fieldsOk && !create.isPending && remoteHost === null;
 
   const onSubmit = async () => {
     if (!canSubmit) return;
@@ -162,6 +166,8 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
       onOpenChange(false);
       if (slug) navigate(`/orgs/${slug}/agents/${created.canonical_id}`);
     } catch (err: unknown) {
+      // Native refused before forwarding: the read-only note below says so.
+      if (isRemoteReadOnlyError(err)) return;
       setServerError({
         view: classifyAgentError(err, 'agents.error.createFailed'),
         params: { name, team, newTeam },
@@ -353,7 +359,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             />
           </div>
 
-          {serverError && (
+          {remoteHost ? (
+            <RemoteReadOnlyNote host={remoteHost} className="" />
+          ) : serverError && (
             <p role="alert" className="text-tier-red text-sm">
               {renderAgentError(serverError.view, t, serverError.params)}
             </p>

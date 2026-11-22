@@ -48,6 +48,8 @@ import { extractServerErrors } from '@/shared/work-hours/extractServerErrors';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 import { useReadOrgSettingsNow, useUpdateOrgSettings } from '@/hooks/settings';
 import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { useAgentsList } from '@/hooks/agents';
 import {
   Select,
@@ -173,6 +175,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const reviewerPickerRef = useRef<HTMLButtonElement>(null);
   const { t, render } = useTranslation();
   const mutation = useUpdateOrgSettings();
+  const readOnlyHost = useRemoteReadOnly(REMOTE_OPS.orgSettings, REMOTE_OPS.teamsSettings);
   const agentsQuery = useAgentsList();
   const agentsList = useMemo(
     () => agentsQuery.data?.agents ?? [],
@@ -214,12 +217,13 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
   const workHoursSentRef = useRef<boolean | null>(null);
   async function setEnabled(next: boolean) {
-    if (workHoursOwner.isBusy()) return; setWhError(null); // one save at a time: keep the sent value (Check result)
+    if (workHoursOwner.isBusy() || readOnlyHost !== null) return; setWhError(null); // one save at a time: keep the sent value (Check result)
     workHoursSentRef.current = next;
     const result = await workHoursOwner.track(() => mutation.mutateAsync({ working_hours: { enabled: next } }));
     if (result.ok) setWhSaved(true);
     // An unknown result is shown (with Check result) by the owner notice.
-    else if (result.outcome === 'failed') setWhError(extractServerErrors(result.error).join('; '));
+    // A remote_read_only refusal is shown by the owner notice (S8-2b).
+    else if (result.outcome === 'failed' && !isRemoteReadOnlyError(result.error)) setWhError(extractServerErrors(result.error).join('; '));
   }
 
   // Reset fields when org data changes externally
@@ -377,7 +381,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   }, [fields, lastSaved.reviewers, rosterNames]);
 
   const handleSave = useCallback(async () => {
-    if (savingLatch.current || !orgSlug) return;
+    if (savingLatch.current || !orgSlug || readOnlyHost !== null) return;
     // No new save while a prior result is unknown (Check result first).
     if (owner.saveRefused) return;
     const generation = orgGeneration.current;
@@ -413,9 +417,9 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const msg = err instanceof Error ? err.message : String(err);
       const naming = namingAddressError(err);
       if (naming) { setIdentityError(naming); setSaveState({ phase: 'idle' }); }
-      else setSaveState({ phase: 'error', message: msg });
+      else setSaveState({ phase: 'error', message: isRemoteReadOnlyError(err) ? '' : msg });
     } finally { savingLatch.current = false; }
-  }, [buildPatch, mutation, orgSlug, identityPreflight, fields, agentsList, owner]);
+  }, [buildPatch, mutation, orgSlug, identityPreflight, fields, agentsList, owner, readOnlyHost]);
 
   // Unsaved-changes guard on nav-away
   useEffect(() => {
@@ -440,6 +444,10 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         </div>
       )}
 
+      {/* S8-2b: on a remote Host every Organization control (incl. Work
+          Hours) stays visible but read-only; native refuses the writes. */}
+      {readOnlyHost && <RemoteReadOnlyNote host={readOnlyHost} />}
+      <fieldset disabled={readOnlyHost !== null} className="m-0 min-w-0 border-0 p-0" data-testid="organization-fields">
       {/* session timeout */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.session.heading')}</h4>
       <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border">
@@ -718,13 +726,15 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         </>
       )}
 
+      </fieldset>
+
       {/* Sticky save bar */}
       {dirty && (
         <div className="border-border-default bg-surface-sunken sticky bottom-0 -mx-8 mt-8 -mb-8 flex items-center gap-3 border-t px-8 py-3">
           <button
             type="button"
             onClick={handleSave}
-            disabled={saveState.phase === 'saving' || owner.saveRefused}
+            disabled={saveState.phase === 'saving' || owner.saveRefused || readOnlyHost !== null}
             className="bg-accent-default text-text-inverse hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}

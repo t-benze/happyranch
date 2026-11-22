@@ -162,8 +162,9 @@ export function inventorySource(webRoot = process.cwd()) {
   if (entry !== '/src/main.tsx') throw new Error(`i18n inventory: unsupported index.html module entry ${entry}; review entry/root before release`);
   const configFile = ts.readConfigFile(resolve(root, 'tsconfig.json'), ts.sys.readFile);
   // THR-305: the build-time feature-flag specifier maps to a JSON profile (no
-  // owned copy); the inventory treats it as an external module.
-  if (configFile.error || JSON.stringify(configFile.config?.compilerOptions?.paths) !== JSON.stringify({ '@/*': ['src/*'], '@happyranch/feature-flags': ['config/features.production.json'] }) || configFile.config.compilerOptions.baseUrl !== '.') throw new Error('i18n inventory: unsupported tsconfig.json alias/root; expected @/* -> src/* and @happyranch/feature-flags -> config/features.production.json');
+  // owned copy); the inventory treats it as an external module. THR-387 S8-2b:
+  // so does the remote-client configuration policy JSON (protocol data).
+  if (configFile.error || JSON.stringify(configFile.config?.compilerOptions?.paths) !== JSON.stringify({ '@/*': ['src/*'], '@happyranch/feature-flags': ['config/features.production.json'], '@happyranch/remote-client-config-policy': ['../protocol/remote-client-config-policy.v1.json'] }) || configFile.config.compilerOptions.baseUrl !== '.') throw new Error('i18n inventory: unsupported tsconfig.json alias/root; expected @/* -> src/*, @happyranch/feature-flags -> config/features.production.json and @happyranch/remote-client-config-policy -> ../protocol/remote-client-config-policy.v1.json');
   const vite = readInput(root, 'vite.config.ts');
   // Parse, never execute config (which has a daemon/proxy reader).
   const viteAST = parse('vite.config.ts', vite), aliases = [], customInputs = [];

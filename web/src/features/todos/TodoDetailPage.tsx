@@ -27,6 +27,8 @@ import { useTranslation } from '@/hooks/i18n'
 import type { Locale, MessageKey } from '@/lib/i18n'
 import { formatCountFor, formatDateTimeFor } from '@/lib/i18n/format'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteHost, useRemoteReadOnly } from '@/lib/remotePolicy'
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote'
 
 interface TodoDetailPageProps {
   scheduleId: string
@@ -118,6 +120,11 @@ export function TodoDetailPage({
   const pauseMutation = usePauseTodo(org)
   const cancelMutation = useCancelTodo(org)
   const editMutation = useEditTodo(org)
+  // S8-2b: the policy classifies schedule PATCH (edit) as configuration, so
+  // Edit is read-only on a remote Host; Pause/Cancel stay operations.
+  const editReadOnlyHost = useRemoteReadOnly(REMOTE_OPS.editSchedule)
+  const liveHost = useRemoteHost()
+  const [editRefused, setEditRefused] = useState(false)
 
   const [pauseOpen, setPauseOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
@@ -170,14 +177,19 @@ export function TodoDetailPage({
   }
 
   const handleEditSave = async (fields: ScheduleEditFields) => {
+    if (editReadOnlyHost !== null) return
     setValidationError(null)
     setConflict(false)
+    setEditRefused(false)
     try {
       await editMutation.mutateAsync({ scheduleId, fields })
       setEditOpen(false)
     } catch (err: unknown) {
       const status = (err as { status?: number } | null | undefined)?.status
-      if (status === 409) {
+      if (isRemoteReadOnlyError(err)) {
+        // Native refused before forwarding: keep the dialog and its draft.
+        setEditRefused(true)
+      } else if (status === 409) {
         setConflict(true)
       } else {
         setValidationError(classifyTodoError(err, 'todos.error.editFailed'))
@@ -225,7 +237,7 @@ export function TodoDetailPage({
                 {t('todos.action.pause')}
               </Button>
             )}
-            <Button variant="secondary" onClick={() => setEditOpen(true)}>
+            <Button variant="secondary" onClick={() => setEditOpen(true)} disabled={editReadOnlyHost !== null}>
               <Pencil size={16} className="mr-1.5" />
               {t('todos.action.edit')}
             </Button>
@@ -236,6 +248,7 @@ export function TodoDetailPage({
           </div>
         )}
       </div>
+      {actions !== 'readonly' && editReadOnlyHost && <RemoteReadOnlyNote host={editReadOnlyHost} />}
 
       {schedule.fire_at && (
         <div className="border-tier-green bg-tier-green-tint text-status-open mb-8 flex items-center justify-between rounded-lg border px-6 py-3">
@@ -444,6 +457,7 @@ export function TodoDetailPage({
               if (!open) {
                 setValidationError(null)
                 setConflict(false)
+                setEditRefused(false)
               }
             }}
             schedule={schedule}
@@ -451,6 +465,7 @@ export function TodoDetailPage({
             validationError={validationError}
             conflict={conflict}
             loading={editMutation.isPending}
+            remoteRefusedHost={editRefused ? (liveHost ?? t('remotePolicy.theHost')) : null}
           />
         </>
       )}

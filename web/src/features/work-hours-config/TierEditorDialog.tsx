@@ -48,6 +48,8 @@ import {
   reconcile,
 } from './merge';
 import { DAYS, ianaTimezones } from './constants';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 export type Tier =
   | { kind: 'org' }
@@ -251,7 +253,12 @@ export function TierEditorDialog({
     return { overrides: { [tier.agent]: layerPatch } };
   }
 
+  // S8-2b: Work Hours writes go through PUT …/settings/org (configuration):
+  // read-only on a remote Host.
+  const readOnlyHost = useRemoteReadOnly(REMOTE_OPS.orgSettings);
+
   async function doSave() {
+    if (readOnlyHost !== null) return;
     setErrors([]);
     const result = await owner.track(() => mutation.mutateAsync({ working_hours: buildPatch() }));
     setConfirming(false);
@@ -261,7 +268,7 @@ export function TierEditorDialog({
       // newer draft typed while the save was pending (via Back) stays open and
       // dirty against the saved value, which is now the baseline.
       if (result.current) onOpenChange(false);
-    } else if (result.outcome === 'failed') {
+    } else if (result.outcome === 'failed' && !isRemoteReadOnlyError(result.error)) {
       setErrors(extractServerErrors(result.error));
     }
   }
@@ -310,6 +317,7 @@ export function TierEditorDialog({
         </DialogHeader>
 
         <OwnerSaveNotice owner={owner} className="" />
+        {readOnlyHost && owner.remoteRefusal === null && <RemoteReadOnlyNote host={readOnlyHost} className="" />}
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
@@ -483,7 +491,7 @@ export function TierEditorDialog({
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 {t('workHours.dialog.back')}
               </Button>
-              <Button onClick={() => void doSave()} disabled={mutation.isPending || owner.busy}>
+              <Button onClick={() => void doSave()} disabled={mutation.isPending || owner.busy || readOnlyHost !== null}>
                 {mutation.isPending || owner.busy ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
@@ -492,7 +500,7 @@ export function TierEditorDialog({
               <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={handleSaveClick} disabled={mutation.isPending || owner.busy}>
+              <Button onClick={handleSaveClick} disabled={mutation.isPending || owner.busy || readOnlyHost !== null}>
                 {mutation.isPending || owner.busy
                   ? t('workHours.dialog.saving')
                   : requiresConfirm

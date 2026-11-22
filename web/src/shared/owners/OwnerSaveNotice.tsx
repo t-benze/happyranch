@@ -6,10 +6,14 @@
  * - unknown → the unknown copy and Check result (or the named unavailable
  *             reason when no reconciliation can run here)
  * - pending → "Saving {page} on {computer} · {org}…"
+ * - failed by native `403 remote_read_only` (S8-2b) → the remote read-only
+ *             copy ("Change this on {Host}"; changes kept, not sent), never C3.
  * Connection-attempt errors never use this notice.
  */
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
+import { useRemoteHost } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ownerContextParams } from './ownerCopy';
 import type { ConfigOwner } from './useConfigOwner';
 
@@ -24,6 +28,8 @@ export function OwnerSaveNotice({
   className?: string;
 }): JSX.Element | null {
   const { t } = useTranslation();
+  // The refusal may arrive before native's app.stateChanged names the Host.
+  const liveHost = useRemoteHost();
   const record = owner.record;
   if (!record) return null;
   const params = ownerContextParams(record, t);
@@ -33,6 +39,9 @@ export function OwnerSaveNotice({
         {t('owners.save.pending', params)}
       </p>
     );
+  }
+  if (record.status === 'failed' && owner.remoteRefusal !== null) {
+    return <RemoteReadOnlyNote host={liveHost ?? (owner.remoteRefusal || t('remotePolicy.theHost'))} variant="refused" className={className} />;
   }
   if (record.status === 'failed') {
     return (

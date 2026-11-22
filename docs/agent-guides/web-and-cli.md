@@ -641,6 +641,52 @@ is replayed. Current Linux native accepts summaries but has no lifecycle listene
 S7-L3. Focused checks:
 `node --experimental-transform-types --test web/scripts/native-owners.test.mjs`.
 
+## Remote read-only configuration (THR-387 S8-2b)
+
+Handoff v2.4 §4. `web/src/lib/remotePolicy/` imports the SAME authoritative
+`protocol/remote-client-config-policy.v1.json` the Linux app ships, through the
+`@happyranch/remote-client-config-policy` build alias (`vite.config.ts`
+`resolve.alias` + `tsconfig.json` `paths`, also pinned by
+`web/scripts/i18n-source-inventory.mjs`; the dev server allows that one file).
+`REMOTE_OPS` names all 21 v1 `config` entries; `useRemoteReadOnly(...ops)`
+returns the remote Host name only while native `app.status` reports a remote
+target AND an op is a policy entry; `useRemoteHost()` returns it for any
+remote target. Browser mode, This computer and a desktop whose status is not
+yet known keep existing behavior. While native's committed target is remote it
+answers every matching request with `403 {"detail":{"code":"remote_read_only"}}`
+before forwarding (`isRemoteReadOnlyError`); the disabled UI is presentation,
+native is the enforcement.
+
+On a remote target the config controls stay visible but read-only with
+“Read-only on this connection. Change this on {Host}.” / “此连接仅可查看。请在
+{Host} 上更改。” (`shared/remotePolicy/RemoteReadOnlyNote`): Settings →
+Organization (all fields incl. Work Hours, Save disabled; Discard stays),
+Settings → Executors (binary register, Connect a CLI, custom-profile
+Reconnect/Remove; Validate stays available), Main Agents detail model/effort
+and CLI (a CLI change also resets the model), Add agent, skill assignment,
+custom-skill create (incl. deep links) and detail metadata/new
+version/retire/restore/eligibility Save (Preview stays), Main Work Hours tier
+and eligibility dialogs, and schedule **Edit** (the policy classifies
+`PATCH …/schedules/{schedule_id}` as configuration; Pause/Cancel/Renew and
+other schedule operations are unchanged). Host-wide create organization (Add
+organization, onboarding) and custom-CLI failed-connection Validate
+(`/retry`)/Clear (`/forget`) say “Unavailable on this connection. Do this on
+{Host}.” Settings → Capacity and Coding are named unavailable (the Host shares
+no reads): “{page} is unavailable on this connection”, with recovery to change
+it on the Host or switch to This computer; Capacity adds “Affects all
+organizations on {Host}”. Language and HappyRanch on this computer are local
+and unchanged (C5).
+
+A `403 remote_read_only` (e.g. native committed a remote target before
+`app.stateChanged` reached the page) is a confirmed failure that keeps the
+draft: `useConfigOwner` records the refusal (from `track`, or `settle(ticket,
+outcome, error)`) and `OwnerSaveNotice` shows “… Change this on {Host}. Your
+changes are still here and weren't sent.”, never the C3 failed-save copy and
+never the raw diagnostic; the schedule Edit dialog shows the same notice and
+keeps its fields. Operations (tasks, threads, jobs, approve/reject, KB,
+artifacts, skill validate/eligibility preview, custom-skill purge, schedule
+operations other than edit) are not policy entries and are unchanged.
+
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 
 The main `npm run build` writes `web/dist/resource-manifest.json` with the

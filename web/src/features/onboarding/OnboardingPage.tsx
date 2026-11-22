@@ -43,6 +43,8 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
+import { REMOTE_OPS, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ConnectRuntimeStep } from './ConnectRuntimeStep';
 
 /** Same slug contract the daemon enforces (mirror of AddOrgDialog). */
@@ -340,9 +342,12 @@ function CreateStep({
 
   const valid = SLUG_RE.test(slug);
   const errorText = serverError ? renderAddOrgError(serverError, t) : null;
+  // S8-2b: creating an organization is host-wide configuration, unavailable
+  // on a remote Host (native refuses POST /api/v1/orgs as read-only).
+  const remoteHost = useRemoteReadOnly(REMOTE_OPS.createOrg);
 
   const submit = (): void => {
-    if (valid && !create.isPending) create.mutate({ slug });
+    if (valid && !create.isPending && remoteHost === null) create.mutate({ slug });
   };
 
   // Distinct `creating` progress state — the workspace is being provisioned.
@@ -398,7 +403,9 @@ function CreateStep({
             · ^[a-z0-9-]&#123;1,40&#125;$
           </span>
         </p>
-        {errorText && (
+        {remoteHost ? (
+          <RemoteReadOnlyNote host={remoteHost} variant="hostWide" className="" />
+        ) : errorText && (
           <p className="text-feedback-danger text-sm" role="alert">
             {errorText}
           </p>
@@ -410,7 +417,7 @@ function CreateStep({
         <ExecutorPrereqPanel />
 
         <div className="flex items-center gap-2 pt-4">
-          <Button type="submit" disabled={!valid || create.isPending}>
+          <Button type="submit" disabled={!valid || create.isPending || remoteHost !== null}>
             {t('onboarding.create.submit')}
           </Button>
           <Button

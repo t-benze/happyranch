@@ -20,6 +20,8 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
+import { REMOTE_OPS, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 
@@ -49,6 +51,9 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
   });
 
   const valid = SLUG_RE.test(slug);
+  // S8-2b: creating an organization is host-wide configuration; on a remote
+  // Host it is unavailable (native refuses POST /api/v1/orgs as read-only).
+  const remoteHost = useRemoteReadOnly(REMOTE_OPS.createOrg);
   const errorText = serverError ? renderAddOrgError(serverError, t) : null;
 
   return (
@@ -70,7 +75,9 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
             autoFocus
           />
           <p className="text-text-secondary text-xs">{t('org.add.slugHint')}</p>
-          {errorText && (
+          {remoteHost ? (
+            <RemoteReadOnlyNote host={remoteHost} variant="hostWide" className="" />
+          ) : errorText && (
             <p className="text-tier-red text-sm">{errorText}</p>
           )}
         </div>
@@ -79,7 +86,7 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
             {t('common.cancel')}
           </Button>
           <Button
-            disabled={!valid || create.isPending}
+            disabled={!valid || create.isPending || remoteHost !== null}
             onClick={() => create.mutate({ slug })}
           >
             {create.isPending ? t('org.add.creating') : t('org.add.create')}

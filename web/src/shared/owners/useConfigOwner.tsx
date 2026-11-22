@@ -41,6 +41,8 @@ import {
   type SaveTicket,
 } from '@/lib/owners/ownerRegistry';
 import { awaitOwnersReceipt, OwnersReceiptError } from '@/lib/native/owners';
+import { getAppStatus } from '@/lib/native/target';
+import { isRemoteReadOnlyError } from '@/lib/remotePolicy';
 import { useOwnerGateContext, useOwnerRecords } from './OwnerGate';
 
 interface OwnerScopeValue {
@@ -111,7 +113,11 @@ export interface ConfigOwner {
   begin: (revision?: number) => SaveTicket | null;
   /** The current draft revision (capture it where a request is built). */
   draftRevision: number;
-  settle: (ticket: SaveTicket, outcome: SaveOutcome) => { current: boolean };
+  /**
+   * Settle a ticket. Pass the failure `error` so native's `403
+   * remote_read_only` is shown as the remote read-only refusal (S8-2b).
+   */
+  settle: (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => { current: boolean };
   /**
    * Desktop save admission after `begin()`: resolves true once native
    * acknowledged the summary showing the save pending (browser: at once).
@@ -147,6 +153,13 @@ export interface ConfigOwner {
   reconcile: (outcome: 'saved' | 'not_saved') => void;
   checking: boolean;
   checkFailed: boolean;
+  /**
+   * S8-2b: the last failed save was native's pre-forward `403
+   * remote_read_only` (nothing reached the Host; the draft stays). Holds the
+   * remote Host name captured at refusal ('' if native no longer names one);
+   * null otherwise. The save notice shows the read-only copy, never C3.
+   */
+  remoteRefusal: string | null;
 }
 
 function draftKey(draft: unknown): string {
@@ -237,6 +250,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
   // refuses, so a reentrant submit can start no second ticket and send nothing.
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [remoteRefusal, setRemoteRefusal] = useState<string | null>(null);
   const isBusy = useCallback(() => inFlight.current, []);
   const begin = useCallback(
     (sentRevision?: number) => {
@@ -247,9 +261,18 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     },
     [registry, id],
   );
+  const noteRefusal = useCallback((error: unknown) => {
+    if (!isRemoteReadOnlyError(error)) return;
+    const target = getAppStatus()?.target;
+    setRemoteRefusal(target?.kind === 'remote' ? target.name : '');
+  }, []);
   const settle = useCallback(
-    (ticket: SaveTicket, outcome: SaveOutcome) => ({ current: registry.settleSave(ticket, outcome).current }),
-    [registry],
+    (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => {
+      setRemoteRefusal(null);
+      if (outcome === 'failed') noteRefusal(error);
+      return { current: registry.settleSave(ticket, outcome).current };
+    },
+    [registry, noteRefusal],
   );
   const sendable = useCallback(() => awaitOwnersReceipt(registry.getSnapshot()), [registry]);
   const track = useCallback(
@@ -279,7 +302,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
           return { ok: true as const, value, current };
         } catch (error) {
           const outcome = classify(error);
-          const { current } = settle(ticket, outcome);
+          const { current } = settle(ticket, outcome, error);
           return { ok: false as const, error, outcome, current, refused: false };
         }
       } finally {
@@ -297,5 +320,8 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
 
   const saveRefused = record?.status === 'unknown';
 
-  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed };
+    // A refusal describes the failed record only: any later settle clears it.
+  const shownRefusal = record?.status === 'failed' ? remoteRefusal : null;
+
+  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed, remoteRefusal: shownRefusal };
 }
