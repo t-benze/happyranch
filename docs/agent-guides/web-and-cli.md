@@ -688,7 +688,7 @@ and eligibility dialogs, and schedule **Edit** (the policy classifies
 other schedule operations are unchanged). Host-wide create organization (Add
 organization, onboarding) and custom-CLI failed-connection Validate
 (`/retry`)/Clear (`/forget`) say “Unavailable on this connection. Do this on
-{Host}.” Settings → Capacity and Coding are named unavailable (the Host shares
+{Host}.” Settings → Capacity is named unavailable (the Host shares
 no reads): “{page} is unavailable on this connection”, with recovery to change
 it on the Host or switch to This computer; Capacity adds “Affects all
 organizations on {Host}”. Language and HappyRanch on this computer are local
@@ -2913,7 +2913,7 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   hash, not by unchanged values), then a failed read whose retained values must
   still carry the identical response's OWN receipt, and finally a usable
   recovery that advances it.
-- **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
+- **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (invocation timeout only; threads are always on, so the UI shows no Enabled toggle — `threads.enabled` is an inert legacy key that old config files may still carry and the settings route still tolerates and round-trips, but the web UI neither shows nor sends it and nothing gates on it), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
 **Reviewer agents (B3, 2026-11-14; UI removed THR-336).** Since THR-336 the web
