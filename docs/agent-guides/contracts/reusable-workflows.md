@@ -669,8 +669,11 @@ recheck using the real `task_selection` owner. It returns a finite refusal and
 never substitutes a model, mutates a task/row, launches, or writes Held.
 S4b mounts it into internal native prelaunch and calls the S4a writer for durable
 no-result Held on drift. Private writer evidence does not prove a genuine native
-launch. @2 remains publicly unadmitted and Coding stays
-Disabled. Provider availability is NOT RUN without an authorized native run.
+launch. At the historical B1/S8b checkpoint, @2 was publicly unadmitted;
+[R2 unit (b)](#r2-unit-b-start2-admission-and-continuation) now supports public
+Start@2 multi-run admission and continuation. Coding stays Disabled/unset until
+explicit Founder setup and Allow. Provider availability is NOT RUN without an
+authorized native run.
 
 ## R1b1: own-task sequential start discovery
 

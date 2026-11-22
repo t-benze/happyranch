@@ -89,8 +89,11 @@ Default 32M SQL, separate A/B/C 2M allowances, row/byte/traversal caps, 5s reads
 remain unchanged. The private `--automatic-schema2=CASE` schema-shell cases and
 `test-daemon-startup-timing.sh --startup_budget` observe actual default charges
 and first/next org loads; they do not establish live listener acceptance.
-Coding stays Disabled by default, @2 is not publicly admitted, and source
-merge grants no live installation, deployment or restart authority.
+Coding stays Disabled by default; public Start@2 multi-run admission and
+continuation are supported by
+[R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
+Explicit Founder setup and Allow remain separate. Source merge grants no live
+installation, deployment or restart authority.
 
 ## Automatic daemon-start installation (A4:2)
 
