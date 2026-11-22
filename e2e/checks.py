@@ -9,10 +9,69 @@ import copy
 import hashlib
 import json
 import math
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
+
+def refusal_process_content(procs: dict, daemon: dict, provider: dict, root: Path) -> None:
+    """Independent raw-tree reader, also exercised by finite harness controls."""
+    def check(ok: bool, label: str) -> None:
+        if not ok:
+            raise ValueError("E04 refusal content: " + label)
+
+    by_pid = {r["pid"]:r for r in procs["rows"]}
+    check(daemon["pid"] in by_pid and by_pid[daemon["pid"]]["start"] == daemon["start"], "same daemon process")
+    for r in procs["rows"]:
+        fields = r["stat"].rsplit(")",1)[1].split()
+        end_fields = r["stat_end"].rsplit(")",1)[1].split()
+        check(int(r["stat"].split("(",1)[0]) == r["pid"] and fields[19] == r["start"] and int(fields[1]) == r["ppid"]
+              and int(r["stat_end"].split("(",1)[0]) == r["pid"] and end_fields[19] == r["start"]
+              and int(end_fields[1]) == r["ppid"] and r["children_end"] == r["children"]
+              and r["root_marker"] in {None, f"E2E_ROOT={root}"}, "raw generation/parent bookends and observed marker")
+        check(r["start"] is not None and r["children"] == sorted(set(r["children"]))
+              and all(child in by_pid and by_pid[child]["ppid"] == r["pid"] for child in r["children"]), "closed known descendant ownership")
+        seen, current = set(), r
+        while current["pid"] not in {daemon["pid"], provider["pid"]}:
+            check(current["pid"] not in seen and current["ppid"] in by_pid, "no unknown/cyclic refusal ancestry")
+            seen.add(current["pid"])
+            parent = by_pid[current["ppid"]]
+            check(current["pid"] in parent["children"], "reverse refusal parent edge")
+            current = parent
+        check(current["start"] == (daemon["start"] if current["pid"] == daemon["pid"] else provider["pid_start"]),
+              "original pinned root generation")
+
+
+def job_process_content(peer: dict, closure: dict, boot: dict, root: Path, token: str) -> None:
+    """Independently read both job generations, raw chain, group and EOF."""
+    def check(ok: bool, label: str) -> None:
+        if not ok:
+            raise ValueError("E04 job content: " + label)
+
+    guardian, daemon = peer["guardian"], peer["daemon"]
+    for process in (peer, guardian, daemon):
+        for raw_stat in (process["stat"], process["stat_end"]):
+            fields = raw_stat.rsplit(")", 1)[1].split()
+            check(int(raw_stat.split("(", 1)[0]) == process["pid"] and fields[19] == process["start"] is not None
+                  and [int(fields[i]) for i in (1, 2, 3)] == [process[k] for k in ("ppid", "pgid", "sid")],
+                  "independent job generation/relationship bookends")
+    check(daemon["pid"] == boot["pid"] and daemon["start"] == boot["start"]
+          and peer["uid"] == os.getuid() and peer["ppid"] == guardian["pid"]
+          and guardian["ppid"] == daemon["pid"] and peer["pid"] != guardian["pid"]
+          and guardian["pid"] == guardian["pgid"] == guardian["sid"] == peer["pgid"] == peer["sid"],
+          "original daemon owns guardian and script group/session")
+    root_marker = f"E2E_ROOT={root}"
+    check(peer["root_marker"] == guardian["root_marker"] == root_marker, "both processes belong to this private run")
+    check([(p["pid"], p["start"], p["ppid"], p["pgid"], p["sid"]) for p in peer["census"]] ==
+          sorted((p["pid"], p["start"], p["ppid"], p["pgid"], p["sid"]) for p in (peer, guardian)),
+          "actual whole group membership")
+    check(peer["hello"] == dict(token=token, pid=peer["pid"]) and peer["pgid"] == closure["pgid"]
+          and peer["start"] == closure["start"] and closure["start"] != closure["observed_start"]
+          and closure["pid"] == peer["pid"] and closure["guardian"]["pid"] == guardian["pid"]
+          and closure["guardian"]["start"] == guardian["start"] != closure["guardian"]["observed_start"]
+          and closure["eof"] is True and closure["members"] == [], "real job process/group/EOF closure")
+
 
 def validate_review_refusal(row: dict, observations: dict, directory: Path, record: dict, positive: dict) -> None:
     """Independently reconstruct the two refusals and original-SID continuation."""
@@ -146,13 +205,8 @@ raise SystemExit(0)
         procs = frame["processes"]
         check(frame["entered"] <= procs["entered"] <= procs["finished"] <= frame["finished"] and len(procs["rows"]) < 512
               and len({r["pid"] for r in procs["rows"]}) == len(procs["rows"]), "bounded actual descendant census")
+        refusal_process_content(procs, dict(pid=api["daemon_pid"], start=api["daemon_start"]), start, root)
         by_pid = {r["pid"]:r for r in procs["rows"]}
-        check(api["daemon_pid"] in by_pid and by_pid[api["daemon_pid"]]["start"] == api["daemon_start"], "same daemon process")
-        for r in procs["rows"]:
-            fields = r["stat"].rsplit(")",1)[1].split()
-            check(int(r["stat"].split("(",1)[0]) == r["pid"] and fields[19] == r["start"] and int(fields[1]) == r["ppid"]
-                  and r["root_marker"] == f"E2E_ROOT={root}", "raw owned process identity")
-            check(r["start"] is not None and all(child in by_pid and by_pid[child]["ppid"] == r["pid"] for child in r["children"]), "closed known descendant ownership")
         check((start["pid"] in by_pid) == (i < 3) and not any(cmd["child_pid"] in by_pid for cmd in commands), "intended CLI children separately accounted and gone")
     def unchanged(a: dict, b: dict) -> None:
         for org in ("alpha","beta"):
@@ -544,13 +598,16 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
             else:
                 peer_count += 1
                 peer, closure = job["peer"], job["closure"]
-                check(peer["hello"] == dict(token=job["token"], pid=peer["pid"]) and peer["pid"] == peer["pgid"] == closure["pgid"]
-                      and peer["start"] == closure["start"] and closure["start"] != closure["observed_start"]
-                      and closure["eof"] is True and closure["members"] == [] and payload["exit_code"] == code, "real job process/group/EOF closure")
+                guardian = peer["guardian"]
+                private_root = Path(next(d["executable_manifest"]["root"] for d in durable if "executable_manifest" in d))
+                job_process_content(peer, closure, dict(pid=record["anchors"][0]["daemon_pid"],
+                                    start=record["anchors"][0]["daemon_start"]), private_root, job["token"])
+                check(payload["exit_code"] == code, "literal terminal exit code")
                 check(any(d.get("jobs_peer") == peer for d in durable), "retained owned script peer")
                 # The launcher owns the census and checks this exact generation
                 # after Owned.cleanup; only these process pins cross processes.
                 observations["cleanup_pins"].append(dict(variant=variant, pid=peer["pid"], start=peer["start"]))
+                observations["cleanup_pins"].append(dict(variant=variant, pid=guardian["pid"], start=guardian["start"]))
                 if code == -9:
                     check(payload["reason"] == "timeout" and 5000 <= raw["duration_ms"] <= 17000 and "released" not in job, "product timeout without controller release")
                 else:

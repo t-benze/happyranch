@@ -1,5 +1,51 @@
 # Daily product E2E health
 
+## Current harness ownership and polling (TASK-18556)
+
+E04 refusal census authenticates descendants through the original boot's pinned
+daemon generation or the pinned provider generation, with raw stat generation
+and parent bookends, complete parent/child edges and a second whole-tree read.
+The private `E2E_ROOT` marker is retained as observed evidence and may be absent
+on an environment-empty OrgFenceGuardian. Guardians remain in the census.
+Unknown, changed or disappearing descendant generations, unclosed edges and
+the existing 512-process bound still refuse. The independent content reader
+reconstructs every chain to its pinned root. Whole-tree before/after comparison,
+SQL/file/output membership and all no-allocation/no-side-effect checks remain.
+
+Bounded jobs have two distinct processes: the script peer and its guardian,
+which leads the original process group and session. E04 pins both generations,
+checks script → guardian → original daemon parents, common group/session and
+both private-run markers, and enumerates the actual PGID. The live group must
+contain exactly those two processes. Raw generation/relationship bookends and
+the independent reader replace the obsolete script-PID-equals-PGID assertion.
+Terminal closure requires both original generations gone, the entire actual
+group empty and the script socket at EOF. Both pins cross to launcher cleanup.
+Exit codes, literal output, timeout and no-survivor assertions are unchanged.
+
+Task list, detail and Recall resolve exactly one routed `div.contents` wrapper
+directly under the shell main, then exactly one page owner beneath it. Both the
+Playwright locator and rendered-DOM expression reject hidden recovery content.
+The list owns its inner main; detail/Recall own ContentWrap's inner div. Exact
+org/task, URL, content and native visibility checks remain authoritative.
+Historical direct-depth owner descriptions below are superseded here.
+
+Only `Controller.finish`'s terminal task GET may retain and retry an exact
+HTTP503 JSON object `{"detail":"census_database_busy"}`. Each response stays in
+the HTTP observations, under the poll's original absolute deadline. No mutation
+is replayed and no deadline is renewed. Other statuses/bodies and every other
+GET, including the subsequent Recall GET, remain strict.
+
+Finite isolated controls run with `TMPDIR` set to a short non-`/tmp` path:
+`python e2e/harness_controls.py --group all`. G1/G2 use real private process
+trees and a Unix peer; G2 invokes the existing budget guardian and observes a
+real exit7/output/EOF. G3 uses the locked `browser.lock` dependencies and local
+Chromium documents; G4 uses a private loopback HTTP fixture. These invoke the
+actual harness observers/readers/locators/poller, with no live daemon or product
+scenario launch. `--source <e2e-directory>` permits an attributable pre-fix
+comparison. The scripted job row/browser in G2 isolate process closure; they do
+not prove product job persistence or UI behavior. Controls are separate from
+the retired Python suite and do not join required checks or trigger Product E2E.
+
 ## Current reporting contract — slice 3 of 3 (THR-291 seq659)
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
