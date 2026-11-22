@@ -1,5 +1,16 @@
 # Local CI
 
+## Focused Default manager persistence (GH-1828)
+
+`uv run --frozen pytest scripts/test_empty_default.py -v --tb=short`
+checks that online Default creation leaves its retained manager equal to a disk
+reload and usable by the real naming namespace capture without a restart. It
+also drives ensure-default followed by display-name enrollment through the
+existing synthetic-org ASGI fixture and SQLite, with workspace bootstrap mocked.
+No daemon lifespan, listener, provider or live org runs. This focused script is
+outside the retired unit suite and skipped general integration, and adds no CI
+trigger or required check.
+
 ## Focused founder revisit admission (THR-386)
 
 `uv run --frozen pytest scripts/test_task_revisit.py -v --tb=short`

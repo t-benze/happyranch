@@ -2407,7 +2407,9 @@ Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It
 The separate online founder `POST /teams/ensure-default` creates only an absent
 empty human-founder Default. `needs_empty_default` rejects conflicting management
 before fencing; `ensure_empty_default` saves a validated candidate before updating
-the shared registry object. Canonical/cache and membership prevalidation precedes
+the shared registry object. Its human manager retains the mapping-form tag, so
+the shared value equals a disk reload and naming captures work without a restart.
+Canonical/cache and membership prevalidation precedes
 the durable lease. The async authority writer gate precedes teams_lock; only
 canonical save/cache update and bounded audit use the short canonical fence.
 Publication occurs through interval exit, then a read-only interval checks owned
