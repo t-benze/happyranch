@@ -3245,11 +3245,18 @@ def validate_j1(observations: dict, prefix: dict, source: Path, variant: str) ->
             "J1 knowledge from the real agent CLI.", "Exact content: alpha → founder; 中文 café."]), "real rendered KB paragraphs")
     elif variant == "J1.browser-artifact-download":
         browser = case["browser_artifact"]
+        thread = case["artifact_thread"]
+        message, = case["artifact_thread_messages"]["messages"]
+        attachment, = message["attachments"]
+        check(thread["pending_replies"] == [] and message["speaker"] == "founder"
+              and attachment["artifact_name"] == attachment["display_name"] == name
+              and attachment["size_bytes"] == len(content), "public thread carries shared artifact attachment")
         check(browser["name"] == browser["filename"] == name and browser["size"] == f"{len(content)} B"
-              and browser["modified"] == browser["expected_modified"] and browser["modified"].startswith("Modified ")
+              and browser["thread"] == thread["thread_id"]
+              and browser["redirected"] is True and browser["artifact_nav_count"] == 0
               and bytes.fromhex(browser["body_hex"]) == content
               and (Path(manifest["root"]) / "raw/j1-download.txt").read_bytes() == content,
-              "actual card metadata and Download bytes")
+              "actual thread attachment Download bytes and retired page navigation")
     elif variant in {"J1.bearer-absent", "J1.bearer-wrong"}:
         label = variant.rsplit("-", 1)[1]
         reads = case["denials"][label]

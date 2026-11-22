@@ -1,4 +1,5 @@
 import { useAgentsList } from '@/hooks/agents';
+import { useThreadRoutes } from '@/hooks/threads';
 import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
@@ -250,6 +251,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   useEffect(() => { abandoned.current = false; return () => { abandoned.current = true; }; }, []);
   const [isRetrying, setIsRetrying] = useState(false);
   const routes = useTasksRoutes();
+  const threadRoutes = useThreadRoutes();
   const orgSlug = useOrgSlugOptional();
   // One owner per selected ordinary status plus the independent attention
   // traversal. Each owner keeps its own cursor, errors and Retry; the page owns
@@ -560,7 +562,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                     <ul>
                       {attentionTasks.map((task) => (
                         <li key={task.task_id}>
-                          <TaskListRow task={task} to={routes.detail(task.task_id)} taskRoutes={routes} />
+                          <TaskListRow task={task} to={routes.detail(task.task_id)} taskRoutes={routes} threadRoutes={threadRoutes} />
                         </li>
                       ))}
                     </ul>
@@ -596,6 +598,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                             task={t}
                             to={routes.detail(t.task_id)}
                             taskRoutes={routes}
+                            threadRoutes={threadRoutes}
                           />
                         </li>
                       ))}

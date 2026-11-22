@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; W4d KB/Artifacts + Usage; later W4 slices add rows).
+ * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; W4d KB + Usage; later W4 slices add rows).
  *
  * Same mechanism as `w3b-jobs-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
@@ -344,10 +344,6 @@ const SAFEGUARD_TASKS = ['delegated', 'blocked_on_job'].map((block_kind, index) 
 
 /** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
 const W4D_KB = { slug: 'raw-knowledge', title: 'Authored «raw» Knowledge', type: 'RAW_Type', topic: 'Raw_Topic', tags: ['Raw_Tag'], body: 'Authored «raw» KB body.', authored_by: 'Raw_Agent', source_task: 'TASK-0042', related_entries: [], updated_at: iso(3600e3) };
-const W4D_ARTIFACTS = [
-  { name: 'Raw_Agent-2026-06-16-THR-042-Raw_Title.pdf', size_bytes: 1536, modified_at: '2026-06-20T14:30:00Z' },
-  { name: 'Raw_Folder/Raw_File.txt', size_bytes: 512, modified_at: '' },
-];
 // W4d-2 Usage response fixtures: windows are org wall-clock parts, not viewer instants.
 const USAGE_META = {
   generated_at: '2026-09-29T06:03:00Z', data_through: '2026-09-29T06:03:00Z', timezone: 'Asia/Shanghai',
@@ -374,7 +370,6 @@ const API_ROUTES = {
   [`/api/v1/orgs/${ORG}/kb`]: { entries: [W4D_KB] },
   [`/api/v1/orgs/${ORG}/kb/stats`]: { entries: [{ slug: W4D_KB.slug, view_count: 1000 }] },
   [`/api/v1/orgs/${ORG}/kb/raw-knowledge`]: W4D_KB,
-  [`/api/v1/orgs/${ORG}/artifacts`]: { artifacts: W4D_ARTIFACTS },
   '/api/v1/auth/bootstrap': { token: 'w4a-evidence-token' },
   '/api/v1/orgs': { orgs: [{ slug: ORG, root: `/runtime/${ORG}` }], broken: [] },
   [`/api/v1/orgs/${ORG}/dashboard/summary`]: { org_age_days: 12 },
@@ -707,24 +702,6 @@ const VIEW_ROUTES = [
     keys: ['kb.acceptButton', 'kb.dismissButton', ['kb.candidatePendingLabel', { agent: 'product_lead' }]],
     verbatim: ['Spanish after-hours routing', 'spanish-after-hours', 'Seen three times this week.', 'product_lead'],
   },
-  {
-    id: 'artifacts-list', route: 'artifacts', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
-    keys: ['artifacts.pageTitle', 'artifacts.type.doc', 'artifacts.fromFilename', 'artifacts.download'],
-    checks: locale => [['localized filter accessible name', `document.querySelector('[role="radiogroup"]').getAttribute('aria-label')`, tr(locale, 'artifacts.filterLabel')]],
-    verbatim: ['Raw_Agent', 'Raw_Folder/', 'THR-042', 'THR-042-Raw_Title.pdf', '1.5 KB'],
-  },
-  {
-    id: 'artifacts-folder', route: 'artifacts folder', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('Raw_Folder/'),
-    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Raw_Folder/'))`); await h.waitTrue(page, bodyHas('Raw_File.txt'), 'artifact folder'); },
-    keys: ['artifacts.root', 'artifacts.modifiedUnavailable', 'artifacts.sortFolders', 'artifacts.download'],
-    verbatim: ['Raw_Folder', 'Raw_File.txt', '512 B'],
-  },
-  {
-    id: 'artifacts-upload', route: 'artifacts upload', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
-    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr('en', 'artifacts.upload'))} || b.textContent.trim() === ${JSON.stringify(tr('zh-CN', 'artifacts.upload'))})`); },
-    keys: ['artifacts.uploadTitle', 'artifacts.file', 'artifacts.nameLabel', 'artifacts.nameHint', 'common.cancel'],
-    verbatim: ['[A-Za-z0-9._-]+', '10 MB'],
-  },
 
   {
     id: 'health', route: 'health', path: `/orgs/${ORG}/health`,
@@ -958,24 +935,6 @@ const SWITCH_ROUTES = [
     shot: 'zh-usage-cohort-compare-switch-1440',
   },
   {
-    id: 'artifacts-upload-file', path: `/orgs/${ORG}/artifacts`,
-    open: async (page, h) => {
-      await h.waitTrue(page, bodyHas('THR-042-Raw_Title.pdf'), 'artifact grid');
-      await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Upload')`);
-      await h.waitTrue(page, `Boolean(document.querySelector('input[type="file"]'))`, 'upload form');
-      await h.evaluate(page, `(() => {
-        const input = document.querySelector('input[type="file"]'); const selected = new File(['exact raw bytes'], 'Raw_Selected.pdf', { type: 'application/pdf' });
-        const data = new DataTransfer(); data.items.add(selected); input.files = data.files; input.dispatchEvent(new Event('change', { bubbles: true }));
-        window.__w4dSelected = input.files[0]; window.__w4dFileInput = input;
-        window.__w4dUploadButton = [...document.querySelectorAll('section button')].find(b => b.textContent.trim() === 'Upload'); return true;
-      })()`);
-    },
-    control: `document.querySelector('section input[type="text"]')`, container: `CONTROL.closest('section')`, draft: 'Raw_Draft.pdf',
-    copy: locale => [tr(locale, 'artifacts.uploadTitle'), tr(locale, 'artifacts.nameLabel'), tr(locale, 'common.cancel')],
-    checks: () => [['selected File and file-input node retained', `document.querySelector('input[type="file"]') === window.__w4dFileInput && window.__w4dFileInput.files[0] === window.__w4dSelected && window.__w4dSelected.name === 'Raw_Selected.pdf'`, true], ['upload control retained', `window.__w4dUploadButton.isConnected && window.__w4dUploadButton.closest('section') === window.__w4aBox.deref()`, true]],
-    shot: 'zh-artifacts-upload-switch-1440',
-  },
-  {
     id: 'dream-drawer-accept', path: `/orgs/${ORG}/dreams`,
     open: async (page, h) => {
       await h.waitTrue(page, bodyHas('DREAM-0011'), 'feed');
@@ -1097,7 +1056,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice)) throw new Error('unknown --slice');
 const expectProfile = arg('expect-profile');
 const buildLog = arg('build-log') && resolve(arg('build-log'));
 if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off'].includes(expectProfile) || !buildLog || !existsSync(buildLog))) {
@@ -1123,8 +1082,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => selectedSlice === 'usage' && row.id.startsWith('usage-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
