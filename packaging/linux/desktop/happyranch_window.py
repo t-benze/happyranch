@@ -203,6 +203,7 @@ def confirm_lifecycle(Gtk: object, parent: object, action: str, service_state: d
     title, detail = lifecycle_copy(action, service_state, remote_name, unsaved, recovery, chinese)
     dialog = Gtk.MessageDialog(transient_for=parent, modal=True,
         message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE, text=title)
+    dialog.set_role("happyranch-lifecycle-recovery" if recovery else "happyranch-lifecycle-confirm")
     dialog.set_default_size(560, -1)
     dialog.format_secondary_text(detail)
     for label in dialog.get_message_area().get_children():
