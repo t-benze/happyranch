@@ -8,8 +8,12 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
     private let lock = NSLock()
     private var writes = 0
     private var held: AppAPITransfer?
+    private var suspendHealth = false
+    private var heldHealth: AppAPITransfer?
     var mutations: Int { lock.withLock { writes } }
     var pending: AppAPITransfer? { lock.withLock { held } }
+    var pendingHealth: AppAPITransfer? { lock.withLock { heldHealth } }
+    func suspendNextHealth() { lock.withLock { suspendHealth = true } }
     init(body: Data) { self.body = body }
     func appRequest(method: String, target: String, headers: [String: String], body: Data) -> AppAPITransfer {
         let transfer = AppAPITransfer()
@@ -27,6 +31,10 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
         guard method == "GET", target == "/api/v1/health" else {
             transfer.finish(AppAPIError.invalidResponse); return transfer
         }
+        if lock.withLock({
+            guard suspendHealth else { return false }
+            suspendHealth = false; heldHealth = transfer; return true
+        }) { return transfer }
         transfer.emit(.response(200, ["content-type": "application/json"]))
         transfer.emit(.bytes(self.body)); transfer.finish()
         return transfer
@@ -109,6 +117,21 @@ final class AppSchemeLoadTests: XCTestCase {
                     XCTAssertFalse(pending.isCancelled, "Busy/ready must not stop an in-flight mutation")
                     XCTAssertEqual(transport.mutations, 2, "Readiness recovery must never replay")
                 }
+                // A previously started health read cannot overwrite a newer
+                // busy → ready publication when its cancellation returns late.
+                transport.suspendNextHealth()
+                let olderAdmission = Task { try await scheme.admitDocument() }
+                let healthDeadline = Date().addingTimeInterval(5)
+                while transport.pendingHealth == nil && Date() < healthDeadline { try await Task.sleep(for: .milliseconds(10)) }
+                let olderHealth = try XCTUnwrap(transport.pendingHealth)
+                for busy in [true, false] {
+                    scheme.updateReadiness(try AppAPIHealth(status: 200, data: Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy)}}".utf8)))
+                }
+                if case .success = await olderAdmission.result { XCTFail("Superseded admission cannot succeed") }
+                XCTAssertTrue(olderHealth.isCancelled)
+                let recoveredStatus = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, in: .page)
+                XCTAssertEqual(recoveredStatus as? String, "ready", "Old admission cancellation cannot replace newer readiness")
+                XCTAssertFalse(pending.isCancelled)
                 pending.emit(.response(200, ["content-type": "text/plain"]))
                 pending.emit(.bytes(Data("original result".utf8))); pending.finish()
                 let result = try await view.callAsyncJavaScript("return await window.pendingResult;", arguments: [:], in: nil, in: .page)

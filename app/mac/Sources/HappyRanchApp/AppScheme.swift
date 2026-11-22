@@ -71,6 +71,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var owners: [ObjectIdentifier: Owner] = [:]
     private var cancelled: Set<String> = []
     private var admission: Task<Void, Error>?
+    private var readinessRevision = UUID()
     private var documentOwners = AppSchemeOwnerSummary()
     private var document = UUID()
     private var documentContext: String?
@@ -167,7 +168,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     func updateReadiness(_ health: AppAPIHealth) {
         hostContract = health.contract; incompatibleSide = health.incompatibleSide
         guard state != health.state else { return }
-        state = health.state; admission?.cancel(); admission = nil
+        state = health.state; readinessRevision = UUID()
+        admission?.cancel(); admission = nil
         emitStatus()
     }
 
@@ -239,11 +241,12 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if refresh, state == "ready" { admission = nil }
         if let admission { try await admission.value; return }
         let expected = document
+        let expectedReadiness = readinessRevision
         let task = Task { [weak self] in
             guard let self else { throw AppAPIError.cancelled }
             let health = try await AppAPIHealth.read(from: self.transport)
             try Task.checkCancellation()
-            guard self.document == expected else { throw AppAPIError.cancelled }
+            guard self.document == expected, self.readinessRevision == expectedReadiness else { throw AppAPIError.cancelled }
             self.hostContract = health.contract
             self.incompatibleSide = health.incompatibleSide
             self.state = health.state
@@ -253,7 +256,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         admission = task
         do { try await task.value }
         catch {
-            guard document == expected else { throw error }
+            guard document == expected, readinessRevision == expectedReadiness else { throw error }
             admission = nil
             if state == "target_starting" || state == "ready" { state = "unreachable" }
             emitStatus(); throw error
@@ -300,7 +303,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         } catch {
             owners[key]?.upstream?.cancel()
             guard let owner = owners[key] else { return }
-            if state == "ready" { state = "unreachable"; admission = nil; emitStatus() }
+            if state == "ready", !(error is CancellationError), (error as? AppAPIError) != .cancelled {
+                state = "unreachable"; admission = nil; emitStatus()
+            }
             if began || (forwarded && (error as? AppAPIError) != .notSent) { owner.task.didFailWithError(AppAPIError.unavailable) }
             else { reply(owner.task, status: 503, code: state == "busy" ? "busy" : state == "incompatible" ? "incompatible" : "target_unreachable") }
         }
