@@ -39,6 +39,7 @@ import {
   ackContextOf,
   baseFromSnapshot,
   capacityFieldLabel,
+  capacityGuidanceMessage,
   classifySnapshot,
   consequenceMessage,
   draftConsequence,
@@ -519,6 +520,16 @@ export function DaemonCapacitySection(): JSX.Element {
 
   const valuesChanged = base !== null && draftBase !== null && !sameBaseValues(base, draftBase);
   /**
+   * S9-FIX D1 (v2.4 §3 / C1): whether the operator's NUMBERS differ from the
+   * accepted base. `valuesChanged` also counts key presence, because a save
+   * always writes both keys explicitly; on a config where the keys are absent
+   * that is true before any edit. Presence alone is what a save would do, not
+   * operator work, so it must not make an untouched page an unsaved owner.
+   */
+  const pairChanged = base !== null && draftPair !== null
+    && (draftPair.queue_workers !== base.pair.queue_workers
+      || draftPair.host_global_session_cap !== base.pair.host_global_session_cap);
+  /**
    * R5: a raw text edit is unsaved operator work even when it does not parse
    * into a valid pair. `9007199254740993`, `abc` and `` are all work a reload
    * or a route change would destroy, and a later changed-revision read must not
@@ -529,7 +540,7 @@ export function DaemonCapacitySection(): JSX.Element {
   const rationaleOnlyDirty = !valuesChanged && !rawEdited && reason.trim().length > 0;
   const unresolved = unresolvedPublication !== null
     || conflictSeen || conflictUnusable !== null || externalSeen;
-  const dirty = rawEdited || valuesChanged || rationaleOnlyDirty || unresolved;
+  const dirty = rawEdited || pairChanged || reason.trim().length > 0 || unresolved;
 
   // A write lock engages on a conflict or an uncertain/unknown outcome. Until an
   // explicit reconciliation clears it, no PUT is issued under any circumstance.
@@ -1263,7 +1274,8 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setWorkersText(event.target.value)}
             />
             <p id="capacity-workers-guidance" className="text-text-secondary text-sm">
-              {displayedSnapshot?.guidance.queue_workers}
+              {displayedSnapshot !== null
+                && capacityGuidanceMessage(displayedSnapshot.guidance, 'queue_workers', locale)}
             </p>
             {fieldErrors.queue_workers && (
               <p id="capacity-workers-error" role="alert" className="text-feedback-danger text-sm">
@@ -1299,7 +1311,8 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setCapText(event.target.value)}
             />
             <p id="capacity-cap-guidance" className="text-text-secondary text-sm">
-              {displayedSnapshot?.guidance.host_global_session_cap}
+              {displayedSnapshot !== null
+                && capacityGuidanceMessage(displayedSnapshot.guidance, 'host_global_session_cap', locale)}
             </p>
             {fieldErrors.host_global_session_cap && (
               <p id="capacity-cap-error" role="alert" className="text-feedback-danger text-sm">

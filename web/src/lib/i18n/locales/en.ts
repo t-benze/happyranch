@@ -1418,6 +1418,11 @@ export const en = {
   'settings.capacity.consequence.aligned':
     'These limits match. Other HappyRanch or service-provider limits may still reduce concurrent work.',
   'settings.capacity.notSetInFile': 'Not explicitly saved',
+  // S9-FIX D2: fixed capacity guidance, localized here; the range numbers come from the API.
+  'settings.capacity.guidance.queue_workers':
+    'Suggested starting range: {low}–{high}. Adjust based on task wait times. This is guidance, not a required range.',
+  'settings.capacity.guidance.host_global_session_cap':
+    'Suggested starting range: {low}–{high}. This applies to HappyRanch supervised sessions, not every process on the machine. The range is not enforced.',
   'settings.capacity.receipt': 'Values received at {time} (your device time)',
   'settings.capacity.numeric.blank': '{field} is required.',
   'settings.capacity.numeric.grammar': '{field} must be a whole number greater than zero, written in plain digits.',

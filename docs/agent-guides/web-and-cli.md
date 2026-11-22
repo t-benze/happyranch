@@ -2797,6 +2797,16 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   applies it before a read observation is called usable or a write result
   enters the capacity cache, so a response the editor rejects can never become
   accepted cached data.
+  THR-387 S9-FIX: the unsaved-edit/owner state counts edited text, a changed
+  number pair, a typed reason or an unresolved outcome. Key presence alone does
+  not: on a config where either key is absent, the seeded defaults plus "a
+  save writes both keys" no longer make an untouched page dirty or prompt on
+  leave (Save stays available and still writes both keys explicitly). The two
+  fixed "Suggested starting range" guidance lines are product copy rendered
+  from the en/zh-CN catalog in the current locale, so they switch live; their
+  range numbers are read from the daemon's `guidance` prose, which is shown
+  verbatim if it carries no recognizable range or is no longer marked
+  unenforced.
   Three refusals are load-bearing and are enforced at the request handler, not
   only on the control. A refresh that FAILED leaves the last usable values on
   screen under a `Last known` label with the receipt of the response that

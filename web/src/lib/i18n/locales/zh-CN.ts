@@ -1355,6 +1355,10 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.capacity.consequence.aligned':
     '这些上限一致。HappyRanch 或服务提供方的其他限制仍可能减少并发工作量。',
   'settings.capacity.notSetInFile': '未明确保存',
+  'settings.capacity.guidance.queue_workers':
+    '建议起始范围：{low}–{high}。请根据任务等待时间调整。这只是建议，并非必须遵守的范围。',
+  'settings.capacity.guidance.host_global_session_cap':
+    '建议起始范围：{low}–{high}。此范围适用于 HappyRanch 受监管会话，而不是本机上的所有进程。该范围不会被强制执行。',
   'settings.capacity.receipt': '值接收于 {time}（你的设备时间）',
   'settings.capacity.numeric.blank': '{field}为必填项。',
   'settings.capacity.numeric.grammar': '{field}必须是大于零的整数，并以普通数字书写。',
