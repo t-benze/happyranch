@@ -72,7 +72,6 @@ interface FieldState {
   dreamMode: string;
   dreamInclude: string;
   dreamExclude: string;
-  threadsEnabled: boolean;
   threadsTimeout: string;
   /** Permanent reviewer IDs in saved order (missing IDs retained); null when
    * the saved configuration is invalid/unclassified and cannot be shown. */
@@ -109,7 +108,6 @@ function buildFieldState(org: OrgSettings): FieldState {
     dreamMode: org.dreaming.agents.mode,
     dreamInclude: org.dreaming.agents.include.join(', '),
     dreamExclude: org.dreaming.agents.exclude.join(', '),
-    threadsEnabled: org.threads.enabled,
     threadsTimeout:
       org.threads.invocation_timeout_seconds === null
         ? ''
@@ -268,7 +266,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       fields.dreamMode !== lastSaved.dreamMode ||
       filteredInclude !== savedInclude ||
       filteredExclude !== savedExclude ||
-      fields.threadsEnabled !== lastSaved.threadsEnabled ||
       fields.threadsTimeout !== lastSaved.threadsTimeout ||
       !sameReviewers(fields.reviewers, lastSaved.reviewers)
     );
@@ -369,7 +366,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
     const parsedThreadTimeout = fields.threadsTimeout.trim() ? Number(fields.threadsTimeout) : null;
     patch.threads = {
-      enabled: fields.threadsEnabled,
       invocation_timeout_seconds: parsedThreadTimeout,
     };
     // Omitted unless deliberately changed: an unrelated save never sends,
@@ -529,12 +525,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       {/* threads */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.threads.heading')}</h4>
       <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border">
-        <EditableRow label={t('settings.organization.enabled')} badge={t('settings.organization.badge.live')}>
-          <BooleanToggle
-            value={fields.threadsEnabled}
-            onChange={(v) => update('threadsEnabled', v)}
-          />
-        </EditableRow>
         <EditableRow label={t('settings.organization.threads.invocationTimeout')} badge={t('settings.organization.badge.live')}>
           <input
             type="number"
