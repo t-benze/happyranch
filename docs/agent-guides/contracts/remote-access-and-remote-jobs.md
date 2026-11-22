@@ -383,7 +383,12 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   exception class, without messages, paths or values and without changing caller
   refusal categories. The harness retains only the bounded allowlisted excerpt
   specified in the [M1 runbook](../../operations/remote-access-runbook.md#manual-home-m1-i6a);
-  diagnostic delivery/collection failure preserves refusal. **Disposable
+  diagnostic delivery/collection failure preserves refusal.
+  THR-327 seq634's runner-only external observer additionally records the fixed
+  activation child's exit/signal and bounded stderr byte metadata with all
+  payload text omitted. It attaches to the same packaged helper without changing
+  product code, sandbox or deadlines; bounds and unavailable/incomplete semantics
+  are in the M1 runbook. No trace text is uploaded. **Disposable
   authentication simulation does not prove a real desktop dialog.** New exact-head
   hosted evidence is required for these cases. Historical [run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)
   at `455c9c5b689fa25f625e2df8cae1b551c2a1de86` passed the earlier operator-profile

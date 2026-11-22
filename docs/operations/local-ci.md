@@ -3817,6 +3817,11 @@ systemd, system bus or installed polkit acceptance is exercised.
 
 I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
+Its `-k m1_child` selection checks the M1-only closed child trace
+projection and unchanged public Enable delivery when observation is unavailable,
+including a real read-only strace-launched synthetic process. This
+selection requires `/usr/bin/strace`; hosted M1 installs it as a runner-only
+diagnostic tool. It never attaches to local services or changes ptrace policy.
 I3b's retained focused selection is
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py scripts/test_invite_recovery.py scripts/test_invite_control.py scripts/test_home_audit.py -q --tb=short`.
 Run the full selection through a durable job. Its mounted cases use real

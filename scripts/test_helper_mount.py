@@ -33,6 +33,109 @@ from scripts.test_installer_token_custody import staged_inventory
 REAL_THREAD = threading.Thread
 
 
+def test_m1_child_diagnostics_closed_projection() -> None:
+    from scripts.ci.m1_child_diagnostics import Projection
+
+    projection = Projection()
+    start = (b'41 execve("/opt/happyranch-desktop/python/bin/python3", '
+        b'["/opt/happyranch-desktop/python/bin/python3", "-I", "-m", '
+        b'"runtime.remote_access.home_activation_backend"], 0x123 /* 0 vars */) = 0')
+    for line in (start.replace(b'41 ', b'40 ').replace(b'0 vars', b'1 vars'),
+                 b'40 +++ exited with 0 +++', start,
+                 b'41 write(0x2, 0x123, 0x2000) = 0x2000',
+                 b'41 write(0x2, 0x123, 0x10 <unfinished ...>',
+                 b'41 write(1, "private-token-canary https://private/join", 44) = 44',
+                 b'41 +++ exited with 7 +++',
+                 start.replace(b'41 ', b'42 '),
+                 b'42 +++ killed by SIGTERM +++',
+                 start.replace(b'41 ', b'43 ').replace(b') = 0', b' <unfinished ...>'),
+                 b'43 <... execve resumed>) = 0', b'43 +++ exited with 1 +++',
+                 start.replace(b'41 ', b'44 ').replace(b') = 0', b') = -1 ENOENT (private-token-canary)'),
+                 b'44 +++ exited with 255 +++',
+                 b'42 private-token-canary', b'private-token-canary'):
+        projection.line(line)
+    result = projection.result('complete')
+    assert result == dict(child_diagnostics='complete', truncated=False, children=[
+        dict(child_pid=41, exit_status=7, signal=None, stderr_bytes=4096,
+             stderr_truncated=True, stderr_incomplete=True, stderr='payload-omitted'),
+        dict(child_pid=42, exit_status=None, signal='SIGTERM', stderr_bytes=0,
+             stderr_truncated=False, stderr_incomplete=False, stderr='payload-omitted'),
+        dict(child_pid=43, exit_status=1, signal=None, stderr_bytes=0,
+             stderr_truncated=False, stderr_incomplete=False, stderr='payload-omitted'),
+        dict(child_pid=44, exit_status=255, signal=None, stderr_bytes=0,
+             stderr_truncated=False, stderr_incomplete=False, stderr='payload-omitted')])
+    assert 'private-token-canary' not in json.dumps(result)
+    assert 'https://' not in json.dumps(result)
+    for pid in range(100, 140):
+        projection.line(start.replace(b'41 ', str(pid).encode() + b' '))
+    assert len(projection.children) == 32 and projection.truncated
+
+
+def test_m1_child_diagnostics_real_strace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.ci import m1_child_diagnostics as diagnostic
+
+    code = 'import os; os.write(2,b"private-token-canary"); raise SystemExit(7)'
+    command = [sys.executable, '-I', '-c', code]
+    monkeypatch.setattr(diagnostic, 'PYTHON', sys.executable)
+    monkeypatch.setattr(diagnostic, 'CHILD', command)
+    traced = subprocess.run(['/usr/bin/strace', *diagnostic.TRACE_ARGS, *command],
+        env={}, cwd='/', capture_output=True, timeout=5, check=False)
+    assert traced.returncode == 7
+    projection = diagnostic.Projection()
+    for line in traced.stdout.splitlines():
+        projection.line(line)
+    records = projection.result('complete')['children']
+    assert len(records) == 1
+    assert records[0] == dict(child_pid=records[0]['child_pid'], exit_status=7,
+        signal=None, stderr_bytes=20, stderr_truncated=False,
+        stderr_incomplete=False, stderr='payload-omitted')
+    assert 'private-token-canary' not in json.dumps(records)
+
+
+@pytest.mark.parametrize('armed', [True, False])
+def test_m1_child_observer_preserves_public_enable(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any, armed: bool) -> None:
+    import runpy
+
+    class NativeError(Exception):
+        pass
+
+    connection, reply, gio = Mock(), Mock(), Mock()
+    reply.get_message_type.return_value = 'reply'
+    reply.get_signature.return_value = 's'
+    reply.get_body.return_value.unpack.return_value = ('"accepted"',)
+    reply.get_sender.return_value = ':1.28'
+    connection.send_message_with_reply_sync.return_value = (reply, None)
+    values = dict(StartServiceByName=1, GetNameOwner=':1.28',
+        GetConnectionUnixProcessID=os.getpid(), NameHasOwner=False)
+    connection.call_sync.side_effect = lambda *args: SimpleNamespace(unpack=lambda: (values[args[3]],))
+    gio.DBusMessageType.ERROR = 'error'
+    gio.DBusConnectionFlags = SimpleNamespace(AUTHENTICATION_CLIENT=1, MESSAGE_BUS_CONNECTION=2)
+    gio.DBusConnection.new_for_address_sync.return_value = connection
+    glib = SimpleNamespace(Error=NativeError, Variant=Mock(), VariantType=Mock())
+    observer = Mock()
+    observer.stdout = io.StringIO('ARMED\n' if armed else '{"child_diagnostics":"unavailable"}\n')
+    observer.communicate.return_value = ('{"child_diagnostics":"complete"}\n' if armed else '', None)
+    launch = Mock(return_value=observer)
+    monkeypatch.setitem(sys.modules, 'gi.repository', SimpleNamespace(Gio=gio, GLib=glib))
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.setenv('RUNNER_ENVIRONMENT', 'github-hosted')
+    monkeypatch.setenv('M1_BUILD', str(tmp_path))
+    monkeypatch.setattr(os, 'getuid', lambda: 1001)
+    monkeypatch.setattr(subprocess, 'Popen', launch)
+    monkeypatch.setattr(sys, 'argv', ['m1_home_bus.py', 'Enable', '--diagnose-child'])
+    caller = runpy.run_path(str(Path(__file__).with_name('ci') / 'm1_home_bus.py'))
+    caller['main']()
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert sum(row.get('admission') == 'accepted' for row in records) == 1
+    assert any(row.get('helper_released') is True for row in records)
+    assert any(row.get('child_diagnostics') == ('complete' if armed else 'unavailable') for row in records)
+    connection.send_message_with_reply_sync.assert_called_once()
+    connection.close_sync.assert_called_once_with(None)
+    observer.communicate.assert_called_once_with(input='', timeout=5)
+    assert launch.call_args.args[0][-2] == str(os.getpid())
+
+
 def test_clean_enable_empty_environment_account_tools(
         composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from runtime.remote_access import service_manager

@@ -12,7 +12,11 @@ admit() {
   [[ $(uname -m) == x86_64 && $(ps -p 1 -o comm=) == systemd ]] || fail 'requires amd64 and systemd PID 1'
 }
 inspect() { sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT "$python" -I -B "$PWD/scripts/ci/m1_home_checks.py" "$@"; }
-call() { /usr/bin/python3 -I -B "$PWD/scripts/ci/m1_home_bus.py" "$@"; }
+call() {
+  local diagnostics=()
+  if [[ $1 == Enable ]]; then diagnostics=(--diagnose-child); fi
+  /usr/bin/python3 -I -B "$PWD/scripts/ci/m1_home_bus.py" "$@" "${diagnostics[@]}"
+}
 install_package() {
   admit
   local path

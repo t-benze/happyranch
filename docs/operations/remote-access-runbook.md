@@ -61,6 +61,24 @@ examines the last 160 journal records for fixed helper/related units, scans at m
 to `enable-refusal.journal.jsonl`. Unknown messages/stages, unrelated units and
 raw journal metadata are discarded. Diagnostic delivery failure preserves the
 original refusal and cannot turn unavailable collection into acceptance.
+
+THR-327 seq634 additionally permits a test-only external child observer. The
+M1 caller's `--diagnose-child` option activates the same packaged helper through
+the fixed system-bus name before Enable and attaches runner-only `strace`; no
+unit, executable, sandbox or kernel ptrace policy is changed. Setup counts inside
+the original 480s+10s caller budget. The observer recognizes only the exact
+empty-environment bundled-Python activation argv and projects actual exit status
+or signal plus successful inline fd2 write/writev byte counts (capped at 4096).
+All stderr payload text is omitted, including apparently harmless text. Split or
+failed writes are marked incomplete; zero observed bytes is not an exception
+diagnosis. Only 32 child records and 4 MiB of trace are processed, with 4096-byte
+lines. Raw exec trace is RAM-only; stdin, stdout and stderr payloads are never
+traced. Only the closed projection enters the existing run.log artifact. Caller
+pipe closure drains for at most 250ms and detaches the observer without signalling
+the helper. Collection failure is reported as unavailable and preserves every
+original public call and acceptance predicate. A swallowed child exception may
+still produce exit 1 with no observed stderr.
+
 Historical M1 receipts do not establish these home cases; native acceptance requires a run at
 the exact new head. M2/M3/M4, Product E2E and deployment are separate.
 

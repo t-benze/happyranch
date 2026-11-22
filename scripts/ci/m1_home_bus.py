@@ -36,8 +36,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('method', choices=BUDGETS)
     parser.add_argument('--interrupt', action='store_true')
+    parser.add_argument('--diagnose-child', action='store_true')
     args = parser.parse_args()
     assert not args.interrupt or args.method == 'Enable', 'interruption fixture requires Enable'
+    assert not args.diagnose_child or args.method == 'Enable', 'child observer requires Enable'
     connection = Gio.DBusConnection.new_for_address_sync(
         Gio.dbus_address_get_for_bus_sync(Gio.BusType.SYSTEM, None),
         Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
@@ -50,6 +52,21 @@ def main() -> None:
             GLib.VariantType.new(reply), Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]
 
     observer = None
+    child_observer = None
+
+    def finish_child_observer() -> None:
+        nonlocal child_observer
+        if child_observer is not None:
+            try:
+                # Closing this private control pipe detaches the root observer.
+                output, _ = child_observer.communicate(input='', timeout=5)
+                print(output, end='', flush=True)
+            except subprocess.TimeoutExpired:
+                child_observer.terminate()
+                child_observer.communicate(timeout=5)
+                print(json.dumps(dict(child_diagnostics='unavailable')), flush=True)
+            child_observer = None
+
     try:
         if args.interrupt:
             observer = subprocess.Popen(['sudo', '--preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT',
@@ -60,6 +77,24 @@ def main() -> None:
         owner = None
         for attempt in range(2):
             deadline = time.monotonic() + BUDGETS[args.method] + 10
+            if args.diagnose_child:
+                # Activate the same fixed packaged service before attachment;
+                # all setup time is inside the unchanged operation deadline.
+                try:
+                    bus('StartServiceByName', '(su)', (NAME, 0), '(u)')
+                    diagnostic_owner = bus('GetNameOwner', '(s)', (NAME,), '(s)')
+                    diagnostic_pid = bus('GetConnectionUnixProcessID', '(s)', (diagnostic_owner,), '(u)')
+                    diagnostic_start = Path(f'/proc/{diagnostic_pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+                    child_observer = subprocess.Popen(['sudo', '--preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT',
+                        '/usr/bin/python3', '-I', '-B', str(Path(__file__).with_name('m1_child_diagnostics.py')),
+                        str(diagnostic_pid), diagnostic_start], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, text=True)
+                    if child_observer.stdout.readline().strip() != 'ARMED':
+                        finish_child_observer()
+                        raise RuntimeError()
+                except Exception:
+                    print(json.dumps(dict(child_diagnostics='unavailable')), flush=True)
+                    finish_child_observer()
             try:
                 # Read the actual reply sender, avoiding a race with I5e's name
                 # release after a quickly refused renewal. This is the CLI's
@@ -86,6 +121,7 @@ def main() -> None:
                                   'attempt': attempt + 1}), flush=True)
                 if attempt or not remote.endswith('.unavailable'):
                     raise AssertionError('public lifecycle admission refused') from None
+                finish_child_observer()
                 # Wait for the refused instance to release its bus name; this
                 # is not an idle-delay workaround for successful Enable.
                 end = time.monotonic() + 5
@@ -116,6 +152,7 @@ def main() -> None:
         print(json.dumps({'method': args.method, 'helper_released': True,
                           'outcome': 'requires-independent-state-check'}), flush=True)
     finally:
+        finish_child_observer()
         if observer is not None and observer.poll() is None:
             observer.terminate()
             observer.wait(timeout=5)

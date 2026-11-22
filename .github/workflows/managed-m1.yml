@@ -46,7 +46,7 @@ jobs:
       - name: Install and exercise public home lifecycle and Off residue
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y python3-venv
+          sudo apt-get update && sudo apt-get install -y python3-venv strace
           mkdir -p "$M1_LOGS"
           bash scripts/ci/m1_install_ready_uninstall.sh run 2>&1 | tee "$M1_LOGS/run.log"
       - name: Collect nonsecret unit properties before teardown
