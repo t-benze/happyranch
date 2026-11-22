@@ -5996,7 +5996,13 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             f.ids=a
                             action=case.removeprefix('recovery_').split('_')[0]
                             command=s4command(f,action)
+                            prior_visit=s4row(f,'workflow_seq_visits',a.visit_id)
                             value=dict(action='workflow_control',workflow=command)
+                            before=inventory()
+                            foreign_body=dict(session_id=f.source.current_session_id,agent='s3_alt',status='completed',confidence=80,
+                                output_summary='Foreign actor cannot recover this source',decision=value)
+                            refused,_=await post(value,payload=foreign_body,code=409)
+                            assert refused.json()['detail']['code']=='unknown_session' and inventory()==before
                             before=inventory()
                             foreign=deepcopy(value);foreign['workflow']['expected_cas']+=1
                             await post(foreign,code=409);assert inventory()==before,'B18 stale CAS allocated'
@@ -6009,6 +6015,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                                 visit=s4row(f,'workflow_seq_visits',run['active_visit_id'])
                                 assert visit['task_id'] in s6queue(f),'C3 replacement not released'
                                 assert visit['principal']==('s3_alt' if action=='reassign' else 's3_author')
+                                assert (visit['input_selection_bytes'],visit['input_selection_digest'])==(prior_visit['input_selection_bytes'],prior_visit['input_selection_digest'])
+                                recovery_brief=json.loads(f.db.get_task(visit['task_id']).brief)
+                                assert recovery_brief['original_request']==json.loads(originals[a.run_id][0])['request']
+                                assert recovery_brief['supplement']==(command['supplement'] if action=='rebrief' else None)
                                 assert json.loads(run['assignment_snapshot_bytes'])['nodes'][0]['principal']=='s3_author','B17 future default changed'
                                 f.ids=AdmissionIds(a.run_id,a.carrier_task_id,visit['id'],visit['task_id'],run['last_event_id'],a.outbox_id)
                                 finish(f.ids)
@@ -6019,6 +6029,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                                 drain_source_cancellations(f.org,f.source.id)
                                 assert s4row(f,'workflow_seq_runs',a.run_id)['state']=='running','B19 missing closure finished'
                                 f.ids=a
+                                s4closed(f,a.visit_id,terminal='cancelled',native_status='cancelled',preserve_session=True,positive=False)
+                                f.conn.execute('UPDATE tasks SET cancelled_at=? WHERE id=?',('2026-11-22T00:00:00+00:00',a.visit_task_id));f.conn.commit()
+                                drain_source_cancellations(f.org,f.source.id)
+                                assert s4row(f,'workflow_seq_runs',a.run_id)['state']=='running','B19 terminal without positive outer closed cancellation'
                                 s4closed(f,a.visit_id,terminal='cancelled',native_status='cancelled',preserve_session=True)
                                 f.conn.execute('UPDATE tasks SET cancelled_at=? WHERE id=?',('2026-11-22T00:00:00+00:00',a.visit_task_id));f.conn.commit()
                                 drain_source_cancellations(f.org,f.source.id)

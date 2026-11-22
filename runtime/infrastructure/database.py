@@ -2207,13 +2207,17 @@ class Database(
                     return False
                 self._conn.rollback()
                 return True
-            if decision_json is not None:
-                workflow_decision = json.loads(decision_json)
-                if workflow_decision.get('action') == 'workflow_start' and 'workflows' in workflow_decision:
-                    continuation = getattr(self, '_workflow_continuation', None)
-                    if continuation is None:
-                        raise ValueError('workflow_start_capture_missing')
-                    continuation.preflight_start_uncommitted(task_id)
+            try:
+                workflow_decision = json.loads(decision_json) if decision_json is not None else None
+            except (ValueError, TypeError, RecursionError):
+                workflow_decision = None  # Retain ordinary legacy result storage semantics.
+            plural_start = (isinstance(workflow_decision, dict) and workflow_decision.get('action') == 'workflow_start'
+                and 'workflows' in workflow_decision)
+            if plural_start:
+                continuation = getattr(self, '_workflow_continuation', None)
+                if continuation is None:
+                    raise ValueError('workflow_start_capture_missing')
+                continuation.preflight_start_uncommitted(task_id)
             omit_attempt = False
             if v2_admission is not None:
                 omit_attempt = ordinary_completion_omission(self, task_id=task_id, row={
@@ -2245,9 +2249,7 @@ class Database(
                     task_id=task_id, agent=agent, session_id=session_id,
                     result_id=accepted_result_id, admission=v2_admission, now=now,
                 )
-            if ownership.kind == 'seq_source_wait_set' or (decision_json is not None
-                    and json.loads(decision_json).get('action') == 'workflow_start'
-                    and 'workflows' in json.loads(decision_json)):
+            if ownership.kind == 'seq_source_wait_set' or plural_start:
                 continuation = getattr(self, '_workflow_continuation', None)
                 if continuation is None or not continuation.callback_uncommitted(
                         task_id=task_id, agent=agent, session_id=session_id, result_id=accepted_result_id):
