@@ -29,6 +29,7 @@ from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
+from runtime.remote_access.helper_lifecycle import log_enable_refusal
 
 
 class _OperationTransactions(HomeActivationTransactionStore):
@@ -519,6 +520,7 @@ class HelperLifecycleBackend:
 
 def helper_main() -> int:
     """Closed private input from the fixed helper; never an operator CLI."""
+    request = None
     try:
         if len(sys.argv) != 1 or os.geteuid() != 0:
             raise ActivationRefused()
@@ -542,6 +544,10 @@ def helper_main() -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ActivationRefused()
+            # The fixed child has an empty environment: Python's default
+            # executable search omits /usr/sbin on Debian/Ubuntu.
+            if argv[0] in ('useradd', 'userdel', 'groupdel'):
+                argv = ['/usr/sbin/' + argv[0], *argv[1:]]
             return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
         manager = SystemdServiceManager(system=True, run=run)
         io = ManagedInstaller(layout='deb', manager=manager, run=run)
@@ -560,7 +566,10 @@ def helper_main() -> int:
             raise ActivationRefused()
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         return 0
-    except Exception:
+    except Exception as error:
+        if (type(request) is dict and request.get('method') == 'Enable'
+                and request.get('step') == 'capture'):
+            log_enable_refusal(error, child=True)
         return 1  # No raw paths, keys, credentials or diagnostics leave this child.
 
 
