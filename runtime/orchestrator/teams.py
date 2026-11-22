@@ -221,7 +221,7 @@ class TeamsRegistry:
         if not self.needs_empty_default():
             return False
         manager = TeamManager(
-            name=None, team="default", workers=(), kind="human", principal="founder",
+            name=None, team="default", workers=(), kind="human", principal="founder", tagged=True,
         )
         metadata = dict(self._metadata)
         metadata.setdefault("default_team", "default")
