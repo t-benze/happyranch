@@ -11,7 +11,7 @@ WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --draft-re
 WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --draft-review=C14
 ```
 
-The dispatcher accepts exactly `C01` through `C26`, or `all`, and emits
+The dispatcher accepts `C01` through `C26`, `caller_ledger`, or `all`, and emits
 attributable outcomes. Positive Draft/coexistence paths use the unpatched real
 `generic_start_catalog()`, qualified registrar and Founder Save/Allow APIs. No
 SQL-seeded new definitions/Allowed defaults substitute for those owners.
@@ -41,6 +41,7 @@ stale-selection rejection at the reducer boundary, with zero persisted changes.
 | C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |
 | C22 | Five fixed historical resource hashes. Raw base/head comparisons below are separate and mandatory; all does not invent a raw oracle. |
 | C23–C26 | Actual manager/worker and node briefs; two real identities' generations/CAS/global operation keys and admitted pins; unchanged Coding Setup list/export; exact documented Founder API sequence. |
+| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding refuses at its unchanged 16384 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
 
 Retain the ordinary focused keepers on **both** Python versions:
 `--start2=all`, `--setup-admission=all`, `--generic-abi=all`, `--s8a=all`,

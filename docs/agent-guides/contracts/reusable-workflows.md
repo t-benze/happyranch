@@ -42,6 +42,12 @@ latest settings and assignments atomically. Committed replay preserves original
 receipts/pins before later Disable checks. Neither recovery nor new runs renew
 wider-goal allowances.
 
+Native decision parsing uses the supplied reader ledger's original traversal
+allowance: 65536 for the sequential reader and 16384 for Coding authority.
+Prechecks reserve on that same ledger before the next operation. No parser
+creates a replacement allowance or raises these existing ceilings; byte, SQL
+and deadline bounds remain unchanged.
+
 ### Founder API-only Draft configuration
 
 Workflows → Setup continues to configure **Coding only**. Draft configuration

@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 27))
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 27)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -7869,6 +7869,46 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         from dataclasses import replace
         from runtime.workflows import sequential_release as release
         from runtime.workflows.sequential_builtin import SequentialBuiltinStore, preset_catalog
+        if case=='caller_ledger':
+            from runtime.workflows.coding_authority_history import _Budget
+            from runtime.workflows.sequential_history import _ReadBudget
+            from runtime.workflows.sequential_initiator import native_decision
+            from runtime.workflows.sequential_start_metadata import _Unrecognized
+            from runtime.workflows._read_exhaustion import ReadExhaustion
+            async with dr_fixture() as f:
+                await dr_start(f)
+                row,_,decision,_=f.original_callback
+                raw=f.conn.execute('SELECT decision_json FROM task_results WHERE id=?',(row['id'],)).fetchone()[0].encode('utf8')
+                observed=json.loads(raw)
+                assert observed['action']=='workflow_start' and observed['workflows']==decision['workflows']
+                before=dr_inventory(f)
+                for ledger,start,admitted,ceiling in (
+                    (_ReadBudget,16384,True,65536),
+                    (_ReadBudget,65535,False,65536),
+                    (_ReadBudget,65536,False,65536),
+                    (_Budget,16383,False,16384),
+                    (_Budget,16384,False,16384),
+                ):
+                    budget=ledger(traversed=start)
+                    error=None
+                    try:
+                        parsed=native_decision(raw,budget)
+                    except _Unrecognized as exc:
+                        error=exc
+                    assert (error is None)==admitted,('caller ledger admission',ledger.__name__,start,admitted,str(error))
+                    if admitted:
+                        assert parsed==observed and start<budget.traversed<ceiling
+                        assert budget.remaining_bytes>0 and budget.sql_steps==0
+                    else:
+                        assert str(error)=='not a closed sequential callback'
+                        assert isinstance(error.__cause__,ReadExhaustion)
+                        cause=error.__cause__
+                        assert cause.allowance is budget and (cause.dimension,cause.requested,cause.remaining)==('work',1,0)
+                        assert budget.traversed==ceiling
+                        if start==ceiling: assert budget.consumed==0
+                    assert dr_inventory(f)==before
+                    print('caller ledger',ledger.__name__,start,'admitted' if admitted else 'refused',budget.traversed,ceiling,flush=True)
+            return
         if case=='C01':
             catalog=dr_catalog();assert set(catalog)=={'release/happyranch/coding',DR_IDENTITY}
             c=catalog[DR_IDENTITY];entry=release.STAGED_GENERIC[(DR_IDENTITY,1)]

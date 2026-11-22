@@ -104,6 +104,10 @@ class _Budget:
     accepted_rows: int = 0
     traversed: int = 0
 
+    @property
+    def traversal_limit(self) -> int:
+        return _TRAVERSAL_LIMIT
+
     def step(self) -> None:
         self.traversed += 1
         _budget_check(self.traversed <= _TRAVERSAL_LIMIT, _check, self, 'work', 1, _TRAVERSAL_LIMIT - self.traversed + 1)
