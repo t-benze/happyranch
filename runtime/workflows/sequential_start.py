@@ -709,10 +709,10 @@ def _ordinary_dependencies(task: dict, budget: _ReadBudget) -> None:
 
 def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str, source: RetryClaim,
                             decision: bytes, captures: tuple, authority: Any, remaining: Any) -> tuple[AdmissionIds, ...]:
-    """All-or-none S5 writer; S6a supplies genuine invocation and goal allowance.
+    """All-or-none writer. The native caller supplies per-member ceilings.
 
-    No session/run_step/public mount is attached. Remaining is the original
-    wider-goal allowance captured by the caller, never a new per-batch budget.
+    Legacy internal aggregate fixtures retain their original scalar allowance.
+    Per-run pins and complete history/cancellation reservations never renew.
     """
     from runtime.infrastructure.workflow_task_ownership import adopt_sequential_wait_set_uncommitted
     from runtime.workflows.sequential_assignments import parse_assignment_start
@@ -772,6 +772,8 @@ def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
             and any(team['name'] == source.team and team['manager'] == dict(kind='agent', principal=source.assigned_agent)
                 for team in snapshot['teams']), 'workflow_seq_batch_source_ineligible')
         prepared, total = [], dict(max_visits=0, max_events=0, max_recoveries=0)
+        if isinstance(remaining, tuple):
+            _check(len(remaining) == len(captures), 'workflow_seq_batch_allowance_unavailable')
         metadata = _selected_layout(conn, budget)
         for command_value, capture in zip(value['workflows'], captures, strict=True):
             raw = _bytes(command_value)
@@ -793,9 +795,14 @@ def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
                 original_limits=storage.limits, authority=authority, capture=capture.authority,
                 assignments=capture, budget=budget, wait_set_id=wait_id, pins=(compiled, setting, storage)))
             limits = generic_limits(compiled, storage.limits, command.lower_limits)
+            if isinstance(remaining, tuple):
+                ceiling = remaining[len(prepared) - 1]
+                _check(all(getattr(limits, key) <= getattr(ceiling, key) for key in total),
+                    'workflow_seq_batch_allowance_exhausted')
             for key in total:
                 total[key] += getattr(limits, key)
-        _check(all(total[key] <= getattr(remaining, key) for key in total), 'workflow_seq_batch_allowance_exhausted')
+        if not isinstance(remaining, tuple):
+            _check(all(total[key] <= getattr(remaining, key) for key in total), 'workflow_seq_batch_allowance_exhausted')
         # Preserve the existing shared reservation before allocating any member;
         # the complete resulting reader repeats its original full-ledger check.
         all_runs = _engine_rows(conn, 'workflow_seq_runs', budget, '1', ())

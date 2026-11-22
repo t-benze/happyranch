@@ -108,6 +108,6 @@ def cmd_workflow_sequential_start_compose(args: argparse.Namespace) -> None:
         print(f'error: {code}; preserve original input, operation key and composed pins', file=sys.stderr)
         raise SystemExit(2) from None
     if isinstance(command, ComposeInputV2):
-        print('@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable; '
-              'read-only advisory decision, do not submit for admission in this release', file=sys.stderr)
+        print('@2 admission supported; composition is read-only; copy the decision unchanged into your own '
+              'genuine FINAL completion, preserving pins and operation keys', file=sys.stderr)
     print(decision.decode('utf8'))

@@ -618,11 +618,12 @@ finalize adapters. Fresh old coding start@1/@2 refuses
 Coding starts still require the selected reviewed definition, latest Allowed NEW
 settings, compatible storage, mounted native engine and eligible current roles.
 Required genuine scratch/pilot acceptance precedes ordinary use; source/static
-evidence is not acceptance. Deferred native recovery/reassignment remains
-unavailable. Ordinary routing stays legacy.
+evidence is not acceptance. Recovery-purpose invocations grant no new start or
+replacement authority; initiator-owned generic controls are described below.
+Ordinary routing stays legacy.
 
 S8b registers Coding v3 as generic Coding data only. Public Start@1 discovery
-and composition remain unchanged; public @2 discovery/compose is available; admission stays unavailable.
+and composition remain unchanged; public @2 discovery/compose and genuine native admission are supported.
 Repository resolve/bind/preflight and sequential finalize/journal transports refuse
 generic @2 selections with `sequential_domain_transport_unavailable`; perform only
 the authorized engineering duties with existing tools. Original @1 replay,
@@ -759,21 +760,41 @@ guarantee. Worker/self-only and direct thread/wake/dream sessions cannot use thi
 manager task decision. Retired coding.v1 / old fresh coding start@1/@2 remain
 refused. Unavailable discovery grants no setup, install, role or start authority.
 
-@2 discovery/compose available; public admission unavailable
-(`workflow_start_v2_unavailable`) in this release, including Allowed Coding v3.
-An eligible own ordinary manager session may read the additive CLI-only GET
-`/api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID`.
-The same read-only composer accepts explicit `workflow-sequential-start-compose@2`
-with 1–8 workflows: exact selector/settings, stable member key, request/inputs,
-role/step overrides and explicit lower limits. Preserve omitted/value/null step
-options and omitted/empty notification consumption. It prints an advisory closed
-plural GenericStartCommand decision and an unavailable warning. Do not submit it
-for admission: the completion route refuses before native/workflow writes or
-queued work. Discovery reserves nothing and reports remaining allowance
-unavailable; no start/control/wait continuation, setup or direct thread/wake/dream
-start authority follows. @1 guidance and bytes remain unchanged. B2+B3 owns the
-complete admission/continuation/recovery path in one later PR; unit (c) owns
-Draft→Review. No live operation or pilot is authorized by this release.
+@2 admission supported for an eligible executable manager's own ordinary task,
+including a thread-originated source and its existing generic wait set. Read your
+CLI-only GET `/api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID`.
+Compose with `happyranch workflows sequential start-compose --org ORG --session-id SID --from-file ABS --json`
+and explicit `workflow-sequential-start-compose@2`, containing 1–8 workflows.
+Concurrent capacity is bounded by existing cancellation reservations (currently
+three unfinished runs); larger batches refuse finitely, all-or-none.
+Keep exact definition/settings pins, stable member keys, request/inputs, role/step
+overrides and explicit lower_limits, including omitted/value/null options.
+The composer only reads. Copy its closed plural decision unchanged into your
+OWN genuine FINAL completion.
+The callback requires your exact active org/task/agent session context and
+revalidates it under the binding lease before any publication ownership or write.
+Foreign, ended and workflow-owned sessions grant no start authority.
+First admission atomically creates the genuine
+result/attempt-or-omission, wait set, all members and receipt with the actual
+empty delivered page. Later starts reuse that wait set. Entry visits wait for
+positive ORIGINAL source closure. Replay preserves original pins and identities;
+Disable affects only fresh admission. Save never starts work.
+
+Held and returned runs wake only their recorded initiator. A run return NEVER
+completes your source. Read the stored delivery and owned-run context; acknowledge
+only IDs actually delivered to this SID using optional consume_notifications
+(maximum32). Use workflow_wait with owned run_ids to await dependencies. Use
+workflow_control with workflow-sequential-control@2, run_id, stable operation_key,
+expected_cas, expected_held_event_id, action and reason. Retry preserves the stopped
+inputs/assignment; rebrief adds bounded supplement; reassign requires a permanent
+target_agent_id and affects only the stopped occurrence; cancel preserves unknown
+execution until original closure. Recoveries keep original per-run limits and
+spent counters. No total-step cap or cross-run numeric pool exists; batch, history,
+cancellation reservation, revise/retry and pinned per-run limits still apply.
+Only your own genuine done after every run and ordinary dependency drains closes
+the source; done refuses while any remain. This grants no thread/wake/dream/worker
+start authority, setup, live operation or pilot authority. @1 bytes and historical
+source-terminal semantics remain unchanged. Unit(c) Draft→Review is separate.
 
 ## Task scratch and owned processes
 

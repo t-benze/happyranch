@@ -1,12 +1,13 @@
 # Coding workflow contracts
 
-## R2 B1 staged Start@2
+## R2 B2+B3 Start@2
 
-@2 discovery/compose available; public admission unavailable
-(`workflow_start_v2_unavailable`), even with saved Allowed Coding v3 settings.
-Use the additive own-session CLI-only start-context/v2 and explicit @2 composer;
-do not submit its advisory plural decision for admission. @1 bytes remain frozen.
-[Canonical B1 contract](reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+@2 admission supported for eligible own-source manager sessions. Discovery and
+composition only read; genuine completion admits all members and their receipt
+atomically. Held recovery uses existing retry/rebrief/step-local reassign/cancel;
+run return wakes the initiator and never completes its source. Exact-head review,
+QA and genuine live Final duties remain agent-owned. @1 bytes remain frozen.
+[Canonical Start@2 contract](reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
 
 ## R2 unit (a): saved defaults and new-run admission
 
@@ -22,8 +23,9 @@ ask to re-read/adopt current settings and retry that action. Save keeps its own 
 
 The [setup/admission contract](reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission)
 owns routes, closed formats, refusal codes, recovery and fixture commands. Existing
-@1 bytes/readers remain unchanged. Public Start@2 admission and Draft→Review remain later
-units; the offline script still refuses fresh admission. Source delivery performs
+@1 bytes/readers remain unchanged. Public Start@2 admission is supported by unit
+(b) above; Draft→Review remains a later unit. The offline script still refuses
+fresh admission. Source delivery performs
 no live setup/Allow, deployment/restart or pilot.
 
 ## S9 retained Coding reader boundary
@@ -57,8 +59,7 @@ Explicit Founder setup/Allow is separate; registration supplies no start authori
 S8b delivers registration and version-selective transport refusal. Public
 start-context discovery, its @1 wire shape, start-compose and v2 fresh-start
 behavior remain unchanged. A fresh public v3 pin still refuses with
-`sequential_release_pin_mismatch` on the original @1 selector; B1 adds @2 discovery/compose,
-while public admission stays unavailable. Repository-resolve/bind/preflight and sequential
+`sequential_release_pin_mismatch` on the original @1 selector; B2+B3 add public @2 admission and continuation. Repository-resolve/bind/preflight and sequential
 Final/journal transports refuse fresh generic @2 selections. Offline setup
 registers v3 only, with no fresh admission; original @1 admission lookup/replay
 remains read-only. V1/v2 bytes, pins, admitted replay, selected-history reads and

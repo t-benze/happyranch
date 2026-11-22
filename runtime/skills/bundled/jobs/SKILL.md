@@ -353,8 +353,10 @@ owns actual binding/version rules and agent responsibilities. R2 unit (a) suppor
 explicit Founder Workflows → Setup Save of Coding v3 role defaults and separate
 Allow/Disable of new-run admission. Save preserves admission and starts no work;
 Disable preserves admitted-run pins. Registration alone grants no role assignment,
-Allow, job or credential entitlement. Public Start@2 and Draft→Review registration
-remain later units; the offline script still refuses fresh admission. Its generic node
+Allow, job or credential entitlement. Public Start@2 multi-run admission and
+continuation are supported by R2 unit (b) through genuine task completion;
+Draft→Review registration remains a later unit. The offline script still refuses
+fresh admission. Its generic node
 brief requires authorized repository/base/worktree preflight, independent
 exact-head review, same-head QA and genuine live Final with matching-head literal
 checks and remote MERGED observation. Follow the generic callback@2 and bounded

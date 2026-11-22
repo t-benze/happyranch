@@ -2870,8 +2870,8 @@ def _consume_completion_report(
                 'workflow_run_not_owned: control/wait requires an admitted owned @2 run; no workflow effect applied')
         return
     if workflow_result and decision.action == 'workflow_start' and decision.workflows is not None:
-        # Internal @2 parser/retained admissions exist; public start is still
-        # unmounted. A historical batch is never reinterpreted as a @1 start.
+        if continuation is not None and ownership.kind == 'seq_source_wait_set':
+            continuation.publish_result(resolved_row_id, task_id)
         return
     if workflow_result and decision.action == "workflow_start":
         if decision.workflow.get('format') == 'workflow-sequential-start@1':

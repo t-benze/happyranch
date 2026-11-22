@@ -12,7 +12,7 @@ import signal
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1280,6 +1280,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
         decision_payload.pop("_manager_self_evaluation", None)
         decision_payload.pop("_authority_v2_admission", None)
     sequential_start = False
+    plural_start = bool(decision_payload is not None and decision_payload.get('action') == 'workflow_start'
+        and 'workflows' in decision_payload)
     if (decision_payload is not None and decision_payload.get('action') == 'workflow_start'
             and 'workflows' in decision_payload):
         from runtime.workflows.sequential_history import _ReadBudget, _bytes
@@ -1288,16 +1290,26 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
             _batch_decision(_bytes(decision_payload), _ReadBudget())
         except ValueError:
             raise HTTPException(status_code=422, detail={'code': 'workflow_invalid_decision'}) from None
-        # B1 exposes read-only discovery/composition only. Refuse before native
-        # result, attempt/claim, wait-set, consumption or queue publication.
-        raise HTTPException(status_code=409, detail={'code': 'workflow_start_v2_unavailable'})
+        if (request is None or 'origin' in request.headers
+                or request.headers.get('x-happyranch-surface') != 'cli'
+                or org.sessions.is_recovery_session(task_id, body.agent, body.session_id)):
+            raise HTTPException(status_code=403, detail={'code': 'sequential_start_source_required'})
+        if body.status != 'completed' or body.waiting_on_job_ids:
+            raise HTTPException(status_code=409, detail={'code': 'workflow_start_completed_required'})
+        # Exact persisted replay remains read-only after tracker cleanup. A new
+        # callback must have the same org/task/principal context as discovery,
+        # before preparation can acquire any publication ownership.
+        if (ownership.kind not in ('legacy', 'seq_source_wait_set')
+                or (org.sessions.get_context_by_session(body.session_id) != (org.slug, task_id, body.agent)
+                    and org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None)):
+            raise HTTPException(status_code=409, detail={'code': 'sequential_task_session_required'})
     if decision_payload is not None and decision_payload.get('action') in ('workflow_control', 'workflow_wait'):
         from runtime.models import NextStep
         try:
             NextStep.model_validate(decision_payload)
         except ValueError:
             raise HTTPException(status_code=422, detail={'code': 'workflow_invalid_decision'}) from None
-    if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
+    if decision_payload is not None and decision_payload.get('action') == 'workflow_start' and not plural_start:
         from runtime.workflows.coding_start_records import CodingStartDecision
         workflow = decision_payload.get('workflow')
         sequential_start = isinstance(workflow, dict) and workflow.get('format') == 'workflow-sequential-start@1'
@@ -1382,6 +1394,14 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
         # unknown / fabricated) session remains unknown_session.
         prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id)
         if prior is not None:
+            if ownership.kind == 'seq_source_wait_set':
+                from runtime.infrastructure.database import completion_result_payload_matches
+                if not completion_result_payload_matches(prior, output_summary=body.output_summary,
+                        confidence_score=body.confidence, status=body.status, risks_flagged=body.risks_flagged,
+                        output_dir=body.output_dir, decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                        waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
+                        local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None):
+                    raise HTTPException(status_code=409, detail={'code': 'workflow_callback_payload_mismatch'})
             if ownership.kind == 'legacy':
                 from runtime.workflows.sequential_start import is_start_result
                 try:
@@ -1623,7 +1643,18 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     from runtime.workflows.sequential_engine import SequentialRefusal
     sequential_owner = org.workflow_sequential_dispatch if ownership.kind == 'seq_visit' else None
     coding_owner = sequential_owner or (org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None)
-    continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' else None
+    continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' or plural_start else None
+
+    @contextmanager
+    def plural_start_lease() -> Iterator[None]:
+        # Revalidate before even a transient publication lease write, keeping
+        # this same binding lease through the synchronous native COMMIT.
+        with org.sessions.binding_lease(task_id, body.agent):
+            if (org.sessions.get_context_by_session(body.session_id) != (org.slug, task_id, body.agent)
+                    or org.sessions.is_recovery_session(task_id, body.agent, body.session_id)):
+                raise HTTPException(status_code=409, detail={'code': 'sequential_task_session_required'})
+            yield
+
     try:
         admission_context = (coding_owner.callback_admission(task_id) if coding_owner is not None else
             continuation.callback_admission(task_id, body.decision, status=body.status)
@@ -1641,7 +1672,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                 # Do not await under this lease.  It bridges get_active() and the
                 # synchronized SQLite transaction, closing the old post-get_active
                 # generation-replacement gap without inverting the DB RLock.
-                with org.sessions.binding_lease(task_id, body.agent):
+                with (plural_start_lease() if plural_start else nullcontext()), \
+                        (continuation.writer_ownership(task_id) if continuation is not None else nullcontext()), \
+                        (nullcontext() if plural_start else org.sessions.binding_lease(task_id, body.agent)):
                     current = org.sessions.get_active(task_id, body.agent)
                     if current != body.session_id:
                         raise HTTPException(
@@ -1656,7 +1689,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                     # clean provider omission.  In particular, a late callback from the
                     # origin invocation must not overwrite a recovery claim.
                     if (ownership.kind == 'legacy' and decision_payload is not None
-                            and decision_payload.get('action') == 'workflow_start'):
+                            and decision_payload.get('action') == 'workflow_start' and not plural_start):
                         workflow = decision_payload['workflow']
                         if workflow.get('format') == 'workflow-sequential-start@1':
                             from runtime.workflows.sequential_start import precheck_completion
@@ -1695,17 +1728,24 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                             detail={"code": "recovery_callback_not_admissible"},
                         )
     except SequentialRefusal as exc:
-        if sequential_owner is None:
+        if sequential_owner is None and continuation is None:
             raise
         raise HTTPException(status_code=409, detail={'code': exc.code}) from None
     except CodingStartError as exc:
         if coding_owner is None:
             raise
         raise HTTPException(status_code=409, detail={'code': exc.code}) from None
-    except ValueError as exc:
-        if ownership.kind != 'seq_source_wait_set' or not str(exc).startswith('workflow_seq_'):
+    except (ValueError, sqlite3.Error) as exc:
+        if continuation is None:
             raise
-        raise HTTPException(status_code=409, detail={'code': str(exc)}) from None
+        from runtime.workflows.sequential_assignments import AssignmentRefusal
+        code = ('sequential_assignment_' + exc.cause if isinstance(exc, AssignmentRefusal)
+            else getattr(exc, 'code', str(exc)))
+        # Preserve categorical causes; arbitrary exception text is not a wire code.
+        if not code.startswith(('workflow_', 'sequential_', 'coding_')) or not all(
+                char in 'abcdefghijklmnopqrstuvwxyz0123456789_' for char in code):
+            code = 'sequential_history_unverified' if isinstance(exc, sqlite3.Error) else 'workflow_callback_unavailable'
+        raise HTTPException(status_code=409, detail={'code': code}) from None
     # Generation-owned cleanup preserves a newer invocation that may have
     # replaced this callback while the route was awaiting its DB lock.
     if not workflow_draft:

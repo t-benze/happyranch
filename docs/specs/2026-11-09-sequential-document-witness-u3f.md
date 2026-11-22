@@ -5,7 +5,9 @@ declared recipient checks for selected inputs, with no document/Coding capabilit
 witness or domain supplement. Rendered node data excludes unaddressed output;
 generic acceptance validates content/provenance, native closure and declared
 outcomes. The historical @1 document paths below retain their original bytes.
-Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+Public @2 admission/continuation is now supported by
+[R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
+Coding stays Disabled/unset until explicit Founder setup/Allow; private source evidence
 does not prove genuine provider/process execution. See the
 [S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
 

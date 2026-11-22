@@ -584,7 +584,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.
     bounded_coding = budget is not None
-    from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
+    from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_V2_TABLES
     for table in CODING_TABLES:
         if table not in tables:
             if coding_present:
@@ -615,17 +615,18 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_coding_mappings', 'workflow_admission_records', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
-        native_sequential = table in SEQUENTIAL_TABLES and table in sequential
+        native_sequential = table in SEQUENTIAL_V2_TABLES and table in sequential
         sequential_rows = {}
         if native_sequential:
             # The complete sequential reader has authenticated these full rows
             # before entering the retained readers in the same snapshot. Exact
             # family names come from the DDL owner, never a namespace prefix.
-            sequential_key = 'version' if table == 'workflow_seq_schema_versions' else 'id'
+            sequential_keys = tuple(row[1] for row in sorted(conn.execute(f'PRAGMA table_xinfo("{quoted}")'),
+                key=lambda row: row[5]) if row[5])
             for expected in sequential[table]:
                 if bounded_coding:
                     budget.step()
-                sequential_rows[(type(expected[sequential_key]), expected[sequential_key])] = expected
+                sequential_rows[tuple((type(expected[key]), expected[key]) for key in sequential_keys)] = expected
         # Enrollment chooses the full comparison projection, never a table-wide
         # coding charge. Ordinary rows remain ordinary after mapping/start.
         table_bounded = bounded_coding
@@ -689,7 +690,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                     continue  # Already discriminated ordinary metadata, no coding spend.
                 data = dict(zip(selected_columns, row, strict=True))
                 if native_sequential:
-                    expected = sequential_rows.get((type(data.get(sequential_key)), data.get(sequential_key)))
+                    expected = sequential_rows.get(tuple((type(data.get(key)), data.get(key)) for key in sequential_keys))
                     if (expected is None or data.keys() != expected.keys()
                             or any(type(data[key]) is not type(value) or data[key] != value
                                    for key, value in expected.items())):

@@ -1,17 +1,18 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
-Current B1 addendum: @2 discovery/compose available; public admission unavailable
-(`workflow_start_v2_unavailable`). This supersedes older public-@2-closed
-statements about discovery/composition only. @1 bytes remain frozen; no admission,
-continuation/recovery or Draft→Review registration is delivered by B1.
-[Current B1 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+Current R2 unit (b) addendum: @2 discovery/compose remain read-only; public
+admission, source continuation and initiator-owned recovery are supported through
+an eligible manager task's genuine completion callback. @1 bytes and historical
+source-terminal semantics remain frozen. Draft→Review registration remains
+undelivered. [Current Start@2 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
 
 > R2 unit (a) supersedes U8b's read-only admission and no-admission-control scope
 > below: Setup now has separate Founder-authenticated Allow new runs / Disable
 > new runs controls. Save never starts work and preserves current admission
 > (first Save initializes Disabled); Disable affects only fresh admission and
-> preserves already-admitted runs' immutable pins. Public Start@2 admission and Draft→Review
-> remain unavailable. See the [current R2 setup/admission contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+> preserves already-admitted runs' immutable pins. Public Start@2 admission/continuation
+> is supported by R2 unit (b) above; Draft→Review remains unavailable. See the
+> [current R2 setup/admission contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
 
 > S7a annotation: for new generic @2 runs, U8's singular @1 task/run views are
 > superseded by additive plural/versioned reads. See the [current S7a contract](../agent-guides/contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2).
