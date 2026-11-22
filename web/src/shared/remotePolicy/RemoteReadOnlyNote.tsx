@@ -5,6 +5,8 @@
  * - refused   → native answered `403 remote_read_only`: the same copy plus
  *               "Your changes are still here and weren't sent." Never the C3
  *               failed-save copy; the draft stays.
+ * - refusedAction → the same refusal for a request without a draft (removal,
+ *               retire/restore, a toggle): "Nothing was sent."
  * - hostWide  → a host-wide action (create org, runtime, custom CLI
  *               retry/forget) that is unavailable on a remote connection.
  * - unavailable → a page whose reads the Host does not share (Capacity,
@@ -21,15 +23,22 @@ export function RemoteReadOnlyNote({
   className = 'mb-4',
 }: {
   host: string;
-  variant?: 'readOnly' | 'refused' | 'hostWide';
+  variant?: 'readOnly' | 'refused' | 'refusedAction' | 'hostWide';
   className?: string;
 }): JSX.Element {
   const { t } = useTranslation();
   const key =
-    variant === 'refused' ? 'remotePolicy.refused' : variant === 'hostWide' ? 'remotePolicy.hostWide' : 'remotePolicy.readOnly';
+    variant === 'refused'
+      ? 'remotePolicy.refused'
+      : variant === 'refusedAction'
+        ? 'remotePolicy.refusedAction'
+        : variant === 'hostWide'
+          ? 'remotePolicy.hostWide'
+          : 'remotePolicy.readOnly';
+  const refusal = variant === 'refused' || variant === 'refusedAction';
   return (
     <p
-      role={variant === 'refused' ? 'alert' : 'note'}
+      role={refusal ? 'alert' : 'note'}
       data-testid="remote-read-only"
       data-variant={variant}
       className={`border-border-default bg-surface-sunken text-text-secondary flex min-w-0 items-start gap-2 rounded-sm border p-3 text-sm break-words ${className}`}

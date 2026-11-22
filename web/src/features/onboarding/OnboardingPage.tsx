@@ -43,7 +43,7 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
-import { REMOTE_OPS, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { REMOTE_OPS, useRemoteReadOnly, useRemoteRefusal } from '@/lib/remotePolicy';
 import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ConnectRuntimeStep } from './ConnectRuntimeStep';
 
@@ -325,6 +325,7 @@ function CreateStep({
   const [slug, setSlug] = useState('');
   const [serverError, setServerError] = useState<AddOrgError | null>(null);
   const qc = useQueryClient();
+  const refusal = useRemoteRefusal();
 
   const create = useMutation({
     mutationFn: (body: { slug: string }) => orgsApi.createOrg(body),
@@ -333,6 +334,9 @@ function CreateStep({
       onCreated(resp.slug);
     },
     onError: (err: unknown, variables) => {
+      // S8-2b: native's 403 remote_read_only, recorded from the response (it
+      // can precede app status reporting the remote Host); never the raw 403.
+      if (refusal.note(err)) return;
       // Store the error IDENTITY (not a rendered string) so a locale switch
       // re-translates without resubmitting, and the raw unknown detail stays
       // byte-for-byte (W2a review R1).
@@ -347,7 +351,10 @@ function CreateStep({
   const remoteHost = useRemoteReadOnly(REMOTE_OPS.createOrg);
 
   const submit = (): void => {
-    if (valid && !create.isPending && remoteHost === null) create.mutate({ slug });
+    if (valid && !create.isPending && remoteHost === null) {
+      refusal.clear();
+      create.mutate({ slug });
+    }
   };
 
   // Distinct `creating` progress state — the workspace is being provisioned.
@@ -381,6 +388,7 @@ function CreateStep({
           onChange={(e) => {
             setSlug(e.target.value);
             setServerError(null);
+            refusal.clear();
           }}
           placeholder={t('onboarding.create.slugPlaceholder')}
           autoFocus
@@ -403,7 +411,9 @@ function CreateStep({
             · ^[a-z0-9-]&#123;1,40&#125;$
           </span>
         </p>
-        {remoteHost ? (
+        {refusal.host !== null ? (
+          <RemoteReadOnlyNote host={refusal.host || t('remotePolicy.theHost')} variant="refused" className="" />
+        ) : remoteHost ? (
           <RemoteReadOnlyNote host={remoteHost} variant="hostWide" className="" />
         ) : errorText && (
           <p className="text-feedback-danger text-sm" role="alert">

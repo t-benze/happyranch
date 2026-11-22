@@ -1093,6 +1093,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   // THR-387 S8-2b — remote read-only configuration (v2.4 §4).
   'remotePolicy.readOnly': '此连接仅可查看。请在 {host} 上更改。',
   'remotePolicy.refused': '此连接仅可查看。请在 {host} 上更改。你的更改仍保留在这里，尚未发送。',
+  'remotePolicy.refusedAction': '此连接仅可查看。请在 {host} 上更改。未发送任何内容。',
   'remotePolicy.unavailable.title': '此连接无法使用{page}',
   'remotePolicy.unavailable.body': '{host} 不向已连接的应用提供{page}。请在 {host} 上更改；如需配置此电脑，请在“连接”中切换到此电脑。',
   'remotePolicy.capacityScope': '影响 {host} 上的所有组织',

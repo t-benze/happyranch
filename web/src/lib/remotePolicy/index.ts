@@ -10,7 +10,7 @@ export {
   type RemoteConfigEntry,
   type RemoteConfigOperation,
 } from './policy';
-export { useRemoteHost, useRemoteReadOnly } from './hooks';
+export { useRemoteHost, useRemoteReadOnly, useRemoteRefusal } from './hooks';
 
 /** Policy operations named by the UI (exact v1 templates). */
 export const REMOTE_OPS = {
@@ -36,3 +36,4 @@ export const REMOTE_OPS = {
   customSkillEligibility: 'PUT /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility',
   editSchedule: 'PATCH /api/v1/orgs/{slug}/schedules/{schedule_id}',
 } as const satisfies Record<string, RemoteConfigOperation>;
+export { remoteRefusalFor, shownRemoteRefusal, type RemoteRefusal } from './refusal';

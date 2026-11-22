@@ -136,7 +136,9 @@ export function CustomSkillDetailPage(): JSX.Element {
   // visible but read-only; Preview (a read-like check) stays available.
   const readOnlyHost = useRemoteReadOnly(REMOTE_OPS.patchCustomSkill, REMOTE_OPS.customSkillVersion, REMOTE_OPS.retireCustomSkill, REMOTE_OPS.restoreCustomSkill, REMOTE_OPS.customSkillEligibility);
   const runLifecycle = (action: LifecycleAction, run: () => Promise<unknown>): void => {
-    if (lifecycleOwner.saveRefused || lifecycleOwner.isBusy() || readOnlyHost !== null) return;
+    // Permanent removal (purge) is not a policy entry: it keeps its existing
+    // response path on every target (whatever the Host answers is shown).
+    if (lifecycleOwner.saveRefused || lifecycleOwner.isBusy() || (readOnlyHost !== null && action !== 'purge')) return;
     sentLifecycle.current = action;
     void lifecycleOwner.track(run);
   };

@@ -185,7 +185,12 @@ app is detected only by origin `happyranch-app://app` with the
   fails is `ResultUnknownError` with the Result unknown notice; it is never
   retried. A caller's own abort keeps its `AbortError`; explicit pre-forward
   refusals (409 `target_changed` Not sent, 503 codes, 429 Throttled) stay
-  distinct.
+  distinct. So does native's exact pre-forward `403
+  {"detail":{"code":"remote_read_only"}}` (S8-2b): when `app.stateChanged`
+  lands before its headers or during its body, a change still fails as
+  `RemoteReadOnlyError` (403 `remote_read_only`, nothing sent, no notice,
+  never re-sent), recognised only from that exact status and body; every
+  other stale answer stays Result unknown.
 - **On change** (`native/queryClient.ts`, attached in `AppProvider`): query
   hashes include the generation of the last switch; a change cancels queries,
   moves each mounted observer to its new-generation key (one fetch under the
@@ -678,14 +683,26 @@ organizations on {Host}”. Language and HappyRanch on this computer are local
 and unchanged (C5).
 
 A `403 remote_read_only` (e.g. native committed a remote target before
-`app.stateChanged` reached the page) is a confirmed failure that keeps the
-draft: `useConfigOwner` records the refusal (from `track`, or `settle(ticket,
-outcome, error)`) and `OwnerSaveNotice` shows “… Change this on {Host}. Your
-changes are still here and weren't sent.”, never the C3 failed-save copy and
-never the raw diagnostic; the schedule Edit dialog shows the same notice and
-keeps its fields. Operations (tasks, threads, jobs, approve/reject, KB,
+`app.stateChanged` reached the page, including when the event lands while the
+response is in flight) is a confirmed failure that keeps the draft. The
+refusal is recorded from the response itself, never from app status alone
+(`lib/remotePolicy/refusal.ts`): `useConfigOwner` records it (from `track`,
+or `settle(ticket, outcome, error)`) and `OwnerSaveNotice` shows “… Change
+this on {Host}. Your changes are still here and weren't sent.”, never the C3
+failed-save copy and never the raw diagnostic. A draftless request (custom
+profile removal, custom-skill retire/restore, Organization's Work Hours
+toggle; the registry never marks these `failed`) shows “… Change this on
+{Host}. Nothing was sent.” / “… 未发送任何内容。” for the latest request; the
+next request clears it. The ownerless Create organization (Add organization,
+onboarding) and Add agent forms use `useRemoteRefusal`: they keep the entered
+fields and show the refused copy at once, before status reports the remote
+Host. {Host} is the live remote name, else the name captured at refusal, else
+“the Host computer” / “主机”. The schedule Edit dialog shows the same notice
+and keeps its fields. Operations (tasks, threads, jobs, approve/reject, KB,
 artifacts, skill validate/eligibility preview, custom-skill purge, schedule
-operations other than edit) are not policy entries and are unchanged.
+operations other than edit) are not policy entries and are unchanged:
+Permanent remove (purge) stays enabled on a remote target and shows whatever
+the Host answers through its existing error path.
 
 ## Packaged main build: theme boot and resource manifest (Settings S1b-B)
 

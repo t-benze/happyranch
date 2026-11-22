@@ -42,7 +42,7 @@ import {
 } from '@/lib/owners/ownerRegistry';
 import { awaitOwnersReceipt, OwnersReceiptError } from '@/lib/native/owners';
 import { getAppStatus } from '@/lib/native/target';
-import { isRemoteReadOnlyError } from '@/lib/remotePolicy';
+import { remoteRefusalFor, shownRemoteRefusal, type RemoteRefusal } from '@/lib/remotePolicy';
 import { useOwnerGateContext, useOwnerRecords } from './OwnerGate';
 
 interface OwnerScopeValue {
@@ -154,12 +154,17 @@ export interface ConfigOwner {
   checking: boolean;
   checkFailed: boolean;
   /**
-   * S8-2b: the last failed save was native's pre-forward `403
-   * remote_read_only` (nothing reached the Host; the draft stays). Holds the
-   * remote Host name captured at refusal ('' if native no longer names one);
-   * null otherwise. The save notice shows the read-only copy, never C3.
+   * S8-2b: the latest request was refused by native's pre-forward `403
+   * remote_read_only` (nothing reached the Host; a draft stays). Holds the
+   * remote Host name captured at refusal ('' if native did not name one yet);
+   * null otherwise. A draft refusal shows while that draft is the failed one;
+   * a draftless request's refusal (removal, retire/restore, a toggle) shows
+   * on its own. The next request clears it. The save notice shows the
+   * read-only copy, never C3.
    */
   remoteRefusal: string | null;
+  /** True when the shown refusal was for a draftless request. */
+  remoteRefusalDraftless: boolean;
 }
 
 function draftKey(draft: unknown): string {
@@ -250,21 +255,25 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
   // refuses, so a reentrant submit can start no second ticket and send nothing.
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
-  const [remoteRefusal, setRemoteRefusal] = useState<string | null>(null);
+  const [remoteRefusal, setRemoteRefusal] = useState<RemoteRefusal | null>(null);
   const isBusy = useCallback(() => inFlight.current, []);
   const begin = useCallback(
     (sentRevision?: number) => {
       if (inFlight.current) return null;
       // Report the current draft first so the registry knows the newest revision.
       registry.setDraft(id, { dirty: latest.current.dirty, revision: revision.current.value });
-      return registry.beginSave(id, sentRevision);
+      const ticket = registry.beginSave(id, sentRevision);
+      // A new request replaces the previous request's refusal.
+      if (ticket !== null) setRemoteRefusal(null);
+      return ticket;
     },
     [registry, id],
   );
   const noteRefusal = useCallback((error: unknown) => {
-    if (!isRemoteReadOnlyError(error)) return;
-    const target = getAppStatus()?.target;
-    setRemoteRefusal(target?.kind === 'remote' ? target.name : '');
+    // Recorded from the response itself: the refusal can arrive before
+    // native's app.stateChanged reports the remote target.
+    const refusal = remoteRefusalFor(error, getAppStatus(), !latest.current.dirty);
+    if (refusal) setRemoteRefusal(refusal);
   }, []);
   const settle = useCallback(
     (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => {
@@ -320,8 +329,13 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
 
   const saveRefused = record?.status === 'unknown';
 
-    // A refusal describes the failed record only: any later settle clears it.
-  const shownRefusal = record?.status === 'failed' ? remoteRefusal : null;
+  // The latest request's refusal: a draft one while that draft is the failed
+  // one; a draftless one while nothing is unsent or outstanding.
+  const shownRefusal = shownRemoteRefusal(record?.status, remoteRefusal);
 
-  return { id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed, remoteRefusal: shownRefusal };
+  return {
+    id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed,
+    remoteRefusal: shownRefusal?.host ?? null,
+    remoteRefusalDraftless: shownRefusal?.draftless ?? false,
+  };
 }

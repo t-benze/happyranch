@@ -37,7 +37,7 @@ import { useCreateAgent } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { useExecutorOptions } from '@/hooks/executor-options';
 import { useTranslation } from '@/hooks/i18n';
-import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { REMOTE_OPS, useRemoteReadOnly, useRemoteRefusal } from '@/lib/remotePolicy';
 import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 
@@ -139,10 +139,14 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
       : !!newTeam);
   // S8-2b: enrolling an agent is configuration; read-only on a remote Host.
   const remoteHost = useRemoteReadOnly(REMOTE_OPS.createAgent);
+  // Native's 403 remote_read_only can arrive before app status reports the
+  // remote Host: record it from the response so the refusal shows at once.
+  const refusal = useRemoteRefusal();
   const canSubmit = fieldsOk && !create.isPending && remoteHost === null;
 
   const onSubmit = async () => {
     if (!canSubmit) return;
+    refusal.clear();
     const body =
       role === 'worker'
         ? {
@@ -166,8 +170,12 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
       onOpenChange(false);
       if (slug) navigate(`/orgs/${slug}/agents/${created.canonical_id}`);
     } catch (err: unknown) {
-      // Native refused before forwarding: the read-only note below says so.
-      if (isRemoteReadOnlyError(err)) return;
+      // Native refused before forwarding: nothing was sent and the fields
+      // stay; the refusal note below says so (never the raw 403).
+      if (refusal.note(err)) {
+        setServerError(null);
+        return;
+      }
       setServerError({
         view: classifyAgentError(err, 'agents.error.createFailed'),
         params: { name, team, newTeam },
@@ -359,7 +367,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             />
           </div>
 
-          {remoteHost ? (
+          {refusal.host !== null ? (
+            <RemoteReadOnlyNote host={refusal.host || t('remotePolicy.theHost')} variant="refused" className="" />
+          ) : remoteHost ? (
             <RemoteReadOnlyNote host={remoteHost} className="" />
           ) : serverError && (
             <p role="alert" className="text-tier-red text-sm">

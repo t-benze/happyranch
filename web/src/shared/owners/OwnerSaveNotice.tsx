@@ -6,8 +6,10 @@
  * - unknown → the unknown copy and Check result (or the named unavailable
  *             reason when no reconciliation can run here)
  * - pending → "Saving {page} on {computer} · {org}…"
- * - failed by native `403 remote_read_only` (S8-2b) → the remote read-only
- *             copy ("Change this on {Host}"; changes kept, not sent), never C3.
+ * - refused by native `403 remote_read_only` (S8-2b) → the remote read-only
+ *             copy ("Change this on {Host}"; changes kept, not sent), never
+ *             C3; a draftless request (removal, retire/restore, a toggle)
+ *             says nothing was sent.
  * Connection-attempt errors never use this notice.
  */
 import { Button } from '@/design-system/primitives/Button';
@@ -40,8 +42,14 @@ export function OwnerSaveNotice({
       </p>
     );
   }
-  if (record.status === 'failed' && owner.remoteRefusal !== null) {
-    return <RemoteReadOnlyNote host={liveHost ?? (owner.remoteRefusal || t('remotePolicy.theHost'))} variant="refused" className={className} />;
+  if (owner.remoteRefusal !== null) {
+    return (
+      <RemoteReadOnlyNote
+        host={liveHost ?? (owner.remoteRefusal || t('remotePolicy.theHost'))}
+        variant={owner.remoteRefusalDraftless ? 'refusedAction' : 'refused'}
+        className={className}
+      />
+    );
   }
   if (record.status === 'failed') {
     return (

@@ -118,3 +118,83 @@ test('the pre-forward refusal is recognised and is a confirmed failure (draft ke
   assert.equal(isRemoteReadOnlyError(null), false);
   assert.equal(isRemoteReadOnlyError(new Error('remote_read_only')), false);
 });
+
+// --- Review F2/F3: the refusal comes from the response itself -----------------
+// The production chain without React: request() through the real client and
+// native target store (synthetic bridge/fetch; native has committed remote,
+// but app.stateChanged has NOT reached the page yet), the real owner registry
+// status derivation, and the refusal selectors `useConfigOwner` and
+// `useRemoteRefusal` render from (`lib/remotePolicy/refusal.ts`).
+class MemoryStorage {
+  #m = new Map();
+  getItem(k) { return this.#m.has(k) ? this.#m.get(k) : null; }
+  setItem(k, v) { this.#m.set(k, String(v)); }
+  removeItem(k) { this.#m.delete(k); }
+}
+async function refusedBeforeStatusEvent(path, body) {
+  globalThis.window = globalThis;
+  globalThis.sessionStorage = new MemoryStorage();
+  globalThis.sessionStorage.setItem('happyranch.token', 'synthetic-not-a-credential');
+  globalThis.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
+  Object.defineProperty(globalThis, 'location', { configurable: true, writable: true, value: { protocol: 'happyranch-app:', origin: 'happyranch-app://app' } });
+  const target = await import('../src/lib/native/target.ts');
+  const client = await import('../src/lib/api/client.ts');
+  const local = { schema: 2, generation: 'g1', target: { kind: 'local', id: 'local', name: 'This computer' }, state: 'ready', incompatible: null, local: { supported: true, mode: 'service', running: 'running', prompt_base_url: 'http://127.0.0.1:9876/api/v1' }, candidate: null, access_unsaved: false, locale: { current: 'en', persisted: true } };
+  target.__setNativeBridgeForTests({ call: async () => JSON.stringify(local), on: () => () => {} });
+  await target.captureTarget();
+  let sends = 0;
+  globalThis.fetch = async () => {
+    sends += 1;
+    return new Response(JSON.stringify({ detail: { code: 'remote_read_only' } }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  };
+  const error = await client.request(path, { method: path.endsWith('/orgs') ? 'POST' : 'DELETE', body }).catch((e) => e);
+  return { error, sends, app: target.getAppStatus() };
+}
+
+test('F2: a draftless owner (profile removal / retire / Work Hours toggle) shows the 403 refusal before the status event', async () => {
+  const { remoteRefusalFor, shownRemoteRefusal } = await import('../src/lib/remotePolicy/refusal.ts');
+  const { createOwnerRegistry } = await import('../src/lib/owners/ownerRegistry.ts');
+  const { error, sends, app } = await refusedBeforeStatusEvent('/executors/runtime/profiles/studio-cli');
+  assert.equal(sends, 1);
+  assert.equal(app.target.kind, 'local', 'the page has not seen the remote target yet');
+  const registry = createOwnerRegistry();
+  registry.register('remove', { scope: 'settings', page: 'settings.executors', subject: 'studio-cli', org: 'studio', computer: null });
+  registry.setDraft('remove', { dirty: false, revision: 0 });
+  const ticket = registry.beginSave('remove');
+  registry.settleSave(ticket, classifySaveError(error));
+  const status = registry.getSnapshot()[0].status;
+  assert.notEqual(status, 'failed', 'the registry derives no failed status without a draft');
+  const refusal = remoteRefusalFor(error, app, true);
+  assert.deepEqual(refusal, { host: '', draftless: true }, 'Host not named yet: the UI shows the localized fallback');
+  assert.deepEqual(shownRemoteRefusal(status, refusal), refusal, 'shown independently of failed/unsent-draft status');
+  // The next request clears it (pending hides it; a later success leaves none).
+  assert.equal(shownRemoteRefusal('pending', refusal), null);
+  assert.equal(shownRemoteRefusal(status, null), null);
+});
+
+test('F2 control: a draft refusal shows only while that draft is the failed one', async () => {
+  const { shownRemoteRefusal } = await import('../src/lib/remotePolicy/refusal.ts');
+  const draft = { host: 'Studio Host', draftless: false };
+  assert.deepEqual(shownRemoteRefusal('failed', draft), draft);
+  for (const status of ['clean', 'confirmed', 'dirty', 'pending', 'unknown', undefined]) {
+    assert.equal(shownRemoteRefusal(status, draft), null, String(status));
+  }
+  const action = { host: '', draftless: true };
+  for (const status of ['dirty', 'pending', 'unknown', undefined]) assert.equal(shownRemoteRefusal(status, action), null, String(status));
+});
+
+test('F3: Create organization / Add agent record the 403 from the response itself (local status, no raw string)', async () => {
+  const { remoteRefusalFor } = await import('../src/lib/remotePolicy/refusal.ts');
+  const { classifyAddOrgError } = await import('../src/lib/addOrgError.ts');
+  const { error, sends, app } = await refusedBeforeStatusEvent('/orgs', { slug: 'northwind' });
+  assert.equal(sends, 1, 'not replayed');
+  assert.equal(app.target.kind, 'local');
+  // Without the refusal record the classifier renders the raw diagnostic.
+  assert.equal(classifyAddOrgError(error, 'northwind').kind, 'raw');
+  assert.deepEqual(remoteRefusalFor(error, app, false), { host: '', draftless: false });
+  const remoteApp = { ...app, target: { kind: 'remote', id: 'saved', name: 'Studio Host' } };
+  assert.deepEqual(remoteRefusalFor(error, remoteApp, false), { host: 'Studio Host', draftless: false });
+  for (const other of [{ status: 403, code: 'forbidden' }, { status: 409, code: 'org_exists' }, new Error('remote_read_only'), null]) {
+    assert.equal(remoteRefusalFor(other, app, false), null);
+  }
+});

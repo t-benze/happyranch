@@ -20,7 +20,7 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
-import { REMOTE_OPS, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { REMOTE_OPS, useRemoteReadOnly, useRemoteRefusal } from '@/lib/remotePolicy';
 import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
@@ -36,6 +36,9 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // S8-2b: native's 403 remote_read_only can arrive before app status reports
+  // the remote Host; record it from the response (never the raw 403 text).
+  const refusal = useRemoteRefusal();
 
   const create = useMutation({
     mutationFn: (body: { slug: string }) => orgsApi.createOrg(body),
@@ -45,6 +48,7 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
       navigate(`/orgs/${resp.slug}/threads`);
     },
     onError: (err: unknown, variables) => {
+      if (refusal.note(err)) return;
       // Use the mutation variables, not the (possibly edited) live `slug`.
       setServerError(classifyAddOrgError(err, variables.slug));
     },
@@ -70,12 +74,15 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
             onChange={(e) => {
               setSlug(e.target.value);
               setServerError(null);
+              refusal.clear();
             }}
             placeholder={t('org.add.slugPlaceholder')}
             autoFocus
           />
           <p className="text-text-secondary text-xs">{t('org.add.slugHint')}</p>
-          {remoteHost ? (
+          {refusal.host !== null ? (
+            <RemoteReadOnlyNote host={refusal.host || t('remotePolicy.theHost')} variant="refused" className="" />
+          ) : remoteHost ? (
             <RemoteReadOnlyNote host={remoteHost} variant="hostWide" className="" />
           ) : errorText && (
             <p className="text-tier-red text-sm">{errorText}</p>
@@ -87,7 +94,10 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
           </Button>
           <Button
             disabled={!valid || create.isPending || remoteHost !== null}
-            onClick={() => create.mutate({ slug })}
+            onClick={() => {
+              refusal.clear();
+              create.mutate({ slug });
+            }}
           >
             {create.isPending ? t('org.add.creating') : t('org.add.create')}
           </Button>

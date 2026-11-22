@@ -1142,6 +1142,7 @@ export const en = {
   // THR-387 S8-2b — remote read-only configuration (v2.4 §4).
   'remotePolicy.readOnly': 'Read-only on this connection. Change this on {host}.',
   'remotePolicy.refused': "Read-only on this connection. Change this on {host}. Your changes are still here and weren't sent.",
+  'remotePolicy.refusedAction': 'Read-only on this connection. Change this on {host}. Nothing was sent.',
   'remotePolicy.unavailable.title': '{page} is unavailable on this connection',
   'remotePolicy.unavailable.body': "{host} doesn't share {page} with connected apps. Change it on {host}, or switch to This computer in Connection to configure this computer.",
   'remotePolicy.capacityScope': 'Affects all organizations on {host}',
