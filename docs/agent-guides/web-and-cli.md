@@ -36,11 +36,19 @@ Slice 5a adds the Linux host fallback:
 
 Mac MAC-1 also loads Main from the packaged `web/dist` at
 `happyranch-app://app`, with native-selected local/remote API and stream
-forwarding and placeholder-only page bootstrap. Its transport-only status/cancel
-facade does not implement the later Mac dialog/menu/locale/local-control slices;
+forwarding and placeholder-only page bootstrap. Its facade accepts the existing
+`app.ownersChanged` summary and acknowledges only after native validation/storage,
+so registered saves can pass their receipt gate. Native protects document
+navigation with owner evidence/non-GET transfers and retains lost unresolved-save
+uncertainty. Status/cancel and owner receipt do not implement the later Mac dialog/menu/locale/local-control slices;
 the separate native Connection view remains. Native timing and packaging
 acceptance are pending exact-reviewed-head QA; see
 [Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+Mac Connected requires the expected current document completion plus fresh
+compatible, non-busy selected-owner admission; the access monitor rechecks both
+authorization and readiness. After a possible send, a lost reply fails the
+scheme transfer even before response headers, preserving Result unknown for a
+mutation. Pre-forward 503 recovery is reserved for proven no-send outcomes.
 
 Linux S7-L1 always serves installed `web/dist` at `happyranch-app://app` for
 local and remote targets. Main uses the in-process native adapter; no GUI

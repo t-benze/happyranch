@@ -2,6 +2,43 @@ import XCTest
 @testable import HappyRanchSupervisor
 
 final class AppHTTPResponseParserTests: XCTestCase {
+    func testLostResponseBeforeHeadersOnlyProvesNotSentBeforeSendFence() async {
+        for started in [false, true] {
+            let transfer = AppAPITransfer()
+            if started {
+                XCTAssertTrue(transfer.beginRequest())
+                XCTAssertFalse(transfer.beginRequest(), "Ready callbacks cannot send twice")
+            }
+            transfer.connectionFailed()
+            var failure: AppAPIError?
+            do {
+                for try await _ in transfer.events { XCTFail("No response headers were received") }
+                XCTFail("A lost reply cannot complete successfully")
+            } catch { failure = error as? AppAPIError }
+            XCTAssertEqual(failure, started ? .unavailable : .notSent)
+            XCTAssertFalse(transfer.beginRequest(), "Completed/cancelled transfers cannot send")
+        }
+    }
+
+    func testHealthAdmissionRequiresCompatibleNonBusySelectedOwner() throws {
+        for (raw, expected) in [
+            (#"{}"#, "incompatible"),
+            (#"{"api_contract":{"current":0,"min_client":1}}"#, "incompatible"),
+            (#"{"api_contract":{"current":2,"min_client":2}}"#, "incompatible"),
+            (#"{"api_contract":{"current":true,"min_client":1}}"#, "incompatible"),
+            (#"{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":true}}"#, "busy"),
+            (#"{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":false}}"#, "ready"),
+            (#"{"api_contract":{"current":2,"min_client":1}}"#, "ready")
+        ] {
+            let observation = try AppAPIHealth(status: 200, data: Data(raw.utf8))
+            XCTAssertEqual(observation.state, expected)
+            if expected == "ready" { XCTAssertNoThrow(try observation.requireReady()) }
+            else { XCTAssertThrowsError(try observation.requireReady()) }
+        }
+        XCTAssertThrowsError(try AppAPIHealth(status: 403, data: Data("{}".utf8)))
+        XCTAssertThrowsError(try AppAPIHealth(status: 200, data: Data("invalid".utf8)))
+    }
+
     func testChunkedSSELeavesBeforeCompletionAcrossFragmentedFraming() throws {
         var parser = AppHTTPResponseParser()
         let header = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".utf8)

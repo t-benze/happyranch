@@ -18,6 +18,8 @@ struct WebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         var owner: WebView
         var scheme: AppScheme?
+        private var navigation: WKNavigation?
+        private var loadID = UUID()
         private var downloads: [WKDownload] = []
         init(_ owner: WebView) { self.owner = owner }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -34,6 +36,7 @@ struct WebView: NSViewRepresentable {
                 }
                 return
             }
+            guard scheme?.allowsNavigation == true else { decisionHandler(.cancel); return }
             decisionHandler(.allow)
         }
         func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
@@ -44,13 +47,37 @@ struct WebView: NSViewRepresentable {
             }
             decisionHandler(.allow)
         }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
-            owner.onLoaded?(owner.url)
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            self.navigation = navigation; loadID = UUID()
+            scheme?.documentDidStart()
         }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { owner.onFailed?(owner.url) }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { owner.onFailed?(owner.url) }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { scheme?.close(); owner.onFailed?(owner.url) }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let navigation, self.navigation === navigation, let scheme,
+                  let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
+            let expected = loadID, selected = owner.url
+            let onLoaded = owner.onLoaded, onFailed = owner.onFailed
+            Task {
+                do {
+                    try await scheme.admitDocument()
+                    guard loadID == expected, self.navigation === navigation, self.scheme === scheme,
+                          webView.url == url, owner.url == selected else { return }
+                    onLoaded?(selected)
+                } catch {
+                    guard loadID == expected, self.scheme === scheme, owner.url == selected else { return }
+                    onFailed?(selected)
+                }
+            }
+        }
+        private func failed(_ navigation: WKNavigation?) {
+            guard let navigation, self.navigation === navigation else { return }
+            loadID = UUID(); self.navigation = nil; scheme?.documentDidStart()
+            owner.onFailed?(owner.url)
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(navigation) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(navigation) }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            loadID = UUID(); navigation = nil; scheme?.close(); owner.onFailed?(owner.url)
+        }
         func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
         func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
         func downloadDidFinish(_ download: WKDownload) { downloads.removeAll { $0 === download } }
@@ -81,7 +108,9 @@ struct WebView: NSViewRepresentable {
         }
     }
     func updateNSView(_ nsView: WKWebView, context: Context) { context.coordinator.owner = self }
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) { coordinator.scheme?.close() }
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.scheme?.close(); coordinator.scheme = nil
+    }
 }
 
 /// Main content view: full-window WebView (no in-window toolbar).

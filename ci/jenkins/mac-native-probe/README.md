@@ -1140,7 +1140,7 @@ python -B -m unittest scripts.mac_native.test_connector_managed scripts.mac_nati
 
 The existing `SUITE` string accepts dispatcher-registered **`app-scheme`** at
 the reviewed source head; no Jenkins definition change is needed. It compiles
-the real SwiftPM product/focused parser and route tests once, builds the one
+the real SwiftPM product/focused parser, route and document-load tests once, builds the one
 main SPA, and launches the product's explicit synthetic qualification entry.
 It preserves fsynced individual page receipts and cancellation evidence even
 on timeout. The report's `app_scheme.qualification` must be assessed, including

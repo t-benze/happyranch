@@ -1,6 +1,5 @@
 import AppKit
 import WebKit
-import CoreFoundation
 import HappyRanchSupervisor
 
 struct AppSchemeRoute {
@@ -22,6 +21,37 @@ struct AppSchemeRoute {
     }
 }
 
+/// Current-document owner evidence. Invalid input removes clearance; losing a
+/// document with unresolved saves permanently retains uncertainty in this view.
+struct AppSchemeOwnerSummary {
+    private(set) var blocking: String?
+    private(set) var counts: [String: Int64]?
+    private var unresolved = false
+    private var uncertain = false
+
+    mutating func accept(_ raw: String) throws {
+        blocking = nil; counts = nil
+        let value = try ConnectionJSON.parse(raw, limit: 1024)
+        guard let object = value.object, Set(object.keys) == ["schema", "blocking", "counts"],
+              object["schema"] == .integer(2), let counts = object["counts"]?.object,
+              Set(counts.keys) == ["dirty", "failed", "pending", "unknown"],
+              counts.values.allSatisfy({ $0.integer.map { (0...255).contains($0) } == true }) else {
+            throw ConnectionRefusal.invalid
+        }
+        let held = counts["pending"]!.integer! > 0 || counts["unknown"]!.integer! > 0
+        let level = held ? "hold" : counts["dirty"]!.integer! > 0 || counts["failed"]!.integer! > 0 ? "prompt" : "none"
+        guard object["blocking"] == .string(level) else { throw ConnectionRefusal.invalid }
+        // No native lifecycle request is offered in MAC-1, so unsolicited gate
+        // decisions cannot authorize an effect and are refused above.
+        blocking = level; self.counts = counts.mapValues { $0.integer! }; unresolved = held
+    }
+    mutating func retire(nonGETPending: Bool) {
+        uncertain = uncertain || unresolved || nonGETPending
+        blocking = nil; counts = nil
+    }
+    var allowsNavigation: Bool { !uncertain && blocking == "none" }
+}
+
 /// Main-frame app loader. All WK task callbacks are serialized on MainActor;
 /// stop removes ownership before cancelling upstream, so late bytes are ignored.
 @MainActor
@@ -41,6 +71,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var owners: [ObjectIdentifier: Owner] = [:]
     private var cancelled: Set<String> = []
     private var admission: Task<Void, Error>?
+    private var documentOwners = AppSchemeOwnerSummary()
+    private var document = UUID()
+    private var hasDocument = false
     private var state = "target_starting"
     private var hostContract: [String: Int]?
     private var incompatibleSide = "host"
@@ -93,10 +126,30 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
 
     func close() {
+        documentDidStart()
         for owner in owners.values { owner.worker?.cancel(); owner.upstream?.cancel() }
         owners.removeAll(); admission?.cancel(); admission = nil
         view?.configuration.userContentController.removeScriptMessageHandler(forName: "appTransport", contentWorld: .page)
         view = nil
+    }
+
+    /// Voluntary replacement must not discard protected owners or an active
+    /// native mutation. Forced document loss still cancels transfers separately.
+    var allowsNavigation: Bool {
+        !hasDocument || (documentOwners.allowsNavigation && !nonGETPending)
+    }
+    private var nonGETPending: Bool {
+        owners.values.contains { !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }
+    }
+    func documentDidStart() {
+        document = UUID(); hasDocument = true
+        documentOwners.retire(nonGETPending: nonGETPending)
+        admission?.cancel(); admission = nil
+    }
+    func admitDocument() async throws {
+        let expected = document
+        try await checkAdmission(refresh: true)
+        guard document == expected, view != nil else { throw AppAPIError.cancelled }
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
@@ -163,44 +216,35 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         owner.worker?.cancel(); owner.upstream?.cancel(); observe?("native_stop", owner.requestID)
     }
 
-    private func checkAdmission() async throws {
+    private func checkAdmission(refresh: Bool = false) async throws {
+        if refresh, state == "ready" { admission = nil }
         if let admission { try await admission.value; return }
-        let transfer = transport.appRequest(method: "GET", target: "/api/v1/health", headers: [:], body: Data())
+        let expected = document
         let task = Task { [weak self] in
-            let deadline = Task { try await Task.sleep(for: .seconds(10)); transfer.cancel() }
-            defer { deadline.cancel() }
-            var data = Data(), status = 0
-            for try await event in transfer.events {
-                switch event {
-                case .response(let code, _): status = code
-                case .bytes(let chunk): data.append(chunk); if data.count > 65536 { transfer.cancel(); throw AppAPIError.invalidResponse }
-                }
-            }
             guard let self else { throw AppAPIError.cancelled }
-            guard status == 200, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let contract = object["api_contract"] as? [String: Any],
-                  let current = Self.integer(contract["current"]), let minimum = Self.integer(contract["min_client"]) else {
-                self.hostContract = nil; self.state = "incompatible"; throw AppAPIError.unavailable
-            }
-            self.hostContract = ["current": current, "min_client": minimum]
-            guard current >= 1, minimum <= 1 else {
-                self.incompatibleSide = minimum > 1 ? "app" : "host"
-                self.state = "incompatible"; throw AppAPIError.unavailable
-            }
-            if (object["update_busy"] as? [String: Any])?["busy"] as? Bool == true {
-                self.state = "busy"; throw AppAPIError.unavailable
-            }
-            self.state = "ready"
+            let health = try await AppAPIHealth.read(from: self.transport)
+            try Task.checkCancellation()
+            guard self.document == expected else { throw AppAPIError.cancelled }
+            self.hostContract = health.contract
+            self.incompatibleSide = health.incompatibleSide
+            self.state = health.state
             self.emitStatus()
+            try health.requireReady()
         }
         admission = task
         do { try await task.value }
-        catch { admission = nil; if state == "target_starting" { state = "unreachable" }; emitStatus(); throw error }
+        catch {
+            guard document == expected else { throw error }
+            admission = nil
+            if state == "target_starting" || state == "ready" { state = "unreachable" }
+            emitStatus(); throw error
+        }
     }
 
     private func forward(_ key: ObjectIdentifier, request: URLRequest, route: AppSchemeRoute,
                          method: String, headers: [String: String], bootstrap: Bool) async {
         var began = false
+        var forwarded = false
         defer { owners.removeValue(forKey: key) }
         do {
             try await checkAdmission()
@@ -213,6 +257,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             }
             let body = try Self.body(request)
             guard owners[key] != nil else { return }
+            forwarded = true
             let transfer = transport.appRequest(method: method, target: route.target, headers: headers, body: body)
             owners[key]?.upstream = transfer
             for try await event in transfer.events {
@@ -230,13 +275,14 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                     owner.task.didReceive(data); observe?("native_write", owner.requestID)
                 }
             }
-            guard let owner = owners[key], began else { return }
+            guard let owner = owners[key] else { return }
+            guard began else { throw AppAPIError.invalidResponse }
             owner.task.didFinish(); observe?("native_finish", owner.requestID)
         } catch {
             owners[key]?.upstream?.cancel()
             guard let owner = owners[key] else { return }
             if state == "ready" { state = "unreachable"; admission = nil; emitStatus() }
-            if began { owner.task.didFailWithError(AppAPIError.unavailable) }
+            if began || (forwarded && (error as? AppAPIError) != .notSent) { owner.task.didFailWithError(AppAPIError.unavailable) }
             else { reply(owner.task, status: 503, code: state == "busy" ? "busy" : state == "incompatible" ? "incompatible" : "target_unreachable") }
         }
     }
@@ -292,9 +338,19 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         guard message.webView === view, message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "happyranch-app", message.frameInfo.securityOrigin.host == "app",
               message.frameInfo.securityOrigin.port == 0, let url = message.frameInfo.request.url,
-              (try? AppSchemeRoute(url)) != nil, let item = message.body as? [String: String] else {
+              (try? AppSchemeRoute(url)) != nil, let item = message.body as? [String: Any] else {
             replyHandler(nil, "unavailable"); return
         }
+        if item["command"] as? String == "app.ownersChanged" {
+            do {
+                // Parsing and storage are synchronous on MainActor, before ACK.
+                // Invalid current-document input cannot retain clean clearance.
+                try documentOwners.accept(item.count == 2 ? item["data"] as? String ?? "" : "")
+                replyHandler("{}", nil)
+            } catch { replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#) }
+            return
+        }
+        guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
         if item == ["command": "app.status"] { replyHandler(statusJSON(), nil); return }
         if item["command"] == "cancel", item.count == 2, let id = item["id"], UUID(uuidString: id) != nil {
             if let key = owners.first(where: { $0.value.requestID == id })?.key { stop(key) }
@@ -302,11 +358,6 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             replyHandler("{}", nil); return
         }
         replyHandler(nil, "unavailable")
-    }
-    private static func integer(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue == Double(number.intValue) else { return nil }
-        return number.intValue
     }
     private func emitStatus() {
         view?.callAsyncJavaScript("window.__hrAppState?.(data);", arguments: ["data": statusJSON()], in: nil, in: .page, completionHandler: nil)

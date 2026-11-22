@@ -1490,7 +1490,7 @@ extension ClientBridge: AppAPITransport {
               target.hasPrefix("/api/v1/"), !target.contains("\r"), !target.contains("\n"),
               body.count <= 67108864, let credential = deviceCredential,
               !credential.isEmpty, credential.utf8.allSatisfy({ (33...126).contains($0) }) else {
-            transfer.finish(AppAPIError.unavailable); return transfer
+            transfer.finish(AppAPIError.notSent); return transfer
         }
         let kept = AppAPIHeaders.filtered(headers, allowed: AppAPIHeaders.request)
         var text = "\(method) \(target) HTTP/1.1\r\nHost: \(homeConnectorHost):\(homeConnectorPort)\r\n"
@@ -1506,20 +1506,20 @@ extension ClientBridge: AppAPITransport {
                 managedDials.enter()
                 return attempt
             }
-            guard let attempt else { transfer.finish(AppAPIError.unavailable); return transfer }
+            guard let attempt else { transfer.finish(AppAPIError.notSent); return transfer }
             DispatchQueue.global(qos: .userInitiated).async { [self, request] in
                 defer { managedDials.leave() }
                 let handle = managedDial(timeoutMs: 30_000, expectedAttempt: attempt)
                 guard handle >= 0 else {
                     if handle == -18 { cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
-                    transfer.finish(AppAPIError.unavailable); return
+                    transfer.finish(AppAPIError.notSent); return
                 }
                 // Install after dial: cancellation during dial closes immediately.
                 transfer.onCancel { [self] in
                     let current = Self.tsnetLock.withLock { managedAttempt == attempt && managedHandles.contains(handle) }
                     if current { closeManagedHandle(handle) }
                 }
-                guard !transfer.isCancelled else { return }
+                guard transfer.beginRequest() else { return }
                 let sent = writeAll(request, handle: handle)
                 guard sent == 0 else {
                     if sent == -18 { cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
@@ -1540,11 +1540,12 @@ extension ClientBridge: AppAPITransport {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    guard transfer.beginRequest() else { return }
                     connection.send(content: request, completion: .contentProcessed { error in
                         if error != nil { transfer.finish(AppAPIError.unavailable) }
                         else { reader.receive(from: connection) }
                     })
-                case .failed: transfer.finish(AppAPIError.unavailable)
+                case .failed: transfer.connectionFailed()
                 default: break
                 }
             }

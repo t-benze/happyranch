@@ -228,7 +228,7 @@ def run(report: dict[str, Any]) -> None:
                  '--scratch-path', str(scratch / 'build'), '--cache-path', str(scratch / 'swiftpm-cache'),
                  '--config-path', str(scratch / 'swiftpm-config'), '--security-path', str(scratch / 'swiftpm-security'),
                  '-c', 'release', '-j', '2', '-Xswiftc', '-gnone']
-        command('product_build_and_parser_tests', swift + ['--filter', 'AppHTTPResponseParserTests|AppSchemeRouteTests'], seconds=600)
+        command('product_build_and_parser_tests', swift + ['--filter', 'AppHTTPResponseParserTests|AppSchemeRouteTests|AppSchemeLoadTests'], seconds=600)
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):

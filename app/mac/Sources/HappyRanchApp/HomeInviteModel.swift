@@ -510,6 +510,10 @@ final class HomeInviteModel: ObservableObject {
                     try check(token)
                     guard let session else { return }
                     try await session.checkAccess()
+                    // Authenticated health alone cannot retain Connected after
+                    // a contract/busy refusal. Recheck the same selected owner.
+                    let health = try await AppAPIHealth.read(from: session.appTransport())
+                    try health.requireReady()
                     try check(token)
                     accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
                 } catch {

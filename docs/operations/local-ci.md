@@ -4188,12 +4188,17 @@ jobs for long commands. No new CI/E2E trigger or gate is added.
 native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
 abort and post-stop writes, partial JSONL retention, root/body/download evidence
 requirements, and private fixture authentication/JSON bytes. This standalone
-venue does not run retired Python units. No shared web source changed in MAC-1;
+venue also executes the shipped page facade with the existing shared owner
+registry/save-receipt gate under Node 24: pending summary delivery, waiting for
+native receipt and refusal of an invalid receipt. It does not establish native
+owner retention. No retired Python units run. No shared web source changed in MAC-1;
 Web static analysis remains part of `scripts/local_ci.sh all`.
 
 `python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`
 is dispatcher-registered for the existing Jenkins `SUITE` string. It is skipped
-on Linux. On Mac it compiles the product plus focused Swift parser/route tests,
+on Linux. On Mac it compiles the product plus focused Swift parser/route tests
+(including native owner retention, pre/post-send error outcomes and readiness)
+and the production navigation delegate's packaged-page load/admission cases,
 then qualifies the production loader, body adapter and SPA against a private
 synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Only the QA leg may execute it after exact-head independent review APPROVE,

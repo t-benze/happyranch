@@ -82,10 +82,26 @@ page authorization and identity headers are not forwarded. The packaged
 `remote-client-config-policy.v1.json` supplies the same native config-write
 refusals as Linux; the daemon/home connector remote allowlist is unchanged.
 Health contract admission uses `current >= 1` and `min_client <= 1`, including
-missing-contract and busy refusals, before API forwarding.
+missing-contract and busy refusals, before API forwarding. The native document
+completion callback also awaits fresh admission of that selected owner and
+checks the current navigation/load identity. The Connected monitor rechecks
+the same readiness contract after its existing access check; authorization
+alone cannot restore Connected after a compatibility or busy refusal.
 
-This slice exposes only transport `app.status`, `app.stateChanged` and request
-cancel. The locale field reports the native launch language; no locale setter,
+Only a proven no-send transport outcome can return the pre-forward 503 recovery
+shape. The managed/DIY transports fence before their first write/send. Local
+URLSession failures after resume conservatively fail the scheme transfer,
+including a lost reply before response headers; mutations become Result unknown
+in the shared client and are never automatically retried.
+
+This slice exposes transport `app.status`, `app.stateChanged`, request cancel
+and the existing `app.ownersChanged` receipt required before registered saves.
+Native parses the bounded, duplicate-free closed summary and stores its owner
+protection before replying `"{}"`. Voluntary document navigation refuses missing,
+dirty/failed or unresolved owner evidence and native non-GET transfers. Document
+loss retains unresolved-save uncertainty; a replacement clean summary cannot
+clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
+a later slice. The locale field reports the native launch language; no locale setter,
 new Settings/Connection actions, toolbar/menu, local controls or launch policy is
 implemented here. The existing native Connection view remains for later slices.
 Those later Mac contracts are not qualified by this transport PR.
@@ -123,7 +139,8 @@ bash -n app/mac/scripts/build-app.sh
 ```
 
 The dispatcher on Linux explicitly skips Darwin execution; this is not native
-PASS. Swift tests are `AppHTTPResponseParserTests` and `AppSchemeRouteTests` in
+PASS. Swift tests are `AppHTTPResponseParserTests`, `AppSchemeRouteTests` and
+`AppSchemeLoadTests` (production document admission and lost-reply delivery) in
 the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
 PR's combined six-run unsigned allowance across Jenkins and GitHub Actions.
@@ -285,7 +302,9 @@ the control host and release runtime, joins through the isolated home helper,
 pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
 then **Opening runtime**. **Connected**
 is published only after the expected authorized main-frame web navigation
-finishes; network membership and health alone cannot publish it. Existing DIY
+finishes and the selected owner passes compatible, non-busy admission. The
+periodic access monitor repeats that readiness check. Network membership and
+authorization alone cannot publish it. Existing DIY
 Tailscale remains an explicit separate selection, never an error fallback. Custom-server
 URL/key intake does not exist and is not planned; outside-home access uses a fixed
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).

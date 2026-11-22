@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Native-only selected-daemon transport. Neither request credentials nor URLs
 /// are returned to JavaScript. Response events preserve upstream byte order.
@@ -7,7 +8,11 @@ public enum AppAPIEvent: Sendable {
     case bytes(Data)
 }
 
-public enum AppAPIError: Error, Sendable { case unavailable, invalidResponse, cancelled, slowReader }
+public enum AppAPIError: Error, Equatable, Sendable {
+    /// Positive transport evidence that no HTTP request could have been sent.
+    case notSent
+    case unavailable, invalidResponse, cancelled, slowReader
+}
 
 public protocol AppAPITransport: Sendable {
     func appRequest(method: String, target: String, headers: [String: String], body: Data) -> AppAPITransfer
@@ -18,6 +23,7 @@ public final class AppAPITransfer: @unchecked Sendable {
     private let continuation: AsyncThrowingStream<AppAPIEvent, Error>.Continuation
     private let lock = NSLock()
     private var ended = false
+    private var requestStarted = false
     private var cancellation: (@Sendable () -> Void)?
 
     public init() {
@@ -30,6 +36,14 @@ public final class AppAPITransfer: @unchecked Sendable {
         if run { action() }
     }
     public var isCancelled: Bool { lock.withLock { ended } }
+    /// Fence immediately BEFORE handing any request bytes to the network.
+    /// Returning false prevents a cancelled transfer from starting a send.
+    public func beginRequest() -> Bool {
+        lock.withLock { guard !ended, !requestStarted else { return false }; requestStarted = true; return true }
+    }
+    public func connectionFailed() {
+        finish(lock.withLock { requestStarted ? AppAPIError.unavailable : .notSent })
+    }
     public func emit(_ event: AppAPIEvent) {
         if case .dropped = continuation.yield(event) { finish(AppAPIError.slowReader) }
     }
@@ -74,7 +88,7 @@ public final class LocalAppAPITransport: AppAPITransport, @unchecked Sendable {
         guard target.hasPrefix("/api/v1/"), !target.contains("\r"), !target.contains("\n"),
               let url = URL(string: "http://127.0.0.1:\(port)" + target),
               url.host == "127.0.0.1", url.port == Int(port), body.count <= 67108864 else {
-            transfer.finish(AppAPIError.unavailable); return transfer
+            transfer.finish(AppAPIError.notSent); return transfer
         }
         do {
             var request = URLRequest(url: url)
@@ -93,8 +107,8 @@ public final class LocalAppAPITransport: AppAPITransport, @unchecked Sendable {
             let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
             let task = session.dataTask(with: request)
             transfer.onCancel { task.cancel(); session.invalidateAndCancel() }
-            task.resume()
-        } catch { transfer.finish(AppAPIError.unavailable) }
+            if transfer.beginRequest() { task.resume() }
+        } catch { transfer.finish(AppAPIError.notSent) }
         return transfer
     }
 }
@@ -119,7 +133,59 @@ private final class AppAPIDelegate: NSObject, URLSessionDataDelegate, @unchecked
         transfer.emit(.bytes(data))
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // URLSession may have attempted a send after resume, including internal
+        // connection retries. Without a proven no-send result, retain unknown.
         transfer.finish(error == nil ? nil : AppAPIError.unavailable); session.finishTasksAndInvalidate()
+    }
+}
+
+/// The same selected-owner readiness observation gates scheme forwarding,
+/// native document admission and the Connected monitor. Authorization remains
+/// with the existing transports/checkAccess; this only evaluates readiness.
+public struct AppAPIHealth: Sendable {
+    public let state: String
+    public let incompatibleSide: String
+    public let contract: [String: Int]?
+
+    public init(status: Int, data: Data) throws {
+        guard status == 200 else { throw AppAPIError.unavailable }
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        func integer(_ value: Any?) -> Int? {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue == Double(number.intValue) else { return nil }
+            return number.intValue
+        }
+        guard let values = object?["api_contract"] as? [String: Any],
+              let current = integer(values["current"]), let minimum = integer(values["min_client"]) else {
+            state = "incompatible"; incompatibleSide = "host"; contract = nil; return
+        }
+        contract = ["current": current, "min_client": minimum]
+        incompatibleSide = minimum > 1 ? "app" : "host"
+        if current < 1 || minimum > 1 { state = "incompatible" }
+        else if (object?["update_busy"] as? [String: Any])?["busy"] as? Bool == true { state = "busy" }
+        else { state = "ready" }
+    }
+    public func requireReady() throws {
+        guard state == "ready" else { throw AppAPIError.unavailable }
+    }
+    public static func read(from transport: any AppAPITransport) async throws -> Self {
+        let transfer = transport.appRequest(method: "GET", target: "/api/v1/health", headers: [:], body: Data())
+        let deadline = Task { try await Task.sleep(for: .seconds(10)); transfer.cancel() }
+        defer { deadline.cancel() }
+        return try await withTaskCancellationHandler {
+            var data = Data(), status = 0
+            for try await event in transfer.events {
+                try Task.checkCancellation()
+                switch event {
+                case .response(let code, _): status = code
+                case .bytes(let chunk):
+                    data.append(chunk)
+                    guard data.count <= 65536 else { transfer.cancel(); throw AppAPIError.invalidResponse }
+                }
+            }
+            try Task.checkCancellation()
+            return try Self(status: status, data: data)
+        } onCancel: { transfer.cancel() }
     }
 }
 

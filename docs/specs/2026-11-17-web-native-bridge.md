@@ -1656,13 +1656,27 @@ fallback, CSP, resource and navigation allowlists. API forwarding captures one
 native-selected transport and opaque generation for the view lifetime; view
 replacement cancels old transfers. Local credentials remain native, remote
 credentials remain in existing Keychain/session custody, and page bootstrap is
-only a placeholder. Native transport status/read and explicit request cancel are
-the only bridge commands in this slice. Remote config-write refusal reads the
+only a placeholder. Alongside native transport status/read and explicit request
+cancel, this slice accepts the existing v2 `app.ownersChanged` summary. Native
+uses the bounded duplicate-free parser, stores protected owner evidence before
+the `"{}"` receipt, refuses voluntary document navigation while owner evidence or
+native non-GET transfers block it, and retains unresolved-save uncertainty on
+document loss. Unsolicited lifecycle decisions are refused; dialog/menu/lifecycle
+commands remain later slices. Remote config-write refusal reads the
 same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
 GUI remote calls use the existing pinned direct dial, not a loopback listener;
 the separate foreground CLI retains its listener. Shared serialized multipart
 and blob download paths are reused. The Mac packager reconciles map removal
 with the main resource manifest and includes the native config policy.
+
+Native Connected/load completion requires both the expected current navigation
+and fresh compatible, non-busy selected-owner health admission. The periodic
+access monitor also evaluates readiness, so authorization cannot restore a false
+Connected state. Managed/DIY transports fence before the first request write;
+only proven no-send failures produce pre-forward recovery. Local URLSession
+failures after resume conservatively fail the scheme request. Missing response
+headers never prove no send: interrupted mutations retain Result unknown in the
+shared web client, with no automatic retry.
 
 **Streaming decision: scheme-first, measurement pending.** No Mac build or
 native PASS is claimed by the Linux maker. `scripts/mac_native/probe.py --suite

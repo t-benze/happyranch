@@ -1,6 +1,6 @@
 import Foundation
 
-/// Transport-only facade. Settings/Connection actions remain later Mac slices.
+/// Transport and owner-receipt facade. Settings/Connection actions remain later Mac slices.
 enum AppSchemeScripts {
     static let page = #"""
 (() => {
@@ -12,6 +12,9 @@ enum AppSchemeScripts {
   }});
   Object.defineProperty(window, 'happyranchConnection', {value: Object.freeze({
     call: async (command, data) => {
+      if (command === 'app.ownersChanged' && typeof data === 'string') {
+        return native.postMessage({command, data});
+      }
       if (command !== 'app.status' || data !== '{}') throw new Error('unavailable');
       return native.postMessage({command:'app.status'});
     },

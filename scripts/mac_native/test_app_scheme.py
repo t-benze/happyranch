@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,13 @@ def evidence() -> tuple[list[dict], list[dict]]:
 
 
 class QualificationVerdictTests(unittest.TestCase):
+    def test_shipping_owner_receipt_save_admission(self) -> None:
+        result = subprocess.run(
+            ['node', '--experimental-transform-types', 'scripts/mac_native/app_scheme_page_probe.mjs'],
+            cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def check_status(self, events: list[dict], sends: list[dict], status: str, code: int = 0) -> None:
         self.assertEqual(assess(events, sends, code, b'mac1 download\n')['status'], status)
 
