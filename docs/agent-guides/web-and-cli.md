@@ -6008,11 +6008,16 @@ U8b (below) adds Setup/Save custody and the Settings → Coding redirect.
 ## U8b Workflows Setup and Settings → Coding redirect (TASK-15605)
 
 `/orgs/:slug/workflows/setup` (Setup tab) edits the CURRENT repo-free default agents of
-the latest stored definition version through only the merged U7b routes and provider
+the latest stored definition version through the merged settings routes and provider
 custody: one row per definition role (permanent agent IDs; the agents list is advisory,
-the server decides eligibility), saved limits/admission shown read-only. No admission,
-repository, start, retry, reassign or merge control; saving never changes admission
-(first save starts Disabled). One Save freezes one key/body (`useSequentialSettingsFence`);
+the server decides eligibility), with saved limits shown read-only. R2 unit (a) adds
+separate Founder-authenticated Allow new runs / Disable new runs controls for fresh
+admission. Save never starts work and preserves current admission (first Save initializes
+Disabled); Disable affects only fresh admission and preserves already-admitted runs'
+immutable pins. No repository, start, retry, reassign or merge control is mounted;
+public Start@2 and Draft→Review
+remain unavailable. See the [R2 setup/admission contract](contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+One Save freezes one key/body (`useSequentialSettingsFence`);
 pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
 "Continue from current configuration", which is enabled (control and handler) only once a
 current read is strictly newer than the refused expected_generation for

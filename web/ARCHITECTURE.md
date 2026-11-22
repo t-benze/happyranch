@@ -41,8 +41,14 @@ original admitted definition is unavailable. No run control is mounted.
 U8b adds `features/workflows/SequentialSetup` (Setup tab): it edits only the current
 repo-free default agents through the U7b `useSequentialSettingsActions` /
 `useSequentialSettingsFence` provider custody, keeps drafts and lookup outcomes in a
-per-QueryClient per-org memory (never persisted) and has no admission, repository or
-run control. The shared sequential read treats the settings read's 404
+per-QueryClient per-org memory (never persisted). R2 unit (a) adds separate
+Founder-authenticated Allow new runs / Disable new runs controls for fresh admission.
+Save never starts work and preserves current admission (first Save initializes Disabled);
+Disable affects only fresh admission and preserves already-admitted runs' immutable pins.
+No repository or run control is mounted; public Start@2 and Draft→Review remain
+unavailable. See the
+[R2 setup/admission contract](../docs/agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+The shared sequential read treats the settings read's 404
 `sequential_settings_not_found` as "nothing saved yet" (no org fence); the original-save
 lookup runs under the same org admission generation/abort/refusal policy, and the Setup
 editor never rehydrates from a read older than its own committed generation, nor adopts

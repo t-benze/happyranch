@@ -1,5 +1,12 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
+> R2 unit (a) supersedes U8b's read-only admission and no-admission-control scope
+> below: Setup now has separate Founder-authenticated Allow new runs / Disable
+> new runs controls. Save never starts work and preserves current admission
+> (first Save initializes Disabled); Disable affects only fresh admission and
+> preserves already-admitted runs' immutable pins. Public Start@2 and Draft→Review
+> remain unavailable. See the [current R2 setup/admission contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+
 > S7a annotation: for new generic @2 runs, U8's singular @1 task/run views are
 > superseded by additive plural/versioned reads. See the [current S7a contract](../agent-guides/contracts/reusable-workflows.md#s7a-additive-founder-read-projections-2).
 > @1 remains explicitly historical and readable with its original bytes and
@@ -144,6 +151,9 @@ and the banner states that the next step and any limit explanation cannot be sho
 A 403/404 on the definition read fences the org exactly as any other sequential read.
 
 ## U8b Setup and Settings → Coding (TASK-15605)
+
+The original U8b delivery scope below is historical; R2 supersedes its admission
+control exclusions as described above.
 
 Declared before edits (output/TASK-15605/assumptions.md): one PR, no split, frontend
 only, no backend/route/schema/OpenAPI change. Setup uses only the U7a definitions and
