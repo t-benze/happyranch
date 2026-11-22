@@ -6,17 +6,28 @@ enum AppSchemeScripts {
 (() => {
   if (window !== top || location.origin !== 'happyranch-app://app') return;
   const native = window.webkit.messageHandlers.appTransport;
+  // Each injected relay belongs to one document. Native releases its calls
+  // only after checking this loaded Main context; retirement revokes it there.
+  const context = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  let admit;
+  const admitted = new Promise(resolve => { admit = resolve; });
+  Object.defineProperty(window, '__hrAppContext', {value: context});
+  Object.defineProperty(window, '__hrAppAdmit', {value: token => {
+    if (token !== context) return false;
+    admit(); return true;
+  }});
   const listeners = new Map();
   Object.defineProperty(window, '__hrAppState', {value: raw => {
     for (const handler of listeners.get('app.stateChanged') || []) handler(raw);
   }});
   Object.defineProperty(window, 'happyranchConnection', {value: Object.freeze({
     call: async (command, data) => {
+      await admitted;
       if (command === 'app.ownersChanged' && typeof data === 'string') {
-        return native.postMessage({command, data});
+        return native.postMessage({context, command, data});
       }
       if (command !== 'app.status' || data !== '{}') throw new Error('unavailable');
-      return native.postMessage({command:'app.status'});
+      return native.postMessage({context, command:'app.status'});
     },
     on: (event, handler) => {
       if (!listeners.has(event)) listeners.set(event, new Set());
@@ -37,7 +48,7 @@ enum AppSchemeScripts {
     let sent = false, bodyReader;
     const abort = () => {
       bodyReader?.cancel().catch(() => {});
-      if (sent) native.postMessage({command:'cancel', id}).catch(() => {});
+      if (sent) native.postMessage({context, command:'cancel', id}).catch(() => {});
     };
     const cleanup = () => signal.removeEventListener('abort', abort);
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');

@@ -25,7 +25,11 @@ const window = {
     return new Promise(resolve => { receipt = resolve; });
   } } } },
 };
-vm.runInNewContext(page, { window, top: window, location: { origin: 'happyranch-app://app' }, Map, Object });
+const context = '11'.repeat(16);
+vm.runInNewContext(page, { window, top: window, location: { origin: 'happyranch-app://app' },
+  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, Map, Object, Uint8Array });
+assert.equal(window.__hrAppContext, context, 'shipping relay must create a document context');
+assert.deepEqual(Object.keys(window.happyranchConnection).sort(), ['call', 'on'], 'public API stays unchanged');
 const target = await import(pathToFileURL(resolve(root, 'web/src/lib/native/target.ts')));
 target.__setNativeBridgeForTests(window.happyranchConnection);
 const { createOwnerRegistry } = await import(pathToFileURL(resolve(root, 'web/src/lib/owners/ownerRegistry.ts')));
@@ -38,8 +42,15 @@ assert.ok(ticket);
 let settled = false;
 const admission = awaitOwnersReceipt(registry.getSnapshot()).then(value => { settled = true; return value; });
 await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.length, 0, 'owner push must wait for native document admission');
+window.__hrAppAdmit('foreign-document');
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.length, 0, 'another document cannot release this relay');
+window.__hrAppAdmit(context);
+await new Promise(resolve => setImmediate(resolve));
 assert.equal(posts.length, 1, 'pending owner summary must reach native');
 assert.equal(posts[0].command, 'app.ownersChanged');
+assert.equal(posts[0].context, context, 'native envelope captures the sending document');
 assert.deepEqual(JSON.parse(posts[0].data), {
   schema: 2, blocking: 'hold', counts: { dirty: 0, failed: 0, pending: 1, unknown: 0 },
 });
@@ -53,4 +64,10 @@ const refused = awaitOwnersReceipt(registry.getSnapshot());
 await new Promise(resolve => setImmediate(resolve));
 receipt('invalid receipt');
 assert.equal(await refused, false);
-console.log('PASS: shipped owner push, delayed acknowledgement and refused receipt');
+window.__hrAppAdmit('replacement-document');
+const late = window.happyranchConnection.call('app.ownersChanged', posts[0].data);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.at(-1).context, context, 'outgoing relay cannot acquire a replacement context');
+receipt('{}');
+await late;
+console.log('PASS: document-bound shipped owner push, admission, delayed acknowledgement and refused receipt');

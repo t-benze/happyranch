@@ -40,6 +40,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private let downloads: URL
     private var window: NSWindow?
     private var view: WKWebView?
+    private var navigation: WKNavigation?
     private var activeDownloads: [WKDownload] = []
     private var pageFinished = false
     private var downloadFinished = false
@@ -80,6 +81,19 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         if action.request.url?.scheme == "blob", action.shouldPerformDownload { decisionHandler(.download); return }
         decisionHandler(action.request.url.flatMap { try? AppSchemeRoute($0) } == nil ? .cancel : .allow)
+    }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        self.navigation = navigation; scheme.documentDidStart()
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let navigation, self.navigation === navigation else { return }
+        Task {
+            do { try await scheme.admitDocument() }
+            catch {
+                guard self.navigation === navigation else { return }
+                log.write("admission_failure"); scheme.close(); exit(1)
+            }
+        }
     }
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         activeDownloads.append(download); download.delegate = self

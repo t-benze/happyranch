@@ -6,7 +6,7 @@ import HappyRanchSupervisor
 @MainActor
 final class HomeInviteModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, connected, stopping
+        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, connected, runtimeBusy, stopping
         case failed(HomeConnectionFailure), keychain(SavedAccessFailure)
 
         var message: String {
@@ -20,12 +20,13 @@ final class HomeInviteModel: ObservableObject {
             case .saving: return "Saving access in login Keychain"
             case .opening: return "Opening runtime"
             case .connected: return "Connected"
+            case .runtimeBusy: return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "忙碌" : "Busy"
             case .stopping: return "Closing local session; waiting for any storage write/readback to settle"
             case .failed(let failure): return failure.localizedDescription
             case .keychain(let failure): return failure.localizedDescription
             }
         }
-        var busy: Bool { [.checkingSavedAccess, .validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .stopping].contains(self) }
+        var busy: Bool { [.checkingSavedAccess, .validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .runtimeBusy, .stopping].contains(self) }
     }
 
     /// Captured by operations and by the native release-UI callbacks. A URL
@@ -54,6 +55,7 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var expiresAt: Date?
     @Published private(set) var comparisonPhrase: String?
     @Published private(set) var webURL: URL?
+    @Published private(set) var appReadiness: AppAPIHealth?
     @Published private(set) var savedHomes: [SavedHome] = []
     @Published private(set) var saveFailure: SavedAccessFailure?
     @Published private(set) var removalFailures: [String] = []
@@ -510,11 +512,16 @@ final class HomeInviteModel: ObservableObject {
                     try check(token)
                     guard let session else { return }
                     try await session.checkAccess()
-                    // Authenticated health alone cannot retain Connected after
-                    // a contract/busy refusal. Recheck the same selected owner.
+                    // Busy includes ordinary active work and bounded-unknown
+                    // update observations. Preserve the admitted document and
+                    // transfers, publish busy, then recheck without replay.
                     let health = try await AppAPIHealth.read(from: session.appTransport())
-                    try health.requireReady()
+                    if health.state != "busy" { try health.requireReady() }
                     try check(token)
+                    appReadiness = health
+                    if phase == .connected || phase == .runtimeBusy {
+                        phase = health.state == "busy" ? .runtimeBusy : .connected
+                    }
                     accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
                 } catch {
                     guard lifetime == token, !Task.isCancelled else { return }
@@ -605,7 +612,7 @@ final class HomeInviteModel: ObservableObject {
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
         expiryTask?.cancel(); monitor?.cancel(); navigationDeadline?.cancel()
-        expiresAt = nil; comparisonPhrase = nil; webURL = nil; unsaved = nil
+        expiresAt = nil; comparisonPhrase = nil; webURL = nil; appReadiness = nil; unsaved = nil
         if finalPhase == .failed(.revoked) { saveFailure = nil }
         if let pendingRemoval {
             target = pendingRemoval.trust

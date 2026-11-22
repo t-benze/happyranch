@@ -85,8 +85,15 @@ Health contract admission uses `current >= 1` and `min_client <= 1`, including
 missing-contract and busy refusals, before API forwarding. The native document
 completion callback also awaits fresh admission of that selected owner and
 checks the current navigation/load identity. The Connected monitor rechecks
-the same readiness contract after its existing access check; authorization
-alone cannot restore Connected after a compatibility or busy refusal.
+the same readiness contract after its existing access check. After admission,
+ordinary or bounded-unknown `update_busy` publishes the existing Busy/忙碌 status
+and preserves Main, its document identity, drafts and in-flight transfers; the
+periodic check restores ready/Connected without replay. Initial busy admission
+still refuses Connected. Genuine access loss and incompatibility keep their
+existing failure handling. Owner relay envelopes capture the loaded Main
+context, revoked at document retirement; late pushes cannot alter current
+evidence or clear retired-save uncertainty. The public call/on API and owner
+summary schema are unchanged.
 
 Only a proven no-send transport outcome can return the pre-forward 503 recovery
 shape. The managed/DIY transports fence before their first write/send. Local
@@ -140,8 +147,13 @@ bash -n app/mac/scripts/build-app.sh
 
 The dispatcher on Linux explicitly skips Darwin execution; this is not native
 PASS. Swift tests are `AppHTTPResponseParserTests`, `AppSchemeRouteTests` and
-`AppSchemeLoadTests` (production document admission and lost-reply delivery) in
+`AppSchemeLoadTests` (production document admission, busy draft/transfer retention,
+retired-document messages and lost-reply delivery) in
 the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
+`HomeInviteModelTests.admittedBusyReadinessRetainsDocument` also checks the real
+periodic connected → busy/unknown → ready monitor, unchanged lifetime/webURL,
+no session reopen/replay and genuine revocation teardown in the existing
+HomeInviteModelTests venue.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
 PR's combined six-run unsigned allowance across Jenkins and GitHub Actions.
 The PR body is the build ledger; 0/6 at maker handoff. No diagnostic-only run,

@@ -75,7 +75,23 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     }
 }
 
+private final class HomeReadinessFixture: AppAPITransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var busy = false
+    func setBusy(_ value: Bool) { lock.withLock { busy = value } }
+    func appRequest(method: String, target: String, headers: [String: String], body: Data) -> AppAPITransfer {
+        let transfer = AppAPITransfer()
+        let busy = lock.withLock { self.busy }
+        transfer.emit(.response(200, ["content-type": "application/json"]))
+        // The bounded-unknown update observation is still busy, not access loss.
+        transfer.emit(.bytes(Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy),\"unknown\":\(busy)}}".utf8)))
+        transfer.finish(); return transfer
+    }
+}
+
 private actor HomeSessionFixture: HomeInviteSession {
+    nonisolated let readiness = HomeReadinessFixture()
+    nonisolated func appTransport() throws -> any AppAPITransport { readiness }
     let gate: HomeAwaitGate
     init(gate: HomeAwaitGate = HomeAwaitGate()) { self.gate = gate }
     private(set) var stops = 0
@@ -166,10 +182,45 @@ struct HomeInviteModelTests {
         return "hrinvite2:" + wire(try JSONSerialization.data(withJSONObject: fields))
     }
 
-    private func eventually(_ predicate: @MainActor () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(5)
+    private func eventually(timeout: TimeInterval = 5, _ predicate: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
         while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
         return predicate()
+    }
+
+    @Test("Admitted runtime survives connected → busy/unknown → ready without replacement or replay")
+    func admittedBusyReadinessRetainsDocument() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        try #require(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL), context = model.lifetime
+        model.webLoaded(url: url, lifetime: context)
+        #expect(model.phase == .connected)
+        var published: [URL?] = []
+        let observation = model.$webURL.sink { published.append($0) }
+        defer { observation.cancel(); model.cancel() }
+        session.readiness.setBusy(true)
+        try #require(await eventually(timeout: 7) { model.phase == .runtimeBusy })
+        #expect(model.phase != .connected && model.appReadiness?.state == "busy")
+        #expect(model.lifetime == context && model.webURL == url)
+        #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "unknown")
+        #expect(await session.stops == 0)
+        #expect(await session.opens == 1)
+        session.readiness.setBusy(false)
+        try #require(await eventually(timeout: 7) { model.phase == .connected })
+        #expect(model.lifetime == context && model.webURL == url)
+        #expect(published.allSatisfy { $0 == url }, "No nil publication can dismantle Main")
+        #expect(await session.stops == 0)
+        #expect(await session.opens == 1)
+        #expect(await session.pairs == 1)
+        #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "available")
+        // Genuine access loss still takes the existing teardown path.
+        await session.configure(access: .revoked)
+        try #require(await eventually(timeout: 7) { model.phase == .failed(.revoked) })
+        #expect(model.webURL == nil && model.lifetime != context)
+        #expect(model.accessObservation?.access == .revokedConfirmed)
     }
 
     @Test("A v1 invite requires a fresh invite and approval before any join")

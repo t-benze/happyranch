@@ -1661,7 +1661,11 @@ cancel, this slice accepts the existing v2 `app.ownersChanged` summary. Native
 uses the bounded duplicate-free parser, stores protected owner evidence before
 the `"{}"` receipt, refuses voluntary document navigation while owner evidence or
 native non-GET transfers block it, and retains unresolved-save uncertainty on
-document loss. Unsolicited lifecycle decisions are refused; dialog/menu/lifecycle
+document loss. Owner relay envelopes capture the injected Main document context,
+bound by native after load and revoked at document retirement. Retired-context
+pushes are rejected before changing current evidence; late clean or pending
+messages cannot clear retirement uncertainty. The public call/on API and summary
+schema remain unchanged. Unsolicited lifecycle decisions are refused; dialog/menu/lifecycle
 commands remain later slices. Remote config-write refusal reads the
 same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
 GUI remote calls use the existing pinned direct dial, not a loopback listener;
@@ -1672,7 +1676,12 @@ with the main resource manifest and includes the native config policy.
 Native Connected/load completion requires both the expected current navigation
 and fresh compatible, non-busy selected-owner health admission. The periodic
 access monitor also evaluates readiness, so authorization cannot restore a false
-Connected state. Managed/DIY transports fence before the first request write;
+Connected state. Once admitted, busy (including bounded-unknown update readiness)
+publishes the existing Busy/忙碌 state while retaining Main's identity, drafts,
+owner evidence and in-flight transfers. Periodic rechecking can restore ready
+without replay; genuine authorization loss and incompatibility retain their
+existing failure handling, and initial busy admission still refuses Connected.
+Managed/DIY transports fence before the first request write;
 only proven no-send failures produce pre-forward recovery. Local URLSession
 failures after resume conservatively fail the scheme request. Missing response
 headers never prove no send: interrupted mutations retain Result unknown in the

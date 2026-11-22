@@ -73,6 +73,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var admission: Task<Void, Error>?
     private var documentOwners = AppSchemeOwnerSummary()
     private var document = UUID()
+    private var documentContext: String?
     private var hasDocument = false
     private var state = "target_starting"
     private var hostContract: [String: Int]?
@@ -142,14 +143,32 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         owners.values.contains { !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }
     }
     func documentDidStart() {
+        documentContext = nil
         document = UUID(); hasDocument = true
         documentOwners.retire(nonGETPending: nonGETPending)
         admission?.cancel(); admission = nil
     }
     func admitDocument() async throws {
         let expected = document
+        guard let view else { throw AppAPIError.cancelled }
+        let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
+        guard document == expected, self.view === view, let context = raw as? String,
+              context.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else { throw AppAPIError.cancelled }
+        documentContext = context
+        let bound = try await view.callAsyncJavaScript("return window.__hrAppAdmit?.(context);",
+            arguments: ["context": context], in: nil, in: .page)
+        guard document == expected, self.view === view, bound as? Bool == true else { throw AppAPIError.cancelled }
         try await checkAdmission(refresh: true)
-        guard document == expected, view != nil else { throw AppAPIError.cancelled }
+        guard document == expected, self.view === view else { throw AppAPIError.cancelled }
+    }
+
+    /// A post-admission readiness observation changes status and future send
+    /// admission, never the document, owner evidence or existing transfers.
+    func updateReadiness(_ health: AppAPIHealth) {
+        hostContract = health.contract; incompatibleSide = health.incompatibleSide
+        guard state != health.state else { return }
+        state = health.state; admission?.cancel(); admission = nil
+        emitStatus()
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
@@ -338,21 +357,22 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         guard message.webView === view, message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "happyranch-app", message.frameInfo.securityOrigin.host == "app",
               message.frameInfo.securityOrigin.port == 0, let url = message.frameInfo.request.url,
-              (try? AppSchemeRoute(url)) != nil, let item = message.body as? [String: Any] else {
+              (try? AppSchemeRoute(url)) != nil, let item = message.body as? [String: Any],
+              let context = documentContext, item["context"] as? String == context else {
             replyHandler(nil, "unavailable"); return
         }
         if item["command"] as? String == "app.ownersChanged" {
             do {
                 // Parsing and storage are synchronous on MainActor, before ACK.
                 // Invalid current-document input cannot retain clean clearance.
-                try documentOwners.accept(item.count == 2 ? item["data"] as? String ?? "" : "")
+                try documentOwners.accept(item.count == 3 ? item["data"] as? String ?? "" : "")
                 replyHandler("{}", nil)
             } catch { replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#) }
             return
         }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
-        if item == ["command": "app.status"] { replyHandler(statusJSON(), nil); return }
-        if item["command"] == "cancel", item.count == 2, let id = item["id"], UUID(uuidString: id) != nil {
+        if item == ["context": context, "command": "app.status"] { replyHandler(statusJSON(), nil); return }
+        if item["command"] == "cancel", item.count == 3, let id = item["id"], UUID(uuidString: id) != nil {
             if let key = owners.first(where: { $0.value.requestID == id })?.key { stop(key) }
             else if cancelled.count < 256 { cancelled.insert(id) }
             replyHandler("{}", nil); return

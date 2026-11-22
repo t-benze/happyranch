@@ -46,7 +46,13 @@ acceptance are pending exact-reviewed-head QA; see
 [Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Mac Connected requires the expected current document completion plus fresh
 compatible, non-busy selected-owner admission; the access monitor rechecks both
-authorization and readiness. After a possible send, a lost reply fails the
+authorization and readiness. Post-admission busy (including bounded-unknown
+update readiness) publishes Busy while retaining Main's identity, drafts and
+transfers, then rechecks without replay; real access loss/incompatibility retain
+their existing failure handling. Owner relay messages carry a loaded-document
+context revoked on retirement; stale pushes cannot replace current evidence or
+clear retired-save uncertainty. The public call/on and summary schema are
+unchanged. After a possible send, a lost reply fails the
 scheme transfer even before response headers, preserving Result unknown for a
 mutation. Pre-forward 503 recovery is reserved for proven no-send outcomes.
 

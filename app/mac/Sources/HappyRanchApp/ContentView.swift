@@ -9,6 +9,7 @@ struct WebView: NSViewRepresentable {
     let transport: any AppAPITransport
     let remote: Bool
     var accessUnsaved = false
+    var readiness: AppAPIHealth?
     var onLoaded: (@MainActor (URL) -> Void)?
     var onFailed: (@MainActor (URL) -> Void)?
 
@@ -107,7 +108,10 @@ struct WebView: NSViewRepresentable {
             return view
         }
     }
-    func updateNSView(_ nsView: WKWebView, context: Context) { context.coordinator.owner = self }
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.owner = self
+        if let readiness { context.coordinator.scheme?.updateReadiness(readiness) }
+    }
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
         coordinator.scheme?.close(); coordinator.scheme = nil
     }
@@ -126,6 +130,7 @@ struct ContentView: View {
                     let lifetime = appDelegate.homeInvite.lifetime
                     WebView(url: url, transport: transport, remote: appDelegate.connectionRole == .client,
                         accessUnsaved: appDelegate.homeInvite.bridgeHasUnsavedAccess,
+                        readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
                         onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
                         onFailed: { appDelegate.homeInvite.webFailed(url: $0, lifetime: lifetime) })
                         .id(urlString + lifetime.attempt.uuidString + lifetime.document.uuidString + appDelegate.appTargetGeneration.uuidString)

@@ -467,7 +467,7 @@ enum ConnectionClientProjection {
         case .awaitingApproval: stage = "waitingApproval"
         case .saving: stage = "saving"
         case .opening: stage = "opening"
-        case .connected: stage = "connected"
+        case .connected, .runtimeBusy: stage = "connected"
         case .stopping: stage = "stopping"
         case .failed, .keychain: stage = "failed"
         }
