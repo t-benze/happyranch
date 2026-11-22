@@ -6034,9 +6034,10 @@ the server decides eligibility), with saved limits shown read-only. R2 unit (a) 
 separate Founder-authenticated Allow new runs / Disable new runs controls for fresh
 admission. Save never starts work and preserves current admission (first Save initializes
 Disabled); Disable affects only fresh admission and preserves already-admitted runs'
-immutable pins. No repository, start, retry, reassign or merge control is mounted;
-public Start@2 and Draft→Review
-remain unavailable. See the [R2 setup/admission contract](contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+immutable pins. No repository, start, retry, reassign or merge control is mounted.
+Public Start@2 admission/continuation is supported through genuine task completion;
+Draft→Review remains unavailable. See the [Start@2 contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation)
+and [R2 setup/admission contract](contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
 One Save freezes one key/body (`useSequentialSettingsFence`);
 pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
 "Continue from current configuration", which is enabled (control and handler) only once a

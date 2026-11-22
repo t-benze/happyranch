@@ -14,7 +14,8 @@ See [the route and custody contract](../agent-guides/contracts/reusable-workflow
 This is source support, not authorization for live operation. This PR performs
 no deploy/restart/live DB mutation/Allow. Founder must separately operate the
 saved four-role setup and Allow when the release is accepted. Public Start@2
-and Draft→Review registration remain separate units. The offline setup script
+admission/continuation is supported by [R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation);
+Draft→Review registration remains undelivered. The offline setup script
 is unchanged and still refuses fresh admission; its original replay is retained.
 
 ## S9 final source checkpoint
@@ -26,8 +27,9 @@ migration exceeds S9's closed set. Coding authority/history, selected @1 replay,
 original Final journals and all cumulative charges stay with their original
 readers. No extraction, storage upgrade or historical rewrite is claimed.
 
-S8b's registration/transport boundary below remains current: public discovery
-and composition use Start@1/v2 and public @2 start stays closed. Defaults stay
+S8b's original Start@1/v2 discovery/composition and domain-transport boundary
+remain unchanged; public @2 discovery/compose/admission is now supported by R2
+unit (b) above. Defaults stay
 Disabled/unset until explicit Founder Save and separate Allow. R1/S1–S8b source delivery and S9 parity do not establish live
 replacement acceptance. Deployment/restart, actual Coding setup/roles/Allow,
 the genuine R2 four-role pilot/scratch merge, then/fanout retirement, live DB
@@ -41,8 +43,8 @@ Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
 adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
 `workflow-sequential-start-context@1` wire shape and Start@1 composer stay
 unchanged, offering v2 only. A fresh public v3 pin still refuses with
-`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
-closed pending separate authorization. V2 fresh-start behavior is unchanged.
+`sequential_release_pin_mismatch`. Public @2 discovery/compose/admission is
+supported by R2 unit (b) above. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
 admission, tasks, runs or Allow. Founder setup and admission are separate above.
 

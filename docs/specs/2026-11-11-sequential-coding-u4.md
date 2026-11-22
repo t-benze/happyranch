@@ -1,10 +1,10 @@
 # Sequential Coding U4: task-owned repository resolution
 
-Current B1 addendum: @2 discovery/compose available; public admission unavailable
-(`workflow_start_v2_unavailable`). This supersedes older public-@2-closed
-statements about discovery/composition only. @1 bytes remain frozen; no admission,
-continuation/recovery or Draft→Review registration is delivered by B1.
-[Current B1 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+Current R2 unit (b) addendum: @2 discovery/compose remain read-only; public
+admission, source continuation and initiator-owned recovery are supported through
+an eligible manager task's genuine completion callback. @1 bytes and historical
+source-terminal semantics remain frozen. Draft→Review registration remains
+undelivered. [Current Start@2 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
 
 ## S8a staged Coding v3 boundary (THR-336)
 

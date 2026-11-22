@@ -178,7 +178,9 @@ methods and policy constants and imports proved work once per caller.
 The [existing schema-shell keepers](../../operations/local-ci.md#s9-reader-parity-keepers)
 cover bounded acquisitions/refusals/charges and complete history/replay. They do
 not prove a naming extraction, semantic Coding role adherence or live acceptance.
-Public @2 discovery/compose is available; admission remains unavailable; Coding defaults remain Disabled/unset until explicit Founder setup and Allow. Source
+Public @2 discovery/compose and admission/continuation through genuine task
+completion are supported by R2 unit (b) above; Coding defaults remain Disabled/unset until explicit Founder
+setup and Allow. Source
 completion does not retire then/fanout or authorize the founder-reserved pilot,
 setup/Allow, deployment/restart, live DB changes or thread notifications.
 
@@ -463,7 +465,8 @@ private source observations, not live host/provider or S6a acceptance evidence.
 
 The internal version-selected dispatcher supports generic queue admission,
 prelaunch, session/PID binding, callbacks, terminal/outer closure and addressed
-node briefs. Public @2 starts remain unavailable. Founder saved-default admission
+node briefs. Public @2 admission/continuation is now supplied by R2 unit (b) above.
+Founder saved-default admission
 is separately supported by R2 unit (a) above.
 Before native launch reservation, `recheck_launch_assignment` checks the saved
 selection against current executor/options. Executor/options drift and current

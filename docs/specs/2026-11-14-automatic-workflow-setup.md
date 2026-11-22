@@ -1,9 +1,11 @@
 # Automatic workflow setup — incremental delivery
 
-Current R2 unit (a) addendum: additive Coding v3/@2 setup reads/Save and separate
+Current R2 units (a) and (b) addendum: additive Coding v3/@2 setup reads/Save and separate
 Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
-Public Start@2 and Draft→Review registration remain undelivered. Registration
+Public Start@2 admission/continuation is supported by
+[R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation);
+Draft→Review registration remains undelivered. Registration
 still creates no defaults or admission; offline fresh admission remains refused.
 Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
 Exact routes, custody and supported fixture commands:
@@ -29,8 +31,9 @@ and once-per-caller reuse accounting are unchanged. See the
 This is a source/doc parity checkpoint, not a new bootstrap phase or installer.
 S2b's schema2 target, nonempty schema1 refusal, verified backup/preservation,
 unchanged-on-failure, full installation integrity and all-org startup limits
-remain. Registration adds generic Coding v3 data only; public @2 start stays
-closed and Coding defaults stay Disabled/unset until explicit Founder setup/Allow. Live qualification, setup/roles/Allow,
+remain. Registration adds generic Coding v3 data only; public @2 admission/continuation
+is supported by R2 unit (b) above. Coding defaults stay Disabled/unset until explicit
+Founder setup/Allow. Live qualification, setup/roles/Allow,
 deployment/restart and pilot remain separately authorized operations.
 
 ## S2b automatic schema2 qualification
@@ -64,7 +67,8 @@ Backup directories remain 0700 and backup files 0600. Full integrity, exact
 preservation, actual writable FIRST/NEXT, default target validation and the
 original parent's single permit still precede COMMIT. No ordinary or installer
 cap, FK/authority/history predicate, 5s read deadline or startup window changes.
-Coding remains Disabled by default and public @2 admission stays closed.
+Coding remains Disabled by default; public @2 admission/continuation is supported
+by R2 unit (b) above after explicit Founder setup/Allow.
 
 Focused private proof uses
 `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --automatic-schema2=CASE`
