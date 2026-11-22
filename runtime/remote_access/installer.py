@@ -2091,7 +2091,7 @@ class ManagedInstaller:
         for line in output.splitlines():
             fields = line.split()
             if (len(fields) != 4 or any(not field.isascii() or not field.isdigit() for field in fields)
-                    or self._headscale_owner[0] in map(int, fields)):
+                    or (self._headscale_owner is not None and self._headscale_owner[0] in map(int, fields))):
                 raise headscale.HeadscaleServiceError("cleanup-uncertain")
 
     def _issuer_receipt(self) -> dict | None:

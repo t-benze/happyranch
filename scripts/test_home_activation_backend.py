@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import inspect
+import io
 import json
 import os
 import socket
 import threading
 import time
 import ssl
+import sys
 from contextlib import contextmanager, ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -176,6 +179,65 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
         yield v
     finally:
         v.observers.close()
+
+
+def test_clean_enable_capture_without_headscale_account(composition: Any) -> None:
+    v = composition
+    assert v.io._headscale_shape() is None
+    native = v.io._run
+    scans = []
+
+    def run(args: list[str], **kwargs: Any) -> tuple[int, str]:
+        if args == ['ps', '-eo', 'ruid=,euid=,suid=,fuid=']:
+            scans.append(args)
+            return 0, '1001 1001 1001 1001\n'
+        return native(args, **kwargs)
+
+    v.io._run = run
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert json.loads(expected)['prestate'] == 'clean'
+    assert scans and not v.head.present
+    assert not v.calls and not v.account_creations
+
+
+@pytest.mark.parametrize('journal_fails', [False, True])
+def test_enable_effect_failure_journals_only_type_source_step(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
+        journal_fails: bool) -> None:
+    import syslog
+    from unittest.mock import Mock
+    from runtime.remote_access import installer
+
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    native = v.io._run
+    secret = 'token=synthetic-secret https://private.invalid/auth /home/private-user pairing=12345'
+
+    def run(argv: list[str], **kwargs: Any) -> tuple[int, str]:
+        if Path(argv[0]).name == 'useradd':
+            raise OSError(secret)
+        return native(argv, **kwargs)
+
+    v.io._run = run
+    monkeypatch.setattr(h, 'ManagedInstaller', lambda **kwargs: v.io)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    request = dict(method='Enable', uid=os.getuid(), step='enable', expected=expected,
+                   deadline=time.monotonic() + 30)
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    sent = Mock(side_effect=OSError('synthetic-journal-secret') if journal_fails else None)
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    assert h.helper_main() == 1
+    # The innermost real product frame calls the synthetic failing native runner.
+    lines, start = inspect.getsourcelines(installer.ManagedInstaller._account)
+    line = start + next(i for i, text in enumerate(lines) if 'code, _ = self._run(' in text)
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-activation-failure exception=OSError '
+        f'source=runtime/remote_access/installer.py:{line} step=enable')
+    emitted = str(sent.call_args)
+    assert all(value not in emitted for value in (secret, 'synthetic-secret', 'private-user',
+                                                  'https://', '12345', 'synthetic-journal-secret'))
+    assert capsys.readouterr() == ('', '')
+    assert v.receipts.current() is None and not v.calls
 
 
 @pytest.mark.parametrize('prestate', ['clean', 'staged-inert', 'prepared'])

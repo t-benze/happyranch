@@ -1579,6 +1579,12 @@ must contain no process with that UID (real/effective/saved/filesystem); failed,
 malformed or oversized observations refuse. These are sampled observations under
 the existing cooperative root-writer discipline, not an atomic process fence.
 
+For clean Enable admission before the Headscale account exists, there is no
+owner UID to match. Only that UID-membership comparison is skipped; the same
+systemd property checks and bounded `ps` command, exit status and four-column
+ASCII numeric row validation still apply. A receipt-bound cleanup retains its
+recorded UID comparison even after the account has been deleted.
+
 Delete user first, then only the receipted group if still present and unshared.
 E defines partial failure: successful userdel followed by failed groupdel keeps
 the receipt, group and all other remaining objects; never recreate the user.
@@ -3499,6 +3505,21 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
+
+THR-327 seq613 release-home creation is owned only by the packaged Linux
+desktop/daemon launcher, using its existing absolute-XDG/default resolver. It
+creates the final folder with explicit 0700 and no-follow verification of real
+directory type, current UID and exact 0700 before publishing any state, including
+GUI desktop.lock or execing the service daemon. Only a newly created verified
+inode may have umask-stripped owner bits restored through its descriptor. Existing
+unsafe folders are never chmod/chown repaired or accepted for remote access; a
+message names the folder and cause (including group/world writes) and says it
+must be private to the user. Existing daemon startup behavior is retained; Enable
+still refuses `release_home_invalid` under the unchanged helper-owner checks.
+Safe existing modes are retained. Shared ensure_daemon_home, non-release homes,
+other daemon file modes and systemd UMask are unchanged. XDG creation does not
+extend the helper's protected release-binding policy.
+
 The packaged entry exposes Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected plus I5a's seven public lifecycle/invite methods, with unchanged
 admission. Linux CLI consumers are I5b and bridge consumers are I5c;
@@ -3510,6 +3531,21 @@ I4b-2 adds RetryPolicyRenewal with its exact retry-policy-renewal auth_admin/no-
 action. Its fixed existing bundled-Python `-I -m
 runtime.remote_access.home_activation_backend` child accepts only the helper's
 closed bounded capture/effect request, empty environment and original timeout.
+Its native runner selects the existing account tools `useradd`, `userdel` and
+`groupdel` by their fixed `/usr/sbin/` paths: the empty environment's default
+`/bin:/usr/bin` search cannot find them on Debian/Ubuntu. Account arguments,
+ownership validation and deadlines are unchanged.
+Enable admission/capture catch-alls journal only fixed internal stage names and
+exception class through local syslog. The Enable-effect child failure adds one
+local warning containing only exception class, innermost product source-relative
+file:line and the fixed enable step, following at most eight explicit causes or
+suppressed contexts through closed wrappers. Source paths are limited to
+160 characters and class names to 64. No message, argument, local, user path or
+credential is formatted. Logging failure preserves closed refusal/exit and
+all existing budgets and uncertainty. See the [local diagnostic runbook](../../operations/remote-access-runbook.md#local-home-enable-failure-diagnosis)
+for the exact helper journal and read command. Founder THR-327 seq643 assigns
+home-network acceptance to founder-run local Linux testing for this milestone;
+this product change adds no hosted M1 run or harness behavior.
 It captures protected activation G/O (including absence), initial Enable config
 generation, and B17 inventory/journal generation. There is no bus-supplied UID,
 path or generation. Already-designed enable/replace-failed/disable polkit actions
@@ -3563,6 +3599,12 @@ I3a's native polkit CheckAuthorization callback with the captured unique bus sen
 and exact action. Linux CLI consumers are I5b and bridge consumers are I5c;
 RefreshHomeAddress remains absent and B13-deferred. Admission is unchanged;
 the terminal/cancellation rules retain the same slot through the entire worker.
+The slot is captured before authorization; its callback constructs the worker
+under the helper lock, then starts it only after leaving that lock. The slot stays
+captured across unlock/start, so another caller still refuses as busy; the worker
+retains current-caller revalidation and the nonblocking effect/settlement guards.
+Worker startup failure uses the existing locked error/clear handling. Genuine
+effect or settlement uncertainty retains its existing sealed-slot behavior.
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains

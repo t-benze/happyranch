@@ -17,6 +17,40 @@ M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deploy
 remain **UNEXECUTED** and outside M1. This historical runbook is not evidence of
 those outcomes or authorization to provision/deploy.
 
+## Local home Enable failure diagnosis
+
+Founder THR-327 seq643 moves this milestone's home-network acceptance to a
+founder-run Linux host test. No new hosted M1 run is required or authorized by
+this change; the historical receipt above remains tied to its recorded source.
+
+The packaged helper's Enable admission/capture refusals use local syslog with
+fixed internal stage names and exception class only. A failure in the activation
+child's `enable` step additionally writes one `remote-access-activation-failure`
+warning to that existing syslog destination, attributed to
+`happyranch-remote-access-helper.service` in the system journal. Read it locally:
+
+```sh
+journalctl -u happyranch-remote-access-helper.service --since '10 minutes ago' --no-pager -o cat
+```
+
+The activation warning contains only exception class, innermost product source
+file:line and the fixed `enable` step. It follows at most eight explicit causes
+or suppressed contexts to locate an underlying failure hidden by a closed product
+wrapper; it never formats exception text or a traceback. For example:
+
+```text
+remote-access-activation-failure exception=OSError source=runtime/remote_access/installer.py:1561 step=enable
+```
+
+Line numbers vary with the installed version. Source paths are limited to
+160 characters relative to shipped `runtime/` code; class names are limited to
+64 characters. No exception messages/arguments, user paths, locals,
+keys, tokens, join material, authentication URLs or pairing codes are recorded.
+Child stderr remains private/discarded; syslog avoids changing that transport.
+Journal delivery failure preserves exit 1 and the existing uncertainty,
+retries, budgets, timeouts and checks. Absence of a warning does not prove
+success; READY still requires its protected receipt and all existing checks.
+
 ---
 
 ## Daemon stop budget

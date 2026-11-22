@@ -9,13 +9,14 @@ import os
 from pathlib import Path
 import queue
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from types import ModuleType, SimpleNamespace
-from typing import Callable, Iterator
+from typing import IO, Callable, Iterator
 import unittest
 from unittest.mock import patch
 
@@ -65,29 +66,111 @@ class LifecycleTests(unittest.TestCase):
         prefix = self.home / "payload"
         (prefix / "bin").mkdir(parents=True)
         daemon = prefix / "bin/happyranch-daemon"
-        daemon.write_text("#!/usr/bin/python3\nimport json, os\n"
+        daemon.write_text("#!/usr/bin/python3\nimport json, os, pathlib, stat\n"
+                          "home = pathlib.Path(os.environ['HAPPYRANCH_DAEMON_HOME'])\n"
+                          "info = home.lstat() if home.exists() else None\n"
+                          "snapshot = None if info is None else [stat.S_ISDIR(info.st_mode), "
+                          "info.st_uid, stat.S_IMODE(info.st_mode), list(home.iterdir())]\n"
                           "print(json.dumps([os.getpid(), {k: os.environ[k] for k in "
                           "('HAPPYRANCH_DAEMON_HOME', 'HAPPYRANCH_DAEMON_PORT', "
-                          "'HAPPYRANCH_DAEMON_BIND_HOST')}]))\n")
+                          "'HAPPYRANCH_DAEMON_BIND_HOST')}, snapshot]))\n")
         daemon.chmod(0o755)
-        for value in (None, "", "relative", str(self.home / "data space")):
-            with self.subTest(xdg=value):
+        cases = ((mask, case) for mask in (0o002, 0o022) for case in range(4))
+        for mask, case in cases:
+            account = self.home / f"account-{mask}-{case}"
+            value = (None, "", "relative", str(account / "data space"))[case]
+            with self.subTest(xdg=value, umask=oct(mask)):
                 env = dict(os.environ, HOME=str(self.home / "untrusted-home"),
                            HAPPYRANCH_DAEMON_HOME="/ignored", HAPPYRANCH_DAEMON_PORT="8765")
                 env.pop("XDG_DATA_HOME", None)
                 if value is not None:
                     env["XDG_DATA_HOME"] = value
                 child = subprocess.Popen([sys.executable, "-I", window.__file__, "--prefix", str(prefix),
-                                          "--run-service", "--user-home", str(self.home)],
-                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                          "--run-service", "--user-home", str(account)],
+                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         text=True, umask=mask)
                 stdout, stderr = child.communicate(timeout=3)
                 self.assertEqual(child.returncode, 0, stderr)
-                pid, actual = json.loads(stdout)
+                pid, actual, snapshot = json.loads(stdout)
                 self.assertEqual(pid, child.pid, "launcher must exec to preserve unit MainPID")
-                expected = Path(value) if value and value.startswith("/") else self.home / ".local/share"
+                expected = Path(value) if value and value.startswith("/") else account / ".local/share"
                 self.assertEqual(actual, {"HAPPYRANCH_DAEMON_HOME": str(expected / "happyranch"),
                                           "HAPPYRANCH_DAEMON_PORT": "0",
                                           "HAPPYRANCH_DAEMON_BIND_HOST": "127.0.0.1"})
+                self.assertEqual(snapshot, [True, os.getuid(), 0o700, []],
+                                 "release home must be private before daemon exec publishes state")
+
+    def test_service_existing_home_refusal_does_not_block_daemon(self) -> None:
+        for case, problem in (("writable", "group- or world-writable"),
+                              ("symlink", "symbolic link"),
+                              ("file", "not a directory"),
+                              ("owner", "not owned by the current user"),
+                              ("unreadable", "could not be verified without following links")):
+            with self.subTest(case=case):
+                account = self.home / case
+                home = account / ".local/share/happyranch"
+                home.parent.mkdir(parents=True)
+                if case == "file":
+                    home.write_text("synthetic existing file")
+                elif case == "symlink":
+                    target = account / "target"
+                    target.mkdir(mode=0o700)
+                    home.symlink_to(target, target_is_directory=True)
+                else:
+                    home.mkdir(mode=0o700)
+                    if case == "writable":
+                        home.chmod(0o775)
+                    elif case == "unreadable":
+                        home.chmod(0o000)
+                before = home.lstat()
+                target_before = target.stat() if case == "symlink" else None
+                error = io.StringIO()
+                uid = os.getuid() + 1 if case == "owner" else os.getuid()
+                with patch.dict(os.environ, XDG_DATA_HOME=""), \
+                        patch.object(sys, "argv", [window.__file__, "--prefix", str(self.home),
+                                                  "--run-service", "--user-home", str(account)]), \
+                        patch.object(os, "getuid", return_value=uid), \
+                        patch.object(os, "execve", side_effect=SystemExit(0)) as execute, \
+                        contextlib.redirect_stderr(error):
+                    with self.assertRaises(SystemExit) as exited:
+                        window.main()
+                self.assertEqual(exited.exception.code, 0)
+                execute.assert_called_once()
+                self.assertEqual(execute.call_args.args[2]["HAPPYRANCH_DAEMON_HOME"], str(home))
+                self.assertIn("release_home_invalid", error.getvalue())
+                self.assertIn(str(home), error.getvalue())
+                self.assertIn(problem, error.getvalue())
+                self.assertIn("private to the user", error.getvalue())
+                self.assertEqual(home.lstat(), before, "existing unsafe home must not be repaired")
+                if case == "symlink":
+                    self.assertEqual(target.stat(), target_before)
+                    self.assertEqual(list(target.iterdir()), [])
+
+    def test_gui_first_home_is_private_before_lock(self) -> None:
+        original_open = Path.open
+        for mask in (0o002, 0o022, 0o200):
+            with self.subTest(umask=oct(mask)):
+                home = self.home / f"gui-{mask}"
+                observed = []
+                def open_lock(path: Path, *args: object, **kwargs: object) -> IO[bytes]:
+                    observed.append((home.lstat(), list(home.iterdir())))
+                    return original_open(path, *args, **kwargs)
+                previous = os.umask(mask)
+                try:
+                    with patch.object(Path, "open", open_lock):
+                        try:
+                            lock = window.acquire_lock(home)
+                        except OSError as exc:
+                            self.fail(f"fresh release home must allow lock publication: {type(exc).__name__}")
+                finally:
+                    os.umask(previous)
+                self.assertIsNotNone(lock)
+                lock.close()
+                self.assertEqual(len(observed), 1)
+                info, names = observed[0]
+                self.assertTrue(stat.S_ISDIR(info.st_mode))
+                self.assertEqual((info.st_uid, stat.S_IMODE(info.st_mode), names),
+                                 (os.getuid(), 0o700, []))
 
     def test_lock_excludes_second_process_and_reopens_same_inode(self) -> None:
         lock = window.acquire_lock(self.home)
