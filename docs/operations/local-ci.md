@@ -22,6 +22,10 @@ undeclared `REVISE` lands then holds; malformed generic callbacks currently
 propagate `SequentialContractError` through ASGI, with no committed result or
 output. Those rows record the exact parser exception, **not** a successful4xx
 transport projection. This slice does not change that existing error mapping.
+The completion API allocates its own INTEGER result ID and ignores a supplied
+extra `result_id`. C16 checks the allocated identity, then uses the actual
+accepted envelope and pre-acceptance state to check wrong output-result and
+stale-selection rejection at the reducer boundary, with zero persisted changes.
 
 | Cases | Observable boundary / retained keeper |
 | --- | --- |
@@ -31,7 +35,7 @@ transport projection. This slice does not change that existing error mapping.
 | C07–C08 | Two-worker Founder setup, first Save Disabled, explicit admission, operation recovery and role/pin/bounds/CAS negatives. |
 | C09–C12 | Actual CLI compose@2, role/step overrides, authentic thread-origin native admission, mixed identities, second-member rollback and four/eight capacity refusal. |
 | C13–C15 | Addressed immutable document and private recipient, canonical review approval, attributed REQUEST_CHANGES/history/invalidation, authored two-return exhaustion and lower revision1 exhaustion before attempt3. Source later done owns parent release. |
-| C16 | Actual callback parser/identity/result negatives, exact1MiB document/48KiB JSON acceptance through settlement/progression, +1-byte refusal and undeclared REVISE hold. |
+| C16 | Actual callback parser/actor/SID negatives, native INTEGER result identity and reducer output-result/stale-selection negatives, exact1MiB document/48KiB JSON acceptance through settlement/progression, +1-byte refusal and undeclared REVISE hold. |
 | C17–C19 | BLOCK/timeout holds, genuine initiator controls and final return, real Coding QA REVISE coexistence, both completion orders and ordinary chain/fanout barriers, later wait-set reuse, original replay after Save/Disable and private reopen. |
 | C20 | Actual two-entry resource/selection ledgers under unchanged caps and SQL/row/work/byte/deadline refusal, no DDL/version changes. Retain `--fresh-catalog=registration`, `--bootstrap-startup`, and `--start2=native_bounds` for startup/populated qualification. |
 | C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |

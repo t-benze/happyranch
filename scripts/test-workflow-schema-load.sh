@@ -7737,8 +7737,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         callback=None
         if identity_negatives:
             valid=dict(session_id=sid,agent=visit['principal'],status='completed',confidence=80,output_summary=summary)
-            for changes,expected,code in [(dict(agent='s3_alt'),409,'unknown_session'),(dict(session_id='foreign-visit-sid'),409,'unknown_session'),
-                    (dict(result_id=999),422,None)]:
+            for changes,expected,code in [(dict(agent='s3_alt'),409,'unknown_session'),(dict(session_id='foreign-visit-sid'),409,'session_mismatch')]:
                 before=dr_inventory(f)
                 response=await f.client.post('/api/v1/orgs/scratch/tasks/'+visit['task_id']+'/completion',headers=f.auth,json=dict(valid,**changes))
                 assert response.status_code==expected,(expected,response.status_code,response.text)
@@ -7748,7 +7747,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             parse_error=None
             try:
                 response=await f.client.post('/api/v1/orgs/scratch/tasks/'+visit['task_id']+'/completion',headers=f.auth,json=dict(
-                    session_id=sid,agent=visit['principal'],status='completed',confidence=80,output_summary=summary))
+                    session_id=sid,agent=visit['principal'],status='completed',confidence=80,output_summary=summary,
+                    **(dict(result_id=999) if identity_negatives else {})))
             except SequentialContractError as exc:
                 parse_error=exc
                 if rejected is None: raise
@@ -7765,6 +7765,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             assert response.status_code==200,(response.status_code,response.text)
             result=f.db.get_latest_task_result(visit['task_id'],visit['principal'],sid)
             assert type(result['id']) is int
+            if identity_negatives:
+                # CompletionBody ignores unknown fields; the native INTEGER row,
+                # never a client-supplied result_id, owns accepted identity.
+                assert result['id']!=999 and f.conn.execute('SELECT 1 FROM task_results WHERE id=999').fetchone() is None
             callback=dict(task_id=visit['task_id'],principal=visit['principal'],session_id=sid,result_id=result['id'],status='completed',
                 carrier_digest=hashlib.sha256(summary.encode()).hexdigest())
         common=dict(task_id=visit['task_id'],principal=visit['principal'],session_id=sid)
@@ -7798,7 +7802,31 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             with f.org.workflow_authority.admission_writer(capture) as writer:
                 hold_and_wake_uncommitted(writer,f.db,org_slug='scratch',run_id=run_id,visit_id=visit['id'],expected_cas=run['cas'],
                     compiled=f.compiled,authority=f.org.workflow_authority,capture=capture)
-        else: s4baccept(f,visit['id'])
+        else:
+            if identity_negatives:
+                from runtime.workflows.sequential_history import _ReadBudget
+                from runtime.workflows.sequential_run_validation import generic_result_state
+                from runtime.workflows.sequential_definition import parse_generic_result
+                from runtime.workflows.sequential_reducer import GenericAuthenticatedResult, reduce_generic_result
+                prior_state=generic_result_state(f.conn,s4row(f,'workflow_seq_runs',run_id),
+                    s4row(f,'workflow_seq_visits',visit['id']),f.compiled,_ReadBudget())
+            s4baccept(f,visit['id'])
+            if identity_negatives:
+                accepted=s4row(f,'workflow_seq_visits',visit['id'])
+                envelope=parse_generic_result(accepted['result_bytes'])
+                assert accepted['result_id']==result['id'] and envelope.outputs[0].result_id==result['id']
+                before=dr_inventory(f)
+                authenticated=dict(task_id=visit['task_id'],session_id=sid,result_id=result['id'],content=content,settled=True)
+                wrong_output=envelope.outputs[0].model_copy(update={'result_id':999})
+                wrong=envelope.model_copy(update={'outputs':(wrong_output,)})
+                decision=reduce_generic_result(f.compiled,prior_state,GenericAuthenticatedResult(**authenticated,envelope=wrong))
+                assert decision.reason=='output_evidence_mismatch' and decision.edge.action=='hold' and decision.activation is None,('wrong output result identity',decision.reason)
+                stale=envelope.model_copy(update={'input_selection_digest':'0'*64})
+                try: reduce_generic_result(f.compiled,prior_state,GenericAuthenticatedResult(**authenticated,envelope=stale))
+                except SequentialContractError as exc: assert str(exc)=='result_visit_mismatch',str(exc)
+                else: raise AssertionError('C16 accepted stale input selection')
+                assert dr_inventory(f)==before
+                print('C16 native INTEGER result owns callback; wrong output result held and stale selection refused, zero writes',flush=True)
         assert f.db.get_task(f.source.id).status=='in_progress','member return completed source'
         return visit,rendered
 
@@ -8215,7 +8243,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     run=dr_select(f,a)
                     counters={r['node_id']:dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(a,))}
                     if case=='C15' and i==f.revision_bound:
-                        assert run['state']=='held' and run['visit_count']==2*(f.revision_bound+1)
+                        assert run['state']=='held' and run['visit_count']==2*(f.revision_bound+1),('draft revision exhaustion',f.revision_bound,run['state'],run['visit_count'])
                         assert json.loads(s4row(f,'workflow_seq_events',run['held_event_id'])['event_bytes'])['decision']['reason']=='limit_exhausted'
                         assert counters['draft']['revisions']==f.revision_bound and counters['draft']['visits']==f.revision_bound+1
                         if f.revision_bound==1: assert counters['draft']['visits']<3
@@ -8238,7 +8266,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         await dr_done(f)
                         print('C15 revisions',f.revision_bound,'exhausted without allowance reset',flush=True)
                         return
-                    assert counters['draft']['revisions']==i+1
+                    assert counters['draft']['revisions']==i+1,('draft revision counter',counters['draft']['revisions'],i+1)
                     assert run['state']=='running'
                     new=s4row(f,'workflow_seq_visits',run['active_visit_id'])
                     assert new['node_id']=='draft' and json.loads(new['input_selection_bytes'])==dict(outputs=[])
