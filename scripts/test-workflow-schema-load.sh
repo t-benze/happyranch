@@ -7974,10 +7974,12 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 await dr_compose(f,error='sequential_settings_conflict')
                 direct=dict(format='workflow-sequential-start@2',operation_key='unset-direct',definition=dr_save()['definition'],
                     settings=dict(generation=1,snapshot_digest='0'*64),request='Private request',inputs=[],role_overrides=[],step_overrides=[],lower_limits=dr_save()['limits'])
-                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_admission_pin_conflict')
+                # Missing definition/settings rows use the existing selection
+                # unavailable refusal, before the later pin-conflict check.
+                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_start_unavailable')
                 SequentialBuiltinStore(f.org).ensure_registered();await matrix('sequential_settings_absent')
                 await dr_compose(f,error='sequential_settings_conflict')
-                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_admission_pin_conflict')
+                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_start_unavailable')
                 assert dict(f.conn.execute('SELECT * FROM workflow_seq_definitions WHERE identity=?',(DR_IDENTITY,)).fetchone())==original
                 save=dr_save();saved=(await setup_put(f,save)).json()['original'];f.settings[DR_IDENTITY]=saved
                 await matrix('sequential_settings_disabled',1)
