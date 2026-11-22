@@ -12,7 +12,7 @@ import signal
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1296,6 +1296,13 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
             raise HTTPException(status_code=403, detail={'code': 'sequential_start_source_required'})
         if body.status != 'completed' or body.waiting_on_job_ids:
             raise HTTPException(status_code=409, detail={'code': 'workflow_start_completed_required'})
+        # Exact persisted replay remains read-only after tracker cleanup. A new
+        # callback must have the same org/task/principal context as discovery,
+        # before preparation can acquire any publication ownership.
+        if (ownership.kind not in ('legacy', 'seq_source_wait_set')
+                or (org.sessions.get_context_by_session(body.session_id) != (org.slug, task_id, body.agent)
+                    and org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None)):
+            raise HTTPException(status_code=409, detail={'code': 'sequential_task_session_required'})
     if decision_payload is not None and decision_payload.get('action') in ('workflow_control', 'workflow_wait'):
         from runtime.models import NextStep
         try:
@@ -1637,6 +1644,17 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     sequential_owner = org.workflow_sequential_dispatch if ownership.kind == 'seq_visit' else None
     coding_owner = sequential_owner or (org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None)
     continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' or plural_start else None
+
+    @contextmanager
+    def plural_start_lease() -> Iterator[None]:
+        # Revalidate before even a transient publication lease write, keeping
+        # this same binding lease through the synchronous native COMMIT.
+        with org.sessions.binding_lease(task_id, body.agent):
+            if (org.sessions.get_context_by_session(body.session_id) != (org.slug, task_id, body.agent)
+                    or org.sessions.is_recovery_session(task_id, body.agent, body.session_id)):
+                raise HTTPException(status_code=409, detail={'code': 'sequential_task_session_required'})
+            yield
+
     try:
         admission_context = (coding_owner.callback_admission(task_id) if coding_owner is not None else
             continuation.callback_admission(task_id, body.decision, status=body.status)
@@ -1654,8 +1672,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                 # Do not await under this lease.  It bridges get_active() and the
                 # synchronized SQLite transaction, closing the old post-get_active
                 # generation-replacement gap without inverting the DB RLock.
-                with (continuation.writer_ownership() if continuation is not None else nullcontext()), \
-                        org.sessions.binding_lease(task_id, body.agent):
+                with (plural_start_lease() if plural_start else nullcontext()), \
+                        (continuation.writer_ownership() if continuation is not None else nullcontext()), \
+                        (nullcontext() if plural_start else org.sessions.binding_lease(task_id, body.agent)):
                     current = org.sessions.get_active(task_id, body.agent)
                     if current != body.session_id:
                         raise HTTPException(

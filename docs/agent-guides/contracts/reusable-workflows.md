@@ -16,6 +16,15 @@ old-version settings never become @2 defaults implicitly. Browser/bearer, foreig
 ended, recovery, worker, carrier, visit and direct thread sessions are refused;
 responses/refusals remain `Cache-Control: no-store` and bounded to 262,144 bytes.
 
+Fresh plural callbacks require the tracker's exact `(org.slug, task_id, agent)`
+context, matching discovery. They refuse with the existing
+`sequential_task_session_required` code (callback 409; discovery 403) before
+publication ownership or native/workflow writes. The same equality is rechecked
+under the existing binding lease, held through synchronous commit and acquired
+before any transient publication lease. Workflow steps/carriers cannot become
+ordinary sources. Exact committed callback replay remains read-only after SID
+cleanup. No bearer flow or existing @1 route changes accompany this @2 refusal.
+
 The existing CLI start-compose accepts explicit workflow-sequential-start-compose@2
 and 1–8 workflows with selector/settings, stable key, request/inputs, role/step
 overrides and explicit lower_limits. Omission/value/null and omitted/empty

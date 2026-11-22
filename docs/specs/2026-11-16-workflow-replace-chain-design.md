@@ -5,6 +5,9 @@ Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
 Public Start@2 discovery/composer and genuine first/later admission, initiator
 wake/recovery and source continuation are delivered together in B2+B3.
+Fresh plural callbacks require discovery's exact org/task/agent session context
+before publication ownership and revalidate it under the same binding lease
+through commit; foreign or workflow-owned sources refuse without writes.
 Draft→Review registration remains undelivered. R1 double-prime binds only existing
 per-run/retry/revise/batch/history/cancellation bounds; there is no total-step cap
 or cross-run numeric pool. Task step counts remain task-local telemetry. Registration

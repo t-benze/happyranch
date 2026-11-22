@@ -4063,6 +4063,12 @@ the raw context/composer/decision streams. No reserialization supplies the oracl
 
 Every source is isolated, synthetic and provider-free; real registry, authority,
 settings readers, ASGI routes, CLI and native callback admission/refusal are exercised.
+`audience` keeps the native SID equal to the active foreign-org SID and also
+changes that org context after preparation. It checks the latter equality under
+the binding lease, explicit callback codes for every denied audience, unchanged
+all-table/live-attempt/queue inventories and no traced write or publication lease.
+Native membership cardinality is asserted before indexing, so an omitted callback
+bridge produces the attributable B08 assertion rather than a fixture IndexError.
 Read/composer/callback refusal compare exact all-table inventories and queue
 counts; read requests also reject traced DML/DDL/COMMIT. Eight-member composition
 uses explicit partitions, including 131072 request bytes; exact262144/+1 CLI

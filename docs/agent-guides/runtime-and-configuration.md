@@ -37,10 +37,13 @@ registered journal; later startup selection refuses fallback.
 Backup directory parents must be 0700 and files 0600. Already-schema2 automatic
 setup writes zero on the next load, including setup audits and registration.
 The distinct positively fresh POST `/orgs` A2 initializer and historical offline
-default remain schema1. Coding defaults remain Disabled. Public @2 discovery/composer
-is delivered with admission unavailable; @2 admission/continuation/recovery (B2+B3)
-and Draft→Review registration remain undelivered. See the
-[B1 contract](contracts/reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+default remain schema1. Coding defaults remain Disabled. Public @2 discovery and
+composition are read-only; B2+B3 now support atomic first/later multi-run admission
+through an eligible manager's genuine own-task callback. Held/return events wake
+the initiator for retry/rebrief/step-local reassign/cancel; a run return never
+completes the source. Only its genuine final done after dependencies drain does.
+Draft→Review registration remains undelivered. See the
+[Start@2 contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation).
 The private schema shell's `--automatic-schema2=CASE` and timing shell's
 `--startup_budget` observe first/next org-load budgets, not live serving acceptance.
 

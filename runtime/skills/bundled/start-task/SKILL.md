@@ -770,7 +770,11 @@ three unfinished runs); larger batches refuse finitely, all-or-none.
 Keep exact definition/settings pins, stable member keys, request/inputs, role/step
 overrides and explicit lower_limits, including omitted/value/null options.
 The composer only reads. Copy its closed plural decision unchanged into your
-OWN genuine FINAL completion. First admission atomically creates the genuine
+OWN genuine FINAL completion.
+The callback requires your exact active org/task/agent session context and
+revalidates it under the binding lease before any publication ownership or write.
+Foreign, ended and workflow-owned sessions grant no start authority.
+First admission atomically creates the genuine
 result/attempt-or-omission, wait set, all members and receipt with the actual
 empty delivered page. Later starts reuse that wait set. Entry visits wait for
 positive ORIGINAL source closure. Replay preserves original pins and identities;
