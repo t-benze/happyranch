@@ -172,6 +172,10 @@ class _ReadBudget(_Budget):
     generic_callbacks: dict[int, tuple[bytes, str]] = field(default_factory=dict)
 
     @property
+    def traversal_limit(self) -> int:
+        return 65536
+
+    @property
     def remaining_bytes(self) -> int:
         # Complete candidate AND independent reference metadata/copy work share
         # this finite ceiling; retained row/value caps still apply.

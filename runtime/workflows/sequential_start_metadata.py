@@ -19,7 +19,6 @@ from runtime.workflows._read_exhaustion import check as _budget_check
 from runtime.workflows._read_exhaustion import exhausted
 
 from runtime.workflows.sequential_contracts import StartCommand
-from runtime.workflows.coding_authority_history import _TRAVERSAL_LIMIT
 
 if TYPE_CHECKING:
     from runtime.workflows.coding_authority_history import _Budget
@@ -42,7 +41,8 @@ def _require(value: bool) -> None:
 def _step(budget: _Budget) -> None:
     # Decline BEFORE performing another operation if its original allowance
     # cannot admit it. The caller retains and raises its original first error.
-    _budget_check(budget.traversed < _TRAVERSAL_LIMIT, _require, budget, 'work', 1, _TRAVERSAL_LIMIT - budget.traversed)
+    limit = budget.traversal_limit
+    _budget_check(budget.traversed < limit, _require, budget, 'work', 1, limit - budget.traversed)
     budget.step()
 
 

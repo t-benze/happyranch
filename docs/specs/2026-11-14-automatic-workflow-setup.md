@@ -5,7 +5,7 @@ Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
 Public Start@2 admission/continuation is supported by
 [R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation);
-Draft→Review registration remains undelivered. Registration
+R2 unit(c) now adds `release/happyranch/draft-review@1` on generic ABI@2 via the same catalog, definition-only registrar and Start@2 path. Draft setup is API-only; the Coding Setup list/selector and offline script stay unchanged. See the [current contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-c-supported-draft--review-bundle). Registration
 still creates no defaults or admission; offline fresh admission remains refused.
 Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
 Exact routes, custody and supported fixture commands:
@@ -508,7 +508,7 @@ configuration. Historical initializer bytes/defaults and generic Database stay
 unchanged. Startup DB absence is never fresh-creation authority.
 
 `sequential_builtin.PRESET_CATALOG` literally names only the reviewed Coding v2
-source and definition digests. Resource discovery precedes SQL ownership. Real
+source and definition digests. The additive generic catalog holds Coding@3 and Draft→Review@1 on ABI@2; the same registrar selects all three exact definition rows. Resource discovery precedes SQL ownership. Real
 OrgState load calls the registrar after its recovery/authority tail. Absent
 storage remains historical; held startup publication defers missing registration.
 An exact existing definition causes zero writes, including audit/settings rows.

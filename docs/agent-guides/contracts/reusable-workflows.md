@@ -1,5 +1,183 @@
 # Reusable workflow contracts
 
+## R2 unit (c): supported Draft → Review bundle
+
+`release/happyranch/draft-review@1` is a supported bundled definition on generic
+ABI@2, alongside Coding@3. The literal release catalog and qualified registrar
+append only its immutable definition. Registration creates no settings, roles,
+Allowed admission, tasks or runs. An eligible ordinary same-team manager uses
+`/workflows/sequential/start-context/v2` and the existing read-only compose@2
+command, then its own genuine final callback. The unsuffixed Start@1 remains
+frozen. Both bundles use the same generic admission, control and continuation.
+
+The graph has two mutually independent worker roles, `author` and `reviewer`.
+`draft` emits an addressed immutable UTF-8 `document` (at most 1,048,576 bytes),
+then `review` emits a canonical JSON object `document_review` (at most 49,152
+bytes). `APPROVE` finishes `document_approved`; `REQUEST_CHANGES` consumes the
+**target draft** revision allowance and invalidates dependent selections. Put
+correction findings in the callback@2 `findings` array of strings; a JSON report
+alone does not return attributed findings. `REVISE` is undeclared and holds as
+an unknown outcome. `BLOCK` holds for the initiator without automatic retry.
+Document quality and the review's claims/evidence are agent responsibilities.
+The engine verifies bytes, selections, declared outcomes and native settlement.
+
+Authored root limits are 16 visits, 4096 events and 2 recoveries; each node has 2
+revisions, 3 attempts and 1 recovery. Settings and per-run requests may only lower
+these bounds. Two returns are possible under authored bounds; the third meets
+both revision and attempt exhaustion. A lower draft revision limit 1 holds on
+the second return before attempts 3. Retry/rebrief/reassign/cancel never reset
+original limits or spent history. A run return, including the last run, never
+completes its source or releases an ordinary chain/fanout parent. The source's
+later genuine done after all dependencies drain owns completion. Only the
+recorded initiator wakes; no Founder thread notification is added.
+
+Raw discovery includes unavailable entries: unregistered →
+`sequential_definition_not_registered`; registered unsaved →
+`sequential_settings_absent`; first Save/Disabled →
+`sequential_settings_disabled`. Valid Saved+Allowed entries are eligible;
+Allowed defaults unusable for the source team report
+`sequential_assignments_unavailable`. Unavailable Draft metadata does not hide
+eligible Coding. Composition is advisory; fresh callback admission rechecks
+latest settings and assignments atomically. Committed replay preserves original
+receipts/pins before later Disable checks. Neither recovery nor new runs renew
+wider-goal allowances.
+
+Native decision parsing uses the supplied reader ledger's original traversal
+allowance: 65536 for the sequential reader and 16384 for Coding authority.
+Prechecks reserve on that same ledger before the next operation. No parser
+creates a replacement allowance or raises these existing ceilings; byte, SQL
+and deadline bounds remain unchanged.
+
+### Founder API-only Draft configuration
+
+Workflows → Setup continues to configure **Coding only**. Draft configuration
+uses the existing Founder-authorized APIs below; agent/task/CLI session proof
+confers no setup authority. No live operation is performed by source delivery.
+Use your existing authorized Founder API client and bearer custody; never copy
+a real token into files, examples or transcripts. The examples use synthetic
+permanent worker IDs `s3_author` and `s3_review`; substitute two distinct active
+permanent worker IDs in your org. Keep operation keys stable for each exact body.
+
+The complete reviewed pin below comes directly from the literal
+`STAGED_GENERIC[("release/happyranch/draft-review", 1)]` release manifest and
+`draft-review.v1.json` resource. Its source SHA256 includes the single trailing
+LF; its definition digest is canonical bytes without that LF. Browser selection
+or eligible manager discovery is not a prerequisite for obtaining this pin.
+
+All paths below are relative to `/api/v1/orgs/{slug}`:
+
+1. GET `/workflows/sequential/views/v2/settings?definition_identity=release%2Fhappyranch%2Fdraft-review`.
+   Initially 404 `sequential_settings_not_found` means not saved; use expected_generation 0.
+2. PUT `/workflows/sequential/settings/v2` with this complete Save body. The
+   first Save produces generation 1 **Disabled**, and starts no work.
+
+```json
+{
+  "format": "workflow-sequential-settings-put@2",
+  "operation_key": "draft-save",
+  "expected_generation": 0,
+  "definition": {
+    "identity": "release/happyranch/draft-review",
+    "version": 1,
+    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
+    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
+    "compiler": "workflow-sequential-compiler@2",
+    "validator": "workflow-sequential-validator@2",
+    "interpreter": "workflow-sequential-interpreter@2",
+    "capabilities": "workflow-sequential-capabilities@2"
+  },
+  "bindings": [
+    {
+      "role": "author",
+      "principal": "s3_author"
+    },
+    {
+      "role": "reviewer",
+      "principal": "s3_review"
+    }
+  ],
+  "limits": {
+    "max_visits": 16,
+    "max_events": 4096,
+    "max_recoveries": 2,
+    "node_revisions": {
+      "draft": 2,
+      "review": 2
+    }
+  }
+}
+```
+
+3. GET `/workflows/sequential/settings/v2/operations?operation_key=draft-save`
+   to recover the exact original Save receipt. GET the current identity at the
+   views URL above; its generation and snapshot must match that receipt.
+4. PUT `/workflows/sequential/settings/admission` with this complete Allow body,
+   taking expected_generation from this identity's latest receipt/read:
+
+```json
+{
+  "format": "workflow-sequential-admission@1",
+  "operation_key": "draft-allow",
+  "expected_generation": 1,
+  "definition": {
+    "identity": "release/happyranch/draft-review",
+    "version": 1,
+    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
+    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
+    "compiler": "workflow-sequential-compiler@2",
+    "validator": "workflow-sequential-validator@2",
+    "interpreter": "workflow-sequential-interpreter@2",
+    "capabilities": "workflow-sequential-capabilities@2"
+  },
+  "admission": "Allowed"
+}
+```
+
+5. GET `/workflows/sequential/settings/admission/operations?operation_key=draft-allow`
+   for the original Allow. Read current settings at the views URL: generation 2,
+   Allowed, same saved bindings/limits. Allow starts no work.
+6. To Disable new starts, PUT `/workflows/sequential/settings/admission` with:
+
+```json
+{
+  "format": "workflow-sequential-admission@1",
+  "operation_key": "draft-disable",
+  "expected_generation": 2,
+  "definition": {
+    "identity": "release/happyranch/draft-review",
+    "version": 1,
+    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
+    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
+    "compiler": "workflow-sequential-compiler@2",
+    "validator": "workflow-sequential-validator@2",
+    "interpreter": "workflow-sequential-interpreter@2",
+    "capabilities": "workflow-sequential-capabilities@2"
+  },
+  "admission": "Disabled"
+}
+```
+
+7. GET `/workflows/sequential/settings/admission/operations?operation_key=draft-disable`
+   and GET current views settings: generation 3 Disabled, same defaults/limits.
+   Disable never changes admitted runs. A later Save preserves current admission;
+   it is not an implicit Disable. Use distinct keys for every new operation.
+
+On a lost response, recover/replay the original exact key/body before another
+action. Original lookup absence/error does not establish a completed write.
+On stale CAS, read this exact identity and reconcile; do not silently change a
+body/key and retry. Generations are per org+definition identity; successful keys
+are globally scoped by org+Founder+operation_key, so reusing a Draft key for a
+Coding body conflicts. Do not borrow another identity's equal-numbered settings
+pin. There is no current GET `/settings/v2`, new helper or offline-script path.
+
+This bundle uses sequential addressed documents, separate from the retired
+old document-review lane. Its activation/return/stage/claim fences and removed
+human sign/stage transports stay retired. Historical resources and admitted
+@1/@2 pins/readers/bytes remain unchanged. Source-resource checks do not prove
+installed wheel/frozen availability, genuine provider behavior, review quality,
+live Setup/Allow, external merge truth or the separately authorized pilot.
+
+
 ## R2 unit (b): Start@2 admission and continuation
 
 B2+B3 now supply **@2 admission supported** through the genuine ordinary-task
@@ -67,7 +245,7 @@ finitely before allocation; no DDL or overloaded fields are introduced.
 
 @1 raw discovery/composer/decision bytes and source-terminal semantics stay frozen.
 Save never starts work; Disable is fresh-only; old fresh Coding transports remain
-refused. Unit(c) Draft→Review, UI actions, offline script changes, live operations,
+refused. Draft→Review is supplied by unit(c) above. UI actions, offline script changes, live operations,
 pilot and then/fanout retirement remain outside this delivery. See the
 [existing venue and cases](../../operations/local-ci.md#start2-public-admission-and-continuation-cases).
 
@@ -130,8 +308,7 @@ be replaced by late older reads.
 
 Disable affects only NEW starts: latest Disabled and stale former Allowed pins
 refuse at fresh admission. Already-admitted runs retain their immutable settings,
-assignments and original replay/readability. No public Start@2 admission or Draft→Review
-registration is delivered here; Start@2 admission/continuation is available above. `scripts/setup_sequential_coding.py` is unchanged:
+assignments and original replay/readability. Unit(a) supplies setup; units(b)/(c) above supply public Start@2 admission/continuation and Draft→Review registration. `scripts/setup_sequential_coding.py` is unchanged:
 fresh offline admission still refuses `sequential_coding_registration_only`;
 original operator records stay in their separate namespace. Deployment/restart,
 live setup/Allow and the actual four-role pilot remain founder-reserved.
@@ -566,6 +743,16 @@ Running count would exceed 4094; no-result/rejection holds from valid Running
 always fit through 4095. Replacement requires at least one remaining original
 result event as well as visit/attempt/recovery/revision capacity. Nothing resets
 or replenishes an allowance; max_events=1 definitions remain valid.
+
+Before any replacement write, retry/rebrief/reassign also compare every retained
+`current.*` input reference with the run's current selection for that slot,
+including its identity and digest. A retired or superseded reference refuses
+with closed HTTP 409 `control_input_retired`: no event, visit, task, assignment,
+counter, outbox, control or actor-result consumption is committed. The run stays
+Held and cancellable. Cancel then the source's later genuine done remains the
+supported exit after an exhausted correction retires those inputs. Current-input
+retries retain their original bytes; reducer invalidation and renderer staleness
+checks remain unchanged. This applies to Coding v3 and Draft → Review alike.
 
 S4b's @2 acceptance writer must pass the original persisted count as
 `storage_event_count` to `reduce_generic_result`, independent of result counters.

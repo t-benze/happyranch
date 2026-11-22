@@ -1,5 +1,80 @@
 # Local CI
 
+## Draft → Review released-bundle cases (THR-336 R2 unit c)
+
+Use the existing private schema-shell venue:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --draft-review=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --draft-review=all
+# One finite case, same venue:
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --draft-review=C14
+```
+
+The dispatcher accepts `C01` through `C26`, `caller_ledger`, or `all`, and emits
+attributable outcomes. Positive Draft/coexistence paths use the unpatched real
+`generic_start_catalog()`, qualified registrar and Founder Save/Allow APIs. No
+SQL-seeded new definitions/Allowed defaults substitute for those owners.
+Test-side native closure receipts are synthetic; actual task invocation,
+ASGI completion intake, INTEGER results, consumption and stored transitions are
+observed. No provider is launched. Unknown/malformed outcomes are distinct:
+undeclared `REVISE` lands then holds; malformed generic callbacks currently
+propagate `SequentialContractError` through ASGI, with no committed result or
+output. Those rows record the exact parser exception, **not** a successful4xx
+transport projection. This slice does not change that existing error mapping.
+The completion API allocates its own INTEGER result ID and ignores a supplied
+extra `result_id`. C16 checks the allocated identity, then uses the actual
+accepted envelope and pre-acceptance state to check wrong output-result and
+stale-selection rejection at the reducer boundary, with zero persisted changes.
+
+| Cases | Observable boundary / retained keeper |
+| --- | --- |
+| C01–C03 | Literal source resource/LF/size/SHA256/ABI/data contract, real qualified registration and zero-write repetition, corruption/conflict refusal. Source imports prove no installed-wheel/frozen availability. |
+| C04–C05 | Full real two-entry and exact-selected v2 catalog, registration/unsaved/Disabled/Allowed/team-unusable matrix, composer and fresh callback refusal, advisory compose-then-Disable. Coding remains independently eligible. |
+| C06 | Actual released Draft source audience refusals plus the existing full `--start2=audience` keeper (thread/wake/dream/recovery/foreign/native ownership), with no policy changes. |
+| C07–C08 | Two-worker Founder setup, first Save Disabled, explicit admission, operation recovery and role/pin/bounds/CAS negatives. |
+| C09–C12 | Actual CLI compose@2, role/step overrides, authentic thread-origin native admission, mixed identities, second-member rollback and four/eight capacity refusal. |
+| C13–C15 | Addressed immutable document and private recipient, canonical review approval, attributed REQUEST_CHANGES/history/invalidation, authored two-return exhaustion and lower revision1 exhaustion before attempt3. Source later done owns parent release. |
+| C16 | Actual callback parser/actor/SID negatives, native INTEGER result identity and reducer output-result/stale-selection negatives, exact1MiB document/48KiB JSON acceptance through settlement/progression, +1-byte refusal and undeclared REVISE hold. |
+| C17–C19 | BLOCK/timeout holds, genuine initiator controls and final return, real Coding QA REVISE coexistence, both completion orders and ordinary chain/fanout barriers, later wait-set reuse, original replay after Save/Disable and private reopen. |
+| C20 | Actual two-entry resource/selection ledgers under unchanged caps and SQL/row/work/byte/deadline refusal, no DDL/version changes. Retain `--fresh-catalog=registration`, `--bootstrap-startup`, and `--start2=native_bounds` for startup/populated qualification. |
+| C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |
+| C22 | Five fixed historical resource hashes. Raw base/head comparisons below are separate and mandatory; all does not invent a raw oracle. |
+| C23–C26 | Actual manager/worker and node briefs; two real identities' generations/CAS/global operation keys and admitted pins; unchanged Coding Setup list/export; exact documented Founder API sequence. |
+| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding refuses at its unchanged 16384 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
+
+Retain the ordinary focused keepers on **both** Python versions:
+`--start2=all`, `--setup-admission=all`, `--generic-abi=all`, `--s8a=all`,
+`--s8b=legacy_replay`, `--s8b=old_fresh_refused`,
+`--s8b=new_transport_refused`, `--s8b=uncertain_final_preserved`.
+These do not substitute for the new released graph. No tests are deleted or
+weakened; the S8a registration inventory now requires exactly three immutable
+rows, preserving the two exact Coding rows.
+
+On the pinned base and implementation head, separately export
+`--start2=legacy_bytes` using absolute `WORKFLOW_START2_GOLDEN_OUTPUT`, and
+`--setup-admission=legacy_golden` using absolute `WORKFLOW_SETUP_GOLDEN_OUTPUT`;
+`cmp` the raw files. Both remain excluded from their own aggregates.
+C25 separately exports the actual v2 list's raw response using absolute
+`WORKFLOW_SETUP_LIST_OUTPUT` with `--setup-admission=first_save`.
+For an older base lacking this observation-only export, apply only the identical
+response capture/export statements to its private source snapshot, with no
+production changes, before running the same deterministic fixture. Retain both
+source SHAs and export hashes. Never infer raw equivalence by reserialization.
+`WORKFLOW_SETUP_BROWSER_FIXTURE` continues exporting the real first_save response,
+now with the actual second generic definition registered. An export is not a
+browser run. Coding-only filters/frontend/state custody are source-unchanged;
+no Draft selector or locale/layout matrix is introduced.
+
+Required ordinary delivery remains clean committed-head `bash scripts/local_ci.sh all`,
+OpenAPI snapshot `--check`, normal hooks and hosted Source Boundary Lint + Web
+Lint (Node24). Long verification/publication uses durable jobs and actual
+terminal receipts before proceeding. Retired Python units/Web Vitest and
+Product E2E: NOT RUN. General integration: SKIPPED THR-243. Private source
+checks prove no installed artifacts, real provider behavior, live configuration,
+review quality or pilot acceptance; no live pilot allocation is consumed.
+
+
 ## Focused Default manager persistence (GH-1828)
 
 `uv run --frozen pytest scripts/test_empty_default.py -v --tb=short`
@@ -23,6 +98,16 @@ provider or live org runs. This focused script is outside retired Python units
 and skipped general integration; it adds no CI trigger or required gate.
 
 ## Focused S4a hold/control source
+
+`start_replay_cancel_boundary` is calibrated for registered Coding v2, staged
+Coding v3 and Draft Review v1. The added Draft row costs 126,536 bytes on each
+full history read of the same fixture (consumed before cancellation reservation:
+50,280,292 at base, 50,406,828 with Draft). Catalog additions reduce history
+headroom by their measured cost; exhaustion continues to refuse safely. The
+268,551-byte lower tail leaves 20 bytes; its next base64 quantum (268,554)
+refuses by 12 bytes. The 288,136-byte upper tail preserves both Held/cancelled
+refusals, full rollback and cancellation availability. These are fixture
+measurements, not changes to the 64 MiB allowance or cancellation reservation.
 
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4a=all`
 (also Python 3.14; `--s4a=CASE` selects one named case) exercises the inactive
@@ -4058,9 +4143,13 @@ and the same command with `3.14`. Individual selectors are `staged_unavailable`
 `rollback`, `replay`, `capacity`, `native_bounds`, `crash_reopen`, `pause_cancel`,
 `related_sources`, `settings_race`, `accounting`, `recovery_retry`, `recovery_rebrief`, `recovery_reassign`,
 `recovery_cancel_pristine`, `recovery_cancel_held`, `recovery_cancel_launched`,
-`recovery_retry_chain`, `recovery_reassign_fanout`
+`recovery_retry_chain`, `recovery_reassign_fanout`, `recovery_input_retired`
 (B08–B28/C2–C5). Recovery selectors execute both member return orders; the
 chain/fanout variants retain ordinary join bytes until genuine ordinary closure.
+`recovery_input_retired` uses real Coding v3 with developer revisions lowered to
+1: the second REQUEST_CHANGES holds, reviewer retry refuses `control_input_retired`
+with zero committed writes, cancel succeeds, and genuine source done releases
+the parent. Draft C15 checks retry/rebrief/reassign separately at this boundary.
 `accounting` builds a real native v2 continuation envelope and observes one
 spend/claim/applied receipt; route/consumer replay must preserve it.
 `all` excludes only `legacy_bytes`, which needs an explicit task-owned absolute

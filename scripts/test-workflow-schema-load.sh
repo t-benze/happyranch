@@ -64,9 +64,18 @@ EXPECTED_REGISTERED_DEFINITIONS = (
     ('release/happyranch/coding', 3,
      'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
      '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'),
+    ('release/happyranch/draft-review', 1,
+     '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
+     'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 27)) + ('caller_ledger',)
+draft_review_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
+    draft_review_case = sys.argv[1].split('=', 1)[1]
+    assert draft_review_case in ('all', *DRAFT_REVIEW_CASES)
+    sys.argv[1:] = ['--assignments']
 START2_CASES = ('staged_unavailable', 'discovery', 'audience', 'pins_settings', 'compose',
-    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources')
+    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'recovery_input_retired', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources')
 start2_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--start2='):
     start2_case = sys.argv[1].split('=', 1)[1]
@@ -1940,7 +1949,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                     assert before[0] == after[0]
                     assert all(after[1][table] == rows for table, rows in before[1].items() if table != 'workflow_seq_definitions'), 'no_setup_effect: registrar changed another table'
                     assert {p: p.read_bytes() for p in (root/'org').rglob('*') if p.is_file()} == files, 'no_setup_effect: metadata/roles changed'
-                    assert conn.total_changes-changes == 2, 'no_setup_effect: expected only v2 and v3 definition INSERTs'
+                    assert conn.total_changes-changes == 3, 'no_setup_effect: expected exactly Coding v2/v3 and Draft v1 definition INSERTs'
                     registration.append((before, after))
                 with patch.object(builtin.SequentialBuiltinStore, 'ensure_registered', observe_register if s8a_case or not sys.argv[1:] else original_register):
                     org = OrgState.load(slug='scratch', root=root, settings=Settings())
@@ -1994,8 +2003,8 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                         assert len(registration) == 1
                         for table in ('tasks', 'task_results', 'workflow_seq_settings', 'workflow_seq_settings_operations', 'workflow_seq_runs', 'workflow_seq_visits'):
                             assert conn.execute('SELECT count(*) FROM '+table).fetchone()[0] == 0, 'no_setup_effect: allocated '+table
-                        definitions = list(conn.execute('SELECT version,definition_bytes FROM workflow_seq_definitions ORDER BY version'))
-                        assert [(r[0],r[1]) for r in definitions] == [(2, coding.raw), (3, release.select_staged_release(release.STAGED_GENERIC[('release/happyranch/coding',3)].pin).raw)]
+                        definitions = list(conn.execute('SELECT identity,version,definition_bytes FROM workflow_seq_definitions ORDER BY identity,version'))
+                        assert [tuple(r) for r in definitions] == [(c.pin.identity,c.pin.version,c.raw) for c in builtin.preset_catalog()]
                         read_sequential_history(conn, expected_org_slug='scratch')
                         before, changes = inventory(), conn.total_changes
                         builtin.SequentialBuiltinStore(org).ensure_registered()
@@ -2068,7 +2077,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                                 before, changes = inventory(), conn.total_changes
                                 store.ensure_registered()
                                 assert conn.total_changes == changes and inventory() == before, 'exact_existing_zero_writes: registrar changed existing rows'
-                                print('PASS R1c exact_existing_zero_writes two manifest entries; complete inventory/rowid/bytes', flush=True)
+                                print('PASS R1c exact_existing_zero_writes three reviewed catalog rows; complete inventory/rowid/bytes', flush=True)
 
                     if selected in ('all', 'pins'):
                         pin = coding.pin
@@ -2204,7 +2213,7 @@ if sys.argv[1:] in ([], ['--assignments']):
             terminal_conditions=dict(done=dict(output='final_output')))
 
     @contextmanager
-    def s3_fixture(*, defaults=None, definition=None, slug='scratch', packaged=False):
+    def s3_fixture(*, defaults=None, definition=None, slug='scratch', packaged=False, released=False):
         with tempfile.TemporaryDirectory(prefix='s3-assignment-') as scratch:
             home = Path(scratch).resolve()
             runtime = RuntimeDir.init(home / 'runtime')
@@ -2234,6 +2243,12 @@ if sys.argv[1:] in ([], ['--assignments']):
                         task_type='task', status='in_progress', current_session_id='s3-source-session',
                         brief='Private source', model_override='initiator-model', reasoning_effort_override='low', override_source='manager')
                     db.insert_task(source)
+                    if released:
+                        # Real bundled registrar already ran in OrgState.load. No
+                        # synthetic definition, settings, Allowed or result seed.
+                        yield SimpleNamespace(org=org, db=db, conn=conn, agents=agents,
+                            source=source, root=root, coordinator=coordinator)
+                        return
                     result = conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
                         (source.id, source.assigned_agent, source.current_session_id, 'completed', source.created_at.isoformat())).lastrowid
                     raw = assignment_bytes(definition or s3_definition())
@@ -2333,7 +2348,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case or draft_review_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2445,10 +2460,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case and not setup_admission_case and not start2_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case and not setup_admission_case and not start2_case and not draft_review_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case or draft_review_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -3018,7 +3033,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case or draft_review_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -3026,9 +3041,13 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 command = f.command
                 s4startreplay(f, command, later=False)
                 if case == 'start_replay_cancel_boundary':
-                    # Edge for the registered v2 + staged v3 set: four full documents,
-                    # then a tail, all finished by the real Held/cancel writers.
-                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 278528)):
+                    # Registered Coding v2 + staged v3 + Draft Review v1: four full
+                    # documents, then a measured tail, all closed by real writers.
+                    # Draft adds 126536 history bytes: consumed-before reservation
+                    # 50280292 -> 50406828 at the old 278528-byte tail. Base64's
+                    # next 3-byte quantum costs 32 history bytes; 268551 leaves
+                    # 20 bytes, while 268554 refuses at 12 bytes over 64 MiB.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 268551)):
                         if index:
                             command = dict(f.command, operation_key='history-' + str(index))
                             f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
@@ -3058,7 +3077,11 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 from runtime.infrastructure.workflow_schema import _schema_snapshot, sequential_storage_inventory
 
                 with s4fixture(document=True) as f:
-                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                    # Subtracting the measured catalog cost in base64 quanta
+                    # moves the former 300000-byte upper tail to 288136. Its
+                    # Held/cancelled admission refusals remain 164372/208908
+                    # bytes over budget; the preceding hold still has 12768.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 288136)):
                         if index:
                             command = dict(f.command, operation_key='history-' + str(index))
                             f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
@@ -6176,6 +6199,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         state.metrics_store.close();state.direct_connect_authority_store.close()
 
     async def start2_cases(case):
+        if case == 'recovery_input_retired':
+            await dr_coding_retired()
+            print('PASS Start2 recovery_input_retired real Coding v3 exhausted correction/refusal/cancel/source done',flush=True)
+            return
         if case in START2_PUBLIC_CASES:
             await start2_public(case)
             if case.startswith('recovery_'):
@@ -6317,7 +6344,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert setup_no_work(f) == no_work, 'B27 Save/Allow allocated work'
                     response = await read()
                     context = response.json()
-                    selected, = context['definitions']
+                    assert [d['selector'] for d in context['definitions']] == ['release/happyranch/coding@3','release/happyranch/draft-review@1'], 'real generic catalog membership drifted'
+                    selected, = [d for d in context['definitions'] if d['selector']=='release/happyranch/coding@3']
+                    draft, = [d for d in context['definitions'] if d['selector']=='release/happyranch/draft-review@1']
+                    assert draft['registered'] and draft['admission']=='Disabled' and draft['unavailable_cause']=='sequential_settings_absent'
                     assert context['format'] == 'workflow-sequential-start-context@2' and context['max_runs'] == 8
                     assert context['assignments'] == 'defaults-with-overrides' and context['source_semantics'] == 'initiator-continues'
                     assert context['availability'] == 'admission-supported' and context['unavailable_cause'] is None, 'C1 supported admission not advertised'
@@ -6667,14 +6697,6 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     state.metrics_store.close()
                     state.direct_connect_authority_store.close()
 
-    if start2_case:
-        for case in START2_CASES:
-            if case == 'legacy_bytes' and start2_case == 'all':
-                continue  # Explicit pinned-base raw stream export is a separate invocation.
-            if start2_case in ('all',case):
-                asyncio.run(start2_cases(case))
-        raise SystemExit(0)
-
     async def setup_case(case):
         from copy import deepcopy
         from runtime.workflows.sequential_history import read_sequential_history, _ReadBudget
@@ -6762,7 +6784,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             assert saved['original']['snapshot']['bindings'] == first['bindings']
             assert saved['original']['snapshot']['limits'] == first['limits'], 'A00 generic lower bounds changed'
             assert setup_no_work(f) == work
-            definitions = (await setup_request(f, 'GET', '/workflows/sequential/views/v2/definitions')).json()
+            definitions_response = await setup_request(f, 'GET', '/workflows/sequential/views/v2/definitions')
+            definitions = definitions_response.json()
+            if os.environ.get('WORKFLOW_SETUP_LIST_OUTPUT'):
+                Path(os.environ['WORKFLOW_SETUP_LIST_OUTPUT']).write_bytes(definitions_response.content)
             assert {d['pin']['version'] for d in definitions['definitions']} == {2,3}, 'A00 generic setup discovery dropped a registered ABI'
             assert (await setup_request(f, 'GET', current_path)).json() == saved['original']
             assert json.loads(f.conn.execute('SELECT snapshot_bytes FROM workflow_seq_settings WHERE id=?', (saved['original']['id'],)).fetchone()[0]) == saved['original']['snapshot']
@@ -7520,6 +7545,985 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     raise AssertionError('uncertain_final_preserved: reserved original task again')
                 assert {p.name:p.read_bytes() for p in attempt.directory.iterdir()} == records
         print('PASS S8b', case, 'original rows/receipts preserved; no live operation', flush=True)
+
+    # THR-336 R2(c): real released resources and registrar, private ASGI/native
+    # callbacks. The only fabricated native facts are positive closure receipts;
+    # no provider is launched and no catalog/engine/receipt answer is replaced.
+    from contextlib import asynccontextmanager
+    DR_SELECTOR = 'release/happyranch/draft-review@1'
+    DR_IDENTITY = 'release/happyranch/draft-review'
+    DR_SOURCE = '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2'
+    DR_DIGEST = 'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'
+
+    def dr_catalog():
+        from runtime.workflows.sequential_release import generic_start_catalog
+        return {c.pin.identity: c for c in generic_start_catalog()}
+
+    def dr_save(key='draft-save', generation=0, *, revisions=2):
+        compiled = dr_catalog()[DR_IDENTITY]
+        return dict(format='workflow-sequential-settings-put@2', operation_key=key, expected_generation=generation,
+            definition=compiled.pin.model_dump(mode='json'), bindings=[dict(role='author',principal='s3_author'),
+                dict(role='reviewer',principal='s3_review')],
+            limits=dict(max_visits=16,max_events=4096,max_recoveries=2,node_revisions=dict(draft=revisions,review=2)))
+
+    def dr_inventory(f):
+        return tuple(f.conn.iterdump()), dict(f.db._v2_live_attempt_owners), tuple(s6queue(f))
+
+    @asynccontextmanager
+    async def dr_fixture(*, configured=True, revisions=2):
+        import httpx
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.models import ThreadRecord
+        from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        from runtime.runtime import port_file
+        with s3_fixture(released=True) as f:
+            f.db.insert_thread(ThreadRecord(id='THR-draft',subject='Private real-bundle source'))
+            f.db.insert_task(TaskRecord(id='s5-parent',assigned_agent='s3_manager',team='engineering',
+                task_type='task',status='in_progress',block_kind='delegated',brief='Wider bounded goal'))
+            f.conn.execute('UPDATE tasks SET parent_task_id=?,dispatched_from_thread_id=? WHERE id=?',('s5-parent','THR-draft',f.source.id));f.conn.commit()
+            f.source=f.db.get_task(f.source.id)
+            f.queue=TaskQueue();f.org.orchestrator._queue=f.queue
+            f.dispatcher=f.org.workflow_sequential_dispatch
+            f.org.orchestrator._main_loop=asyncio.get_running_loop()
+            f.org.orchestrator._host_supervisor=HostSessionSupervisor(backend=PassthroughBackend(),
+                policy=canary_policy(),publisher=lambda receipt:None)
+            state=DaemonState(runtime=RuntimeDir(f.root.parent.parent),settings=Settings())
+            state.orgs['scratch'],state.profile_coordinator=f.org,f.coordinator
+            f.app=create_app(state)
+            home=Path(os.environ['HAPPYRANCH_DAEMON_HOME'])
+            (home/'daemon.token').write_text('synthetic-setup-founder')
+            port_file().write_text('43210')
+            f.catalog=dr_catalog();f.compiled=f.catalog.get(DR_IDENTITY)
+            f.cli={'x-happyranch-surface':'cli'}
+            f.auth=dict(f.cli,authorization='Bearer synthetic-setup-founder')
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=f.app),base_url='http://private') as client:
+                f.client=client
+                async def sid(value):
+                    s6sid(f,value);f.source=f.db.get_task(f.source.id)
+                    f.org.sessions.set_active(f.source.id,f.source.assigned_agent,value,org_slug='scratch')
+                    s6bind_v2(f,value)
+                    if f.conn.execute('SELECT 1 FROM workflow_seq_source_wait_sets WHERE source_task_id=?',(f.source.id,)).fetchone():
+                        s5page(f,value,write=True)
+                f.sid=sid
+                await sid('draft-initial')
+                try:
+                    if configured:
+                        f.draft_save=dr_save(revisions=revisions)
+                        f.coding_save=setup_command(f,'coding-save')
+                        f.settings={};f.operation_receipts={}
+                        for body in (f.draft_save,f.coding_save):
+                            response=await setup_put(f,body)
+                            f.operation_receipts[body['operation_key']]=response.content
+                            assert response.json()['original']['generation']==1
+                            assert response.json()['original']['snapshot']['admission']=='Disabled'
+                            allowed=await setup_put(f,setup_admission(body,body['operation_key']+'-allow',1))
+                            f.settings[body['definition']['identity']]=allowed.json()['original']
+                            f.operation_receipts[body['operation_key']+'-allow']=allowed.content
+                    with patch.object(f.org.orchestrator,'_run_agent',side_effect=AssertionError('provider launch forbidden')):
+                        yield f
+                finally:
+                    state.metrics_store.close();state.direct_connect_authority_store.close()
+
+    async def dr_read(f, *, selector=None, status=200, code=None, params=None, headers=None):
+        before=dr_inventory(f);changes=f.conn.total_changes;sql=[]
+        query=params or [('session_id',f.source.current_session_id)]+([] if selector is None else [('definition',selector)])
+        with f.db.observe_trace(sql.append):
+            response=await f.client.get('/api/v1/orgs/scratch/workflows/sequential/start-context/v2',
+                params=query,headers=f.cli if headers is None else headers)
+        assert response.status_code==status,(status,response.status_code,response.text)
+        assert response.headers['cache-control']=='no-store'
+        assert dr_inventory(f)==before and f.conn.total_changes==changes
+        assert not any(q.lstrip().split(' ',1)[0].upper() in
+            ('INSERT','UPDATE','DELETE','REPLACE','CREATE','ALTER','DROP','COMMIT','END') for q in sql)
+        if code: assert response.json()['detail']['code']==code,response.text
+        return response
+
+    async def dr_compose(f, identities=(DR_IDENTITY,), *, error=None, count=None, overrides=None):
+        import httpx
+        from cli.main import build_parser
+        members=[]
+        for i,identity in enumerate(identities if count is None else [identities[0]]*count):
+            setting=f.settings[identity]
+            member=dict(definition=identity+'@'+str(f.catalog[identity].pin.version),settings={k:setting[k] for k in ('generation','snapshot_digest')},
+                operation_key='draft-start-'+str(i),request='Private bounded 中文 document',inputs=[],role_overrides=[],step_overrides=[],
+                lower_limits=setting['snapshot']['limits'])
+            if overrides and i==0: member.update(overrides)
+            members.append(member)
+        payload=dict(format='workflow-sequential-start-compose@2',workflows=members)
+        path=Path(os.environ['HAPPYRANCH_DAEMON_HOME'])/'draft-compose.json'
+        original=s4bytes(payload);path.write_bytes(original)
+        args=build_parser().parse_args(['workflows','sequential','start-compose','--org','scratch',
+            '--session-id',f.source.current_session_id,'--from-file',str(path),'--json'])
+        loop=asyncio.get_running_loop();real=httpx.Client;out,err=io.StringIO(),io.StringIO()
+        def transport(request):
+            assert request.method=='GET' and 'authorization' not in request.headers
+            response=asyncio.run_coroutine_threadsafe(f.client.send(request),loop).result(timeout=10)
+            return httpx.Response(response.status_code,content=response.content,headers=response.headers)
+        def invoke():
+            with redirect_stdout(out),redirect_stderr(err),patch.object(httpx,'Client',
+                    lambda **kw:real(transport=httpx.MockTransport(transport),**kw)):
+                try: args.func(args)
+                except SystemExit as exc: return exc.code
+            return 0
+        before=dr_inventory(f);changes=f.conn.total_changes
+        result=await asyncio.to_thread(invoke)
+        assert dr_inventory(f)==before and f.conn.total_changes==changes and path.read_bytes()==original
+        if error:
+            assert result==2 and error in err.getvalue() and not out.getvalue(),(result,error,err.getvalue())
+            return None
+        assert result==0,(result,err.getvalue())
+        raw=out.getvalue().removesuffix('\n').encode();assert raw==s4bytes(json.loads(raw))
+        decision=json.loads(raw)
+        assert decision['action']=='workflow_start' and 'workflow' not in decision
+        return decision
+
+    async def dr_post(f, decision, *, status=200, code=None, body=None, consume=True):
+        payload=body or dict(session_id=f.source.current_session_id,agent='s3_manager',status='completed',confidence=80,
+            output_summary='Private released Draft boundary',decision=decision)
+        before=dr_inventory(f)
+        response=await f.client.post('/api/v1/orgs/scratch/tasks/'+f.source.id+'/completion',headers=f.auth,json=payload)
+        assert response.status_code==status,(status,response.status_code,response.text)
+        if code: assert response.json()['detail']['code']==code,response.text
+        if status!=200:
+            assert dr_inventory(f)==before,'refusal changed allocation/accounting/receipt/queue'
+            return response
+        row=f.db.get_latest_task_result(f.source.id,'s3_manager',payload['session_id'])
+        assert type(row['id']) is int
+        if consume:
+            report=completion_report_from_result_row(f.source.id,row,fallback_agent='s3_manager')
+            _consume_completion_report(f.org.orchestrator,f.source.id,report,result_row_id=row['id'])
+        return row,payload
+
+    def dr_ids(f, run):
+        from runtime.workflows.sequential_start import AdmissionIds
+        visit=s4row(f,'workflow_seq_visits',run['active_visit_id'])
+        out=f.conn.execute("SELECT id FROM workflow_seq_outbox WHERE run_id=? AND kind='visit_queued' ORDER BY rowid LIMIT 1",(run['id'],)).fetchone()
+        return AdmissionIds(run['id'],run['carrier_task_id'],visit['id'],visit['task_id'],run['last_event_id'],out[0])
+
+    async def dr_start(f, identities=(DR_IDENTITY,), *, decision=None):
+        decision=decision or await dr_compose(f,identities)
+        row,body=await dr_post(f,decision)
+        runs=[dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_runs ORDER BY start_operation_key')]
+        f.batch_ids=tuple(dr_ids(f,r) for r in runs);f.ids=f.batch_ids[0]
+        assert len(runs)==len(identities)
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_source_wait_sets').fetchone()[0]==1
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_source_memberships').fetchone()[0]==len(runs)
+        receipt=f.conn.execute('SELECT receipt_bytes FROM workflow_seq_consumption_receipts WHERE result_id=?',(row['id'],)).fetchone()[0]
+        assert set(json.loads(receipt)['effects']['run_ids'])=={r['id'] for r in runs}
+        assert f.db.get_authority_policy_v2_attempt_for_result(row['id']) is not None
+        assert not s6queue(f),'entry released before source closure'
+        f.original_callback=(row,body,decision,receipt)
+        s5release(f)
+        assert set(s6queue(f))=={i.visit_task_id for i in f.batch_ids}
+        while not f.queue._queue.empty(): f.queue._queue.get_nowait()
+        return runs
+
+    def dr_select(f, run_id):
+        run=s4row(f,'workflow_seq_runs',run_id)
+        f.compiled=f.catalog[json.loads(run['start_bytes'])['definition']['identity']]
+        if run['active_visit_id']: f.ids=dr_ids(f,run)
+        return run
+
+    async def dr_visit(f, run_id, outcome=None, *, content=None, findings=None, summary=None, positive=True, no_result=False, rejected=None, identity_negatives=False):
+        run=dr_select(f,run_id);visit=s4row(f,'workflow_seq_visits',run['active_visit_id'])
+        task=f.db.get_task(visit['task_id'])
+        inv=TaskInvocation(f.org.orchestrator,task,task.assigned_agent,'draft-native-'+visit['id'],owner='sequential',workflow_dispatcher=f.dispatcher)
+        inv.prepare();assert await asyncio.to_thread(inv.commit)
+        sid=inv.session_id
+        from runtime.orchestrator.task_pause import _invocation
+        token=_invocation.set(inv)
+        try: rendered=await asyncio.to_thread(f.dispatcher.node_instruction,task.id,task.assigned_agent,sid)
+        finally: _invocation.reset(token)
+        visit=s4row(f,'workflow_seq_visits',visit['id'])
+        f.org.sessions.set_active(visit['task_id'],visit['principal'],sid,org_slug='scratch')
+        node=next(n for n in f.compiled.definition.nodes if n.id==visit['node_id'])
+        if content is None: content=b'Private immutable draft \xe4\xb8\xad\xe6\x96\x87' if node.id=='draft' else b'{"evidence_limits":"private synthetic report","verdict":"reported"}'
+        summary=summary if summary is not None else s4bytes(dict(format='workflow-sequential-callback@2',outcome=outcome,
+            content_base64=base64.b64encode(content).decode('ascii'),findings=findings or [])).decode()
+        callback=None
+        if identity_negatives:
+            valid=dict(session_id=sid,agent=visit['principal'],status='completed',confidence=80,output_summary=summary)
+            for changes,expected,code in [(dict(agent='s3_alt'),409,'unknown_session'),(dict(session_id='foreign-visit-sid'),409,'session_mismatch')]:
+                before=dr_inventory(f)
+                response=await f.client.post('/api/v1/orgs/scratch/tasks/'+visit['task_id']+'/completion',headers=f.auth,json=dict(valid,**changes))
+                assert response.status_code==expected,(expected,response.status_code,response.text)
+                if code: assert response.json()['detail']['code']==code,response.text
+                assert dr_inventory(f)==before
+        if not no_result:
+            parse_error=None
+            try:
+                response=await f.client.post('/api/v1/orgs/scratch/tasks/'+visit['task_id']+'/completion',headers=f.auth,json=dict(
+                    session_id=sid,agent=visit['principal'],status='completed',confidence=80,output_summary=summary,
+                    **(dict(result_id=999) if identity_negatives else {})))
+            except SequentialContractError as exc:
+                parse_error=exc
+                if rejected is None: raise
+            if rejected is not None:
+                assert parse_error is not None and str(parse_error)==rejected,(rejected,parse_error)
+                print('C16 existing ASGI parser exception',rejected,'(unhandled server error, not HTTP4xx)',flush=True)
+                assert f.db.get_latest_task_result(visit['task_id'],visit['principal'],sid) is None
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs WHERE visit_id=?',(visit['id'],)).fetchone()[0]==0
+                assert s4row(f,'workflow_seq_runs',run_id)['visit_count']==run['visit_count']
+                inv.unsettled=False;inv.move_reservation.quiescent=True
+                inv.phase('result_processing',started_at=None,captured_generation=None)
+                assert inv.close()['removed'];f.org.orchestrator._team_moves.release_task(inv);inv.store._live.pop(inv.identity)
+                return visit,rendered
+            assert response.status_code==200,(response.status_code,response.text)
+            result=f.db.get_latest_task_result(visit['task_id'],visit['principal'],sid)
+            assert type(result['id']) is int
+            if identity_negatives:
+                # CompletionBody ignores unknown fields; the native INTEGER row,
+                # never a client-supplied result_id, owns accepted identity.
+                assert result['id']!=999 and f.conn.execute('SELECT 1 FROM task_results WHERE id=999').fetchone() is None
+            callback=dict(task_id=visit['task_id'],principal=visit['principal'],session_id=sid,result_id=result['id'],status='completed',
+                carrier_digest=hashlib.sha256(summary.encode()).hexdigest())
+        common=dict(task_id=visit['task_id'],principal=visit['principal'],session_id=sid)
+        invocation=inv.identity
+        f.conn.execute('UPDATE tasks SET status=?,completed_at=? WHERE id=?',('failed' if no_result else 'completed',
+            '2026-11-22T00:00:00+00:00',visit['task_id']))
+        f.conn.execute("UPDATE workflow_seq_runs SET progress='result_pending_settlement' WHERE id=?",(run_id,))
+        _evidence(f.conn,run_id,visit['id'],'terminal',dict(format='workflow-sequential-terminal@1',invocation_id=invocation,
+            **common,classification='unknown' if no_result else 'success',request=dict(org='scratch',logical_id=visit['task_id'],agent_id=visit['principal'],retry_attempt=0),
+            handle_digest='1'*64,receipt=dict(backend='linux-systemd-cgroup-v2',terminal_reason='timeout' if no_result else 'success',
+                cleanup_status='clean',quiescent=True,survivors=[]),callback=callback))
+        f.conn.commit()
+        # Synthetic positive native/outer observations stand in for the private
+        # provider-free venue. Close the genuine original preparation owner.
+        inv.unsettled=False;inv.move_reservation.quiescent=True
+        inv.phase('result_processing',started_at=None,captured_generation=None)
+        assert inv.close()['removed']
+        f.org.orchestrator._team_moves.release_task(inv)
+        inv.store._live.pop(inv.identity)
+        f.org.sessions.clear_if_active_session(visit['task_id'],visit['principal'],sid)
+        before=s5snap(f)
+        if not positive:
+            try: s4baccept(f,visit['id'])
+            except ValueError as exc: assert str(exc)=='workflow_seq_business_hold_proof_invalid',str(exc)
+            else: raise AssertionError('accepted before original outer settlement')
+            assert s5snap(f)==before
+            return visit,rendered
+        s4outer(f,visit['id'])
+        if no_result:
+            capture=f.org.workflow_authority.capture_admission()
+            with f.org.workflow_authority.admission_writer(capture) as writer:
+                hold_and_wake_uncommitted(writer,f.db,org_slug='scratch',run_id=run_id,visit_id=visit['id'],expected_cas=run['cas'],
+                    compiled=f.compiled,authority=f.org.workflow_authority,capture=capture)
+        else:
+            if identity_negatives:
+                from runtime.workflows.sequential_history import _ReadBudget
+                from runtime.workflows.sequential_run_validation import generic_result_state
+                from runtime.workflows.sequential_definition import parse_generic_result
+                from runtime.workflows.sequential_reducer import GenericAuthenticatedResult, reduce_generic_result
+                prior_state=generic_result_state(f.conn,s4row(f,'workflow_seq_runs',run_id),
+                    s4row(f,'workflow_seq_visits',visit['id']),f.compiled,_ReadBudget())
+            s4baccept(f,visit['id'])
+            if identity_negatives:
+                accepted=s4row(f,'workflow_seq_visits',visit['id'])
+                envelope=parse_generic_result(accepted['result_bytes'])
+                assert accepted['result_id']==result['id'] and envelope.outputs[0].result_id==result['id']
+                before=dr_inventory(f)
+                authenticated=dict(task_id=visit['task_id'],session_id=sid,result_id=result['id'],content=content,settled=True)
+                wrong_output=envelope.outputs[0].model_copy(update={'result_id':999})
+                wrong=envelope.model_copy(update={'outputs':(wrong_output,)})
+                decision=reduce_generic_result(f.compiled,prior_state,GenericAuthenticatedResult(**authenticated,envelope=wrong))
+                assert decision.reason=='output_evidence_mismatch' and decision.edge.action=='hold' and decision.activation is None,('wrong output result identity',decision.reason)
+                stale=envelope.model_copy(update={'input_selection_digest':'0'*64})
+                try: reduce_generic_result(f.compiled,prior_state,GenericAuthenticatedResult(**authenticated,envelope=stale))
+                except SequentialContractError as exc: assert str(exc)=='result_visit_mismatch',str(exc)
+                else: raise AssertionError('C16 accepted stale input selection')
+                assert dr_inventory(f)==before
+                print('C16 native INTEGER result owns callback; wrong output result held and stale selection refused, zero writes',flush=True)
+        assert f.db.get_task(f.source.id).status=='in_progress','member return completed source'
+        return visit,rendered
+
+    async def dr_finish(f, run_id):
+        for _ in range(8):
+            run=dr_select(f,run_id)
+            if run['state']=='finished': return
+            assert run['state']=='running',run
+            node=s4row(f,'workflow_seq_visits',run['active_visit_id'])['node_id']
+            await dr_visit(f,run_id,dict(draft='produced',review='APPROVE',develop='produced',qa='PASS',finalize='merged')[node])
+        raise AssertionError('released graph failed to finish within authored bounds')
+
+    async def dr_done(f):
+        await f.sid('draft-drain')
+        page=s5page(f,f.source.current_session_id)
+        if page['notifications']:
+            await dr_post(f,dict(action='workflow_wait',run_ids=[],consume_notifications=[x['notification_id'] for x in page['notifications']]))
+        else:
+            # A control may already acknowledge the last delivered event. Park
+            # that original callback's source before the next native invocation.
+            f.db.update_task(f.source.id,block_kind='delegated')
+        current=f.db.get_task(f.source.id)
+        inv=TaskInvocation(f.org.orchestrator,current,current.assigned_agent,'draft-done')
+        inv.prepare();assert inv.commit(),('done native admission',repr(current),s6queue(f))
+        f.source=f.db.get_task(current.id)
+        f.org.sessions.set_active(current.id,current.assigned_agent,inv.session_id,org_slug='scratch');s6bind_v2(f,inv.session_id)
+        await dr_post(f,dict(action='done',summary='Genuine source final decision'))
+        assert f.db.get_task(f.source.id).status=='completed',repr(f.db.get_task(f.source.id))
+        _enqueue_parent_if_waiting(f.org.orchestrator,f.source.id)
+        assert s6queue(f).count('s5-parent')==1,('parent queue',s6queue(f),repr(f.db.get_task('s5-parent')))
+
+    def dr_corrupt_definition(f,sql,args):
+        with f.db.workflow_schema_transaction() as conn:
+            triggers=list(conn.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_definitions'"))
+            for name,_ in triggers: conn.execute('DROP TRIGGER "'+name.replace('"','""')+'"')
+            conn.execute(sql,args)
+            for _,ddl in triggers: conn.execute(ddl)
+
+    async def dr_case(case):
+        from dataclasses import replace
+        from runtime.workflows import sequential_release as release
+        from runtime.workflows.sequential_builtin import SequentialBuiltinStore, preset_catalog
+        if case=='caller_ledger':
+            from runtime.workflows.coding_authority_history import _Budget
+            from runtime.workflows.sequential_history import _ReadBudget
+            from runtime.workflows.sequential_initiator import native_decision
+            from runtime.workflows.sequential_start_metadata import _Unrecognized
+            from runtime.workflows._read_exhaustion import ReadExhaustion
+            async with dr_fixture() as f:
+                await dr_start(f)
+                row,_,decision,_=f.original_callback
+                raw=f.conn.execute('SELECT decision_json FROM task_results WHERE id=?',(row['id'],)).fetchone()[0].encode('utf8')
+                observed=json.loads(raw)
+                assert observed['action']=='workflow_start' and observed['workflows']==decision['workflows']
+                before=dr_inventory(f)
+                for ledger,start,admitted,ceiling in (
+                    (_ReadBudget,16384,True,65536),
+                    (_ReadBudget,65535,False,65536),
+                    (_ReadBudget,65536,False,65536),
+                    (_Budget,16383,False,16384),
+                    (_Budget,16384,False,16384),
+                ):
+                    budget=ledger(traversed=start)
+                    error=None
+                    try:
+                        parsed=native_decision(raw,budget)
+                    except _Unrecognized as exc:
+                        error=exc
+                    assert (error is None)==admitted,('caller ledger admission',ledger.__name__,start,admitted,str(error))
+                    if admitted:
+                        assert parsed==observed and start<budget.traversed<ceiling
+                        assert budget.remaining_bytes>0 and budget.sql_steps==0
+                    else:
+                        assert str(error)=='not a closed sequential callback'
+                        assert isinstance(error.__cause__,ReadExhaustion)
+                        cause=error.__cause__
+                        assert cause.allowance is budget and (cause.dimension,cause.requested,cause.remaining)==('work',1,0)
+                        assert budget.traversed==ceiling
+                        if start==ceiling: assert budget.consumed==0
+                    assert dr_inventory(f)==before
+                    print('caller ledger',ledger.__name__,start,'admitted' if admitted else 'refused',budget.traversed,ceiling,flush=True)
+            return
+        if case=='C01':
+            catalog=dr_catalog();assert set(catalog)=={'release/happyranch/coding',DR_IDENTITY}
+            c=catalog[DR_IDENTITY];entry=release.STAGED_GENERIC[(DR_IDENTITY,1)]
+            raw=release.resources.files('runtime').joinpath(*entry.resource).read_bytes()
+            assert entry.size==2471 and len(raw)==entry.size and raw[-1:]==b'\n' and raw[-2:-1]!=b'\n'
+            assert hashlib.sha256(raw).hexdigest()==DR_SOURCE and hashlib.sha256(raw[:-1]).hexdigest()==DR_DIGEST
+            assert c.raw==raw[:-1] and c.pin.source_digest==DR_SOURCE and c.pin.definition_digest==DR_DIGEST
+            assert all(getattr(c.pin,k)==f'workflow-sequential-{k}@2' for k in ('compiler','validator','interpreter','capabilities'))
+            d=json.loads(c.raw)
+            assert d['identity']==DR_IDENTITY and d['version']==1 and d['format']=='workflow-sequential-definition@2'
+            assert d['entry_node']=='draft' and [n['id'] for n in d['nodes']]==['draft','review']
+            assert set(d['roles'])=={'author','reviewer'}
+            for role,other in [('author','reviewer'),('reviewer','author')]:
+                assert d['roles'][role]==dict(kind='agent',executable=True,eligibility='worker',independent_of=[other])
+            assert [n['output_contract'] for n in d['nodes']]==[dict(slot='document',type='immutable-document@1'),dict(slot='document_review',type='canonical-json-object@1')]
+            assert set(d['nodes'][0]['outcomes'])=={'produced','BLOCK'}
+            assert set(d['nodes'][1]['outcomes'])=={'APPROVE','REQUEST_CHANGES','BLOCK'}
+            assert d['nodes'][1]['outcomes']['REQUEST_CHANGES']==dict(action='next',node='draft',consume_counter='node_revisions',invalidate_dependents=True)
+            assert d['limits']==dict(max_visits=16,max_events=4096,max_recoveries=2)
+            assert all(n['limits']==dict(revisions=2,attempts=3,recoveries=1) for n in d['nodes'])
+            assert len(preset_catalog())==3
+            return
+        if case=='C03':
+            entry=release.STAGED_GENERIC[(DR_IDENTITY,1)]
+            for change,code in [(dict(size=entry.size+1),'sequential_release_corrupt'),
+                    (dict(pin=entry.pin.model_copy(update={'source_digest':'0'*64})),'sequential_release_corrupt'),
+                    (dict(pin=entry.pin.model_copy(update={'compiler':'workflow-sequential-compiler@1'})),'sequential_release_corrupt'),
+                    (dict(resource=('workflows','builtin_templates','missing-draft.json')),'sequential_release_unavailable')]:
+                altered=replace(entry,**change)
+                with patch.dict(release.STAGED_GENERIC,{(DR_IDENTITY,1):altered}):
+                    try: release.select_staged_release(altered.pin)
+                    except release.SequentialReleaseUnavailable as exc: assert exc.code==code,(exc.code,code)
+                    else: raise AssertionError('corrupt release accepted')
+            assert release.generic_start_catalog(DR_SELECTOR)[0].pin==entry.pin
+            async with dr_fixture(configured=False) as f:
+                # Conflict is a negative-only private row mutation, never repair.
+                dr_corrupt_definition(f,'UPDATE workflow_seq_definitions SET source_digest=? WHERE identity=?',('0'*64,DR_IDENTITY))
+                before=tuple(f.conn.iterdump())
+                try: SequentialBuiltinStore(f.org).ensure_registered()
+                except ValueError as exc: assert str(exc)=='sequential_coding_definition_conflict',str(exc)
+                else: raise AssertionError('conflicting definition repaired')
+                assert tuple(f.conn.iterdump())==before
+                dr_corrupt_definition(f,'UPDATE workflow_seq_definitions SET source_digest=? WHERE identity=?',(DR_SOURCE,DR_IDENTITY))
+                SequentialBuiltinStore(f.org).ensure_registered()
+            return
+        if case=='C22':
+            hashes={
+                'docs/agent-guides/contracts/reusable-workflows-examples/draft-review-v1.json':'9bd833e0ea0f474ef1bcdc5d291603d508320747a4699e9cdb3286e8b5c97800',
+                'docs/agent-guides/contracts/reusable-workflows-examples/draft-review-v2-data-variation.json':'f3906d2a17efdda13bf7776e74a9b9c26c0b8d1e6e57913edc99ba74985d3713',
+                'runtime/workflows/builtin_templates/coding.v1.json':'6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8',
+                'runtime/workflows/builtin_templates/coding.v2.json':'5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
+                'runtime/workflows/builtin_templates/coding.v3.json':'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36'}
+            assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in hashes.items())
+            print('C22 five fixed hashes; raw base/head exporters + cmp REQUIRED separately',flush=True)
+            return
+        if case=='C15':
+            for revisions in (2,1):
+                async with dr_fixture(revisions=revisions) as f:
+                    f.revision_bound=revisions
+                    await dr_native_case(f,case)
+            return
+        if case=='C16':
+            await dr_output_cases()
+            return
+        if case=='C17':
+            for action in ('retry','rebrief','reassign','cancel'):
+                for no_result in (False,True):
+                    async with dr_fixture() as f:
+                        f.recovery_action=action;f.no_result=no_result
+                        print('C17 control variant',action,'timeout' if no_result else 'BLOCK',flush=True)
+                        await dr_native_case(f,case)
+            async with dr_fixture() as f:
+                run=(await dr_start(f))[0]['id']
+                visit,_=await dr_visit(f,run,'BLOCK',findings=['Original launched work needs outer closure'],positive=False)
+                await f.sid('draft-cancel-unknown');dr_select(f,run)
+                await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'cancel')))
+                current=s4row(f,'workflow_seq_runs',run)
+                assert (current['state'],current['progress'])==('running','cancelling')
+                from runtime.workflows.sequential_cancellation_tail import drain_source_cancellations
+                drain_source_cancellations(f.org,f.source.id)
+                assert s4row(f,'workflow_seq_runs',run)['state']=='running'
+                s4outer(f,visit['id']);drain_source_cancellations(f.org,f.source.id)
+                assert s4row(f,'workflow_seq_runs',run)['terminal_outcome']=='cancelled'
+                await dr_done(f)
+            return
+        if case=='C18':
+            for enclosure in ('chain','fanout'):
+                for b_first in (False,True):
+                    async with dr_fixture() as f:
+                        f.enclosure=enclosure;f.b_first=b_first
+                        await dr_native_case(f,case)
+            return
+        async with dr_fixture(configured=case not in ('C02','C04','C05','C07','C08','C25','C26')) as f:
+            if case=='C02':
+                rows=tuple(tuple(r) for r in f.conn.execute('SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions ORDER BY identity,version'))
+                assert rows==tuple(sorted(EXPECTED_REGISTERED_DEFINITIONS))
+                assert not f.conn.execute('SELECT 1 FROM workflow_seq_settings').fetchone()
+                assert not f.conn.execute('SELECT 1 FROM workflow_seq_runs').fetchone()
+                dr_corrupt_definition(f,'DELETE FROM workflow_seq_definitions WHERE identity=?',(DR_IDENTITY,))
+                work=setup_no_work(f);changes=f.conn.total_changes
+                SequentialBuiltinStore(f.org).ensure_registered()
+                assert f.conn.total_changes-changes==1 and setup_no_work(f)==work
+                before=tuple(f.conn.iterdump());changes=f.conn.total_changes
+                SequentialBuiltinStore(f.org).ensure_registered()
+                assert tuple(f.conn.iterdump())==before and f.conn.total_changes==changes
+                read_sequential_history(f.conn,expected_org_slug='scratch');assert not f.conn.execute('PRAGMA foreign_key_check').fetchall()
+            elif case in ('C04','C05'):
+                f.settings={}
+                # Configure Coding first: Draft unavailability cannot hide it.
+                coding=setup_command(f,'matrix-coding');await setup_put(f,coding)
+                f.settings['release/happyranch/coding']=(await setup_put(f,setup_admission(coding,'matrix-coding-allow',1))).json()['original']
+                async def matrix(cause,generation=None,admission='Disabled',registered=True):
+                    response=await dr_read(f)
+                    entries={x['selector']:x for x in response.json()['definitions']}
+                    assert set(entries)=={DR_SELECTOR,'release/happyranch/coding@3'}
+                    d=entries[DR_SELECTOR];assert d['registered']==registered and d['admission']==admission and d['unavailable_cause']==cause,d
+                    assert entries['release/happyranch/coding@3']['unavailable_cause'] is None
+                    assert (d['settings'] is None)==(generation is None)
+                    if generation is not None:
+                        assert d['settings']['generation']==generation and d['pin']==dr_save()['definition']
+                        assert d['defaults']==d['settings']['snapshot']['bindings'] and d['limits']==d['settings']['snapshot']['limits']
+                    exact=await dr_read(f,selector=DR_SELECTOR);assert exact.json()['definitions']==[d]
+                    assert [x['selector'] for x in entries.values() if x['unavailable_cause'] is None]==(
+                        ['release/happyranch/coding@3',DR_SELECTOR] if cause is None else ['release/happyranch/coding@3'])
+                    return d
+                # Negative row absence preserves actual package/catalog.
+                original=dict(f.conn.execute('SELECT * FROM workflow_seq_definitions WHERE identity=?',(DR_IDENTITY,)).fetchone())
+                dr_corrupt_definition(f,'DELETE FROM workflow_seq_definitions WHERE identity=?',(DR_IDENTITY,))
+                await matrix('sequential_definition_not_registered',registered=False)
+                f.settings[DR_IDENTITY]=dict(generation=1,snapshot_digest='0'*64,snapshot=dict(limits=dr_save()['limits']))
+                await dr_compose(f,error='sequential_settings_conflict')
+                direct=dict(format='workflow-sequential-start@2',operation_key='unset-direct',definition=dr_save()['definition'],
+                    settings=dict(generation=1,snapshot_digest='0'*64),request='Private request',inputs=[],role_overrides=[],step_overrides=[],lower_limits=dr_save()['limits'])
+                # Missing definition/settings rows use the existing selection
+                # unavailable refusal, before the later pin-conflict check.
+                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_start_unavailable')
+                SequentialBuiltinStore(f.org).ensure_registered();await matrix('sequential_settings_absent')
+                await dr_compose(f,error='sequential_settings_conflict')
+                await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409,code='sequential_start_unavailable')
+                assert dict(f.conn.execute('SELECT * FROM workflow_seq_definitions WHERE identity=?',(DR_IDENTITY,)).fetchone())==original
+                save=dr_save();saved=(await setup_put(f,save)).json()['original'];f.settings[DR_IDENTITY]=saved
+                await matrix('sequential_settings_disabled',1)
+                await dr_compose(f,error='sequential_settings_disabled')
+                # Copied valid command reaches native writer with Disabled settings.
+                direct=dict(format='workflow-sequential-start@2',operation_key='disabled-direct',definition=save['definition'],
+                    settings={k:saved[k] for k in ('generation','snapshot_digest')},request='Private request',inputs=[],role_overrides=[],step_overrides=[],lower_limits=save['limits'])
+                response=await dr_post(f,dict(action='workflow_start',workflows=[direct]),status=409)
+                assert 'sequential_admission_pin_conflict' in response.text,response.text
+                allowed=(await setup_put(f,setup_admission(save,'matrix-allow',1))).json()['original'];f.settings[DR_IDENTITY]=allowed
+                await matrix(None,2,'Allowed');composed=await dr_compose(f)
+                disabled=(await setup_put(f,setup_admission(save,'matrix-disable',2,'Disabled'))).json()['original']
+                f.settings[DR_IDENTITY]=disabled;await matrix('sequential_settings_disabled',3)
+                response=await dr_post(f,composed,status=409);assert any(c in response.text for c in ('settings_conflict','settings_generation','settings_disabled','admission_pin_conflict')),response.text
+                # All-worker cross-team setup can Save, but source assignments refuse.
+                cross=dr_save('matrix-cross',3);cross['bindings'][0]['principal']='s3_other'
+                await setup_put(f,cross)
+                f.settings[DR_IDENTITY]=(await setup_put(f,setup_admission(cross,'matrix-cross-allow',4))).json()['original']
+                await matrix('sequential_assignments_unavailable',5,'Allowed')
+                await dr_compose(f,error='sequential_assignments_unavailable')
+                for selector in (DR_IDENTITY+'@2','release/unknown/workflow@1'):
+                    await dr_read(f,selector=selector,status=409,code='sequential_release_unavailable')
+                await dr_read(f,params=[('session_id',f.source.current_session_id),('definition',DR_SELECTOR),('definition',DR_SELECTOR)],status=422,code='sequential_start_context_invalid')
+            elif case in ('C07','C26'):
+                coding=setup_command(f,'procedure-coding');await setup_put(f,coding)
+                coding_before=(await setup_put(f,setup_admission(coding,'procedure-coding-allow',1))).json()['original']
+                body=dr_save();work=setup_no_work(f)
+                path='/workflows/sequential/views/v2/settings?definition_identity=release%2Fhappyranch%2Fdraft-review'
+                initial=await setup_request(f,'GET',path,expected=404,code='sequential_settings_not_found')
+                receipts=[]
+                for command,lookup in [(body,'/workflows/sequential/settings/v2/operations?operation_key='),
+                        (setup_admission(body,'draft-allow',1),'/workflows/sequential/settings/admission/operations?operation_key='),
+                        (setup_admission(body,'draft-disable',2,'Disabled'),'/workflows/sequential/settings/admission/operations?operation_key=')]:
+                    response=await setup_put(f,command);receipt=response.json()['original'];receipts.append(receipt)
+                    assert (await setup_request(f,'GET',lookup+command['operation_key'])).content==response.content
+                    assert (await setup_put(f,command)).content==response.content
+                    assert (await setup_request(f,'GET',path)).json()==receipt
+                    assert receipt['snapshot']['bindings']==body['bindings'] and receipt['snapshot']['definition']==body['definition']
+                    assert setup_no_work(f)==work
+                    assert (await setup_request(f,'GET','/workflows/sequential/views/v2/settings?definition_identity=release%2Fhappyranch%2Fcoding')).json()==coding_before
+                assert [(r['generation'],r['snapshot']['admission']) for r in receipts]==[(1,'Disabled'),(2,'Allowed'),(3,'Disabled')]
+                # A later Save preserves Allowed independently from Disable.
+                await setup_put(f,setup_admission(body,'again-allow',3))
+                later=(await setup_put(f,dr_save('later-save',4))).json()['original'];assert later['snapshot']['admission']=='Allowed'
+                print(case,'documented Save/lookup/read/Allow/lookup/read/Disable/lookup/read HTTP200; generations1/2/3; zero work',flush=True)
+            elif case=='C08':
+                first=dr_save()
+                await setup_put(f,setup_admission(first,'before-save',0),expected=409,code='sequential_settings_defaults_required')
+                await setup_put(f,first)
+                for label,edit,status,code in [
+                    ('missing',lambda x:x['bindings'].pop(),422,'sequential_settings_defaults_invalid'),
+                    ('duplicate',lambda x:x['bindings'].append(x['bindings'][0]),422,'sequential_settings_defaults_invalid'),
+                    ('unknown',lambda x:x['bindings'][0].update(role='unknown'),422,'sequential_settings_defaults_invalid'),
+                    ('same',lambda x:x['bindings'][0].update(principal='s3_review'),422,'sequential_settings_defaults_invalid'),
+                    ('ineligible',lambda x:x['bindings'][0].update(principal='s3_manager'),403,'sequential_authority_denied'),
+                    ('missing-agent',lambda x:x['bindings'][0].update(principal='missing'),403,'sequential_authority_denied'),
+                    ('pin',lambda x:x['definition'].update(definition_digest='0'*64),409,'sequential_definition_conflict'),
+                    ('abi',lambda x:x['definition'].update(compiler='workflow-sequential-compiler@1'),422,'sequential_settings_request_invalid'),
+                    ('root',lambda x:x['limits'].update(max_visits=17),422,'sequential_settings_defaults_invalid'),
+                    ('node',lambda x:x['limits']['node_revisions'].update(draft=3),422,'sequential_settings_defaults_invalid')]:
+                    value=deepcopy(first);value.update(operation_key='bad-'+label,expected_generation=1);edit(value)
+                    before=tuple(f.conn.iterdump());await setup_put(f,value,expected=status,code=code);assert tuple(f.conn.iterdump())==before
+                before=tuple(f.conn.iterdump())
+                await setup_put(f,dr_save('stale',0),expected=409,code='sequential_settings_generation_stale')
+                await setup_put(f,dict(first,bindings=list(reversed(first['bindings']))),expected=409,code='sequential_settings_operation_conflict')
+                assert tuple(f.conn.iterdump())==before
+            elif case=='C06':
+                decision=await dr_compose(f)
+                for headers in ({},dict(f.cli,origin='http://browser'),f.auth):
+                    await dr_read(f,headers=headers,status=403,code='sequential_task_session_required')
+                f.db.insert_task(TaskRecord(id='draft-worker',assigned_agent='s3_author',team='engineering',task_type='task',status='in_progress',current_session_id='draft-worker-sid',brief='Private worker'))
+                f.org.sessions.set_active('draft-worker','s3_author','draft-worker-sid',org_slug='scratch')
+                await dr_read(f,params=[('session_id','draft-worker-sid')],status=403,code='sequential_task_session_required')
+                f.org.sessions.set_active(f.source.id,'s3_manager',f.source.current_session_id,org_slug='foreign')
+                await dr_read(f,status=403,code='sequential_task_session_required')
+                await dr_post(f,decision,status=409,code='sequential_task_session_required')
+                f.org.sessions.set_active(f.source.id,'s3_manager',f.source.current_session_id,org_slug='scratch')
+                f.db.update_task(f.source.id,status='completed')
+                await dr_read(f,status=403,code='sequential_task_session_required')
+                await start2_cases('audience')
+                print('C06 mapped keeper start2=audience: thread/wake/dream/recovery/carrier/visit/foreign guards',flush=True)
+            elif case=='C09':
+                one=await dr_compose(f,overrides=dict(role_overrides=[dict(role='author',principal='s3_alt')],
+                    step_overrides=[dict(node='draft',model=None,reasoning_effort=None)]))
+                assert len(one['workflows'])==1 and one['workflows'][0]['step_overrides'][0]==dict(node='draft',model=None,reasoning_effort=None)
+                mixed=await dr_compose(f,(DR_IDENTITY,'release/happyranch/coding'))
+                assert [w['definition'] for w in mixed['workflows']]==[f.catalog[i].pin.model_dump(mode='json') for i in (DR_IDENTITY,'release/happyranch/coding')]
+                assert all('model' not in w['step_overrides'] for w in mixed['workflows'])
+            elif case=='C10':
+                decision=await dr_compose(f)
+                for overrides in ([dict(role='author',principal='s3_review')],[dict(role='author',principal='s3_other')],
+                        [dict(role='author',principal='s3_manager')],[dict(role='unknown',principal='s3_alt')],
+                        [dict(role='author',principal='missing')]):
+                    bad=deepcopy(decision);bad['workflows'][0]['role_overrides']=overrides
+                    response=await dr_post(f,bad,status=409);assert any(c in response.text for c in ('assignment','role_','authority_denied')),response.text
+                decision['workflows'][0]['role_overrides']=[dict(role='author',principal='s3_alt')]
+                runs=await dr_start(f,decision=decision)
+                assert f.db.get_task(f.ids.visit_task_id).assigned_agent=='s3_alt'
+                await dr_finish(f,runs[0]['id']);await dr_done(f)
+            elif case in ('C11','C12','C13','C14','C15','C16','C17','C18','C19','C20','C23','C24'):
+                await dr_native_case(f,case)
+            elif case=='C25':
+                coding=setup_command(f,'list-coding');await setup_put(f,coding)
+                coding_current=(await setup_put(f,setup_admission(coding,'list-coding-allow',1))).json()['original']
+                before=[(await setup_request(f,'GET',p)).content for p in ('/workflows/sequential/views/v2/definitions','/workflows/sequential/definitions')]
+                definitions=json.loads(before[0])['definitions']
+                assert sorted((d['pin']['identity'],d['pin']['version']) for d in definitions)==[('release/happyranch/coding',2),('release/happyranch/coding',3)],definitions
+                for d in definitions:
+                    stored=dict(f.conn.execute('SELECT * FROM workflow_seq_definitions WHERE id=?',(d['id'],)).fetchone())
+                    assert stored['definition_digest']==d['pin']['definition_digest'],(stored,d)
+                for body in (dr_save(),setup_admission(dr_save(),'draft-allow',1),setup_admission(dr_save(),'draft-disable',2,'Disabled')):
+                    await setup_put(f,body)
+                    assert [(await setup_request(f,'GET',p)).content for p in ('/workflows/sequential/views/v2/definitions','/workflows/sequential/definitions')]==before,('C25 list changed',before,[(await setup_request(f,'GET',p)).content for p in ('/workflows/sequential/views/v2/definitions','/workflows/sequential/definitions')])
+                output=os.environ.get('WORKFLOW_DRAFT_SETUP_LIST_OUTPUT')
+                if output: Path(output).write_bytes(before[0])
+                # Existing exporter uses actual registered second entry, never a
+                # hand-written filtered response. Caller may inspect its JSON.
+                await setup_case('first_save')
+            elif case=='C21':
+                await dr_retirement(f)
+            else: raise AssertionError('unimplemented Draft case '+case)
+
+    async def dr_native_case(f,case):
+        identities=(DR_IDENTITY,'release/happyranch/coding') if case in ('C12','C18','C24') else (DR_IDENTITY,)
+        if case=='C24':
+            coding_before=(await setup_request(f,'GET','/workflows/sequential/views/v2/settings?definition_identity=release%2Fhappyranch%2Fcoding')).content
+            await setup_put(f,dr_save('draft-advance',2))
+            await setup_put(f,setup_admission(f.draft_save,'draft-early-disable',3,'Disabled'))
+            assert (await setup_request(f,'GET','/workflows/sequential/views/v2/settings?definition_identity=release%2Fhappyranch%2Fcoding')).content==coding_before
+            await setup_put(f,dict(f.coding_save,expected_generation=2,operation_key='coding-advance'))
+            await setup_put(f,setup_admission(f.draft_save,'draft-reallow',4))
+            await setup_put(f,dict(f.coding_save,expected_generation=3,operation_key='coding-equal-four'))
+            await setup_put(f,dict(f.coding_save,expected_generation=4,operation_key='coding-equal-five'))
+            before=tuple(f.conn.iterdump())
+            await setup_put(f,dr_save('draft-stale',2),expected=409,code='sequential_settings_generation_stale')
+            await setup_put(f,dict(f.coding_save,operation_key='draft-save',expected_generation=3),expected=409,code='sequential_settings_operation_conflict')
+            assert tuple(f.conn.iterdump())==before
+            for identity in identities:
+                f.settings[identity]=(await setup_request(f,'GET','/workflows/sequential/views/v2/settings?definition_identity='+identity)).json()
+            await dr_compose(f,identities,error='sequential_settings_conflict',overrides=dict(settings={k:f.settings['release/happyranch/coding'][k] for k in ('generation','snapshot_digest')}))
+            for key,raw in f.operation_receipts.items():
+                prefix='/workflows/sequential/settings/admission/operations?operation_key=' if key.endswith('-allow') else '/workflows/sequential/settings/v2/operations?operation_key='
+                assert (await setup_request(f,'GET',prefix+key)).content==raw
+            crossed=await dr_compose(f,identities)
+            crossed['workflows'][0]['settings']=deepcopy(crossed['workflows'][1]['settings'])
+            response=await dr_post(f,crossed,status=409);assert 'sequential_admission_pin_conflict' in response.text,response.text
+        if case=='C12':
+            mixed=await dr_compose(f,identities)
+            stale=deepcopy(mixed);stale['workflows'][1]['settings']['snapshot_digest']='0'*64
+            await dr_post(f,stale,status=409)
+            for count in (4,8):
+                oversized=await dr_compose(f,count=count)
+                response=await dr_post(f,oversized,status=409);assert 'read_bytes_exhausted' in response.text,response.text
+            from runtime.workflows import sequential_engine as engine
+            original=engine._write_generic_admission;seen=[]
+            def fault(*args,**kwargs):
+                result=original(*args,**kwargs);seen.append(result)
+                if len(seen)==2: raise ValueError('workflow_deliberate_draft_second_member')
+                return result
+            with patch.object(engine,'_write_generic_admission',fault): await dr_post(f,mixed,status=409)
+            assert len(seen)==2
+        if case=='C18':
+            ordinary=s6ordinary(f,parent=f.source.id,task_id='draft-ordinary')
+            native=(s4bytes(dict(legs=[],step_index=0,step_audit_id=1)).decode() if f.enclosure=='chain' else
+                s4bytes(dict(children_ids=[ordinary.id],children_details=[],width=1,manager_agent='s3_manager',status='spawned')).decode())
+            f.conn.execute('UPDATE tasks SET active_'+f.enclosure+'=? WHERE id=?',(native,f.source.id));f.conn.commit()
+            f.source=f.db.get_task(f.source.id)
+        if case=='C20':
+            from runtime.workflows import sequential_history as history_owner
+            observed=[];original_budget=history_owner._ReadBudget
+            class Observed(original_budget):
+                def __init__(self,**kw): super().__init__(**kw);observed.append(self)
+            schema=tuple(f.conn.execute("SELECT type,name,sql FROM sqlite_schema ORDER BY name"))
+            versions=tuple(f.conn.execute('SELECT * FROM workflow_seq_schema_versions'))
+            from runtime.workflows import sequential_start_discovery as discovery_owner
+            from cli.commands import workflow_sequential_start_v2 as compose_owner
+            with patch.object(history_owner,'_ReadBudget',Observed),patch.object(discovery_owner,'_ReadBudget',Observed),patch.object(compose_owner,'_ReadBudget',Observed):
+                await dr_read(f);await dr_compose(f,(DR_IDENTITY,'release/happyranch/coding'))
+            assert schema==tuple(f.conn.execute("SELECT type,name,sql FROM sqlite_schema ORDER BY name"))
+            assert versions==tuple(f.conn.execute('SELECT * FROM workflow_seq_schema_versions'))
+            for budget in observed:
+                assert budget.consumed<=67108864 and budget.accepted_rows<=8192 and budget.traversed<=65536
+            print('C20 two-entry measured ledgers',[(b.consumed,b.accepted_rows,b.traversed,b.sql_steps) for b in observed],flush=True)
+            candidate=await dr_compose(f,(DR_IDENTITY,'release/happyranch/coding'))
+            original_preflight=f.db._workflow_continuation.preflight_start_uncommitted
+            for kind in ('bytes','rows','work','deadline','sql'):
+                charged=[]
+                class Exhausted(original_budget):
+                    def __init__(self,**kw):
+                        super().__init__(**kw)
+                        if kind=='bytes': self.consumed=67108864
+                        if kind=='rows': self.accepted_rows=8192
+                        if kind=='work': self.traversed=65536
+                        if kind=='deadline': self.deadline=time.monotonic()-1
+                        if kind=='sql': self.sql_limit=0
+                        charged.append(self)
+                def limited(task_id):
+                    with patch.object(history_owner,'_ReadBudget',Exhausted): return original_preflight(task_id)
+                with patch.object(f.db._workflow_continuation,'preflight_start_uncommitted',limited):
+                    response=await dr_post(f,candidate,status=409)
+                assert charged and any(c in response.text for c in ('exhausted','coding_authority_history_invalid','sequential_history_unverified')),response.text
+                print('C20 finite existing budget',kind,'HTTP409 zero committed rows',flush=True)
+
+        old_tables=('workflow_review_requests','workflow_submissions','workflow_rounds','workflow_review_receipts')
+        old_rows={t:tuple(tuple(r) for r in f.conn.execute('SELECT * FROM '+t+' ORDER BY rowid')) for t in old_tables}
+        runs=await dr_start(f,identities);a=runs[0]['id'];originals={r['id']:(r['start_bytes'],r['settings_id'],r['assignment_snapshot_bytes'],r['original_limits_bytes']) for r in runs}
+        if case=='C11':
+            assert f.db.get_task(f.source.id).dispatched_from_thread_id=='THR-draft'
+            assert len(f.batch_ids)==1 and s4row(f,'workflow_seq_visits',f.ids.visit_id)['node_id']=='draft'
+        if case in ('C13','C14','C15','C16','C23'):
+            visit,brief=await dr_visit(f,a,'produced',positive=False)
+            assert s4row(f,'workflow_seq_runs',a)['visit_count']==1
+            s4outer(f,visit['id']);s4baccept(f,visit['id'])
+            run=dr_select(f,a);review=s4row(f,'workflow_seq_visits',run['active_visit_id'])
+            assert review['node_id']=='review'
+            selection=json.loads(review['input_selection_bytes'])['outputs'];assert len(selection)==1 and selection[0]['slot']=='document'
+            assert selection[0]['digest']==hashlib.sha256(b'Private immutable draft \xe4\xb8\xad\xe6\x96\x87').hexdigest()
+            if case=='C13':
+                from runtime.workflows.sequential_document_access import authorize_generic_input
+                from runtime.workflows.sequential_contracts import GenericOutputRef
+                from runtime.workflows.sequential_history import _ReadBudget
+                output=dict(f.conn.execute('SELECT * FROM workflow_seq_outputs WHERE visit_id=?',(visit['id'],)).fetchone())
+                node=next(n for n in f.compiled.definition.nodes if n.id=='review')
+                try: authorize_generic_input(compiled=f.compiled,node=node,ref=GenericOutputRef.model_validate(selection[0]),output=output,
+                    stored_recipients=json.loads(output['recipients_bytes']),principal='s3_alt',visit=review,budget=_ReadBudget())
+                except ValueError as exc: assert str(exc)=='sequential_output_access_unavailable'
+                else: raise AssertionError('wrong recipient disclosed document')
+            if case in ('C14','C15'):
+                findings=['needs_detail: Add the attributed detail']
+                for i in range(f.revision_bound+1 if case=='C15' else 1):
+                    returning=s4row(f,'workflow_seq_runs',a)['active_visit_id']
+                    await dr_visit(f,a,'REQUEST_CHANGES',findings=findings)
+                    run=dr_select(f,a)
+                    counters={r['node_id']:dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(a,))}
+                    if case=='C15' and i==f.revision_bound:
+                        assert run['state']=='held' and run['visit_count']==2*(f.revision_bound+1),('draft revision exhaustion',f.revision_bound,run['state'],run['visit_count'])
+                        assert json.loads(s4row(f,'workflow_seq_events',run['held_event_id'])['event_bytes'])['decision']['reason']=='limit_exhausted'
+                        assert counters['draft']['revisions']==f.revision_bound and counters['draft']['visits']==f.revision_bound+1
+                        if f.revision_bound==1: assert counters['draft']['visits']<3
+                        before=tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(a,)))
+                        await f.sid('draft-exhausted');f.ids=dr_ids_for_stopped(f,a)
+                        if f.revision_bound==2:
+                            await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'retry')),status=409)
+                            assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(a,)))==before
+                        else:
+                            # The reviewer has capacity, but its retained document
+                            # was retired by the exhausted correction edge.
+                            for action in ('retry','rebrief','reassign'):
+                                await dr_post(f,dict(action='workflow_control',workflow=s4command(f,action)),
+                                    status=409,code='control_input_retired')
+                                assert dr_select(f,a)==run
+                                assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(a,)))==before
+                                print('C15 lower bound',action,'control_input_retired HTTP409 zero writes',flush=True)
+                            assert sum(r['node_id']=='draft' for r in f.conn.execute('SELECT node_id FROM workflow_seq_visits WHERE run_id=?',(a,)))==2
+                        await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'cancel')))
+                        await dr_done(f)
+                        print('C15 revisions',f.revision_bound,'exhausted without allowance reset',flush=True)
+                        return
+                    assert counters['draft']['revisions']==i+1,('draft revision counter',counters['draft']['revisions'],i+1)
+                    assert run['state']=='running'
+                    new=s4row(f,'workflow_seq_visits',run['active_visit_id'])
+                    assert new['node_id']=='draft' and json.loads(new['input_selection_bytes'])==dict(outputs=[])
+                    v,brief=await dr_visit(f,a,'produced',content=b'Revised document '+str(i).encode())
+                    assert 'needs_detail' in brief and 'Add the attributed detail' in brief
+                    data=json.loads(brief.splitlines()[-1])
+                    attributed=next(x for x in data['inputs'] if x['source']=='returned_findings')['findings'][-1]
+                    assert attributed['source_visit']==returning and type(attributed['source_result']) is int
+                    next_review=s4row(f,'workflow_seq_visits',dr_select(f,a)['active_visit_id'])
+                    assert json.loads(next_review['input_selection_bytes'])['outputs'][0]['digest']!=selection[0]['digest']
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs WHERE run_id=?',(a,)).fetchone()[0]==3+2*i
+            if case=='C16':
+                await dr_visit(f,a,'REVISE')
+                held=dr_select(f,a);assert held['state']=='held'
+                event=json.loads(s4row(f,'workflow_seq_events',held['held_event_id'])['event_bytes'])
+                assert 'unknown_outcome' in str(event),event
+                return
+            if case=='C23':
+                await f.sid('draft-prompt')
+                prompt=_build_agent_prompt(f.org.orchestrator,f.db.get_task(f.source.id),'s3_manager')
+                assert 'supported generic catalog' in prompt and 'Draft→Review@1' in prompt
+                worker=_build_agent_prompt(f.org.orchestrator,f.db.get_task(review['task_id']),review['principal'])
+                assert 'for your own ordinary manager task' not in worker
+                assert 'workflow-sequential-callback@2' in brief
+        if case=='C17':
+            await dr_visit(f,a,'BLOCK',findings=['Private causal blocker'],no_result=f.no_result)
+            assert dr_select(f,a)['state']=='held'
+            await f.sid('draft-control')
+            f.ids=dr_ids_for_stopped(f,a)
+            command=s4command(f,f.recovery_action)
+            bad=deepcopy(command);bad['expected_cas']+=1
+            await dr_post(f,dict(action='workflow_control',workflow=bad),status=409)
+            await dr_post(f,dict(action='workflow_control',workflow=command))
+            run=dr_select(f,a)
+            if f.recovery_action=='cancel':
+                assert run['state']=='finished' and run['terminal_outcome']=='cancelled'
+                await dr_done(f);return
+            replacement=s4row(f,'workflow_seq_visits',run['active_visit_id'])
+            assert replacement['principal']==('s3_alt' if f.recovery_action=='reassign' else 's3_author')
+            assert run['recovery_count']==1 and run['visit_count']==2
+        if case=='C18':
+            b=runs[1]['id']
+            await dr_visit(f,a,'BLOCK',findings=['A awaits initiator'])
+            await dr_visit(f,b,'produced');await dr_visit(f,b,'APPROVE');await dr_visit(f,b,'REVISE',findings=['qa_detail: Private QA return'])
+            counters={r['node_id']:dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(b,))}
+            assert counters['develop']['revisions']==1 and dr_select(f,a)['state']=='held'
+            await f.sid('draft-recover');f.ids=dr_ids_for_stopped(f,a);f.compiled=f.catalog[DR_IDENTITY]
+            await dr_post(f,dict(action='done',summary='Too early'),status=409)
+            await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'retry')))
+            if f.b_first: await dr_finish(f,b)
+            else: await dr_finish(f,a)
+            assert f.db.get_task(f.source.id).status=='in_progress' and 's5-parent' not in s6queue(f)
+        if case=='C19':
+            row,body,decision,receipt=f.original_callback
+            await setup_put(f,dr_save('after-admission-save',2))
+            await setup_put(f,setup_admission(f.draft_save,'after-admission-disable',3,'Disabled'))
+            # Callback replay uses original result even after tracker cleanup.
+            f.org.sessions.clear(f.source.id,f.source.assigned_agent)
+            before=dr_inventory(f)
+            await dr_post(f,decision,body=body)
+            assert dr_inventory(f)==before
+            assert f.conn.execute('SELECT receipt_bytes FROM workflow_seq_consumption_receipts WHERE result_id=?',(row['id'],)).fetchone()[0]==receipt
+            with s5reopen(f) as opened: assert a in read_sequential_history(opened,expected_org_slug='scratch').run_ids
+            await f.sid('draft-stale-new')
+            stale=deepcopy(decision);stale['workflows'][0]['operation_key']='fresh-stale-pin'
+            await dr_post(f,stale,status=409,code='workflow_seq_settings_generation_stale')
+        if case=='C24':
+            await setup_put(f,setup_admission(f.draft_save,'draft-disabled',5,'Disabled'))
+        for r in runs: await dr_finish(f,r['id'])
+        for r in runs:
+            current=s4row(f,'workflow_seq_runs',r['id'])
+            assert (current['start_bytes'],current['settings_id'],current['assignment_snapshot_bytes'],current['original_limits_bytes'])==originals[r['id']]
+            assert current['state']=='finished' and f.db.get_task(current['carrier_task_id']).status=='completed'
+        assert f.db.get_task(f.source.id).status=='in_progress'
+        assert {t:tuple(tuple(r) for r in f.conn.execute('SELECT * FROM '+t+' ORDER BY rowid')) for t in old_tables}==old_rows
+        with s5reopen(f) as opened: read_sequential_history(opened,expected_org_slug='scratch')
+        if case in ('C18','C24'):
+            await f.sid('draft-later-batch')
+            later=await dr_compose(f,('release/happyranch/coding',))
+            later['workflows'][0]['operation_key']='later-coding-valid'
+            await dr_post(f,later)
+            extra=dict(f.conn.execute('SELECT * FROM workflow_seq_runs WHERE start_operation_key=?',('later-coding-valid',)).fetchone())
+            assert f.conn.execute('SELECT count(*) FROM workflow_seq_source_wait_sets').fetchone()[0]==1
+            s5release(f);await dr_finish(f,extra['id'])
+        if case=='C18':
+            assert getattr(f.db.get_task(f.source.id),'active_'+f.enclosure)==native
+            await f.sid('draft-ordinary-pending')
+            await dr_post(f,dict(action='done',summary='Ordinary child outstanding'),status=409)
+            await dr_post(f,dict(action='workflow_wait',run_ids=[],consume_notifications=[]))
+            assert f.db.admit_task_completion_callback(task_id=ordinary.id,agent=ordinary.assigned_agent,session_id=ordinary.current_session_id,
+                status='completed',confidence_score=80,output_summary='Ordinary child done',decision_json=s4bytes(dict(action='done',summary='Done')).decode())
+            row=f.db.get_latest_task_result(ordinary.id,ordinary.assigned_agent,ordinary.current_session_id)
+            _consume_completion_report(f.org.orchestrator,ordinary.id,completion_report_from_result_row(ordinary.id,row,fallback_agent=ordinary.assigned_agent),result_row_id=row['id'])
+        await dr_done(f)
+
+    async def dr_output_cases():
+        # Actual callback boundary, otherwise valid current native visit. Each
+        # malformed input has its own expected parser code and no accepted output.
+        variants=[('base64',False,None,s4bytes(dict(format='workflow-sequential-callback@2',outcome='produced',content_base64='!',findings=[])).decode(),'invalid_base64'),
+            ('empty',False,b'',None,'empty_callback_without_cause'),
+            ('document-over',False,b'x'*1048577,None,'generic_output_bounds'),
+            ('json-over',True,s4bytes(dict(x='x'*(49152-7))),None,'generic_output_bounds'),
+            ('json-shape',True,b'[]',None,'expected_object'),
+            ('json-canonical',True,b'{"x": 1}',None,'noncanonical_bytes')]
+        for label,review,content,summary,code in variants:
+            async with dr_fixture() as f:
+                run=(await dr_start(f))[0]['id']
+                if review: await dr_visit(f,run,'produced')
+                await dr_visit(f,run,'APPROVE' if review else 'produced',content=content,summary=summary,rejected=code)
+                print('C16 callback rejected',label,code,'zero accepted output/successor',flush=True)
+        for review,content in [(False,b'x'*1048576),(True,s4bytes(dict(x='x'*(49152-8))))]:
+            assert len(content)==(49152 if review else 1048576)
+            async with dr_fixture() as f:
+                run=(await dr_start(f))[0]['id']
+                if review: await dr_visit(f,run,'produced')
+                await dr_visit(f,run,'APPROVE' if review else 'produced',content=content,identity_negatives=True)
+                await dr_finish(f,run);await dr_done(f)
+                print('C16 exact cap accepted and settled',len(content),flush=True)
+        async with dr_fixture() as f:
+            run=(await dr_start(f))[0]['id']
+            await dr_visit(f,run,'produced');await dr_visit(f,run,'REVISE')
+            held=dr_select(f,run);assert held['state']=='held'
+            event=json.loads(s4row(f,'workflow_seq_events',held['held_event_id'])['event_bytes'])
+            assert 'unknown_outcome' in str(event),event
+            await f.sid('draft-unknown-outcome');f.ids=dr_ids_for_stopped(f,run)
+            await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'cancel')));await dr_done(f)
+
+    def dr_ids_for_stopped(f,run_id):
+        from runtime.workflows.sequential_start import AdmissionIds
+        run=s4row(f,'workflow_seq_runs',run_id)
+        visit=dict(f.conn.execute('SELECT * FROM workflow_seq_visits WHERE run_id=? ORDER BY ordinal DESC LIMIT 1',(run_id,)).fetchone())
+        return AdmissionIds(run_id,run['carrier_task_id'],visit['id'],visit['task_id'],run['last_event_id'],'unused')
+
+    async def dr_retirement(f):
+        from runtime.workflows.templates import WorkflowTemplateStore, WorkflowTemplatePrincipal
+        from cli.main import build_parser
+        definition=dict(kind='document-review',schema_version=2,description='Private old-lane refusal',
+            author=dict(role='author',kind='agent'),output=dict(primitive='immutable-document-revision',description='Private document'),
+            reviewers=[dict(role='reviewer',kind='agent')],outcomes=['approved'],
+            approval=dict(mode='all',revision='current',required_roles=['reviewer']),request_changes=None,
+            submission=dict(timing='on-completion'))
+        template=WorkflowTemplateStore(f.db).publish_version(org_slug='scratch',
+            principal=WorkflowTemplatePrincipal.agent(org_slug='scratch',agent_name='s3_manager',team_slug='engineering',
+                task_id=f.source.id,session_id=f.source.current_session_id,revalidate=lambda:None),
+            operation_key='draft-retired-template',namespace='org/scratch/team/engineering',template_name='draft-retired',
+            expected_current_version=0,definition=definition)
+        capture=f.org.workflow_authority.capture_admission()
+        body=dict(format='workflow-activation-request@2',operation_key='draft-retired-activation',instance_id='draft-retired-instance',
+            expected_activation_revision=0,template=dict(identity_id=template.identity_id,version=template.version,definition_digest=template.definition_digest),
+            authority=dict(namespace=capture.ready.namespace,generation=capture.ready.generation,snapshot_digest=capture.ready.snapshot_digest),
+            scope=dict(brief='Private old activation reaches retirement after current Founder/role/pin authorization'),
+            bindings=dict(author=dict(kind='agent',principal='s3_author',team='engineering'),reviewer=dict(kind='agent',principal='s3_review',team='engineering')),
+            eligible_replacements=dict(author=[],reviewer=[]),allowed_actions=['draft-document','submit-immutable-document','collect-review','approve-planning-input'],inputs=[])
+        before=dr_inventory(f)
+        response=await f.client.post('/api/v1/orgs/scratch/workflows/activations',headers=f.auth,json=body)
+        assert response.status_code==409 and response.json()['detail']['code']=='workflow_document_review_retired',response.text
+        assert dr_inventory(f)==before
+        paths={getattr(r,'path','') for r in f.app.routes}
+        assert '/api/v1/orgs/{slug}/workflows/reviews/human-receipts' not in paths
+        assert '/api/v1/orgs/{slug}/workflows/reviews/stages' not in paths
+        for verb in ('sign','stage'):
+            with redirect_stderr(io.StringIO()):
+                try: build_parser().parse_args(['workflows','reviews',verb])
+                except SystemExit as exc: assert exc.code==2
+                else: raise AssertionError('removed review CLI verb restored: '+verb)
+        read_sequential_history(f.conn,expected_org_slug='scratch')
+
+
+    async def dr_coding_retired():
+        async with dr_fixture() as f:
+            # The real Founder API lowers only the developer revision allowance.
+            # Reviewer attempts/recoveries remain available at the stopped visit.
+            lowered=dict(f.coding_save,operation_key='coding-lower-revisions',expected_generation=2)
+            lowered['limits']=dict(lowered['limits'],node_revisions=dict(lowered['limits']['node_revisions'],develop=1))
+            saved=await setup_put(f,lowered)
+            f.settings['release/happyranch/coding']=saved.json()['original']
+            run_id=(await dr_start(f,('release/happyranch/coding',)))[0]['id']
+            for revision in range(2):
+                await dr_visit(f,run_id,'produced')
+                await dr_visit(f,run_id,'REQUEST_CHANGES',findings=['change_detail: revise selected change'])
+                run=dr_select(f,run_id)
+                assert run['state']==('running' if revision==0 else 'held')
+            counters={r['node_id']:dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_node_counters WHERE run_id=?',(run_id,))}
+            assert counters['develop']['revisions']==1 and counters['develop']['visits']==2
+            assert counters['review']['visits']==2 and run['visit_count']==4 and run['recovery_count']==0
+            assert json.loads(s4row(f,'workflow_seq_events',run['held_event_id'])['event_bytes'])['decision']['reason']=='limit_exhausted'
+            await f.sid('coding-retired-input');f.ids=dr_ids_for_stopped(f,run_id)
+            await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'retry')),
+                status=409,code='control_input_retired')
+            assert dr_select(f,run_id)==run
+            assert json.loads(run['original_limits_bytes'])['node_revisions']['develop']==1
+            await dr_post(f,dict(action='workflow_control',workflow=s4command(f,'cancel')))
+            assert dr_select(f,run_id)['terminal_outcome']=='cancelled'
+            await dr_done(f)
+
+    if start2_case:
+        for case in START2_CASES:
+            if case == 'legacy_bytes' and start2_case == 'all':
+                continue  # Explicit pinned-base raw stream export is a separate invocation.
+            if start2_case in ('all',case):
+                asyncio.run(start2_cases(case))
+        raise SystemExit(0)
+
+    if draft_review_case:
+        for case in DRAFT_REVIEW_CASES:
+            if draft_review_case in ('all',case):
+                asyncio.run(dr_case(case))
+                print('PASS Draft',case,'private real released catalog/ASGI/native boundary; provider NOT RUN',flush=True)
+        raise SystemExit(0)
 
     if setup_admission_case:
         for case in SETUP_ADMISSION_CASES:

@@ -8,7 +8,7 @@ wake/recovery and source continuation are delivered together in B2+B3.
 Fresh plural callbacks require discovery's exact org/task/agent session context
 before publication ownership and revalidate it under the same binding lease
 through commit; foreign or workflow-owned sources refuse without writes.
-Draft→Review registration remains undelivered. R1 double-prime binds only existing
+R2 unit(c) now adds `release/happyranch/draft-review@1` on generic ABI@2 via the same catalog, definition-only registrar and Start@2 path. Draft setup is API-only; the Coding Setup list/selector and offline script stay unchanged. See the [current contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-c-supported-draft--review-bundle). R1 double-prime binds only existing
 per-run/retry/revise/batch/history/cancellation bounds; there is no total-step cap
 or cross-run numeric pool. Task step counts remain task-local telemetry. Registration
 still creates no defaults or admission; offline fresh admission remains refused.

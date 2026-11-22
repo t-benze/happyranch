@@ -1,5 +1,7 @@
 # Workflow foundation and document-review contracts
 
+The supported [Draft → Review sequential bundle](reusable-workflows.md#r2-unit-c-supported-draft--review-bundle) uses generic callback@2 and addressed immutable outputs, separately from the retired old lane below. It does not restore activation, human signing/staging or review claim/launch.
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

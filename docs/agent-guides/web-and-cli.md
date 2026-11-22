@@ -5,6 +5,8 @@ settlement, initiator-owned hold recovery and source-never-auto-completes semant
 [the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
 Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
 
+Draft → Review is supported as `release/happyranch/draft-review@1` on generic ABI@2. Use the same compose@2 member selector, exact settings pin and plural callback. [The complete Founder API Save/Allow/Disable procedure](contracts/reusable-workflows.md#founder-api-only-draft-configuration) owns configuration and original-operation recovery. Workflows → Setup remains Coding-only; no Draft selector or browser Start is added.
+
 ## Multipart uploads in the native app scheme
 
 The artifacts and task-attachment API clients use same-origin `/api/v1` paths.
@@ -6035,8 +6037,10 @@ separate Founder-authenticated Allow new runs / Disable new runs controls for fr
 admission. Save never starts work and preserves current admission (first Save initializes
 Disabled); Disable affects only fresh admission and preserves already-admitted runs'
 immutable pins. No repository, start, retry, reassign or merge control is mounted.
-Public Start@2 admission/continuation is supported through genuine task completion;
-Draft→Review remains unavailable. See the [Start@2 contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation)
+Public Start@2 admission/continuation supports Coding and Draft→Review through
+genuine task completion; Draft configuration uses the
+[Founder API-only procedure](contracts/reusable-workflows.md#founder-api-only-draft-configuration).
+See the [Start@2 contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation)
 and [R2 setup/admission contract](contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
 One Save freezes one key/body (`useSequentialSettingsFence`);
 pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
