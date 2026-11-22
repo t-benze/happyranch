@@ -777,6 +777,8 @@ This is source inspection, not live/native acceptance. `AS` =
 | `app.ownersChanged` / `app.lifecycleRequested` (web) | **S6-W2b implemented (#1804, merge 521b0e45):** [owners.ts](../../web/src/lib/native/owners.ts), [NativeOwnersBridge.tsx](../../web/src/shared/owners/NativeOwnersBridge.tsx), [useConfigOwner.tsx](../../web/src/shared/owners/useConfigOwner.tsx). Initial + per-change all-owner summary via `call()`, serialized and deduped against the last acknowledged summary; a registered save is sent only after native acknowledged its pending summary, and a refused/lost push holds it (settled failed, nothing sent); lifecycle keep/proceed answered once per ID on the same call; browser mode no-op. Native lifecycle requests (S7-L3) and a WebKitGTK round-trip are NOT RUN. |
 | Main Connection command admission | **S6-W3-L (#1782), S7-L1 (#1813) implemented:** [AppScheme.bridge_message](../../packaging/linux/desktop/app_scheme_webkit.py#L640), `APP_PAGE`/`APP_RELAY` admit all eight existing v1 Host commands and ten existing v1 Client commands, plus `client.commitSwitch`, with closed args and validated v1 bodies. `host.stateChanged` remains; `bridge.hello`/`client.stateChanged` retired with the Linux shell, and Main uses v2 `app.status`/`app.stateChanged`. Main's AppScheme uses [host_bridge.HostBridge](../../packaging/linux/desktop/host_bridge.py#L116) for the bus/busy slot, bounded Status sharing and visible-Main three-second polling; errors preserve native effect/recovery. Linux S7-L1 uses the app scheme by default, retires the native Connection window and GUI proxy, and routes Connection/badge entry through `app.dialogRequested`. |
 | S7-L1 Linux topology | Main always uses happyranch-app://app; Connection/badge request the SPA dialog; GUI uses only the in-process adapter. connection_window.py and Linux shell assets are retired. Foreground CLI RuntimeProxy remains. Debian packaging validates the main resource manifest. Native/live acceptance is tracked separately. |
+| S7-L2 Linux local controls | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Admitted Main dispatches all eight local commands ([app_scheme_webkit.py:718](../../packaging/linux/desktop/app_scheme_webkit.py#L718)) through the existing ServiceMode queue: mutation slot reserved before native consent, named busy refusal, reads available, explicit failed-effect reconciliation ([happyranch_window.py:628](../../packaging/linux/desktop/happyranch_window.py#L628), [process:659](../../packaging/linux/desktop/happyranch_window.py#L659), [Cancel-default consent:1153](../../packaging/linux/desktop/happyranch_window.py#L1153)). Start/Restart recheck compatibility and refresh the cached local bearer through existing bootstrap without selecting a target or rebuilding Main ([app_scheme_webkit.py:561](../../packaging/linux/desktop/app_scheme_webkit.py#L561)). Main/dialog/owners and remote selection survive service-only Restart; Settings owns local controls ([SettingsDialogBody.tsx:151](../../web/src/features/settings/SettingsDialogBody.tsx#L151)); Main's strip/reserved height is retired ([happyranch_window.py:1284](../../packaging/linux/desktop/happyranch_window.py#L1284)). Native/live acceptance recorded separately; Mac pending. |
+| S7-L2 local readmission | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Start/Restart replies require closed readmission for this computer: ready/unreachable/incompatible/unknown, existing incompatibility detail only for incompatible and otherwise null; the other four mutations omit it ([happyranch_window.py:680](../../packaging/linux/desktop/happyranch_window.py#L680), [app_scheme_webkit.py:594](../../packaging/linux/desktop/app_scheme_webkit.py#L594), [web parser:142](../../web/src/features/settings/local/localService.ts#L142)). Pre-interruption background admission is cancelled and its completion discarded; local status reads remain available ([app_scheme_webkit.py:568](../../packaging/linux/desktop/app_scheme_webkit.py#L568)). Local C6 uses app.status with named settled disagreement; remote C6 uses only local readmission ([LocalServicePage.tsx:491](../../web/src/features/settings/local/LocalServicePage.tsx#L491)). F3 retains the result during pending/failed/unreadable/timed-out local Recheck unless a fresh parsed local publication arrives after the new read is issued; preexisting reads are drained and only the same outcome is superseded ([LocalServicePage.tsx:178](../../web/src/features/settings/local/LocalServicePage.tsx#L178), [fresh read:200](../../web/src/features/settings/local/LocalServicePage.tsx#L200), [Recheck:249](../../web/src/features/settings/local/LocalServicePage.tsx#L249)). Remote appState/selection stay remote; no URL/credential or effect retry authority. Native/live acceptance recorded separately; Mac pending. |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
@@ -1351,10 +1353,45 @@ candidate, disconnect or grant remote lifecycle/config authority. Remote Host
 service, access and grants remain outside these commands. No daemon route,
 remote allowlist or security/auth change is needed or authorized.
 
-**Implementation status.** Spec only: S7-L2 wires the existing ServiceMode
-supervisor and the web Settings local page, with native consent and C5/C6 copy.
-Foreground/native/web execution, screenshots, service effects and Mac parity
-are NOT RUN here. Mac implementation remains pending separate authorization.
+**Implementation status.** Linux S7-L2 is implemented by **PR #1815**, merge
+**c3c473f3**, reviewed/QA'd head **fba03199**. Admitted packaged Main dispatches
+all eight commands through the existing ServiceMode supervisor
+([app_scheme_webkit.py:718](../../packaging/linux/desktop/app_scheme_webkit.py#L718),
+[happyranch_window.py:628](../../packaging/linux/desktop/happyranch_window.py#L628)).
+The mutation slot is reserved before native consent; reads remain available,
+failed effects require explicit status reconciliation and foreground mutations
+are unsupported ([happyranch_window.py:636](../../packaging/linux/desktop/happyranch_window.py#L636),
+[process:698](../../packaging/linux/desktop/happyranch_window.py#L698)). Start/Restart
+repeat compatibility and existing loopback bootstrap without rebuilding Main or
+changing a selected remote target ([app_scheme_webkit.py:561](../../packaging/linux/desktop/app_scheme_webkit.py#L561)).
+Main's control/remote-access strip and reserved height are removed
+([happyranch_window.py:1284](../../packaging/linux/desktop/happyranch_window.py#L1284));
+Settings owns local controls. Native/live acceptance recorded separately: real
+systemd/logind/display acceptance is NOT RUN here; Mac remains pending separate
+authorization.
+
+The web Settings → HappyRanch on this computer page consumes all eight commands
+with exact closed data; Start/Restart require `readmission` (missing/unreadable
+means unknown effect) and other mutations forbid it
+([localService.ts:142](../../web/src/features/settings/local/localService.ts#L142),
+[call:179](../../web/src/features/settings/local/localService.ts#L179),
+[LocalServicePage.tsx:150](../../web/src/features/settings/local/LocalServicePage.tsx#L150)).
+C6 separates service result, readiness and compatibility: remote selection uses
+only this computer's readmission (ready, named incompatible host/app/unknown,
+unreachable or not confirmed); local selection uses `app.status`, naming settled
+disagreement ([LocalServicePage.tsx:491](../../web/src/features/settings/local/LocalServicePage.tsx#L491),
+[outcome:549](../../web/src/features/settings/local/LocalServicePage.tsx#L549)).
+Remote Recheck reads only `local.status`/`local.update.status`, retaining C5 scope
+and leaving remote `app.status` and selection untouched. Local Recheck drains
+any preexisting status read, then supersedes only the same action's readmission
+after a fresh parsed local publication following the new read: its reply or a
+newer `app.stateChanged`. Pending/rejected/unreadable/timed-out reads without that
+publication retain the result and Recheck; no mutation is retried or replayed
+([LocalServicePage.tsx:178](../../web/src/features/settings/local/LocalServicePage.tsx#L178),
+[fresh read:200](../../web/src/features/settings/local/LocalServicePage.tsx#L200),
+[Recheck:249](../../web/src/features/settings/local/LocalServicePage.tsx#L249),
+[target.ts:186](../../web/src/lib/native/target.ts#L186)).
+
 The examples below are versioned payloads, each checked against its named
 definition and the root; no-argument `{}` is checked only as the empty call args.
 
