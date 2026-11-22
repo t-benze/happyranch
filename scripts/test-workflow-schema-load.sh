@@ -5656,6 +5656,69 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     pin=await settings_change('allow')
                     for command in value['workflows']: command['settings']=pin
 
+                # The operator's file-backed revise ceiling can change while
+                # the prepared callback is waiting for the real async DB lock.
+                from runtime.orchestrator.org_config import load_org_config
+                config=f.root/'org/config.yaml'
+                original_config=config.read_bytes()
+                revision=f.db.get_task(f.source.id).revision_count
+                f.db.update_task(f.source.id,revision_count=1)
+                config.write_text('reviewer_agents: []\nmax_revise_rounds: 0\n')
+                lock=f.org.db_lock
+                await lock.acquire()
+                waiting=asyncio.Event()
+                acquire=lock.acquire
+                prepared=False
+                @asynccontextmanager
+                async def prepared_admission(*args,**kw):
+                    nonlocal prepared
+                    async with original(*args,**kw):
+                        prepared=True
+                        yield
+                async def observed_acquire():
+                    assert prepared,'F1 callback did not finish preparation before lock wait'
+                    waiting.set()
+                    return await acquire()
+                async def lower_policy():
+                    await waiting.wait()
+                    assert lock.locked() and not f.conn.in_transaction
+                    assert load_org_config(f.org.orchestrator._paths).max_revise_rounds==0
+                    config.write_text('reviewer_agents: []\nmax_revise_rounds: 1\n')
+                    lock.release()
+                changer=asyncio.create_task(lower_policy())
+                before=inventory()
+                changes=f.conn.total_changes
+                traced=[]
+                try:
+                    with patch.object(f.db._workflow_continuation,'callback_admission',prepared_admission), \
+                            patch.object(lock,'acquire',observed_acquire), f.db.observe_trace(traced.append):
+                        try:
+                            response,_=await post(value,code=409)
+                        except AssertionError:
+                            print('F1 policy race committed rows:', 'results',f.conn.execute(
+                                'SELECT count(*) FROM task_results WHERE task_id=?',(f.source.id,)).fetchone()[0],
+                                'memberships',f.conn.execute('SELECT count(*) FROM workflow_seq_source_memberships WHERE source_task_id=?',
+                                    (f.source.id,)).fetchone()[0], 'receipts',f.conn.execute(
+                                'SELECT count(*) FROM workflow_seq_consumption_receipts WHERE initiator_task_id=?',
+                                    (f.source.id,)).fetchone()[0],flush=True)
+                            raise
+                    await changer
+                    assert response.json()['detail']['code']=='workflow_seq_workflow_start_revisions_exhausted',response.text
+                    assert load_org_config(f.org.orchestrator._paths).max_revise_rounds==1
+                    assert not any(sql.lstrip().split(' ',1)[0].upper() in
+                        ('INSERT','UPDATE','DELETE','REPLACE','CREATE','ALTER','DROP','COMMIT') for sql in traced), \
+                        'F1 policy race wrote before refusal, including publication leases'
+                    assert inventory()==before and f.conn.total_changes==changes,'F1 policy race changed native/workflow/live/queue state'
+                    print('PASS Start2 settings_race F1 real DB-lock wait; policy 0->1 revision1; HTTP409 zero writes',flush=True)
+                finally:
+                    if not changer.done():
+                        changer.cancel()
+                    await asyncio.gather(changer,return_exceptions=True)
+                    if lock.locked():
+                        lock.release()
+                    config.write_bytes(original_config)
+                    f.db.update_task(f.source.id,revision_count=revision)
+
             async def accounting_cause():
                 f.conn.execute('UPDATE tasks SET parent_task_id=NULL WHERE id=?',(f.source.id,))
                 f.db._task_pause_store.ensure_uncommitted(f.source.id);f.conn.commit()

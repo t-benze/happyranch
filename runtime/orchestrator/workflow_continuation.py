@@ -197,12 +197,23 @@ class WorkflowContinuation:
                 _start_capture.reset(start_token)
 
     @contextmanager
-    def writer_ownership(self):
+    def writer_ownership(self, task_id: str):
         """Profile/publisher leases surround only the synchronous native writer."""
         starts, control = _start_capture.get(), _control_capture.get()
         authority = starts[0][0].authority if starts is not None else (
             control[0][1].authority if control is not None and control[0] is not None else None)
         with ExitStack() as stack:
+            if starts is not None:
+                from runtime.infrastructure.db.tasks import RetryClaim
+                from runtime.workflows.sequential_start import _policy
+                # The route has finished its async lock waits. Refresh file
+                # policy before publication leases or the native transaction.
+                source = RetryClaim.from_task(self.db.get_task(task_id))
+                revise_limit = _policy(self.org, source)
+                _require(revise_limit == 0 or source.revision < revise_limit,
+                    'workflow_start_revisions_exhausted')
+                token = _start_capture.set((starts[0], revise_limit))
+                stack.callback(_start_capture.reset, token)
             if authority is not None:
                 stack.enter_context(self.org.workflow_authority._admission_ownership(authority))
             yield

@@ -1673,7 +1673,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                 # synchronized SQLite transaction, closing the old post-get_active
                 # generation-replacement gap without inverting the DB RLock.
                 with (plural_start_lease() if plural_start else nullcontext()), \
-                        (continuation.writer_ownership() if continuation is not None else nullcontext()), \
+                        (continuation.writer_ownership(task_id) if continuation is not None else nullcontext()), \
                         (nullcontext() if plural_start else org.sessions.binding_lease(task_id, body.agent)):
                     current = org.sessions.get_active(task_id, body.agent)
                     if current != body.session_id:
