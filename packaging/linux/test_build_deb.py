@@ -572,6 +572,124 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn(name.removeprefix('python/'), result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
+    @staticmethod
+    def relocatable_elf(arch: str) -> bytes:
+        # ET_REL has sections for the linker, no runtime program-header table.
+        header = struct.pack('<16sHHIQQQIHHHHHH', b'\x7fELF\x02\x01\x01' + b'\0' * 9,
+                             1, 62 if arch == 'x86_64' else 183, 1, 0, 0, 64, 0,
+                             64, 0, 0, 64, 10, 3)
+        symbol = struct.pack('<IBBHQQ', 0, 0x10, 0, 2, 0, 0)
+        # (type, flags, link, info, entry size, contents). Group info is a
+        # symbol index, deliberately larger than the section count.
+        entries = [
+            (17, 0, 4, 11, 4, struct.pack('<II', 1, 2)),
+            (1, 0x206, 0, 0, 0, b'build-only code\n'),
+            (3, 0, 0, 0, 0, b'\0'),
+            (2, 0, 3, 1, 24, b'\0' * 24 + symbol * 11),
+            (4, 0x40, 4, 2, 24, struct.pack('<QQq', 0, 1 << 32, 0)),
+            (9, 0x40, 4, 2, 16, struct.pack('<QQ', 0, 1 << 32)),
+            (5, 0, 4, 0, 4, struct.pack('<IIII', 1, 1, 0, 0)),
+            (6, 0, 3, 0, 16, b'\0' * 16),
+            (18, 0, 4, 0, 4, b'\0' * 48),
+        ]
+        sections, contents = b'\0' * 64, b''
+        for kind, flags, link, info, size, data in entries:
+            sections += struct.pack('<IIQQQQIIQQ', 0, kind, flags, 0,
+                                    704 + len(contents), len(data), link, info, 1, size)
+            contents += data
+        return header + sections + contents
+
+    def test_relocatable_elf_is_preserved_in_payload(self) -> None:
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                archive = self.payload(arch)
+                root = self.work / f'happyranch-0.1.0-linux-{arch}'
+                path = root / f'python/lib/python3.12/config-3.12-{arch}-linux-gnu/python.o'
+                path.parent.mkdir(parents=True)
+                original = self.relocatable_elf(arch)
+                path.write_bytes(original)
+                for fix in (False, True):
+                    result = subprocess.run([sys.executable, '-B', '-I',
+                                             str(BUILDER.with_name('python-elf-stack.py')),
+                                             str(root / 'python'), *(['--fix'] if fix else [])],
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('NON-LOADABLE ET_REL:', result.stdout)
+                    self.assertEqual(path.read_bytes(), original)
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unknown_and_malformed_elf_layouts_are_refused(self) -> None:
+        for arch in ('x86_64', 'aarch64'):
+            valid = self.relocatable_elf(arch)
+            cases = {'truncated header': valid[:32], 'truncated sections': valid[:128]}
+            for kind in (0, 4, 0xfe00, 0xffff):
+                data = bytearray(self.elf(arch))  # safe GNU_STACK must not hide unknown e_type
+                struct.pack_into('<H', data, 16, kind)
+                cases[f'unknown type {kind}'] = data
+            for name, offset, format_, value in (
+                ('wrong class', 4, 'B', 1), ('wrong encoding', 5, 'B', 2),
+                ('wrong ident version', 6, 'B', 0), ('wrong machine', 18, 'H', 40),
+                ('wrong version', 20, 'I', 0), ('entry point', 24, 'Q', 1),
+                ('program offset', 32, 'Q', 64), ('program count', 56, 'H', 1),
+                ('header size', 52, 'H', 0), ('section offset', 40, 'Q', 1),
+                ('section size', 58, 'H', 0), ('section count', 60, 'H', 0),
+                ('section string index', 62, 'H', 10), ('section extent', 152, 'Q', 4096),
+                ('section string type', 62, 'H', 2),
+            ):
+                data = bytearray(valid)
+                struct.pack_into('<' + format_, data, offset, value)
+                cases[name] = data
+            for index, label in ((1, 'group'), (4, 'symtab'), (5, 'rela'), (6, 'rel'),
+                                 (7, 'hash'), (8, 'dynamic'), (9, 'symtab_shndx')):
+                for value in (0, 0xffffffff, 2):  # missing, out of range, wrong target type
+                    data = bytearray(valid)
+                    struct.pack_into('<I', data, 64 + index * 64 + 40, value)
+                    cases[f'{label} link {value}'] = data
+                data = bytearray(valid)
+                struct.pack_into('<I', data, 64 + index * 64 + 44, 0xffffffff)
+                cases[f'{label} info out of range'] = data
+            data = bytearray(valid)
+            struct.pack_into('<I', data, 64 + 4 * 64 + 4, 11)  # SHT_DYNSYM shares SYMTAB rules
+            struct.pack_into('<I', data, 64 + 4 * 64 + 40, 0xffffffff)
+            cases['dynsym link out of range'] = data
+            for flags, field in ((0x40, 44), (0x80, 40)):
+                data = bytearray(valid)
+                struct.pack_into('<Q', data, 64 + 2 * 64 + 8, flags)
+                struct.pack_into('<I', data, 64 + 2 * 64 + field, 0xffffffff)
+                cases[f'flagged section reference {flags}'] = data
+            root = self.work / arch
+            root.mkdir()
+            (root / 'safe-loadable').write_bytes(self.elf(arch))
+            path = root / 'unusual-name'
+            for name, data in cases.items():
+                for fix in (False, True):
+                    with self.subTest(arch=arch, case=name, fix=fix):
+                        path.write_bytes(data)
+                        result = subprocess.run([sys.executable, '-B', '-I',
+                                                 str(BUILDER.with_name('python-elf-stack.py')),
+                                                 str(root), *(['--fix'] if fix else [])],
+                                                text=True, capture_output=True)
+                        self.assertNotEqual(result.returncode, 0, 'invalid ELF was admitted')
+                        self.assertIn('unsupported ELF layout:', result.stderr)
+                        self.assertEqual(path.read_bytes(), data, 'invalid ELF was modified')
+            with self.subTest(arch=arch, case='symtab link 4294967295', boundary='builder'):
+                archive = self.payload(arch)
+                payload = self.work / f'happyranch-0.1.0-linux-{arch}'
+                object_path = payload / f'python/lib/python3.12/config-3.12-{arch}-linux-gnu/python.o'
+                object_path.parent.mkdir(parents=True)
+                data = cases['symtab link 4294967295']
+                object_path.write_bytes(data)
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(payload, arcname=payload.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0, 'invalid section link was packaged')
+                self.assertIn('unsupported ELF layout:', result.stderr)
+                self.assertEqual(object_path.read_bytes(), data, 'invalid ELF was modified')
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
     def test_elf_stack_repair_preserves_loads_and_payload(self) -> None:
         for arch in ('x86_64', 'aarch64'):
             for kind in (2, 3):  # executable with PT_PHDR; shared object without it
