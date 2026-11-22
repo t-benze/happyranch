@@ -2190,6 +2190,43 @@ class LocalControlsTests(unittest.TestCase):
 
 
 class StartupLifecycleTests(unittest.TestCase):
+    def test_native_confirmation_roles_preserve_labels_and_stay_default(self) -> None:
+        dialogs = []
+        class Dialog:
+            def __init__(self, **kwargs: object) -> None:
+                self.role, self.buttons, self.default = None, None, None
+                dialogs.append(self)
+            def set_role(self, role: str) -> None:
+                self.role = role
+            def add_buttons(self, *buttons: object) -> None:
+                self.buttons = buttons
+            def set_default_response(self, response: int) -> None:
+                self.default = response
+            def get_message_area(self) -> object:
+                return SimpleNamespace(get_children=lambda: [])
+            def run(self) -> int:
+                return response
+            def __getattr__(self, _name: str) -> object:
+                return lambda *_args: None
+        gtk = SimpleNamespace(MessageDialog=Dialog, MessageType=SimpleNamespace(WARNING=0),
+            ButtonsType=SimpleNamespace(NONE=0), ResponseType=SimpleNamespace(CANCEL=0, OK=1))
+        for action, normal, recovery_label in (("close", ("Close", "关闭"), ("Close anyway", "仍然关闭")),
+                ("quit", ("Quit", "退出"), ("Quit anyway", "仍然退出")),
+                ("relaunch", ("Relaunch", "重新启动"), ("Relaunch anyway", "仍然重新启动"))):
+            for recovery, role in ((False, "happyranch-lifecycle-confirm"),
+                                   (True, "happyranch-lifecycle-recovery")):
+                for chinese in (False, True):
+                    for response in (gtk.ResponseType.CANCEL, gtk.ResponseType.OK):
+                        with self.subTest(action=action, recovery=recovery, chinese=chinese, response=response):
+                            accepted = window.confirm_lifecycle(gtk, None, action,
+                                {"running": "running", "keepRunning": "off"}, None, False, recovery, chinese)
+                            self.assertEqual(dialogs[-1].role, role)
+                            self.assertEqual(dialogs[-1].buttons, ("留下" if chinese else "Stay",
+                                gtk.ResponseType.CANCEL, (recovery_label if recovery else normal)[int(chinese)],
+                                gtk.ResponseType.OK))
+                            self.assertEqual(dialogs[-1].default, gtk.ResponseType.CANCEL)
+                            self.assertEqual(accepted, response == gtk.ResponseType.OK)
+
     def test_startup_routes_remote_to_main_without_start_or_connect(self) -> None:
         for value in ("local", "remote:" + "a" * 64, "remote:unsaved"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as scratch:

@@ -180,7 +180,7 @@ try:
     (evidence / 'happyranch.desktop').write_bytes(desktop.read_bytes())
     result['desktop_exec'] = command
     result['stage'] = 'display-tools'
-    run(apt + ['install', '-y', 'xvfb', 'openbox', 'xdotool', 'scrot',
+    run(apt + ['install', '-y', 'xvfb', 'openbox', 'xdotool', 'x11-utils', 'scrot',
                'desktop-file-utils', 'dbus-x11'], 'apt-display-tools', timeout=600)
     run(['desktop-file-validate', str(desktop)], 'desktop-validate')
     check('installed desktop entry validates')
@@ -276,6 +276,11 @@ try:
         owner = run(['xdotool', 'getwindowpid', focused],
                     'quit-dialog-owner', env=env, timeout=10).strip()
         require(owner == str(app.pid), 'Quit confirmation is not owned by the app')
+        role = run(['xprop', '-id', focused, 'WM_WINDOW_ROLE'],
+                   'quit-dialog-role', env=env, timeout=10).strip()
+        result['quit_dialog'] = {'window': focused, 'pid': owner, 'role_property': role}
+        require(role == 'WM_WINDOW_ROLE(STRING) = "happyranch-lifecycle-confirm"',
+                'Quit confirmation is not the normal lifecycle dialog: ' + repr(role))
         quit_dialog['window'] = focused
         return True
 
