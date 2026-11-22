@@ -217,6 +217,34 @@ export function capacityFieldLabel(key: string, locale: Locale): string {
   return messageKey === undefined ? key : translate(locale, messageKey);
 }
 
+const CAPACITY_GUIDANCE_KEYS = {
+  queue_workers: 'settings.capacity.guidance.queue_workers',
+  host_global_session_cap: 'settings.capacity.guidance.host_global_session_cap',
+} as const satisfies Record<'queue_workers' | 'host_global_session_cap', MessageKey>;
+
+/** The first `<low>–<high>` (or hyphen) digit range in the daemon's guidance. */
+const GUIDANCE_RANGE = /(\d+)\s*[–-]\s*(\d+)/;
+
+/**
+ * S9-FIX D2: the daemon's fixed capacity guidance is product copy, so it is
+ * rendered from the typed catalog in the current locale (and re-renders on a
+ * live locale switch). The suggested-range NUMBERS stay the daemon's: they are
+ * read from the API prose. When that prose carries no recognizable range, or
+ * the daemon no longer marks the range as unenforced (the catalog copy says it
+ * is not enforced), the API text is shown verbatim rather than inventing
+ * numbers or contradicting the daemon.
+ */
+export function capacityGuidanceMessage(
+  guidance: DaemonCapacitySnapshot['guidance'],
+  key: 'queue_workers' | 'host_global_session_cap',
+  locale: Locale,
+): string {
+  const source = guidance[key];
+  const range = guidance.enforced === false ? GUIDANCE_RANGE.exec(source) : null;
+  if (range === null) return source;
+  return translate(locale, CAPACITY_GUIDANCE_KEYS[key], { low: range[1], high: range[2] });
+}
+
 // ---------------------------------------------------------------------------
 // Draft consequence arithmetic
 // ---------------------------------------------------------------------------
