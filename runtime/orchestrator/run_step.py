@@ -4632,6 +4632,12 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         manager_name=agent,
         self_only=not is_mgr,
         workflow_start_available=workflow_start_available,
+        workflow_start_v2_discovery=bool(
+            actor is not None and actor.role == "manager" and actor.executor
+            and actor.team == task.team and task.assigned_agent == agent
+            and orch.teams.executable_manager_for_team(task.team) == agent
+            and classify_task(orch._db, task.id, org_slug=orch._slug).kind in ("legacy", "seq_source_wait_set")
+        ),
         reviewer_agents=list(reviewers.agents),
         reviewer_configuration_state=reviewers.state,
         missing_reviewer_agents=list(reviewers.missing_agents),

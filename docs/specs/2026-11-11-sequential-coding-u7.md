@@ -1,9 +1,15 @@
 # Sequential Coding U7: common transport and agent initiation
 
+Current B1 addendum: @2 discovery/compose available; public admission unavailable
+(`workflow_start_v2_unavailable`). This supersedes older public-@2-closed
+statements about discovery/composition only. @1 bytes remain frozen; no admission,
+continuation/recovery or Draft→Review registration is delivered by B1.
+[Current B1 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+
 Current R2 unit (a) addendum: additive Coding v3/@2 setup reads/Save and separate
 Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
-Public Start@2 and Draft→Review registration remain undelivered. Registration
+Public Start@2 admission and Draft→Review registration remain undelivered. Registration
 still creates no defaults or admission; offline fresh admission remains refused.
 Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
 Exact routes, custody and supported fixture commands:
@@ -16,8 +22,7 @@ Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
 adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
 `workflow-sequential-start-context@1` wire shape and Start@1 composer stay
 unchanged, offering v2 only. A fresh public v3 pin still refuses with
-`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
-closed pending separate authorization. V2 fresh-start behavior is unchanged.
+`sequential_release_pin_mismatch`. B1 provides @2 discovery/compose; public admission remains unavailable. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
 admission, tasks, runs or Allow. Explicit Founder setup/Allow is separate above.
 

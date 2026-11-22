@@ -4039,3 +4039,31 @@ These private direct boundaries forbid provider
 launch and observe actual native results, persisted dependencies, receipts and
 queue IDs. They do not establish live provider or deployment acceptance. Run
 required long selections through durable jobs and inspect their actual receipts.
+
+## Start2 B1 read-only cases
+
+The existing private ASGI/SQLite schema-load venue supports
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start2=all`
+and the same command with `3.14`. Individual selectors are `staged_unavailable`
+(B01/B04/B30/C1), `discovery` (B01), `audience` (B02), `pins_settings` (B03),
+`compose` (B04), `batch` (B05/B26), `member8` (B06), `overrides` (B07),
+`advisory` (B25), `bounds` (B26), `read_only` (B27), `catalog` (B28),
+`legacy_bytes` (B29), `prompt` (B30), `no_ui` (B31).
+`all` excludes only `legacy_bytes`, which needs an explicit task-owned absolute
+`WORKFLOW_START2_GOLDEN_OUTPUT`; run it on pinned base and branch and `cmp`
+the raw context/composer/decision streams. No reserialization supplies the oracle.
+
+Every source is isolated, synthetic and provider-free; real registry, authority,
+settings readers, ASGI routes, CLI and native callback refusal are exercised.
+Read/composer/callback refusal compare exact all-table inventories and queue
+counts; read requests also reject traced DML/DDL/COMMIT. Eight-member composition
+uses explicit partitions, including 131072 request bytes; exact262144/+1 CLI
+response bytes,32/33 notification IDs and deadline/row/work/byte/SQL exhaustion uses test-side bounded controls on existing ledgers. Catalog reuse is
+private reviewed-resource isolation, not Draft→Review registration or AC1 proof.
+B1 reports admission and authoritative remaining allowance unavailable even with
+Allowed settings. These cases do not prove B2+B3 admission/recovery/accounting,
+eight-run write/startup fit, provider containment or the genuine pilot.
+Retired Python units and Web Vitest NOT RUN; general integration SKIPPED under
+THR-243 seq42; Product E2E NOT RUN. Required local CI remains
+`bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable
+jobs for long commands. No new CI/E2E trigger or gate is added.

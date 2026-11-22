@@ -1280,6 +1280,17 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
         decision_payload.pop("_manager_self_evaluation", None)
         decision_payload.pop("_authority_v2_admission", None)
     sequential_start = False
+    if (decision_payload is not None and decision_payload.get('action') == 'workflow_start'
+            and 'workflows' in decision_payload):
+        from runtime.workflows.sequential_history import _ReadBudget, _bytes
+        from runtime.workflows.sequential_start import _batch_decision
+        try:
+            _batch_decision(_bytes(decision_payload), _ReadBudget())
+        except ValueError:
+            raise HTTPException(status_code=422, detail={'code': 'workflow_invalid_decision'}) from None
+        # B1 exposes read-only discovery/composition only. Refuse before native
+        # result, attempt/claim, wait-set, consumption or queue publication.
+        raise HTTPException(status_code=409, detail={'code': 'workflow_start_v2_unavailable'})
     if decision_payload is not None and decision_payload.get('action') in ('workflow_control', 'workflow_wait'):
         from runtime.models import NextStep
         try:

@@ -65,6 +65,21 @@ STAGED_GENERIC = {
 GENERIC_CATALOG = STAGED_GENERIC
 
 
+def generic_start_catalog(selector: str | None = None) -> tuple[GenericCompiledDefinition, ...]:
+    """Reviewed @2 discovery/composer data, without granting public admission.
+
+    The registrar and composer share exact package/pin verification. Keep the
+    original @1 manifest and selector independent of this additive catalog.
+    """
+    if not 0 < len(GENERIC_CATALOG) <= 16:
+        raise SequentialReleaseUnavailable('sequential_release_unavailable')
+    entries = tuple(entry for entry in GENERIC_CATALOG.values()
+        if selector is None or selector == f'{entry.pin.identity}@{entry.pin.version}')
+    if not entries:
+        raise SequentialReleaseUnavailable('sequential_release_unavailable')
+    return tuple(select_staged_release(entry.pin) for entry in entries)
+
+
 class SequentialReleaseUnavailable(ValueError):
     """Categorical source refusal, with no resource path or raw loader detail."""
 

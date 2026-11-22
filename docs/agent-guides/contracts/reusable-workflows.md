@@ -1,5 +1,55 @@
 # Reusable workflow contracts
 
+## R2 unit (b), B1: read-only Start@2
+
+@2 discovery/compose available; public admission unavailable in this release
+(`workflow_start_v2_unavailable`). No UI Start/recovery action is added.
+An eligible executable same-team manager uses only its own current ordinary
+session, including an existing generic source wait set, with CLI-only GET
+`/api/v1/orgs/{slug}/workflows/sequential/start-context/v2?session_id=SID`
+and optional exact `definition=identity@version`. Browser/bearer, foreign,
+ended, recovery, worker, carrier, visit and direct thread sessions are refused;
+responses and refusals use `Cache-Control: no-store`.
+
+The closed `workflow-sequential-start-context@2` response selects the reviewed
+generic catalog (Coding v3), verifies full package/registration pins and latest
+identity-wide @2 settings, and reports roles/responsibilities, required inputs,
+limits, defaults, Allowed/Disabled and finite definition-unavailability causes.
+Its release fields are `availability: admission-unavailable`,
+`unavailable_cause: workflow_start_v2_unavailable`, `remaining: null`, and
+`remaining_cause: workflow_start_v2_unavailable`. No authoritative source/root/
+lineage remainder or reservation is promised. The response also lists only this
+SID’s stored delivered notification IDs; it never snapshots or consumes a page. Default assignment eligibility is
+checked against current authority; per-run target selection is advisory syntax
+until the later admission owner rechecks it. Missing/old-version defaults never
+become new @2 defaults implicitly. Save/Allow/Disable still create no work.
+
+The same CLI `workflows sequential start-compose --org ORG --session-id SID
+--from-file ABS --json` accepts explicit `format:
+workflow-sequential-start-compose@2`, `workflows` (1–8), and optional
+`consume_notifications` (at most 32 distinct IDs). Each member has exactly
+`definition` (selector), discovered `settings`, stable `operation_key`,
+`request`, `inputs`, `role_overrides`, `step_overrides`, and explicit
+`lower_limits`. It only GETs and reads packages, prints the existing closed
+plural `GenericStartCommand` decision and warns on stderr that admission is
+unavailable. Omitted consumption remains omitted; explicit `[]` remains empty;
+step model/effort omission, value and null remain distinct. Each member and the
+summed unchanged global syntax ceilings must fit; these checks grant no fresh
+allowance or authoritative executor availability. No task/session/actor/budget
+fields, singular/plural mixtures, duplicate keys, fallback files or auto-repins.
+The callback refuses the valid plural decision with 409
+`workflow_start_v2_unavailable` before result/attempt/claim, wait-set, notification
+consumption or queued work. Do not submit the advisory decision for admission.
+
+@1 discovery/composer/decision bytes and source-terminal semantics stay frozen.
+B2+B3 will deliver first/later admission, complete continuation/recovery and
+reservation accounting together in one later PR. Draft→Review registration is
+unit (c). No schema, raised caps, offline script, thread/wake/dream authority,
+then/fanout change, live setup/Allow/restart or pilot follows. Verification uses
+`WORKFLOW_SCHEMA_PYTHON=3.12` or `3.14` with
+`bash scripts/test-workflow-schema-load.sh --start2=all`; see the
+[case list and evidence limits](../../operations/local-ci.md#start2-b1-read-only-cases).
+
 ## R2 unit (a): saved defaults and new-run admission
 
 Workflows → Setup supports the shipped Coding v3/@2 definition and its four
@@ -59,8 +109,8 @@ be replaced by late older reads.
 
 Disable affects only NEW starts: latest Disabled and stale former Allowed pins
 refuse at fresh admission. Already-admitted runs retain their immutable settings,
-assignments and original replay/readability. No public Start@2 or Draft→Review
-registration is delivered here. `scripts/setup_sequential_coding.py` is unchanged:
+assignments and original replay/readability. No public Start@2 admission or Draft→Review
+registration is delivered here; B1 discovery/compose is available above. `scripts/setup_sequential_coding.py` is unchanged:
 fresh offline admission still refuses `sequential_coding_registration_only`;
 original operator records stay in their separate namespace. Deployment/restart,
 live setup/Allow and the actual four-role pilot remain founder-reserved.
@@ -107,7 +157,7 @@ methods and policy constants and imports proved work once per caller.
 The [existing schema-shell keepers](../../operations/local-ci.md#s9-reader-parity-keepers)
 cover bounded acquisitions/refusals/charges and complete history/replay. They do
 not prove a naming extraction, semantic Coding role adherence or live acceptance.
-Public @2 start/composition remains closed; Coding defaults remain Disabled/unset until explicit Founder setup and Allow. Source
+Public @2 discovery/compose is available; admission remains unavailable; Coding defaults remain Disabled/unset until explicit Founder setup and Allow. Source
 completion does not retire then/fanout or authorize the founder-reserved pilot,
 setup/Allow, deployment/restart, live DB changes or thread notifications.
 
@@ -118,8 +168,7 @@ Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
 adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
 `workflow-sequential-start-context@1` wire shape and Start@1 composer stay
 unchanged, offering v2 only. A fresh public v3 pin still refuses with
-`sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
-closed pending separate authorization. V2 fresh-start behavior is unchanged.
+`sequential_release_pin_mismatch`. Public @2 discovery/compose is available through B1 above; admission remains unavailable. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
 admission, tasks, runs or Allow. Explicit Founder setup and separate admission now use the R2 unit (a) surface above.
 
@@ -554,8 +603,8 @@ No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 only positive closure permits its completion. S6b above supplies native cancellation delivery;
 S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
-S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
-Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
+S5. Public @2 admission/continuation remains unavailable; B1 adds read-only
+discovery/compose above. Coding defaults require explicit Founder Save/Allow. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
 
 ## S3: resolved assignments @2 (inert)
 
@@ -2714,7 +2763,7 @@ A2's existing registrar and A4/offline consumers share that manifest via
 `preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
 projection. S8b keeps Coding v3 in the separate generic registration catalog
 alongside v2; the public manifest and Start@1 composer remain v2 only, with
-public @2 start/composition closed pending separate authorization.
+public @2 discovery/compose available and admission unavailable through B1 above.
 Exact existing registration writes zero; mismatches refuse. There
 is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
@@ -2935,8 +2984,8 @@ the existing `workflow-sequential-control@2` command, and `workflow_wait` with
 `run_ids` listing known owned runs. Both accept optional `consume_notifications`
 (maximum 32 distinct delivered IDs), retaining S5's stored-page consumption default
 and existing receipt validation. A wait requires a consumed event or an
-outstanding run/ordinary dependency. Public composition remains Start@1; @2
-start is unmounted and control/wait are not advertised as agent capabilities.
+outstanding run/ordinary dependency. Public composition supports unchanged Start@1 and additive read-only @2 through B1;
+@2 admission is unavailable and control/wait are not advertised as agent capabilities.
 
 Database retains ordinary callback authentication, cancellation/recovery, exact
 replay and v2 attempt/omission behavior. Its single attached continuation seam
