@@ -10,6 +10,36 @@ import subprocess
 import sys
 
 
+def elf_kind(path: Path) -> int:
+    # Classify before accepting any GNU_STACK: unknown types must fail closed
+    # even if readelf happens to display an otherwise safe program header.
+    ehdr = struct.Struct('<16sHHIQQQIHHHHHH')
+    shdr = struct.Struct('<IIQQQQIIQQ')
+    data = path.read_bytes()
+    if len(data) < ehdr.size:
+        raise RuntimeError('unsupported ELF layout: ' + str(path))
+    header = ehdr.unpack_from(data)
+    ident, kind, machine, version = header[:4]
+    if (ident[:7] != b'\x7fELF\x02\x01\x01' or kind not in (1, 2, 3)
+            or machine not in (62, 183) or version != 1 or header[8] != ehdr.size):
+        raise RuntimeError('unsupported ELF layout: ' + str(path))
+    if kind == 1:  # ET_REL: linker input, never a loadable runtime image.
+        offset, size, count, names = header[6], *header[11:14]
+        if (header[4:6] != (0, 0) or header[9:11] != (0, 0)
+                or size != shdr.size or not 0 < count < 0xff00 or names >= count
+                or offset < ehdr.size or offset + count * size > len(data)):
+            raise RuntimeError('unsupported ELF layout: ' + str(path))
+        sections = [shdr.unpack_from(data, offset + i * size) for i in range(count)]
+        if any(sections[0]) or any(
+                section[1] != 8 and section[4] + section[5] > len(data)  # SHT_NOBITS has no bytes
+                for section in sections):
+            raise RuntimeError('unsupported ELF layout: ' + str(path))
+    elif (header[9] != 56 or not 0 < header[10] < 0xfffc
+          or header[5] < ehdr.size or header[5] + header[10] * 56 > len(data)):
+        raise RuntimeError('unsupported ELF layout: ' + str(path))
+    return kind
+
+
 def clear_execstack(path: Path) -> None:
     # PBS's BOLT ET_EXEC layout crashes patchelf --clear-execstack (0.18/0.19).
     # Append a mapped program-header table instead of relocating code/data.
@@ -74,6 +104,7 @@ def stack_headers(path: Path) -> list[str]:
 def check_tree(root: Path, *, fix: bool = False) -> None:
     root = root.resolve(strict=True)
     count = 0
+    relocatable = 0
     unsafe = []
     for path in sorted(root.rglob('*')):
         if path.is_symlink():
@@ -85,6 +116,10 @@ def check_tree(root: Path, *, fix: bool = False) -> None:
         with path.open('rb') as stream:
             if stream.read(4) != b'\x7fELF':
                 continue
+        if elf_kind(path) == 1:
+            relocatable += 1
+            print(f'NON-LOADABLE ET_REL: {path.relative_to(root)}', flush=True)
+            continue
         count += 1
         headers = stack_headers(path)
         if len(headers) == 1 and headers[0] and not set(headers[0]) & {'E', 'X'}:
@@ -101,8 +136,9 @@ def check_tree(root: Path, *, fix: bool = False) -> None:
     if unsafe:
         raise RuntimeError('unsafe GNU_STACK: ' + ', '.join(unsafe))
     if not count:
-        raise RuntimeError('no bundled ELF files found: ' + str(root))
-    print(f'PASS GNU_STACK: all {count} bundled ELFs have non-executable stack headers', flush=True)
+        raise RuntimeError('no bundled loadable ELF files found: ' + str(root))
+    print(f'PASS GNU_STACK: all {count} bundled loadable ELFs have non-executable stack headers; '
+          f'{relocatable} non-loadable ET_REL files', flush=True)
 
 
 THREAD = '''

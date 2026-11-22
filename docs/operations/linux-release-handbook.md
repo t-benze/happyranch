@@ -244,7 +244,12 @@ that toolchain's license and vendor notices. All are also copied to the .deb's
 
 After copying the interpreter and runtime wheels,
 `python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
-It reports each missing/executable `PT_GNU_STACK` and repairs it to a
+It classifies supported ELF64 little-endian x86_64/aarch64 layouts first and
+fails closed on unknown ELF types or malformed layouts. Valid `ET_REL` linker
+inputs without program headers (including PBS's aarch64 `config-3.12-*/python.o`)
+are reported as non-loadable and retained byte-for-byte; `PT_GNU_STACK` does not
+apply to them. Every `ET_EXEC`/`ET_DYN` still requires exactly one non-executable
+stack header. The checker reports each missing/executable `PT_GNU_STACK` and repairs it to a
 non-executable stack. Missing headers are added using an appended read-only
 program-header mapping; existing LOAD segments, code and data stay intact.
 This avoids patchelf's assertion failure on the pinned BOLT interpreter.
@@ -1505,8 +1510,9 @@ archive members/escaping links and existing outputs, and calls
 host or execute a foreign interpreter: `x86_64` maps to Debian `amd64`, and
 `aarch64` maps to `arm64`. The manual workflow retains its original two native
 matrix rows and uploads the .deb alongside its intermediate inputs.
-The .deb builder rejects any ELF in `python/` without exactly one non-executable stack
-header before packaging, including older unsafe tarballs; rebuild those through
+The .deb builder applies the same ELF classification and rejects every loadable
+ELF in `python/` without exactly one non-executable stack header before packaging,
+including older unsafe tarballs; rebuild those through
 `build-payload.sh`. This check never executes a foreign interpreter. The native
 payload build and installed-package smoke perform the actual MDWE thread test.
 The Headscale static Go binary outside `python/` is never scanned or repaired.
