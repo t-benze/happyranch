@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from gi.repository import Gio, GLib
 
@@ -242,10 +242,16 @@ class ConnectionCLITests(unittest.TestCase):
         import gi
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk
+        original_init_check = Gtk.init_check
+        initialize = Mock(return_value=(True, []))
         # GTK may default to wayland-0 even without explicit display variables.
+        # Restore the proxy dict directly: patch.object teardown deletes the
+        # underlying GI callable too, leaving stale PyGObject ResultTuple types.
         with patch.dict(native.os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}), \
-                patch.object(Gtk, "init_check", return_value=(True, [])):
+                patch.dict(Gtk.__dict__, {"init_check": initialize}):
             self.assertFalse(native.desktop_available())
+            initialize.assert_not_called()
+        self.assertIs(Gtk.init_check, original_init_check)
         with patch.object(native, "Host", side_effect=RuntimeError("unexpected host construction")) as host:
             for action in ("approve-device", "reject-device", "revoke-device", *LIFECYCLE):
                 with self.subTest(action=action):
