@@ -35,6 +35,8 @@ import type { WorkingHoursSettings } from '@/lib/api/types';
 import { ErrorPanel } from './ErrorPanel';
 import { extractServerErrors } from './extractServerErrors';
 import { eligibleSet } from './eligibleSet';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 interface Props {
   open: boolean;
@@ -101,7 +103,12 @@ export function EligibilityEditorDialog({
   // Receipt admission counts as saving, like the request itself.
   const saving = mutation.isPending || owner.busy;
 
+  // S8-2b: Work Hours writes go through PUT …/settings/org (configuration):
+  // read-only on a remote Host.
+  const readOnlyHost = useRemoteReadOnly(REMOTE_OPS.orgSettings);
+
   async function doSave() {
+    if (readOnlyHost !== null) return;
     setErrors([]);
     const result = await owner.track(() =>
       mutation.mutateAsync({
@@ -115,7 +122,7 @@ export function EligibilityEditorDialog({
       // newer draft typed while the save was pending (via Back) stays open and
       // dirty against the saved value, which is now the baseline.
       if (result.current) onOpenChange(false);
-    } else if (result.outcome === 'failed') {
+    } else if (result.outcome === 'failed' && !isRemoteReadOnlyError(result.error)) {
       setErrors(extractServerErrors(result.error));
     }
   }
@@ -129,6 +136,7 @@ export function EligibilityEditorDialog({
         </DialogHeader>
 
         <OwnerSaveNotice owner={owner} className="" />
+        {readOnlyHost && owner.remoteRefusal === null && <RemoteReadOnlyNote host={readOnlyHost} className="" />}
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
@@ -200,7 +208,7 @@ export function EligibilityEditorDialog({
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 {t('workHours.dialog.back')}
               </Button>
-              <Button onClick={() => void doSave()} disabled={saving}>
+              <Button onClick={() => void doSave()} disabled={saving || readOnlyHost !== null}>
                 {saving ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
@@ -209,7 +217,7 @@ export function EligibilityEditorDialog({
               <Button variant="ghost" onClick={() => requestOpenChange(false)}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={() => setConfirming(true)} disabled={saving}>
+              <Button onClick={() => setConfirming(true)} disabled={saving || readOnlyHost !== null}>
                 {t('workHours.dialog.reviewImpact')}
               </Button>
             </>

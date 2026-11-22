@@ -22,6 +22,7 @@
  */
 import { useParams } from 'react-router-dom';
 import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteHost, useRemoteReadOnly } from '@/lib/remotePolicy';
 import { useState } from 'react';
 import { CheckCircle2, RefreshCw, Terminal, Trash2, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
@@ -139,8 +140,13 @@ function ProfileRow({
 
   // Receipt admission counts as removing, like the request itself.
   const removing = remove.isPending || owner.busy;
+  // S8-2b: on a remote Host, removal (policy config) and reconnect (custom
+  // CLI registration/commit/retry/forget) are read-only.
+  const removeReadOnly = useRemoteReadOnly(REMOTE_OPS.removeProfile) !== null;
+  const reconnectReadOnly = useRemoteHost() !== null;
 
   const onConfirmRemove = async (): Promise<void> => {
+    if (removeReadOnly) return;
     setError(null);
     const result = await owner.track(async () => {
       try {
@@ -160,7 +166,7 @@ function ProfileRow({
     if (!result.ok) {
       // Any other failure surfaces inline, no opaque error; an unknown result
       // is shown by the owner notice.
-      if (result.outcome === 'failed') setError(errMessage(result.error, 'settings.executors.profiles.removeFailed'));
+      if (result.outcome === 'failed' && !isRemoteReadOnlyError(result.error)) setError(errMessage(result.error, 'settings.executors.profiles.removeFailed'));
       return;
     }
     setConfirming(false);
@@ -221,7 +227,7 @@ function ProfileRow({
               type="button"
               variant="destructive"
               onClick={() => void onConfirmRemove()}
-              disabled={removing}
+              disabled={removing || removeReadOnly}
               data-testid={`profile-confirm-remove-${profile.name}`}
             >
               {removing
@@ -247,6 +253,7 @@ function ProfileRow({
                 type="button"
                 variant="secondary"
                 onClick={() => onReconnect(profile.name)}
+                disabled={reconnectReadOnly}
                 data-testid={`profile-reconnect-${profile.name}`}
               >
                 <RefreshCw aria-hidden="true" size={14} />
@@ -257,6 +264,7 @@ function ProfileRow({
               type="button"
               variant="secondary"
               onClick={() => setConfirming(true)}
+              disabled={removeReadOnly}
               data-testid={`profile-remove-${profile.name}`}
             >
               <Trash2 aria-hidden="true" size={14} />

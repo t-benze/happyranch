@@ -6,10 +6,16 @@
  * - unknown → the unknown copy and Check result (or the named unavailable
  *             reason when no reconciliation can run here)
  * - pending → "Saving {page} on {computer} · {org}…"
+ * - refused by native `403 remote_read_only` (S8-2b) → the remote read-only
+ *             copy ("Change this on {Host}"; changes kept, not sent), never
+ *             C3; a draftless request (removal, retire/restore, a toggle)
+ *             says nothing was sent.
  * Connection-attempt errors never use this notice.
  */
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
+import { useRemoteHost } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ownerContextParams } from './ownerCopy';
 import type { ConfigOwner } from './useConfigOwner';
 
@@ -24,6 +30,8 @@ export function OwnerSaveNotice({
   className?: string;
 }): JSX.Element | null {
   const { t } = useTranslation();
+  // The refusal may arrive before native's app.stateChanged names the Host.
+  const liveHost = useRemoteHost();
   const record = owner.record;
   if (!record) return null;
   const params = ownerContextParams(record, t);
@@ -32,6 +40,15 @@ export function OwnerSaveNotice({
       <p role="status" data-owner-notice="pending" className={`text-text-secondary text-sm break-words ${className}`}>
         {t('owners.save.pending', params)}
       </p>
+    );
+  }
+  if (owner.remoteRefusal !== null) {
+    return (
+      <RemoteReadOnlyNote
+        host={liveHost ?? (owner.remoteRefusal || t('remotePolicy.theHost'))}
+        variant={owner.remoteRefusalDraftless ? 'refusedAction' : 'refused'}
+        className={className}
+      />
     );
   }
   if (record.status === 'failed') {

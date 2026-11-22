@@ -24,6 +24,8 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
 import { usePromptBaseUrl } from '@/lib/native/hooks';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import {
   BUILTINS,
   buildConnectPrompt,
@@ -825,7 +827,10 @@ export function AdapterBindFailedBody({
 }): JSX.Element {
   const { t, render } = useTranslation();
   const [confirmingClear, setConfirmingClear] = useState(false);
-  const clearErrorMessage = clearError instanceof ApiError
+  // S8-2b: custom CLI retry/forget are host-wide configuration; on a remote
+  // Host they are unavailable (native refuses them as remote_read_only).
+  const remoteHost = useRemoteReadOnly(REMOTE_OPS.customCliRetry, REMOTE_OPS.customCliForget);
+  const clearErrorMessage = isRemoteReadOnlyError(clearError) ? null : clearError instanceof ApiError
     ? (typeof clearError.detail === 'string' ? clearError.detail : clearError.message)
     : clearError instanceof Error ? clearError.message : null;
   const categoryMessageKey = {
@@ -858,7 +863,7 @@ export function AdapterBindFailedBody({
           </p>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button onClick={onRetry} disabled={isClearing}>
+          <Button onClick={onRetry} disabled={isClearing || remoteHost !== null}>
             <RefreshCw aria-hidden="true" size={15} />
             {t('onboarding.connect.validate')}
           </Button>
@@ -868,7 +873,7 @@ export function AdapterBindFailedBody({
           </Button>
           {confirmingClear ? (
             <>
-              <Button variant="destructive" onClick={onClear} disabled={isClearing}>
+              <Button variant="destructive" onClick={onClear} disabled={isClearing || remoteHost !== null}>
                 {isClearing
                   ? t('onboarding.connect.clearing')
                   : t('onboarding.connect.clear.confirm')}
@@ -878,7 +883,7 @@ export function AdapterBindFailedBody({
               </Button>
             </>
           ) : (
-            <Button variant="secondary" onClick={() => setConfirmingClear(true)}>
+            <Button variant="secondary" onClick={() => setConfirmingClear(true)} disabled={remoteHost !== null}>
               {t('onboarding.connect.clear.action')}
             </Button>
           )}
@@ -886,6 +891,7 @@ export function AdapterBindFailedBody({
         <p className="text-text-muted mt-3 text-xs">
           {t('onboarding.connect.clear.note')}
         </p>
+        {remoteHost && <RemoteReadOnlyNote host={remoteHost} variant="hostWide" className="mt-3" />}
         {clearErrorMessage && <p className="text-feedback-danger mt-2 text-sm" role="alert">{clearErrorMessage}</p>}
       </div>
     </div>

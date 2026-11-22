@@ -48,6 +48,8 @@ import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { useNativeRecovery } from '@/hooks/nativeRecovery';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
+import { useRemoteHost } from '@/lib/remotePolicy';
+import { RemoteUnavailablePage } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
@@ -276,8 +278,22 @@ export function SettingsPane({ section }: { section: SettingsSection }): JSX.Ele
   const settingsQuery = useSettings();
   const recovery = useNativeRecovery();
   const { t } = useTranslation();
+  const remoteHost = useRemoteHost();
 
   if (section === 'preferences') return <PreferencesPanel />;
+  // S8-2b (v2.4 §4): the remote Host shares no Capacity/Coding reads with a
+  // connected app, so these pages are named unavailable, never fake values.
+  if (remoteHost && (section === 'coding' || section === 'daemon-capacity')) {
+    return section === 'coding' ? (
+      <RemoteUnavailablePage host={remoteHost} page={t('settings.nav.coding')} />
+    ) : (
+      <RemoteUnavailablePage
+        host={remoteHost}
+        page={t('settings.nav.daemonCapacity')}
+        scope={t('remotePolicy.capacityScope', { host: remoteHost })}
+      />
+    );
+  }
   if (section === 'coding') {
     return <NativeRecoveryFence><CodingPanel key={slug} /></NativeRecoveryFence>;
   }

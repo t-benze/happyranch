@@ -221,6 +221,7 @@ cp "$WORK/source/packaging/linux/desktop/client_session.py" \
     "$WORK/source/packaging/linux/desktop/client_ui.py" \
     "$WORK/source/runtime/remote_access/invite_v2.py" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/protocol/native-connection-bridge.v1.json" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/protocol/remote-client-config-policy.v1.json" "$PAYLOAD/share/happyranch/desktop/"
 cp "$WORK/source/packaging/linux/desktop/happyranch.desktop.in" "$PAYLOAD/share/applications/"
 # Reuse the existing clay brand artwork; no generated/new icon design.
 for size in 16 32 64 128 256 512 1024; do

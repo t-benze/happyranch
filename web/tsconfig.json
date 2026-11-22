@@ -24,7 +24,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@happyranch/feature-flags": ["config/features.production.json"]
+      "@happyranch/feature-flags": ["config/features.production.json"],
+      "@happyranch/remote-client-config-policy": ["../protocol/remote-client-config-policy.v1.json"]
     }
   },
   "include": ["src", "vite.config.ts", "connection/src", "connection/vite.config.ts"]

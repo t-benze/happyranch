@@ -28,6 +28,8 @@ export type FeatureSelection = FeatureProfile | 'preview';
 export type FeatureFlags = Record<string, boolean>;
 
 export const FEATURE_FLAGS_MODULE = '@happyranch/feature-flags';
+export const REMOTE_POLICY_MODULE = '@happyranch/remote-client-config-policy';
+const REMOTE_POLICY_FILE = path.resolve(__dirname, '../protocol/remote-client-config-policy.v1.json');
 export const FEATURE_PROFILE_MARKER = Symbol.for('happyranch.featureProfile');
 const FEATURE_LOCAL_LIFECYCLE = 'build:local';
 const FEATURE_COMPAT_ENV = 'VITE_ENABLE_KB_COMPOSE';
@@ -390,12 +392,17 @@ export default defineConfig(async ({ command, mode, isPreview }) => {
     console.info(resolved.logLine);
     featureAlias = { [FEATURE_FLAGS_MODULE]: resolved.aliasTarget };
   }
+  // THR-387 S8-2b: the web imports the SAME authoritative remote-client
+  // configuration policy the Linux app ships (`lib/remotePolicy`), not a copy.
+  featureAlias = { ...featureAlias, [REMOTE_POLICY_MODULE]: REMOTE_POLICY_FILE };
   return {
     plugins: [i18nEvidenceInstrumentation(), react(), (await import('@tailwindcss/vite')).default(), resourceManifest()],
     resolve: {
       alias: { ...featureAlias, '@': path.resolve(__dirname, 'src') },
     },
     server: {
+      // The default allow list is this package; add the one policy file.
+      fs: { allow: [__dirname, REMOTE_POLICY_FILE] },
       port: 5173,
       strictPort: true,
       proxy: {

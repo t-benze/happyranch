@@ -36,6 +36,8 @@ import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
+import { useRemoteHost } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
 
@@ -60,6 +62,10 @@ export function ExecutorsSection(): JSX.Element {
   const [connecting, setConnecting] = useState<string | null>(null);
   const connectedSubtitle = (via: ConnectMode): string => t(connectedSubtitleKey(via));
   const qc = useQueryClient();
+  // S8-2b: on a remote Host the lists stay readable; register, remove and
+  // Connect a CLI (registration + custom CLI commit/retry/forget) are
+  // read-only. Validate stays available.
+  const remoteHost = useRemoteHost();
 
   /** Collapse back to the list. Invalidate BOTH management queries so a connect
    *  (which registers via the runtime route, bypassing either mutation's own
@@ -76,6 +82,7 @@ export function ExecutorsSection(): JSX.Element {
 
   return (
     <section className="space-y-8" data-testid="executors-section">
+      {remoteHost && <RemoteReadOnlyNote host={remoteHost} className="" />}
       {connecting !== null ? (
         <div data-testid="executors-connect">
         <ConnectFlow
@@ -127,6 +134,7 @@ export function ExecutorsSection(): JSX.Element {
             type="button"
             variant="secondary"
             onClick={() => setConnecting('')}
+            disabled={remoteHost !== null}
             data-testid="connect-a-cli"
           >
             <Plug aria-hidden="true" size={16} />

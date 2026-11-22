@@ -10,6 +10,8 @@ import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useTranslation } from '@/hooks/i18n';
 import { classifySkillError, renderSkillErrorInContext } from './strings';
 import { skillMdHash } from './skillMdHash';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 
 // Create-error copy goes through the shared Skills diagnostic boundary: the
 // seq43 Option A `invalid_slug` refusal and the `slug_permanently_reserved`
@@ -52,8 +54,11 @@ export function CustomSkillCreatePage(): JSX.Element {
       return matches ? 'saved' : 'unknown';
     },
   });
+  // S8-2b: creating a custom skill is configuration. On a remote Host this
+  // page (incl. deep links) stays visible, read-only: "Change this on {Host}".
+  const readOnlyHost = useRemoteReadOnly(REMOTE_OPS.createCustomSkill);
   const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setError(null);
+    e.preventDefault(); if (readOnlyHost !== null) return; setError(null);
     // THR-262: a trimmed-blank optional description is omitted from the
     // request entirely, so the server derives the catalog description from
     // the SKILL.md frontmatter. A nonblank value is sent as supplied and the
@@ -67,11 +72,11 @@ export function CustomSkillCreatePage(): JSX.Element {
     sent.current = { body, hash: skillMdHash(skillMd) };
     const result = await owner.track(() => create.mutateAsync(body), undefined, ticket);
     if (result.ok) navigate(`/orgs/${slug ?? ''}/skills/custom/${encodeURIComponent(result.value.skill_id)}`);
-    else setError(result.error);
+    else if (!isRemoteReadOnlyError(result.error)) setError(result.error);
   };
   // Receipt admission counts as pending, like the request itself.
   const pending = create.isPending || owner.busy;
   const back = <Link to={`/orgs/${slug ?? ''}/skills/custom`} className="text-text-secondary hover:text-text-primary text-body-sm mb-4 inline-flex items-center gap-1.5"><ArrowLeft size={15} />{t('skills.backToCustom')}</Link>;
   if (isCustomSkillForbidden(error)) return <div className="p-8">{back}<EmptyState icon={<Shield size={28} />} title={t('skills.founderRequired.title')} body={t('skills.founderRequired.body')} /></div>;
-  return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-12 md:py-8">{back}<h1 className="text-h2 text-text-primary mb-1">{t('skills.create.title')}</h1><p className="text-text-secondary text-body-sm mb-6">{t('skills.create.description')}</p><form onSubmit={submit} className="border-border-default bg-surface-raised space-y-4 rounded-md border p-6"><label className="block text-sm font-medium">{t('skills.create.name')}<Input value={name} onChange={(e) => setName(e.target.value)} disabled={pending} required /></label><label className="block text-sm font-medium">{t('skills.create.slug')}<Input value={skillSlug} onChange={(e) => setSkillSlug(e.target.value)} disabled={pending} required /></label><label className="block text-sm font-medium">{t('skills.create.descriptionLabel')}<Input value={description} onChange={(e) => setDescription(e.target.value)} disabled={pending} /><span className="text-text-secondary block text-xs font-normal">{t('skills.create.descriptionHint')}</span></label><label className="block text-sm font-medium">SKILL.md<Textarea value={skillMd} onChange={(e) => setSkillMd(e.target.value)} disabled={pending} required /></label><OwnerSaveNotice owner={owner} className="" />{Boolean(error) && owner.record?.status !== 'unknown' && <p role="alert" className="text-attention-text flex items-center gap-1.5 text-sm"><TriangleAlert size={15} />{renderSkillErrorInContext(classifySkillError(error, 'skills.create.error.fallback'), 'skills.create.error.fallback', t)}</p>}<Button type="submit" disabled={pending || owner.saveRefused}>{t(pending ? 'skills.create.submitting' : 'skills.create.submit')}</Button></form></div></div>;
+  return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-12 md:py-8">{back}<h1 className="text-h2 text-text-primary mb-1">{t('skills.create.title')}</h1><p className="text-text-secondary text-body-sm mb-6">{t('skills.create.description')}</p>{readOnlyHost && <RemoteReadOnlyNote host={readOnlyHost} />}<form onSubmit={submit} className="border-border-default bg-surface-raised rounded-md border p-6"><fieldset disabled={readOnlyHost !== null} className="m-0 min-w-0 space-y-4 border-0 p-0"><label className="block text-sm font-medium">{t('skills.create.name')}<Input value={name} onChange={(e) => setName(e.target.value)} disabled={pending} required /></label><label className="block text-sm font-medium">{t('skills.create.slug')}<Input value={skillSlug} onChange={(e) => setSkillSlug(e.target.value)} disabled={pending} required /></label><label className="block text-sm font-medium">{t('skills.create.descriptionLabel')}<Input value={description} onChange={(e) => setDescription(e.target.value)} disabled={pending} /><span className="text-text-secondary block text-xs font-normal">{t('skills.create.descriptionHint')}</span></label><label className="block text-sm font-medium">SKILL.md<Textarea value={skillMd} onChange={(e) => setSkillMd(e.target.value)} disabled={pending} required /></label><OwnerSaveNotice owner={owner} className="" />{Boolean(error) && owner.record?.status !== 'unknown' && <p role="alert" className="text-attention-text flex items-center gap-1.5 text-sm"><TriangleAlert size={15} />{renderSkillErrorInContext(classifySkillError(error, 'skills.create.error.fallback'), 'skills.create.error.fallback', t)}</p>}<Button type="submit" disabled={pending || owner.saveRefused}>{t(pending ? 'skills.create.submitting' : 'skills.create.submit')}</Button></fieldset></form></div></div>;
 }

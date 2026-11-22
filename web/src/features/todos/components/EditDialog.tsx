@@ -29,6 +29,7 @@ import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
 import type { MessageKey } from '@/lib/i18n'
 import { useTranslation } from '@/hooks/i18n'
 import { renderTodoError, type TodoErrorView } from '../strings'
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote'
 import { ORDINAL_KEYS } from '../recurrence'
 import {
   nextWeeklyOccurrence,
@@ -87,6 +88,11 @@ interface EditDialogProps {
   validationError?: TodoErrorView | null
   conflict?: boolean
   loading?: boolean
+  /**
+   * S8-2b: native refused the edit as `403 remote_read_only` (schedule PATCH
+   * is configuration on a remote Host): the Host name; the form keeps the draft.
+   */
+  remoteRefusedHost?: string | null
 }
 
 export function EditDialog({
@@ -97,6 +103,7 @@ export function EditDialog({
   validationError,
   conflict = false,
   loading = false,
+  remoteRefusedHost = null,
 }: EditDialogProps): JSX.Element {
   const { t, locale } = useTranslation()
   const isWeekly = schedule.kind === 'weekly'
@@ -427,6 +434,9 @@ export function EditDialog({
             </div>
           )}
 
+          {remoteRefusedHost !== null && (
+            <RemoteReadOnlyNote host={remoteRefusedHost} variant="refused" className="" />
+          )}
           {displayedError && (
             <div className="border-tier-red bg-tier-red-tint text-tier-red rounded-sm border px-3 py-2 text-sm">
               {renderTodoError(displayedError, t)}
@@ -442,7 +452,7 @@ export function EditDialog({
           >
             {t('todos.dialog.dismiss')}
           </Button>
-          <Button onClick={handleSave} disabled={loading}>
+          <Button onClick={handleSave} disabled={loading || remoteRefusedHost !== null}>
             {loading ? t('todos.edit.saving') : t('todos.edit.save')}
           </Button>
         </DialogFooter>

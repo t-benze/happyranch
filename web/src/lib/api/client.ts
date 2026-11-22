@@ -129,6 +129,21 @@ export class ResultUnknownError extends ApiError {
   }
 }
 
+/**
+ * Native's exact pre-forward `403 {"detail":{"code":"remote_read_only"}}`
+ * (THR-387 S8-2b): a configuration change on a remote Host was refused before
+ * any byte reached the Host. It keeps this status/code even when native's
+ * `app.stateChanged` (the commit to that remote target) lands before the
+ * response headers or during its body: the change was provably not sent, so
+ * it is never a Result unknown. No notice or recovery is published; the
+ * caller shows the read-only refusal and keeps its draft. Never retried.
+ */
+export class RemoteReadOnlyError extends ApiError {
+  constructor() {
+    super(403, 'remote_read_only', { code: 'remote_read_only' });
+  }
+}
+
 /** Native per-view cap / lock contention (429 too_many_requests); not host busy. */
 export class ThrottledError extends ApiError {
   constructor() {
@@ -164,8 +179,23 @@ function isPreForwardRefusal(status: number, code: string | null): boolean {
   );
 }
 
+/** Exactly native's pre-forward remote read-only refusal (S8-2b), by status and body. */
+function isRemoteReadOnlyRefusal(status: number, code: string | null): boolean {
+  return status === 403 && code === 'remote_read_only';
+}
+
+/** A change's body text that is exactly native's remote read-only refusal. */
+function remoteReadOnlyText(status: number, text: string): boolean {
+  if (status !== 403) return false;
+  try {
+    return isRemoteReadOnlyRefusal(status, nativeCodeOf(JSON.parse(text)));
+  } catch {
+    return false;
+  }
+}
+
 async function peekNativeCode(res: Response): Promise<string | null> {
-  if (res.status !== 409 && res.status !== 429 && res.status !== 499 && res.status !== 503) return null;
+  if (res.status !== 403 && res.status !== 409 && res.status !== 429 && res.status !== 499 && res.status !== 503) return null;
   try {
     return nativeCodeOf(JSON.parse(await res.clone().text()));
   } catch {
@@ -289,6 +319,8 @@ export interface Fenced {
  *   generation is unchanged (a changed generation is refetched by its new
  *   owners); others -> NotSentError, never retried.
  * - 499 cancelled on a non-GET -> ResultUnknownError.
+ * - Exact 403 remote_read_only on a non-GET -> RemoteReadOnlyError, even when
+ *   the generation changed before its headers or body (S8-2b; never unknown).
  * Everything else is returned for the caller's existing error handling.
  */
 export async function schemeFetch(url: string, init: RequestInit, pinned?: string): Promise<Fenced> {
@@ -312,7 +344,15 @@ export async function schemeFetch(url: string, init: RequestInit, pinned?: strin
       if (!read && isNativeTarget() && !init.signal?.aborted) throw staleOutcome(read);
       throw error;
     }
-    if (isStaleTarget(captured)) throw staleOutcome(read);
+    if (isStaleTarget(captured)) {
+      // S8-2b: native may commit the remote target (app.stateChanged) before
+      // its pre-forward 403 remote_read_only reaches the page. Only that exact
+      // status and body proves nothing was sent; anything else stays unknown.
+      if (!read && res.status === 403 && isRemoteReadOnlyRefusal(res.status, await peekNativeCode(res))) {
+        throw new RemoteReadOnlyError();
+      }
+      throw staleOutcome(read);
+    }
     if (res.ok) {
       noteForwardedSuccess(captured);
       return { res, captured };
@@ -323,6 +363,7 @@ export async function schemeFetch(url: string, init: RequestInit, pinned?: strin
     // proves native refused before forwarding is Not sent, else unknown.
     if (isStaleTarget(captured)) {
       if (!read && isPreForwardRefusal(res.status, code)) throw notSent();
+      if (!read && isRemoteReadOnlyRefusal(res.status, code)) throw new RemoteReadOnlyError();
       throw staleOutcome(read);
     }
     const transient = (res.status === 429 && code === 'too_many_requests') || (res.status === 503 && code === 'busy');
@@ -370,7 +411,11 @@ export async function fencedText(fenced: Fenced, read: boolean): Promise<string>
     if (!read && isNativeTarget()) throw staleOutcome(read);
     throw error;
   }
-  if (isStaleTarget(fenced.captured)) throw staleOutcome(read);
+  if (isStaleTarget(fenced.captured)) {
+    // S8-2b: an exact remote read-only refusal body is still Not sent.
+    if (!read && remoteReadOnlyText(fenced.res.status, text)) throw new RemoteReadOnlyError();
+    throw staleOutcome(read);
+  }
   return text;
 }
 

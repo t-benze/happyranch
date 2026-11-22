@@ -1209,3 +1209,75 @@ test('R3-2 control: explicit-token save keeps single send on 401 (no re-bootstra
   ]);
   assert.equal(sessionStorage.getItem('happyranch.token'), 'tok-1', 'explicit-token path does not clear the bearer');
 });
+
+// THR-387 S8-2b (review F1) — native's exact pre-forward
+// `403 {"detail":{"code":"remote_read_only"}}` survives generation fencing
+// when app.stateChanged (native committing the remote target) lands before
+// the response headers or during the body. It is the read-only refusal (not
+// sent, draft kept), never 499 cancelled / Result unknown, and never replayed.
+// Every other answer across the same orderings stays Result unknown.
+const REMOTE_STATE = () => state('g2', {
+  target: { kind: 'remote', id: 'saved-studio', name: 'Studio Host' },
+  local: { supported: true, mode: 'service', running: 'stopped', prompt_base_url: null },
+});
+const READ_ONLY_BODY = { detail: { code: 'remote_read_only' } };
+
+/** One mutation through request(); the status event fires at `when`. */
+async function refusalAcrossSwitch(when, body, method = 'PUT') {
+  const bridge = desktop(state('g1'));
+  await target.captureTarget();
+  if (when === 'before-headers') {
+    queue.push(() => {
+      bridge.emit(REMOTE_STATE());
+      return json(403, body)();
+    });
+    return request('/orgs/demo/settings/org', { method, body: method === 'GET' ? undefined : { session_timeout: 5400 } }).catch((e) => e);
+  }
+  const deferred = deferredBody(403);
+  queue.push(deferred.respond);
+  const pending = request('/orgs/demo/settings/org', { method, body: method === 'GET' ? undefined : { session_timeout: 5400 } }).catch((e) => e);
+  await tick(10);
+  bridge.emit(REMOTE_STATE());
+  deferred.deliver(body);
+  return pending;
+}
+
+for (const when of ['before-headers', 'during-body']) {
+  test(`S8-2b F1: app.stateChanged ${when} of an exact 403 remote_read_only -> read-only refusal (not sent), single send`, async () => {
+    const { classifySaveError } = await import('../src/lib/owners/ownerRegistry.ts');
+    const err = await refusalAcrossSwitch(when, READ_ONLY_BODY);
+    assert.ok(err instanceof ApiError, String(err));
+    assert.ok(!(err instanceof ResultUnknownError), `must not be Result unknown: ${err?.status} ${err?.code}`);
+    assert.equal(err.status, 403);
+    assert.equal(err.code, 'remote_read_only');
+    assert.equal(classifySaveError(err), 'failed', 'a confirmed refusal keeps the draft (never unknown / Check result)');
+    assert.equal(notices.getNativeNotice(), null, 'no result_unknown (or other) notice');
+    assert.equal(recovery.getNativeRecoveryState(), null, 'no recovery state');
+    assert.equal(calls.length, 1, 'never replayed');
+  });
+
+  test(`S8-2b F1 control: app.stateChanged ${when} of any other 403 / near-miss body -> Result unknown, single send`, async () => {
+    for (const body of [
+      { detail: { code: 'forbidden' } },
+      { detail: { code: 'remote_read_only', reason: 'x' } },
+      { detail: 'remote_read_only' },
+      { detail: { code: 'remote_read_only' }, extra: 1 },
+    ]) {
+      calls = [];
+      notices.__resetNativeNoticeForTests();
+      const err = await refusalAcrossSwitch(when, body);
+      assert.ok(err instanceof ResultUnknownError, `${JSON.stringify(body)} -> ${String(err)}`);
+      assert.equal(notices.getNativeNotice(), 'result_unknown');
+      assert.equal(calls.length, 1);
+    }
+  });
+}
+
+test('S8-2b F1 control: a GET answered 403 remote_read_only after a switch is still dropped as stale', async () => {
+  for (const when of ['before-headers', 'during-body']) {
+    calls = [];
+    const err = await refusalAcrossSwitch(when, READ_ONLY_BODY, 'GET');
+    assert.ok(err instanceof StaleTargetError, `${when}: ${String(err)}`);
+    assert.equal(calls.length, 1);
+  }
+});

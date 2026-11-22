@@ -18,6 +18,7 @@
  */
 import { useParams } from 'react-router-dom';
 import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { isRemoteReadOnlyError, useRemoteHost } from '@/lib/remotePolicy';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronRight, Terminal, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
@@ -125,6 +126,9 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
   });
   // Receipt admission counts as registering, like the request itself.
   const registering = register.isPending || owner.busy;
+  // S8-2b: binary registration is host configuration; on a remote Host it is
+  // read-only (Validate, a read-like check, stays available).
+  const readOnlyHost = useRemoteHost();
   const busy = validate.isPending || registering;
 
   const onValidate = async () => {
@@ -139,6 +143,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
   };
 
   const onRegister = async () => {
+    if (readOnlyHost !== null) return;
     setRegisterError(null);
     setCheck(null);
     const sent = path;
@@ -146,7 +151,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
     if (result.ok) {
       // Clear only the path that was sent; a newer typed path stays unsaved.
       setPath((current) => (current === sent ? '' : current));
-    } else if (result.outcome === 'failed') {
+    } else if (result.outcome === 'failed' && !isRemoteReadOnlyError(result.error)) {
       // The register route validates server-side and returns 422 with a
       // human-readable reason (not absolute / missing / not executable).
       setRegisterError(errMessage(result.error, 'settings.executors.binaries.registerFailed'));
@@ -237,7 +242,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
           <Button
             type="button"
             onClick={onRegister}
-            disabled={!trimmed || busy}
+            disabled={!trimmed || busy || readOnlyHost !== null}
           >
             {registering
               ? t('settings.executors.binaries.registering')

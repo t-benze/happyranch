@@ -1,3 +1,5 @@
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
@@ -111,6 +113,7 @@ export function SkillAssignmentPanel({
     draft: queue,
     onDiscard: () => setQueue({}),
   });
+  const remoteReadOnlyHost = useRemoteReadOnly(REMOTE_OPS.assignSkill);
 
   const section = (body: ReactNode) => (
     <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
@@ -188,6 +191,8 @@ export function SkillAssignmentPanel({
   const pendingCount = changeCount(assignments, queue);
   // Receipt admission counts as applying, like the requests themselves.
   const applying = assign.isPending || owner.busy;
+  // S8-2b: assignment is agent configuration; read-only on a remote Host.
+  const readOnlyHost = remoteReadOnlyHost;
 
   function toggle(a: AgentAssignmentFacts): void {
     setApplied(false);
@@ -210,7 +215,7 @@ export function SkillAssignmentPanel({
       setQueue({});
       setReviewOpen(false);
       setApplied(true);
-    } else if (!result.refused) {
+    } else if (!result.refused && !isRemoteReadOnlyError(result.error)) {
       // A refused apply sent nothing (a prior result is still unknown; the
       // owner notice offers its reconciliation).
       setApplyError(classifySkillError(result.error, 'skills.assign.applyError'));
@@ -219,6 +224,7 @@ export function SkillAssignmentPanel({
 
   return section(
     <>
+      {readOnlyHost && <RemoteReadOnlyNote host={readOnlyHost} className="mt-4" />}
       <ul className="mt-4 flex flex-col gap-2.5">
         {assignments.map((a) => {
           const p = previewProvenance(a, queue);
@@ -260,7 +266,7 @@ export function SkillAssignmentPanel({
                 <button
                   type="button"
                   onClick={() => toggle(a)}
-                  disabled={applying}
+                  disabled={applying || readOnlyHost !== null}
                   aria-label={t('skills.assign.toggleAria', { action: t(label), agent: identityPresentation.label(a.agent) })}
                   className="border-border-default bg-surface-subtle text-text-primary hover:bg-surface-sunken text-body-sm inline-flex items-center rounded-md border px-2.5 py-1 font-semibold disabled:opacity-60"
                 >
@@ -342,7 +348,7 @@ export function SkillAssignmentPanel({
                 <button
                   type="button"
                   onClick={apply}
-                  disabled={applying}
+                  disabled={applying || readOnlyHost !== null}
                   className="bg-accent-default text-text-inverse hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
                 >
                   {applying

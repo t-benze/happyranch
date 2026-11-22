@@ -1,4 +1,6 @@
 import { OwnerSaveNotice, useConfigOwner } from '@/shared/owners';
+import { REMOTE_OPS, isRemoteReadOnlyError, useRemoteReadOnly } from '@/lib/remotePolicy';
+import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { classifySaveError } from '@/lib/owners/ownerRegistry';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { useIdentityPresentation } from '@/hooks/identities';
@@ -115,6 +117,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
 
   const setExecutor = useSetAgentExecutor();
   const setModel = useSetAgentModel();
+  // S8-2b: model/effort is agent configuration (PUT …/model); read-only on a
+  // remote Host. Other agent controls keep their existing behavior.
+  const modelReadOnlyHost = useRemoteReadOnly(REMOTE_OPS.agentModel);
   const manageRepo = useManageAgentRepo();
   const executorOptions = useExecutorOptions();
 
@@ -407,7 +412,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       const outcome = rawErrors.some((err) => classifySaveError(err) === 'unknown')
         ? 'unknown'
         : rawErrors.length > 0 ? 'failed' : 'saved';
-      owner.settle(ticket, outcome);
+      owner.settle(ticket, outcome, rawErrors.find(isRemoteReadOnlyError));
       saveInFlight.current = false;
       setSaving(false);
     }
@@ -494,6 +499,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
         ) && policyAgent && (
           <TeamEscalationPolicyEntryCard agent={policyAgent} />
         )}
+        {/* S8-2b: a CLI change also resets the model, so both are read-only
+            on a remote Host. */}
+        {modelReadOnlyHost && <RemoteReadOnlyNote host={modelReadOnlyHost} className="" />}
         {/* Executor — live-derived dropdown (same source as AddAgentDialog) */}
         <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
@@ -508,7 +516,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           ) : (
             <select
               value={displayExecutor}
-              disabled={saving || !agentReady || executorOptions.state !== 'ready'}
+              disabled={saving || !agentReady || executorOptions.state !== 'ready' || modelReadOnlyHost !== null}
               onChange={(e) => onExecutorChange(e.target.value)}
               className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-sm border p-2 text-sm"
               aria-label={t('agents.executor.label')}
@@ -579,7 +587,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           <input
             type="text"
             value={displayModel}
-            disabled={saving || !selectionReady}
+            disabled={saving || !selectionReady || modelReadOnlyHost !== null}
             onChange={(e) => onModelChange(e.target.value)}
             placeholder={displayExecutor !== '—' ? t('agents.detail.modelDefault', { executor: displayExecutor }) : t('agents.detail.modelUnset')}
             className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
@@ -597,7 +605,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           <input id="agent-reasoning-effort" type="text" value={displayEffort}
             placeholder={t('agents.detail.effortDefault')}
             aria-describedby="agent-reasoning-effort-help"
-            disabled={saving || !effortSupported}
+            disabled={saving || !effortSupported || modelReadOnlyHost !== null}
             onChange={(event) => onEffortChange(event.target.value)}
             className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft" />
           <p id="agent-reasoning-effort-help" className="text-text-muted mt-2 text-xs">

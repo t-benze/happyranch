@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+from functools import lru_cache
 from collections import deque
 import itertools
 import sys
@@ -48,6 +49,40 @@ CLIENT_COMMANDS = frozenset({"client.status", "client.acceptInvite", "client.ret
                              "client.removeSaved", "client.retrySave"})
 LOCAL_COMMANDS = frozenset({"local.status", "local.start", "local.stop", "local.restart",
                             "local.keepRunning.set", "local.repair", "local.turnOff", "local.update.status"})
+
+
+@lru_cache(maxsize=1)
+def remote_config_policy() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Load the installation-owned policy once; source runs use protocol/."""
+    directory = Path(__file__).resolve().parent
+    source = directory / "remote-client-config-policy.v1.json"
+    if not source.exists() and directory.parts[-3:] == ("packaging", "linux", "desktop"):
+        source = directory.parents[2] / "protocol/remote-client-config-policy.v1.json"
+    try:
+        policy = json.loads(source.read_text(encoding="utf-8"))
+        if (set(policy) != {"version", "entries"} or type(policy["version"]) is not int
+                or policy["version"] != 1 or not isinstance(policy["entries"], list)
+                or not policy["entries"]):
+            raise ValueError("invalid policy")
+        entries = []
+        for entry in policy["entries"]:
+            if (set(entry) != {"method", "path_template", "class"} or entry["class"] != "config"
+                    or entry["method"] not in {"POST", "PUT", "PATCH", "DELETE"}
+                    or not entry["path_template"].startswith("/api/v1/")):
+                raise ValueError("invalid policy entry")
+            entries.append((entry["method"], tuple(entry["path_template"].split("/"))))
+        return tuple(entries)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise SchemeError(500, "bundle_unavailable") from None
+
+
+def remote_config_request(method: str, path: str) -> bool:
+    """Match complete decoded path segments, independent of query/generation."""
+    parts = path.rstrip("/").split("/")
+    return any(method == verb and len(parts) == len(template)
+               and all(actual == expected or bool(actual) and expected.startswith("{")
+                       and expected.endswith("}") for actual, expected in zip(parts, template))
+               for verb, template in remote_config_policy())
 
 
 def owners_summary(value: object) -> dict:
@@ -994,6 +1029,9 @@ class AppScheme:
                 data, mime = self.bundle.get(path)
                 self.reply(request, 200, b"" if method == "HEAD" else data, mime)
                 return
+            with self.target_lock:
+                if isinstance(self.daemon, RemoteDaemon) and remote_config_request(method, path):
+                    raise SchemeError(403, "remote_read_only")
             if path.rstrip("/") == "/api/v1/auth/bootstrap":
                 if method != "GET":
                     raise SchemeError(405, "method_not_allowed")
@@ -1043,6 +1081,12 @@ class AppScheme:
             with self.target_lock:
                 if transfer.generation is None:
                     transfer.generation = self.generation
+                # Also fence direct/captured transfers before bootstrap can send
+                # health bytes. A policy denial does not depend on generation.
+                if (isinstance(transfer.target, RemoteDaemon)
+                        and remote_config_request(method, route(ORIGIN + target)[0])):
+                    self.GLib.idle_add(self.error, request, SchemeError(403, "remote_read_only"))
+                    return
                 transfer.method, transfer.send_lock = method, self.target_lock
                 if transfer.generation != self.generation:
                     transfer.cancel("target_changed")

@@ -46,6 +46,41 @@ case exercises refusal of missing/altered manifests, file tampering, extras
 and a contained symlink. This is maker verification; installed launch, minimum
 engine, native focus and genuine remote-pair acceptance remain QA work.
 
+## Remote configuration read-only routing (S8-2b, Linux native)
+
+The committed `protocol/remote-client-config-policy.v1.json` is shipped unchanged
+by `build-payload.sh` into `share/happyranch/desktop/`, beside
+`app_scheme_webkit.py`. The native Main scheme loads that installation-owned
+file once. Direct source runs use the repository's `protocol/` copy; a missing
+or invalid installed policy refuses remote API routing with `bundle_unavailable`.
+
+For a committed remote target, each matching method and decoded path template
+returns HTTP 403 with `{"detail":{"code":"remote_read_only"}}` before generation
+admission, body reads, compatibility/bootstrap probes or any peer I/O. Query
+strings, encoded parameters and trailing slashes do not bypass the match. The
+forward worker also checks its captured remote target before bootstrap. A
+candidate remote does not change a committed local target's write behavior.
+
+All 21 configuration entries are covered, including schedule **PATCH** (edit).
+Local configuration writes and unmatched remote operations/GETs keep their
+existing forwarding and generation checks. No retry, credential change or daemon
+remote-allowlist change is involved. Visible read-only controls, localized Host
+scope copy and draft-preserving handling of this 403 are the web leg on the same
+PR; this native slice alone does not establish that UI behavior.
+
+Focused standalone boundary checks use two ephemeral loopback stand-in peers,
+synthetic authority and GIO without a display, outside the retired unit suite:
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_remote_policy.py -v
+/usr/bin/python3 -B scripts/check_remote_client_config_policy.py
+```
+
+Use a task-owned non-`/tmp` TMPDIR when the host's `/tmp` quota is exhausted.
+These checks do not establish real-remote, installed-package or visual acceptance.
+Independent QA still uses the reviewed head and an isolated WebKitGTK scheme
+smoke on Xvfb (Broadway fallback when Xvfb is absent); never use the live daemon.
+
 ## Native language preference (S8-1-L)
 
 `packaging/linux/desktop/app_locale.py` supplies the native preference
