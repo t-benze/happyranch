@@ -21,7 +21,7 @@ from runtime.workflows.sequential_assignments import (
 )
 from runtime.workflows.sequential_contracts import GenericControl, GenericCounters, GenericNodeCounters, GenericStepOverride
 from runtime.workflows.sequential_definition import SequentialContractError, _json, generic_limits, parse_generic_start
-from runtime.workflows.sequential_engine import _engine_context, _engine_rows, _identity
+from runtime.workflows.sequential_engine import SequentialRefusal, _engine_context, _engine_rows, _identity
 from runtime.workflows.sequential_history import _ReadBudget, _bytes, _decode, _hashed, _require, _result, _sql_budget
 from runtime.workflows.sequential_reducer import reduce_generic_control, require_generic_event_capacity
 
@@ -241,6 +241,19 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             previous = max((row for row in data['workflow_seq_visits'] if row['node_id'] == run['held_node_id']),
                            key=lambda row: row['ordinal'])
             generic_closed_visit(conn, run=run, visit=previous, budget=budget)
+            from runtime.workflows.sequential_run_validation import generic_selection
+            node = next(item for item in compiled.definition.nodes if item.id == previous['node_id'])
+            current_slots = {item.source[8:] for item in node.inputs if item.source.startswith('current.')}
+            retained = tuple(ref for ref in generic_selection(previous, budget) if ref.slot in current_slots)
+            if retained:
+                # Correction edges retire selections even when their target's
+                # allowance is exhausted. Never admit an unrenderable recovery.
+                latest = max((event for event in data['workflow_seq_events'] if event['kind'] == 'transition'),
+                             key=lambda event: event['sequence'], default=None)
+                current = {} if latest is None else {ref['slot']: ref for ref in _decode(
+                    _hashed(latest['event_bytes'], latest['event_digest']), budget)['decision']['selections']}
+                if any(current.get(ref.slot) != ref.model_dump(mode='json') for ref in retained):
+                    raise SequentialRefusal('control_input_retired')
             _require(capture.assignment is not None and capture.authority_snapshot == generic_assignment_authority(
                 capture.authority, org_slug=org_slug), 'control_assignment_conflict')
             assignment = capture.assignment
@@ -273,7 +286,6 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             supplement = command.supplement if command.supplement is not None else prior_supplement
             original_visit = min((item for item in data['workflow_seq_visits'] if item['node_id'] == previous['node_id']),
                                  key=lambda item: item['ordinal'])
-            node = next(item for item in compiled.definition.nodes if item.id == previous['node_id'])
             brief = _bytes(dict(format='workflow-sequential-recovery-brief@2', original_request=start.request,
                 node=node.id, role=node.role, responsibilities=list(node.responsibilities),
                 original_step_brief=db.get_task(original_visit['task_id']).brief,
