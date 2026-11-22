@@ -1299,7 +1299,7 @@ units, general integration or Product E2E. Live-daemon/Product-E2E proof is NOT
 RUN; owned workflow callbacks requiring genuine host launch/terminal evidence
 remain outside this no-launch observation.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, a thread artifact attachment and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
 
 J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 

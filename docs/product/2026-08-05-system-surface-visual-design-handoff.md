@@ -26,7 +26,7 @@ owns the selected change:
 | Intent-first navigation pilot | [#577](https://github.com/t-benze/happyranch/issues/577) | Founder-approved after #576; a bounded navigation-only pilot that must not become a route migration or visual-system rewrite. |
 | Dreams unavailable-data defect | [#572](https://github.com/t-benze/happyranch/issues/572) | Truthful fallback only. |
 | Dashboard attention contradiction | [#573](https://github.com/t-benze/happyranch/issues/573) | Traceability to a canonical record or removal of the unsupported claim. |
-| Artifact provenance placeholder | [#574](https://github.com/t-benze/happyranch/issues/574) | Show supplied provenance or an explicit unavailable treatment. |
+| Artifact provenance placeholder | [#574](https://github.com/t-benze/happyranch/issues/574) | Historical page target superseded by the standalone Artifacts page removal (THR-392). |
 | Executor restart/live semantics | [#575](https://github.com/t-benze/happyranch/issues/575) | Copy follows confirmed runtime behavior; no inferred semantics. |
 
 No additional issue is created for generic “polish.” New visual requests must map
@@ -44,7 +44,7 @@ perceivable through text and structure, not color alone.
 | Operate | Dashboard, Threads, Tasks, Jobs, Todos | Dashboard is triage. Cards and assistant responses link to canonical records; they do not imply that they performed a record action. |
 | Organization | Agents, Teams, Work Hours | Explain membership, ownership, cadence, source-of-value, and current effective state. |
 | Govern | Skills, Settings | Skills retains B2 custom-skill version, provenance, validation, eligibility, and materialization evidence. Settings owns organization/runtime operating controls. Do not create browser-only authorization signals. |
-| Evidence | KB, Artifacts, Audit, Dreams, Usage, Health | Present source, time/window, freshness or an explicit unavailable/derived state; route consequential action to the canonical record. |
+| Evidence | KB, Audit, Dreams, Usage, Health | Present source, time/window, freshness or an explicit unavailable/derived state; route consequential action to the canonical record. |
 | Global | Organization switcher, command palette, help, assistant dock, account/runtime context | Available across normal AppShell routes. The assistant may navigate and show evidence; it has no direct governance-write control. |
 
 The current sidebar grouping is a baseline implementation detail, not approval to

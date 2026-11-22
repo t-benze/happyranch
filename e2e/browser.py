@@ -2172,8 +2172,8 @@ class Browser:
 
         return self._native(read, end)
 
-    def knowledge_artifact(self, name: str, modified_at: str) -> dict:
-        """Use the page's Download action; API reads cannot supply its bytes."""
+    def knowledge_artifact(self, name: str, thread: str) -> dict:
+        """Download a shared artifact from its shipping thread attachment control."""
         from playwright.async_api import Page as AsyncPage
         c = self.controller
         end = min(c.effective_end(), time.monotonic() + self.page_timeout)
@@ -2181,30 +2181,29 @@ class Browser:
         async def read() -> dict:
             page = AsyncPage(self.page._impl_obj)
             await page.goto(f"{self.base}/orgs/alpha/artifacts", timeout=c.remaining(15)*1000)
-            locale = await page.locator("html").get_attribute("lang")
-            require(locale in {"en", "zh-CN"}, "J1 known browser locale")
-            if locale != "en":
-                await page.get_by_role("combobox", name="语言", exact=True).click(timeout=c.remaining(5)*1000)
-                await page.get_by_role("option", name="English", exact=True).click(timeout=c.remaining(5)*1000)
-            card = page.locator("article").filter(has=page.locator(f'h3[title="{name}"]'))
-            await card.get_by_role("heading", name=name, exact=True).wait_for(state="visible", timeout=c.remaining(10)*1000)
-            require(await card.count() == 1, "J1 one exact artifact card")
-            size = await card.locator("span.font-mono").inner_text()
-            modified = await card.locator("p").filter(has_text="Modified ").inner_text()
-            expected_modified = await page.evaluate("""stamp => 'Modified ' + new Intl.DateTimeFormat('en-US', {
-                year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-            }).format(new Date(stamp))""", modified_at)
-            require(modified == expected_modified, "J1 exact API modification time rendered", modified)
+            await page.wait_for_url(f"{self.base}/orgs/alpha/threads", timeout=c.remaining(10)*1000)
+            redirected = page.url == f"{self.base}/orgs/alpha/threads"
+            nav_count = await page.locator('aside a[href="/orgs/alpha/artifacts"]').count()
+            require(redirected and nav_count == 0, "J1 retired page redirects without artifact navigation")
+            url = f"{self.base}/orgs/alpha/threads/{thread}"
+            await page.goto(url, timeout=c.remaining(15)*1000)
+            attachment = page.locator("article").get_by_role("button").filter(has=page.get_by_text(name, exact=True))
+            await attachment.wait_for(state="visible", timeout=c.remaining(10)*1000)
+            require(await attachment.count() == 1, "J1 one exact thread artifact attachment")
+            display_name = await attachment.locator("span").nth(0).inner_text()
+            size = await attachment.locator("span").nth(1).inner_text()
+            await page.screenshot(path=str(c.root / "raw/j1-thread-artifact.png"), full_page=True,
+                                  timeout=c.remaining(5)*1000)
             async with page.expect_download(timeout=c.remaining(10)*1000) as event:
-                await card.get_by_role("button", name="Download", exact=True).click(timeout=c.remaining(5)*1000)
+                await attachment.click(timeout=c.remaining(5)*1000)
             download = await event.value
             target = c.root / "raw/j1-download.txt"
             await download.save_as(target)
-            require(await download.failure() is None, "J1 successful native download")
-            require(page.url == f"{self.base}/orgs/alpha/artifacts", "J1 current artifacts document")
-            return dict(name=await card.locator("h3").get_attribute("title"), size=size, modified=modified,
-                        expected_modified=expected_modified,
-                        filename=download.suggested_filename, body_hex=target.read_bytes().hex())
+            require(await download.failure() is None, "J1 successful native thread artifact download")
+            require(page.url == url, "J1 download retains current thread document")
+            return dict(name=display_name, size=size, thread=thread, redirected=redirected,
+                        artifact_nav_count=nav_count, filename=download.suggested_filename,
+                        body_hex=target.read_bytes().hex())
 
         return self._native(read, end)
 

@@ -32,10 +32,13 @@ patches, and other blobs a task produces.
 
 Artifacts are where you retrieve file outputs from completed work.
 
-- **Web:** `/orgs/:slug/artifacts`
-- **CLI:** `happyranch artifacts list`, `happyranch artifacts get <name> --output <path>`
+- **Thread links:** Open or download shared artifact attachments from thread messages.
+- **CLI:** `happyranch artifacts put <local-path> --agent <agent>`, `happyranch artifacts list`, `happyranch artifacts get <name> --output <path>`
 
-![placeholder: Knowledge and Artifacts surfaces showing a KB entry and a generated report](TODO)
+The standalone Artifacts page and navigation entry are removed. Shared storage,
+the daemon file API, CLI upload/list/download, and thread artifact links remain.
+
+![placeholder: Knowledge and Threads surfaces showing a KB entry and an artifact attachment](TODO)
 
 ## The Rule
 
@@ -51,5 +54,5 @@ the KB. If it is an agent's private working note, it belongs in Memory.
 ## Grounded Technical Facts
 
 - KB routes: `/orgs/:slug/kb`, `/orgs/:slug/kb/*`.
-- Artifacts route: `/orgs/:slug/artifacts`.
+- Legacy `/orgs/:slug/artifacts` redirects to that org's Threads; bare `/artifacts` uses the home/org selection.
 - CLI command groups: `memory ...`, `kb ...`, and `artifacts ...`.

@@ -8,7 +8,6 @@ import {
   ChevronDown,
   Clock,
   FileText,
-  Folder,
   GitFork,
   House,
   Lightbulb,
@@ -47,7 +46,7 @@ import { features } from '@/config/features';
  *  - Top: context header (wordmark + org context line + caret) doubling as the
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
  *  - Primary navigation: one flat, usage-ordered list of Home, Threads, Tasks,
- *    Jobs, Todos, Agents, Work Hours, Skills, Knowledge, Artifacts, Audit,
+ *    Jobs, Todos, Agents, Work Hours, Skills, Knowledge, Audit,
  *    Dreams, Usage, and Health.
  *  - Footer: Settings is permanently pinned above the static avatar + identity
  *    account row (BUG-07), separated from the primary list by the footer divider.
@@ -230,9 +229,6 @@ export function Sidebar(): JSX.Element {
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('kb', true)} icon={Book}>
           {t('shell.nav.knowledge')}
-        </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Folder}>
-          {t('shell.nav.artifacts')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('audit', true)} icon={FileText}>
           {t('shell.nav.audit')}
