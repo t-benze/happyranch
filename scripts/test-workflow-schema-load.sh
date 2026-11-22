@@ -5600,7 +5600,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert response.status_code == status, (case, status, response.status_code, response.text)
                     assert response.headers.get('cache-control') == 'no-store'
                     if code:
-                        assert response.json()['detail']['code'] == code, response.text
+                        assert response.json() == {'detail': {'code': code}}, response.text
                     return response
                 def transport(request):
                     requests.append((request.method, request.url.path))
@@ -5608,14 +5608,14 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert request.headers['x-happyranch-surface'] == 'cli' and 'authorization' not in request.headers
                     response = asyncio.run_coroutine_threadsafe(client.send(request), loop).result(timeout=10)
                     return httpx.Response(response.status_code, content=response.content+b' '*response_padding, headers=response.headers)
-                async def compose(payload, *, error=None, staged=True, raw=None, padding=0):
+                async def compose(payload, *, session=sid, error=None, staged=True, raw=None, padding=0):
                     nonlocal response_padding
                     response_padding=padding
                     path = home / 'start2-compose.json'
                     original = _bytes(payload) if raw is None else raw
                     path.write_bytes(original)
                     args = build_parser().parse_args(['workflows','sequential','start-compose','--org','scratch',
-                        '--session-id',sid,'--from-file',str(path),'--json'])
+                        '--session-id',session,'--from-file',str(path),'--json'])
                     out, err = io.StringIO(), io.StringIO()
                     before = inventory()
                     def invoke():
@@ -5626,8 +5626,15 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             except SystemExit as exc:
                                 return exc.code
                         return 0
-                    result = await asyncio.to_thread(invoke)
+                    sql = []
+                    f.conn.set_trace_callback(sql.append)
+                    try:
+                        result = await asyncio.to_thread(invoke)
+                    finally:
+                        f.conn.set_trace_callback(None)
                     assert inventory() == before and path.read_bytes() == original, ('B1 composer wrote state/input', case)
+                    assert not any(s.lstrip().split(' ',1)[0].upper() in
+                        ('INSERT','UPDATE','DELETE','REPLACE','CREATE','DROP','ALTER','COMMIT','END') for s in sql), sql
                     if error:
                         assert result == 2 and not out.getvalue() and error in err.getvalue(), (case, result, out.getvalue(), err.getvalue(), error)
                         return
@@ -5734,6 +5741,81 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert '@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable' in adopted_prompt
                             assert before == (tuple(adopted.conn.iterdump()),adopted.conn.total_changes)
                     elif case == 'audience':
+                        from datetime import datetime, timezone
+                        from runtime.models import DreamRecord, WorkHourRecord, ThreadInvocationPurpose
+                        from runtime.workflows.recovery import classify_task
+                        from runtime.orchestrator.producer_move import run_native_producer
+                        # Compose a valid plural decision once with the eligible source;
+                        # denied callers must reach audience guards, not input validation.
+                        decision = json.loads(await compose(payload))
+                        async def denied(label, session, *, source=task, principal='s3_manager',
+                                         read_status=403, read_code='sequential_task_session_required',
+                                         callback_code='workflow_start_v2_unavailable'):
+                            await read(params=[('session_id',session)],status=read_status,code=read_code)
+                            await compose(payload,session=session,
+                                error=f'sequential_start_context_refused:{read_status}:{read_code}')
+                            before, sql = inventory(), []
+                            f.conn.set_trace_callback(sql.append)
+                            try:
+                                callback = await client.post('/api/v1/orgs/scratch/tasks/'+source+'/completion',
+                                    headers=dict(cli,authorization='Bearer synthetic-setup-founder'),
+                                    json=dict(session_id=session,agent=principal,status='completed',confidence=80,
+                                        output_summary='Private B02 denied '+label,decision=decision))
+                            finally:
+                                f.conn.set_trace_callback(None)
+                            assert inventory() == before, ('B02 callback wrote state/queue', label)
+                            assert not any(s.lstrip().split(' ',1)[0].upper() in
+                                ('INSERT','UPDATE','DELETE','REPLACE','CREATE','DROP','ALTER','COMMIT','END') for s in sql), (label,sql)
+                            assert callback.status_code == 409 and callback.json()['detail']['code'] == callback_code, (label,callback.text)
+                            print('PASS Start2 audience',label,'discovery',read_status,read_code,
+                                'composer exit2 callback409',callback_code,'zero writes',flush=True)
+                        invocation = f.db.mint_thread_invocation(thread_id='THR-start2',agent_name='s3_manager',
+                            triggering_seq=0,purpose=ThreadInvocationPurpose.REPLY)
+                        assert f.db.get_pending_invocation(invocation.invocation_token) is not None
+                        assert f.org.sessions.get_context_by_session(invocation.invocation_token) is None
+                        await denied('direct_thread_token',invocation.invocation_token)
+                        now = datetime.now(timezone.utc)
+                        f.db.work_hours.insert(WorkHourRecord(id='WORKHOUR-1',agent_name='s3_manager',
+                            local_date='2026-11-22',slot='private',mode='windowed',scheduled_for=now))
+                        f.db.insert_dream(DreamRecord(id='DREAM-1',agent_name='s3_manager',local_date='2026-11-22',
+                            scheduled_for=now,window_end=now))
+                        for kind, source_id in (('wake','WORKHOUR-1'),('dream','DREAM-1')):
+                            async def producer_action(owner):
+                                assert owner is not None and owner.state.kind == kind and owner.state.task_id is None
+                                assert owner.state.source_id == source_id and owner.state.agent_id == 's3_manager'
+                                assert f.org.sessions.get_context_by_session(owner.session_id) is None
+                                await denied(kind+'_invocation',owner.session_id)
+                            # Genuine native producer reservation/action, without provider execution.
+                            await run_native_producer(f.org,kind,source_id,producer_action)
+                        f.org.sessions.set_active(task,'s3_manager','start2-foreign-org',org_slug='foreign')
+                        assert f.org.sessions.get_context_by_session('start2-foreign-org') == ('foreign',task,'s3_manager')
+                        await denied('foreign_org_binding','start2-foreign-org')
+                        f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
+                        f.org.sessions.clear(task,'s3_manager')
+                        assert f.db.get_task(task).status == 'in_progress' and f.db.get_task(task).current_session_id == sid
+                        assert f.org.sessions.get_context_by_session(sid) is None
+                        await denied('ended_session',sid)
+                        f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
+                        # Admit through the existing private writer to obtain genuine
+                        # ownership, rather than forging a subtask or ownership marker.
+                        owned = f.admit(f.command)
+                        for label, owned_task, owner_kind in (
+                                ('workflow_step',owned.visit_task_id,'seq_visit'),
+                                ('workflow_carrier',owned.carrier_task_id,'seq_carrier')):
+                            record = f.db.get_task(owned_task)
+                            owned_sid = 'start2-'+label
+                            # Match the existing S8b private running-visit fixture;
+                            # generic native update_task correctly refuses owned tasks.
+                            if label == 'workflow_step':
+                                f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?",(owned_sid,owned.visit_id))
+                                f.conn.execute("UPDATE tasks SET status='in_progress',current_session_id=? WHERE id=?",(owned_sid,owned_task))
+                                f.conn.commit()
+                            # A genuine carrier has no native SID; a registry
+                            # binding must not turn it into an ordinary source.
+                            f.org.sessions.set_active(owned_task,record.assigned_agent,owned_sid,org_slug='scratch')
+                            assert classify_task(f.db,owned_task,org_slug='scratch').kind == owner_kind
+                            await denied(label,owned_sid,source=owned_task,principal=record.assigned_agent,
+                                callback_code='workflow_reconciliation_required' if label=='workflow_carrier' else 'workflow_start_v2_unavailable')
                         for headers in ({},dict(cli,origin='http://browser'),dict(cli,authorization='Bearer synthetic-start2-founder')):
                             await read(headers=headers,status=403,code='sequential_task_session_required')
                         for params in ([('session_id',sid),('session_id',sid)],[('session_id',sid),('extra','x')]):
@@ -5741,23 +5823,26 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         await read(content=b'{}',status=422,code='sequential_start_context_invalid')
                         await read(params=[('session_id','foreign')],status=403,code='sequential_task_session_required')
                         f.org.sessions.set_active('THR-start2','s3_manager','start2-thread',org_slug='scratch')
-                        await read(params=[('session_id','start2-thread')],status=404,code='task_not_found')
+                        await denied('missing_native_task','start2-thread',read_status=404,read_code='task_not_found')
                         f.db.insert_task(TaskRecord(id='start2-worker',assigned_agent='s3_author',team='engineering',
                             task_type='task',status='in_progress',current_session_id='start2-worker-sid',brief='Private worker source'))
                         f.org.sessions.set_active('start2-worker','s3_author','start2-worker-sid',org_slug='scratch')
-                        await read(params=[('session_id','start2-worker-sid')],status=403,code='sequential_task_session_required')
+                        await denied('worker','start2-worker-sid',source='start2-worker',principal='s3_author')
                         store=f.db._task_pause_store
                         store.control(task,held=True,expected_generation=0,actor='founder',sessions=f.org.sessions)
-                        await read(status=409,code='sequential_source_paused')
+                        await denied('paused_source',sid,read_status=409,read_code='sequential_source_paused')
                         store.control(task,held=False,expected_generation=1,actor='founder',sessions=f.org.sessions)
                         f.org.sessions.register_recovery_session(task,'s3_manager',sid,org_slug='scratch')
-                        await read(status=403,code='sequential_task_session_required')
+                        await denied('recovery_session',sid)
                         f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
                         f.conn.execute('UPDATE tasks SET task_type=? WHERE id=?',('subtask',task));f.conn.commit()
-                        await read(status=403,code='sequential_task_session_required')
+                        await denied('ordinary_subtask',sid)
                         f.conn.execute('UPDATE tasks SET task_type=? WHERE id=?',('task',task));f.conn.commit()
                         f.db.update_task(task,status='completed')
-                        await read(status=403,code='sequential_task_session_required')
+                        await denied('completed_source',sid,callback_code='task_not_active')
+                        f.db.update_task(task,status='in_progress',completed_at=None,cancelled_at=now)
+                        assert f.org.sessions.get_active(task,'s3_manager') == sid
+                        await denied('cancelled_source',sid,callback_code='task_not_active')
                     elif case == 'pins_settings':
                         await read(params=[('session_id',sid),('definition','release/happyranch/coding@3')])
                         for selector in ('release/happyranch/coding@2','coding.v1','/tmp/unregistered.json','release/unknown/workflow@1'):
