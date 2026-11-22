@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import os
 from pathlib import Path
 import queue
 import threading
 import time
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -648,6 +651,70 @@ class RequestTests(unittest.TestCase):
         for read in reads:
             read({}, None)
         self.assertEqual(book.reads, 0)
+
+
+class StartupSelectionHooksTests(unittest.TestCase):
+    commit = LifecycleTests.commit
+    save_start = SavedLifecycleTests.save_start
+
+    def setUp(self) -> None:
+        SavedLifecycleTests.setUp(self)
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": scratch.name})
+        env.start()
+        self.addCleanup(env.stop)
+        spec = importlib.util.spec_from_file_location("startup_hook_fixture",
+            Path(__file__).with_name("app_startup_selection.py"))
+        self.startup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.startup)
+        hook = patch.object(owner, "_startup", self.startup, create=True)
+        hook.start()
+        self.addCleanup(hook.stop)
+
+    def prepare_saved(self) -> str:
+        self.save_start()
+        self.ui.pump(lambda: self.ui.opened is not None)
+        self.assertEqual(self.startup.current()["current"], "local", "a candidate is not committed selection")
+        ref = self.model.active_ref
+        self.assertEqual(self.commit()[0]["effect"], "confirmed")
+        self.assertEqual(self.startup.current()["current"], "remote:" + ref)
+        return ref
+
+    def test_only_confirmed_remote_commit_writes_and_write_failure_keeps_connection(self) -> None:
+        self.fake.mode = "write-failed"
+        self.save_start()
+        self.ui.pump(lambda: self.ui.opened is not None)
+        self.assertEqual(self.startup.current()["current"], "local")
+        with patch.object(self.startup.os, "replace", side_effect=OSError("synthetic failure")):
+            result = self.commit()
+        self.assertEqual(result[0]["effect"], "confirmed")
+        self.assertEqual(self.model.stage, "connected")
+        self.assertEqual(self.startup.current(), {"current": "remote:unsaved", "persisted": False})
+        self.assertFalse(self.model.startup_selection_saved)
+
+    def test_disconnect_retains_saved_selection_and_confirmed_remove_clears_it(self) -> None:
+        ref = self.prepare_saved()
+        self.model.stop()
+        self.ui.pump(lambda: self.model.stage == "idle")
+        self.assertEqual(self.startup.current()["current"], "remote:" + ref)
+        replies = []
+        self.model.remove_saved(ref, "document", lambda *r: replies.append(r))
+        self.ui.saved_consent(False)
+        self.assertEqual(self.startup.current()["current"], "remote:" + ref)
+        self.model.remove_saved(ref, "document", lambda *r: replies.append(r))
+        self.ui.saved_consent(True)
+        self.ui.pump(lambda: self.model.saved_access == "none")
+        self.assertEqual(self.startup.current()["current"], "local")
+
+    def test_confirmed_revocation_clears_only_recorded_reference(self) -> None:
+        self.prepare_saved()
+        self.session.health_error = "revoked"
+        replies = []
+        self.model.health(lambda *r: replies.append(r))
+        self.ui.pump(lambda: bool(replies))
+        self.assertEqual(replies[-1][0]["access"], "revokedConfirmed")
+        self.assertEqual(self.startup.current()["current"], "local")
 
 
 if __name__ == "__main__":

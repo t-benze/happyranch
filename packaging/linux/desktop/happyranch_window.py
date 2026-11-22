@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 from typing import IO, Callable
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -33,6 +34,17 @@ if _locale is None:
     _locale = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_locale)
     sys.modules["_happyranch_app_locale"] = _locale
+_startup = sys.modules.get("_happyranch_startup_selection")
+if _startup is None:
+    _spec = importlib.util.spec_from_file_location("_happyranch_startup_selection",
+                                                  Path(__file__).with_name("app_startup_selection.py"))
+    _startup = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_startup)
+    sys.modules["_happyranch_startup_selection"] = _startup
+# Keep the running application's reader, never a replacement installed module.
+_spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
+_contract = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_contract)
 
 
 class LaunchError(Exception):
@@ -41,6 +53,170 @@ class LaunchError(Exception):
     def __init__(self, message: str, action: str | None = None) -> None:
         super().__init__(message)
         self.action = action
+
+
+def relaunch_assets(prefix: Path, contract: object) -> str:
+    """Inspect installed desktop code and the relevant observed service range.
+
+    Compile without importing installed code into the running process. A build
+    timestamp/newer service alone is never evidence that relaunch remedies it.
+    Return a content fingerprint for a final unchanged-assets check after exit.
+    """
+    if (type(contract) is not dict or set(contract) != {"current", "min_client"}
+            or any(type(v) is not int or v < 1 for v in contract.values())
+            or contract["min_client"] > contract["current"]):
+        raise LaunchError("Compatible installed desktop assets could not be verified.")
+    directory = prefix / "share/happyranch/desktop"
+    try:
+        def read(path: Path, limit: int) -> bytes:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("nonregular installed asset")
+                raw = stream.read(limit + 1)
+            if not raw or len(raw) > limit:
+                raise ValueError("installed asset limit")
+            return raw
+        info = json.loads(read(prefix / "build-info.json", 1024 * 1024))
+        if not re.fullmatch(r"[0-9a-f]{40}", info["source_sha"]):
+            raise ValueError()
+        digest = hashlib.sha256()
+        constants = {}
+        required = ("happyranch_window.py", "app_scheme_webkit.py", "app_scheme.py",
+                    "app_locale.py", "app_startup_selection.py", "client_model.py",
+                    "client_ui.py", "client_store.py", "client_session.py", "client_runtime.py",
+                    "connection_contract.py", "connection_cli.py", "client_cli.py", "host_bridge.py",
+                    "invite_v2.py")
+        for name in required:
+            raw = read(directory / name, 1024 * 1024)
+            tree = ast.parse(raw)
+            compile(tree, name, "exec")
+            digest.update(name.encode() + b"\0" + raw)
+            if name == "app_scheme.py":
+                for node in tree.body:
+                    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                        for target in node.targets:
+                            if isinstance(target, ast.Name) and target.id in ("CLIENT", "MIN_DAEMON"):
+                                constants[target.id] = node.value.value
+        if (set(constants) != {"CLIENT", "MIN_DAEMON"}
+                or any(type(v) is not int or v < 1 for v in constants.values())
+                or not constants["MIN_DAEMON"] <= contract["current"]
+                or not contract["min_client"] <= constants["CLIENT"] <= contract["current"]):
+            raise ValueError()
+        digest.update(read(prefix / "build-info.json", 1024 * 1024))
+        raw = read(directory / "native-connection-bridge.v1.json", 128 * 1024)
+        # Protocol is also HostBridge's startup reader. Give it the exact bounded
+        # bytes being fingerprinted, avoiding a second path read or code import.
+        protocol = _contract.Protocol(SimpleNamespace(read_text=lambda **_kwargs: raw.decode("utf-8")))
+        if type(protocol.commands) is not dict or type(protocol.events) is not dict:
+            raise ValueError("invalid installed bridge structure")
+        protocol.hello()
+        protocol.host_unavailable()
+        digest.update(raw)
+        raw = read(directory / "remote-client-config-policy.v1.json", 4 * 1024 * 1024)
+        policy = _contract.parse_json(raw.decode("utf-8"), 4 * 1024 * 1024)
+        # Same closed resource shape consumed by AppScheme.remote_config_policy;
+        # the S8 routing path itself remains unchanged.
+        if (type(policy) is not dict or set(policy) != {"version", "entries"}
+                or type(policy["version"]) is not int or policy["version"] != 1
+                or type(policy["entries"]) is not list or not policy["entries"]):
+            raise ValueError("invalid installed policy")
+        for entry in policy["entries"]:
+            if (type(entry) is not dict or set(entry) != {"method", "path_template", "class"}
+                    or entry["class"] != "config" or entry["method"] not in {"POST", "PUT", "PATCH", "DELETE"}
+                    or not entry["path_template"].startswith("/api/v1/")):
+                raise ValueError("invalid installed policy entry")
+        digest.update(raw)
+        bundle = prefix / "web/dist"
+        if bundle.resolve(strict=True) != bundle or not (bundle / "index.html").is_file():
+            raise ValueError("missing packaged Main")
+        count = total = directories = 0
+        for parent, dirs, files in os.walk(bundle, followlinks=False):
+            dirs.sort()
+            directories += 1
+            if directories > 4096 or any((Path(parent) / name).is_symlink() for name in dirs):
+                raise ValueError("installed bundle directory limit")
+            for name in sorted(files):
+                path = Path(parent) / name
+                if path.is_symlink():
+                    raise ValueError("aliased installed asset")
+                raw = read(path, 64 * 1024 * 1024)
+                count, total = count + 1, total + len(raw)
+                if count > 4096 or total > 256 * 1024 * 1024:
+                    raise ValueError("installed bundle limit")
+                digest.update(path.relative_to(bundle).as_posix().encode() + b"\0" + raw)
+        return digest.hexdigest()
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, SyntaxError, RecursionError):
+        raise LaunchError("Compatible installed desktop assets could not be verified.") from None
+
+
+def lifecycle_copy(action: str, service_state: dict, remote_name: str | None,
+                   unsaved: bool, recovery: bool, chinese: bool) -> tuple[str, str]:
+    """Actual-effects native confirmation; no reconnect or restart promise."""
+    def tr(en: str, zh: str) -> str:
+        return zh if chinese else en
+    title = {"close": tr("Close HappyRanch?", "关闭 HappyRanch？"),
+             "quit": tr("Quit HappyRanch?", "退出 HappyRanch？"),
+             "relaunch": tr("Relaunch desktop app?", "重新启动桌面应用？")}[action]
+    keep_running, running = service_state["keepRunning"], service_state["running"]
+    text = (tr("HappyRanch on this computer is already stopped. Exiting does not start it.",
+               "此电脑上的 HappyRanch 已经停止。退出不会启动它。")
+            if running == "stopped" else
+            tr("HappyRanch on this computer keeps running under its freshly checked keep-running policy.",
+               "根据刚刚检查的后台运行设置，此电脑上的 HappyRanch 将保持运行。")
+            if keep_running == "on" and running == "running" else
+            tr("HappyRanch on this computer is still starting. Exiting leaves it under the checked keep-running policy; running work is not guaranteed.",
+               "此电脑上的 HappyRanch 仍在启动。退出后将继续遵循已检查的后台运行设置；不保证工作正在运行。")
+            if keep_running == "on" and running == "starting" else
+            tr("The local service state is unavailable. This app has no attached local service; exiting sends no local Start or Stop.",
+               "本地服务状态不可用。此应用未附加本地服务；退出不会发送本地启动或停止命令。")
+            if keep_running == "unowned" else
+            tr("This stops HappyRanch on this computer and may interrupt local work.",
+               "这会停止此电脑上的 HappyRanch，并可能中断本地工作。")
+            if keep_running in ("off", "partial", "unsupported") and running in ("running", "starting") else
+            tr("The local service outcome could not be checked. Stay and check again.",
+               "无法检查本地服务的退出结果。请留在应用中并重新检查。"))
+    if remote_name:
+        text += "\n\n" + tr(f"The app connection to {remote_name} will close; {remote_name} keeps running.",
+                            f"应用与 {remote_name} 的连接将关闭；{remote_name} 将保持运行。")
+        text += "\n" + (tr("Access wasn't saved; reopening may need a new invite.",
+                           "访问权限未保存；重新打开时可能需要新的邀请。") if unsaved else
+                        tr("Saved access and Host grants are retained. Reconnect still needs your confirmation.",
+                           "已保存的访问权限及主机授权将保留。重新连接仍需您确认。"))
+        text += "\n" + tr("This action does not remove saved access or revoke Host grants.",
+                         "此操作不会移除已保存的访问权限或撤销主机授权。")
+    if action == "relaunch":
+        text += "\n\n" + tr("The next launch follows the saved startup selection. Restart, reconnect and resumed work are not guaranteed.",
+                            "下次启动将遵循已保存的启动选择。不保证重启、重新连接或恢复工作成功。")
+    if recovery:
+        text = tr("The web owner gate is unavailable or still waiting. Unsent edits may be lost. "
+                  "A sent save may still take effect; it is not cancelled. Check result in the original context.",
+                  "网页编辑状态检查不可用或仍在等待。未发送的编辑可能丢失。"
+                  "已发送的保存仍可能生效，并未取消。请在原始上下文中检查结果。") + "\n\n" + text
+    return title, text
+
+
+def confirm_lifecycle(Gtk: object, parent: object, action: str, service_state: dict,
+                      remote_name: str | None, unsaved: bool, recovery: bool,
+                      chinese: bool) -> bool:
+    """Stay-default native confirmation shared by normal and recovery exits."""
+    title, detail = lifecycle_copy(action, service_state, remote_name, unsaved, recovery, chinese)
+    dialog = Gtk.MessageDialog(transient_for=parent, modal=True,
+        message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE, text=title)
+    dialog.set_default_size(560, -1)
+    dialog.format_secondary_text(detail)
+    for label in dialog.get_message_area().get_children():
+        label.set_width_chars(42)
+        label.set_max_width_chars(60)
+    labels = ({"close": ("Close anyway", "仍然关闭"), "quit": ("Quit anyway", "仍然退出"),
+               "relaunch": ("Relaunch anyway", "仍然重新启动")} if recovery else
+              {"close": ("Close", "关闭"), "quit": ("Quit", "退出"), "relaunch": ("Relaunch", "重新启动")})
+    accept = labels[action][int(chinese)]
+    dialog.add_buttons("留下" if chinese else "Stay", Gtk.ResponseType.CANCEL, accept, Gtk.ResponseType.OK)
+    dialog.set_default_response(Gtk.ResponseType.CANCEL)
+    accepted = dialog.run() == Gtk.ResponseType.OK
+    dialog.destroy()
+    return accepted
 
 
 def desktop_home(user_home: Path | None = None, *,
@@ -596,6 +772,7 @@ class LocalControls:
         self.mode = "service"
         self.lock = threading.Lock()
         self.operation = None
+        self.selection_saved = True
         self.unresolved = False
 
     def pending_status(self) -> dict:
@@ -699,6 +876,8 @@ class LocalControls:
                     if not read and (snapshot["running"] == "unknown" or snapshot["keepRunning"] == "unknown"
                                      or command == "local.stop" and snapshot["running"] != "stopped"):
                         raise LaunchError("The local operation needs fresh inspection.")
+                    if command == "local.start":
+                        self.selection_saved = _startup.set("local")["persisted"]
                     with self.lock:
                         if not read or self.unresolved and snapshot["running"] != "unknown" and snapshot["keepRunning"] != "unknown":
                             self.operation, self.unresolved = None, False
@@ -1143,12 +1322,17 @@ def run_gui(prefix: Path, home: Path) -> int:
     cancel = threading.Event()
     worker = None
     closing = False
+    exit_action = None
+    relaunch_proof = None
+    relaunch_contract = None
+    startup = _startup.load()
     log_path = home / "logs/desktop-daemon.log"
     service = ServiceMode(home)
     requests = queue.Queue()
     remote = None
     client_ui = None
     app_scheme = None
+    selection_notice = None
 
     def confirm_local(command: str, args: dict) -> bool:
         if command == "local.start":
@@ -1243,8 +1427,8 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.show_all()
         return False
 
-    def show_web(url: str, fallback: bool = False) -> bool:
-        nonlocal app_scheme, client_ui
+    def show_web(url: str | None, fallback: bool = False) -> bool:
+        nonlocal app_scheme, client_ui, selection_notice
         if closing:
             return False
         if app_scheme is not None:
@@ -1254,15 +1438,15 @@ def run_gui(prefix: Path, home: Path) -> int:
         # health proof. Do not accept a caller-selected upstream address.
         import importlib.util
         from urllib.parse import urlsplit
-        endpoint = urlsplit(url)
+        endpoint = urlsplit(url) if url is not None else None
         try:
-            if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None:
+            if endpoint is not None and (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None):
                 raise ValueError("invalid verified endpoint")
             path = prefix / "share/happyranch/desktop/app_scheme_webkit.py"
             spec = importlib.util.spec_from_file_location("app_scheme_webkit", path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port, home / "desktop-web",
+            app_scheme = module.AppScheme(prefix / "web/dist", endpoint.port if endpoint else None, home / "desktop-web",
                                           local_mode="foreground" if fallback else "service")
             local_controls.mode = "foreground" if fallback else "service"
             app_scheme.local_dispatch = local_controls.request
@@ -1287,6 +1471,100 @@ def run_gui(prefix: Path, home: Path) -> int:
         if content is not None:
             window.remove(content)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        selection_notice = Gtk.Label()
+        selection_notice.set_line_wrap(True)
+        selection_notice.set_no_show_all(True)
+        box.pack_start(selection_notice, False, False, 0)
+        def preference_notice() -> bool:
+            if app_scheme is None or app_scheme.closed:
+                return False
+            if _startup.current()["persisted"]:
+                local_controls.selection_saved = True
+                client_ui.model.startup_selection_saved = True
+            failed = not local_controls.selection_saved or not client_ui.model.startup_selection_saved
+            selection_notice.set_text(tr(
+                "Startup selection wasn't saved. Next launch uses the last confirmed record.",
+                "启动选择未保存。下次启动将使用上次确认保存的记录。"))
+            selection_notice.set_visible(failed)
+            return True
+        preference_notice()
+        notice_timer = GLib.timeout_add(100, preference_notice)
+        selection_notice.connect("destroy", lambda *_args: GLib.source_remove(notice_timer))
+        if endpoint is None:
+            # Main loads even when saved access cannot be discovered. Lookup
+            # does not restore credentials, connect, or start a local service.
+            selected = app_scheme
+            recovery = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            recovery.set_border_width(12)
+            reason = Gtk.Label(label=tr(
+                "No connection selected. Local startup is suppressed. Open Connection to reconnect or start HappyRanch explicitly.",
+                "尚未选择连接。本地自动启动已暂停。请打开连接以重新连接，或明确启动 HappyRanch。"))
+            reason.set_line_wrap(True)
+            recovery.pack_start(reason, False, False, 0)
+            start_button = Gtk.Button(label=tr("Start HappyRanch", "启动 HappyRanch"))
+            def explicit_start(_button: object) -> None:
+                document, token = selected.document, selected.bridge_token
+                def current() -> bool:
+                    return not selected.closed and selected.document == document and selected.bridge_token == token
+                def gate(begin: bool = False) -> str | None:
+                    refusal = selected.effect_refusal(selected.owner_snapshot())
+                    if refusal is None and begin:
+                        selected.local_service_changed("starting")
+                    return refusal
+                def started(result: object, error: object = None) -> None:
+                    if not current():
+                        return
+                    if error:
+                        reason.set_text(tr("Start could not be confirmed. Open Settings to check the local service.",
+                                           "无法确认启动结果。请打开设置以检查本地服务。"))
+                    elif client_ui.model.active_target is None:
+                        refusal = selected.select_target(selected.local_daemon, owner_saves=selected.owner_snapshot())
+                        if refusal is None:
+                            recovery.hide()
+                local_controls.request("local.start", {}, started, current, gate)
+            start_button.connect("clicked", explicit_start)
+            recovery.pack_start(start_button, False, False, 0)
+            box.pack_start(recovery, False, False, 0)
+            def discovered(result: object, error: object = None, _effect: str = "none") -> None:
+                if selected.closed or client_ui.model.main is not selected:
+                    return
+                value = startup["current"]
+                ref = value[7:] if value.startswith("remote:") else ""
+                model = client_ui.model
+                # Lookup is advisory initial selection only. A slow keyring
+                # result cannot replace explicit Start or another chosen target.
+                if (selected.daemon is not None or selected.local_daemon is not None
+                        or local_controls.pending_status()["busy"]
+                        or model.active_target is not None or model.switch_candidate is not None):
+                    return
+                record = model.records.get(ref)
+                if record is not None:
+                    # A selected, disconnected target has no credential owner
+                    # and cannot bootstrap. Reconnect still uses saved_target.
+                    class SavedTarget(module.RemoteDaemon):
+                        def reset(self) -> None:
+                            super().reset()
+                            with self._state:
+                                self.state = "unreachable"
+                        def bootstrap(self, stop: threading.Event | None = None) -> None:
+                            raise module.SchemeError(503, "target_unreachable")
+                    target = SavedTarget(None, target_id=ref,
+                        name=tr("Saved computer", "已保存的电脑"))
+                    target.reset()
+                    selected.daemon = target
+                    model.active_ref = ref
+                    selected.emit_state()
+                    reason.set_text(tr("Saved computer selected, not connected. Open Connection and confirm reconnect.",
+                                       "已选择保存的电脑，但尚未连接。请打开连接并确认重新连接。"))
+                else:
+                    needs_permission = result and result.get("savedAccess") == "needsPermission"
+                    reason.set_text(tr(
+                        "Saved access is unavailable or wasn't saved. Local startup remains suppressed. Open Connection, or start HappyRanch explicitly.",
+                        "保存的访问权限不可用或未保存。本地自动启动仍已暂停。请打开连接，或明确启动 HappyRanch。")
+                        + ("\n" + tr("Unlock the login keyring and check again.", "请解锁登录密钥环并重新检查。")
+                           if needs_permission else ""))
+            if startup["current"] != "remote:unsaved":
+                client_ui.model.discover(discovered)
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
             return True
@@ -1315,8 +1593,22 @@ def run_gui(prefix: Path, home: Path) -> int:
                 service.remove_legacy()
                 error = LaunchError("The old unit was removed and the user manager reloaded. Start HappyRanch when ready.", "start")
                 return
-            url = service.start(cancel, retry=action == "retry")
+            url = None if action == "remote" else service.start(cancel, retry=action == "retry")
+            if action == "remote":
+                GLib.idle_add(show_web, None)
+                while not cancel.is_set():
+                    try:
+                        operation = requests.get(timeout=2)
+                    except queue.Empty:
+                        operation = None
+                    if cancel.is_set():
+                        break
+                    if operation is not None or not local_controls.unresolved:
+                        local_controls.process(operation)
+                return
             if url is not None:
+                if action == "start":
+                    local_controls.selection_saved = _startup.set("local")["persisted"]
                 GLib.idle_add(show_web, url)
                 while not cancel.is_set():
                     try:
@@ -1390,8 +1682,87 @@ def run_gui(prefix: Path, home: Path) -> int:
         worker = threading.Thread(target=supervise, args=(action,), name="desktop-daemon")
         worker.start()
 
-    def request_close(*_args: object) -> bool:
-        nonlocal closing
+    def exit_now(action: str, recovery: bool = False) -> bool:
+        nonlocal closing, exit_action, relaunch_proof, relaunch_contract
+        owner_document = ((app_scheme, app_scheme.document, app_scheme.bridge_token)
+                          if app_scheme is not None else None)
+        # Existing stop-failure recovery owns its worker and bounded retry.
+        if closing:
+            cancel.set()
+            return True
+        with local_controls.lock:
+            if local_controls.operation is not None or local_controls.unresolved:
+                return False
+            local_controls.operation = "app." + action
+        try:
+            if client_ui is not None and (client_ui.model.saving or client_ui.model.storage_busy):
+                return False
+            observation = local_controls.observe()
+            keep = "unsupported" if local_controls.mode == "foreground" else observation["keepRunning"]
+            unowned_remote = ((startup["current"].startswith("remote:") or worker is None) and not service.shutdown_pending
+                              and not service.attached and observation["running"] == "unknown"
+                              and keep == "unknown")
+            if unowned_remote:
+                keep = "unowned"
+            if action == "relaunch":
+                if app_scheme is None or app_scheme.daemon is None:
+                    raise LaunchError("Compatible installed desktop assets could not be verified.")
+                # A cached service range or a newer service does not establish
+                # compatibility. Reobserve via the existing target transport.
+                target_transport = app_scheme.daemon
+                target_transport.reset()
+                try:
+                    target_transport.bootstrap()
+                except Exception:
+                    # An incompatible health reply still supplies its range;
+                    # a failed/unavailable health read leaves it unknown.
+                    pass
+                with app_scheme.daemon._state:
+                    relaunch_contract = app_scheme.daemon.host_contract
+                relaunch_proof = relaunch_assets(prefix, relaunch_contract)
+            if action != "close" or recovery or unowned_remote:
+                target = app_scheme.status()["target"] if app_scheme is not None else None
+                name = target["name"] if target and target["kind"] == "remote" else None
+                unsaved = bool(app_scheme is not None and app_scheme.access_unsaved)
+                if not confirm_lifecycle(Gtk, window, action, {**observation, "keepRunning": keep},
+                                         name, unsaved, recovery, chinese):
+                    return False
+            # Native consent runs a nested GTK loop. Recheck web/native owners
+            # and the actual service policy before admitting any exit.
+            if app_scheme is not None and not recovery:
+                if (owner_document != (app_scheme, app_scheme.document, app_scheme.bridge_token)
+                        or app_scheme.effect_refusal(app_scheme.owner_snapshot())):
+                    return False
+            elif owner_document is not None and not recovery:
+                return False
+            if client_ui is not None and (client_ui.model.saving or client_ui.model.storage_busy):
+                return False
+            after = local_controls.observe()
+            after_keep = "unsupported" if local_controls.mode == "foreground" else after["keepRunning"]
+            if (unowned_remote and not service.shutdown_pending and not service.attached
+                    and after["running"] == "unknown" and after_keep == "unknown"):
+                after_keep = "unowned"
+            if (after_keep != keep or after["running"] != observation["running"] or keep in ("unknown", "checking")
+                    or after["running"] == "unknown" and not unowned_remote):
+                raise LaunchError(tr("Local service outcome is unknown. Stay and check again.",
+                                     "本地服务的退出结果未知。请留在应用中并重新检查。"))
+            if after["running"] == "running" and local_controls.mode == "service":
+                service.current_port()  # Attach custody without issuing start.
+                service.attached = service.shutdown_pending = True
+        except LaunchError as error:
+            dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+                message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.CLOSE,
+                text=tr("Exit held — check again", "退出已暂停 — 请重新检查"))
+            dialog.format_secondary_text(str(error) if chinese is False else
+                tr("Check the local service and compatible installed desktop assets before trying again.",
+                   "请检查本地服务及兼容的已安装桌面资源，然后重试。"))
+            dialog.run()
+            dialog.destroy()
+            return False
+        finally:
+            with local_controls.lock:
+                local_controls.operation = None
+        exit_action = action
         closing = True
         if app_scheme is not None:
             app_scheme.close()
@@ -1404,6 +1775,26 @@ def run_gui(prefix: Path, home: Path) -> int:
             message(tr("Stopping HappyRanch…", "正在停止 HappyRanch…"))
         return True
 
+    def request_lifecycle(action: str) -> bool:
+        if closing:
+            cancel.set()
+            return True
+        if app_scheme is not None:
+            delivered = app_scheme.request_lifecycle(action, exit_now)
+            pending = app_scheme.lifecycle_pending
+            captured = pending[3] if pending else action
+            if delivered and app_scheme.owners is not None and not app_scheme.owner_uncertain:
+                if app_scheme.owners["blocking"] != "hold":
+                    return True  # Web owns dirty/failed keep/discard and clean consent.
+            # Separate Stay-default recovery, never discard a sent save.
+            exit_now(captured, recovery=True)
+        else:
+            exit_now(action, recovery=True)
+        return True
+
+    def request_close(*_args: object) -> bool:
+        return request_lifecycle("close")
+
     def activate(_app: object) -> None:
         nonlocal window, lock, worker
         if window is not None:
@@ -1413,6 +1804,11 @@ def run_gui(prefix: Path, home: Path) -> int:
         header = MainHeader(Gtk, GLib, tr, lambda: app_scheme.status() if app_scheme is not None else None,
                             request_dialog)
         window.set_titlebar(header.header)
+        for label, action in ((tr("Quit", "退出"), "quit"), (tr("Relaunch", "重新启动"), "relaunch"),
+                              (tr("Exit anyway…", "仍要退出…"), "recoveryExit")):
+            button = Gtk.Button(label=label)
+            button.connect("clicked", lambda _button, action=action: app.activate_action(action, None))
+            header.header.pack_end(button)
         window.set_default_size(1100, 760)
         icon = prefix / "share/icons/hicolor/128x128/apps/happyranch.png"
         if icon.is_file():
@@ -1428,17 +1824,25 @@ def run_gui(prefix: Path, home: Path) -> int:
             # Without a session bus, flock still prevents a second daemon.
             app.quit()
             return
-        begin_action()
+        begin_action(None if startup["current"] == "local" else "remote")
 
     quit_action = Gio.SimpleAction.new("quit", None)
-    quit_action.connect("activate", request_close)
+    quit_action.connect("activate", lambda *_args: request_lifecycle("quit"))
     app.add_action(quit_action)
+    relaunch_action = Gio.SimpleAction.new("relaunch", None)
+    relaunch_action.connect("activate", lambda *_args: request_lifecycle("relaunch"))
+    app.add_action(relaunch_action)
+    recovery_action = Gio.SimpleAction.new("recoveryExit", None)
+    # Separate explicit Quit recovery remains available even if a captured
+    # Relaunch cannot verify installed assets and the web cannot answer Keep.
+    recovery_action.connect("activate", lambda *_args: exit_now("quit", True))
+    app.add_action(recovery_action)
     app.set_accels_for_action("app.quit", ["<Primary>q"])
     app.connect("activate", activate)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, request_close)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, request_close)
     try:
-        return app.run([])
+        result = app.run([])
     finally:
         if client_ui is not None:
             client_ui.shutdown()
@@ -1449,6 +1853,15 @@ def run_gui(prefix: Path, home: Path) -> int:
             worker.join(8)
         if lock is not None:
             lock.close()
+    if exit_action == "relaunch":
+        if worker is not None and worker.is_alive():
+            raise LaunchError("The desktop supervisor has not stopped; relaunch was refused.")
+        if relaunch_assets(prefix, relaunch_contract) != relaunch_proof:
+            raise LaunchError("Installed desktop assets changed; relaunch was refused.")
+        subprocess.Popen(["/usr/bin/python3", "-I", str(prefix / "share/happyranch/desktop/happyranch_window.py"),
+                          "--prefix", str(prefix), "--daemon-home", str(home)],
+                         start_new_session=True, close_fds=True)
+    return result
 
 
 def main() -> int:

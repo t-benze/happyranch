@@ -641,9 +641,14 @@ another gate already open answer keep; a repeated ID only focuses the open gate.
 From a proceed answer no new save is admitted; a definitive refusal
 (`effect:"none"`) restores saving, a lost acknowledgement keeps the hold. A
 reload starts with empty module state and sends its own initial summary; nothing
-is replayed. Current Linux native accepts summaries but has no lifecycle listener
-(its `on()` throws, tolerated silently) and refuses gate-bearing summaries until
-S7-L3. Focused checks:
+is replayed. Linux native accepts closed gate-bearing summaries and emits
+`app.lifecycleRequested` for close, Quit and Relaunch. Decisions must match the
+outstanding request and current Main document; Keep cancels, and proceed is
+consumed once after checking owners and native transfers. Pending/unknown saves
+hold exit. Document replacement, unsubscription or WebKit death drops the
+request and retains unresolved uncertainty; explicit recovery Quit uses a native
+loss warning. Native confirmation rechecks owners and local service state before
+applying the existing keep-running policy. Focused checks:
 `node --experimental-transform-types --test web/scripts/native-owners.test.mjs`.
 
 ## Remote read-only configuration (THR-387 S8-2b)

@@ -1232,19 +1232,104 @@ action; a saved active connection keeps its saved-access metadata.
 Owner evidence: section 12 requires pending/unknown owner saves to refuse. The v2
 schema defines the closed `app.ownersChanged` summary (web → native) and the
 `app.lifecycleRequested` event (native → web); see the bridge spec's owner summary
-and lifecycle gate section. Linux Main admits only an exact closed summary
-(`schema`, `blocking`, `counts`) and replies `"{}"`; anything else, including a
-summary carrying `gate`, is refused with `unsupportedCommand`. The web sends a
+and lifecycle gate section. Linux Main admits the closed summary
+(`schema`, `blocking`, `counts`, optional `gate`) and replies `"{}"` after
+admission. A gate must match the outstanding native request and current Main
+document; malformed, stale or consumed decisions invalidate current owner
+evidence and are refused with `invalidRequest` / `effect:none`. Foreign-document
+input cannot invalidate the current document. The web sends a
 registered save only after that acknowledgement; a refused or lost push holds the
 save (nothing is sent). Without an admitted summary, or with pending/unknown
 counts, voluntary commit/disconnect refuses (`owner_save_unknown`,
-`owner_save_pending`); dirty/failed refuses with `owner_edits_pending`. Native does
-not yet emit `app.lifecycleRequested` (S7-L3). Main view
+`owner_save_pending`); dirty/failed refuses with `owner_edits_pending`.
+Main close, Quit and Relaunch emit `app.lifecycleRequested` with schema 2,
+one process-unique requestId and the captured action. Even clean owners need
+the matching web decision. Repeated actions focus that same request; they do
+not replace its action. Keep cancels it; proceed consumes it once, requires
+zero blocking owners, and rechecks native non-GET transfers before effect
+admission. Native confirmation rechecks document identity after its nested GTK
+loop. Unsubscription, document replacement and WebKit death drop the request;
+pending/unknown saves and unfinished non-GETs retain the existing coarse latch.
+Main view
 recreation reattaches the same committed session before navigation, with a fresh
 transport admission; it cancels an unfinished candidate. This is initial attachment
 of the same target, not a voluntary switch. Earlier S5-L2-pending descriptions in
 this handbook describe the preceding source epoch; native/live acceptance remains
 separate from this source implementation.
+
+### Startup selection and native app exits (S7-L3)
+
+`app_startup_selection.py` stores only `local`, `remote:unsaved`, or
+`remote:<opaque saved-access reference>` in
+`$XDG_CONFIG_HOME/happyranch/startup-selection` (absolute XDG path only), else
+`~/.config/happyranch/startup-selection`. It uses the locale preference's locked,
+bounded no-follow read and private atomic-write/directory-fsync pattern. It
+stores no credential, host or display name. Only an absent record defaults to
+local; unreadable/corrupt records suppress local startup. Like locale, a failed
+post-replace sync may leave new bytes visible without confirmed durability.
+
+Ordinary local/Host launch auto-starts through the existing supervisor. Any
+remote record loads packaged Main without local Start, session restoration or
+silent reconnect. A discovered exact saved reference is selected but disconnected;
+no first-saved-computer fallback is used. Missing/removed/locked saved access,
+unsaved access and invalid records keep local startup suppressed with native
+recovery text. Connection and explicit Start HappyRanch remain reachable.
+Reconnection still requires the existing native saved-target consent and an
+explicit commit. Opening/reopening Connection or Settings starts nothing.
+
+The preference changes after confirmed remote target commit, confirmed explicit
+local Start, or confirmed removal/revocation of the recorded access reference.
+Attempts, candidates and Disconnect do not change it. A remote commit with
+session-only access records `remote:unsaved`. Preference write failure does not
+undo a successful commit; a native notice says the selection was not saved and
+the next launch uses the last confirmed record.
+
+Dirty/failed owners use the web's one contextual keep/discard gate. Pending,
+unknown or missing evidence holds normal exits. Native Exit anyway is a separate
+Stay-default loss warning: unsent edits may be lost, a sent save may still take
+effect and is not cancelled, and Check result belongs to the original context.
+It bypasses waiting for web only, never target-commit or native service ownership
+checks. Unknown native local effects remain held. If a remote-only launch never
+started or attached to a local service, or startup ended without an owned
+supervisor/service, and inspection is unavailable, a separate
+native confirmation states that exiting sends no local Start or Stop; it does
+not claim the service is running or stopped. Quit/Relaunch otherwise inspect the
+actual local policy even under remote selection, disclose local interruption
+when Off/Partly on, and disclose remote Host continuity and retained grants.
+Freshly inspected Fully On follows the existing close_window keep-running
+policy. Foreground owned children still stop and reap.
+The separate native Exit anyway action is an explicit Quit recovery. It remains
+available when an outstanding Relaunch cannot verify installed assets and web
+cannot answer Keep; it never silently relaunches.
+
+Relaunch is ordinary Quit followed by launch after supervisor completion and
+desktop-lock release. It first reobserves the relevant target's service contract,
+checks installed desktop CLIENT/MIN_DAEMON against that range, requires readable
+release metadata, packaged Main, native modules and resources, and compiles the
+installed Python without importing it. Reads reject nonregular files and have
+byte/work bounds; the fingerprint covers the complete bounded packaged web
+bundle as well as native code/resources. A content fingerprint must remain
+unchanged after exit. Unknown/incompatible/missing assets refuse relaunch.
+This verifies the inspected installed assets' compatibility, not an updater,
+signed provenance, successful launch/reconnect or resumed work.
+
+Focused standalone native venues (set TMPDIR to a short, existing non-/tmp
+directory and isolate XDG_CONFIG_HOME before running):
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_scheme_lifecycle.py -v
+/usr/bin/python3 -B packaging/linux/desktop/test_app_startup_selection.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_model.py StartupSelectionHooksTests -v
+/usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py StartupLifecycleTests -v
+```
+
+The lifecycle matrix's documented harness drives the real native bridge and
+existing ServiceMode against synthetic systemd/proc/health observations in a
+temporary home. It observes command admission and policy, not real logind.
+The new application lifecycle model and its TLC evidence are under
+`docs/specs/formal/local-service-supervisor/`; service-only Restart behavior is
+unchanged. Installed-package, full Main, real remote pair and session-end
+qualification remain separate evidence.
 
 Focused switch and admitted-document checks use the existing standalone venues:
 

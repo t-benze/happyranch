@@ -55,3 +55,23 @@ Full small logs and byte counts/SHA-256 are retained under dev_agent
 `output/TASK-18530/tlc-CONFIG.log` and `manifest.json`. Real service/logind,
 credential custody, GTK layout and unbounded concurrency remain outside this
 model. No CI gate or automation is added.
+
+## S7-L3 application lifecycle — TASK-18557
+
+2026-11-22 11:12 +08:00, same verified jar SHA-256 and TLC 2.19 as above.
+Sequential `-XX:+UseParallelGC -Xmx512m -workers 1 -fp 0 -seed 1` runs used
+existing `/usr/bin/java`, private `/dev/shm/hr18557` TMPDIR/java.io.tmpdir
+and distinct metadirs. The directory was created in the same invocation.
+
+| Config | Exit | Generated | Distinct | Queue left | Depth | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| app-local-off | 0 | 6490 | 3768 | 0 | 13 | Six safety invariants; no error |
+| app-remote-on | 0 | 6490 | 3768 | 0 | 13 | Same policy under remote selection; no error |
+| app-negative-skip-assets | 12 | 9 | 7 | 5 | 2 | Expected RelaunchNeedsAssets counterexample |
+
+All completed in under one second each. An earlier draft exited 75 because
+an unparenthesized disjunction left `uncertain` unassigned; it was corrected
+before the recorded positive runs. That failed draft is retained in the task
+output and is not passing evidence. Small actual logs are in dev_agent
+`output/TASK-18557/tlc-app-*.log`; finite abstractions and exclusions are in
+README. Existing service-only supervisor behavior/model is unchanged.

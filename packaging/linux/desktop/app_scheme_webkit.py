@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import select
 import socket
 import threading
@@ -86,8 +87,9 @@ def remote_config_request(method: str, path: str) -> bool:
 
 
 def owners_summary(value: object) -> dict:
-    """Closed v2 ownersChanged summary; lifecycle decisions belong to S7-L3."""
-    if (type(value) is not dict or set(value) != {"schema", "blocking", "counts"}
+    """Closed v2 summary; a gate is correlated separately with native intent."""
+    if (type(value) is not dict or set(value) not in (
+            {"schema", "blocking", "counts"}, {"schema", "blocking", "counts", "gate"})
             or type(value["schema"]) is not int or value["schema"] != 2):
         raise ValueError("invalid owner summary")
     counts = value["counts"]
@@ -98,6 +100,14 @@ def owners_summary(value: object) -> dict:
                 "prompt" if counts["dirty"] or counts["failed"] else "none")
     if value["blocking"] != blocking:
         raise ValueError("inconsistent owner summary")
+    if "gate" in value:
+        gate = value["gate"]
+        if (type(gate) is not dict or set(gate) != {"requestId", "decision"}
+                or type(gate["requestId"]) is not str
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", gate["requestId"])
+                or gate["decision"] not in ("keep", "proceed")
+                or gate["decision"] == "proceed" and blocking != "none"):
+            raise ValueError("invalid lifecycle decision")
     return value
 # The launcher loads installed siblings afresh after Restart. Keep this native
 # counter in the process module registry, rather than reusing module-local IDs.
@@ -186,7 +196,8 @@ APP_PAGE = r"""(() => {
   if (window !== top || location.origin !== 'happyranch-app://app') return;
   let active = true, sequence = 0;
   const pending = new Map(), listeners = new Map([
-    ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()], ['host.stateChanged', new Set()]]);
+    ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()],
+    ['app.lifecycleRequested', new Set()], ['host.stateChanged', new Set()]]);
   const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
   const retired = command => {
@@ -235,7 +246,7 @@ APP_PAGE = r"""(() => {
       && args.computerRef.length > 0 && args.computerRef.length <= 256;
     const counts = args?.counts;
     const owners = command === 'app.ownersChanged' && args && !Array.isArray(args)
-      && Object.keys(args).sort().join(',') === 'blocking,counts,schema' && args.schema === 2
+      && ['blocking,counts,schema','blocking,counts,gate,schema'].includes(Object.keys(args).sort().join(',')) && args.schema === 2
       && counts && !Array.isArray(counts) && Object.keys(counts).sort().join(',') === 'dirty,failed,pending,unknown'
       && Object.values(counts).every(n=>Number.isInteger(n) && n >= 0 && n <= 255)
       && args.blocking === (counts.pending || counts.unknown ? 'hold' : counts.dirty || counts.failed ? 'prompt' : 'none');
@@ -289,7 +300,7 @@ APP_RELAY = r"""(() => {
     if (active && admitted && enabled === 'true')
       window.postMessage({channel:'hr-app-event', event:'app.stateChanged', raw}, location.origin);
   }, emit:(event, raw) => {
-    if (active && admitted && ['app.stateChanged','app.dialogRequested','host.stateChanged'].includes(event))
+    if (active && admitted && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged'].includes(event))
       window.postMessage({channel:'hr-app-event', event, raw}, location.origin);
   }});
   const revoke = () => {
@@ -312,7 +323,7 @@ APP_RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-app://app') return;
     const item = event.data;
-    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested','host.stateChanged'].includes(item.event)
+    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged'].includes(item.event)
         && typeof item.enabled === 'boolean') {
       send({event:item.event, enabled:item.enabled}).catch(() => {}); return;
     }
@@ -474,6 +485,8 @@ class AppScheme:
         self.bridge_token = None
         self.subscribed = False
         self.dialog_subscribed = False
+        self.lifecycle_subscribed = False
+        self.lifecycle_pending = None
         self.host_subscribed = False
         self.host_adapter = None
         self.owners = None
@@ -685,6 +698,8 @@ class AppScheme:
         self.document += 1
         self.bridge_token, self.subscribed = None, False
         self.dialog_subscribed = False
+        self.lifecycle_subscribed = False
+        self.lifecycle_pending = None
         self._replace_target(self.daemon)
 
     def owner_snapshot(self) -> tuple[str, ...] | None:
@@ -723,9 +738,26 @@ class AppScheme:
         return self.emit_event("app.dialogRequested", json.dumps({"schema": 2, "dialog": dialog},
                                                                separators=(",", ":")))
 
+    def request_lifecycle(self, action: str, admit: object) -> bool:
+        """One native intent, never replayed across document/subscription loss."""
+        if action not in ("close", "quit", "relaunch"):
+            return False
+        if self.lifecycle_pending is None:
+            if not self.lifecycle_subscribed or self.bridge_token is None or self.closed:
+                return False
+            self.lifecycle_pending = (self.document, self.bridge_token,
+                                      "l" + new_generation(), action, admit)
+        document, token, request_id, captured, _admit = self.lifecycle_pending
+        if document != self.document or token != self.bridge_token:
+            self.lifecycle_pending = None
+            return False
+        return self.emit_event("app.lifecycleRequested", json.dumps(
+            {"schema": 2, "requestId": request_id, "action": captured}, separators=(",", ":")))
+
     def emit_event(self, event: str, raw: str) -> bool:
         subscribed = (self.subscribed if event == "app.stateChanged" else
                       self.dialog_subscribed if event == "app.dialogRequested" else
+                      self.lifecycle_subscribed if event == "app.lifecycleRequested" else
                       self.host_subscribed if event == "host.stateChanged" else False)
         if not subscribed or self.bridge_token is None or self.closed:
             return False
@@ -810,8 +842,22 @@ class AppScheme:
                 self.owners = None  # Invalid current-document input cannot retain clean clearance.
                 if set(item) != {"token", "command", "data"} or type(item["data"]) is not str:
                     raise ValueError("invalid owner push")
-                self.owners = owners_summary(_contract.parse_json(item["data"], 1024))
+                incoming = owners_summary(_contract.parse_json(item["data"], 1024))
+                gate = incoming.get("gate")
+                pending = self.lifecycle_pending
+                if gate is not None and (pending is None or pending[:2] != (self.document, self.bridge_token)
+                                         or gate["requestId"] != pending[2]):
+                    raise ValueError("stale lifecycle decision")
+                self.owners = {k: v for k, v in incoming.items() if k != "gate"}
                 self.owners_unresolved = bool(self.owners["counts"]["pending"] or self.owners["counts"]["unknown"])
+                if gate is not None:
+                    self.lifecycle_pending = None  # Consume before nested native confirmation.
+                    if gate["decision"] == "proceed":
+                        refusal = self.effect_refusal(self.owner_snapshot())
+                        if refusal or not pending[4](pending[3]):
+                            reply.return_error_message(json.dumps({"code": refusal or "permissionDenied",
+                                "effect": "none", "recovery": "nativeRecovery" if refusal else "none"}))
+                            return True
                 reply.return_value(self.JSC.Value.new_string(value.get_context(), "{}"))
                 return True
             if set(item) == {"token", "command", "data"} and item["command"] == "app.status" and item["data"] == "{}":
@@ -869,11 +915,15 @@ class AppScheme:
                     self.client_dispatch(item["command"], document, finish)
                 return True
             elif (set(item) == {"token", "event", "enabled"}
-                  and item["event"] in ("app.stateChanged", "app.dialogRequested", "host.stateChanged") and type(item["enabled"]) is bool):
+                  and item["event"] in ("app.stateChanged", "app.dialogRequested", "app.lifecycleRequested", "host.stateChanged") and type(item["enabled"]) is bool):
                 if item["event"] == "app.stateChanged":
                     self.subscribed = item["enabled"]
                 elif item["event"] == "app.dialogRequested":
                     self.dialog_subscribed = item["enabled"]
+                elif item["event"] == "app.lifecycleRequested":
+                    self.lifecycle_subscribed = item["enabled"]
+                    if not self.lifecycle_subscribed:
+                        self.lifecycle_pending = None
                 else:
                     self.host_subscribed = item["enabled"]
                     if self.host_adapter is None:
@@ -950,6 +1000,8 @@ class AppScheme:
             self.status_stop.set()
         self.bridge_token, self.subscribed = None, False
         self.dialog_subscribed = False
+        self.lifecycle_subscribed = False
+        self.lifecycle_pending = None
         self.generation = new_generation()
         self.cancel_all()
         self.GLib.source_remove(self.timer)
