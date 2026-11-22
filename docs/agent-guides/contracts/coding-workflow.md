@@ -2503,7 +2503,12 @@ belong only to the new tables. The standalone history and complete ownership
 inventory share one bounded acquisition/copy/replay allowance; original Coding
 grammar remains unchanged. Installed scalar recognition holds new v2 marks with
 `reconciliation_required`, retaining original v1 routing.
-Empty/absent storage is `new-engine unavailable`, with no old-Coding fallback.
+Valid installed sequential storage with registered definitions and ownership
+version 2 is `storage readable`, including zero settings and runs, so first-time
+Setup can Save. Absent sequential storage, no definitions or ownership other
+than 2 is `new-engine unavailable`, with no old-Coding fallback; integrity
+refusals remain refusals. Readability does not admit starts: saved Allowed
+settings and the existing admission checks remain required.
 TASK-14576 composes the original complete Coding/document readers after complete
 sequential validation, in one native snapshot and an explicit connection-bound
 scope. Their recursive schema checks use complete independent combined references.

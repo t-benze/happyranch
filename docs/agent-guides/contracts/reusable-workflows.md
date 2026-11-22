@@ -1465,8 +1465,11 @@ canonical bytes/digests and ABI pins, settings generations and operation custody
 native task/result tuple links, visit predecessors/selected inputs, original
 limits, reducer decisions, event sequence/hash/CAS anchors and exact task outbox
 closure. Its transaction joins the caller's snapshot or rolls back its own read
-interval. Empty/absent new storage says `new-engine unavailable`. A populated
-`storage readable` inventory establishes new-record consistency only, never
+interval. Valid installed sequential storage with registered definitions and
+ownership version 2 says `storage readable`, even with zero settings and runs,
+so first-time Setup is reachable. Absent sequential storage, no definitions or
+ownership other than 2 says `new-engine unavailable`; integrity refusals remain
+refusals. A `storage readable` inventory establishes new-record consistency only, never
 engine readiness, business admission, current authority or authentic native
 settlement. Stored verified-check arrays remain adapter assertions for U3 to
 authenticate; document-only content/capability policy is supplied by U3f below,

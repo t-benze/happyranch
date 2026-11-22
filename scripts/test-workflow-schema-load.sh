@@ -6703,7 +6703,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         from runtime.workflows.sequential_start import _generic_selection
         from runtime.workflows.sequential_assignments import parse_assignment_start, assignment_bytes
         from runtime.orchestrator.producer_move import native_writer
-        with s3_fixture() as f:
+        with s3_fixture(released=case == 'first_save') as f:
             first = setup_command(f, 'unit-a-save')
             identity = first['definition']['identity']
             current_path = '/workflows/sequential/views/v2/settings?definition_identity='+identity
@@ -6772,6 +6772,19 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         read_sequential_history(h.conn,expected_org_slug='scratch')
                 return
             work = setup_no_work(f)
+            if case == 'first_save':
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+                before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                for path, versions in (('/workflows/sequential/definitions', {2}),
+                        ('/workflows/sequential/views/v2/definitions', {2, 3})):
+                    initial = (await setup_request(f, 'GET', path)).json()
+                    assert initial['storage'] == 'storage readable', (path, initial)
+                    assert {d['pin']['version'] for d in initial['definitions']} == versions
+                initial_runs = (await setup_request(f, 'GET', '/workflows/sequential/runs')).json()
+                assert initial_runs['storage'] == 'storage readable' and initial_runs['runs'] == []
+                await setup_request(f, 'GET', current_path, expected=404, code='sequential_settings_not_found')
+                assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
             if case in ('first_save', 'validation'):
                 assert not f.conn.execute('SELECT 1 FROM workflow_seq_settings WHERE definition_identity=?',(identity,)).fetchone()
                 for value in ('Allowed', 'Disabled'):
