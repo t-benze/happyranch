@@ -30,7 +30,7 @@ struct AppSchemeOwnerSummary {
     private var uncertain = false
 
     mutating func accept(_ raw: String) throws {
-        blocking = nil; counts = nil
+        blocking = nil; self.counts = nil
         let value = try ConnectionJSON.parse(raw, limit: 1024)
         guard let object = value.object, Set(object.keys) == ["schema", "blocking", "counts"],
               object["schema"] == .integer(2), let counts = object["counts"]?.object,
