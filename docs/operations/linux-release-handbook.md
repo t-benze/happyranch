@@ -245,7 +245,11 @@ that toolchain's license and vendor notices. All are also copied to the .deb's
 After copying the interpreter and runtime wheels,
 `python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
 It classifies supported ELF64 little-endian x86_64/aarch64 layouts first and
-fails closed on unknown ELF types or malformed layouts. Valid `ET_REL` linker
+fails closed on unknown ELF types or malformed layouts. Before exempting `ET_REL`,
+it validates section extents, the section-name string-table index, and supported
+gABI `sh_link`/`sh_info` references and target types (including symbol/string
+tables, relocations, groups and flag-defined section links); unsupported
+reference semantics fail closed in both check and fix modes. Valid `ET_REL` linker
 inputs without program headers (including PBS's aarch64 `config-3.12-*/python.o`)
 are reported as non-loadable and retained byte-for-byte; `PT_GNU_STACK` does not
 apply to them. Every `ET_EXEC`/`ET_DYN` still requires exactly one non-executable

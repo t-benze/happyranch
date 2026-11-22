@@ -34,6 +34,34 @@ def elf_kind(path: Path) -> int:
                 section[1] != 8 and section[4] + section[5] > len(data)  # SHT_NOBITS has no bytes
                 for section in sections):
             raise RuntimeError('unsupported ELF layout: ' + str(path))
+        if names and sections[names][1] != 3:  # e_shstrndx must identify SHT_STRTAB.
+            raise RuntimeError('unsupported ELF layout: ' + str(path))
+        # gABI section-header references: symbol/string tables, relocations,
+        # hashes, dynamic data, groups and extended symbol section indexes.
+        link_types = {2: (3,), 11: (3,), 4: (2, 11), 9: (2, 11),
+                      5: (2, 11), 6: (3,), 17: (2, 11), 18: (2, 11)}
+        for section in sections[1:]:
+            type_, flags, link, info = section[1], section[2], section[6], section[7]
+            if link >= count or (flags & 0x40 and info >= count):  # SHF_INFO_LINK
+                raise RuntimeError('unsupported ELF layout: ' + str(path))
+            targets = link_types.get(type_)
+            if targets:
+                if sections[link][1] not in targets:
+                    raise RuntimeError('unsupported ELF layout: ' + str(path))
+            elif link and not flags & 0x80:  # Only SHF_LINK_ORDER defines another link.
+                raise RuntimeError('unsupported ELF layout: ' + str(path))
+            if type_ in (2, 11):  # sh_info is a symbol count, not a section index.
+                if section[9] != 24 or section[5] % 24 or not 0 < info <= section[5] // 24:
+                    raise RuntimeError('unsupported ELF layout: ' + str(path))
+            elif type_ in (4, 9):  # Relocations in ET_REL must name a target section.
+                if not 0 < info < count or sections[info][1] == 0:
+                    raise RuntimeError('unsupported ELF layout: ' + str(path))
+            elif type_ == 17:  # SHT_GROUP sh_info indexes the linked symbol table.
+                symbols = sections[link]
+                if symbols[9] != 24 or symbols[5] % 24 or info >= symbols[5] // 24:
+                    raise RuntimeError('unsupported ELF layout: ' + str(path))
+            elif info and (type_ in (5, 6, 18) or not flags & 0x40):
+                raise RuntimeError('unsupported ELF layout: ' + str(path))
     elif (header[9] != 56 or not 0 < header[10] < 0xfffc
           or header[5] < ehdr.size or header[5] + header[10] * 56 > len(data)):
         raise RuntimeError('unsupported ELF layout: ' + str(path))
