@@ -8372,7 +8372,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             with s5reopen(f) as opened: assert a in read_sequential_history(opened,expected_org_slug='scratch').run_ids
             await f.sid('draft-stale-new')
             stale=deepcopy(decision);stale['workflows'][0]['operation_key']='fresh-stale-pin'
-            response=await dr_post(f,stale,status=409);assert 'sequential_admission_pin_conflict' in response.text,response.text
+            await dr_post(f,stale,status=409,code='workflow_seq_settings_generation_stale')
         if case=='C24':
             await setup_put(f,setup_admission(f.draft_save,'draft-disabled',5,'Disabled'))
         for r in runs: await dr_finish(f,r['id'])
