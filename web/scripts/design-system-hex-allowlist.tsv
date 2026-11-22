@@ -1,8 +1,8 @@
 # path<TAB>line<TAB>column<TAB>value<TAB>specific temporary reason
 design-system/patterns/KbdChip.tsx	19	210	rgba(0,0,0,0.4)	Existing inset-key shadow residue frozen pending a separately reviewed token migration
 design-system/primitives/Dialog.tsx	38	27	bg-black/60	Existing modal scrim palette utility frozen pending a separately reviewed semantic-token migration
-features/settings/SettingsDialog.tsx	378	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
-features/settings/sections/OrganizationSection.tsx	711	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
+features/settings/SettingsDialog.tsx	371	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
+features/settings/sections/OrganizationSection.tsx	701	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/OverviewPage.tsx	127	65	bg-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/TierEditorDialog.tsx	479	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
 design-system/patterns/Composer.tsx	359	161	bg-transparent	legacy default Tailwind special colour utility

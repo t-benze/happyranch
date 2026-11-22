@@ -46,6 +46,12 @@ Two independent conditions, **both** required for a fresh sequential start. Neit
 
 Row IDs are deterministic (`sha256` of org/principal/operation_key), following the engine's `_identity` pattern. After COMMIT, the script runs the unchanged `read_sequential_history(conn, expected_org_slug=…)` as an oracle and requires `'storage readable'`. On any oracle refusal it reports a non-zero exit. Rows stay immutable (schema triggers), so a refusal after COMMIT is reported as committed-but-unreadable and is never "repaired".
 
+`storage readable` means validated installed sequential storage with registered
+definitions and ownership version 2, including zero settings and runs. Missing
+sequential layout, no definitions or ownership other than 2 remains unavailable;
+integrity refusals remain refusals. This oracle is a consistency check. Start
+admission separately requires saved Allowed settings and the venue fence below.
+
 `--admission Disabled` publishes the next generation as Disabled. Because U3b requires the newest generation, every pin to an older `Allowed` generation is then refused (`settings_generation_stale`).
 
 ### 1.2 Venue fence (filesystem): marker in the isolated daemon home

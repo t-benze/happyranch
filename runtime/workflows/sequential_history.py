@@ -913,8 +913,10 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             reserve_cancellation: bool = False) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
-    Empty/absent storage is explicitly unavailable. A readable inventory is not
-    an installed engine, admission, authorization or safe-to-launch disposition.
+    Absent storage, missing definitions or ownership != 2 is unavailable.
+    Valid installed storage needs no settings or runs to be readable.
+    A readable inventory is not an installed engine, admission, authorization
+    or safe-to-launch disposition.
     Original complete document/Coding readers validate retained data on both
     legacy-only and combined layouts. Their recursive structure checks select
     complete combined references only inside the explicit new-reader scope.
@@ -1039,7 +1041,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
         if reserve_cancellation:
             _reserve_generic_cancellation(data, budget)
         budget.check()
-        ready = bool(definitions and settings and layout.ownership == 2)
+        ready = bool(definitions and layout.ownership == 2)
         result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
                                    tuple(sorted(definitions)), tuple(sorted(runs)), retained)
         if task_id is not None:
