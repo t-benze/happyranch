@@ -446,7 +446,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
       {/* S8-2b: on a remote Host every Organization control (incl. Work
           Hours) stays visible but read-only; native refuses the writes. */}
-      {readOnlyHost && <RemoteReadOnlyNote host={readOnlyHost} />}
+      {readOnlyHost && owner.remoteRefusal === null && <RemoteReadOnlyNote host={readOnlyHost} />}
       <fieldset disabled={readOnlyHost !== null} className="m-0 min-w-0 border-0 p-0" data-testid="organization-fields">
       {/* session timeout */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.session.heading')}</h4>
