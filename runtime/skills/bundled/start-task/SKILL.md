@@ -622,7 +622,7 @@ evidence is not acceptance. Deferred native recovery/reassignment remains
 unavailable. Ordinary routing stays legacy.
 
 S8b registers Coding v3 as generic Coding data only. Public Start@1 discovery
-and composition remain unchanged; public @2 start/composition stays closed.
+and composition remain unchanged; public @2 discovery/compose is available; admission stays unavailable.
 Repository resolve/bind/preflight and sequential finalize/journal transports refuse
 generic @2 selections with `sequential_domain_transport_unavailable`; perform only
 the authorized engineering duties with existing tools. Original @1 replay,
@@ -633,7 +633,7 @@ v3 roles, then explicitly Allow/Disable new runs. Save preserves admission and
 creates no work; Disable never changes admitted-run pins. Pending/uncertain
 operations keep their original kind/key/body; resolve uncertainty only through
 original-key lookup. Agent/task/CLI sessions gain no Founder setup entitlement.
-Public Start@2 and Draft→Review registration remain separate units. Live setup,
+Public Start@2 admission and Draft→Review registration remain separate units. Live setup,
 Allow, deployment/restart and the pilot remain founder-reserved.
 
 Keep these live boundaries in every lane:
@@ -758,6 +758,22 @@ Thread-originated ordinary sources have a partial thread tail with no redelivery
 guarantee. Worker/self-only and direct thread/wake/dream sessions cannot use this
 manager task decision. Retired coding.v1 / old fresh coding start@1/@2 remain
 refused. Unavailable discovery grants no setup, install, role or start authority.
+
+@2 discovery/compose available; public admission unavailable
+(`workflow_start_v2_unavailable`) in this release, including Allowed Coding v3.
+An eligible own ordinary manager session may read the additive CLI-only GET
+`/api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID`.
+The same read-only composer accepts explicit `workflow-sequential-start-compose@2`
+with 1–8 workflows: exact selector/settings, stable member key, request/inputs,
+role/step overrides and explicit lower limits. Preserve omitted/value/null step
+options and omitted/empty notification consumption. It prints an advisory closed
+plural GenericStartCommand decision and an unavailable warning. Do not submit it
+for admission: the completion route refuses before native/workflow writes or
+queued work. Discovery reserves nothing and reports remaining allowance
+unavailable; no start/control/wait continuation, setup or direct thread/wake/dream
+start authority follows. @1 guidance and bytes remain unchanged. B2+B3 owns the
+complete admission/continuation/recovery path in one later PR; unit (c) owns
+Draft→Review. No live operation or pilot is authorized by this release.
 
 ## Task scratch and owned processes
 

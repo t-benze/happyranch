@@ -1,9 +1,11 @@
 # Workflow replacement of dispatch chains: technical design and migration plan
 
-Current R2 unit (a) addendum: additive Coding v3/@2 setup reads/Save and separate
+Current R2 unit (a) and (b) B1 addendum: additive Coding v3/@2 setup reads/Save and separate
 Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
-Public Start@2 and Draft→Review registration remain undelivered. Registration
+Public Start@2 discovery/composer is delivered with admission unavailable.
+Start@2 admission/continuation/recovery (B2+B3) and Draft→Review registration
+remain undelivered. Registration
 still creates no defaults or admission; offline fresh admission remains refused.
 Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
 Exact routes, custody and supported fixture commands:

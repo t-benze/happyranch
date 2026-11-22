@@ -15,6 +15,7 @@ def build_capabilities_prompt(
     reviewer_configuration_state: str = "invalid",
     missing_reviewer_agents: list[str] | None = None,
     workflow_start_available: bool = False,
+    workflow_start_v2_discovery: bool = False,
 ) -> str:
     """Build the prompt sent to a task owner for each decision step.
 
@@ -306,6 +307,16 @@ def build_capabilities_prompt(
             "@1 limits: one run per source, fixed assignments, source-terminal semantics: the source task ends when the run returns.",
             "Thread-originated ordinary tasks have only a partial thread tail, with no redelivery guarantee.",
             "Unavailable discovery grants no setup authority. Retired coding.v1 and old fresh workflow-coding-start@1/@2 stay refused.\n",
+        ])
+
+    if workflow_start_v2_discovery and not self_only:
+        sections.extend([
+            "@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable.",
+            "Read your own CLI GET /api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID for Coding v3/@2.",
+            "The same read-only start-compose command accepts explicit format workflow-sequential-start-compose@2 and 1–8 workflows.",
+            "Preserve discovered settings/pins, stable member keys, explicit lower allocations and omitted/value/null step overrides.",
+            "Its plural GenericStartCommand decision is advisory only; do not submit it for admission in this release.",
+            "Discovery reserves nothing; remaining source/root/lineage allowance is unavailable. No @2 start/control/wait continuation is offered here.\n",
         ])
 
     if prior_steps:

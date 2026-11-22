@@ -65,6 +65,13 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
      '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'),
 )
+START2_CASES = ('staged_unavailable', 'discovery', 'audience', 'pins_settings', 'compose',
+    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui')
+start2_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--start2='):
+    start2_case = sys.argv[1].split('=', 1)[1]
+    assert start2_case in ('all', *START2_CASES)
+    sys.argv[1:] = ['--assignments']
 SETUP_ADMISSION_CASES = ('first_save', 'validation', 'replay', 'race', 'pins', 'rollback', 'history', 'legacy_golden')
 setup_admission_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--setup-admission='):
@@ -2326,7 +2333,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2438,10 +2445,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case and not setup_admission_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case and not setup_admission_case and not start2_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -3011,7 +3018,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or start2_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -5542,6 +5549,460 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         return {table: tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
             for table in ('tasks', 'task_results', 'workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_events',
                           'workflow_seq_assignments', 'workflow_seq_outbox')}
+
+    async def start2_cases(case):
+        import httpx
+        from dataclasses import replace
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.orchestrator import run_step
+        from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        from runtime.models import NextStep, ThreadRecord
+        from runtime.runtime import port_file
+        from cli.main import build_parser
+        from runtime.workflows import sequential_release as release
+        from runtime.workflows.sequential_history import _bytes
+        with s3_fixture() as f:
+            sid, task = 'start2-sid', 'start2-source'
+            f.db.insert_thread(ThreadRecord(id='THR-start2', subject='Private Start2 origin'))
+            f.db.insert_task(TaskRecord(id=task, assigned_agent='s3_manager', team='engineering',
+                task_type='task', status='in_progress', current_session_id=sid, brief='Private Start2 source', origin_thread_id='THR-start2'))
+            f.org.sessions.set_active(task, 's3_manager', sid, org_slug='scratch')
+            f.org.orchestrator._main_loop = asyncio.get_running_loop()
+            f.org.orchestrator._queue = asyncio.Queue()
+            f.org.orchestrator._host_supervisor = HostSessionSupervisor(backend=PassthroughBackend(),
+                policy=canary_policy(), publisher=lambda receipt: None)
+            state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+            state.orgs['scratch'], state.profile_coordinator = f.org, f.coordinator
+            app = create_app(state)
+            home = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])
+            (home / 'daemon.token').write_text('synthetic-start2-founder')
+            port_file().write_text('43210')
+            url = '/api/v1/orgs/scratch/workflows/sequential/start-context/v2'
+            cli = {'x-happyranch-surface': 'cli'}
+            loop, real_client = asyncio.get_running_loop(), httpx.Client
+            requests, response_padding = [], 0
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                def inventory():
+                    return tuple(f.conn.iterdump()), f.conn.total_changes, f.org.orchestrator._queue.qsize()
+                async def read(*, path=url, params=None, headers=None, content=None, status=200, code=None):
+                    before, sql = inventory(), []
+                    f.conn.set_trace_callback(sql.append)
+                    try:
+                        response = await client.request('GET', path, params=[('session_id', sid)] if params is None else params,
+                            headers=cli if headers is None else headers, content=content)
+                    finally:
+                        f.conn.set_trace_callback(None)
+                    assert inventory() == before, ('B1 discovery wrote native/workflow/queue state', case)
+                    assert not any(s.lstrip().split(' ', 1)[0].upper() in
+                        ('INSERT','UPDATE','DELETE','REPLACE','CREATE','DROP','ALTER','COMMIT','END') for s in sql), sql
+                    assert response.status_code == status, (case, status, response.status_code, response.text)
+                    assert response.headers.get('cache-control') == 'no-store'
+                    if code:
+                        assert response.json() == {'detail': {'code': code}}, response.text
+                    return response
+                def transport(request):
+                    requests.append((request.method, request.url.path))
+                    assert request.method == 'GET' and request.url.path in (url, url.removesuffix('/v2'))
+                    assert request.headers['x-happyranch-surface'] == 'cli' and 'authorization' not in request.headers
+                    response = asyncio.run_coroutine_threadsafe(client.send(request), loop).result(timeout=10)
+                    return httpx.Response(response.status_code, content=response.content+b' '*response_padding, headers=response.headers)
+                async def compose(payload, *, session=sid, error=None, staged=True, raw=None, padding=0):
+                    nonlocal response_padding
+                    response_padding=padding
+                    path = home / 'start2-compose.json'
+                    original = _bytes(payload) if raw is None else raw
+                    path.write_bytes(original)
+                    args = build_parser().parse_args(['workflows','sequential','start-compose','--org','scratch',
+                        '--session-id',session,'--from-file',str(path),'--json'])
+                    out, err = io.StringIO(), io.StringIO()
+                    before = inventory()
+                    def invoke():
+                        with redirect_stdout(out), redirect_stderr(err), patch.object(httpx, 'Client',
+                                lambda **kw: real_client(transport=httpx.MockTransport(transport), **kw)):
+                            try:
+                                args.func(args)
+                            except SystemExit as exc:
+                                return exc.code
+                        return 0
+                    sql = []
+                    f.conn.set_trace_callback(sql.append)
+                    try:
+                        result = await asyncio.to_thread(invoke)
+                    finally:
+                        f.conn.set_trace_callback(None)
+                    assert inventory() == before and path.read_bytes() == original, ('B1 composer wrote state/input', case)
+                    assert not any(s.lstrip().split(' ',1)[0].upper() in
+                        ('INSERT','UPDATE','DELETE','REPLACE','CREATE','DROP','ALTER','COMMIT','END') for s in sql), sql
+                    if error:
+                        assert result == 2 and not out.getvalue() and error in err.getvalue(), (case, result, out.getvalue(), err.getvalue(), error)
+                        return
+                    assert result == 0, (case, result, err.getvalue())
+                    if staged:
+                        assert 'public admission unavailable: workflow_start_v2_unavailable' in err.getvalue(), 'B1 composer advertised admission'
+                    raw = out.getvalue().removesuffix('\n').encode()
+                    assert raw == _bytes(json.loads(raw)), 'B1 canonical decision bytes'
+                    assert NextStep.model_validate_json(raw).model_dump(mode='json') == json.loads(raw)
+                    return raw
+                try:
+                    if case == 'legacy_bytes':
+                        legacy = setup_command(f, 'start2-legacy', legacy=True)
+                        await setup_put(f, legacy)
+                        saved = (await setup_put(f,setup_admission(legacy,'start2-legacy-allow',1))).json()['original']
+                        response = await read(path=url.removesuffix('/v2'))
+                        member = dict(definition='release/happyranch/coding@2', settings={k:saved[k] for k in ('generation','snapshot_digest')},
+                            operation_key='start2-legacy-compose', request='Frozen @1 中文', inputs=[])
+                        decision = await compose(member, staged=False)
+                        from runtime.workflows.sequential_start import SequentialStartDecision
+                        parsed = SequentialStartDecision.model_validate_json(decision)
+                        output = os.environ.get('WORKFLOW_START2_GOLDEN_OUTPUT')
+                        assert output, 'legacy_bytes requires an absolute WORKFLOW_START2_GOLDEN_OUTPUT'
+                        Path(output).write_bytes(b'context\n'+response.content+b'\ncomposer\n'+decision+b'\ndecision\n'+_bytes(parsed.model_dump(mode='json'))+b'\n')
+                        print('PASS Start2 legacy_bytes raw context/composer/decision exported; compare with pinned base', flush=True)
+                        return
+                    if case == 'pins_settings':
+                        empty=(await read()).json()['definitions'][0]
+                        assert empty['settings'] is None and empty['unavailable_cause']=='sequential_settings_absent'
+                        from runtime.workflows.sequential_definition import compile_generic_definition
+                        from runtime.workflows.sequential_release import StagedGenericDefinition
+                        missing_data=s3_definition()
+                        missing_data['identity']='release/synthetic/unregistered'
+                        package=_bytes(missing_data)+b'\n'
+                        missing_compiled=compile_generic_definition(package[:-1],source_digest=hashlib.sha256(package).hexdigest())
+                        entry=StagedGenericDefinition(package='runtime',resource=('workflows','builtin_templates','missing.json'),
+                            size=len(package),pin=missing_compiled.pin)
+                        class MissingResource:
+                            def joinpath(self,*parts): return self
+                            def open(self,mode): return io.BytesIO(package)
+                        with patch.dict(release.GENERIC_CATALOG,{(missing_compiled.pin.identity,1):entry}), patch.object(
+                                release.resources,'files',return_value=MissingResource()):
+                            missing=(await read(params=[('session_id',sid),('definition',missing_compiled.pin.identity+'@1')])).json()['definitions'][0]
+                            assert not missing['registered'] and missing['unavailable_cause']=='sequential_definition_not_registered'
+                    first = setup_command(f, 'start2-save')
+                    no_work = setup_no_work(f)
+                    await setup_put(f, first)
+                    await setup_put(f, setup_admission(first, 'start2-allow', 1))
+                    assert setup_no_work(f) == no_work, 'B27 Save/Allow allocated work'
+                    response = await read()
+                    context = response.json()
+                    selected, = context['definitions']
+                    assert context['format'] == 'workflow-sequential-start-context@2' and context['max_runs'] == 8
+                    assert context['assignments'] == 'defaults-with-overrides' and context['source_semantics'] == 'initiator-continues'
+                    assert context['availability'] == 'admission-unavailable' and context['unavailable_cause'] == 'workflow_start_v2_unavailable', 'B1 release fence absent'
+                    assert selected['registered'] and selected['admission'] == 'Allowed' and selected['unavailable_cause'] is None, selected
+                    assert selected['pin'] == first['definition'] and selected['settings']['generation'] == 2
+                    member = dict(definition='release/happyranch/coding@3',
+                        settings={k:selected['settings'][k] for k in ('generation','snapshot_digest')},
+                        operation_key='start2-member', request='Private 中文 goal', inputs=[], role_overrides=[], step_overrides=[],
+                        lower_limits=dict(max_visits=8,max_events=128,max_recoveries=0,node_revisions=dict(develop=1)))
+                    payload = dict(format='workflow-sequential-start-compose@2', workflows=[member])
+                    if case in ('staged_unavailable', 'compose'):
+                        if case == 'compose':
+                            payload['workflows'].append(dict(member,operation_key='start2-second'))
+                        raw = await compose(payload)
+                        command = json.loads(raw)['workflows'][0]
+                        assert command['definition'] == first['definition'] and command['settings'] == member['settings']
+                        assert command['request'] == member['request'] and command['operation_key'] == member['operation_key']
+                        assert 'consume_notifications' not in json.loads(raw)
+                        await compose(dict(payload,consume_notifications=['foreign-notification']),error='sequential_notification_not_delivered')
+                        assert json.loads(await compose(dict(payload,consume_notifications=[])))['consume_notifications'] == []
+                        if case == 'staged_unavailable':
+                            before = inventory()
+                            callback = await client.post('/api/v1/orgs/scratch/tasks/'+task+'/completion',
+                                headers=dict(cli,authorization='Bearer synthetic-setup-founder'),
+                                json=dict(session_id=sid,agent='s3_manager',status='completed',confidence=80,
+                                    output_summary='Private unavailable composed decision',decision=json.loads(raw)))
+                            assert callback.status_code == 409 and callback.json()['detail']['code'] == 'workflow_start_v2_unavailable', callback.text
+                            assert inventory() == before, 'C1 callback wrote result/attempt/claim/wait-set/consumption/queue'
+                            assert not f.conn.execute('SELECT 1 FROM task_results WHERE task_id=?',(task,)).fetchone()
+                            prompt = run_step._build_agent_prompt(f.org.orchestrator,f.db.get_task(task),'s3_manager')
+                            assert '@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable' in prompt
+                    elif case == 'discovery':
+                        assert [r['role'] for r in selected['roles']] == ['developer','final_manager','qa','reviewer']
+                        assert len(selected['defaults']) == 4 and all(r['responsibilities'] for r in selected['roles'])
+                        # A genuine pre-existing generic wait set, not a forged ownership marker.
+                        with s5fixture() as adopted:
+                            await setup_put(adopted,setup_command(adopted,'start2-save'))
+                            await setup_put(adopted,setup_admission(setup_command(adopted,'unused'),'start2-allow',1))
+                            s5hold(adopted)
+                            from runtime.workflows.sequential_start_discovery import read_start_context_v2
+                            adopted.db.update_task(adopted.source.id,current_session_id='start2-adopted',block_kind=None)
+                            adopted.org.sessions.set_active(adopted.source.id,'s3_manager','start2-adopted',org_slug='scratch')
+                            page=s5page(adopted,'start2-adopted',write=True)
+                            assert len(page['notifications'])==1
+                            before = tuple(adopted.conn.iterdump()),adopted.conn.total_changes
+                            value = await read_start_context_v2(adopted.org,task_id=adopted.source.id,principal='s3_manager',
+                                session_id='start2-adopted',selector=None,revalidate=lambda:None)
+                            assert value.source_semantics == 'initiator-continues' and value.availability == 'admission-unavailable'
+                            assert value.definitions[0].model_dump(mode='json')==selected
+                            assert value.delivered_notifications==tuple(item['notification_id'] for item in page['notifications'])
+                            adopted_prompt=run_step._build_agent_prompt(adopted.org.orchestrator,adopted.db.get_task(adopted.source.id),'s3_manager')
+                            assert '@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable' in adopted_prompt
+                            assert before == (tuple(adopted.conn.iterdump()),adopted.conn.total_changes)
+                    elif case == 'audience':
+                        from datetime import datetime, timezone
+                        from runtime.models import DreamRecord, WorkHourRecord, ThreadInvocationPurpose
+                        from runtime.workflows.recovery import classify_task
+                        from runtime.orchestrator.producer_move import run_native_producer
+                        # Compose a valid plural decision once with the eligible source;
+                        # denied callers must reach audience guards, not input validation.
+                        decision = json.loads(await compose(payload))
+                        async def denied(label, session, *, source=task, principal='s3_manager',
+                                         read_status=403, read_code='sequential_task_session_required',
+                                         callback_code='workflow_start_v2_unavailable'):
+                            await read(params=[('session_id',session)],status=read_status,code=read_code)
+                            await compose(payload,session=session,
+                                error=f'sequential_start_context_refused:{read_status}:{read_code}')
+                            before, sql = inventory(), []
+                            f.conn.set_trace_callback(sql.append)
+                            try:
+                                callback = await client.post('/api/v1/orgs/scratch/tasks/'+source+'/completion',
+                                    headers=dict(cli,authorization='Bearer synthetic-setup-founder'),
+                                    json=dict(session_id=session,agent=principal,status='completed',confidence=80,
+                                        output_summary='Private B02 denied '+label,decision=decision))
+                            finally:
+                                f.conn.set_trace_callback(None)
+                            assert inventory() == before, ('B02 callback wrote state/queue', label)
+                            assert not any(s.lstrip().split(' ',1)[0].upper() in
+                                ('INSERT','UPDATE','DELETE','REPLACE','CREATE','DROP','ALTER','COMMIT','END') for s in sql), (label,sql)
+                            assert callback.status_code == 409 and callback.json()['detail']['code'] == callback_code, (label,callback.text)
+                            print('PASS Start2 audience',label,'discovery',read_status,read_code,
+                                'composer exit2 callback409',callback_code,'zero writes',flush=True)
+                        invocation = f.db.mint_thread_invocation(thread_id='THR-start2',agent_name='s3_manager',
+                            triggering_seq=0,purpose=ThreadInvocationPurpose.REPLY)
+                        assert f.db.get_pending_invocation(invocation.invocation_token) is not None
+                        assert f.org.sessions.get_context_by_session(invocation.invocation_token) is None
+                        await denied('direct_thread_token',invocation.invocation_token)
+                        now = datetime.now(timezone.utc)
+                        f.db.work_hours.insert(WorkHourRecord(id='WORKHOUR-1',agent_name='s3_manager',
+                            local_date='2026-11-22',slot='private',mode='windowed',scheduled_for=now))
+                        f.db.insert_dream(DreamRecord(id='DREAM-1',agent_name='s3_manager',local_date='2026-11-22',
+                            scheduled_for=now,window_end=now))
+                        for kind, source_id in (('wake','WORKHOUR-1'),('dream','DREAM-1')):
+                            async def producer_action(owner):
+                                assert owner is not None and owner.state.kind == kind and owner.state.task_id is None
+                                assert owner.state.source_id == source_id and owner.state.agent_id == 's3_manager'
+                                assert f.org.sessions.get_context_by_session(owner.session_id) is None
+                                await denied(kind+'_invocation',owner.session_id)
+                            # Genuine native producer reservation/action, without provider execution.
+                            await run_native_producer(f.org,kind,source_id,producer_action)
+                        f.org.sessions.set_active(task,'s3_manager','start2-foreign-org',org_slug='foreign')
+                        assert f.org.sessions.get_context_by_session('start2-foreign-org') == ('foreign',task,'s3_manager')
+                        await denied('foreign_org_binding','start2-foreign-org')
+                        f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
+                        f.org.sessions.clear(task,'s3_manager')
+                        assert f.db.get_task(task).status == 'in_progress' and f.db.get_task(task).current_session_id == sid
+                        assert f.org.sessions.get_context_by_session(sid) is None
+                        await denied('ended_session',sid)
+                        f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
+                        # Admit through the existing private writer to obtain genuine
+                        # ownership, rather than forging a subtask or ownership marker.
+                        owned = f.admit(f.command)
+                        for label, owned_task, owner_kind in (
+                                ('workflow_step',owned.visit_task_id,'seq_visit'),
+                                ('workflow_carrier',owned.carrier_task_id,'seq_carrier')):
+                            record = f.db.get_task(owned_task)
+                            owned_sid = 'start2-'+label
+                            # Match the existing S8b private running-visit fixture;
+                            # generic native update_task correctly refuses owned tasks.
+                            if label == 'workflow_step':
+                                f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?",(owned_sid,owned.visit_id))
+                                f.conn.execute("UPDATE tasks SET status='in_progress',current_session_id=? WHERE id=?",(owned_sid,owned_task))
+                                f.conn.commit()
+                            # A genuine carrier has no native SID; a registry
+                            # binding must not turn it into an ordinary source.
+                            f.org.sessions.set_active(owned_task,record.assigned_agent,owned_sid,org_slug='scratch')
+                            assert classify_task(f.db,owned_task,org_slug='scratch').kind == owner_kind
+                            await denied(label,owned_sid,source=owned_task,principal=record.assigned_agent,
+                                callback_code='workflow_reconciliation_required' if label=='workflow_carrier' else 'workflow_start_v2_unavailable')
+                        for headers in ({},dict(cli,origin='http://browser'),dict(cli,authorization='Bearer synthetic-start2-founder')):
+                            await read(headers=headers,status=403,code='sequential_task_session_required')
+                        for params in ([('session_id',sid),('session_id',sid)],[('session_id',sid),('extra','x')]):
+                            await read(params=params,status=422,code='sequential_start_context_invalid')
+                        await read(content=b'{}',status=422,code='sequential_start_context_invalid')
+                        await read(params=[('session_id','foreign')],status=403,code='sequential_task_session_required')
+                        f.org.sessions.set_active('THR-start2','s3_manager','start2-thread',org_slug='scratch')
+                        await denied('missing_native_task','start2-thread',read_status=404,read_code='task_not_found')
+                        f.db.insert_task(TaskRecord(id='start2-worker',assigned_agent='s3_author',team='engineering',
+                            task_type='task',status='in_progress',current_session_id='start2-worker-sid',brief='Private worker source'))
+                        f.org.sessions.set_active('start2-worker','s3_author','start2-worker-sid',org_slug='scratch')
+                        await denied('worker','start2-worker-sid',source='start2-worker',principal='s3_author')
+                        store=f.db._task_pause_store
+                        store.control(task,held=True,expected_generation=0,actor='founder',sessions=f.org.sessions)
+                        await denied('paused_source',sid,read_status=409,read_code='sequential_source_paused')
+                        store.control(task,held=False,expected_generation=1,actor='founder',sessions=f.org.sessions)
+                        f.org.sessions.register_recovery_session(task,'s3_manager',sid,org_slug='scratch')
+                        await denied('recovery_session',sid)
+                        f.org.sessions.set_active(task,'s3_manager',sid,org_slug='scratch')
+                        f.conn.execute('UPDATE tasks SET task_type=? WHERE id=?',('subtask',task));f.conn.commit()
+                        await denied('ordinary_subtask',sid)
+                        f.conn.execute('UPDATE tasks SET task_type=? WHERE id=?',('task',task));f.conn.commit()
+                        f.db.update_task(task,status='completed')
+                        await denied('completed_source',sid,callback_code='task_not_active')
+                        f.db.update_task(task,status='in_progress',completed_at=None,cancelled_at=now)
+                        assert f.org.sessions.get_active(task,'s3_manager') == sid
+                        await denied('cancelled_source',sid,callback_code='task_not_active')
+                    elif case == 'pins_settings':
+                        await read(params=[('session_id',sid),('definition','release/happyranch/coding@3')])
+                        for selector in ('release/happyranch/coding@2','coding.v1','/tmp/unregistered.json','release/unknown/workflow@1'):
+                            await read(params=[('session_id',sid),('definition',selector)],status=409,code='sequential_release_unavailable')
+                        key=('release/happyranch/coding',3)
+                        entry=release.GENERIC_CATALOG[key]
+                        with patch.dict(release.GENERIC_CATALOG,{key:replace(entry,size=entry.size-1)}):
+                            await read(status=409,code='sequential_release_corrupt')
+                        with patch.object(release.resources,'files',side_effect=OSError('private missing package')):
+                            await read(status=409,code='sequential_release_unavailable')
+                        legacy=setup_command(f,'start2-old-defaults',generation=2,legacy=True)
+                        await setup_put(f,legacy)
+                        wrong=(await read()).json()['definitions'][0]
+                        assert wrong['unavailable_cause']=='sequential_settings_version_conflict' and wrong['settings'] is None
+                    elif case in ('batch','member8'):
+                        eight=dict(payload,workflows=[dict(member,operation_key='partition-'+str(i)) for i in range(8)])
+                        raw=await compose(eight)
+                        assert len(json.loads(raw)['workflows'])==8 and len(raw)<=1048576
+                        for count in (0,9):
+                            await compose(dict(payload,workflows=[dict(member,operation_key='shape-'+str(i)) for i in range(count)]),error='sequential_compose_input_invalid')
+                        await compose(dict(payload,workflows=[member,member]),error='sequential_compose_input_invalid')
+                        await compose(dict(payload,workflow=member),error='sequential_compose_input_invalid')
+                        await compose(dict(payload,consume_notifications=['same','same']),error='sequential_compose_input_invalid')
+                        await compose(dict(payload,consume_notifications=['page-'+str(i) for i in range(33)]),error='sequential_compose_input_invalid')
+                        await compose(dict(payload,consume_notifications=['page-'+str(i) for i in range(32)]),error='sequential_notification_not_delivered')
+                        if case=='batch':
+                            valid=json.loads(raw)
+                            for wrong in (dict(valid,workflow=valid['workflows'][0]),dict(valid,workflows=[]),
+                                          dict(valid,workflows=valid['workflows']+[valid['workflows'][0]]),
+                                          dict(valid,children=[])):
+                                before=inventory()
+                                refused=await client.post('/api/v1/orgs/scratch/tasks/'+task+'/completion',
+                                    headers=dict(cli,authorization='Bearer synthetic-setup-founder'),
+                                    json=dict(session_id=sid,agent='s3_manager',status='completed',confidence=80,
+                                        output_summary='Private malformed batch',decision=wrong))
+                                assert refused.status_code==422 and refused.json()['detail']['code']=='workflow_invalid_decision', refused.text
+                                assert inventory()==before
+                        if case=='member8':
+                            eight['workflows'][7]['role_overrides']=[dict(role='unknown',principal='s3_author')]
+                            await compose(eight,error='sequential_assignment_role_key')
+                            eight['workflows'][7]['role_overrides']=[]
+                            eight['workflows'][7]['lower_limits']=dict(member['lower_limits'],node_revisions=dict(develop=2))
+                            await compose(eight,error='sequential_lower_limits_exceed_settings')
+                    elif case == 'overrides':
+                        for edit in ({'node':'develop'},{'node':'develop','model':None,'reasoning_effort':None},
+                                     {'node':'develop','model':'target-model','reasoning_effort':'high'}):
+                            value=dict(member,step_overrides=[edit])
+                            actual=json.loads(await compose(dict(payload,workflows=[value])))['workflows'][0]
+                            assert actual['step_overrides']==[edit], ('B07 presence/provenance lost',edit,actual)
+                        value=dict(member,role_overrides=[dict(role='developer',principal='s3_review')])
+                        await compose(dict(payload,workflows=[value]),error='sequential_assignment_independence')
+                        value=dict(member,step_overrides=[dict(node='unknown',model=None)])
+                        await compose(dict(payload,workflows=[value]),error='sequential_assignment_node_key')
+                    elif case == 'advisory':
+                        assert context['remaining'] is None and context['remaining_cause']=='workflow_start_v2_unavailable'
+                        for key in ('remaining','source','root','actor'):
+                            await compose(dict(payload,**{key:64}),error='sequential_compose_input_invalid')
+                        too_many=dict(payload,workflows=[dict(member,operation_key=str(i),lower_limits=dict(member['lower_limits'],max_visits=12)) for i in range(8)])
+                        await compose(too_many,error='workflow_seq_batch_allowance_exhausted')
+                    elif case == 'bounds':
+                        from runtime.workflows import sequential_start_discovery as discovery
+                        from runtime.workflows.sequential_history import _ReadBudget
+                        for kind in ('bytes','rows','work','deadline','sql'):
+                            charged=[]
+                            class Limited(_ReadBudget):
+                                def __init__(self):
+                                    super().__init__()
+                                    if kind=='bytes': self.consumed=64*1048576
+                                    if kind=='rows': self.accepted_rows=8192
+                                    if kind=='work': self.traversed=65536
+                                    if kind=='deadline': self.deadline=time.monotonic()-1
+                                    if kind=='sql': self.sql_limit=0
+                                    charged.append(self)
+                            with patch.object(discovery,'_ReadBudget',Limited):
+                                await read(status=409,code='sequential_history_unverified')
+                            assert charged
+                            b=charged[0]
+                            print('Start2 bounds',kind,'rows',b.accepted_rows,'bytes',b.consumed,'work',b.traversed,'sql',b.sql_steps,'deadline_remaining',b.deadline-time.monotonic(),flush=True)
+                        await compose(payload,padding=262144-len(response.content))
+                        await compose(payload,padding=262145-len(response.content),error='sequential_start_context_too_large')
+                        # Max request strings fit in eight commands under unchanged ceilings.
+                        large=dict(payload,workflows=[dict(member,operation_key='large-'+str(i),request='x'*16384) for i in range(8)])
+                        raw=await compose(large)
+                        print('Start2 fit members=8 request_bytes=131072 decision_bytes='+str(len(raw))+' response_bytes='+str(len(response.content)),flush=True)
+                    elif case == 'read_only':
+                        stale=deepcopy(payload)
+                        await setup_put(f,dict(first,operation_key='start2-new-defaults',expected_generation=2))
+                        await compose(stale,error='sequential_settings_conflict:409')
+                        latest=(await read()).json()['definitions'][0]
+                        assert latest['admission']=='Allowed'
+                        await setup_put(f,setup_admission(first,'start2-disable',3,'Disabled'))
+                        disabled=(await read()).json()['definitions'][0]
+                        assert disabled['unavailable_cause']=='sequential_settings_disabled' and disabled['settings']['generation']==4
+                        member['settings']={k:disabled['settings'][k] for k in ('generation','snapshot_digest')}
+                        await compose(payload,error='sequential_settings_disabled')
+                        assert setup_no_work(f)==no_work
+                    elif case == 'catalog':
+                        # Existing private reviewed-package mechanism, no production fixture exception.
+                        from runtime.workflows.sequential_definition import compile_generic_definition
+                        from runtime.workflows.sequential_release import StagedGenericDefinition
+                        second=s3_definition()
+                        second['identity']='release/synthetic/start2'
+                        raw=_bytes(second)+b'\n'
+                        compiled=compile_generic_definition(raw[:-1],source_digest=hashlib.sha256(raw).hexdigest())
+                        entry=StagedGenericDefinition(package='runtime',resource=('workflows','builtin_templates','second.json'),size=len(raw),pin=compiled.pin)
+                        class Resource:
+                            def joinpath(self,*parts): return self
+                            def open(self,mode): return io.BytesIO(raw)
+                        pin=compiled.pin
+                        f.conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                            ('start2-second-definition',pin.identity,pin.version,compiled.raw,pin.definition_digest,pin.source_digest,
+                             pin.compiler,pin.validator,pin.interpreter,pin.capabilities))
+                        f.conn.commit()
+                        with patch.dict(release.GENERIC_CATALOG,{(compiled.pin.identity,compiled.pin.version):entry}), patch.object(
+                                release.resources,'files',return_value=Resource()):
+                            await setup_put(f,dict(format='workflow-sequential-settings-put@2',operation_key='second-save',
+                                expected_generation=0,definition=pin.model_dump(mode='json'),
+                                bindings=[dict(role=r,principal=a) for r,a in (('developer','s3_author'),('reviewer','s3_review'),('manager','s3_manager'))],
+                                limits=dict(max_visits=3,max_events=8,max_recoveries=0)))
+                            await setup_put(f,dict(format='workflow-sequential-admission@1',operation_key='second-allow',
+                                expected_generation=1,definition=pin.model_dump(mode='json'),admission='Allowed'))
+                            # Select only the second reviewed package; Coding bytes cannot be replaced by it.
+                            discovered=(await read(params=[('session_id',sid),('definition',compiled.pin.identity+'@1')])).json()['definitions'][0]
+                            assert discovered['pin']==compiled.pin.model_dump(mode='json') and discovered['registered']
+                            # Composer GETs the whole catalog. Keep the fixture's literal generic entry only.
+                            with patch.object(release,'GENERIC_CATALOG',{(compiled.pin.identity,1):entry}):
+                                second_member=dict(member,definition=compiled.pin.identity+'@1',settings={k:discovered['settings'][k] for k in ('generation','snapshot_digest')},
+                                    lower_limits=dict(max_visits=3,max_events=8,max_recoveries=0))
+                                result=json.loads(await compose(dict(payload,workflows=[second_member])))
+                                assert result['workflows'][0]['definition']==compiled.pin.model_dump(mode='json')
+                    elif case == 'prompt':
+                        text=run_step._build_agent_prompt(f.org.orchestrator,f.db.get_task(task),'s3_manager')
+                        assert '@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable' in text
+                        assert 'one run per source' in text and 'source task ends when the run returns' in text
+                        skill=Path('runtime/skills/bundled/start-task/SKILL.md').read_text()
+                        assert '@2 discovery/compose available; public admission unavailable' in skill
+                        from runtime.orchestrator.capabilities import build_capabilities_prompt
+                        assert 'start-context/v2' not in build_capabilities_prompt([],1,self_only=True,workflow_start_v2_discovery=True)
+                    elif case == 'no_ui':
+                        classification=json.loads(Path('tests/contract/route-classification.json').read_text())
+                        route='GET /api/v1/orgs/{slug}/workflows/sequential/start-context/v2'
+                        assert route not in classification['included'] and route in classification['excluded']
+                        schema=app.openapi()
+                        context_model=schema['components']['schemas']['StartContextV2']
+                        assert context_model['additionalProperties'] is False
+                        assert context_model['properties']['availability']['const']=='admission-unavailable'
+                        assert '/api/v1/orgs/{slug}/workflows/sequential/start-context/v2' in schema['paths']
+                        assert not any('start-context/v2' in p.read_text() for p in Path('web/src/lib/api').rglob('*.ts'))
+                    print('PASS Start2',case,'real private ASGI/CLI/SQLite; public admission UNAVAILABLE; provider FORBIDDEN',flush=True)
+                finally:
+                    state.metrics_store.close()
+                    state.direct_connect_authority_store.close()
+
+    if start2_case:
+        for case in START2_CASES:
+            if case == 'legacy_bytes' and start2_case == 'all':
+                continue  # Explicit pinned-base raw stream export is a separate invocation.
+            if start2_case in ('all',case):
+                asyncio.run(start2_cases(case))
+        raise SystemExit(0)
 
     async def setup_case(case):
         from copy import deepcopy

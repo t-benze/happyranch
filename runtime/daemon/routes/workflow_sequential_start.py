@@ -19,6 +19,7 @@ from runtime.workflows.sequential_engine import SequentialRefusal
 from runtime.workflows.sequential_history import _bytes
 from runtime.workflows.sequential_release import SequentialReleaseUnavailable
 from runtime.workflows.sequential_views import ProjectionRefusal, StartContext, read_start_context
+from runtime.workflows.sequential_start_discovery import StartContextV2, read_start_context_v2
 
 
 class _NoStoreRoute(APIRoute):
@@ -84,6 +85,55 @@ async def start_context(request: Request, org: OrgDep, session_id: Sid,
 
     try:
         value = await read_start_context(org, task_id=task_id, principal=principal,
+            session_id=session_id, selector=definition, revalidate=revalidate)
+        return Response(_bytes(value.model_dump(mode='json')), media_type='application/json')
+    except ProjectionRefusal as exc:
+        raise HTTPException(exc.status, detail={'code': exc.code}) from None
+    except SequentialRefusal as exc:
+        status = 404 if exc.code == 'task_not_found' else 403 if exc.code in (
+            'sequential_task_session_required', 'sequential_authority_denied', 'role_unavailable', 'role_ineligible') else 409
+        raise HTTPException(status, detail={'code': exc.code}) from None
+    except SequentialReleaseUnavailable as exc:
+        raise HTTPException(409, detail={'code': exc.code}) from None
+    except (WorkflowAuthorityError, ProfileCoordinatorError, CodingEvidenceRefusal, OSError):
+        raise HTTPException(409, detail={'code': 'sequential_authority_unverified'}) from None
+    except (PauseControlError, sqlite3.Error, ValueError, TypeError, KeyError, AttributeError,
+            IndexError, StopIteration, UnicodeError, RecursionError, TimeoutError):
+        raise HTTPException(409, detail={'code': 'sequential_history_unverified'}) from None
+
+
+@router.get('/workflows/sequential/start-context/v2', response_model=StartContextV2, responses={
+    403: {'description': 'Own current ordinary executable team-manager session required; no bearer/browser/foreign/thread/recovery'},
+    404: {'description': 'Registry-bound native task absent'},
+    409: {'description': 'Finite unavailable definition, authority, storage or read-budget cause; no start effect'},
+    422: {'description': 'Exactly one session_id, optional exact identity@version definition, empty GET body'},
+})
+async def start_context_v2(request: Request, org: OrgDep, session_id: Sid,
+                        definition: Selector = None) -> Response:
+    if ('authorization' in request.headers or 'origin' in request.headers
+            or request.headers.get('x-happyranch-surface') != 'cli'):
+        raise HTTPException(403, detail={'code': 'sequential_task_session_required'})
+    expected = [('session_id', session_id)] + ([] if definition is None else [('definition', definition)])
+    if sorted(request.query_params.multi_items()) != sorted(expected):
+        raise HTTPException(422, detail={'code': 'sequential_start_context_invalid'})
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(422, detail={'code': 'sequential_start_context_invalid'})
+    context = org.sessions.get_context_by_session(session_id)
+    if context is None or context[0] != org.slug:
+        raise HTTPException(403, detail={'code': 'sequential_task_session_required'})
+    _, task_id, principal = context
+
+    def revalidate() -> None:
+        daemon = request.app.state.daemon
+        if (daemon.is_idle or daemon.orgs.get(org.slug) is not org
+                or org.sessions.get_context_by_session(session_id) != context
+                or org.sessions.get_active(task_id, principal) != session_id
+                or org.sessions.is_recovery_session(task_id, principal, session_id)):
+            raise ProjectionRefusal('sequential_task_session_required', 403)
+
+    try:
+        value = await read_start_context_v2(org, task_id=task_id, principal=principal,
             session_id=session_id, selector=definition, revalidate=revalidate)
         return Response(_bytes(value.model_dump(mode='json')), media_type='application/json')
     except ProjectionRefusal as exc:

@@ -1,5 +1,11 @@
 # Sequential Coding U4: task-owned repository resolution
 
+Current B1 addendum: @2 discovery/compose available; public admission unavailable
+(`workflow_start_v2_unavailable`). This supersedes older public-@2-closed
+statements about discovery/composition only. @1 bytes remain frozen; no admission,
+continuation/recovery or Draft→Review registration is delivered by B1.
+[Current B1 contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-b1-read-only-start2).
+
 ## S8a staged Coding v3 boundary (THR-336)
 
 Coding v3 registration creates definitions only. R2 unit (a) separately supports
@@ -7,7 +13,7 @@ Founder setup Save and Allow/Disable; see the [current contract](../agent-guides
 The separate literal
 `STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
 immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
-v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
+v2 semantics. The original @1 discovery/start-compose/fresh selection remain v2 only;
 v3 is hidden and a fresh v3 pin refuses with `sequential_release_pin_mismatch`.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
 admission, tasks, runs or Allow. S8b owns public catalog/transport promotion.

@@ -20,6 +20,8 @@ from runtime.workflows.sequential_history import _bytes
 from runtime.workflows.sequential_release import select_bundled_release
 from runtime.workflows.sequential_start import SequentialStartDecision
 from runtime.workflows.sequential_views import StartContext
+from cli.commands.workflow_sequential_start_v2 import ComposeInputV2, compose_v2
+from runtime.workflows.sequential_assignments import AssignmentRefusal
 
 
 class ComposeInput(Closed):
@@ -33,18 +35,22 @@ class ComposeInput(Closed):
     lower_limits: Limits | None = None
 
 
-def _input(path: str) -> ComposeInput:
+def _input(path: str) -> ComposeInput | ComposeInputV2:
     absolute = require_absolute_payload_path(path, kind='sequential-start-compose')
     try:
         with Path(absolute).open('rb') as stream:
             raw = stream.read(DEFINITION_LIMIT + 1)
-        return ComposeInput.model_validate(_json(raw, DEFINITION_LIMIT))
+        value = _json(raw, DEFINITION_LIMIT)
+        model = ComposeInputV2 if value.get('format') == 'workflow-sequential-start-compose@2' else ComposeInput
+        return model.model_validate(value)
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
         raise ValueError('sequential_compose_input_invalid') from None
 
 
-def compose(client: httpx.Client, org: str, sid: str, command: ComposeInput) -> bytes:
+def compose(client: httpx.Client, org: str, sid: str, command: ComposeInput | ComposeInputV2) -> bytes:
     """Only GET discovery and package reads; admission belongs to the callback."""
+    if isinstance(command, ComposeInputV2):
+        return compose_v2(client, org, sid, command)
     with client.stream('GET', f'/api/v1/orgs/{org}/workflows/sequential/start-context',
             params=[('session_id', sid), ('definition', command.definition)]) as response:
         raw = bytearray()
@@ -98,7 +104,10 @@ def cmd_workflow_sequential_start_compose(args: argparse.Namespace) -> None:
     except (OSError, ValueError, TypeError, httpx.HTTPError) as exc:
         # Pydantic errors may contain supplied content. Keep malformed response
         # and transport diagnostics categorical; preserve the input file/pins.
-        code = str(exc) if type(exc) in (ValueError, SequentialContractError) else 'sequential_compose_unavailable'
+        code = str(exc) if type(exc) in (ValueError, SequentialContractError, AssignmentRefusal) else 'sequential_compose_unavailable'
         print(f'error: {code}; preserve original input, operation key and composed pins', file=sys.stderr)
         raise SystemExit(2) from None
+    if isinstance(command, ComposeInputV2):
+        print('@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable; '
+              'read-only advisory decision, do not submit for admission in this release', file=sys.stderr)
     print(decision.decode('utf8'))
