@@ -1,5 +1,10 @@
 # Task orchestration contracts
 
+Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
+settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
+[the current contract](reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
+Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
+
 ## S5 version boundary
 
 S5 provides an internal plural Start@2 writer with a stable version3

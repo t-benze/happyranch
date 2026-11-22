@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -15,6 +15,7 @@ from runtime.workflows.sequential_history import _bytes, _require
 
 
 _control_capture: ContextVar[Any] = ContextVar('workflow_continuation_capture', default=None)
+_start_capture: ContextVar[Any] = ContextVar('workflow_start_capture', default=None)
 
 
 def decision_schemas() -> list[dict]:
@@ -133,7 +134,29 @@ class WorkflowContinuation:
     async def callback_admission(self, task_id: str, decision: dict | None,
                                  *, status: str = 'completed') -> AsyncIterator[None]:
         """File-backed control discovery happens before the native write fence."""
-        capture = None
+        capture, starts = None, None
+        prior = self.db.get_latest_task_result(task_id, self.db.get_task(task_id).assigned_agent,
+            self.db.get_task(task_id).current_session_id)
+        if decision and decision.get('action') == 'workflow_start' and 'workflows' in decision and prior is None:
+            from runtime.infrastructure.db.tasks import RetryClaim
+            from runtime.workflows.sequential_start import prepare_generic_batch, _policy, _require_runtime
+            from runtime.workflows.sequential_release import generic_start_catalog
+            task = self.db.get_task(task_id)
+            _require(status == 'completed', 'workflow_start_completed_required')
+            from runtime.workflows.sequential_start_discovery import read_start_source_v2
+            from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+            budget = _ReadBudget()
+            with self.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+                read_start_source_v2(conn, self.org, task_id=task_id, principal=task.assigned_agent,
+                    session_id=task.current_session_id, budget=budget)
+            _require_runtime(self.org)
+            for command in decision['workflows']:
+                pin = command['definition']
+                compiled, = generic_start_catalog(pin['identity'] + '@' + str(pin['version']))
+                _require(compiled.pin.model_dump(mode='json') == pin, 'workflow_start_pin_conflict')
+            source = RetryClaim.from_task(task)
+            starts = (prepare_generic_batch(self.org, decision=_bytes(decision), source=source),
+                _policy(self.org, source))
         if status == 'completed' and decision and decision.get('action') == 'workflow_control':
             from runtime.workflows.sequential_control import prepare_control
             from runtime.workflows.sequential_definition import compile_generic_definition
@@ -155,6 +178,7 @@ class WorkflowContinuation:
         with ExitStack() as captures:
             cancellations = {}
             token = _control_capture.set((capture, captures, cancellations))
+            start_token = _start_capture.set(starts)
             try:
                 yield
                 with self.db._lock:
@@ -170,11 +194,65 @@ class WorkflowContinuation:
                     self._publish_cancellation(result_id)
             finally:
                 _control_capture.reset(token)
+                _start_capture.reset(start_token)
+
+    @contextmanager
+    def writer_ownership(self):
+        """Profile/publisher leases surround only the synchronous native writer."""
+        starts, control = _start_capture.get(), _control_capture.get()
+        authority = starts[0][0].authority if starts is not None else (
+            control[0][1].authority if control is not None and control[0] is not None else None)
+        with ExitStack() as stack:
+            if authority is not None:
+                stack.enter_context(self.org.workflow_authority._admission_ownership(authority))
+            yield
 
     def admitted_uncommitted(self, invocation: Any) -> None:
         """The single snapshot call site, after a genuinely new SID is bound."""
         from runtime.workflows.sequential_initiator import snapshot_delivery
         snapshot_delivery(self.db._conn, invocation.task.id, invocation.agent, invocation.session_id)
+
+    def preflight_start_uncommitted(self, task_id: str) -> None:
+        """Reject impossible reservations before the native result/attempt write.
+
+        The actual batch writer still validates the complete resulting history.
+        Both checks run under the same native writer and current authority lease.
+        """
+        from runtime.workflows.sequential_history import (
+            _ReadBudget, _sql_budget, _reserve_generic_cancellation, read_sequential_history,
+        )
+        from runtime.workflows.sequential_engine import _engine_rows, _identity
+        from runtime.workflows.sequential_start_discovery import read_start_source_v2
+        from runtime.workflows.sequential_start import _generic_selection, _selected_layout
+        from runtime.workflows.sequential_assignments import parse_assignment_start
+        starts = _start_capture.get()
+        _require(starts is not None, 'workflow_start_capture_missing')
+        captures, revise_limit = starts
+        conn, task, budget = self.db._conn, self.db.get_task(task_id), _ReadBudget()
+        _require(conn.in_transaction and not self.org._runner_admission_closed, 'workflow_start_admission_closed')
+        _require(revise_limit == 0 or task.revision_count < revise_limit, 'workflow_start_revisions_exhausted')
+        with _sql_budget(conn, budget):
+            read_start_source_v2(conn, self.org, task_id=task_id, principal=task.assigned_agent,
+                session_id=task.current_session_id, budget=budget)
+            read_sequential_history(conn, expected_org_slug=self.org.slug, deadline=budget.deadline)
+            runs = _engine_rows(conn, 'workflow_seq_runs', budget, '1', ())
+            visits = _engine_rows(conn, 'workflow_seq_visits', budget, '1', ())
+            metadata = _selected_layout(conn, budget)
+            for capture in captures:
+                self.org.workflow_authority._validate_admission_uncommitted(conn, capture.authority)
+                command = parse_assignment_start(capture.start_bytes)
+                compiled, _, _ = _generic_selection(conn, org_slug=self.org.slug, command=command, budget=budget, metadata=metadata)
+                run_id = _identity('run', self.org.slug, task.assigned_agent, task_id, command.operation_key)
+                # Every fresh member starts with the definition's entry assignment.
+                resolved = json.loads(capture.snapshot_bytes)
+                principal = next(node['principal'] for node in resolved['nodes'] if node['node'] == compiled.definition.entry_node)
+                visit_id = _identity('visit', run_id, '1')
+                runs.append(dict(engine_version=2, state='running', id=run_id, source_task_id=task_id,
+                    source_principal=task.assigned_agent, source_session_id=task.current_session_id,
+                    carrier_task_id='TASK-SEQ-' + _identity('carrier', run_id), active_visit_id=visit_id))
+                visits.append(dict(id=visit_id, task_id='TASK-SEQ-' + _identity('first-task', run_id),
+                    principal=principal, session_id=None))
+            _reserve_generic_cancellation(dict(workflow_seq_runs=runs, workflow_seq_visits=visits), budget)
 
     def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str,
                              result_id: int) -> bool:
@@ -207,8 +285,48 @@ class WorkflowContinuation:
             return True
         _require(type(row['decision_json']) is str, 'workflow_decision_required')
         value = json.loads(row['decision_json'])
+        start_effects = None
+        from runtime.workflows.sequential_start import _claim_action
+        action = _claim_action(self.org, RetryClaim.from_task(self.db.get_task(task_id), result_row_id=result_id))
+        if parsed.action == 'workflow_start':
+            from runtime.workflows.sequential_start import admit_batch_uncommitted
+            from runtime.workflows.sequential_start_discovery import read_start_source_v2
+            from runtime.workflows.sequential_contracts import GenericLimits
+            from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+            from runtime.workflows.sequential_initiator import snapshot_delivery
+            starts = _start_capture.get()
+            _require(starts is not None, 'workflow_start_capture_missing')
+            captures, revise_limit = starts
+            task = self.db.get_task(task_id)
+            _require(revise_limit == 0 or task.revision_count < revise_limit, 'workflow_start_revisions_exhausted')
+            _require(not self.org._runner_admission_closed, 'workflow_start_admission_closed')
+            budget = _ReadBudget()
+            with _sql_budget(conn, budget):
+                read_start_source_v2(conn, self.org, task_id=task_id, principal=agent,
+                    session_id=session_id, budget=budget, result_id=result_id)
+            # Engine model ceilings, per member; never a cross-run pool or step cap.
+            remaining = tuple(GenericLimits(max_visits=64, max_events=4096, max_recoveries=64)
+                for _ in captures)
+            first = conn.execute('SELECT 1 FROM workflow_seq_source_wait_sets WHERE source_task_id=?',
+                (task_id,)).fetchone() is None
+            admissions = admit_batch_uncommitted(conn, self.db, org_slug=self.org.slug,
+                source=RetryClaim.from_task(task, result_row_id=result_id), decision=_bytes(parsed.model_dump(mode='json')),
+                captures=captures, authority=self.org.workflow_authority, remaining=remaining)
+            if first:
+                # Adoption and its actual empty delivered page belong to this first callback.
+                page = snapshot_delivery(conn, task_id, agent, session_id)
+                _require(not page['notifications'], 'workflow_first_delivery_conflict')
+            start_effects = dict(action='workflow_start', run_ids=[item.run_id for item in admissions])
 
         def apply() -> dict:
+            result = apply_effects()
+            if action is not None:
+                ack = self.db._acknowledge_v2_decision_dispatch_uncommitted(root_task_id=task_id,
+                    manager_agent=action.manager_agent, result_id=action.causal_result_id)
+                _require(ack.status == 'applied', 'workflow_action_ack_conflict')
+            return result
+
+        def apply_effects() -> dict:
             state = observe_dependencies(conn, self.db, task_id)
             _require(state is not None, 'workflow_dependencies_unavailable')
             if parsed.action == 'workflow_wait':
@@ -241,8 +359,7 @@ class WorkflowContinuation:
                 conn.execute("UPDATE tasks SET block_kind='delegated' WHERE id=?", (task_id,))
                 return effects
             elif parsed.action == 'workflow_start':
-                # Public @2 start remains unmounted until its later owner.
-                raise ValueError('workflow_start_v2_unavailable')
+                return start_effects
             if parsed.action == 'workflow_wait':
                 conn.execute("UPDATE tasks SET block_kind='delegated' WHERE id=?", (task_id,))
             return {'action': parsed.action}
@@ -252,13 +369,53 @@ class WorkflowContinuation:
         return True
 
     def prompt_context(self, task: Any) -> str:
-        from runtime.workflows.sequential_initiator import delivered_page
+        from types import SimpleNamespace
+        from runtime.workflows.sequential_initiator import delivered_page, _rows
+        from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, _parse, _generic_limits_value
+        from runtime.workflows.sequential_definition import compile_generic_definition, parse_generic_start, generic_limits
+        from runtime.workflows.sequential_contracts import GenericLimits
+        from runtime.workflows.sequential_control import result_counters
+        from runtime.workflows.sequential_reducer import reduce_generic_control
         with self.db.coherent_read_view() as conn:
             task = self.db.get_task(task.id)
             state = observation(self.db, task.id)
             if state is None:
                 return ''
             page = delivered_page(conn, task.id, task.assigned_agent, task.current_session_id)
+            budget = _ReadBudget()
+            with _sql_budget(conn, budget):
+                for view in state['runs']:
+                    run = _rows(conn, 'workflow_seq_runs', budget, 'id=?', (view['run_id'],))[0]
+                    definition = _rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))[0]
+                    compiled = _parse(definition['definition_bytes'], compile_generic_definition, budget,
+                        source_digest=definition['source_digest'])
+                    history = {table: _rows(conn, 'workflow_seq_' + table, budget, 'run_id=?', (run['id'],))
+                        for table in ('visits', 'events', 'controls', 'node_counters')}
+                    counters = result_counters(run, compiled, history['visits'], history['events'],
+                        history['controls'], history['node_counters'])
+                    start = _parse(run['start_bytes'], parse_generic_start, budget)
+                    original = GenericLimits.model_validate_json(run['original_limits_bytes'])
+                    limits = generic_limits(compiled, original, start.lower_limits)
+                    held = next((event for event in history['events'] if event['id'] == run['held_event_id']), None)
+                    cause = None if held is None else json.loads(held['event_bytes']).get('cause')
+                    run = dict(run, hold_cause=cause)
+                    controls = {}
+                    for action in ('retry', 'rebrief', 'reassign', 'cancel'):
+                        command = dict(format='workflow-sequential-control@2', run_id=run['id'],
+                            operation_key='<stable-key>', expected_cas=run['cas'],
+                            expected_held_event_id=run['held_event_id'], action=action, reason='<reason>')
+                        if action == 'rebrief':
+                            command['supplement'] = '<same-goal supplement>'
+                        if action == 'reassign':
+                            command['target_agent_id'] = '<eligible permanent agent ID>'
+                        try:
+                            reduce_generic_control(compiled, SimpleNamespace(**command), run=run,
+                                counters=counters, limits=limits)
+                            controls[action] = dict(command=command, revalidate='current authority, assignment and positive closure required')
+                        except ValueError as exc:
+                            controls[action] = dict(refusal=str(exc))
+                    view.update(cause=cause, stopped_node_id=run['held_node_id'],
+                        counters=counters.model_dump(mode='json'), limits=_generic_limits_value(limits), controls=controls)
             return '\nWorkflow events (stored delivery for this session):\n' + json.dumps(
                 dict(page=page, unfinished_runs=state['unfinished_runs'],
                      runs=state['runs'], ordinary_outstanding=state['ordinary_outstanding']), ensure_ascii=False, sort_keys=True)
@@ -318,6 +475,7 @@ class WorkflowContinuation:
             effects = json.loads(row[0])['effects']
         self._publish_cancellation(result_id)
         selected = getattr(self.org.orchestrator, '_queue', None)
+        # Start entries are released exclusively by their ORIGINAL source settlement.
         if selected is not None and effects.get('new_task_id') is not None:
             self.org.workflow_sequential_dispatch.notify_queued(effects['new_task_id'], selected)
         self.wake(task_id)

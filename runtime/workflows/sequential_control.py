@@ -1,4 +1,4 @@
-"""Inactive S4a controls. Discovery precedes the caller-owned authority writer.
+"""Generic member controls. Discovery precedes the caller-owned authority writer.
 
 No native signal, queue publication, source continuation or public admission is
 performed here. Refusals must escape the writer and roll back its transaction.
@@ -180,6 +180,14 @@ def _rows(conn: sqlite3.Connection, run: dict, budget: _ReadBudget) -> dict[str,
         'workflow_seq_visits', 'workflow_seq_events', 'workflow_seq_controls', 'workflow_seq_node_counters')}
 
 
+def _finish_member_carrier(conn: sqlite3.Connection, run: dict) -> None:
+    """Only a fully drained member cancellation closes its structural carrier."""
+    if conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE run_id=?', (run['id'],)).fetchone():
+        stamp = datetime.now(timezone.utc).isoformat()
+        conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,updated_at=? "
+                     "WHERE id=? AND status='pending'", (stamp, stamp, run['carrier_task_id']))
+
+
 def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str, compiled: object,
                               actor: RetryClaim, capture: ControlCapture, authority: object,
                               replacement_task: TaskRecord | None = None) -> bytes:
@@ -317,6 +325,7 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
                              (stamp, stamp, visit['task_id']))
             _move(conn, run, event_id, state='finished', terminal_outcome='cancelled', progress=None,
                   active_visit_id=None, held_node_id=None, held_event_id=None)
+            _finish_member_carrier(conn, run)
         else:
             _move(conn, run, event_id, progress='cancelling')
         receipt = _bytes(dict(format='workflow-sequential-control-receipt@2', run_id=run['id'],
@@ -383,6 +392,7 @@ def native_cancel_fence_uncommitted(conn: sqlite3.Connection, db: object, *, org
         if immediate:
             _move(conn, run, event_id, state='finished', terminal_outcome='cancelled', progress=None,
                 active_visit_id=None, held_node_id=None, held_event_id=None)
+            _finish_member_carrier(conn, run)
             event = _engine_rows(conn, 'workflow_seq_events', budget, 'id=?', (event_id,))[0]
             wake_uncommitted(conn, run, event, compiled, {row['id']: row for row in visits}, budget)
         else:
@@ -409,5 +419,6 @@ def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org
         conn.execute("UPDATE workflow_seq_visits SET state='cancelled',selected=0 WHERE id=?", (visit['id'],))
         _move(conn, run, event, state='finished', terminal_outcome='cancelled', progress=None,
               active_visit_id=None, held_node_id=None, held_event_id=None)
+        _finish_member_carrier(conn, run)
     validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
     return event

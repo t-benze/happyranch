@@ -1,54 +1,66 @@
 # Reusable workflow contracts
 
-## R2 unit (b), B1: read-only Start@2
+## R2 unit (b): Start@2 admission and continuation
 
-@2 discovery/compose available; public admission unavailable in this release
-(`workflow_start_v2_unavailable`). No UI Start/recovery action is added.
-An eligible executable same-team manager uses only its own current ordinary
-session, including an existing generic source wait set, with CLI-only GET
-`/api/v1/orgs/{slug}/workflows/sequential/start-context/v2?session_id=SID`
-and optional exact `definition=identity@version`. Browser/bearer, foreign,
+B2+B3 now supply **@2 admission supported** through the genuine ordinary-task
+completion route. Discovery/composition remain read-only. An eligible executable
+same-team manager uses its own current task/SID, including a thread-originated
+source or existing wait set. GET `/api/v1/orgs/{slug}/workflows/sequential/start-context/v2?session_id=SID`
+selects the reviewed generic catalog and exact Allowed/latest definition/settings
+pins. It exposes `availability: admission-supported`, `unavailable_cause: null`,
+`remaining: null`, `remaining_cause: native-per-run-bounds`; discovery reserves
+nothing. It lists only the SID's stored delivered IDs, without resnapshotting.
+The closed context preserves full package/registration pins, roles/responsibilities,
+required inputs, defaults and finite definition-unavailability causes. Missing or
+old-version settings never become @2 defaults implicitly. Browser/bearer, foreign,
 ended, recovery, worker, carrier, visit and direct thread sessions are refused;
-responses and refusals use `Cache-Control: no-store`.
+responses/refusals remain `Cache-Control: no-store` and bounded to 262,144 bytes.
 
-The closed `workflow-sequential-start-context@2` response selects the reviewed
-generic catalog (Coding v3), verifies full package/registration pins and latest
-identity-wide @2 settings, and reports roles/responsibilities, required inputs,
-limits, defaults, Allowed/Disabled and finite definition-unavailability causes.
-Its release fields are `availability: admission-unavailable`,
-`unavailable_cause: workflow_start_v2_unavailable`, `remaining: null`, and
-`remaining_cause: workflow_start_v2_unavailable`. No authoritative source/root/
-lineage remainder or reservation is promised. The response also lists only this
-SID’s stored delivered notification IDs; it never snapshots or consumes a page. Default assignment eligibility is
-checked against current authority; per-run target selection is advisory syntax
-until the later admission owner rechecks it. Missing/old-version defaults never
-become new @2 defaults implicitly. Save/Allow/Disable still create no work.
+The existing CLI start-compose accepts explicit workflow-sequential-start-compose@2
+and 1–8 workflows with selector/settings, stable key, request/inputs, role/step
+overrides and explicit lower_limits. Omission/value/null and omitted/empty
+consumption remain distinct. Copy its closed plural GenericStartCommand decision
+unchanged into your own genuine FINAL completion. Concurrent capacity is bounded
+by existing cancellation reservations (currently three unfinished runs); larger
+batches refuse finitely, all-or-none. No client actor/root/remaining
+field grants authority. The input rejects singular/plural mixtures, duplicate
+keys, fallback files and automatic re-pins. Browser, foreign, recovery, worker, carrier, visit and
+direct thread/wake/dream sessions receive no ordinary-task start authority.
 
-The same CLI `workflows sequential start-compose --org ORG --session-id SID
---from-file ABS --json` accepts explicit `format:
-workflow-sequential-start-compose@2`, `workflows` (1–8), and optional
-`consume_notifications` (at most 32 distinct IDs). Each member has exactly
-`definition` (selector), discovered `settings`, stable `operation_key`,
-`request`, `inputs`, `role_overrides`, `step_overrides`, and explicit
-`lower_limits`. It only GETs and reads packages, prints the existing closed
-plural `GenericStartCommand` decision and warns on stderr that admission is
-unavailable. Omitted consumption remains omitted; explicit `[]` remains empty;
-step model/effort omission, value and null remain distinct. Each member and the
-summed unchanged global syntax ceilings must fit; these checks grant no fresh
-allowance or authoritative executor availability. No task/session/actor/budget
-fields, singular/plural mixtures, duplicate keys, fallback files or auto-repins.
-The callback refuses the valid plural decision with 409
-`workflow_start_v2_unavailable` before result/attempt/claim, wait-set, notification
-consumption or queued work. Do not submit the advisory decision for admission.
+First start creates the genuine INTEGER result, applicable attempt-or-omission,
+wait set, all members and result-owned receipt in ONE transaction. Its actual
+empty delivery is retained; a late event cannot be resnapshotted into that SID.
+Later starts reuse the wait set and stored page. Reservation preflight rejects
+impossible batches before native result/attempt/claim or workflow allocation.
+Any refusal rolls back the
+result, claims, members and receipt. Exact replay uses original identities before
+fresh settings/Disable checks. Result consumers only publish recorded effects;
+all first visits wait for positive original source settlement.
 
-@1 discovery/composer/decision bytes and source-terminal semantics stay frozen.
-B2+B3 will deliver first/later admission, complete continuation/recovery and
-reservation accounting together in one later PR. Draft→Review registration is
-unit (c). No schema, raised caps, offline script, thread/wake/dream authority,
-then/fanout change, live setup/Allow/restart or pilot follows. Verification uses
-`WORKFLOW_SCHEMA_PYTHON=3.12` or `3.14` with
-`bash scripts/test-workflow-schema-load.sh --start2=all`; see the
-[case list and evidence limits](../../operations/local-ci.md#start2-b1-read-only-cases).
+Hold/return wakes only the recorded initiator; a run return NEVER completes the
+source or releases its parent. workflow_control uses the existing control@2 CAS
+and held-event identity for retry, bounded rebrief, step-local reassign to a
+permanent principal, or cancel. Unknown launched cancellation remains outstanding
+until original positive closure. Immediate and drained cancellation close only
+the member carrier. workflow_wait consumes only actually delivered notification
+IDs. Ordinary done refuses while any run or ordinary dependency remains; only
+the source's own genuine final done closes it and releases its parent once.
+
+R1 double-prime / THR-229: each run retains immutable effective limits
+(definition ∩ original settings ∩ requested lower limits ∩ engine ceilings).
+Recovery never renews visits/events/recoveries/revisions. There is no pooled
+numeric allowance and no total-step cap; max_orchestration_steps remains inert.
+Task-local orchestration_step_count is incremented once by existing native
+accounting, including an applicable continuation-envelope spend, with no second
+workflow-specific increment. Batch1–8, native revise/retry and finite combined
+history/cancellation reservations remain enforcing. Missing native facts refuse
+finitely before allocation; no DDL or overloaded fields are introduced.
+
+@1 raw discovery/composer/decision bytes and source-terminal semantics stay frozen.
+Save never starts work; Disable is fresh-only; old fresh Coding transports remain
+refused. Unit(c) Draft→Review, UI actions, offline script changes, live operations,
+pilot and then/fanout retirement remain outside this delivery. See the
+[existing venue and cases](../../operations/local-ci.md#start2-public-admission-and-continuation-cases).
 
 ## R2 unit (a): saved defaults and new-run admission
 
@@ -110,7 +122,7 @@ be replaced by late older reads.
 Disable affects only NEW starts: latest Disabled and stale former Allowed pins
 refuse at fresh admission. Already-admitted runs retain their immutable settings,
 assignments and original replay/readability. No public Start@2 admission or Draft→Review
-registration is delivered here; B1 discovery/compose is available above. `scripts/setup_sequential_coding.py` is unchanged:
+registration is delivered here; Start@2 admission/continuation is available above. `scripts/setup_sequential_coding.py` is unchanged:
 fresh offline admission still refuses `sequential_coding_registration_only`;
 original operator records stay in their separate namespace. Deployment/restart,
 live setup/Allow and the actual four-role pilot remain founder-reserved.
@@ -168,7 +180,7 @@ Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
 adds immutable definitions only. `PRESET_CATALOG`, public `MANIFEST`, the
 `workflow-sequential-start-context@1` wire shape and Start@1 composer stay
 unchanged, offering v2 only. A fresh public v3 pin still refuses with
-`sequential_release_pin_mismatch`. Public @2 discovery/compose is available through B1 above; admission remains unavailable. V2 fresh-start behavior is unchanged.
+`sequential_release_pin_mismatch`. Public @2 discovery/compose/admission is available above. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
 admission, tasks, runs or Allow. Explicit Founder setup and separate admission now use the R2 unit (a) surface above.
 
@@ -603,7 +615,7 @@ No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 only positive closure permits its completion. S6b above supplies native cancellation delivery;
 S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
-S5. Public @2 admission/continuation remains unavailable; B1 adds read-only
+S5. B2+B3 now mount public @2 admission/continuation; B1 supplies read-only
 discovery/compose above. Coding defaults require explicit Founder Save/Allow. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
 
 ## S3: resolved assignments @2 (inert)
@@ -2763,7 +2775,7 @@ A2's existing registrar and A4/offline consumers share that manifest via
 `preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
 projection. S8b keeps Coding v3 in the separate generic registration catalog
 alongside v2; the public manifest and Start@1 composer remain v2 only, with
-public @2 discovery/compose available and admission unavailable through B1 above.
+public @2 discovery/compose and admission available above.
 Exact existing registration writes zero; mismatches refuse. There
 is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
@@ -2984,8 +2996,8 @@ the existing `workflow-sequential-control@2` command, and `workflow_wait` with
 `run_ids` listing known owned runs. Both accept optional `consume_notifications`
 (maximum 32 distinct delivered IDs), retaining S5's stored-page consumption default
 and existing receipt validation. A wait requires a consumed event or an
-outstanding run/ordinary dependency. Public composition supports unchanged Start@1 and additive read-only @2 through B1;
-@2 admission is unavailable and control/wait are not advertised as agent capabilities.
+outstanding run/ordinary dependency. Public composition supports unchanged Start@1 and additive read-only @2;
+B2+B3 mount genuine @2 admission and initiator-owned control/wait capabilities.
 
 Database retains ordinary callback authentication, cancellation/recovery, exact
 replay and v2 attempt/omission behavior. Its single attached continuation seam

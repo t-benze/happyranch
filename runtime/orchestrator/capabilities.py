@@ -311,12 +311,18 @@ def build_capabilities_prompt(
 
     if workflow_start_v2_discovery and not self_only:
         sections.extend([
-            "@2 discovery/compose available; public admission unavailable: workflow_start_v2_unavailable.",
+            "@2 admission supported for your own ordinary manager task and its owned wait set.",
             "Read your own CLI GET /api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID for Coding v3/@2.",
             "The same read-only start-compose command accepts explicit format workflow-sequential-start-compose@2 and 1–8 workflows.",
             "Preserve discovered settings/pins, stable member keys, explicit lower allocations and omitted/value/null step overrides.",
-            "Its plural GenericStartCommand decision is advisory only; do not submit it for admission in this release.",
-            "Discovery reserves nothing; remaining source/root/lineage allowance is unavailable. No @2 start/control/wait continuation is offered here.\n",
+            "Copy its plural GenericStartCommand decision unchanged into your own genuine FINAL completion; composition starts nothing.",
+            "Concurrent capacity is bounded by existing cancellation reservations (currently three unfinished runs); larger batches refuse finitely, all-or-none.",
+            "Discovery reserves nothing. Per-run limits stay pinned; no total-step cap or cross-run numeric pool applies.",
+            "Held and returned runs wake only their initiator; a run return never completes the source task.",
+            "Use workflow_control with workflow-sequential-control@2: run_id, operation_key, expected_cas, expected_held_event_id, action.",
+            "Actions: retry; rebrief with bounded supplement; reassign with target_agent_id for the stopped occurrence; cancel.",
+            "Use workflow_wait with owned run_ids. consume_notifications may contain only IDs actually delivered to this SID.",
+            "After runs and ordinary dependencies drain, submit your own genuine done; done refuses while any remain.\n",
         ])
 
     if prior_steps:

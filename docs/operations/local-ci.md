@@ -4040,7 +4040,7 @@ launch and observe actual native results, persisted dependencies, receipts and
 queue IDs. They do not establish live provider or deployment acceptance. Run
 required long selections through durable jobs and inspect their actual receipts.
 
-## Start2 B1 read-only cases
+## Start2 public admission and continuation cases
 
 The existing private ASGI/SQLite schema-load venue supports
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start2=all`
@@ -4048,21 +4048,34 @@ and the same command with `3.14`. Individual selectors are `staged_unavailable`
 (B01/B04/B30/C1), `discovery` (B01), `audience` (B02), `pins_settings` (B03),
 `compose` (B04), `batch` (B05/B26), `member8` (B06), `overrides` (B07),
 `advisory` (B25), `bounds` (B26), `read_only` (B27), `catalog` (B28),
-`legacy_bytes` (B29), `prompt` (B30), `no_ui` (B31).
+`legacy_bytes` (B29), `prompt` (B30), `no_ui` (B31), `admission`,
+`rollback`, `replay`, `capacity`, `native_bounds`, `crash_reopen`, `pause_cancel`,
+`related_sources`, `settings_race`, `accounting`, `recovery_retry`, `recovery_rebrief`, `recovery_reassign`,
+`recovery_cancel_pristine`, `recovery_cancel_held`, `recovery_cancel_launched`,
+`recovery_retry_chain`, `recovery_reassign_fanout`
+(B08–B28/C2–C5). Recovery selectors execute both member return orders; the
+chain/fanout variants retain ordinary join bytes until genuine ordinary closure.
+`accounting` builds a real native v2 continuation envelope and observes one
+spend/claim/applied receipt; route/consumer replay must preserve it.
 `all` excludes only `legacy_bytes`, which needs an explicit task-owned absolute
 `WORKFLOW_START2_GOLDEN_OUTPUT`; run it on pinned base and branch and `cmp`
 the raw context/composer/decision streams. No reserialization supplies the oracle.
 
 Every source is isolated, synthetic and provider-free; real registry, authority,
-settings readers, ASGI routes, CLI and native callback refusal are exercised.
+settings readers, ASGI routes, CLI and native callback admission/refusal are exercised.
 Read/composer/callback refusal compare exact all-table inventories and queue
 counts; read requests also reject traced DML/DDL/COMMIT. Eight-member composition
 uses explicit partitions, including 131072 request bytes; exact262144/+1 CLI
 response bytes,32/33 notification IDs and deadline/row/work/byte/SQL exhaustion uses test-side bounded controls on existing ledgers. Catalog reuse is
 private reviewed-resource isolation, not Draft→Review registration or AC1 proof.
-B1 reports admission and authoritative remaining allowance unavailable even with
-Allowed settings. These cases do not prove B2+B3 admission/recovery/accounting,
-eight-run write/startup fit, provider containment or the genuine pilot.
+The 1–8 bound is syntax/composition only. Concurrent capacity is bounded by
+existing cancellation reservations (currently three unfinished runs); a larger
+batch refuses atomically with the existing finite cause. `capacity` derives the
+fitting cardinality and observes fresh four/eight-member zero-write refusals.
+`admission` observes 2+2 refusal, 2+1 success and new capacity after a member
+finishes. Public recovery cases drive genuine result/receipt/native writers and
+synthetic positive native closure through source done; they prove no provider
+containment, live deployment or genuine pilot.
 Retired Python units and Web Vitest NOT RUN; general integration SKIPPED under
 THR-243 seq42; Product E2E NOT RUN. Required local CI remains
 `bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable

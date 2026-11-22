@@ -1,11 +1,13 @@
 # Workflow replacement of dispatch chains: technical design and migration plan
 
-Current R2 unit (a) and (b) B1 addendum: additive Coding v3/@2 setup reads/Save and separate
+Current R2 unit (a) and (b) B2+B3 addendum: additive Coding v3/@2 setup reads/Save and separate
 Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
-Public Start@2 discovery/composer is delivered with admission unavailable.
-Start@2 admission/continuation/recovery (B2+B3) and Draft→Review registration
-remain undelivered. Registration
+Public Start@2 discovery/composer and genuine first/later admission, initiator
+wake/recovery and source continuation are delivered together in B2+B3.
+Draft→Review registration remains undelivered. R1 double-prime binds only existing
+per-run/retry/revise/batch/history/cancellation bounds; there is no total-step cap
+or cross-run numeric pool. Task step counts remain task-local telemetry. Registration
 still creates no defaults or admission; offline fresh admission remains refused.
 Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
 Exact routes, custody and supported fixture commands:
@@ -146,9 +148,9 @@ For @2 workflow decisions, add a common `consume_notifications` array of at most
 
 ### Revision and audit rules
 
-Replace hard-coded two-return interpretation for new definitions with per-node declared revision/attempt limits and a total run visit bound. Recommendation: keep 64 total visits, 4096 events, 32 nodes, 16 roles; per-node revisions/attempts/recoveries at most 63/64/64, further intersected with original definition, settings, requested lower limits, root remaining allowances and existing org revise/retry policy. Pilot Coding can still default to two corrections; two is no longer an engine-wide product rule. Final numeric limits need sign-off and sizing evidence.
+Replace hard-coded two-return interpretation for new definitions with per-node declared revision/attempt limits and a total run visit bound. Recommendation: keep 64 total visits, 4096 events, 32 nodes, 16 roles; per-node revisions/attempts/recoveries at most 63/64/64, further intersected with original definition, settings, requested lower limits, existing org revise/retry policy and finite combined-history/cancellation headroom. Pilot Coding can still default to two corrections; two is no longer an engine-wide product rule. Final numeric limits need sign-off and sizing evidence.
 
-An automatic correction consumes its declared revision counter and a visit. A held-step replacement consumes an attempt/recovery and a visit; it cannot reset an exhausted revision counter. Changing model, agent, brief, key, task number or session creates no allowance. When a limit is exhausted, the wake shows the actual remaining values and why retry/rebrief/reassign are unavailable; cancel remains supported. New runs must account for the same wider-goal spent allowances. Automatic graph cycles remain bounded; no resume edge may jump to an arbitrary node or edit the graph.
+An automatic correction consumes its declared revision counter and a visit. A held-step replacement consumes an attempt/recovery and a visit; it cannot reset an exhausted revision counter. Changing model, agent, brief, key, task number or session creates no allowance. When a limit is exhausted, the wake shows the actual remaining values and why retry/rebrief/reassign are unavailable; cancel remains supported. New runs preserve prior per-run ledgers and share the existing combined-history/cancellation bounds; there is no cross-run numeric pool or total-step cap. Automatic graph cycles remain bounded; no resume edge may jump to an arbitrary node or edit the graph.
 
 The authoritative audit is the append-only workflow event stream, extended with `held`, `control_applied`, `finished`, `initiator_wake_created`, `initiator_wake_consumed` or equivalent normalized rows. It records before/after CAS, causal native result or terminal observation ID/digest (nullable result only when genuinely absent), actor task/agent/SID, command digest, assignment generation, before/after counters, replaced visit and fresh visit. A notification/consumption table may reference the event rather than duplicate its bytes. Human-readable `audit_log` entries use the **existing actual task ID and actor**; no new `audit_log.task_id` prefix or overloaded-field meaning. Task creation's existing conditional model-selection audit remains as THR-356 defines it. Event history is the replay authority; a log line is not.
 
@@ -182,7 +184,7 @@ Model/effort belong to the node assignment rather than to graph routing. Propose
 }
 ```
 
-Digests in the example are placeholders, not valid commands. A closed manager decision is `{"action":"workflow_start","workflows":[StartAt2,...]}` (one to eight runs). No mixing `workflow` and `workflows`. The existing singular `{"action":"workflow_start","workflow":StartAt1}` remains an explicitly parsed legacy variant. A batch validates all commands/eligibility/executor pairs/remaining aggregate allowances before any run/task allocation and commits all or none. Eight is a proposed finite bound aligned with current fanout width; it is not parallel nodes inside a workflow.
+Digests in the example are placeholders, not valid commands. A closed manager decision is `{"action":"workflow_start","workflows":[StartAt2,...]}` (one to eight runs). No mixing `workflow` and `workflows`. The existing singular `{"action":"workflow_start","workflow":StartAt1}` remains an explicitly parsed legacy variant. A batch validates all commands, eligibility/executor pairs, per-member original limits and the existing combined-history/cancellation reservation before allocation and commits all or none. One to eight is the syntax/composer bound; actual concurrent capacity is reservation-bound (currently three unfinished runs), and larger batches refuse finitely. Members are independent runs with sequential nodes.
 
 Start@1 remains byte-for-byte parsed and replayed under its original equality/fixed-run semantics. R1's composer initially emits @1. New starts switch to @2 after all readers, cancellation and continuation owners are mounted. Do not add optional override fields to @1 or normalize historical bytes into @2. Keep the original definition+settings pin as the defaults/admission snapshot; store a separate canonical **resolved assignment snapshot** and its digest, including field presence, origin of each choice and target executor identity. Settings defaults are not a mandatory equality check in @2. A future default/save/disable changes fresh admissions only. Current authority/eligibility is rechecked before disclosure and each new step/recovery task; no saved selection becomes a permanent access grant.
 

@@ -1,5 +1,10 @@
 # Web And CLI
 
+Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
+settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
+[the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
+Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
+
 ## Multipart uploads in the native app scheme
 
 The artifacts and task-attachment API clients use same-origin `/api/v1` paths.

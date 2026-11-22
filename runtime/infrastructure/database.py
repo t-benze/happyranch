@@ -2126,6 +2126,13 @@ class Database(
                 (task_id, agent, session_id),
             ).fetchone()
             if existing is not None:
+                if v2_admission is None and ownership.kind == 'seq_source_wait_set':
+                    matched = completion_result_payload_matches(dict(existing),
+                        output_summary=output_summary, confidence_score=confidence_score, status=status,
+                        risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
+                        waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
+                    self._conn.rollback()
+                    return matched
                 if v2_admission is None:
                     # Unchanged legacy idempotency: any persisted same-session
                     # result short-circuits an exact retry.
@@ -2200,6 +2207,13 @@ class Database(
                     return False
                 self._conn.rollback()
                 return True
+            if decision_json is not None:
+                workflow_decision = json.loads(decision_json)
+                if workflow_decision.get('action') == 'workflow_start' and 'workflows' in workflow_decision:
+                    continuation = getattr(self, '_workflow_continuation', None)
+                    if continuation is None:
+                        raise ValueError('workflow_start_capture_missing')
+                    continuation.preflight_start_uncommitted(task_id)
             omit_attempt = False
             if v2_admission is not None:
                 omit_attempt = ordinary_completion_omission(self, task_id=task_id, row={
@@ -2231,7 +2245,9 @@ class Database(
                     task_id=task_id, agent=agent, session_id=session_id,
                     result_id=accepted_result_id, admission=v2_admission, now=now,
                 )
-            if ownership.kind == 'seq_source_wait_set':
+            if ownership.kind == 'seq_source_wait_set' or (decision_json is not None
+                    and json.loads(decision_json).get('action') == 'workflow_start'
+                    and 'workflows' in json.loads(decision_json)):
                 continuation = getattr(self, '_workflow_continuation', None)
                 if continuation is None or not continuation.callback_uncommitted(
                         task_id=task_id, agent=agent, session_id=session_id, result_id=accepted_result_id):

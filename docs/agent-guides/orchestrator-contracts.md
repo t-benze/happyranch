@@ -1,5 +1,10 @@
 # Orchestrator Contracts
 
+Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
+settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
+[the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
+Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

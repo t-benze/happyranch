@@ -1,4 +1,4 @@
-"""Read-only plural GenericStartCommand composition; no public admission."""
+"""Read-only plural GenericStartCommand composition for native callback admission."""
 from __future__ import annotations
 
 import json
@@ -69,7 +69,7 @@ def compose_v2(client: httpx.Client, org: str, sid: str, command: ComposeInputV2
         raise ValueError('sequential_definition_conflict')
     if not set(command.consume_notifications) <= set(context.delivered_notifications):
         raise ValueError('sequential_notification_not_delivered')
-    workflows, total = [], dict(max_visits=0, max_events=0, max_recoveries=0)
+    workflows = []
     for member in command.workflows:
         value = selected.get(member.definition)
         if value is None:
@@ -89,7 +89,7 @@ def compose_v2(client: httpx.Client, org: str, sid: str, command: ComposeInputV2
             definition=value.pin.model_dump(mode='json'))))
         validate_assignment_keys(compiled, start)
         validate_generic_start(start, compiled, original_limits=value.limits)
-        if (any(getattr(start.lower_limits, key) > getattr(value.limits, key) for key in total)
+        if (any(getattr(start.lower_limits, key) > getattr(value.limits, key) for key in ('max_visits', 'max_events', 'max_recoveries'))
                 or generic_limits(compiled, start.lower_limits) != generic_limits(compiled, value.limits, start.lower_limits)):
             raise ValueError('sequential_lower_limits_exceed_settings')
         principals = {role: requirement.default_agent for role, requirement in compiled.definition.roles}
@@ -98,14 +98,8 @@ def compose_v2(client: httpx.Client, org: str, sid: str, command: ComposeInputV2
         if any(principals[role] is None or any(principals[role] == principals[other]
                 for other in requirement.independent_of) for role, requirement in compiled.definition.roles):
             raise ValueError('sequential_assignment_independence')
-        for key in total:
-            total[key] += getattr(start.lower_limits, key)
         workflows.append(dict(start.model_dump(mode='json', exclude_unset=True),
                               lower_limits=_generic_limits_value(start.lower_limits)))
-    # Only the unchanged global shape ceilings are knowable here. This is NOT a
-    # fresh source/root/lineage allowance or a promise that callback admission fits.
-    if any(total[key] > cap for key, cap in (('max_visits', 64), ('max_events', 4096), ('max_recoveries', 64))):
-        raise ValueError('workflow_seq_batch_allowance_exhausted')
     decision = dict(action='workflow_start', workflows=workflows)
     if 'consume_notifications' in command.model_fields_set:
         decision['consume_notifications'] = command.consume_notifications

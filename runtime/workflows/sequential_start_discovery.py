@@ -1,4 +1,4 @@
-"""Additive Start@2 advisory discovery. Public admission remains unavailable."""
+"""Additive Start@2 advisory discovery; native callback admission is authoritative."""
 from __future__ import annotations
 
 import asyncio
@@ -58,17 +58,18 @@ class StartContextV2(Closed):
     max_runs: Literal[8] = 8
     assignments: Literal['defaults-with-overrides'] = 'defaults-with-overrides'
     source_semantics: Literal['initiator-continues'] = 'initiator-continues'
-    availability: Literal['admission-unavailable'] = 'admission-unavailable'
-    unavailable_cause: Literal['workflow_start_v2_unavailable'] = 'workflow_start_v2_unavailable'
-    # There is no reservation or authoritative cross-batch allowance in B1.
+    availability: Literal['admission-supported'] = 'admission-supported'
+    unavailable_cause: None = None
+    # Per-run bounds are pinned at admission; there is no cross-run numeric pool.
     remaining: None = None
-    remaining_cause: Literal['workflow_start_v2_unavailable'] = 'workflow_start_v2_unavailable'
+    remaining_cause: Literal['native-per-run-bounds'] = 'native-per-run-bounds'
     delivered_notifications: tuple[Token, ...] = ()
     definitions: tuple[StartDefinitionViewV2, ...]
 
 
 def read_start_source_v2(conn: sqlite3.Connection, org: Any, *, task_id: str,
-                         principal: str, session_id: str, budget: _ReadBudget) -> dict:
+                         principal: str, session_id: str, budget: _ReadBudget,
+                         result_id: int | None = None) -> dict:
     """Own ordinary source or its own generic wait set; never @1 fallthrough."""
     from runtime.workflows.sequential_start import _ordinary_dependencies
 
@@ -101,8 +102,9 @@ def read_start_source_v2(conn: sqlite3.Connection, org: Any, *, task_id: str,
         if row['team'] != source['team']:
             raise ProjectionRefusal('sequential_task_session_required', 403)
         key = row['parent_task_id']
-    if list(_bounded_rows(conn, 'task_results', ('id',), (('integer',),), budget,
-            where='task_id=? AND agent=? AND session_id=?', args=(task_id, principal, session_id), maximum=1)):
+    results = list(_bounded_rows(conn, 'task_results', ('id',), (('integer',),), budget,
+            where='task_id=? AND agent=? AND session_id=?', args=(task_id, principal, session_id), maximum=1))
+    if [row[0] for row in results] != ([] if result_id is None else [result_id]):
         raise ProjectionRefusal('sequential_task_session_required', 403)
     # The ancestry above already identifies the root. Acquire only its bounded
     # control cells, on the SAME snapshot/ledger, rather than re-reading every
