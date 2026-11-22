@@ -265,6 +265,25 @@ try:
     check('live window screenshot captured')
     result['stage'] = 'quit'
     run(['xdotool', 'key', '--clearmodifiers', 'ctrl+q'], 'normal-quit', env=env)
+    quit_dialog = {}
+
+    def quit_dialog_ready() -> bool:
+        require(app.poll() is None, 'app exited before Quit confirmation')
+        focused = run(['xdotool', 'getactivewindow'],
+                      'quit-focus-' + str(len(result['commands'])), env=env, timeout=10).strip()
+        if focused == window:
+            return False
+        owner = run(['xdotool', 'getwindowpid', focused],
+                    'quit-dialog-owner', env=env, timeout=10).strip()
+        require(owner == str(app.pid), 'Quit confirmation is not owned by the app')
+        quit_dialog['window'] = focused
+        return True
+
+    wait_until(quit_dialog_ready, 10, 'native Quit confirmation did not become active')
+    run(['xdotool', 'windowactivate', '--sync', quit_dialog['window']],
+        'activate-quit-dialog', env=env, timeout=10)
+    # Stay is the default: move focus to Quit/OK and activate that button.
+    run(['xdotool', 'key', '--clearmodifiers', 'Tab', 'space'], 'confirm-quit', env=env)
     result['app_exit_code'] = app.wait(timeout=20)
     require(app.returncode == 0, 'normal Quit did not exit zero')
     require(not Path(f'/proc/{daemon["pid"]}').exists(), 'app-owned daemon remains after Quit')

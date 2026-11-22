@@ -1548,9 +1548,12 @@ daemon is the app's child, checks HTTP200/status `ok` at `/api/v1/health`, and
 compares `/` byte for byte
 with the installed built `web/dist/index.html`. It captures the actual focused
 window in `window.png`; a reviewer must view the PNG to assess rendered content.
-Ctrl+Q must exit the app with status0, leave no daemon process and remove both
-markers. Package removal must leave no package-specific files, links or
-directories and must preserve the entire user-data home (bytes and metadata),
+The smoke sends Ctrl+Q, waits for the app-owned native confirmation to become
+active, then uses xdotool Tab and Space to select and activate Quit/OK from the
+Stay default. After confirmation, the existing 20-second wait must observe app
+exit with status0, no daemon process and removal of both markers. Package removal
+must leave no package-specific files, links or directories and must preserve the
+entire user-data home (bytes and metadata),
 including a sentinel. Shared system directories are excluded from payload
 leftover checks. The isolated user-data fixture is deleted only after that
 preservation assertion. Failures return nonzero; teardown cannot change a
