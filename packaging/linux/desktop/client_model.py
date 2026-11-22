@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import importlib.util
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 import uuid
@@ -18,6 +19,13 @@ _spec.loader.exec_module(_native)
 _spec = importlib.util.spec_from_file_location("client_store", Path(__file__).with_name("client_store.py"))
 _store = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_store)
+_startup = sys.modules.get("_happyranch_startup_selection")
+if _startup is None:
+    _spec = importlib.util.spec_from_file_location("_happyranch_startup_selection",
+                                                  Path(__file__).with_name("app_startup_selection.py"))
+    _startup = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_startup)
+    sys.modules["_happyranch_startup_selection"] = _startup
 
 
 def timestamp(value: float | None = None) -> str:
@@ -62,6 +70,7 @@ class ClientModel:
         self.main = self.bridge_types = None
         self.active_session = self.active_target = None
         self.active_unsaved = False
+        self.startup_selection_saved = True
         self.active_projection = None
         self.switch_candidate = self.candidate_target = self.candidate_error = None
         self.candidate_stop = threading.Event()
@@ -196,6 +205,9 @@ class ClientModel:
         self.session = self.candidate_target = self.switch_candidate = None
         self.document = None
         self.runtime, self.access = "available", "allowed"
+        self.startup_selection_saved = _startup.set(
+            "remote:" + self.active_ref if not self.active_unsaved and self.active_ref
+            else "remote:unsaved")["persisted"]
         self.changed("connected")
         # Swap/cancellation/event already occurred. Cleanup is independent and
         # cannot roll back an admitted target or claim atomic cleanup success.
@@ -590,6 +602,7 @@ class ClientModel:
                         self.active_ref = None
                     self.saved_access = "saved" if self.records else "none"
                     self._cleanup = "confirmed"
+                    self.startup_selection_saved = _startup.clear_reference(ref)["persisted"]
                 self.changed()
                 finish(self.action("unknown" if error else "confirmed"),
                        "removalIncomplete" if error else None, "unknown" if error else "confirmed")
@@ -721,6 +734,8 @@ class ClientModel:
             self.reading = False
             self.health_finish = None
             self.access = {"revoked": "revokedConfirmed", "accessUnavailable": "accessDenied"}.get(error, "unknown") if error else "allowed"
+            if error == "revoked" and self.active_ref:
+                self.startup_selection_saved = _startup.clear_reference(self.active_ref)["persisted"]
             self.observation = "unavailable" if error else "known"
             if error:
                 self.runtime = "offline" if error == "daemonUnavailable" else "unknown"

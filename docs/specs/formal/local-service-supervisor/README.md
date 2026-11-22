@@ -118,3 +118,36 @@ The first bypasses recheck; the second retains recheck and bypasses status
 cancellation/completion fencing. Expected exit is 12 with the respective
 freshness/cache counterexample; neither is a passing design. Positive configs check all listed
 invariants and liveness. Use a durable job if expanded runs can exceed a minute.
+
+## Native application Quit and Relaunch (S7-L3)
+
+`AppLifecycle.tla` complements the service-only supervisor model. It models
+the new ordinary Quit-then-launch behavior in `run_gui`: one document-bound
+request, Keep vs current clean Proceed, retained uncertainty after replacement,
+separate explicit recovery consent, compatible installed-assets admission,
+existing keep-running policy, failed-stop custody/retry, and launch only after
+supervisor completion and lock release. Local/remote selection uses the same
+local-service policy; neither selection authorizes a remote Host stop.
+
+The model abstracts the validated transport/document/requestId tuple as
+`pending`; it does not model JSON parsing, GTK reentrancy or HTTP. `Replace`
+represents reload, revocation or WebKit death. `Publish` abstracts an original
+document's save/discard/result observation; it cannot clear the retained latch.
+`RecoveryExit` is a human's explicit loss-warning acceptance, never timeout.
+Native service observations, compatibility and confirmed unchanged installed
+assets are atomic inputs; no live systemd/logind, filesystem provenance,
+networking, credentials or package-updater proof follows. Unknown/unattached
+local service on remote-only launch has no local service effect and is outside
+the attached-service model. The model is safety-only and promises no eventual
+exit, restart, reconnect or work resumption.
+
+Run sequentially with the same pinned jar and private short non-/tmp TMPDIR:
+
+```sh
+/usr/bin/java -XX:+UseParallelGC -Xmx512m -cp "$TASK_TMP/tla2tools.jar" tlc2.TLC -workers 1 -fp 0 -seed 1 -metadir "$TASK_TMP/states-app-local" -config app-local-off.cfg AppLifecycle
+```
+
+Repeat for `app-remote-on.cfg` and `app-negative-skip-assets.cfg` with distinct
+metadirs. The negative deliberately bypasses compatible-assets admission;
+expected exit 12 violates `RelaunchNeedsAssets`. Actual results are in
+[RESULTS.md](RESULTS.md). No CI gate or automation is added.

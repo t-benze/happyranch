@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 from typing import Callable, Iterator
 import unittest
@@ -2071,6 +2072,126 @@ class LocalControlsTests(unittest.TestCase):
         self.fixture.state["FragmentPath"] = "/foreign.service"
         self.assertEqual(self.run_request("local.restart")[1]["code"], "outcomeUnknown")
         self.assertEqual(self.fixture.verbs().count("restart"), 1)
+
+
+class StartupLifecycleTests(unittest.TestCase):
+    def test_startup_routes_remote_to_main_without_start_or_connect(self) -> None:
+        for value in ("local", "remote:" + "a" * 64, "remote:unsaved"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as scratch:
+                callbacks = queue.Queue()
+                calls, views = [], []
+                class Widget:
+                    def __init__(self, **kwargs: object) -> None:
+                        self.children, self.signals = [], {}
+                    def connect(self, name: str, callback: object) -> None:
+                        self.signals[name] = callback
+                    def add(self, child: object) -> None:
+                        self.children.append(child)
+                    def get_child(self) -> object:
+                        return self.children[0] if self.children else None
+                    def get_children(self) -> list:
+                        return self.children[:]
+                    def get_message_area(self) -> object:
+                        return self
+                    def remove(self, child: object) -> None:
+                        self.children.remove(child)
+                    def pack_start(self, child: object, *_args: object) -> None:
+                        self.add(child)
+                    def run(self) -> int:
+                        return 1
+                    def __getattr__(self, name: str) -> object:
+                        return lambda *_args: None
+                shell, app = Widget(), Widget()
+                app.done = False
+                app.quit = lambda: setattr(app, "done", True)
+                def run_app(_args: list) -> int:
+                    app.signals["activate"](app)
+                    deadline = time.monotonic() + 5
+                    while not app.done and time.monotonic() < deadline:
+                        callback, args = callbacks.get(timeout=3)
+                        if callback.__name__ == "show_web":
+                            views.append(args[0])
+                            shell.signals["delete-event"]()
+                        else:
+                            callback(*args)
+                    self.assertTrue(app.done, "supervisor must stop before releasing the lock")
+                    return 0
+                app.run = run_app
+                gi, repository = ModuleType("gi"), ModuleType("gi.repository")
+                gi.require_version = lambda *_args: None
+                repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
+                    SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+                repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
+                    unix_signal_add=lambda *_args: None,
+                    idle_add=lambda callback, *args: callbacks.put((callback, args)))
+                repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
+                    ApplicationWindow=lambda **_kwargs: shell, Box=Widget, Label=Widget, Button=Widget,
+                    MessageDialog=Widget, MessageType=SimpleNamespace(WARNING=0),
+                    ButtonsType=SimpleNamespace(NONE=0, CLOSE=1),
+                    ResponseType=SimpleNamespace(CANCEL=0, OK=1),
+                    Orientation=SimpleNamespace(VERTICAL=0))
+                service = SimpleNamespace(shutdown_pending=False, attached=False,
+                    start=lambda *_args, **_kwargs: calls.append("start") or "http://127.0.0.1:43127/")
+                with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+                        patch.object(window, "MainHeader", return_value=SimpleNamespace(header=Widget())), \
+                        patch.object(window, "RemoteAccessPanel", return_value=SimpleNamespace(box=Widget(), close=lambda: None)), \
+                        patch.object(window, "ServiceMode", return_value=service), \
+                        patch.object(window, "_startup", SimpleNamespace(load=lambda: {"current": value, "persisted": True}), create=True), \
+                        patch.object(window.LocalControls, "observe", return_value={"running": "stopped", "keepRunning": "off"}), \
+                        patch.object(subprocess, "Popen", side_effect=AssertionError("no fallback or reconnect")):
+                    self.assertEqual(window.run_gui(Path("/synthetic"), Path(scratch)), 0)
+                self.assertEqual(calls, ["start"] if value == "local" else [])
+                self.assertEqual(views, ["http://127.0.0.1:43127/"] if value == "local" else [None])
+
+    def test_native_confirmation_discloses_local_remote_and_recovery_effects(self) -> None:
+        self.assertTrue(callable(getattr(window, "lifecycle_copy", None)), "native actual-effects copy is required")
+        for action in ("close", "quit", "relaunch"):
+            for chinese in (False, True):
+                for keep in ("off", "partial", "on"):
+                    with self.subTest(action=action, chinese=chinese, keep=keep):
+                        title, text = window.lifecycle_copy(action, keep, "Studio Host", True, True, chinese)
+                        self.assertIn("Studio Host", text)
+                        self.assertIn("保持运行" if chinese else "keeps running", text)
+                        self.assertIn("新的邀请" if chinese else "new invite", text)
+                        self.assertIn("撤销主机授权" if chinese else "revoke Host grants", text)
+                        self.assertIn("并未取消" if chinese else "not cancelled", text)
+                        self.assertIn("中断本地工作" if chinese else "interrupt local work", text) if keep != "on" else \
+                            self.assertIn("后台运行设置" if chinese else "keep-running policy", text)
+                        if action == "relaunch":
+                            self.assertIn("重新启动" if chinese else "Relaunch", title)
+                            self.assertIn("不保证" if chinese else "not guaranteed", text)
+
+    def test_relaunch_requires_complete_compatible_unchanged_installed_assets(self) -> None:
+        self.assertTrue(callable(getattr(window, "relaunch_assets", None)), "installed compatibility verification is required")
+        with tempfile.TemporaryDirectory() as scratch:
+            prefix = Path(scratch)
+            desktop = prefix / "share/happyranch/desktop"
+            desktop.mkdir(parents=True)
+            for source in Path(window.__file__).parent.glob("*.py"):
+                if not source.name.startswith("test_"):
+                    (desktop / source.name).write_bytes(source.read_bytes())
+            (desktop / "invite_v2.py").write_bytes(
+                (Path(window.__file__).parents[3] / "runtime/remote_access/invite_v2.py").read_bytes())
+            for name in ("native-connection-bridge.v1.json", "remote-client-config-policy.v1.json"):
+                (desktop / name).write_text("{}")
+            (prefix / "web/dist").mkdir(parents=True)
+            (prefix / "web/dist/index.html").write_text("<html></html>")
+            (prefix / "build-info.json").write_text(json.dumps({"source_sha": "a" * 40}))
+            known = {"current": 1, "min_client": 1}
+            digest = window.relaunch_assets(prefix, known)
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            (prefix / "web/dist/app.js").write_text("// changed installed UI\n")
+            changed = window.relaunch_assets(prefix, known)
+            self.assertNotEqual(changed, digest)
+            digest = changed
+            for contract in (None, {}, {"current": 0, "min_client": 1}, {"current": 2, "min_client": 2}):
+                with self.assertRaises(window.LaunchError):
+                    window.relaunch_assets(prefix, contract)
+            (desktop / "app_startup_selection.py").unlink()
+            with self.assertRaises(window.LaunchError):
+                window.relaunch_assets(prefix, known)
+            (desktop / "app_startup_selection.py").write_text("# changed\n")
+            self.assertNotEqual(window.relaunch_assets(prefix, known), digest)
 
 
 if __name__ == "__main__":
