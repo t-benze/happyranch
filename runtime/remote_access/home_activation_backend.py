@@ -29,6 +29,7 @@ from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
+from runtime.remote_access.helper_lifecycle import log_enable_refusal
 
 
 class _OperationTransactions(HomeActivationTransactionStore):
@@ -517,8 +518,50 @@ class HelperLifecycleBackend:
         raise ActivationRefused()
 
 
+def _log_activation_failure(error: Exception) -> None:
+    """Keep only the class and innermost shipped source location in local syslog."""
+    try:
+        import re
+        import syslog
+
+        # Closed product wrappers retain the original failure as context even
+        # when suppressing its text. Project one cause, without formatting it.
+        seen = {id(error)}
+        for _ in range(8):
+            cause = error.__cause__
+            if cause is None and error.__suppress_context__:
+                cause = error.__context__
+            if cause is None or id(cause) in seen:
+                break
+            seen.add(id(cause))
+            error = cause
+        root = Path(__file__).parent.parent
+        source = None
+        trace = error.__traceback__
+        while trace is not None:
+            try:
+                relative = Path(trace.tb_frame.f_code.co_filename).relative_to(root)
+            except ValueError:
+                pass
+            else:
+                # Only source-relative identifiers; never an absolute/user path.
+                path = f'runtime/{relative.as_posix()}'
+                if (len(path) <= 160 and
+                        re.fullmatch(r'(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py', relative.as_posix())):
+                    source = f'{path}:{trace.tb_lineno}'
+            trace = trace.tb_next
+        name = type(error).__name__
+        name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
+        if source is not None:
+            syslog.syslog(syslog.LOG_WARNING,
+                f'remote-access-activation-failure exception={name} source={source} step=enable')
+    except Exception:
+        pass  # Diagnostic loss preserves the original closed failure.
+
+
 def helper_main() -> int:
     """Closed private input from the fixed helper; never an operator CLI."""
+    request = None
     try:
         if len(sys.argv) != 1 or os.geteuid() != 0:
             raise ActivationRefused()
@@ -542,6 +585,10 @@ def helper_main() -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ActivationRefused()
+            # The fixed child has an empty environment: Python's default
+            # executable search omits /usr/sbin on Debian/Ubuntu.
+            if argv[0] in ('useradd', 'userdel', 'groupdel'):
+                argv = ['/usr/sbin/' + argv[0], *argv[1:]]
             return _default_run(argv, timeout=min(timeout, remaining), **kwargs)
         manager = SystemdServiceManager(system=True, run=run)
         io = ManagedInstaller(layout='deb', manager=manager, run=run)
@@ -560,8 +607,14 @@ def helper_main() -> int:
             raise ActivationRefused()
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         return 0
-    except Exception:
-        return 1  # No raw paths, keys, credentials or diagnostics leave this child.
+    except Exception as error:
+        if (type(request) is dict and request.get('method') == 'Enable'
+                and request.get('step') == 'capture'):
+            log_enable_refusal(error, child=True)
+        elif (type(request) is dict and request.get('method') == 'Enable'
+                and request.get('step') == 'enable'):
+            _log_activation_failure(error)
+        return 1  # No raw paths, keys, credentials or exception text leave this child.
 
 
 if __name__ == '__main__':

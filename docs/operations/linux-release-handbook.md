@@ -784,6 +784,15 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
+The packaged service launcher and GUI create a missing release data folder at
+0700 before daemon state or desktop.lock publication. The final leaf is checked
+without following symlinks, including current-UID ownership and exact 0700 for
+a new folder. Existing unsafe folders are never chmod/chown repaired; the log
+names the path and problem and says it must be private to the user. The daemon
+keeps its existing startup behavior and remote Enable refuses
+`release_home_invalid`. This changes no shared development-home creation, other
+file modes, systemd UMask or helper-owner safety checks (THR-327 seq613).
+
 ### Native Main header (Settings S6-L)
 
 The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**

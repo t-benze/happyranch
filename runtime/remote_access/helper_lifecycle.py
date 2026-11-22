@@ -6,6 +6,7 @@ effect; the caller owns scheduling and eventual settlement, never an implicit re
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -26,6 +27,42 @@ METHODS = frozenset({'Enable', 'Disable', 'ReplaceFailed', 'RefreshHomeAddress',
 OUTCOMES = frozenset({SetupPhase.READY, SetupPhase.OFF, SetupPhase.IN_PROGRESS,
                       SetupPhase.FAILED, SetupPhase.UNCERTAIN, SetupPhase.PARTIAL_CLEANUP})
 T = TypeVar('T')
+
+
+def log_enable_refusal(error: Exception, *, child: bool = False) -> None:
+    """Journal only fixed internal stages and a class, never exception text."""
+    stages = {
+        '_dispatch': 'dispatch', '_start_lifecycle': 'admission', 'take': 'capture',
+        '_call': 'capture-transport', 'current_generation': 'capture-transport',
+        '_authorized': 'authorization', '_lifecycle_authorized': 'revalidation',
+        'helper_main': 'child', 'dispatch': 'dispatch', 'capture': 'capture',
+        '_record': 'protected-record', '_parent': 'protected-parent',
+        '_inventory': 'inventory', '_home_staging_residue': 'clean-residue',
+        '_headscale_ca_sources': 'ca-sources', '_headscale_stopped': 'headscale-quiescence',
+        '_confirm_quiescent': 'managed-quiescence', '_replacement_snapshot': 'snapshot',
+        '_headscale_publication': 'headscale-publication', '_issuer_receipt': 'issuer-receipt',
+        '_directory': 'custody-directory', '_check_directory': 'custody-directory',
+        '_default_run': 'native-command',
+    }
+    try:
+        import syslog
+
+        observed = []
+        trace = error.__traceback__
+        for _ in range(24):
+            if trace is None:
+                break
+            stage = stages.get(trace.tb_frame.f_code.co_name)
+            if stage is not None and (not observed or stage != observed[-1]):
+                observed.append(stage)
+            trace = trace.tb_next
+        stage = '.'.join(observed[-8:]) or 'unknown'
+        name = type(error).__name__
+        name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
+        syslog.syslog(syslog.LOG_WARNING, 'remote-access-enable-refusal origin=' +
+            ('child' if child else 'helper') + ' stage=' + stage + ' exception=' + name)
+    except Exception:
+        pass  # Diagnostic loss must preserve the original closed refusal.
 
 
 class _StringEnum(str, Enum):
