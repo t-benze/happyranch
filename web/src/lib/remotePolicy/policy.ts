@@ -90,7 +90,8 @@ function templateMatches(template: string, path: string): boolean {
 export function matchesRemoteConfigRequest(method: string, path: string): boolean {
   const verb = method.toUpperCase();
   if (!METHODS.has(verb)) return false;
-  let bare = path.split('?')[0] ?? '';
+  // Like native, a trailing slash does not change the route.
+  let bare = (path.split('?')[0] ?? '').replace(/\/+$/, '');
   if (!bare.startsWith('/')) bare = `/${bare}`;
   const absolute = bare === API_PREFIX || bare.startsWith(`${API_PREFIX}/`) ? bare : `${API_PREFIX}${bare}`;
   return REMOTE_CONFIG_ENTRIES.some(

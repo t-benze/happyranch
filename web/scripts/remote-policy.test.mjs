@@ -82,6 +82,7 @@ test('concrete config requests match, with or without /api/v1 and a query', () =
     assert.ok(matchesRemoteConfigRequest(entry.method, path), `${entry.method} ${path}`);
     assert.ok(matchesRemoteConfigRequest(entry.method.toLowerCase(), path.replace('/api/v1', '')), `${entry.method} bare ${path}`);
     assert.ok(matchesRemoteConfigRequest(entry.method, `${path}?a=1`), `${entry.method} ${path}?a=1`);
+    assert.ok(matchesRemoteConfigRequest(entry.method, `${path}/`), `${entry.method} ${path}/`);
   }
 });
 
