@@ -113,7 +113,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       catch_up_on_startup: stored.dreaming.catch_up_on_startup,
       agents: { mode: stored.dreaming.agents.mode, include: [...stored.dreaming.agents.include], exclude: [...stored.dreaming.agents.exclude] },
     },
-    threads: { enabled: stored.threads.enabled, invocation_timeout_seconds: stored.threads.invocation_timeout_seconds },
+    threads: { invocation_timeout_seconds: stored.threads.invocation_timeout_seconds },
   });
   /**
    * The complete non-GET set of a phase: every row finished, none unexpected, and

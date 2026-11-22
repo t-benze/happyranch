@@ -111,7 +111,6 @@ function EditableOrgSection({
   const [dreamMode, setDreamMode] = useState(org.dreaming.agents.mode);
   const [dreamInclude, setDreamInclude] = useState(org.dreaming.agents.include.join(', '));
   const [dreamExclude, setDreamExclude] = useState(org.dreaming.agents.exclude.join(', '));
-  const [threadsEnabled, setThreadsEnabled] = useState(org.threads.enabled);
   const [threadsTimeout, setThreadsTimeout] = useState(
     org.threads.invocation_timeout_seconds === null ? '' : String(org.threads.invocation_timeout_seconds),
   );
@@ -130,7 +129,6 @@ function EditableOrgSection({
     setDreamMode(org.dreaming.agents.mode);
     setDreamInclude(org.dreaming.agents.include.join(', '));
     setDreamExclude(org.dreaming.agents.exclude.join(', '));
-    setThreadsEnabled(org.threads.enabled);
     setThreadsTimeout(
       org.threads.invocation_timeout_seconds === null ? '' : String(org.threads.invocation_timeout_seconds),
     );
@@ -162,7 +160,6 @@ function EditableOrgSection({
     // threads
     const parsedThreadTimeout = threadsTimeout.trim() ? Number(threadsTimeout) : null;
     patch.threads = {
-      enabled: threadsEnabled,
       invocation_timeout_seconds: parsedThreadTimeout,
     };
 
@@ -178,7 +175,6 @@ function EditableOrgSection({
       setDreamMode(data.org.dreaming.agents.mode);
       setDreamInclude(data.org.dreaming.agents.include.join(', '));
       setDreamExclude(data.org.dreaming.agents.exclude.join(', '));
-      setThreadsEnabled(data.org.threads.enabled);
       setThreadsTimeout(
         data.org.threads.invocation_timeout_seconds === null ? '' : String(data.org.threads.invocation_timeout_seconds),
       );
@@ -267,9 +263,6 @@ function EditableOrgSection({
         {/* threads */}
         <h4 className="text-base font-medium">Threads</h4>
         <div className="border-border-default divide-border-default divide-y rounded-md border">
-          <EditableRow label="Enabled">
-            <BooleanToggle value={threadsEnabled} onChange={setThreadsEnabled} />
-          </EditableRow>
           <EditableRow label="Invocation timeout (s)">
             <input
               type="number"
