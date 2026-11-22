@@ -747,17 +747,21 @@ export interface WorkflowQuery<T> extends QueryLike<T> {
   refreshError?: Error | null;
 }
 export interface SequentialSettingsFence {
-  command: Sequential.SequentialSettingsCommand;
-  phase: 'sending' | 'uncertain';
+  command: Sequential.SetupCommand;
+  phase: 'sending' | 'uncertain' | 'conflict';
 }
 export interface SequentialSettingsActions {
-  save: (command: Sequential.SequentialSettingsCommand) => Promise<Sequential.SequentialSettingsReceipt>;
-  readOperation: (key: string) => Promise<Sequential.SequentialSettingsReceipt>;
+  save: (command: Sequential.SetupSaveCommand) => Promise<Sequential.SetupReceipt>;
+  admission: (command: Sequential.SequentialAdmissionCommand) => Promise<Sequential.SetupReceipt>;
+  adoptConflict: (key: string) => void;
+  readOperation: (key: string) => Promise<Sequential.SetupReceipt>;
 }
 
 export interface WorkflowsApi {
   useWorkflowSetupStatus: () => WorkflowQuery<WorkflowSetupStatus>;
   useSequentialSettingsActions: () => SequentialSettingsActions;
+  useSequentialSetupDefinitions: () => WorkflowQuery<Sequential.SetupDefinitions>;
+  useSequentialSetupSettings: (identity: string) => WorkflowQuery<Sequential.SetupSettings>;
   useSequentialSettingsFence: () => SequentialSettingsFence | null;
   useSequentialDefinitions: () => WorkflowQuery<Sequential.SequentialDefinitions>;
   useSequentialDefinition: (id: string) => WorkflowQuery<Sequential.SequentialDefinition>;

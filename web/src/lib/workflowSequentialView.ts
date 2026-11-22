@@ -76,6 +76,59 @@ export function parseDefinition(text: string): DefView | null {
   };
 }
 
+export type SetupDefView = Omit<DefView, 'limits'> & {
+  limits: import('./api/workflowSequential').SequentialLimits | import('./api/workflowSequential').GenericSequentialLimits;
+};
+/** Setup supports the generic ABI additively; the historical parser above stays @1. */
+export function parseSetupDefinition(text: string): SetupDefView | null {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return null; }
+  if (!isObj(raw)) return null;
+  if (raw.format === 'workflow-sequential-definition@1') {
+    if (!isObj(raw.limits) || !['content_returns', 'max_content_epochs', 'max_visits', 'max_events'].every(k => Number.isSafeInteger((raw.limits as Record<string, unknown>)[k]))
+      || (raw.limits.content_returns as number) < 0 || (raw.limits.content_returns as number) > 2
+      || (raw.limits.max_content_epochs as number) < 1 || (raw.limits.max_content_epochs as number) > 3
+      || (raw.limits.max_visits as number) < 1 || (raw.limits.max_events as number) < 1) return null;
+    return parseDefinition(text);
+  }
+  if (raw.format !== 'workflow-sequential-definition@2' || !Array.isArray(raw.nodes) || !isObj(raw.roles)
+    || typeof raw.identity !== 'string' || !Number.isSafeInteger(raw.version) || !isObj(raw.limits)) return null;
+  const limits = raw.limits;
+  if (!['max_visits', 'max_events', 'max_recoveries'].every(k => Number.isSafeInteger(limits[k]))
+    || (limits.max_visits as number) < 1 || (limits.max_visits as number) > 64
+    || (limits.max_events as number) < 1 || (limits.max_events as number) > 4096
+    || (limits.max_recoveries as number) < 0 || (limits.max_recoveries as number) > 64
+    || Object.keys(limits).some(k => !['max_visits', 'max_events', 'max_recoveries', 'node_revisions'].includes(k))
+    || (limits.node_revisions !== undefined && (!isObj(limits.node_revisions)
+      || !Object.values(limits.node_revisions).every(v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 63)))) return null;
+  const roles: DefRole[] = [];
+  for (const [name, r] of Object.entries(raw.roles)) {
+    if (!isObj(r) || typeof r.eligibility !== 'string' || !['worker', 'registered-team-manager'].includes(r.eligibility)
+      || !Array.isArray(r.independent_of) || !r.independent_of.every(x => typeof x === 'string')) return null;
+    roles.push({ name, eligibility: r.eligibility, independentOf: strs(r.independent_of) });
+  }
+  const nodes: DefNode[] = [];
+  for (const n of raw.nodes) {
+    if (!isObj(n) || typeof n.id !== 'string' || typeof n.role !== 'string' || !isObj(n.output_contract) || !isObj(n.outcomes)) return null;
+    const outcomes: DefNode['outcomes'] = [];
+    for (const [outcome, value] of Object.entries(n.outcomes)) {
+      const e = edge(value);
+      if (!e) return null;
+      outcomes.push({ outcome, edge: e });
+    }
+    nodes.push({ id: n.id, role: n.role, responsibilities: strs(n.responsibilities),
+      inputs: Array.isArray(n.inputs) ? n.inputs.filter(isObj).map(i => ({ name: str(i.name), source: str(i.source), required: i.required !== false })) : [],
+      output: { slot: str(n.output_contract.slot), type: str(n.output_contract.type) }, checks: [], outcomes });
+  }
+  if (!roles.length || !nodes.length || nodes.some(n => !roles.some(r => r.name === n.role))) return null;
+  return { identity: raw.identity, version: raw.version as number, description: str(raw.description), entry: str(raw.entry_node),
+    roles, nodes, limits: { max_visits: limits.max_visits as number, max_events: limits.max_events as number,
+      max_recoveries: limits.max_recoveries as number,
+      ...(limits.node_revisions !== undefined ? { node_revisions: limits.node_revisions as Record<string, number> } : {}) },
+    inputs: Array.isArray(raw.required_inputs) ? raw.required_inputs.filter(isObj).map(i => ({ name: str(i.name), contract: str(i.contract), required: i.required !== false })) : [],
+    terminals: isObj(raw.terminal_conditions) ? Object.entries(raw.terminal_conditions).map(([name, c]) => ({ name, output: isObj(c) ? str(c.output) : '', requires: [] })) : [] };
+}
+
 export type Visit = SequentialRunDetail['visits'][number];
 
 /** The admitted definition's `next` edge for a recorded outcome, with its target node. */

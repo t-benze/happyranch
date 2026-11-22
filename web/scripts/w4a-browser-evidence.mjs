@@ -35,12 +35,15 @@
  * B3 reviewer choice (Settings ▸ Organization) runs against any ordinary dist:
  *   node scripts/w4a-browser-evidence.mjs --slice reviewer-settings --dist <dist> \
  *     --out <dir> [--reviewer-case R1-none,R5-unrelated-save,...]
+ * Coding setup cases reuse this runner with --slice workflow-setup
+ * --workflow-fixture <schema-load first_save export> [--workflow-case W01,...].
  */
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
 import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
 import { createFeatureFlagsFixture, runFeatureFlagsCases } from './feature-flags-browser-cases.mjs';
 import { createReviewerSettingsFixture, runReviewerSettingsCases } from './reviewer-settings-browser-cases.mjs';
+import { createWorkflowSetupFixture, runWorkflowSetupCases } from './workflow-setup-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -526,6 +529,11 @@ function startServer(root) {
           if (selectedSlice === 'feature-flags' && ffFixture.handle(request, response, p, ref, row)) return;
           if (selectedSlice === 'reviewer-settings') {
             const handled = rvFixture.handle(request, response, p, row);
+            if (handled === 'hang') { HUNG.push(response); return; }
+            if (handled) return;
+          }
+          if (selectedSlice === 'workflow-setup') {
+            const handled = wfFixture.handle(request, response, p, row);
             if (handled === 'hang') { HUNG.push(response); return; }
             if (handled) return;
           }
@@ -1098,7 +1106,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice)) throw new Error('unknown --slice');
 const expectProfile = arg('expect-profile');
 const buildLog = arg('build-log') && resolve(arg('build-log'));
 if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off'].includes(expectProfile) || !buildLog || !existsSync(buildLog))) {
@@ -1107,6 +1115,8 @@ if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off
 }
 const ffFixture = createFeatureFlagsFixture(WH_SETTINGS, ORG);
 const rvFixture = createReviewerSettingsFixture(WH_SETTINGS, W4C_LEAD, ORG);
+const wfFixture = selectedSlice === 'workflow-setup'
+  ? createWorkflowSetupFixture(JSON.parse(readFileSync(arg('workflow-fixture'), 'utf8')), W4C_LEAD, ORG) : null;
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1123,8 +1133,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1162,6 +1172,7 @@ async function main() {
   let chrome;
   let cdp;
   let chromeVersion = null;
+  const browserObservations = { console: [], exceptions: [], failedRequests: [], responses: [] };
   try {
     // Keep singleton paths short while allocating
     // anonymous font mappings on an available task-owned temp filesystem.
@@ -1175,9 +1186,21 @@ async function main() {
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
     await cdp.ready;
+    if (selectedSlice === 'workflow-setup') {
+      const urls = new Map();
+      cdp.handlers.set('Network.requestWillBeSent', [message => urls.set(message.params.requestId, message.params.request.url)]);
+      for (const [event, key, fields] of [
+        ['Runtime.consoleAPICalled', 'console', p => ({ type: p.type, args: p.args.map(a => a.value ?? a.description) })],
+        ['Runtime.exceptionThrown', 'exceptions', p => ({ text: p.exceptionDetails.text, description: p.exceptionDetails.exception?.description })],
+        ['Network.loadingFailed', 'failedRequests', p => ({ url: urls.get(p.requestId), error: p.errorText, canceled: p.canceled, blocked: p.blockedReason })],
+        ['Network.responseReceived', 'responses', p => ({ url: p.response.url, status: p.response.status, mimeType: p.response.mimeType })],
+      ]) {
+        cdp.handlers.set(event, [message => browserObservations[key].push({ sessionId: message.sessionId, ...fields(message.params) })]);
+      }
+    }
 
-    async function openPage(url, { init = '', width = 1440, height = 900 } = {}) {
-      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    async function openPage(url, { init = '', width = 1440, height = 900, background = false } = {}) {
+      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', background });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
       for (const domain of ['Page', 'Runtime', 'Network']) await cdp.send(`${domain}.enable`, {}, sessionId);
       // Offline isolation: every non-loopback request (the external webfont
@@ -1224,8 +1247,8 @@ async function main() {
       screenshots.push({ name, file: `${name}.png`, sha256: sha256(buffer), bytes: buffer.length, ...meta });
     }
     /** Second same-origin tab writes the preference -> `storage` event in `page`. */
-    async function crossTabSwitch(page, locale) {
-      const other = await openPage(`${base}/__w4a_blank`);
+    async function crossTabSwitch(page, locale, { background = false } = {}) {
+      const other = await openPage(`${base}/__w4a_blank`, { background });
       await evaluate(other, `(() => { localStorage.setItem(${JSON.stringify(LOCALE_KEY)}, ${JSON.stringify(locale)}); return true; })()`);
       await closePage(other);
       await cdp.send('Page.bringToFront', {}, page.sessionId);
@@ -1551,6 +1574,8 @@ async function main() {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
     } else if (selectedSlice === 'reviewer-settings') {
       await runReviewerSettingsCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, fixture: rvFixture, selected: arg('reviewer-case', 'all') });
+    } else if (selectedSlice === 'workflow-setup') {
+      await runWorkflowSetupCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale }, { org: ORG, fixture: wfFixture, selected: arg('workflow-case', 'all') });
     } else if (selectedSlice === 'feature-flags') {
       await runFeatureFlagsCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, fixture: ffFixture, currentCase: () => current }, { org: ORG, expectProfile, buildLog, distIndexSha256: fingerprint.indexHtmlSha256 });
     } else if (selectedSlice === 'work-hours-reachability') {
@@ -1662,7 +1687,8 @@ async function main() {
     dist: fingerprint,
     routes: { view: ACTIVE_VIEWS.map((r) => r.id), switch: ACTIVE_SWITCHES.map((r) => r.id), api: Object.keys(API_ROUTES) },
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),
-    cases, screenshots, ledger: LEDGER, passed: cases.length - failed.length, failed: failed.length,
+    cases, screenshots, ledger: LEDGER, ...(selectedSlice === 'workflow-setup' ? { browserObservations } : {}),
+    passed: cases.length - failed.length, failed: failed.length,
   };
   writeFileSync(join(outDir, 'receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`);
   writeFileSync(join(outDir, 'SHA256SUMS'), screenshots.map((s) => `${s.sha256}  ${s.file}`).join('\n') + '\n');

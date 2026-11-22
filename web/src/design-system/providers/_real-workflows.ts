@@ -36,7 +36,7 @@ function refuseSequentialOrg(qc: QueryClient, slug: string, ownHash: string) {
 }
 /** The settings GET's 404 when no generation was ever saved for this definition identity (U8b first setup). */
 function isSettingsNotSaved(kind: string, error: unknown): boolean {
-  return kind === 'settings' && status(error) === 404
+  return (kind === 'settings' || kind === 'setup-settings') && status(error) === 404
     && (error as { code?: string | null } | null)?.code === 'sequential_settings_not_found';
 }
 /** The original-save lookup's 404 when that exact operation key was never committed (absent, not a refusal). */
@@ -137,6 +137,8 @@ function useSequentialRead<T>(kind: string, id: string, load: (slug: string, sig
   };
 }
 const sequentialReads = {
+  useSequentialSetupDefinitions: () => useSequentialRead('setup-definitions', 'catalog', workflowSequential.listSequentialSetupDefinitions),
+  useSequentialSetupSettings: (id: string) => useSequentialRead('setup-settings', id, (slug, signal) => workflowSequential.getSequentialSetupSettings(slug, id, signal)),
   useSequentialDefinitions: () => useSequentialRead('definitions', 'catalog', workflowSequential.listSequentialDefinitions),
   useSequentialDefinition: (id: string) => useSequentialRead('definition', id, (slug, signal) => workflowSequential.getSequentialDefinition(slug, id, signal)),
   useSequentialSettings: (id: string) => useSequentialRead('settings', id, (slug, signal) => workflowSequential.getSequentialSettings(slug, id, signal)),
@@ -180,32 +182,42 @@ function useSequentialSettingsActions(): ReturnType<WorkflowsApi['useSequentialS
   const qc = useQueryClient();
   return useMemo(() => {
     const store = sendStore(qc);
-    return {
-      save: async (draft: workflowSequential.SequentialSettingsCommand) => {
+    const mutate = async (draft: workflowSequential.SetupCommand) => {
         if (!slug || store.fences.has(slug)) throw new Error('sequential_settings_send_in_progress');
         const command = workflowSequential.freezeSequentialSettingsCommand(draft);
         setFence(store, slug, { command, phase: 'sending' });
         try {
-          const saved = await workflowSequential.putSequentialSettings(slug, command);
+          const saved = await admittedSequentialRead(qc, slug, () => false, () => workflowSequential.putSequentialSetup(slug, command));
           // A receipt is original history, never current settings cache data.
           setFence(store, slug, null);
           void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'settings'] });
+          void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'setup-settings'] });
           return saved;
         } catch (error) {
           const code = (error as { code?: string } | null)?.code;
           const definite = ['sequential_settings_request_invalid', 'sequential_settings_generation_stale',
             'sequential_settings_operation_conflict', 'sequential_definition_not_found',
-            'sequential_definition_conflict', 'sequential_settings_defaults_invalid', 'sequential_authority_denied'];
-          setFence(store, slug, code && definite.includes(code) ? null : { command, phase: 'uncertain' });
+            'sequential_definition_conflict', 'sequential_settings_defaults_invalid', 'sequential_settings_defaults_required', 'sequential_authority_denied'];
+          setFence(store, slug, code === 'sequential_settings_generation_stale' || code === 'sequential_settings_operation_conflict'
+            ? { command, phase: 'conflict' } : code && definite.includes(code) ? null : { command, phase: 'uncertain' });
           throw error;
         }
+      };
+    return {
+      save: mutate,
+      admission: mutate,
+      adoptConflict: (key: string) => {
+        const fence = store.fences.get(slug);
+        if (fence?.phase === 'conflict' && fence.command.operation_key === key) setFence(store, slug, null);
       },
       readOperation: async (key: string) => {
         // Same admission policy as the shared sequential reads (AC11): a 403/404
         // refusal fences the org; a late receipt after a sibling refusal or
         // generation change throws the fence refusal and never releases custody.
+        const original = store.fences.get(slug);
+        if (!original || original.phase !== 'uncertain' || original.command.operation_key !== key) throw new Error('sequential_settings_original_required');
         const value = await admittedSequentialRead(qc, slug, isOperationAbsent,
-          signal => workflowSequential.getSequentialSettingsOperation(slug, key, signal));
+          signal => workflowSequential.getSequentialSetupOperation(slug, original.command, signal));
         const fence = store.fences.get(slug);
         // 404/error/refusal/foreign/mismatched receipts keep original custody. Reading
         // while PUT is pending cannot release its synchronous send ownership.
@@ -213,6 +225,7 @@ function useSequentialSettingsActions(): ReturnType<WorkflowsApi['useSequentialS
           && JSON.stringify(workflowSequential.freezeSequentialSettingsCommand(value.command)) === JSON.stringify(fence.command)) {
           setFence(store, slug, null);
           void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'settings'] });
+          void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'setup-settings'] });
         }
         return value;
       },

@@ -2,7 +2,9 @@
 
 ## S8a staged Coding v3 boundary (THR-336)
 
-Coding v3 is registration-only until S8b catalog cutover. The separate literal
+Coding v3 registration creates definitions only. R2 unit (a) separately supports
+Founder setup Save and Allow/Disable; see the [current contract](../agent-guides/contracts/coding-workflow.md#r2-unit-a-saved-defaults-and-new-run-admission).
+The separate literal
 `STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
 immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
 v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;

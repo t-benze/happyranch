@@ -13,12 +13,13 @@ from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.sequential_coding_policy import CodingEvidenceRefusal
 from runtime.workflows.sequential_settings import (
     COMMAND_LIMIT, SettingsCommand, SettingsReceipt, parse_settings_command, settings_operation,
+    GenericSettingsCommand, GenericSettingsReceipt, AdmissionCommand, AdmissionReceipt,
 )
 from runtime.workflows.sequential_views import (
     DefinitionList, DefinitionView, ProjectionRefusal, RunDetail, RunList,
     SettingsView, TaskWorkflowView, read_projection,
     GenericRunDetail, HistoricalRunDetail, ProjectionFailure, ProjectionRuns, ProjectionUnavailable,
-    TaskRunsView, read_projection_v2,
+    TaskRunsView, read_projection_v2, SetupDefinitionList, GenericDefinitionView, GenericSettingsView,
 )
 
 router = APIRouter(dependencies=[require_token()])
@@ -35,7 +36,7 @@ _RESPONSES = {
 async def _read(request: Request, response: Response, org: OrgDep, kind: str,
                 selected: str | None = None) -> object:
     response.headers['Cache-Control'] = 'no-store'
-    expected = [('definition_identity', selected)] if kind == 'settings' else []
+    expected = [('definition_identity', selected)] if kind in ('settings', 'setup-settings') else []
     if list(request.query_params.multi_items()) != expected:
         raise HTTPException(422, detail={'code': 'sequential_read_invalid'})
     async for chunk in request.stream():
@@ -87,8 +88,8 @@ async def task_workflow(request: Request, response: Response, org: OrgDep, task_
     return await _read(request, response, org, 'task', task_id)
 
 
-def _settings_body() -> dict:
-    schema = SettingsCommand.model_json_schema()
+def _settings_body(model: Any = SettingsCommand) -> dict:
+    schema = model.model_json_schema()
     definitions = schema.pop('$defs', {})
 
     def inline(value: Any) -> Any:
@@ -103,7 +104,7 @@ def _settings_body() -> dict:
 
 
 async def _settings_operation(request: Request, response: Response, org: OrgDep,
-                              operation_key: str | None = None) -> object:
+                              operation_key: str | None = None, model: Any = SettingsCommand) -> object:
     response.headers['Cache-Control'] = 'no-store'
     expected = [('operation_key', operation_key)] if request.method == 'GET' else []
     if list(request.query_params.multi_items()) != expected:
@@ -118,7 +119,11 @@ async def _settings_operation(request: Request, response: Response, org: OrgDep,
         if request.method == 'PUT':
             if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
                 raise ValueError('content_type')
-            command = parse_settings_command(bytes(raw))
+            if model is SettingsCommand:
+                command = parse_settings_command(bytes(raw))
+            else:
+                from runtime.workflows.sequential_definition import _json
+                command = model.model_validate(_json(bytes(raw), COMMAND_LIMIT))
             operation_key = command.operation_key
         elif raw:
             raise ValueError('unexpected_body')
@@ -137,7 +142,8 @@ async def _settings_operation(request: Request, response: Response, org: OrgDep,
 
     try:
         revalidate()
-        return await settings_operation(org, key=operation_key, command=command, revalidate=revalidate)
+        return await settings_operation(org, key=operation_key, command=command, revalidate=revalidate,
+            kind=model.model_fields['format'].annotation.__args__[0])
     except ProjectionRefusal as exc:
         raise HTTPException(exc.status, detail={'code': exc.code}) from None
     except CodingEvidenceRefusal as exc:
@@ -160,6 +166,48 @@ async def put_settings(request: Request, response: Response, org: OrgDep) -> obj
 async def original_settings_operation(request: Request, response: Response, org: OrgDep,
                                       operation_key: Annotated[str, Query(min_length=1, max_length=128)]) -> object:
     return await _settings_operation(request, response, org, operation_key)
+
+
+# Additive setup ABI. The @1 routes above retain their original projections and schemas.
+@router.get('/workflows/sequential/views/v2/definitions', response_model=SetupDefinitionList, responses=_RESPONSES)
+async def setup_definitions(request: Request, response: Response, org: OrgDep) -> object:
+    return await _read(request, response, org, 'setup-definitions')
+
+
+@router.get('/workflows/sequential/views/v2/definitions/{definition_id}',
+    response_model=DefinitionView | GenericDefinitionView, responses=_RESPONSES)
+async def setup_definition(request: Request, response: Response, org: OrgDep, definition_id: Identifier) -> object:
+    return await _read(request, response, org, 'setup-definition', definition_id)
+
+
+@router.get('/workflows/sequential/views/v2/settings', response_model=SettingsView | GenericSettingsView, responses=_RESPONSES)
+async def setup_settings(request: Request, response: Response, org: OrgDep,
+                         definition_identity: Annotated[str, Query(max_length=140)]) -> object:
+    return await _read(request, response, org, 'setup-settings', definition_identity)
+
+
+@router.put('/workflows/sequential/settings/v2', response_model=GenericSettingsReceipt,
+    responses=_RESPONSES, openapi_extra=_settings_body(GenericSettingsCommand))
+async def put_generic_settings(request: Request, response: Response, org: OrgDep) -> object:
+    return await _settings_operation(request, response, org, model=GenericSettingsCommand)
+
+
+@router.get('/workflows/sequential/settings/v2/operations', response_model=GenericSettingsReceipt, responses=_RESPONSES)
+async def original_generic_settings_operation(request: Request, response: Response, org: OrgDep,
+    operation_key: Annotated[str, Query(min_length=1, max_length=128)]) -> object:
+    return await _settings_operation(request, response, org, operation_key, GenericSettingsCommand)
+
+
+@router.put('/workflows/sequential/settings/admission', response_model=AdmissionReceipt,
+    responses=_RESPONSES, openapi_extra=_settings_body(AdmissionCommand))
+async def put_admission(request: Request, response: Response, org: OrgDep) -> object:
+    return await _settings_operation(request, response, org, model=AdmissionCommand)
+
+
+@router.get('/workflows/sequential/settings/admission/operations', response_model=AdmissionReceipt, responses=_RESPONSES)
+async def original_admission_operation(request: Request, response: Response, org: OrgDep,
+    operation_key: Annotated[str, Query(min_length=1, max_length=128)]) -> object:
+    return await _settings_operation(request, response, org, operation_key, AdmissionCommand)
 
 
 # S7a additive read-only surface. No Start@2/control/wait mutation is mounted.

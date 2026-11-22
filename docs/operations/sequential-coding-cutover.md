@@ -1,5 +1,22 @@
 # Sequential Coding cutover and backout — operator draft
 
+## R2 unit (a) source delivery — founder operation remains separate
+
+Workflows → Setup now reads Coding v3, Saves its four role defaults and offers
+separate Allow new runs / Disable new runs controls under the existing setup
+Founder authentication. First Save initializes Disabled; later Save preserves
+admission and creates no work. Admission uses the exact saved pin and shared
+identity-wide generation CAS, copies defaults/limits, and creates no work.
+Disable leaves admitted-run pins unchanged. Original-key replay/lookup is
+read-only and distinct from current settings; uncertain writes are never retried.
+See [the route and custody contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+
+This is source support, not authorization for live operation. This PR performs
+no deploy/restart/live DB mutation/Allow. Founder must separately operate the
+saved four-role setup and Allow when the release is accepted. Public Start@2
+and Draft→Review registration remain separate units. The offline setup script
+is unchanged and still refuses fresh admission; its original replay is retained.
+
 ## S9 final source checkpoint
 
 The [final reader audit](../agent-guides/contracts/reusable-workflows.md#s9-final-reader-parity-and-naming-deferral)
@@ -10,8 +27,8 @@ original Final journals and all cumulative charges stay with their original
 readers. No extraction, storage upgrade or historical rewrite is claimed.
 
 S8b's registration/transport boundary below remains current: public discovery
-and composition use Start@1/v2, public @2 start stays closed, and Coding remains
-Disabled/unset. R1/S1–S8b source delivery and S9 parity do not establish live
+and composition use Start@1/v2 and public @2 start stays closed. Defaults stay
+Disabled/unset until explicit Founder Save and separate Allow. R1/S1–S8b source delivery and S9 parity do not establish live
 replacement acceptance. Deployment/restart, actual Coding setup/roles/Allow,
 the genuine R2 four-role pilot/scratch merge, then/fanout retirement, live DB
 mutation and workflow thread notices remain founder-reserved. PR1252 stays held.
@@ -27,7 +44,7 @@ unchanged, offering v2 only. A fresh public v3 pin still refuses with
 `sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
 closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. Coding stays Disabled.
+admission, tasks, runs or Allow. Founder setup and admission are separate above.
 
 Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
 Final transport with `sequential_domain_transport_unavailable`. Local Final

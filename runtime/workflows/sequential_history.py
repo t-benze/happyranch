@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Annotated, ClassVar, Literal, TypeVar, TYPE_CHECKING
 
-from pydantic import BeforeValidator, Field
+from pydantic import BeforeValidator, Field, WithJsonSchema, field_serializer
 
 from runtime.workflows._read_exhaustion import ReadExhaustion, check as _budget_check
 
@@ -65,14 +65,34 @@ class StorageSettings(Closed):
     admission: Literal['Disabled', 'Allowed']
 
 
+_GENERIC_LIMITS_SCHEMA = GenericLimits.model_json_schema()
+_GENERIC_LIMITS_SCHEMA['properties']['node_revisions'] = {
+    'type': 'object', 'maxProperties': 32,
+    'propertyNames': {'pattern': '^[a-z][a-z0-9_]{0,63}$'},
+    'additionalProperties': {'type': 'integer', 'minimum': 0, 'maximum': 63},
+}
+
+
+def _generic_limits_value(value: GenericLimits) -> dict:
+    # Named generic bounds are objects on the wire, never tuple-pair arrays.
+    result = value.model_dump(mode='json', exclude={'node_revisions'})
+    if 'node_revisions' in value.model_fields_set:
+        result['node_revisions'] = dict(value.node_revisions)
+    return result
+
+
 class GenericStorageSettings(Closed):
-    """Internal @2 org defaults; no public settings/admission surface."""
+    """Immutable @2 org defaults; supported Founder setup is separate from starts."""
 
     format: Literal['workflow-sequential-settings-storage@2']
     definition: GenericDefinitionPin
     bindings: Annotated[tuple[BindingClaim, ...], BeforeValidator(_array), Field(max_length=16)]
-    limits: GenericLimits
+    limits: Annotated[GenericLimits, WithJsonSchema(_GENERIC_LIMITS_SCHEMA)]
     admission: Literal['Disabled', 'Allowed']
+
+    @field_serializer('limits')
+    def limits_value(self, value: GenericLimits) -> dict:
+        return _generic_limits_value(value)
 
 
 def _storage_settings(raw: bytes, budget: _ReadBudget) -> StorageSettings | GenericStorageSettings:
@@ -478,7 +498,11 @@ def _settings(data: dict[str, list[dict]], definitions: dict[str, CompiledDefini
             'format', 'operation_key', 'principal', 'settings_id', 'expected_generation', 'snapshot_digest'}, budget)
         receipt = _record(row['receipt_bytes'], row['receipt_digest'], {
             'format', 'operation_id', 'settings_id', 'generation', 'snapshot_digest'}, budget)
-        _require(_bytes(request) == _bytes(dict(format='workflow-sequential-settings-operation-storage@1',
+        _require(request['format'] in ('workflow-sequential-settings-operation-storage@1',
+                 'workflow-sequential-admission-operation-storage@1')
+                 and (request['format'] != 'workflow-sequential-admission-operation-storage@1'
+                      or row['principal'] == 'founder'), 'settings_request_conflict')
+        _require(_bytes(request) == _bytes(dict(format=request['format'],
                  operation_key=row['operation_key'], principal=row['principal'], settings_id=target['id'],
                  expected_generation=target['generation'] - 1, snapshot_digest=target['snapshot_digest'])),
                  'settings_request_conflict')

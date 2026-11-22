@@ -6,6 +6,7 @@ This incremental validator never acquires earlier result/output payloads.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from typing import Any
 from collections.abc import Iterator
 
@@ -146,7 +147,11 @@ def _selected_settings(data: dict[str, list[dict]], definitions: dict[str, Compi
             'format', 'operation_key', 'principal', 'settings_id', 'expected_generation', 'snapshot_digest'}, budget)
         receipt = _record(row['receipt_bytes'], row['receipt_digest'], {
             'format', 'operation_id', 'settings_id', 'generation', 'snapshot_digest'}, budget)
-        _require(_bytes(request) == _bytes(dict(format='workflow-sequential-settings-operation-storage@1',
+        _require(request['format'] in ('workflow-sequential-settings-operation-storage@1',
+                 'workflow-sequential-admission-operation-storage@1')
+                 and (request['format'] != 'workflow-sequential-admission-operation-storage@1'
+                      or row['principal'] == 'founder'), 'settings_request_conflict')
+        _require(_bytes(request) == _bytes(dict(format=request['format'],
                  operation_key=row['operation_key'], principal=row['principal'], settings_id=target['id'],
                  expected_generation=target['generation'] - 1, snapshot_digest=target['snapshot_digest'])),
                  'settings_request_conflict')
@@ -188,10 +193,13 @@ def _pins(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, definition
     """Fresh admission alone requires the latest settings generation."""
     compiled, setting, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
         definition_id=definition_id, settings_id=settings_id, budget=budget)
-    newer = list(_bounded_rows(conn, 'workflow_seq_settings', ('generation',), (('integer',),), budget,
+    # This is an existence guard, not a singleton assertion. Stop at the
+    # first newer row; multiple legitimate Saves must still classify stale.
+    with closing(_bounded_rows(conn, 'workflow_seq_settings', ('generation',), (('integer',),), budget,
         where='org_slug=? AND definition_identity=? AND generation>?',
-        args=(org_slug, setting['definition_identity'], setting['generation']), maximum=1))
-    _require(not newer, 'settings_generation_stale')
+        args=(org_slug, setting['definition_identity'], setting['generation']), maximum=1)) as rows:
+        newer = next(rows, None)
+    _require(newer is None, 'settings_generation_stale')
     return compiled, setting, snapshot
 
 

@@ -7,19 +7,21 @@ import time
 from contextlib import ExitStack
 from typing import Annotated, Any, Callable, Literal
 
-from pydantic import BeforeValidator, Field, StrictInt
+from pydantic import BeforeValidator, Field, StrictInt, WithJsonSchema, field_serializer
 
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows.sequential_contracts import (
     BindingClaim, Closed, DefinitionPin, Digest, Limits, Positive, Token, _array,
+    GenericDefinitionPin, GenericLimits,
 )
-from runtime.workflows.sequential_definition import _json, compile_definition
+from runtime.workflows.sequential_definition import _json, compile_definition, compile_generic_definition, generic_limits
 from runtime.workflows.sequential_engine import _bound_agents, _engine_rows, _identity
 from runtime.workflows.sequential_history import (
-    StorageSettings, _ReadBudget, _bytes, _decode, _parse, _sql_budget, read_sequential_history,
+    StorageSettings, GenericStorageSettings, _storage_settings, _generic_limits_value, _GENERIC_LIMITS_SCHEMA,
+    _ReadBudget, _bytes, _decode, _parse, _sql_budget, read_sequential_history,
 )
 from runtime.workflows.sequential_coding_evidence import _current_authority
-from runtime.workflows.sequential_views import ProjectionRefusal, SettingsView
+from runtime.workflows.sequential_views import ProjectionRefusal, SettingsView, GenericSettingsView
 
 COMMAND_LIMIT = 16384
 PRINCIPAL = 'founder'
@@ -32,6 +34,28 @@ class SettingsCommand(Closed):
     definition: DefinitionPin
     bindings: Annotated[tuple[BindingClaim, ...], BeforeValidator(_array), Field(min_length=1, max_length=16)]
     limits: Limits
+
+
+class GenericSettingsCommand(SettingsCommand):
+    format: Literal['workflow-sequential-settings-put@2']
+    definition: GenericDefinitionPin
+    limits: Annotated[GenericLimits, WithJsonSchema(_GENERIC_LIMITS_SCHEMA)]
+
+    @field_serializer('limits')
+    def limits_value(self, value: GenericLimits) -> dict:
+        return _generic_limits_value(value)
+
+
+class AdmissionCommand(Closed):
+    format: Literal['workflow-sequential-admission@1']
+    operation_key: Token
+    expected_generation: Annotated[StrictInt, Field(ge=0, le=9223372036854775806)]
+    definition: DefinitionPin | GenericDefinitionPin
+    admission: Literal['Allowed', 'Disabled']
+
+
+SetupCommand = SettingsCommand | GenericSettingsCommand | AdmissionCommand
+Snapshot = StorageSettings | GenericStorageSettings
 
 
 class StorageReceipt(Closed):
@@ -51,36 +75,66 @@ class SettingsReceipt(Closed):
     original: SettingsView
 
 
+class GenericSettingsReceipt(SettingsReceipt):
+    format: Literal['workflow-sequential-settings-receipt@2'] = 'workflow-sequential-settings-receipt@2'
+    command: GenericSettingsCommand
+    original: GenericSettingsView
+
+
+class AdmissionReceipt(Closed):
+    format: Literal['workflow-sequential-admission-receipt@1'] = 'workflow-sequential-admission-receipt@1'
+    org_slug: str
+    operation_key: Token
+    command: AdmissionCommand
+    receipt: StorageReceipt
+    original: SettingsView | GenericSettingsView
+
+
+SetupReceipt = SettingsReceipt | GenericSettingsReceipt | AdmissionReceipt
+
+
 def parse_settings_command(raw: bytes) -> SettingsCommand:
     return SettingsCommand.model_validate(_json(raw, COMMAND_LIMIT))
 
 
-def _original(conn: sqlite3.Connection, org: Any, key: str, budget: _ReadBudget) -> SettingsReceipt | None:
+def _original(conn: sqlite3.Connection, org: Any, key: str, budget: _ReadBudget) -> SetupReceipt | None:
     operations = _engine_rows(conn, 'workflow_seq_settings_operations', budget,
         'org_slug=? AND principal=? AND operation_key=?', (org.slug, PRINCIPAL, key))
     if not operations:
         return None
     operation = operations[0]
     row = _engine_rows(conn, 'workflow_seq_settings', budget, 'id=?', (operation['settings_id'],))[0]
-    snapshot = StorageSettings.model_validate(_decode(row['snapshot_bytes'], budget))
+    snapshot = _storage_settings(row['snapshot_bytes'], budget)
     saved = _decode(operation['request_bytes'], budget)
-    command = SettingsCommand(format='workflow-sequential-settings-put@1', operation_key=key,
-        expected_generation=saved['expected_generation'], definition=snapshot.definition,
-        bindings=snapshot.bindings, limits=snapshot.limits)
+    generic = isinstance(snapshot, GenericStorageSettings)
+    view = GenericSettingsView if generic else SettingsView
+    if saved['format'] == 'workflow-sequential-admission-operation-storage@1':
+        command = AdmissionCommand(format='workflow-sequential-admission@1', operation_key=key,
+            expected_generation=saved['expected_generation'], definition=snapshot.definition,
+            admission=snapshot.admission)
+        owner = AdmissionReceipt
+    else:
+        model = GenericSettingsCommand if generic else SettingsCommand
+        command = model(format='workflow-sequential-settings-put@2' if generic else 'workflow-sequential-settings-put@1',
+            operation_key=key, expected_generation=saved['expected_generation'], definition=snapshot.definition,
+            bindings=snapshot.bindings, limits=snapshot.limits)
+        owner = GenericSettingsReceipt if generic else SettingsReceipt
     receipt = StorageReceipt.model_validate(_decode(operation['receipt_bytes'], budget))
-    return SettingsReceipt(org_slug=org.slug, operation_key=key, command=command, receipt=receipt,
-        original=SettingsView(id=row['id'], generation=row['generation'],
+    return owner(org_slug=org.slug, operation_key=key, command=command, receipt=receipt,
+        original=view(id=row['id'], generation=row['generation'],
             snapshot_digest=row['snapshot_digest'], snapshot=snapshot))
 
 
-def _selection(conn: sqlite3.Connection, org: Any, command: SettingsCommand, capture: Any,
-               budget: _ReadBudget) -> tuple[dict, StorageSettings, int]:
+def _selection(conn: sqlite3.Connection, org: Any, command: SetupCommand, capture: Any,
+               budget: _ReadBudget) -> tuple[dict, Snapshot, int]:
     definitions = _engine_rows(conn, 'workflow_seq_definitions', budget,
         'identity=? AND version=?', (command.definition.identity, command.definition.version))
     if not definitions:
         raise ProjectionRefusal('sequential_definition_not_found', 404)
     definition = definitions[0]
-    compiled = _parse(definition['definition_bytes'], compile_definition, budget,
+    compiler = (compile_generic_definition if type(command) is not SettingsCommand
+                and definition['compiler_pin'] == 'workflow-sequential-compiler@2' else compile_definition)
+    compiled = _parse(definition['definition_bytes'], compiler, budget,
                       source_digest=definition['source_digest'])
     if command.definition != compiled.pin:
         raise ProjectionRefusal('sequential_definition_conflict')
@@ -90,12 +144,30 @@ def _selection(conn: sqlite3.Connection, org: Any, command: SettingsCommand, cap
     generation = 0 if current is None else current['generation']
     if command.expected_generation != generation:
         raise ProjectionRefusal('sequential_settings_generation_stale')
+    if isinstance(command, AdmissionCommand):
+        if current is None:
+            raise ProjectionRefusal('sequential_settings_defaults_required')
+        saved = _storage_settings(current['snapshot_bytes'], budget)
+        if saved.definition != command.definition:
+            raise ProjectionRefusal('sequential_settings_defaults_required')
+        # Admission never resolves, fills or normalizes the saved defaults/limits.
+        return definition, saved.model_copy(update={'admission': command.admission}), generation
     bindings = {item.role: item.principal for item in command.bindings}
     if (len(bindings) != len(command.bindings) or bindings.keys() != dict(compiled.definition.roles).keys()
             or any(bindings[role] == bindings[other] for role, requirement in compiled.definition.roles
                    for other in requirement.independent_of)
-            or any(getattr(command.limits, name) > getattr(compiled.definition.limits, name) for name in Limits.model_fields)):
+            or any(getattr(command.limits, name) > getattr(compiled.definition.limits, name)
+                   for name in (('max_visits', 'max_events', 'max_recoveries')
+                                if isinstance(command, GenericSettingsCommand) else Limits.model_fields))):
         raise ProjectionRefusal('sequential_settings_defaults_invalid', 422)
+    if isinstance(command, GenericSettingsCommand):
+        try:
+            effective = generic_limits(compiled)
+            revisions = dict(effective.node_revisions)
+            if any(node not in revisions or value > revisions[node] for node, value in command.limits.node_revisions):
+                raise ValueError('invalid_revision_bound')
+        except ValueError:
+            raise ProjectionRefusal('sequential_settings_defaults_invalid', 422) from None
     budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
     try:
         # This existing helper consumes bindings only; it grants no access.
@@ -111,13 +183,15 @@ def _selection(conn: sqlite3.Connection, org: Any, command: SettingsCommand, cap
     if managers and any(agent['team'] != managers[0]['team'] for agent in agents.values()):
         raise ProjectionRefusal('sequential_authority_denied', 403)
     admission = 'Disabled' if current is None else _decode(current['snapshot_bytes'], budget)['admission']
-    snapshot = StorageSettings(format='workflow-sequential-settings-storage@1', definition=compiled.pin,
+    owner = GenericStorageSettings if isinstance(command, GenericSettingsCommand) else StorageSettings
+    snapshot = owner(format='workflow-sequential-settings-storage@2' if owner is GenericStorageSettings
+                     else 'workflow-sequential-settings-storage@1', definition=compiled.pin,
         bindings=command.bindings, limits=command.limits, admission=admission)
     return definition, snapshot, generation
 
 
 def _inspect(conn: sqlite3.Connection, org: Any, capture: Any, budget: _ReadBudget,
-             deadline: float, key: str, command: SettingsCommand | None) -> SettingsReceipt | None:
+             deadline: float, key: str, command: SetupCommand | None, kind: str) -> SetupReceipt | None:
     with _sql_budget(conn, budget):
         _current_authority(conn, org.workflow_authority, capture, budget)
     history = read_sequential_history(conn, expected_org_slug=org.slug, deadline=deadline)
@@ -127,6 +201,8 @@ def _inspect(conn: sqlite3.Connection, org: Any, capture: Any, budget: _ReadBudg
     with _sql_budget(conn, budget):
         receipt = _original(conn, org, key, budget)
         if receipt is not None:
+            if receipt.command.format != kind:
+                raise ProjectionRefusal('sequential_settings_operation_conflict')
             if command is not None and command != receipt.command:
                 raise ProjectionRefusal('sequential_settings_operation_conflict')
         elif command is None:
@@ -137,14 +213,14 @@ def _inspect(conn: sqlite3.Connection, org: Any, capture: Any, budget: _ReadBudg
         return receipt
 
 
-async def settings_operation(org: Any, *, key: str, command: SettingsCommand | None,
-                             revalidate: Callable[[], None]) -> SettingsReceipt:
+async def settings_operation(org: Any, *, key: str, command: SetupCommand | None,
+                             revalidate: Callable[[], None], kind: str = 'workflow-sequential-settings-put@1') -> SetupReceipt:
     """SELECT-only lookup/replay; fresh writes recheck under the original writer.
 
     One deadline; each complete oracle retains its OWN D2 allowance. Projection,
     command and write work share one finite allowance. No retries or work IDs.
     """
-    if command is not None and command.operation_key != key:
+    if command is not None and (command.operation_key != key or command.format != kind):
         raise ProjectionRefusal('sequential_settings_request_invalid', 422)
     deadline = time.monotonic() + 5.0
     budget = _ReadBudget(deadline=deadline)
@@ -168,7 +244,7 @@ async def settings_operation(org: Any, *, key: str, command: SettingsCommand | N
                         (org.slug, PRINCIPAL, key)).fetchone() is None:
                     raise ProjectionRefusal('sequential_settings_operation_not_found', 404)
                 with _sql_budget(conn, budget):
-                    receipt = _inspect(conn, org, capture, budget, deadline, key, command)
+                    receipt = _inspect(conn, org, capture, budget, deadline, key, command, kind)
                     if receipt is not None:
                         budget.reserve(96 * len(_bytes(receipt.model_dump(mode='json'))) + 4096)
                     revalidate()
@@ -184,7 +260,7 @@ async def settings_operation(org: Any, *, key: str, command: SettingsCommand | N
                 with authority.admission_writer(capture) as conn:
                     revalidate()
                     with _sql_budget(conn, budget):
-                        receipt = _inspect(conn, org, capture, budget, deadline, key, command)
+                        receipt = _inspect(conn, org, capture, budget, deadline, key, command, kind)
                     with _sql_budget(conn, budget):
                         if receipt is None:
                             definition, snapshot, generation = _selection(conn, org, command, capture, budget)
@@ -192,7 +268,8 @@ async def settings_operation(org: Any, *, key: str, command: SettingsCommand | N
                             digest = hashlib.sha256(raw).hexdigest()
                             setting_id = _identity('settings', org.slug, PRINCIPAL, key)
                             operation_id = _identity('settings-operation', org.slug, PRINCIPAL, key)
-                            request = _bytes(dict(format='workflow-sequential-settings-operation-storage@1',
+                            request = _bytes(dict(format=('workflow-sequential-admission-operation-storage@1'
+                                if isinstance(command, AdmissionCommand) else 'workflow-sequential-settings-operation-storage@1'),
                                 operation_key=key, principal=PRINCIPAL, settings_id=setting_id,
                                 expected_generation=generation, snapshot_digest=digest))
                             stored_receipt = _bytes(dict(format='workflow-sequential-settings-receipt-storage@1',

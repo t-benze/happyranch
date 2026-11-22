@@ -2,7 +2,7 @@
  * Common Workflows journey: Definitions, definition overview, Setup (U8b),
  * Runs and run detail. Agents initiate runs from their tasks; no view has a
  * start, retry, reassign or merge control, and only Setup edits configuration
- * (current default agents; never admission or repositories).
+ * (current default agents and separate new-run admission; never repositories).
  */
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
