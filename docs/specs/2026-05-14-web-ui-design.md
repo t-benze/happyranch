@@ -312,7 +312,13 @@ The TUI removal lands in the same PR as the web app reaching parity. Until that 
 
 Each step has independent verification (lint, unit, contract, manual). Detailed sequencing belongs in the implementation plan, not this spec.
 
-## 15. Artifacts surface (delivered 2026-06-10, scope A)
+## 15. Artifacts surface (historical; superseded by THR-392)
+
+> The standalone Artifacts page, navigation entry and page-only controls below
+> are removed. This section records the 2026-06-10 design, not current page or
+> test requirements. Shared storage, daemon API, CLI put/list/get and thread
+> artifact upload/download links remain. Legacy page URLs redirect; see the
+> current [Shared Artifacts guide](../agent-guides/features-and-invariants.md#shared-artifacts).
 
 Per founder decision THR-007, the org-shared artifact store (the `happyranch artifacts put|list|get` CLI surface) gets a founder-facing web page. The surface supports **create, read (list), read (download), and delete** — the daemon (`runtime/daemon/routes/artifacts.py`) exposes **four** routes (`POST /artifacts`, `GET /artifacts`, `GET /artifacts/{name}`, `DELETE /artifacts/{name}`) and intentionally has **no update route** (`POST` is an idempotent create-or-overwrite), so the UI exposes create, read, and delete but no update. Delete is web + daemon only — the CLI surface stays `put|list|get` with **no** `happyranch artifacts delete` verb.
 
