@@ -11,8 +11,11 @@ export const mockWorkflowsApi: WorkflowsApi = {
   useSequentialSettingsFence: () => null,
   useSequentialSettingsActions: () => ({
     save: async () => { throw new Error('workflow_display_only'); },
+    admission: async () => { throw new Error('workflow_display_only'); },
+    adoptConflict: () => { throw new Error('workflow_display_only'); },
     readOperation: async () => { throw new Error('workflow_display_only'); },
   }),
+  useSequentialSetupDefinitions: () => empty(), useSequentialSetupSettings: () => empty(),
   useSequentialDefinitions: () => empty(), useSequentialDefinition: () => empty(),
   useSequentialSettings: () => empty(), useSequentialRuns: () => empty(),
   useSequentialRun: () => empty(), useTaskSequentialWorkflow: () => empty(),

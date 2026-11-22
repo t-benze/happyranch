@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSequentialRunV2, getTaskSequentialWorkflows, listSequentialRunsV2 } from '@/lib/api/workflowSequential';
 import { useData } from '@/design-system/providers/DataContext';
 import { admittedSequentialRead, isNetworkFailure } from '@/design-system/providers/_real-workflows';
+export type { SetupPin, GenericDefinitionPin, DefinitionPin, SequentialLimits, GenericSequentialLimits, SetupCommand } from '@/lib/api/workflowSequential';
 export const useWorkflowSetupStatus: ReturnType<typeof useData>['workflows']['useWorkflowSetupStatus'] = () => useData().workflows.useWorkflowSetupStatus();
 export const useSequentialDefinitions: ReturnType<typeof useData>['workflows']['useSequentialDefinitions'] = () => useData().workflows.useSequentialDefinitions();
 export const useSequentialDefinition: ReturnType<typeof useData>['workflows']['useSequentialDefinition'] = (id) => useData().workflows.useSequentialDefinition(id);
@@ -57,3 +58,6 @@ function useSequentialProjection<T extends { org_slug: string }>(kind: string, i
 export const useSequentialRunsV2 = () => useSequentialProjection('runs', 'all', listSequentialRunsV2);
 export const useSequentialRunV2 = (id: string) => useSequentialProjection('run', id, (slug, signal) => getSequentialRunV2(slug, id, signal));
 export const useTaskSequentialWorkflows = (id: string) => useSequentialProjection('task', id, (slug, signal) => getTaskSequentialWorkflows(slug, id, signal));
+
+export const useSequentialSetupDefinitions: ReturnType<typeof useData>['workflows']['useSequentialSetupDefinitions'] = () => useData().workflows.useSequentialSetupDefinitions();
+export const useSequentialSetupSettings: ReturnType<typeof useData>['workflows']['useSequentialSetupSettings'] = (id) => useData().workflows.useSequentialSetupSettings(id);

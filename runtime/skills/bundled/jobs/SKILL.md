@@ -349,9 +349,12 @@ merged bundle or second action. Preserve existing per-complete-read allowances
 on one original deadline.
 
 The [Coding contract](../../../../docs/agent-guides/contracts/coding-workflow.md)
-owns actual binding/version rules and agent responsibilities. Coding v3 remains
-registration-only/Disabled until its catalog cutover; infer no start, setup,
-roles, admission, Allow, job or credential entitlement. Its actual generic node
+owns actual binding/version rules and agent responsibilities. R2 unit (a) supports
+explicit Founder Workflows → Setup Save of Coding v3 role defaults and separate
+Allow/Disable of new-run admission. Save preserves admission and starts no work;
+Disable preserves admitted-run pins. Registration alone grants no role assignment,
+Allow, job or credential entitlement. Public Start@2 and Draft→Review registration
+remain later units; the offline script still refuses fresh admission. Its generic node
 brief requires authorized repository/base/worktree preflight, independent
 exact-head review, same-head QA and genuine live Final with matching-head literal
 checks and remote MERGED observation. Follow the generic callback@2 and bounded

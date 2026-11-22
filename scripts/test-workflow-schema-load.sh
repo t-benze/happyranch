@@ -7,6 +7,7 @@ from pathlib import Path
 from contextlib import ExitStack, contextmanager, closing
 from contextvars import copy_context
 from itertools import product
+import asyncio
 import json
 import sqlite3
 import stat
@@ -64,6 +65,12 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
      '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae'),
 )
+SETUP_ADMISSION_CASES = ('first_save', 'validation', 'replay', 'race', 'pins', 'rollback', 'history', 'legacy_golden')
+setup_admission_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--setup-admission='):
+    setup_admission_case = sys.argv[1].split('=', 1)[1]
+    assert setup_admission_case in ('all', *SETUP_ADMISSION_CASES)
+    sys.argv[1:] = ['--assignments']
 S8B_CASES = ('new_transport_refused', 'legacy_replay', 'old_fresh_refused', 'uncertain_final_preserved')
 s8b_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s8b='):
@@ -707,13 +714,13 @@ def sequential_fixture(*, schema_version=1, trace=True):
         finally:
             db.close()
 
-def schema2_routing_fixture(db):
+def schema2_routing_fixture(db, *, slug='scratch'):
     """Existing A4 routing keepers now start from the installed schema2 target."""
     from runtime.infrastructure import workflow_schema as schema
     with schema._schema_snapshot(db._conn):
-        identity = schema._coding_org_identity(db._conn, expected_org_slug='scratch', expected_path=str(db.db_path))
+        identity = schema._coding_org_identity(db._conn, expected_org_slug=slug, expected_path=str(db.db_path))
         inventory = schema.sequential_storage_inventory(db._conn)
-    assert schema.install_sequential_schema(db._conn, expected_org_slug='scratch', expected_path=str(db.db_path),
+    assert schema.install_sequential_schema(db._conn, expected_org_slug=slug, expected_path=str(db.db_path),
         source_identity=identity, source_inventory=inventory, offline_check=lambda: None, schema_version=2) == 'upgraded'
 
 # Synthetic storage only: compiler/parser and the unmodified public reader
@@ -2190,11 +2197,11 @@ if sys.argv[1:] in ([], ['--assignments']):
             terminal_conditions=dict(done=dict(output='final_output')))
 
     @contextmanager
-    def s3_fixture(*, defaults=None, definition=None):
+    def s3_fixture(*, defaults=None, definition=None, slug='scratch'):
         with tempfile.TemporaryDirectory(prefix='s3-assignment-') as scratch:
             home = Path(scratch).resolve()
             runtime = RuntimeDir.init(home / 'runtime')
-            root = runtime.orgs_dir / 'scratch'
+            root = runtime.orgs_dir / slug
             _seed_skeleton(root, from_example=None)
             (root / 'org/config.yaml').write_text('reviewer_agents: []\n')
             (root / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: s3_manager\n    workers: [s3_author, s3_alt, s3_review]\n  other:\n    manager: s3_other_manager\n    workers: [s3_other]\n')
@@ -2206,13 +2213,13 @@ if sys.argv[1:] in ([], ['--assignments']):
                     enrolled_at=None, system_prompt='Private no-launch assignment proof')
                 (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(agents[name]))
             with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
-                db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug='scratch')
+                db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug=slug)
                 initialize_fresh_reviewer_agents(OrgPaths(root), db)
                 db.close()
-                org = OrgState.load(slug='scratch', root=root, settings=Settings())
+                org = OrgState.load(slug=slug, root=root, settings=Settings())
                 try:
-                    schema2_routing_fixture(org.db)
-                    coordinator = ProfileCoordinator(daemon_home=home, orgs={'scratch': org})
+                    schema2_routing_fixture(org.db, slug=slug)
+                    coordinator = ProfileCoordinator(daemon_home=home, orgs={slug: org})
                     org._profile_coordinator = org.workflow_authority._profile_coordinator = coordinator
                     coordinator.reconcile_startup()
                     db, conn = org.db, org.db._conn
@@ -2235,9 +2242,9 @@ if sys.argv[1:] in ([], ['--assignments']):
                         ('s3-definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
                          pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
                     conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
-                        ('s3-settings', 'scratch', 's3-definition', pin.identity, 1, saved, assignment_digest(saved)))
+                        ('s3-settings', slug, 's3-definition', pin.identity, 1, saved, assignment_digest(saved)))
                     conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
-                        ('s3-operation', 'scratch', 'founder', 's3-save', request, assignment_digest(request), 's3-settings', receipt, assignment_digest(receipt)))
+                        ('s3-operation', slug, 'founder', 's3-save', request, assignment_digest(request), 's3-settings', receipt, assignment_digest(receipt)))
                     conn.commit()
                     command = dict(format='workflow-sequential-start@2', operation_key='s3-start', definition=pin.model_dump(mode='json'),
                         settings=dict(generation=1, snapshot_digest=assignment_digest(saved)), request='Private assignment goal', inputs=[],
@@ -2268,7 +2275,7 @@ if sys.argv[1:] in ([], ['--assignments']):
                             capture = prepare_generic_start(org, start=raw, source=claim)
                             assert not conn.in_transaction, 'S3 discovery retained SQL ownership'
                             with org.workflow_authority.admission_writer(capture.authority) as writer:
-                                ids = admit_uncommitted(writer, db, org_slug='scratch', compiled=compiled, settings_row=setting,
+                                ids = admit_uncommitted(writer, db, org_slug=slug, compiled=compiled, settings_row=setting,
                                     start=raw, source=claim, carrier_task=carrier, visit_task=visit,
                                     original_limits=compiled.definition.limits, authority=org.workflow_authority, capture=capture)
                         return ids
@@ -2319,7 +2326,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case else ASSIGNMENT_CASES):
+    for case in (() if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2431,10 +2438,10 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case and not s4b_case and not s5_case and not s6a_case and not s6b_case and not s7a_case and not s8b_case and not setup_admission_case:
         raise SystemExit(0)
 
-if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or not sys.argv[1:]:
+if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case or not sys.argv[1:]:
     import base64
     from threading import Barrier, Event, Thread
     from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
@@ -3004,7 +3011,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 capture, seq_history._ReadBudget())
 
 
-    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case else S4A_CASES):
+    for case in (() if s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case else S4A_CASES):
         if s4a_case not in (None, 'all', case):
             continue
         if case.startswith('start_replay_'):
@@ -5489,6 +5496,427 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             assert response.headers.get('cache-control') == 'no-store'
         return response.json()
 
+    # Unit (a) extends this private ASGI/SQLite venue; no live daemon or launch.
+    async def setup_request(f, method, path, *, body=None, raw=None, expected=200, code=None, headers=None):
+        import httpx
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+        state.orgs[f.org.slug], state.profile_coordinator = f.org, f.coordinator
+        (Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'daemon.token').write_text('synthetic-setup-founder')
+        app = create_app(state)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                response = await client.request(method, '/api/v1/orgs/' + f.org.slug + path,
+                    content=raw if raw is not None else None if body is None else s4bytes(body),
+                    headers={'authorization': 'Bearer synthetic-setup-founder', 'content-type': 'application/json'} if headers is None else headers)
+        finally:
+            state.metrics_store.close()
+            state.direct_connect_authority_store.close()
+        if expected is not None:
+            assert response.status_code == expected, (method, path, expected, response.status_code, response.text)
+        if code:
+            assert response.json()['detail']['code'] == code, response.text
+        return response
+
+    def setup_command(f, key, generation=0, *, legacy=False):
+        from runtime.workflows import sequential_release
+        compiled = sequential_release.read_coding_release() if legacy else sequential_release.read_generic_coding_release()
+        roles = ('qa', 'developer', 'final_manager', 'reviewer')
+        return dict(format='workflow-sequential-settings-put@1' if legacy else 'workflow-sequential-settings-put@2',
+            operation_key=key, expected_generation=generation, definition=compiled.pin.model_dump(mode='json'),
+            bindings=[dict(role=role, principal=dict(qa='s3_alt', developer='s3_author', final_manager='s3_manager', reviewer='s3_review')[role]) for role in roles],
+            limits=compiled.definition.limits.model_dump(mode='json', exclude_unset=True) if legacy else
+                dict(max_visits=12, max_events=128, max_recoveries=2, node_revisions=dict(develop=1)))
+
+    def setup_admission(save, key, generation, admission='Allowed'):
+        return dict(format='workflow-sequential-admission@1', operation_key=key, expected_generation=generation,
+            definition=save['definition'], admission=admission)
+
+    async def setup_put(f, body, **kwargs):
+        path = '/workflows/sequential/settings'
+        path += '/admission' if body['format'] == 'workflow-sequential-admission@1' else '/v2' if body['format'].endswith('@2') else ''
+        return await setup_request(f, 'PUT', path, body=body, **kwargs)
+
+    def setup_no_work(f):
+        return {table: tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
+            for table in ('tasks', 'task_results', 'workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_events',
+                          'workflow_seq_assignments', 'workflow_seq_outbox')}
+
+    async def setup_case(case):
+        from copy import deepcopy
+        from runtime.workflows.sequential_history import read_sequential_history, _ReadBudget
+        from runtime.workflows.sequential_start import _generic_selection
+        from runtime.workflows.sequential_assignments import parse_assignment_start, assignment_bytes
+        from runtime.orchestrator.producer_move import native_writer
+        with s3_fixture() as f:
+            first = setup_command(f, 'unit-a-save')
+            identity = first['definition']['identity']
+            current_path = '/workflows/sequential/views/v2/settings?definition_identity='+identity
+            operations_path = '/workflows/sequential/settings/v2/operations?operation_key='
+            admission_path = '/workflows/sequential/settings/admission/operations?operation_key='
+            if case == 'legacy_golden':
+                # Run this row on the pinned base AND branch; callers retain raw
+                # response bodies/rows for a byte comparison, never new goldens.
+                legacy = setup_command(f, 'unit-a-legacy', legacy=True)
+                paths = ['/workflows/sequential/definitions']
+                rows = list(f.conn.execute('SELECT id FROM workflow_seq_definitions WHERE version=2 AND identity=?', (identity,)))
+                paths.append('/workflows/sequential/definitions/'+rows[0][0])
+                before = [await setup_request(f, 'GET', path) for path in paths]
+                saved = await setup_put(f, legacy)
+                replay = await setup_put(f, legacy)
+                original = await setup_request(f, 'GET', '/workflows/sequential/settings/operations?operation_key=unit-a-legacy')
+                current = await setup_request(f, 'GET', '/workflows/sequential/settings?definition_identity='+identity)
+                assert saved.content == replay.content == original.content
+                output = os.environ.get('WORKFLOW_SETUP_GOLDEN_OUTPUT')
+                assert output, 'legacy_golden needs WORKFLOW_SETUP_GOLDEN_OUTPUT (task-owned path)'
+                payload = dict(responses=[r.content.hex() for r in (*before, saved, replay, original, current)],
+                    rows={table:[{k:(v.hex() if isinstance(v, bytes) else v) for k,v in dict(row).items()} for row in
+                        f.conn.execute('SELECT * FROM '+table+' WHERE '+('definition_identity=?' if table.endswith('settings') else 'operation_key=?'),
+                            (identity if table.endswith('settings') else 'unit-a-legacy',))]
+                        for table in ('workflow_seq_settings','workflow_seq_settings_operations')})
+                Path(output).write_bytes(s4bytes(payload))
+                return
+            if case == 'history':
+                for prior in ('Disabled','Allowed'):
+                    with s3_fixture() as h:
+                        old=setup_command(h,'history-v1',legacy=True)
+                        # Retained offline history is fixture setup, using its
+                        # unchanged writer/namespace and the SAME textual key.
+                        from scripts import setup_sequential_coding as offline
+                        from runtime.workflows.sequential_release import read_coding_release
+                        await setup_put(h,dict(old,operation_key='history-seed'))
+                        definition=h.conn.execute('SELECT id FROM workflow_seq_definitions WHERE identity=? AND version=2',(identity,)).fetchone()[0]
+                        raw=s4bytes(dict(format='workflow-sequential-settings-storage@1',definition=old['definition'],
+                            bindings=old['bindings'],limits=old['limits'],admission='Disabled'))
+                        offline._write(h.conn,'scratch','admission',SimpleNamespace(operation_key='history-v1',definition=read_coding_release().pin,expected_generation=1),
+                            dict(write=dict(definition_id=definition,generation=2,raw=raw)))
+                        h.conn.commit()
+                        offline_before=tuple(tuple(r) for r in h.conn.execute('SELECT * FROM workflow_seq_settings_operations WHERE principal=?',(offline.PRINCIPAL,)))
+                        old['expected_generation']=2
+                        legacy=(await setup_put(h,old)).content
+                        before=tuple(tuple(row) for row in h.conn.execute('SELECT * FROM workflow_seq_settings'))
+                        await setup_put(h,setup_admission(first,'wrong-version',3),expected=409,code='sequential_settings_defaults_required')
+                        await setup_put(h,setup_admission(old,'history-v1',3),expected=409,code='sequential_settings_operation_conflict')
+                        legacy_admission=setup_admission(old,'legacy-control',3,prior)
+                        await setup_put(h,legacy_admission)
+                        await setup_put(h,dict(old,operation_key='legacy-control',expected_generation=4),expected=409,code='sequential_settings_operation_conflict')
+                        await setup_put(h,dict(legacy_admission,admission='Disabled' if prior=='Allowed' else 'Allowed'),expected=409,code='sequential_settings_operation_conflict')
+                        generation=4
+                        new=dict(first,operation_key='history-v2',expected_generation=generation)
+                        current=(await setup_put(h,new)).json()
+                        assert current['original']['generation']==generation+1
+                        assert current['original']['snapshot']['admission']==prior
+                        assert all(tuple(row) in tuple(tuple(r) for r in h.conn.execute('SELECT * FROM workflow_seq_settings')) for row in before)
+                        assert (await setup_put(h,old)).content==legacy
+                        assert (await setup_request(h,'GET','/workflows/sequential/settings/operations?operation_key=history-v1')).content==legacy
+                        await setup_put(h,setup_admission(first,'history-stale',generation),expected=409,code='sequential_settings_generation_stale')
+                        original=offline._inspect(h.conn,org='scratch',action='admission-show',command=None,key='history-v1',
+                            compiled=read_coding_release(),budget=_ReadBudget())
+                        assert original['write'] is None and original['receipt']['generation']==2
+                        assert tuple(tuple(r) for r in h.conn.execute('SELECT * FROM workflow_seq_settings_operations WHERE principal=?',(offline.PRINCIPAL,)))==offline_before
+                        read_sequential_history(h.conn,expected_org_slug='scratch')
+                return
+            work = setup_no_work(f)
+            if case in ('first_save', 'validation'):
+                assert not f.conn.execute('SELECT 1 FROM workflow_seq_settings WHERE definition_identity=?',(identity,)).fetchone()
+                for value in ('Allowed', 'Disabled'):
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    await setup_put(f, setup_admission(first, 'missing-'+value, 0, value), expected=409, code='sequential_settings_defaults_required')
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+            result = await setup_put(f, first)
+            saved = result.json()
+            assert saved['original']['generation'] == 1 and saved['original']['snapshot']['admission'] == 'Disabled'
+            assert saved['original']['snapshot']['bindings'] == first['bindings']
+            assert saved['original']['snapshot']['limits'] == first['limits'], 'A00 generic lower bounds changed'
+            assert setup_no_work(f) == work
+            definitions = (await setup_request(f, 'GET', '/workflows/sequential/views/v2/definitions')).json()
+            assert {d['pin']['version'] for d in definitions['definitions']} == {2,3}, 'A00 generic setup discovery dropped a registered ABI'
+            assert (await setup_request(f, 'GET', current_path)).json() == saved['original']
+            assert json.loads(f.conn.execute('SELECT snapshot_bytes FROM workflow_seq_settings WHERE id=?', (saved['original']['id'],)).fetchone()[0]) == saved['original']['snapshot']
+            if case == 'first_save':
+                output = os.environ.get('WORKFLOW_SETUP_BROWSER_FIXTURE')
+                if output:
+                    legacy = setup_command(f, 'browser-legacy', legacy=True)
+                    Path(output).write_bytes(s4bytes(dict(definitions=definitions, saved=saved,
+                        agents=[dict(name=name, team=agent.team, role=agent.role) for name,agent in f.agents.items()],
+                        legacy_command=legacy)))
+                with sqlite3.connect(f.db.path) as reopened:
+                    reopened.execute('PRAGMA foreign_keys=ON')
+                    read_sequential_history(reopened, expected_org_slug='scratch')
+                    row = reopened.execute('SELECT snapshot_bytes FROM workflow_seq_settings WHERE id=?', (saved['original']['id'],)).fetchone()[0]
+                    assert json.loads(row) == saved['original']['snapshot']
+                return
+            if case == 'validation':
+                variants = []
+                for name, edit, status, code in (
+                    ('missing-role', lambda x:x['bindings'].pop(),422,'sequential_settings_defaults_invalid'),
+                    ('duplicate-role', lambda x:x['bindings'].append(x['bindings'][0]),422,'sequential_settings_defaults_invalid'),
+                    ('unknown-role', lambda x:x['bindings'][0].update(role='unknown'),422,'sequential_settings_defaults_invalid'),
+                    ('ineligible', lambda x:x['bindings'][0].update(principal='s3_other_manager'),403,'sequential_authority_denied'),
+                    ('manager-worker', lambda x:x['bindings'][2].update(principal='s3_other'),403,'sequential_authority_denied'),
+                    ('cross-team', lambda x:x['bindings'][0].update(principal='s3_other'),403,'sequential_authority_denied'),
+                    ('independence', lambda x:x['bindings'][0].update(principal='s3_author'),422,'sequential_settings_defaults_invalid'),
+                    ('digest', lambda x:x['definition'].update(definition_digest='0'*64),409,'sequential_definition_conflict'),
+                    ('version', lambda x:x['definition'].update(version=2),409,'sequential_definition_conflict'),
+                    ('abi', lambda x:x['definition'].update(compiler='workflow-sequential-compiler@1'),422,'sequential_settings_request_invalid'),
+                    ('unregistered', lambda x:x['definition'].update(identity='release/unknown/workflow'),404,'sequential_definition_not_found'),
+                    ('legacy-limit', lambda x:x['limits'].update(content_returns=1),422,'sequential_settings_request_invalid'),
+                    ('unknown-node', lambda x:x['limits']['node_revisions'].update(unknown=1),422,'sequential_settings_defaults_invalid'),
+                    ('above-node', lambda x:x['limits']['node_revisions'].update(develop=3),422,'sequential_settings_defaults_invalid'),
+                    ('above-root', lambda x:x['limits'].update(max_visits=17),422,'sequential_settings_defaults_invalid')):
+                    value=deepcopy(first);value.update(operation_key='invalid-'+name,expected_generation=1);edit(value)
+                    variants.append((value,status,code))
+                admission = setup_admission(first, 'valid-audience', 1)
+                for field,value in (('admission','invalid'),('expected_generation',True),('expected_generation',-1)):
+                    body=deepcopy(admission);body[field]=value
+                    variants.append((body,422,'sequential_settings_request_invalid'))
+                for field,value,status,code in (
+                    ('definition_digest','0'*64,409,'sequential_definition_conflict'),
+                    ('identity','release/unknown/workflow',404,'sequential_definition_not_found'),
+                    ('compiler','workflow-sequential-compiler@1',422,'sequential_settings_request_invalid')):
+                    body=deepcopy(admission);body['definition'][field]=value
+                    variants.append((body,status,code))
+                for field in ('extra','principal','repository','bindings','limits'):
+                    value=deepcopy(admission);value[field]=[] if field=='bindings' else 'unexpected'
+                    variants.append((value,422,'sequential_settings_request_invalid'))
+                for field in ('extra','principal','repository','admission'):
+                    value=deepcopy(first);value.update(operation_key='closed-save-'+field,expected_generation=1);value[field]='unexpected'
+                    variants.append((value,422,'sequential_settings_request_invalid'))
+                for value,status,code in variants:
+                    before,changes=tuple(f.conn.iterdump()),f.conn.total_changes
+                    await setup_put(f,value,expected=status,code=code)
+                    assert tuple(f.conn.iterdump())==before and f.conn.total_changes==changes
+                path='/workflows/sequential/settings/admission'
+                for raw in (b'{"format":"x","format":"y"}', b' '+s4bytes(admission), b'x'*16385):
+                    await setup_request(f,'PUT',path,raw=raw,expected=422,code='sequential_settings_request_invalid')
+                f.org.sessions.set_active(f.source.id, f.source.assigned_agent, f.source.current_session_id, org_slug=f.org.slug)
+                for headers in ({}, {'authorization':'Bearer synthetic-invalid'}, {'X-Session-ID':f.source.current_session_id},
+                                {'X-Session-ID':f.source.current_session_id,'X-HappyRanch-Surface':'cli'}):
+                    before=tuple(f.conn.iterdump())
+                    await setup_request(f,'PUT',path,body=admission,headers=headers,expected=401)
+                    await setup_request(f,'GET',admission_path+'valid-audience',headers=headers,expected=401)
+                    await setup_put(f,dict(first,operation_key='save-audience',expected_generation=1),headers=headers,expected=401)
+                    await setup_request(f,'GET',operations_path+'unit-a-save',headers=headers,expected=401)
+                    assert tuple(f.conn.iterdump())==before
+                for suffix in ('','?operation_key=x&operation_key=y','?operation_key=x&extra=x','?operation_key=%20'):
+                    await setup_request(f,'GET',path+'/operations'+suffix,expected=422)
+                    await setup_request(f,'GET','/workflows/sequential/settings/v2/operations'+suffix,expected=422)
+                await setup_request(f,'GET',admission_path+'missing',raw=b'{}',expected=422,code='sequential_settings_request_invalid')
+                await setup_request(f,'GET',operations_path+'unit-a-save',raw=b'{}',expected=422,code='sequential_settings_request_invalid')
+                await setup_request(f,'PUT',path+'?extra=x',body=admission,expected=422,code='sequential_settings_request_invalid')
+                await setup_request(f,'PUT',path+'?x=a&x=b',body=admission,expected=422,code='sequential_settings_request_invalid')
+                await setup_request(f,'PUT',path,body=admission,headers={'authorization':'Bearer synthetic-setup-founder','content-type':'text/plain'},expected=422)
+                for raw in (b'{"format":"x","format":"y"}', b' '+s4bytes(first), b'x'*16385):
+                    await setup_request(f,'PUT','/workflows/sequential/settings/v2',raw=raw,expected=422,code='sequential_settings_request_invalid')
+                await setup_request(f,'PUT','/workflows/sequential/settings/v2?extra=x',body=first,expected=422)
+                await setup_request(f,'PUT','/workflows/sequential/settings/v2',body=first,
+                    headers={'authorization':'Bearer synthetic-setup-founder','content-type':'text/plain'},expected=422)
+                await setup_put(f,admission)
+                assert setup_no_work(f)==work
+                return
+            frozen={table:tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
+                for table in ('workflow_seq_settings','workflow_seq_settings_operations')}
+            fragments={key:s4bytes(first[key]) for key in ('bindings','limits')}
+            allowed_command=setup_admission(first,'unit-a-allow',1)
+            allowed=(await setup_put(f,allowed_command)).json()
+            assert allowed['original']['generation']==2 and allowed['original']['snapshot']['admission']=='Allowed'
+            assert allowed['original']['snapshot']['bindings']==first['bindings'] and allowed['original']['snapshot']['limits']==first['limits']
+            readback=(await setup_request(f,'GET',current_path)).json()
+            assert readback==allowed['original'], 'A03 independent Allow readback differs'
+            assert {key:s4bytes(readback['snapshot'][key]) for key in fragments}==fragments
+            for table,old in frozen.items():
+                rows=tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
+                assert rows[:-1]==old, ('A03 old row bytes changed',table)
+            assert setup_no_work(f)==work
+            with sqlite3.connect(f.db.path) as reopened:
+                row=reopened.execute('SELECT snapshot_bytes FROM workflow_seq_settings WHERE id=?',(readback['id'],)).fetchone()[0]
+                assert json.loads(row)==readback['snapshot'], 'A03 reopened Allow snapshot differs'
+            if case=='race':
+                import asyncio
+                for index,(left_kind,right_kind) in enumerate((('Allowed','Disabled'),('Save','Allowed'),('Save','Disabled'))):
+                    current=(await setup_request(f,'GET',current_path)).json()
+                    contenders=[]
+                    for side,action in (('left',left_kind),('right',right_kind)):
+                        body=deepcopy(first) if action=='Save' else setup_admission(first,'unused',current['generation'],action)
+                        body.update(operation_key='race-'+side+'-'+str(index),expected_generation=current['generation'])
+                        if action=='Save':
+                            body['bindings'][0]['principal'],body['bindings'][3]['principal']=body['bindings'][3]['principal'],body['bindings'][0]['principal']
+                            body['limits']=dict(max_visits=11,max_events=120,max_recoveries=1,node_revisions=dict(develop=0))
+                        contenders.append(body)
+                    left,right=contenders
+                    frozen={table:tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
+                        for table in ('workflow_seq_settings','workflow_seq_settings_operations')}
+                    # Both tasks start outside the shared writer. No barrier is
+                    # inserted inside its lock, and no production seam is added.
+                    native=f.org.workflow_authority._async_writer_lock
+                    arrived=asyncio.Event()
+                    class ObservedLock:
+                        count=0
+                        def __getattr__(self,name):
+                            return getattr(native,name)
+                        async def __aenter__(self):
+                            self.count+=1
+                            if self.count==2:
+                                arrived.set()
+                            return await native.__aenter__()
+                        async def __aexit__(self,*args):
+                            return await native.__aexit__(*args)
+                    await native.acquire()
+                    with patch.object(f.org.workflow_authority,'_async_writer_lock',ObservedLock()):
+                        tasks=[asyncio.create_task(setup_put(f,body,expected=None)) for body in (left,right)]
+                        try:
+                            await asyncio.wait_for(arrived.wait(),timeout=5)
+                        finally:
+                            native.release()
+                        outcomes=await asyncio.gather(*tasks)
+                    assert sorted(r.status_code for r in outcomes)==[200,409]
+                    loser=next(r for r in outcomes if r.status_code==409)
+                    assert loser.json()['detail']['code']=='sequential_settings_generation_stale'
+                    winner=next(body for body,response in zip(contenders,outcomes) if response.status_code==200)
+                    observed=(await setup_request(f,'GET',current_path)).json()
+                    assert observed['generation']==current['generation']+1
+                    assert observed['snapshot']['admission']==(current['snapshot']['admission'] if 'bindings' in winner else winner['admission'])
+                    for key in ('bindings','limits'):
+                        assert observed['snapshot'][key]==(winner[key] if 'bindings' in winner else current['snapshot'][key])
+                    for table,old in frozen.items():
+                        rows=tuple(tuple(row) for row in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid'))
+                        assert len(rows)==len(old)+1 and rows[:-1]==old, ('A06 append delta/old bytes',table)
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_settings_operations WHERE operation_key IN (?,?)',(left['operation_key'],right['operation_key'])).fetchone()[0]==1
+                assert setup_no_work(f)==work
+                return
+            if case=='pins':
+                from runtime.workflows.sequential_engine import admit_uncommitted
+                from runtime.workflows.sequential_start import prepare_generic_start
+                from runtime.workflows.sequential_release import read_generic_coding_release
+                from runtime.workflows.sequential_contracts import GenericLimits
+                compiled=read_generic_coding_release()
+                start=deepcopy(f.command)
+                start.update(operation_key='unit-a-run',definition=first['definition'],settings=dict(generation=2,snapshot_digest=allowed['original']['snapshot_digest']),
+                    lower_limits=first['limits'],role_overrides=[],step_overrides=[])
+                raw=assignment_bytes(start)
+                claim=RetryClaim.from_task(f.source,result_row_id=f.conn.execute('SELECT id FROM task_results WHERE task_id=?',(f.source.id,)).fetchone()[0])
+                capture=prepare_generic_start(f.org,start=raw,source=claim)
+                setting=dict(f.conn.execute('SELECT * FROM workflow_seq_settings WHERE id=?',(allowed['original']['id'],)).fetchone())
+                carrier=TaskRecord(id='unit-a-carrier',parent_task_id=f.source.id,assigned_agent='s3_manager',team='engineering',task_type='subtask',brief='Private inert carrier')
+                visit=TaskRecord(id='unit-a-visit',parent_task_id=carrier.id,assigned_agent='s3_author',team='engineering',task_type='subtask',brief='Private inert visit',
+                    model_override=f.source.model_override,reasoning_effort_override=f.source.reasoning_effort_override,override_source='manager')
+                with f.org.workflow_authority.admission_writer(capture.authority) as conn:
+                    ids=admit_uncommitted(conn,f.db,org_slug='scratch',compiled=compiled,settings_row=setting,start=raw,source=claim,
+                        carrier_task=carrier,visit_task=visit,original_limits=GenericLimits.model_validate(first['limits']),authority=f.org.workflow_authority,capture=capture)
+                work=setup_no_work(f)
+            changed=deepcopy(first);changed.update(operation_key='unit-a-save-allowed',expected_generation=2)
+            changed['bindings'][0]['principal'],changed['bindings'][3]['principal']=changed['bindings'][3]['principal'],changed['bindings'][0]['principal']
+            changed['limits']=dict(max_visits=11,max_events=120,max_recoveries=1,node_revisions=dict(develop=0))
+            kept=(await setup_put(f,changed)).json()
+            assert kept['original']['snapshot']['admission']=='Allowed' and kept['original']['generation']==3
+            assert kept['original']['snapshot']['limits']==changed['limits']
+            disabled=(await setup_put(f,setup_admission(first,'unit-a-disable',3,'Disabled'))).json()
+            assert disabled['original']['generation']==4 and disabled['original']['snapshot']['admission']=='Disabled'
+            changed.update(operation_key='unit-a-save-disabled',expected_generation=4)
+            last=(await setup_put(f,changed)).json()
+            assert last['original']['generation']==5 and last['original']['snapshot']['admission']=='Disabled'
+            assert setup_no_work(f)==work
+            if case=='pins':
+                from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+                row=s4row(f,'workflow_seq_runs',ids.run_id)
+                with f.db.coherent_read_view() as conn:
+                    validate_selected_run_uncommitted(conn,org_slug='scratch',run_id=ids.run_id,scope='admission')
+                capture=prepare_generic_start(f.org,start=raw,source=claim)
+                before=setup_no_work(f)
+                with f.org.workflow_authority.admission_writer(capture.authority) as conn:
+                    replay=admit_uncommitted(conn,f.db,org_slug='scratch',compiled=compiled,settings_row=setting,start=raw,source=claim,
+                        carrier_task=carrier,visit_task=visit,original_limits=GenericLimits.model_validate(first['limits']),authority=f.org.workflow_authority,capture=capture)
+                assert replay==ids and setup_no_work(f)==before, 'A07 admitted replay changed pins/work'
+                for pin in (start['settings'],dict(generation=5,snapshot_digest=last['original']['snapshot_digest'])):
+                    source=TaskRecord(id='unit-a-fresh-source-'+str(pin['generation']),assigned_agent='s3_manager',team='engineering',
+                        task_type='task',status='in_progress',current_session_id='unit-a-fresh-session-'+str(pin['generation']),brief='Private fresh source')
+                    f.db.insert_task(source)
+                    result=f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+                        (source.id,source.assigned_agent,source.current_session_id,'completed',source.created_at.isoformat())).lastrowid
+                    f.conn.commit()
+                    before=setup_no_work(f)
+                    fresh=deepcopy(start);fresh.update(operation_key='fresh-'+str(pin['generation']),settings=pin)
+                    try:
+                        prepare_generic_start(f.org,start=assignment_bytes(fresh),source=RetryClaim.from_task(source,result_row_id=result))
+                    except ValueError as exc:
+                        assert ('settings_generation_stale' if pin['generation']==2 else 'sequential_admission_pin_conflict') in str(exc), str(exc)
+                    else:
+                        raise AssertionError('A07 fresh disabled/stale settings admitted')
+                    assert setup_no_work(f)==before, 'A07 refused fresh attempt allocated work'
+                work=setup_no_work(f)
+                assert (await s7read(f,'/workflows/sequential/views/v2/runs/'+ids.run_id))['run']['settings_id']==allowed['original']['id']
+            if case=='rollback':
+                # Real owner transaction cut: fault its existing post-insert
+                # complete reader, never a new production injection hook.
+                from runtime.workflows import sequential_settings as owner
+                original=owner.read_sequential_history
+                def after_insert(conn,**kwargs):
+                    if conn.execute('SELECT 1 FROM workflow_seq_settings_operations WHERE operation_key=?',('unit-a-rollback',)).fetchone():
+                        raise ValueError('private precommit fault')
+                    return original(conn,**kwargs)
+                def business():
+                    tables=[r[0] for r in f.conn.execute("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'workflow_seq_*' OR name IN ('tasks','task_results')) ORDER BY name")]
+                    return {table:tuple(tuple(r) for r in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid')) for table in tables}
+                before=business()
+                with patch.object(owner,'read_sequential_history',after_insert):
+                    await setup_put(f,setup_admission(first,'unit-a-rollback',5),expected=409,code='sequential_history_unverified')
+                assert business()==before and not f.conn.in_transaction, 'A09 partial business append or retained transaction'
+            # Original Save/admission are independent of newer opposite-kind work.
+            before,changes,sql=tuple(f.conn.iterdump()),f.conn.total_changes,[]
+            with patch('runtime.workflows.sequential_settings.native_writer',side_effect=AssertionError('replay acquired writer')):
+                f.conn.set_trace_callback(sql.append)
+                try:
+                    assert (await setup_put(f,first)).json()==saved
+                    assert (await setup_put(f,allowed_command)).json()==allowed
+                    assert (await setup_request(f,'GET',operations_path+'unit-a-save')).json()==saved
+                    assert (await setup_request(f,'GET',admission_path+'unit-a-allow')).json()==allowed
+                    await setup_request(f,'GET',admission_path+'absent',expected=404,code='sequential_settings_operation_not_found')
+                finally:
+                    f.conn.set_trace_callback(None)
+            assert tuple(f.conn.iterdump())==before and f.conn.total_changes==changes
+            assert not any(stmt.lstrip().split(' ',1)[0].upper() in ('INSERT','UPDATE','DELETE','REPLACE','COMMIT') for stmt in sql)
+            if case=='replay':
+                # A second actual private tenant has its own registrar/history;
+                # a founder bearer cannot make its key lookup read another DB.
+                with s3_fixture(slug='foreign') as foreign:
+                    foreign_before=tuple(foreign.conn.iterdump())
+                    await setup_request(foreign,'GET',admission_path+'unit-a-allow',expected=404,code='sequential_settings_operation_not_found')
+                    await setup_request(foreign,'GET',operations_path+'unit-a-save',expected=404,code='sequential_settings_operation_not_found')
+                    assert tuple(foreign.conn.iterdump())==foreign_before
+                # Reopen the actual database facade used by the routes, then
+                # repeat originals without acquiring any writer custody.
+                with s5reopen(f) as reopened:
+                    reopened.rollback()  # Route owns its own read transaction.
+                    with patch.object(f.db,'_conn',reopened), patch('runtime.workflows.sequential_settings.native_writer',side_effect=AssertionError('reopened replay acquired writer')):
+                        assert (await setup_put(f,first)).json()==saved
+                        assert (await setup_put(f,allowed_command)).json()==allowed
+                        assert (await setup_request(f,'GET',operations_path+'unit-a-save')).json()==saved
+                        assert (await setup_request(f,'GET',admission_path+'unit-a-allow')).json()==allowed
+            for body in (dict(setup_admission(first,'unit-a-allow',1),definition=f.compiled.pin.model_dump(mode='json')),setup_admission(first,'unit-a-allow',2),setup_admission(first,'unit-a-allow',1,'Disabled'),
+                         setup_admission(first,'unit-a-save',0),dict(first,operation_key='unit-a-allow',expected_generation=1)):
+                await setup_put(f,body,expected=409,code='sequential_settings_operation_conflict')
+            await setup_put(f,setup_admission(first,'unit-a-stale',1),expected=409,code='sequential_settings_generation_stale')
+            same=setup_admission(first,'unit-a-same',5,'Disabled')
+            final=await setup_put(f,same)
+            assert final.json()['original']['generation']==6
+            assert (await setup_put(f,same)).content==final.content
+            read_sequential_history(f.conn,expected_org_slug='scratch')
+            with sqlite3.connect(f.db.path) as reopened:
+                reopened.execute('PRAGMA foreign_keys=ON')
+                read_sequential_history(reopened,expected_org_slug='scratch')
+            if case=='rollback':
+                lost=setup_admission(first,'unit-a-response-lost',6)
+                await setup_put(f,lost)  # Deliberately discard the real committed response.
+                newer=dict(changed,operation_key='unit-a-after-loss',expected_generation=7)
+                await setup_put(f,newer)
+                recovered=(await setup_request(f,'GET',admission_path+lost['operation_key'])).json()
+                assert recovered['command']==lost and recovered['original']['generation']==7
+                assert (await setup_request(f,'GET',current_path)).json()['generation']==8
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_settings_operations WHERE operation_key=?',(lost['operation_key'],)).fetchone()[0]==1
+            print('TRANSCRIPT unit-a Save -> Allow -> readback -> Save-while-Allowed -> replay -> stale -> Disable',
+                json.dumps(dict(save=saved,allow=allowed,save_allowed=kept,disable=disabled)),flush=True)
+
     def s7legacy(f):
         from runtime.workflows.sequential_definition import compile_definition
         from runtime.workflows.sequential_contracts import Limits
@@ -5961,7 +6389,16 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert {p.name:p.read_bytes() for p in attempt.directory.iterdir()} == records
         print('PASS S8b', case, 'original rows/receipts preserved; no live operation', flush=True)
 
-    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case:
+    if setup_admission_case:
+        for case in SETUP_ADMISSION_CASES:
+            if case == 'legacy_golden' and setup_admission_case == 'all':
+                continue  # Separate base/branch byte comparison requires an output path.
+            if setup_admission_case not in ('all',case):
+                continue
+            asyncio.run(setup_case(case))
+            print('PASS unit-a',case,'real ASGI/private SQLite; no live operation',flush=True)
+
+    if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_case or setup_admission_case:
         raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

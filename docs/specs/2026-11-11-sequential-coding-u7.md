@@ -1,5 +1,14 @@
 # Sequential Coding U7: common transport and agent initiation
 
+Current R2 unit (a) addendum: additive Coding v3/@2 setup reads/Save and separate
+Founder Allow/Disable are supported in source. Save preserves admission; Disable
+affects new starts only; immutable admitted pins and @1 contracts are retained.
+Public Start@2 and Draft→Review registration remain undelivered. Registration
+still creates no defaults or admission; offline fresh admission remains refused.
+Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
+Exact routes, custody and supported fixture commands:
+[R2 setup/admission contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+
 ## S8b registration and transport boundary (THR-336)
 
 Coding v3 is the generic Coding definition in `GENERIC_CATALOG` (the compatible
@@ -10,7 +19,7 @@ unchanged, offering v2 only. A fresh public v3 pin still refuses with
 `sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
 closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. Coding stays Disabled.
+admission, tasks, runs or Allow. Explicit Founder setup/Allow is separate above.
 
 Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
 Final transport with `sequential_domain_transport_unavailable`. Local Final
@@ -39,7 +48,7 @@ or document capability witness; domain task transport refuses them. Addressed
 generic node briefs and positive native closure gate output/advancement without
 Git/domain semantic guarantees. Historical @1 engine paths retain their bytes.
 No S5 source continuation or live Coding pilot is supplied.
-Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+Public @2 starts remain closed; R2 Founder setup/admission is separate above. Private source evidence
 does not prove genuine provider/process execution. See the
 [S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
 

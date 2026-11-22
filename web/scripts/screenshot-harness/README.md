@@ -49,6 +49,19 @@ node scripts/screenshot-harness/demo.mjs all   # or: a | b | c
 
 `demo.mjs` is the reference: copy the block for your mode and adapt the content.
 
+The stateful Coding setup cases also use the existing ordinary-build CDP runner:
+`node scripts/w4a-browser-evidence.mjs --slice workflow-setup --dist dist
+--workflow-fixture /absolute/fixture.json --out /absolute/evidence`. Produce the
+synthetic fixture by setting `WORKFLOW_SETUP_BROWSER_FIXTURE=/absolute/fixture.json`
+on the repository's `bash scripts/test-workflow-schema-load.sh
+--setup-admission=first_save` command. `--workflow-case A00.2,W01,W02,W03,W04,W05`
+selects cases; `--workflow-case W05-switch` isolates locale preservation. Locale
+changes use a real background-tab storage event with zero visibility transitions;
+a separate same-locale foreground control observes normal focus refresh. These
+browser cases observe the shipping provider and request
+ledger; the private schema/ASGI fixture separately owns persistence and auth.
+They add no required CI execution or trigger.
+
 ## Composing each mode in your own task script
 
 ```js

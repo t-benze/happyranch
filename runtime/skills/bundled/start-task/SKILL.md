@@ -627,8 +627,14 @@ Repository resolve/bind/preflight and sequential finalize/journal transports ref
 generic @2 selections with `sequential_domain_transport_unavailable`; perform only
 the authorized engineering duties with existing tools. Original @1 replay,
 selected history and uncertain Final records retain their original rules; never
-reissue an uncertain Final. Coding stays Disabled/unset; registration grants no
-start, setup, roles or Allow.
+reissue an uncertain Final. Registration grants no start, setup, roles or Allow.
+R2 unit (a) separately supports Founder Workflows → Setup: Save the four Coding
+v3 roles, then explicitly Allow/Disable new runs. Save preserves admission and
+creates no work; Disable never changes admitted-run pins. Pending/uncertain
+operations keep their original kind/key/body; resolve uncertainty only through
+original-key lookup. Agent/task/CLI sessions gain no Founder setup entitlement.
+Public Start@2 and Draft→Review registration remain separate units. Live setup,
+Allow, deployment/restart and the pilot remain founder-reserved.
 
 Keep these live boundaries in every lane:
 

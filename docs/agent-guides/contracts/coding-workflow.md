@@ -1,5 +1,23 @@
 # Coding workflow contracts
 
+## R2 unit (a): saved defaults and new-run admission
+
+Workflows → Setup supports Coding v3/@2 and its four roles (`developer`,
+`reviewer`, `qa`, `final_manager`). Save creates no work: the first Save for an
+identity initializes Disabled, and later Saves preserve admission across versions.
+Separate Founder Allow/Disable uses the saved exact pin and shared identity-wide
+CAS. Admission preserves dirty role drafts; Disable affects only new starts and
+never changes admitted-run pins. Pending/uncertain operations retain their original
+kind/key/body, with read-only original lookup and explicit conflict adoption.
+Pending/uncertain badges name the original Allow/Disable action; admission conflicts
+ask to re-read/adopt current settings and retry that action. Save keeps its own copy.
+
+The [setup/admission contract](reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission)
+owns routes, closed formats, refusal codes, recovery and fixture commands. Existing
+@1 bytes/readers remain unchanged. Public Start@2 and Draft→Review remain later
+units; the offline script still refuses fresh admission. Source delivery performs
+no live setup/Allow, deployment/restart or pilot.
+
 ## S9 retained Coding reader boundary
 
 S9 defers the shared-reader naming extraction: common bounded primitives still
@@ -12,8 +30,8 @@ See [the final reader map](reusable-workflows.md#s9-final-reader-parity-and-nami
 
 The role-report contract below is the current generic Coding data convention;
 the historical domain capabilities apply only to actual old bindings. S9 grants
-no public @2 start, setup/roles/Allow, live pilot or uncertain-merge retry. Coding
-remains Disabled/unset; genuine role adherence and the scratch merge are NOT RUN
+no public @2 start, live pilot or uncertain-merge retry. Separate R2 setup/roles/Allow
+is source-supported above; genuine role adherence and the scratch merge are NOT RUN
 and founder-reserved.
 
 <a id="coding-v3-role-reports--s8a-staged-registration"></a>
@@ -25,8 +43,8 @@ bounded canonical JSON objects (at most 49152 UTF8 bytes). `GENERIC_CATALOG`
 pins its literal resource; `STAGED_GENERIC` keeps the compatible registrar
 export. The qualified registrar appends v2 and v3 immutable definition rows
 only. `PRESET_CATALOG` and the public @1 `MANIFEST` keep their v2 projection.
-No settings, roles, admission, tasks, runs or Allow are created. Coding stays
-Disabled/unset; registration supplies no activation or start authority.
+No settings, roles, admission, tasks, runs or Allow are created by registration.
+Explicit Founder setup/Allow is separate; registration supplies no start authority.
 
 S8b delivers registration and version-selective transport refusal. Public
 start-context discovery, its @1 wire shape, start-compose and v2 fresh-start

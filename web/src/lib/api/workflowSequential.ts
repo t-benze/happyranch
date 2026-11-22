@@ -92,6 +92,46 @@ export interface SequentialSettingsReceipt {
   original: SequentialSettings;
 }
 
+export interface GenericSequentialLimits {
+  max_visits: number; max_events: number; max_recoveries: number; node_revisions?: Record<string, number>;
+}
+export interface GenericSequentialSettings {
+  format: 'workflow-sequential-settings-view@2'; id: string; generation: number; snapshot_digest: string;
+  snapshot: { format: 'workflow-sequential-settings-storage@2'; definition: GenericDefinitionPin;
+    bindings: SequentialBinding[]; limits: GenericSequentialLimits; admission: 'Disabled' | 'Allowed' };
+}
+export type SetupSettings = SequentialSettings | GenericSequentialSettings;
+export type SetupPin = DefinitionPin | GenericDefinitionPin;
+export interface SetupDefinitions {
+  format: 'workflow-sequential-definitions-view@2'; storage: SequentialDefinitions['storage'];
+  definitions: { id: string; pin: SetupPin; definition_json: string }[];
+}
+export interface GenericSequentialSettingsCommand {
+  format: 'workflow-sequential-settings-put@2'; operation_key: string; expected_generation: number;
+  definition: GenericDefinitionPin; bindings: SequentialBinding[]; limits: GenericSequentialLimits;
+}
+export interface SequentialAdmissionCommand {
+  format: 'workflow-sequential-admission@1'; operation_key: string; expected_generation: number;
+  definition: SetupPin; admission: 'Allowed' | 'Disabled';
+}
+export type SetupSaveCommand = SequentialSettingsCommand | GenericSequentialSettingsCommand;
+export type SetupCommand = SetupSaveCommand | SequentialAdmissionCommand;
+export interface GenericSequentialSettingsReceipt {
+  format: 'workflow-sequential-settings-receipt@2'; org_slug: string; operation_key: string;
+  command: GenericSequentialSettingsCommand; receipt: SequentialSettingsReceipt['receipt']; original: GenericSequentialSettings;
+}
+export interface SequentialAdmissionReceipt {
+  format: 'workflow-sequential-admission-receipt@1'; org_slug: string; operation_key: string;
+  command: SequentialAdmissionCommand; receipt: SequentialSettingsReceipt['receipt']; original: SetupSettings;
+}
+export type SetupReceipt = SequentialSettingsReceipt | GenericSequentialSettingsReceipt | SequentialAdmissionReceipt;
+export const listSequentialSetupDefinitions = (slug: string, signal?: AbortSignal): Promise<SetupDefinitions> =>
+  request(`/orgs/${slug}/workflows/sequential/views/v2/definitions`, { signal });
+export const getSequentialSetupDefinition = (slug: string, id: string, signal?: AbortSignal): Promise<SetupDefinitions['definitions'][number]> =>
+  request(`/orgs/${slug}/workflows/sequential/views/v2/definitions/${encodeURIComponent(id)}`, { signal });
+export const getSequentialSetupSettings = (slug: string, identity: string, signal?: AbortSignal): Promise<SetupSettings> =>
+  request(`/orgs/${slug}/workflows/sequential/views/v2/settings`, { params: { definition_identity: identity }, signal });
+
 /** Closed commands have ASCII keys and integer numbers. Freeze exact original
  * bytes before awaiting token/transport; never normalize an uncertain resend. */
 function canonical(value: unknown): unknown {
@@ -108,8 +148,8 @@ function canonical(value: unknown): unknown {
   if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError('sequential_settings_json');
   return Object.freeze(Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])));
 }
-export function freezeSequentialSettingsCommand(command: SequentialSettingsCommand): SequentialSettingsCommand {
-  const copy = canonical(command) as SequentialSettingsCommand;
+export function freezeSequentialSettingsCommand<T extends SetupCommand>(command: T): T {
+  const copy = canonical(command) as T;
   if (new TextEncoder().encode(JSON.stringify(copy)).length > 16384) throw new TypeError('sequential_settings_size');
   return copy;
 }
@@ -134,6 +174,63 @@ export const putSequentialSettings = async (slug: string, command: SequentialSet
 /** Original receipt only. Never substitutes the latest current-generation GET. */
 export const getSequentialSettingsOperation = async (slug: string, key: string, signal?: AbortSignal): Promise<SequentialSettingsReceipt> =>
   receipt(await request(`/orgs/${slug}/workflows/sequential/settings/operations`, { params: { operation_key: key }, signal }), slug, key);
+
+/** Validate original setup history before it can release mutation custody. */
+function setupReceipt(value: SetupReceipt, slug: string, command: SetupCommand): SetupReceipt {
+  const fail = () => { throw new TypeError('sequential_settings_receipt'); };
+  const same = (a: unknown, b: unknown) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+  const keys = (v: object, expected: string[]) => same(Object.keys(v).sort(), expected.sort());
+  canonical(value);
+  const admission = command.format === 'workflow-sequential-admission@1';
+  const generic = command.definition.compiler === 'workflow-sequential-compiler@2';
+  const original = value.original, stored = value.receipt, snapshot = original.snapshot;
+  if (!keys(value, ['format', 'org_slug', 'operation_key', 'command', 'receipt', 'original'])
+    || value.format !== (admission ? 'workflow-sequential-admission-receipt@1' : generic ? 'workflow-sequential-settings-receipt@2' : 'workflow-sequential-settings-receipt@1')
+    || value.org_slug !== slug || value.operation_key !== command.operation_key || !same(value.command, command)
+    || !keys(stored, ['format', 'operation_id', 'settings_id', 'generation', 'snapshot_digest'])
+    || stored.format !== 'workflow-sequential-settings-receipt-storage@1' || typeof stored.operation_id !== 'string' || !stored.operation_id
+    || !keys(original, ['format', 'id', 'generation', 'snapshot_digest', 'snapshot'])
+    || stored.settings_id !== original.id || typeof original.id !== 'string' || !original.id
+    || !Number.isSafeInteger(original.generation) || original.generation !== command.expected_generation + 1
+    || stored.generation !== original.generation || stored.snapshot_digest !== original.snapshot_digest
+    || !/^[0-9a-f]{64}$/.test(original.snapshot_digest)
+    || original.format !== (generic ? 'workflow-sequential-settings-view@2' : 'workflow-sequential-settings-view@1')
+    || snapshot.format !== (generic ? 'workflow-sequential-settings-storage@2' : 'workflow-sequential-settings-storage@1')
+    || !keys(snapshot, ['format', 'definition', 'bindings', 'limits', 'admission'])
+    || !same(snapshot.definition, command.definition) || !['Allowed', 'Disabled'].includes(snapshot.admission)
+    || !Array.isArray(snapshot.bindings) || !snapshot.bindings.every(b => keys(b, ['role', 'principal']) && typeof b.role === 'string' && typeof b.principal === 'string')) fail();
+  if (admission) {
+    if (snapshot.admission !== command.admission) fail();
+  } else if (!same(snapshot.bindings, command.bindings) || !same(snapshot.limits, command.limits)) fail();
+  const limits = snapshot.limits;
+  if (generic) {
+    if (!('max_recoveries' in limits) || !keys(limits, ['max_visits', 'max_events', 'max_recoveries', ...('node_revisions' in limits ? ['node_revisions'] : [])])
+      || !Number.isSafeInteger(limits.max_recoveries) || limits.max_recoveries < 0 || limits.max_recoveries > 64
+      || (limits.node_revisions !== undefined && (typeof limits.node_revisions !== 'object' || limits.node_revisions === null || Array.isArray(limits.node_revisions)
+        || !Object.values(limits.node_revisions).every(v => Number.isSafeInteger(v) && v >= 0 && v <= 63)))) fail();
+  } else if (!('content_returns' in limits) || !keys(limits, ['content_returns', 'max_content_epochs', 'max_visits', 'max_events'])
+    || !Number.isSafeInteger(limits.content_returns) || limits.content_returns < 0 || limits.content_returns > 2
+    || !Number.isSafeInteger(limits.max_content_epochs) || limits.max_content_epochs < 1 || limits.max_content_epochs > 3) fail();
+  if (!Number.isSafeInteger(limits.max_visits) || limits.max_visits < 1 || limits.max_visits > 64
+    || !Number.isSafeInteger(limits.max_events) || limits.max_events < 1 || limits.max_events > 4096) fail();
+  return value;
+}
+function setupPath(command: SetupCommand): string {
+  return command.format === 'workflow-sequential-admission@1' ? 'settings/admission'
+    : command.format === 'workflow-sequential-settings-put@2' ? 'settings/v2' : 'settings';
+}
+/** Exactly one send, with frozen kind/body before token acquisition. */
+export const putSequentialSetup = async (slug: string, command: SetupCommand): Promise<SetupReceipt> => {
+  const body = freezeSequentialSettingsCommand(command);
+  return setupReceipt(await request(`/orgs/${slug}/workflows/sequential/${setupPath(body)}`, {
+    method: 'PUT', body, auth: { token: getToken },
+  }), slug, body);
+};
+/** Original lookup validates against the entire original command, including its action. */
+export const getSequentialSetupOperation = async (slug: string, command: SetupCommand, signal?: AbortSignal): Promise<SetupReceipt> =>
+  setupReceipt(await request(`/orgs/${slug}/workflows/sequential/${setupPath(command)}/operations`, {
+    params: { operation_key: command.operation_key }, signal,
+  }), slug, command);
 
 /** Additive S7a reads. @1 types and clients above retain their original ABI. */
 export type GenericDefinitionPin = Omit<DefinitionPin, 'compiler' | 'validator' | 'interpreter' | 'capabilities'> & {

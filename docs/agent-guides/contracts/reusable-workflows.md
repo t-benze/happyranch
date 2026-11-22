@@ -1,5 +1,79 @@
 # Reusable workflow contracts
 
+## R2 unit (a): saved defaults and new-run admission
+
+Workflows → Setup supports the shipped Coding v3/@2 definition and its four
+roles (`developer`, `reviewer`, `qa`, `final_manager`). Save is explicit and
+creates no work. The first Save for a definition identity initializes Disabled;
+later Saves preserve the latest admission, including across @1→@2 versions.
+Generations belong to the identity, not the ABI or release version. Old-version
+saved defaults are shown as such and cannot be used to Allow a different pin.
+Generic root/node limits retain their supplied values within compiled ceilings;
+no legacy content-return/epoch limits are invented.
+
+All routes use exactly the existing setup Founder bearer dependency. Task/agent
+or CLI-surface session credentials provide no fallback. No auth/permission or
+native connector implementation changes accompany these routes. The paths below
+are relative to `/api/v1/orgs/{slug}`:
+
+| Operation | Additive path | Closed format |
+| --- | --- | --- |
+| Mixed @1/@2 definition list/detail | GET `/workflows/sequential/views/v2/definitions[/{definition_id}]` | definitions-view@2 / original definition JSON and exact pin |
+| Latest identity-wide defaults | GET `/workflows/sequential/views/v2/settings?definition_identity=…` | settings-view@1 or @2, preserving the stored ABI |
+| Generic Save | PUT `/workflows/sequential/settings/v2` | `workflow-sequential-settings-put@2` |
+| Original generic Save | GET `/workflows/sequential/settings/v2/operations?operation_key=…` | `workflow-sequential-settings-receipt@2` |
+| Allow/Disable | PUT `/workflows/sequential/settings/admission` | `workflow-sequential-admission@1` |
+| Original admission | GET `/workflows/sequential/settings/admission/operations?operation_key=…` | `workflow-sequential-admission-receipt@1` |
+
+Save@2 has exactly format, operation_key, expected_generation, definition,
+bindings and limits. Admission has exactly format, operation_key,
+expected_generation, definition (exact @1 or @2 pin), and admission
+(`Allowed` or `Disabled`). Canonical UTF8 JSON is bounded to 16384 bytes;
+queries/extra fields/duplicate keys/noncanonical bodies refuse with
+`sequential_settings_request_invalid` (422). Existing @1 routes, command grammar,
+response formats and historical bytes are unchanged.
+
+Admission requires current saved defaults for that exact definition pin
+(`sequential_settings_defaults_required`, 409). It copies bindings/limits without
+normalization, advances one generation under the same Save CAS, and allocates no
+run/task/event. A fresh key advances even for the same admission value. Stale
+CAS is `sequential_settings_generation_stale` (409). A changed body or action
+under a committed key is `sequential_settings_operation_conflict` (409).
+Exact replay and original lookup return the immutable original result through
+SELECT-only paths with no durable writer lease. Missing originals return
+`sequential_settings_operation_not_found` (404). An original receipt is separate
+from current settings and cannot authorize resending an uncertain operation.
+New admission storage-operation encoding discriminates the action in the
+existing tables; old Save/offline operation and receipt encodings stay intact.
+
+The separate Allow new runs / Disable new runs controls use saved defaults;
+they neither Save a dirty draft nor start work. Dirty role edits survive an
+admission result and can later be explicitly Saved on the new valid CAS. One
+synchronous per-org fence locks both actions before token/transport awaits,
+including navigation/org changes. A conflict retains its original basis and
+requires explicit continuation from a separately read current generation.
+Uncertain outcomes permit only the original action's read-only lookup; malformed,
+foreign, wrong-kind/body or missing receipts keep custody. Locale changes retain
+draft, focus/selection and original key/body. Newer confirmed generations cannot
+be replaced by late older reads.
+
+Disable affects only NEW starts: latest Disabled and stale former Allowed pins
+refuse at fresh admission. Already-admitted runs retain their immutable settings,
+assignments and original replay/readability. No public Start@2 or Draft→Review
+registration is delivered here. `scripts/setup_sequential_coding.py` is unchanged:
+fresh offline admission still refuses `sequential_coding_registration_only`;
+original operator records stay in their separate namespace. Deployment/restart,
+live setup/Allow and the actual four-role pilot remain founder-reserved.
+
+Scoped verification extends the existing private schema-load venue (Python 3.12
+or 3.14): `bash scripts/test-workflow-schema-load.sh --setup-admission=all`;
+individual selections are `first_save`, `validation`, `replay`, `race`, `pins`,
+`rollback`, `history`. `legacy_golden` is separate: set a task-owned absolute
+`WORKFLOW_SETUP_GOLDEN_OUTPUT` and compare raw base/branch response/row records.
+Retain `--s8b=legacy_replay` and `--s8b=old_fresh_refused`. This is scoped direct
+source verification, not a restored Python/Vitest suite or Product E2E trigger.
+The required checks remain Source Boundary Lint and Web Lint (Node 24).
+
 ## S9 final reader parity and naming deferral
 
 The shared acquisition primitives remain in
@@ -33,7 +107,7 @@ methods and policy constants and imports proved work once per caller.
 The [existing schema-shell keepers](../../operations/local-ci.md#s9-reader-parity-keepers)
 cover bounded acquisitions/refusals/charges and complete history/replay. They do
 not prove a naming extraction, semantic Coding role adherence or live acceptance.
-Public @2 start/composition remains closed; Coding stays Disabled/unset. Source
+Public @2 start/composition remains closed; Coding defaults remain Disabled/unset until explicit Founder setup and Allow. Source
 completion does not retire then/fanout or authorize the founder-reserved pilot,
 setup/Allow, deployment/restart, live DB changes or thread notifications.
 
@@ -47,7 +121,7 @@ unchanged, offering v2 only. A fresh public v3 pin still refuses with
 `sequential_release_pin_mismatch`. Public @2 discovery/start/composition stays
 closed pending separate authorization. V2 fresh-start behavior is unchanged.
 Missing settings remain Disabled/unset; registration creates no settings, roles,
-admission, tasks, runs or Allow. Coding stays Disabled.
+admission, tasks, runs or Allow. Explicit Founder setup and separate admission now use the R2 unit (a) surface above.
 
 Fresh @2 selected runs refuse repository-resolve/bind/preflight and sequential
 Final transport with `sequential_domain_transport_unavailable`. Local Final
@@ -199,7 +273,7 @@ settle an aggregate. U6 Option B's ordinary/document UNSETTLED fallback remains.
 Pause delays new visit/initiator sessions while allowing committed cancellation
 and native closure; Resume preserves original limits and never revives a
 terminal source. No new founder/thread message, schema, public @2 admission or
-Coding activation is added; Coding remains Disabled and PR1252 stays held.
+Coding activation is added by S6b; R2 Founder setup/admission is separate above, and PR1252 stays held.
 
 Focused private verification is selected with
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s6b=all`
@@ -263,7 +337,7 @@ completes the source or the ordinary parent. The inbox addresses the original
 source task/principal; queue insertion is never consumption. The @1 event,
 return, parent-wake and terminal thread-tail behavior is retained unchanged.
 S6a supplies live initiator queue/session continuation; S6b above supplies
-owned-run cancellation. Coding remains Disabled and PR1252 remains held.
+owned-run cancellation. R2 Founder setup/admission is separate above; PR1252 remains held.
 
 `snapshot_delivery(conn, initiator_task_id, principal, session_id, cursor=...)`
 is called exactly once per genuinely admitted SID, inside its admission
@@ -319,7 +393,8 @@ private source observations, not live host/provider or S6a acceptance evidence.
 
 The internal version-selected dispatcher supports generic queue admission,
 prelaunch, session/PID binding, callbacks, terminal/outer closure and addressed
-node briefs. Public @2 admission remains unavailable and Coding stays Disabled.
+node briefs. Public @2 starts remain unavailable. Founder saved-default admission
+is separately supported by R2 unit (a) above.
 Before native launch reservation, `recheck_launch_assignment` checks the saved
 selection against current executor/options. Executor/options drift and current
 active-target team/role eligibility refusals call the existing S4a writer to persist
@@ -2676,7 +2751,7 @@ and [operator install/backout](../../operations/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
 
-Superseded by S8b: registration-only Coding v3; fresh admission refuses
+Superseded by S8b: registration-only Coding v3; fresh offline admission refuses
 `sequential_coding_registration_only`. The v2 registration/admission description
 below is historical; original operation replay and readback retain their rules.
 

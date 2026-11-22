@@ -15,7 +15,8 @@ from runtime.workflows.sequential_contracts import (
 from runtime.workflows.sequential_definition import compile_definition, parse_result, parse_start
 from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents, _engine_rows
 from runtime.workflows.sequential_history import (
-    StorageSettings, _ReadBudget, _bytes, _decode, _parse, _sql_budget, read_sequential_history,
+    StorageSettings, GenericStorageSettings, _storage_settings, _ReadBudget, _bytes, _decode, _parse,
+    _sql_budget, read_sequential_history,
 )
 from runtime.workflows.sequential_repository_subject import read_repository_subject
 from runtime.workflows.sequential_coding_evidence import _current_authority
@@ -47,6 +48,26 @@ class SettingsView(Closed):
     generation: int
     snapshot_digest: str
     snapshot: StorageSettings
+
+
+class GenericDefinitionView(Closed):
+    id: str
+    pin: GenericDefinitionPin
+    definition_json: str
+
+
+class SetupDefinitionList(Closed):
+    format: Literal['workflow-sequential-definitions-view@2'] = 'workflow-sequential-definitions-view@2'
+    storage: Literal['new-engine unavailable', 'storage readable']
+    definitions: tuple[DefinitionView | GenericDefinitionView, ...]
+
+
+class GenericSettingsView(Closed):
+    format: Literal['workflow-sequential-settings-view@2'] = 'workflow-sequential-settings-view@2'
+    id: str
+    generation: int
+    snapshot_digest: str
+    snapshot: GenericStorageSettings
 
 
 class TaskLink(Closed):
@@ -322,6 +343,10 @@ def _run(conn: sqlite3.Connection, row: dict, capture: Any, budget: _ReadBudget
 
 def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None,
              capture: Any, budget: _ReadBudget, history: Any) -> Closed:
+    setup = kind.startswith('setup-')
+    if setup:
+        kind = kind.removeprefix('setup-')
+    definition_list = SetupDefinitionList if setup else DefinitionList
     # Absent-task classification must precede any ownership/schema inspection.
     if kind == 'task' and conn.execute('SELECT 1 FROM tasks WHERE id=?', (selected,)).fetchone() is None:
         raise ProjectionRefusal('task_not_found', 404)
@@ -331,7 +356,7 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
             # complete compatible history. Only this positive absence is empty.
             return TaskWorkflowView(task_id=selected, run=None)
         if kind == 'definitions':
-            return DefinitionList(storage=history.status, definitions=())
+            return definition_list(storage=history.status, definitions=())
         if kind == 'runs':
             return RunList(storage=history.status, runs=())
         raise ProjectionRefusal('sequential_storage_unavailable')
@@ -339,22 +364,32 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
         rows = _engine_rows(conn, 'workflow_seq_definitions', budget,
             'identity=?' if kind == 'definitions' else 'id=?',
             ('release/happyranch/coding' if kind == 'definitions' else selected,))
-        views = tuple(_definition(row, budget) for row in rows
-                      if row['compiler_pin'] == 'workflow-sequential-compiler@1')
+        views = []
+        for row in rows:
+            if row['compiler_pin'] == 'workflow-sequential-compiler@1':
+                views.append(_definition(row, budget))
+            elif setup:
+                from runtime.workflows.sequential_definition import compile_generic_definition
+                compiled = _parse(row['definition_bytes'], compile_generic_definition, budget,
+                                  source_digest=row['source_digest'])
+                views.append(GenericDefinitionView(id=row['id'], pin=compiled.pin,
+                    definition_json=row['definition_bytes'].decode('utf8')))
         if kind == 'definition':
             if not views:
                 raise ProjectionRefusal('sequential_definition_not_found', 404)
             return views[0]
-        return DefinitionList(storage=history.status, definitions=views)
+        return definition_list(storage=history.status, definitions=tuple(views))
     if kind == 'settings':
         rows = _engine_rows(conn, 'workflow_seq_settings', budget, 'org_slug=? AND definition_identity=?',
                             (org.slug, selected))
-        rows = [row for row in rows if _decode(row['snapshot_bytes'], budget)['format'] == 'workflow-sequential-settings-storage@1']
+        if not setup:
+            rows = [row for row in rows if _decode(row['snapshot_bytes'], budget)['format'] == 'workflow-sequential-settings-storage@1']
         if not rows:
             raise ProjectionRefusal('sequential_settings_not_found', 404)
         row = max(rows, key=lambda item: item['generation'])
-        snapshot = StorageSettings.model_validate(_decode(row['snapshot_bytes'], budget))
-        return SettingsView(id=row['id'], generation=row['generation'],
+        snapshot = _storage_settings(row['snapshot_bytes'], budget)
+        owner = GenericSettingsView if isinstance(snapshot, GenericStorageSettings) else SettingsView
+        return owner(id=row['id'], generation=row['generation'],
                             snapshot_digest=row['snapshot_digest'], snapshot=snapshot)
     if kind == 'task':
         read_sequential_owner(conn, task_id=selected, org_slug=org.slug)

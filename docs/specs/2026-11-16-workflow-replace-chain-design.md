@@ -1,5 +1,14 @@
 # Workflow replacement of dispatch chains: technical design and migration plan
 
+Current R2 unit (a) addendum: additive Coding v3/@2 setup reads/Save and separate
+Founder Allow/Disable are supported in source. Save preserves admission; Disable
+affects new starts only; immutable admitted pins and @1 contracts are retained.
+Public Start@2 and Draft→Review registration remain undelivered. Registration
+still creates no defaults or admission; offline fresh admission remains refused.
+Live setup/Allow/deploy/restart/pilot are not performed by source delivery.
+Exact routes, custody and supported fixture commands:
+[R2 setup/admission contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission).
+
 Design proposal, 2026-11-16. TASK-16668; root TASK-16667; THR-336. Author: dev_agent. **Design only; no implementation or operating authority.** The PR containing this document is a docs-only draft. Independent design review and founder sign-off precede the redesign build. R1 may be commissioned separately as described below. PR1252 stays held.
 
 ## 1. Decision and evidence boundary

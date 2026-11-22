@@ -2,7 +2,9 @@
 
 ## S8a staged Coding v3 boundary (THR-336)
 
-Coding v3 is registration-only until S8b catalog cutover. The separate literal
+Coding v3 registration creates definitions only. R2 unit (a) separately supports
+Founder setup Save and Allow/Disable; see the [current contract](../agent-guides/contracts/coding-workflow.md#r2-unit-a-saved-defaults-and-new-run-admission).
+The separate literal
 `STAGED_GENERIC` table uses the generic @2 ABI; the qualified registrar adds only
 immutable definitions alongside v2. `PRESET_CATALOG` and public `MANIFEST` retain
 v2 semantics. Public discovery/start-compose/fresh selection remain v2 only;
@@ -25,7 +27,7 @@ is authorized by this source delivery.
 S4a introduces separate inactive generic @2 holds/controls; it does not change
 the @1 business-hold/repository or cancellation implementations described here.
 Native mounting, initiator wake delivery and public admission remain separate.
-Coding stays Disabled. See the S4a section of reusable-workflows.md.
+S4a itself supplies no activation. See the S4a section of reusable-workflows.md.
 
 Current subject-binding transport: [U4c](2026-11-12-sequential-coding-u4c.md)
 supersedes historical unavailable/unmounted repository-adapter statements below.
