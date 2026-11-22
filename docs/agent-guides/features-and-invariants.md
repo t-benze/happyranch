@@ -4417,7 +4417,10 @@ rows, adds valid root revisits, deduplicates and sorts newest-first (ID breaks
 created-at ties). Summary rows also include literal dispatch and derived origin
 fields. Ordinary delegated children are not discovered through revisit traversal.
 Task UI thread grouping/column/detail use the derived origin with literal fallback
-for older servers; the task detail rail cites the original task with a revisit
+for older servers. The Tasks list THREAD column id links to that thread's detail
+page (provider-aware thread routes, same origin-then-literal id) as a sibling
+overlay anchor outside the row's task link, so it opens the thread, not the task;
+rows with no thread keep the em-dash (THR-395). The task detail rail cites the original task with a revisit
 arrow, and thread linked-task entries (including retries) are bordered rail
 rows showing only a separate `StatusBadge` and current task `IdBadge`, the row
 linked to that current task, with no secondary origin line or link (founder

@@ -5349,7 +5349,11 @@ ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-o
 Task details/list/roots and thread linked-task summaries carry nullable
 `originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
 keeps its creation meaning. Task grouping/column/detail use origin with literal
-fallback for older servers. The task detail rail cites the original task with a
+fallback for older servers. The Tasks list THREAD column id links to that thread's
+detail page through the provider-aware thread routes (`originating_thread_id`,
+else literal `dispatched_from_thread_id`); it is a sibling overlay anchor, not
+nested in the row's task link, so clicking it opens the thread, not the task.
+Rows with no thread keep the em-dash (THR-395). The task detail rail cites the original task with a
 revisit arrow; a thread linked-task entry is one bordered rail row (THR-376
 `.rail-link`) carrying a separate shared `StatusBadge` (full status) and task
 `IdBadge` (current task ID), the whole row linked to that task, with no
