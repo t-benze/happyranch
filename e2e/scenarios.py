@@ -308,11 +308,20 @@ def knowledge(c: Controller) -> None:
     require(record["browser_kb"] == dict(slug=slug, title="J1 agent knowledge", paragraphs=[
         "J1 knowledge from the real agent CLI.", "Exact content: alpha → founder; 中文 café."]), "J1 exact rendered KB")
     c.mark("J1.browser-kb")
-    record["browser_artifact"] = c.browser.knowledge_artifact(name, info["modified_at"])
+    # Founder-only synthetic thread: no agent invocation or extra provider start.
+    status, thread = c.api("POST", "/api/v1/orgs/alpha/threads", dict(
+        subject="J1 shared artifact", recipients=["@founder"],
+        body_markdown="J1 shared artifact attachment.",
+        attachments=[dict(artifact_name=name, display_name=name)]))
+    require(status == 200 and thread["pending_replies"] == [], "J1 founder-only artifact thread", thread)
+    record["artifact_thread"] = thread
+    record["artifact_thread_messages"] = c.get(f"/api/v1/orgs/alpha/threads/{thread['thread_id']}/messages")
+    record["browser_artifact"] = c.browser.knowledge_artifact(name, thread["thread_id"])
     browser = record["browser_artifact"]
     require(browser["name"] == browser["filename"] == name and browser["size"] == f"{len(content)} B"
-            and browser["modified"].startswith("Modified ") and "unavailable" not in browser["modified"].lower()
-            and bytes.fromhex(browser["body_hex"]) == content, "J1 page Download exact bytes and metadata", browser)
+            and browser["redirected"] is True and browser["artifact_nav_count"] == 0
+            and browser["thread"] == thread["thread_id"]
+            and bytes.fromhex(browser["body_hex"]) == content, "J1 thread Download exact bytes and retired page redirect", browser)
     c.mark("J1.browser-artifact-download")
 
     def protected_knowledge() -> dict:

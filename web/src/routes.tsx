@@ -21,7 +21,6 @@ import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
-import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { SequentialWorkflowsPage } from '@/features/workflows/SequentialWorkflowsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
@@ -185,6 +184,7 @@ export function AppRoutes(): JSX.Element {
         {!PROTOTYPES_DISABLED && prototypeRoutes()}
         <Route element={<AppShell />}>
           <Route index element={<RootRedirect />} />
+          <Route path="artifacts" element={<Navigate to="/" replace />} />
           {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
               shell drives the container-level /orgs list + create routes, so a
               slug is not yet chosen. Mounted in AppShell like the org-less index. */}
@@ -238,7 +238,7 @@ export function AppRoutes(): JSX.Element {
                 <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
               </>
             )}
-            <Route path="artifacts" element={<ArtifactsPage />} />
+            <Route path="artifacts" element={<Navigate to="../threads" replace />} />
             <Route path="settings/*" element={desktop ? <DesktopSettingsRoute /> : <SettingsPage />} />
           </Route>
           {/* THR-387 S1b: recovery-only org-less Settings (Preferences reachable

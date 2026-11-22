@@ -47,7 +47,6 @@ const SECTION_TITLES: Record<string, MessageKey> = {
   agents: 'shell.title.agents',
   skills: 'shell.title.skills',
   kb: 'shell.title.knowledge',
-  artifacts: 'shell.title.artifacts',
   usage: 'shell.title.usage',
   dreams: 'shell.title.dreams',
   // THR-305: no Work Hours title while the UI is off; the not-found page then
