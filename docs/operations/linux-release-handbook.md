@@ -1544,8 +1544,9 @@ architecture, installs the .deb and its Depends from stock Jammy archives with
 recommendations disabled, checks apt consistency, runs `happyranch --help`, and
 imports system GTK3/WebKit2 4.1 **before** installing display-test tools. Package
 inventories before/after this phase record what was already present. Only then
-does it install Xvfb, Openbox, xdotool, scrot, desktop-file-utils and dbus-x11
-(plus their dependencies). No build/runtime dependency is added as a test tool.
+does it install Xvfb, Openbox, xdotool, x11-utils (xprop), scrot,
+desktop-file-utils and dbus-x11 (plus their dependencies). No build/runtime
+dependency is added as a test tool.
 
 It validates `/usr/share/applications/happyranch.desktop` and executes its
 installed Exec command as the normal user, with Xvfb, a window manager, private
@@ -1558,9 +1559,17 @@ daemon is the app's child, checks HTTP200/status `ok` at `/api/v1/health`, and
 compares `/` byte for byte
 with the installed built `web/dist/index.html`. It captures the actual focused
 window in `window.png`; a reviewer must view the PNG to assess rendered content.
-Ctrl+Q must exit the app with status0, leave no daemon process and remove both
-markers. Package removal must leave no package-specific files, links or
-directories and must preserve the entire user-data home (bytes and metadata),
+The smoke sends Ctrl+Q, waits for the app-owned native confirmation to become
+active, then reads its X11 `WM_WINDOW_ROLE` with xprop and records the window,
+PID and observed property in `result.json`. The stable, non-visible GTK roles
+are `happyranch-lifecycle-confirm` for normal confirmation and
+`happyranch-lifecycle-recovery` for recovery. Only the exact normal role is
+accepted; recovery, missing or other roles fail before input. It then uses
+xdotool Tab and Space to select and activate Quit/OK from the
+Stay default. After confirmation, the existing 20-second wait must observe app
+exit with status0, no daemon process and removal of both markers. Package removal
+must leave no package-specific files, links or directories and must preserve the
+entire user-data home (bytes and metadata),
 including a sentinel. Shared system directories are excluded from payload
 leftover checks. The isolated user-data fixture is deleted only after that
 preservation assertion. Failures return nonzero; teardown cannot change a
