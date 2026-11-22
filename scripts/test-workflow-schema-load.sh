@@ -3041,9 +3041,13 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 command = f.command
                 s4startreplay(f, command, later=False)
                 if case == 'start_replay_cancel_boundary':
-                    # Edge for the registered v2 + staged v3 set: four full documents,
-                    # then a tail, all finished by the real Held/cancel writers.
-                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 278528)):
+                    # Registered Coding v2 + staged v3 + Draft Review v1: four full
+                    # documents, then a measured tail, all closed by real writers.
+                    # Draft adds 126536 history bytes: consumed-before reservation
+                    # 50280292 -> 50406828 at the old 278528-byte tail. Base64's
+                    # next 3-byte quantum costs 32 history bytes; 268551 leaves
+                    # 20 bytes, while 268554 refuses at 12 bytes over 64 MiB.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 268551)):
                         if index:
                             command = dict(f.command, operation_key='history-' + str(index))
                             f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
@@ -3073,7 +3077,11 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 from runtime.infrastructure.workflow_schema import _schema_snapshot, sequential_storage_inventory
 
                 with s4fixture(document=True) as f:
-                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                    # Subtracting the measured catalog cost in base64 quanta
+                    # moves the former 300000-byte upper tail to 288136. Its
+                    # Held/cancelled admission refusals remain 164372/208908
+                    # bytes over budget; the preceding hold still has 12768.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 288136)):
                         if index:
                             command = dict(f.command, operation_key='history-' + str(index))
                             f.ids = f.admit(command, task_suffix='-' + command['operation_key'])

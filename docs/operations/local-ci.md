@@ -99,6 +99,16 @@ and skipped general integration; it adds no CI trigger or required gate.
 
 ## Focused S4a hold/control source
 
+`start_replay_cancel_boundary` is calibrated for registered Coding v2, staged
+Coding v3 and Draft Review v1. The added Draft row costs 126,536 bytes on each
+full history read of the same fixture (consumed before cancellation reservation:
+50,280,292 at base, 50,406,828 with Draft). Catalog additions reduce history
+headroom by their measured cost; exhaustion continues to refuse safely. The
+268,551-byte lower tail leaves 20 bytes; its next base64 quantum (268,554)
+refuses by 12 bytes. The 288,136-byte upper tail preserves both Held/cancelled
+refusals, full rollback and cancellation availability. These are fixture
+measurements, not changes to the 64 MiB allowance or cancellation reservation.
+
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4a=all`
 (also Python 3.14; `--s4a=CASE` selects one named case) exercises the inactive
 @2 writers against private org/native rows. It observes Held cursors, no-result
