@@ -12,7 +12,7 @@ Draft → Review is supported as `release/happyranch/draft-review@1` on generic 
 The artifacts and task-attachment API clients use same-origin `/api/v1` paths.
 On `happyranch-app:` they encode FormData inside JavaScript with the platform
 multipart encoder, then send a Uint8Array and its explicit boundary-bearing
-Content-Type. This avoids WebKitGTK's Blob-backed scheme-request crash. Ordinary
+Content-Type. This avoids WebKitGTK's Blob-backed scheme-request crash and Mac WKURLSchemeHandler's observed empty raw FormData body. Ordinary
 daemon-served browser uploads still send native FormData with browser-set headers.
 Both scheme uploads mirror the daemon's 10 MiB per-file limit before encoding,
 preserving the existing artifact/task upload error contracts. Serialization adds
@@ -33,6 +33,14 @@ Slice 5a adds the Linux host fallback:
 `happyranch connection status` and `connection host --help`. Slice 5b adds Linux
 `connection client --help` with terminal consent, foreground ownership and honest
 `runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). I5b delivers the seven Linux host lifecycle/invite CLI mappings with terminal-only invites and replacement confirmation; address refresh remains B13-deferred. Native/live acceptance remains pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
+
+Mac MAC-1 also loads Main from the packaged `web/dist` at
+`happyranch-app://app`, with native-selected local/remote API and stream
+forwarding and placeholder-only page bootstrap. Its transport-only status/cancel
+facade does not implement the later Mac dialog/menu/locale/local-control slices;
+the separate native Connection view remains. Native timing and packaging
+acceptance are pending exact-reviewed-head QA; see
+[Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 
 Linux S7-L1 always serves installed `web/dist` at `happyranch-app://app` for
 local and remote targets. Main uses the in-process native adapter; no GUI

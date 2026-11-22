@@ -64,6 +64,7 @@ final class HomeInviteModel: ObservableObject {
     private(set) var attemptID = UUID()
     @Published private(set) var documentGeneration = UUID()
     var lifetime: Lifetime { Lifetime(attempt: attemptID, document: documentGeneration) }
+    var appTransport: (any AppAPITransport)? { try? session?.appTransport() }
     private var confirmation: Lifetime?
     private var loadedURL: URL?
     private var saving: Lifetime?
@@ -476,7 +477,7 @@ final class HomeInviteModel: ObservableObject {
         activeCredential = credential
         loadedURL = nil
         phase = .opening
-        let url = try await candidate.open(credential)
+        let url = try await candidate.openApp(credential)
         try check(token)
         accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
         webURL = url

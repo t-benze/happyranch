@@ -1,75 +1,87 @@
 import SwiftUI
 import WebKit
+import HappyRanchSupervisor
 
-/// NSViewRepresentable wrapping WKWebView.
+/// Main uses the one packaged app origin. `url` identifies the selected native
+/// owner for existing release-load callbacks; it is never loaded by WebKit.
 struct WebView: NSViewRepresentable {
     let url: URL
-    var verifiedHome = false
+    let transport: any AppAPITransport
+    let remote: Bool
+    var accessUnsaved = false
     var onLoaded: (@MainActor (URL) -> Void)?
     var onFailed: (@MainActor (URL) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         var owner: WebView
-        private var authorizedRoot = false
+        var scheme: AppScheme?
+        private var downloads: [WKDownload] = []
         init(_ owner: WebView) { self.owner = owner }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
-            guard owner.verifiedHome else { decisionHandler(.allow); return }
-            guard let target = navigationAction.request.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host,
-                  target.port == owner.url.port else { decisionHandler(.cancel); owner.onFailed?(owner.url); return }
-            decisionHandler(.allow)
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
-                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
-            guard owner.verifiedHome, navigationResponse.isForMainFrame else { decisionHandler(.allow); return }
-            guard let response = navigationResponse.response as? HTTPURLResponse,
-                  (200...299).contains(response.statusCode), let target = response.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port,
-                  authorizedRoot || target == owner.url else {
-                decisionHandler(.cancel); owner.onFailed?(owner.url); return
+            guard let target = action.request.url else { decisionHandler(.cancel); return }
+            if target.scheme == "blob", action.shouldPerformDownload {
+                decisionHandler(.download); return
             }
-            authorizedRoot = true
+            guard action.targetFrame?.isMainFrame == true,
+                  let route = try? AppSchemeRoute(target), !route.path.hasPrefix("/api/") else {
+                decisionHandler(.cancel)
+                if ["https", "http"].contains(target.scheme ?? ""), action.navigationType == .linkActivated {
+                    NSWorkspace.shared.open(target)
+                }
+                return
+            }
             decisionHandler(.allow)
         }
-
+        func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+            guard response.isForMainFrame, let http = response.response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode), let url = http.url, (try? AppSchemeRoute(url)) != nil else {
+                decisionHandler(.cancel); return
+            }
+            decisionHandler(.allow)
+        }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard owner.verifiedHome, authorizedRoot, let target = webView.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port else { return }
+            guard let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
             owner.onLoaded?(owner.url)
         }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            authorizedRoot = false; owner.onFailed?(owner.url)
-        }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            authorizedRoot = false; owner.onFailed?(owner.url)
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { owner.onFailed?(owner.url) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { owner.onFailed?(owner.url) }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { scheme?.close(); owner.onFailed?(owner.url) }
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
+        func downloadDidFinish(_ download: WKDownload) { downloads.removeAll { $0 === download } }
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) { downloads.removeAll { $0 === download } }
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
+                      completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = (suggestedFilename as NSString).lastPathComponent
+            panel.begin { result in completionHandler(result == .OK ? panel.url : nil) }
         }
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = prefs
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.load(URLRequest(url: url))
-        return webView
-    }
-
-    func updateNSView(_ nsView: WKWebView, context: Context) {
-        context.coordinator.owner = self
-        if nsView.url != url {
-            nsView.load(URLRequest(url: url))
+        do {
+            guard let root = Bundle.main.resourceURL?.appendingPathComponent("web/dist", isDirectory: true) else { throw AppAPIError.unavailable }
+            let scheme = try AppScheme(root: root, transport: transport, remote: remote,
+                promptURL: remote ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
+            scheme.configure(config); context.coordinator.scheme = scheme
+            let view = WKWebView(frame: .zero, configuration: config)
+            view.navigationDelegate = context.coordinator
+            scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
+            return view
+        } catch {
+            let view = WKWebView(frame: .zero, configuration: config)
+            Task { onFailed?(url) }
+            return view
         }
     }
+    func updateNSView(_ nsView: WKWebView, context: Context) { context.coordinator.owner = self }
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) { coordinator.scheme?.close() }
 }
 
 /// Main content view: full-window WebView (no in-window toolbar).
@@ -79,13 +91,15 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
+            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString),
+               let transport = appDelegate.appAPITransport {
                 ZStack(alignment: .top) {
                     let lifetime = appDelegate.homeInvite.lifetime
-                    WebView(url: url, verifiedHome: appDelegate.clientLane == .managed && appDelegate.connectionRole == .client,
+                    WebView(url: url, transport: transport, remote: appDelegate.connectionRole == .client,
+                        accessUnsaved: appDelegate.homeInvite.bridgeHasUnsavedAccess,
                         onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
                         onFailed: { appDelegate.homeInvite.webFailed(url: $0, lifetime: lifetime) })
-                        .id(lifetime)
+                        .id(urlString + lifetime.attempt.uuidString + lifetime.document.uuidString + appDelegate.appTargetGeneration.uuidString)
                     if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
                         HomeSessionStatus(model: appDelegate.homeInvite)
                             .environmentObject(appDelegate)

@@ -4181,3 +4181,22 @@ Retired Python units and Web Vitest NOT RUN; general integration SKIPPED under
 THR-243 seq42; Product E2E NOT RUN. Required local CI remains
 `bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable
 jobs for long commands. No new CI/E2E trigger or gate is added.
+
+## MAC-1 app-scheme focused checks
+
+`python3 -B -m unittest scripts.mac_native.test_app_scheme -v` exercises the
+native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
+abort and post-stop writes, partial JSONL retention, root/body/download evidence
+requirements, and private fixture authentication/JSON bytes. This standalone
+venue does not run retired Python units. No shared web source changed in MAC-1;
+Web static analysis remains part of `scripts/local_ci.sh all`.
+
+`python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`
+is dispatcher-registered for the existing Jenkins `SUITE` string. It is skipped
+on Linux. On Mac it compiles the product plus focused Swift parser/route tests,
+then qualifies the production loader, body adapter and SPA against a private
+synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+Only the QA leg may execute it after exact-head independent review APPROVE,
+within the PR's combined six-run unsigned build ledger. Native execution,
+Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
+the Linux maker. This adds no required check, job definition edit or E2E run.

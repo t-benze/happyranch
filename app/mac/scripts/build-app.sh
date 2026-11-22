@@ -342,7 +342,19 @@ rm "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
+cp "$SOURCE/protocol/remote-client-config-policy.v1.json" "$APP/Contents/Resources/remote-client-config-policy.v1.json"
 find "$APP/Contents/Resources/web/dist" -name '*.map' -type f -delete
+# The main manifest is emitted before release-only map removal. Keep its
+# native allowlist equal to the bytes actually packaged.
+python3 - "$APP/Contents/Resources/web/dist/resource-manifest.json" <<'APP_MANIFEST'
+import json
+import sys
+from pathlib import Path
+manifest_path = Path(sys.argv[1])
+manifest = json.loads(manifest_path.read_text())
+manifest["resources"] = [row for row in manifest["resources"] if not row["path"].endswith(".map")]
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+APP_MANIFEST
 # Keep the independent connection inventory byte-for-byte, including licenses.
 cp -R "$OUTPUT/scratch/connection" "$APP/Contents/Resources/Connection"
 python3 -I - "$SOURCE/packaging/linux/desktop/connection_contract.py" \

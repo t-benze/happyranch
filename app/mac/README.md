@@ -54,6 +54,83 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-1: Main app scheme and native API transport
+
+Main loads the single packaged `Contents/Resources/web/dist` at
+`happyranch-app://app/`, with persistent per-origin WebKit storage. The upstream
+port in AppDelegate is native endpoint identity only; WebKit never loads it.
+The loader pins every static file to the existing resource manifest, uses its
+no-follow descriptor reader, serves the pinned index for SPA routes/deep reload,
+and enforces CSP plus an independent WebKit resource allowlist. Release map
+removal also removes those entries from the packaged manifest.
+
+`AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
+32 requests (two with bodies), 64 MiB bodies and the native target generation.
+The document-start adapter serializes request bodies, assigns cancellation IDs
+and retains abort forwarding until EOF/cancel. Shared `multipart.ts` already
+encodes FormData; it avoids Mac's observed empty raw FormData body as well as
+Linux's crash. Shared artifact downloads already use fetch → blob → download;
+Main's WKDownloadDelegate asks for a save destination. Direct API navigation is
+blocked. HTTP(S) links use the system browser.
+
+The page bootstrap returns only `hr_native_session`. Local calls read the
+existing daemon credential natively at the already verified port. Remote calls
+reuse ClientBridge's selected managed peer or DIY dial and in-memory credential
+from existing native/Keychain custody. The GUI no longer starts a proxy listener;
+the foreground CLI's `open`/loopback behavior remains. Redirects, cookies,
+page authorization and identity headers are not forwarded. The packaged
+`remote-client-config-policy.v1.json` supplies the same native config-write
+refusals as Linux; the daemon/home connector remote allowlist is unchanged.
+Health contract admission uses `current >= 1` and `min_client <= 1`, including
+missing-contract and busy refusals, before API forwarding.
+
+This slice exposes only transport `app.status`, `app.stateChanged` and request
+cancel. The locale field reports the native launch language; no locale setter,
+new Settings/Connection actions, toolbar/menu, local controls or launch policy is
+implemented here. The existing native Connection view remains for later slices.
+Those later Mac contracts are not qualified by this transport PR.
+
+Manual native qualification is **pending**, with scheme streaming chosen for
+measurement and no buffering conclusion/fallback yet. After independent review
+APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
+It compiles the product and focused parser/route tests once, launches that same
+product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
+uses the production loader/adapter and built SPA. No real daemon, Keychain,
+helper, signing or production data is used. The synthetic local venue uses the
+SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
+The internal qualification entry is explicitly commissioned by MAC-1 and is the
+only test-only app entry added; ordinary app startup never selects it.
+
+Each page receipt is sent immediately to native and fsynced to JSONL; timeout
+retains earlier events. Every one of five events at 1s intervals must arrive in
+under **500 ms** (less than half the interval); the two-event abort must stop its
+native owner within **500 ms**, with no writes from that owner afterward. No
+completion-only receipt array can pass. The suite also checks JSON POST/PUT,
+10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
+honestly expects `/onboarding`: the fixture returns a successful empty `orgs`
+list, exactly the `RootRedirect` branch in `web/src/routes.tsx`; it never converts
+an error or missing response into onboarding. `/settings` is reloaded and its
+SPA root must render. A timeout/failure is FAIL with partial evidence, not proof
+of WebKit buffering. If actual timing establishes buffering, the manager must
+commission native-message streaming fallback and renewed review/build.
+
+Linux maker commands (no Mac build):
+
+```sh
+python3 -B -m unittest scripts.mac_native.test_app_scheme -v
+python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json
+bash -n app/mac/scripts/build-app.sh
+```
+
+The dispatcher on Linux explicitly skips Darwin execution; this is not native
+PASS. Swift tests are `AppHTTPResponseParserTests` and `AppSchemeRouteTests` in
+the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
+All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
+PR's combined six-run unsigned allowance across Jenkins and GitHub Actions.
+The PR body is the build ledger; 0/6 at maker handoff. No diagnostic-only run,
+extra retry, new Jenkins job or required check is added.
+
+
 ### THR-379 slice 5c: foreground Mac client CLI
 
 Use the CLI shipped inside the same app bundle (adjust the app location):

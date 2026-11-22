@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "packaged", "connector-launchd", "connector-managed", "env-sanitizer")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "packaged", "connector-launchd", "connector-managed", "env-sanitizer", "app-scheme")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1440,6 +1440,11 @@ def main() -> int:
                 from scripts.mac_native.suite_packaged import run as packaged
 
                 packaged(report)
+            elif args.suite == 'app-scheme':
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_app_scheme import run as app_scheme
+
+                app_scheme(report)
             elif args.suite == 'toolchain':
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_toolchain import run as toolchain

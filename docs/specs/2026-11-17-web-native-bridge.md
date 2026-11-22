@@ -739,8 +739,7 @@ main baseline. The historical S6-L/S6-W3-L and temporary Connection-routing sour
 merged main `7535eaad416d1b0311f99796b49822bfe6220527` (#1776/#1782/#1781).
 This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
-`packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
-**pending (no Mac work this wave)**. Web status is summarized after the table
+`packaging/linux/desktop/app_scheme_webkit.py`. For the dialog, lifecycle, locale, local-control and Connection-command rows, Mac remains **pending**. MAC-1 transport status is recorded below; it does not qualify those later rows. Web status is summarized after the table
 (S5-W1); Main Connection and locale updates are reconciled to main `59e29630` (#1811/#1812/#1813). S7-L2/DOC-5, S8-2b and S7-L3 status rows are reconciled to main `26585a430e8d0885b2984c45590284ed647555c4` (#1815/#1816/#1817/#1819); current linked citations resolve at that base, with AppScheme/window symbols replacing moved line numbers. Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
@@ -1648,3 +1647,44 @@ layout and remains outside required CI wiring. It checks shape/drift only;
 S8-2b PR #1817 (merge 01b37dc4, reviewed/QA head 041cc479f) records native
 pre-forward 403 and web read-only behavior evidence; real remote, installed
 package and Mac **NOT RUN**.
+
+### MAC-1 transport implementation and qualification status
+
+MAC-1 moves Mac Main to the same `happyranch-app://app` origin and single main
+bundle as Linux. `AppScheme` uses the existing manifest/no-follow reader, SPA
+fallback, CSP, resource and navigation allowlists. API forwarding captures one
+native-selected transport and opaque generation for the view lifetime; view
+replacement cancels old transfers. Local credentials remain native, remote
+credentials remain in existing Keychain/session custody, and page bootstrap is
+only a placeholder. Native transport status/read and explicit request cancel are
+the only bridge commands in this slice. Remote config-write refusal reads the
+same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
+GUI remote calls use the existing pinned direct dial, not a loopback listener;
+the separate foreground CLI retains its listener. Shared serialized multipart
+and blob download paths are reused. The Mac packager reconciles map removal
+with the main resource manifest and includes the native config policy.
+
+**Streaming decision: scheme-first, measurement pending.** No Mac build or
+native PASS is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
+app-scheme` builds the actual product at the approved head and qualifies the
+shipping scheme/adapter against a synthetic local daemon using the built SPA.
+Every page event is emitted immediately to native and fsynced; final-only arrays
+are forbidden. Pass requires all five one-second-spaced events below 500 ms
+receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later
+writes for that owner. Timeouts retain partial JSONL in the report and fail.
+This is a local transport fixture with development tsnet stubs, not live remote,
+Keychain, packaged release, minimum-macOS or native save-panel acceptance.
+If measured buffering appears, native-message delivery and a web SSE helper
+adaptation require the manager's follow-up and renewed exact-head review/build.
+No fallback is implemented or presumed necessary before those measurements.
+
+M1's root expectation is `/onboarding` because the synthetic daemon returns a
+successful empty org list, matching `RootRedirect`; an API error never supplies
+that condition. The suite separately requires rendered SPA `/settings` after a
+real reload. JSON methods, serialized 10 MiB upload/digest and blob-download
+file bytes are additional assertions, not substitutes for per-event timing.
+
+Builds are gated on independent reviewer APPROVE and capped at six combined
+unsigned Jenkins/GitHub Actions runs for this PR. The ledger starts at 0/6 in
+the PR body. No S0 diagnostic allowance, daily E2E trigger, required test/build
+check, dialog/toolbar/menu/local-control/language or launch-policy work is added.
