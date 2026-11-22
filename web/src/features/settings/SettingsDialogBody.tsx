@@ -3,7 +3,7 @@
  *
  * Navigation follows v2.4 §2: This app → Language; This computer →
  * HappyRanch on this computer; Runtime settings → Capacity, Executors,
- * Organization, Coding; plus Open Connection. The panes
+ * Organization; plus Open Connection. The panes
  * are the existing `features/settings` sections (`SettingsPane`), so there is
  * one Settings editor and no duplicate mutation path. This computer →
  * "HappyRanch on this computer" (S7-L2, `./local`) is listed where native
@@ -19,7 +19,6 @@
  * rail. There is never a sideways-only strip.
  */
 import {
-  GitPullRequest,
   Gauge,
   Home as HomeIcon,
   Languages,
@@ -62,7 +61,6 @@ const RUNTIME_ITEMS: readonly NavItem[] = [
   { section: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
   { section: 'executors', labelKey: 'settings.nav.executors', icon: Terminal },
   { section: 'organization', labelKey: 'settings.nav.organization', icon: HomeIcon },
-  { section: 'coding', labelKey: 'settings.nav.coding', icon: GitPullRequest },
 ];
 
 export interface SettingsDialogBodyProps {

@@ -1051,7 +1051,8 @@ export interface WorkingHoursSettings {
 export interface OrgSettings {
   session_timeout_seconds: number | null;
   /** Configured permanent reviewer IDs (missing IDs included; [] for none/invalid).
-   * Edited by Settings ▸ Organization; read `reviewer_configuration` for validity. */
+   * No web control edits it since THR-336 (settings API only); read
+   * `reviewer_configuration` for validity. */
   reviewer_agents: string[];
   reviewer_configuration: {
     state: 'none' | 'configured' | 'missing' | 'invalid';

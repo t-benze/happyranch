@@ -2586,8 +2586,8 @@ Settings GET `/api/v1/orgs/{slug}/settings` and PUT
 Founder PUT accepts `reviewer_agents: []` as deliberate none; null, duplicate,
 blank and unknown IDs refuse. Omitted fields preserve policy. The internal v2
 marker is never client-writable. Existing Founder/org/publication boundaries
-remain. B1 provides the backend/TS contract; B3 (2026-11-14) adds the
-Settings ▸ Organization reviewer choice described in the Settings section.
+remain. B1 provides the backend/TS contract. The B3 Settings ▸ Organization
+reviewer choice was removed (THR-336); see the Settings section.
 Snapshot path/status checks do not prove response-property parity: review
 `getSettings`/`putOrgSettings`, TS models, route classification and fixtures.
 The retired web openapi-coverage suite remains NOT RUN.
@@ -2916,8 +2916,13 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
-**Reviewer agents (B3, 2026-11-14).** Settings ▸ Organization edits the generic
-inline-chain `reviewer_agents` setting; it does not select Coding workflow roles,
+**Reviewer agents (B3, 2026-11-14; UI removed THR-336).** Since THR-336 the web
+app has no `reviewer_agents` control: Settings ▸ Organization never sends the key
+(every Save omits it), so the setting is changeable only through the settings
+API (PUT `/settings/org`), and new orgs default to none. Its runtime use (chain
+verdict safety net, authority validation) is unchanged. Historical B3 contract:
+Settings ▸ Organization edited the generic
+inline-chain `reviewer_agents` setting; it did not select Coding workflow roles,
 install workflows or allow runs. The picker lists the active roster from the
 existing agents read, plus an explicit None; requests carry permanent IDs while
 chips and options show current names (`name · id`). The field renders the
@@ -2930,12 +2935,11 @@ flow, but `reviewer_agents` is sent only when the Founder deliberately changed
 it (an unrelated Save omits the key); a successful Save re-syncs from the PUT
 response. A save response always updates the Settings cache of the org it was
 written to, even after an org switch. Locale switches issue no request and keep
-the draft and focus. Browser evidence:
-`web/scripts/w4a-browser-evidence.mjs --slice reviewer-settings [--reviewer-case <ids>]`
-against an ordinary dist with a stateful synthetic Settings daemon.
+the draft and focus. (Its `--slice reviewer-settings` browser evidence was
+removed with the picker.)
 
 The response includes operator-only `threads.default_turn_cap`, which has no
-browser control (`reviewer_agents` was operator-only until B3, above). Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
+browser control (nor, since THR-336, does `reviewer_agents`, above). Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
 
 **Backend routes:**
 
@@ -5414,14 +5418,16 @@ and explicitly GET that key after transport uncertainty; current configuration
 may be newer than the returned original receipt. Unsafe JavaScript integers
 refuse rather than round a CAS. This backend has no new CLI command;
 existing agent mapping publication cannot replace Founder-owned defaults after
-S1. The page below consumes this client. No configuration save enables the currently disabled engine. See
+S1. Since THR-336 no web page consumes this client (the mirror stays for the
+route contract; routes stay for API/CLI). No configuration save enables the currently disabled engine. See
 [R2](../specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
 
 ### Founder coding settings page
 
-Historical (THR-320). Since U8b (TASK-15605) `CodingSection` no longer edits: it points
-to Workflows → Setup and offers only the read-only original-key lookup described in
-§ U8b. The editor contract below is retained as history for its saved records.
+Historical (THR-320). Since U8b (TASK-15605) `CodingSection` no longer edited; THR-336
+removed the Settings → Coding tab entirely (the URL redirects to Workflows → Setup and
+the original-key lookup is API/CLI-only, § U8b). The editor contract below is retained
+as history for its saved records.
 
 `/orgs/:slug/settings/coding` mounted `CodingSection` outside the general settings
 gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
@@ -5656,8 +5662,8 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 
 The published human-terminal command is
 `python3 scripts/setup_coding.py --org happyranch`, followed by Workflows → Setup
-at `/orgs/ORG/workflows/setup`. Settings → Coding is only a pointer with read-only
-original-save recovery; it no longer edits historical repo-bearing settings.
+at `/orgs/ORG/workflows/setup`. Settings → Coding was removed (THR-336); its URL
+redirects to Setup and historical original-save recovery is API/CLI-only.
 Use the actual reviewed pinned source update supplied by root; the runtime guide
 specifies bootstrap, strict flags, all-runtime maintenance and private recovery
 material. No agent may run host setup effects. Managed/unknown attribution and
@@ -6025,7 +6031,7 @@ The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the
 [U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
-U8b (below) adds Setup/Save custody and the Settings → Coding redirect.
+U8b (below) adds Setup/Save custody and the Settings → Coding pointer (removed by THR-336).
 
 ## U8b Workflows Setup and Settings → Coding redirect (TASK-15605)
 
@@ -6061,11 +6067,13 @@ expected_generation, and the receipt panel compares generations ordinally. Draft
 per org (never persisted), so navigation, org A→B→A and locale changes keep them with no
 request. The settings GET's 404 `sequential_settings_not_found` means "nothing saved
 yet" and does not fence the org; every other 403/404 keeps the U8a org-wide fence and F6
-applies to the settings read. `/orgs/:slug/settings/coding` no longer edits: it points to
-Workflows → Setup and keeps historical repo-bearing saves recoverable by a read-only
-GET `/settings/coding?operation_key=KEY` lookup (the old send fence was memory-only, so
-recovery is by the original key the old page displayed). Nothing there sends a PUT,
-converts or resends the historical command. See the
+applies to the settings read. `/orgs/:slug/settings/coding` no longer edits. Since
+THR-336 the Settings → Coding tab is removed and that URL redirects to
+`/orgs/:slug/workflows/setup` (in the desktop dialog host an unknown Settings page opens
+Capacity). Historical repo-bearing saves stay recoverable only via API/CLI with the
+read-only GET `/settings/coding?operation_key=KEY` (the old send fence was memory-only,
+so recovery is by the original key the old page displayed). Nothing in the web app
+sends that PUT, converts or resends the historical command. See the
 [U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
 
 ## U7b repo-free settings and original save (TASK-15482)

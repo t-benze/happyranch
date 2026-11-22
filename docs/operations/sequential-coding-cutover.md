@@ -214,8 +214,10 @@ authority or genuine Coding execution acceptance.
    The historical host setup links there but does not register/install sequential
    data. Explicit first Save starts Disabled; later Save preserves admission,
    allocating no work. Preserve original save key/body and use Check original save
-   after uncertainty. The pointer at `/orgs/ORG/settings/coding` retains only OLD
-   read-only save recovery; never translate/re-key/resend repo-bearing commands.
+   after uncertainty. The Settings → Coding pointer was removed (THR-336; its URL
+   redirects to Setup); OLD read-only save recovery is via GET
+   `/settings/coding?operation_key=KEY` (API/CLI) only; never translate/re-key/resend
+   repo-bearing commands.
 6. Fresh offline admission is closed. `setup_sequential_coding.py admission`
    refuses a new operation with `sequential_coding_registration_only` and creates
    no settings or Allow. For an original v2 operation, retain its exact command,

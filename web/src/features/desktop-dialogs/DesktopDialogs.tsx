@@ -13,8 +13,8 @@
  *   is still in the document. Without one (cold deep link, native entry, a
  *   removed invoker) focus returns to the Main recovery control when one is
  *   shown, otherwise to the Main content landmark.
- * - A same-document link inside a dialog pane (e.g. Coding > Open Coding
- *   setup) goes through the same close request with that destination: the
+ * - A same-document link inside a dialog pane (e.g. Executors > Agents)
+ *   goes through the same close request with that destination: the
  *   dialog closes, Main shows the destination and gets focus.
  * - Native `app.dialogRequested` (bridge spec "v2 dialog request event")
  *   opens the named dialog through the same open request, with no invoker.
@@ -357,7 +357,7 @@ function DesktopDialogHost({
           restoreFocus(toMain ? null : returnTarget.current);
         }}
         onClickCapture={(event) => {
-          // In-pane links (Coding setup, Executors > Agents, Organization >
+          // In-pane links (Executors > Agents, Organization >
           // Work Hours, ...) leave Settings for a Main page: route them
           // through the one close request instead of navigating behind the
           // modal. Runs before the router's own link handler.

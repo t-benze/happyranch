@@ -54,9 +54,10 @@ lookup runs under the same org admission generation/abort/refusal policy, and th
 editor never rehydrates from a read older than its own committed generation, nor adopts
 a conflict read below the known committed generation. For `generation_stale` the
 read must be strictly newer than the refused basis; for `operation_conflict` it
-may equal that basis (both also respect the committed floor). Settings →
-Coding (`features/settings/sections/CodingSection`) is a pointer to Setup plus a
-read-only original-key lookup for historical saves. See
+may equal that basis (both also respect the committed floor). The former
+Settings → Coding tab was removed (THR-336): `/orgs/:slug/settings/coding`
+redirects to Workflows → Setup, and the historical original-key lookup
+(GET `/settings/coding?operation_key=KEY`) is reachable only via API/CLI. See
 `docs/specs/2026-11-12-sequential-coding-u8.md`.
 
 ## Layers (strict)

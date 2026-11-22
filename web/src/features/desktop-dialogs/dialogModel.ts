@@ -18,7 +18,6 @@ export const DESKTOP_SETTINGS_SECTIONS = [
   'daemon-capacity',
   'executors',
   'organization',
-  'coding',
 ] as const;
 
 export type DesktopSettingsSection = (typeof DESKTOP_SETTINGS_SECTIONS)[number];

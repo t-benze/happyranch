@@ -1,7 +1,7 @@
 /**
  * SettingsPage — full page (not dialog) with left sub-nav + field panel.
  *
- * Sub-nav: Capacity · Organization · Executors · Coding · Preferences.
+ * Sub-nav: Capacity · Organization · Executors · Preferences.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -20,9 +20,8 @@
  * enabled Preferences in ordinary production builds; W5 now uses full-mode
  * browser-language fallback when a saved preference is absent or invalid.
  *
- * THR-320: the Founder coding section reads its own org-keyed coding view, so
- * it is mounted outside the general settings gate with its own states, and is
- * keyed by org so a draft or late reply never crosses into another org.
+ * THR-336: the Coding section was removed; workflow configuration lives only
+ * under Workflows → Setup, and the old `coding` URL redirects there.
  */
 import { useState } from 'react';
 import {
@@ -37,7 +36,6 @@ import {
   Terminal,
   Gauge,
   Languages,
-  GitPullRequest,
   type LucideIcon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -61,13 +59,6 @@ const SECTIONS = [
   icon: LucideIcon;
 }>;
 
-/** Founder coding section; owns its own read, outside the settings gate. */
-const CODING_SECTION = {
-  key: 'coding',
-  labelKey: 'settings.nav.coding',
-  icon: GitPullRequest,
-} as const satisfies { key: string; labelKey: MessageKey; icon: LucideIcon };
-
 /** Client-only section; listed last (W3b-2: always mounted). */
 const PREFERENCES_SECTION = {
   key: 'preferences',
@@ -77,7 +68,6 @@ const PREFERENCES_SECTION = {
 
 export type SettingsSection =
   | (typeof SECTIONS)[number]['key']
-  | (typeof CODING_SECTION)['key']
   | (typeof PREFERENCES_SECTION)['key'];
 
 /**
@@ -113,11 +103,6 @@ export function SettingsPage(): JSX.Element {
       )}
     </>
   );
-  const fenced = (element: ReactNode): JSX.Element => (
-    <SettingsContent>
-      <NativeRecoveryFence>{element}</NativeRecoveryFence>
-    </SettingsContent>
-  );
 
   return (
     <div className="bg-surface-canvas h-full">
@@ -141,10 +126,8 @@ export function SettingsPage(): JSX.Element {
               </SettingsContent>
             }
           />
-          <Route
-            path="coding"
-            element={fenced(<CodingPanel key={slug} />)}
-          />
+          {/* THR-336: the removed Coding tab's old URL goes to Workflows → Setup. */}
+          <Route path="coding" element={<Navigate to={`/orgs/${slug}/workflows/setup`} replace />} />
           <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel key={slug} />)} />
           <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel key={slug} org={settingsQuery.data.org} />)} />
           <Route path="executors" element={gated(<ExecutorsPanel key={slug} />)} />
@@ -204,7 +187,6 @@ export function RecoverySettingsPage({ notFound }: { notFound: ReactNode }): JSX
           <Route path="daemon-capacity" element={fenced} />
           <Route path="organization" element={fenced} />
           <Route path="executors" element={fenced} />
-          <Route path="coding" element={fenced} />
           <Route path="*" element={<Navigate to={`${base}/preferences`} replace />} />
         </Routes>
       </ContentWrap>
@@ -235,7 +217,7 @@ function SettingsContent({ children, base }: { children: ReactNode; base?: strin
  */
 function SettingsSubNav({ base }: { base: string }): JSX.Element {
   const { t } = useTranslation();
-  const sections = [...SECTIONS, CODING_SECTION, PREFERENCES_SECTION];
+  const sections = [...SECTIONS, PREFERENCES_SECTION];
 
   return (
     <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
@@ -274,28 +256,22 @@ function SettingsSubNav({ base }: { base: string }): JSX.Element {
  * Language (`preferences`) needs no org.
  */
 export function SettingsPane({ section }: { section: SettingsSection }): JSX.Element {
-  const { slug } = useParams<{ slug: string }>();
   const settingsQuery = useSettings();
   const recovery = useNativeRecovery();
   const { t } = useTranslation();
   const remoteHost = useRemoteHost();
 
   if (section === 'preferences') return <PreferencesPanel />;
-  // S8-2b (v2.4 §4): the remote Host shares no Capacity/Coding reads with a
-  // connected app, so these pages are named unavailable, never fake values.
-  if (remoteHost && (section === 'coding' || section === 'daemon-capacity')) {
-    return section === 'coding' ? (
-      <RemoteUnavailablePage host={remoteHost} page={t('settings.nav.coding')} />
-    ) : (
+  // S8-2b (v2.4 §4): the remote Host shares no Capacity reads with a
+  // connected app, so that page is named unavailable, never fake values.
+  if (remoteHost && section === 'daemon-capacity') {
+    return (
       <RemoteUnavailablePage
         host={remoteHost}
         page={t('settings.nav.daemonCapacity')}
         scope={t('remotePolicy.capacityScope', { host: remoteHost })}
       />
     );
-  }
-  if (section === 'coding') {
-    return <NativeRecoveryFence><CodingPanel key={slug} /></NativeRecoveryFence>;
   }
   if (!recovery && settingsQuery.isLoading) {
     return <div className="text-text-secondary p-8 text-sm">{t('settings.page.loading')}</div>;
@@ -331,7 +307,6 @@ import { OrganizationSection } from './sections/OrganizationSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
 import { DaemonCapacitySection } from './sections/DaemonCapacitySection';
 import { PreferencesSection } from './sections/PreferencesSection';
-import { CodingSection } from './sections/CodingSection';
 import type { OrgSettings } from '@/lib/api/types';
 
 function DaemonCapacityPanel(): JSX.Element {
@@ -362,19 +337,6 @@ function ExecutorsPanel(): JSX.Element {
         {t('settings.panel.executors.description')}
       </p>
       <ExecutorsSection />
-    </div>
-  );
-}
-
-function CodingPanel(): JSX.Element {
-  const { t } = useTranslation();
-  return (
-    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-8">
-      <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.coding.title')}</h2>
-      <p className="text-text-secondary mb-8 text-sm">
-        {t('settings.panel.coding.description')}
-      </p>
-      <CodingSection />
     </div>
   );
 }

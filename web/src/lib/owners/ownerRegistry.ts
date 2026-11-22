@@ -66,7 +66,6 @@ export type OwnerPage =
   | 'settings.workHours'
   | 'settings.capacity'
   | 'settings.executors'
-  | 'settings.coding'
   | 'agents.agent'
   | 'agents.systemPrompt'
   | 'agents.escalationPolicy'
