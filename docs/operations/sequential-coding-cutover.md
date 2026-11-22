@@ -15,7 +15,7 @@ This is source support, not authorization for live operation. This PR performs
 no deploy/restart/live DB mutation/Allow. Founder must separately operate the
 saved four-role setup and Allow when the release is accepted. Public Start@2
 admission/continuation is supported by [R2 unit (b)](../agent-guides/contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation);
-Draft→Review registration remains undelivered. The offline setup script
+R2 unit(c) now adds `release/happyranch/draft-review@1` on generic ABI@2 via the same catalog, definition-only registrar and Start@2 path. Draft setup is API-only; the Coding Setup list/selector and offline script stay unchanged. See the [current contract](../agent-guides/contracts/reusable-workflows.md#r2-unit-c-supported-draft--review-bundle). The offline setup script
 is unchanged and still refuses fresh admission; its original replay is retained.
 
 ## S9 final source checkpoint

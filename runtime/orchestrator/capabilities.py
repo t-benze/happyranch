@@ -312,7 +312,7 @@ def build_capabilities_prompt(
     if workflow_start_v2_discovery and not self_only:
         sections.extend([
             "@2 admission supported for your own ordinary manager task and its owned wait set.",
-            "Read your own CLI GET /api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID for Coding v3/@2.",
+            "Read your own CLI GET /api/v1/orgs/ORG/workflows/sequential/start-context/v2?session_id=SID for the supported generic catalog (Coding@3 and Draft→Review@1).",
             "The same read-only start-compose command accepts explicit format workflow-sequential-start-compose@2 and 1–8 workflows.",
             "Preserve discovered settings/pins, stable member keys, explicit lower allocations and omitted/value/null step overrides.",
             "Copy its plural GenericStartCommand decision unchanged into your own genuine FINAL completion; composition starts nothing.",

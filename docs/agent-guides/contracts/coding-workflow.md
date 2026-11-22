@@ -24,7 +24,7 @@ ask to re-read/adopt current settings and retry that action. Save keeps its own 
 The [setup/admission contract](reusable-workflows.md#r2-unit-a-saved-defaults-and-new-run-admission)
 owns routes, closed formats, refusal codes, recovery and fixture commands. Existing
 @1 bytes/readers remain unchanged. Public Start@2 admission is supported by unit
-(b) above; Draft→Review remains a later unit. The offline script still refuses
+(b) above; unit(c) adds the API-configured [Draft→Review bundle](reusable-workflows.md#r2-unit-c-supported-draft--review-bundle) through the same generic catalog. The offline script still refuses
 fresh admission. Source delivery performs
 no live setup/Allow, deployment/restart or pilot.
 

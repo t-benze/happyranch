@@ -5,6 +5,8 @@ settlement, initiator-owned hold recovery and source-never-auto-completes semant
 [the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
 Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
 
+Draft → Review is supported as `release/happyranch/draft-review@1` on generic ABI@2. Use the same compose@2 member selector, exact settings pin and plural callback. [The complete Founder API Save/Allow/Disable procedure](contracts/reusable-workflows.md#founder-api-only-draft-configuration) owns configuration and original-operation recovery. Workflows → Setup remains Coding-only; no Draft selector or browser Start is added.
+
 ## Multipart uploads in the native app scheme
 
 The artifacts and task-attachment API clients use same-origin `/api/v1` paths.

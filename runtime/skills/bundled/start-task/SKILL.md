@@ -634,7 +634,7 @@ v3 roles, then explicitly Allow/Disable new runs. Save preserves admission and
 creates no work; Disable never changes admitted-run pins. Pending/uncertain
 operations keep their original kind/key/body; resolve uncertainty only through
 original-key lookup. Agent/task/CLI sessions gain no Founder setup entitlement.
-Public Start@2 admission and Draft→Review registration remain separate units. Live setup,
+The generic catalog supports Coding@3 and `release/happyranch/draft-review@1` on ABI@2. Draft has independent author/reviewer workers and API-only Founder Save/Allow/Disable; Workflows → Setup remains Coding-only. Live setup,
 Allow, deployment/restart and the pilot remain founder-reserved.
 
 Keep these live boundaries in every lane:
@@ -787,14 +787,18 @@ only IDs actually delivered to this SID using optional consume_notifications
 workflow_control with workflow-sequential-control@2, run_id, stable operation_key,
 expected_cas, expected_held_event_id, action and reason. Retry preserves the stopped
 inputs/assignment; rebrief adds bounded supplement; reassign requires a permanent
-target_agent_id and affects only the stopped occurrence; cancel preserves unknown
+target_agent_id and affects only the stopped occurrence. Retry/rebrief/reassign
+refuse HTTP 409 `control_input_retired` with zero committed writes when any
+retained `current.*` reference is retired or superseded; the run stays Held and
+cancellable. Cancel then your later genuine done remains available after all
+dependencies drain. Current-input retries retain their original bytes; cancel preserves unknown
 execution until original closure. Recoveries keep original per-run limits and
 spent counters. No total-step cap or cross-run numeric pool exists; batch, history,
 cancellation reservation, revise/retry and pinned per-run limits still apply.
 Only your own genuine done after every run and ordinary dependency drains closes
 the source; done refuses while any remain. This grants no thread/wake/dream/worker
 start authority, setup, live operation or pilot authority. @1 bytes and historical
-source-terminal semantics remain unchanged. Unit(c) Draft→Review is separate.
+source-terminal semantics remain unchanged. Select `release/happyranch/draft-review@1` for supported document drafting/review through the same compose@2 path. Only REQUEST_CHANGES returns attributed callback findings to draft; undeclared REVISE holds. This is separate from retired old document-review/signing transports.
 
 ## Task scratch and owned processes
 

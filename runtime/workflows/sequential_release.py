@@ -40,7 +40,7 @@ MANIFEST = {
 _RETIRED = frozenset({('release/happyranch/coding', 1)})
 
 
-# Literal reviewed generic Coding catalog: registration identity/pins only.
+# Literal reviewed generic catalog: registration identity/pins only.
 # Public Start@1 discovery and the legacy compatibility view remain separate.
 @dataclass(frozen=True)
 class StagedGenericDefinition:
@@ -56,6 +56,13 @@ STAGED_GENERIC = {
         pin=GenericDefinitionPin(identity='release/happyranch/coding', version=3,
             source_digest='ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
             definition_digest='65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae',
+            compiler='workflow-sequential-compiler@2', validator='workflow-sequential-validator@2',
+            interpreter='workflow-sequential-interpreter@2', capabilities='workflow-sequential-capabilities@2')),
+    ('release/happyranch/draft-review', 1): StagedGenericDefinition(
+        package='runtime', resource=('workflows', 'builtin_templates', 'draft-review.v1.json'), size=2471,
+        pin=GenericDefinitionPin(identity='release/happyranch/draft-review', version=1,
+            source_digest='7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
+            definition_digest='f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65',
             compiler='workflow-sequential-compiler@2', validator='workflow-sequential-validator@2',
             interpreter='workflow-sequential-interpreter@2', capabilities='workflow-sequential-capabilities@2')),
 }
