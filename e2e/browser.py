@@ -64,11 +64,16 @@ _RENDERED_DOM = r"""(main, args) => {
     const href = '/orgs/' + org + '/tasks/' + task;
     if (doc.location.pathname !== (surface === 'list' ? '/orgs/' + org + '/tasks' : href)
         || doc.location.search || doc.location.hash) fail('url');
+    // Recovery keeps routed content mounted but hidden. Resolve its current
+    // wrapper first, then the exact page owner, never a descendant text match.
+    const routed = one(direct(main).filter(c => c.tagName === 'DIV'
+        && c.classList.contains('contents')), 'routed');
+    if (routed.closest('[hidden], [aria-hidden="true"]')) fail('hidden-routed');
     // TasksPage owns an inner main; detail owns ContentWrap's two DIVs.
     // Keep all returned paths relative to the outer shell on both routes.
-    const owner = surface === 'list' ? one(direct(main).filter(c => c.tagName === 'DIV')
+    const owner = surface === 'list' ? one(direct(routed).filter(c => c.tagName === 'DIV')
         .flatMap(c => direct(c)).filter(c => c.tagName === 'MAIN'), 'list') :
-        one(direct(main).filter(c => c.tagName === 'DIV')
+        one(direct(routed).filter(c => c.tagName === 'DIV')
             .flatMap(c => direct(c)).filter(c => c.tagName === 'DIV'), 'detail');
     if (surface === 'list') {
         const link = one([...owner.querySelectorAll('a')].filter(a => a.getAttribute('href') === href), 'list-link');
@@ -1141,7 +1146,20 @@ class Browser:
 
     def _task_surface(self, surface: str) -> Any:
         require(surface in {'list', 'detail', 'recall'}, 'task-surface')
-        return self._task_shell().locator(':scope > div > main' if surface == 'list' else ':scope > div > div')
+        shell = self._task_shell()
+        expect(shell).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        routed = shell.locator(':scope > div.contents')
+        expect(routed).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(routed).not_to_have_attribute('hidden', re.compile('.*'), timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        owner = routed.locator(':scope > div > main' if surface == 'list' else ':scope > div > div')
+        expect(owner).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(owner).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        return owner
 
     def _rendered_once(self, expected: dict) -> dict:
         c, main = self.controller, self._task_shell()

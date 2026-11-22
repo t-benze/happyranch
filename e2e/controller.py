@@ -761,7 +761,13 @@ class Controller:
     def finish(self, org: str, task: str) -> dict:
         begin = time.monotonic()
         def terminal() -> dict | None:
-            body = self.get(f"/api/v1/orgs/{org}/tasks/{task}")
+            path = f"/api/v1/orgs/{org}/tasks/{task}"
+            status, body = self.api("GET", path)
+            # api retains every observation. Only this read may retry, under
+            # poll's original absolute end; no command or mutation is replayed.
+            if status == 503 and body == {"detail": "census_database_busy"}:
+                return None
+            require(status == 200, "public GET success", (path, status, body))
             require(body["task"]["status"] not in {"failed", "escalated", "cancelled"}, "unexpected terminal task", body)
             return body if body["task"]["status"] == "completed" else None
         body = self.poll(terminal, "natural terminal completion")

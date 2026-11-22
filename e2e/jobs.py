@@ -187,10 +187,45 @@ def group_members(pgid: int) -> list[dict]:
         try:
             fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
             if int(fields[2]) == pgid:
-                members.append(dict(pid=int(path.name), start=fields[19], state=fields[0]))
+                members.append(dict(pid=int(path.name), start=fields[19], state=fields[0],
+                                    ppid=int(fields[1]), pgid=int(fields[2]), sid=int(fields[3])))
         except (FileNotFoundError, ProcessLookupError):
             continue
-    return members
+    return sorted(members, key=lambda member: member["pid"])
+
+
+def job_processes(c: Controller, pid: int) -> dict:
+    """Pin the socket script, its bounded-job leader and the original daemon."""
+    def read(number: int) -> dict:
+        raw = Path(f"/proc/{number}/stat").read_text()
+        fields = raw.rsplit(")", 1)[1].split()
+        return dict(pid=number, start=fields[19], ppid=int(fields[1]),
+                    pgid=int(fields[2]), sid=int(fields[3]), stat=raw)
+
+    peer = read(pid)
+    guardian = read(peer["ppid"])
+    boot = c.boots[-1]
+    daemon = read(c.daemon.pid)
+    require(daemon["pid"] == boot["pid"] and daemon["start"] == boot["start"] is not None,
+            "job original daemon generation")
+    require(guardian["ppid"] == daemon["pid"] and guardian["pid"] == guardian["pgid"] == guardian["sid"]
+            == peer["pgid"] == peer["sid"] and peer["pid"] != guardian["pid"], "job script/guardian/daemon parent/group/session chain")
+    for row in (peer, guardian):
+        marker = f"E2E_ROOT={c.root}"
+        require(marker.encode() in Path(f"/proc/{row['pid']}/environ").read_bytes().split(b"\0"),
+                "script and guardian same private run")
+        row["root_marker"] = marker
+    census = group_members(peer["pgid"])
+    require([(r["pid"], r["start"], r["ppid"], r["pgid"], r["sid"]) for r in census] ==
+            sorted((r["pid"], r["start"], r["ppid"], r["pgid"], r["sid"]) for r in (peer, guardian)),
+            "actual job group contains exactly pinned guardian and script")
+    for row in (daemon, guardian, peer):
+        end = read(row["pid"])
+        require(all(end[key] == row[key] for key in ("pid", "start", "ppid", "pgid", "sid")),
+                "job chain generation/relationship bookends")
+        row["stat_end"] = end["stat"]
+    peer.update(guardian=guardian, daemon=daemon, census=census)
+    return peer
 
 
 def observe_running(c: Controller, task: str, job: dict, server: socket.socket) -> tuple[socket.socket, BinaryIO]:
@@ -202,12 +237,13 @@ def observe_running(c: Controller, task: str, job: dict, server: socket.socket) 
     connection.settimeout(c.remaining(3))
     pid, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
     start = identity(pid)
-    peer = dict(pid=pid, uid=uid, start=start, pgid=os.getpgid(pid), at=time.monotonic())
+    peer = dict(pid=pid, uid=uid, start=start, at=time.monotonic())
     c.durable.append(dict(jobs_peer=peer))
     require(uid == os.getuid() and start is not None, "owned live script peer", peer)
-    require(f"E2E_ROOT={c.root}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "script run ownership")
+    peer.update(job_processes(c, pid))
+    require(peer["start"] == start, "original socket script generation")
     owned = json.loads((c.root / "owned.json").read_text())
-    (c.root / "owned.tmp").write_text(json.dumps([*owned, pid]))
+    (c.root / "owned.tmp").write_text(json.dumps([*owned, peer["guardian"]["pid"], pid]))
     (c.root / "owned.tmp").replace(c.root / "owned.json")
     stream = connection.makefile("rb")
     connection.settimeout(c.remaining(3))
@@ -215,10 +251,8 @@ def observe_running(c: Controller, task: str, job: dict, server: socket.socket) 
     c.remaining()
     peer["hello"] = hello
     job["peer"] = peer
-    require(hello == {"token": job["token"], "pid": pid} and peer["pgid"] == pid, "actual token/PID/PGID handshake", peer)
+    require(hello == {"token": job["token"], "pid": pid}, "actual token/script PID handshake", peer)
     require(json.loads(Path(job["sentinel"]).read_text()) == hello, "literal launch sentinel")
-    peer["census"] = group_members(pid)
-    require(peer["census"] == [dict(pid=pid, start=start, state=peer["census"][0]["state"])], "direct script owns exactly one process")
     job["running"] = raw_job(c, task, job["id"])
     require(job["running"]["status"] == "running" and identity(pid) == start, "genuine live running witness")
     return connection, stream
@@ -236,9 +270,11 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket,
                handle: tuple[socket.socket, BinaryIO]) -> None:
     connection, stream = handle
     pid, start = job["peer"]["pid"], job["peer"]["start"]
+    guardian, pgid = job["peer"]["guardian"], job["peer"]["pgid"]
     job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server), expected=browser_job_expected(job, job["running"]))
     job["running_browser"] = c.browser.job_open(job["id"], "running", expected=browser_job_expected(job, job["running"]))
-    require(identity(pid) == start, "script live through running browser read")
+    require(identity(pid) == start and identity(guardian["pid"]) == guardian["start"],
+            "script and guardian live through running browser read")
     if job["code"] != -9:
         connection.settimeout(c.remaining(3))
         connection.sendall(b"R")
@@ -248,13 +284,15 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket,
         row = raw_job(c, task, job["id"])
         return row if row["status"] in {"completed", "failed", "rejected"} else None
     job["terminal"] = c.poll(terminal, "real product terminal job", cap=17)
-    c.poll(lambda: identity(pid) != start and not group_members(pid), "natural job process/group closure", cap=3)
+    c.poll(lambda: identity(pid) != start and identity(guardian["pid"]) != guardian["start"]
+           and not group_members(pgid), "natural script/guardian/whole group closure", cap=3)
     connection.settimeout(c.remaining(2))
     eof = stream.read(1)
     c.remaining()
     require(eof == b"", "script socket EOF after natural terminal")
-    job["closure"] = dict(pid=pid, start=start, observed_start=identity(pid), pgid=pid,
-                          members=group_members(pid), eof=True, at=time.monotonic())
+    job["closure"] = dict(pid=pid, start=start, observed_start=identity(pid), pgid=pgid,
+                          guardian=dict(pid=guardian["pid"], start=guardian["start"], observed_start=identity(guardian["pid"])),
+                          members=group_members(pgid), eof=True, at=time.monotonic())
     stream.close()
     connection.close()
     c.job_connections.remove(connection)
@@ -416,16 +454,19 @@ def final_task(c: Controller, task: str, starts: list[dict], jobs: list[dict], s
 def refusal_processes(c: Controller, start: dict) -> dict:
     """Bounded actual descendants of the two known owned roots; unknown refuses."""
     entered = time.monotonic()
-    pending = [(c.daemon.pid, identity(c.daemon.pid)), (start["pid"], start["pid_start"])]
+    boot = c.boots[-1]
+    require(boot["pid"] == c.daemon.pid and boot["start"] is not None, "pinned refusal daemon root")
+    pending = [(boot["pid"], boot["start"], None), (start["pid"], start["pid_start"], None)]
     rows = {}
     while pending:
         c.remaining()
-        pid, expected = pending.pop()
-        require(len(rows) < 512, "refusal descendant bound")
+        pid, expected, parent = pending.pop()
         if pid in rows:
+            require(rows[pid]["start"] == expected and (parent is None or rows[pid]["ppid"] == parent),
+                    "same generation and parent across refusal roots")
             continue
         actual = identity(pid)
-        if actual is None:
+        if actual is None and parent is None and pid == start["pid"]:
             continue
         require(actual == expected and actual is not None, "known process start ownership")
         proc = Path(f"/proc/{pid}")
@@ -433,16 +474,32 @@ def refusal_processes(c: Controller, start: dict) -> dict:
         fields = stat_text.rsplit(")", 1)[1].split()
         env_entries = (proc / "environ").read_bytes().split(b"\0")
         marker = f"E2E_ROOT={c.root}".encode()
-        require(marker in env_entries, "refusal descendant private run ownership")
         children = sorted({int(child) for thread in (proc / "task").iterdir()
                            for child in (thread / "children").read_text().split()})
-        require(fields[19] == actual and identity(pid) == actual, "stable raw descendant start ownership")
+        require(fields[19] == actual and identity(pid) == actual
+                and (parent is None or int(fields[1]) == parent), "stable raw descendant start/parent ownership")
         rows[pid] = dict(pid=pid, start=actual, ppid=int(fields[1]), children=children,
-                         stat=stat_text, root_marker=env_entries[env_entries.index(marker)].decode("utf-8"))
+                         stat=stat_text, root_marker=marker.decode() if marker in env_entries else None)
+        require(len(rows) < 512, "refusal descendant bound")
         for child in children:
             child_start = identity(child)
             require(child_start is not None, "unknown descendant fails closed")
-            pending.append((child, child_start))
+            pending.append((child, child_start, pid))
+    # Bookend the entire walk: an unmarked child is authenticated by a stable
+    # chain to the originally pinned daemon/provider, never by its name/env.
+    for pid, row in rows.items():
+        c.remaining()
+        proc = Path(f"/proc/{pid}")
+        row["stat_end"] = (proc / "stat").read_text()
+        fields = row["stat_end"].rsplit(")", 1)[1].split()
+        row["children_end"] = sorted({int(child) for thread in (proc / "task").iterdir()
+                                     for child in (thread / "children").read_text().split()})
+        require(fields[19] == row["start"] == identity(pid) and int(fields[1]) == row["ppid"]
+                and row["children_end"] == row["children"], "whole refusal tree generation/relationship bookends")
+        require(all(child in rows and rows[child]["ppid"] == pid for child in row["children"]),
+                "closed refusal parent/child edges")
+        require(pid in {boot["pid"], start["pid"]}
+                or row["ppid"] in rows and pid in rows[row["ppid"]]["children"], "no unknown refusal process")
     return dict(entered=entered, finished=time.monotonic(), rows=sorted(rows.values(), key=lambda r: r["pid"]))
 
 
