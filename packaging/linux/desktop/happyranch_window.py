@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 from typing import IO, Callable
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -40,6 +41,10 @@ if _startup is None:
     _startup = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_startup)
     sys.modules["_happyranch_startup_selection"] = _startup
+# Keep the running application's reader, never a replacement installed module.
+_spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
+_contract = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_contract)
 
 
 class LaunchError(Exception):
@@ -98,10 +103,30 @@ def relaunch_assets(prefix: Path, contract: object) -> str:
                 or not constants["MIN_DAEMON"] <= contract["current"]
                 or not contract["min_client"] <= constants["CLIENT"] <= contract["current"]):
             raise ValueError()
-        for path in (prefix / "build-info.json",
-                     directory / "native-connection-bridge.v1.json",
-                     directory / "remote-client-config-policy.v1.json"):
-            digest.update(read(path, 4 * 1024 * 1024))
+        digest.update(read(prefix / "build-info.json", 1024 * 1024))
+        raw = read(directory / "native-connection-bridge.v1.json", 128 * 1024)
+        # Protocol is also HostBridge's startup reader. Give it the exact bounded
+        # bytes being fingerprinted, avoiding a second path read or code import.
+        protocol = _contract.Protocol(SimpleNamespace(read_text=lambda **_kwargs: raw.decode("utf-8")))
+        if type(protocol.commands) is not dict or type(protocol.events) is not dict:
+            raise ValueError("invalid installed bridge structure")
+        protocol.hello()
+        protocol.host_unavailable()
+        digest.update(raw)
+        raw = read(directory / "remote-client-config-policy.v1.json", 4 * 1024 * 1024)
+        policy = _contract.parse_json(raw.decode("utf-8"), 4 * 1024 * 1024)
+        # Same closed resource shape consumed by AppScheme.remote_config_policy;
+        # the S8 routing path itself remains unchanged.
+        if (type(policy) is not dict or set(policy) != {"version", "entries"}
+                or type(policy["version"]) is not int or policy["version"] != 1
+                or type(policy["entries"]) is not list or not policy["entries"]):
+            raise ValueError("invalid installed policy")
+        for entry in policy["entries"]:
+            if (type(entry) is not dict or set(entry) != {"method", "path_template", "class"}
+                    or entry["class"] != "config" or entry["method"] not in {"POST", "PUT", "PATCH", "DELETE"}
+                    or not entry["path_template"].startswith("/api/v1/")):
+                raise ValueError("invalid installed policy entry")
+        digest.update(raw)
         bundle = prefix / "web/dist"
         if bundle.resolve(strict=True) != bundle or not (bundle / "index.html").is_file():
             raise ValueError("missing packaged Main")
@@ -121,11 +146,11 @@ def relaunch_assets(prefix: Path, contract: object) -> str:
                     raise ValueError("installed bundle limit")
                 digest.update(path.relative_to(bundle).as_posix().encode() + b"\0" + raw)
         return digest.hexdigest()
-    except (OSError, ValueError, TypeError, KeyError, SyntaxError, RecursionError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, SyntaxError, RecursionError):
         raise LaunchError("Compatible installed desktop assets could not be verified.") from None
 
 
-def lifecycle_copy(action: str, keep_running: str, remote_name: str | None,
+def lifecycle_copy(action: str, service_state: dict, remote_name: str | None,
                    unsaved: bool, recovery: bool, chinese: bool) -> tuple[str, str]:
     """Actual-effects native confirmation; no reconnect or restart promise."""
     def tr(en: str, zh: str) -> str:
@@ -133,15 +158,22 @@ def lifecycle_copy(action: str, keep_running: str, remote_name: str | None,
     title = {"close": tr("Close HappyRanch?", "关闭 HappyRanch？"),
              "quit": tr("Quit HappyRanch?", "退出 HappyRanch？"),
              "relaunch": tr("Relaunch desktop app?", "重新启动桌面应用？")}[action]
-    text = (tr("HappyRanch on this computer keeps running under its freshly checked keep-running policy.",
+    keep_running, running = service_state["keepRunning"], service_state["running"]
+    text = (tr("HappyRanch on this computer is already stopped. Exiting does not start it.",
+               "此电脑上的 HappyRanch 已经停止。退出不会启动它。")
+            if running == "stopped" else
+            tr("HappyRanch on this computer keeps running under its freshly checked keep-running policy.",
                "根据刚刚检查的后台运行设置，此电脑上的 HappyRanch 将保持运行。")
-            if keep_running == "on" else
+            if keep_running == "on" and running == "running" else
+            tr("HappyRanch on this computer is still starting. Exiting leaves it under the checked keep-running policy; running work is not guaranteed.",
+               "此电脑上的 HappyRanch 仍在启动。退出后将继续遵循已检查的后台运行设置；不保证工作正在运行。")
+            if keep_running == "on" and running == "starting" else
             tr("The local service state is unavailable. This app has no attached local service; exiting sends no local Start or Stop.",
                "本地服务状态不可用。此应用未附加本地服务；退出不会发送本地启动或停止命令。")
             if keep_running == "unowned" else
             tr("This stops HappyRanch on this computer and may interrupt local work.",
                "这会停止此电脑上的 HappyRanch，并可能中断本地工作。")
-            if keep_running in ("off", "partial", "unsupported") else
+            if keep_running in ("off", "partial", "unsupported") and running in ("running", "starting") else
             tr("The local service outcome could not be checked. Stay and check again.",
                "无法检查本地服务的退出结果。请留在应用中并重新检查。"))
     if remote_name:
@@ -164,11 +196,11 @@ def lifecycle_copy(action: str, keep_running: str, remote_name: str | None,
     return title, text
 
 
-def confirm_lifecycle(Gtk: object, parent: object, action: str, keep_running: str,
+def confirm_lifecycle(Gtk: object, parent: object, action: str, service_state: dict,
                       remote_name: str | None, unsaved: bool, recovery: bool,
                       chinese: bool) -> bool:
     """Stay-default native confirmation shared by normal and recovery exits."""
-    title, detail = lifecycle_copy(action, keep_running, remote_name, unsaved, recovery, chinese)
+    title, detail = lifecycle_copy(action, service_state, remote_name, unsaved, recovery, chinese)
     dialog = Gtk.MessageDialog(transient_for=parent, modal=True,
         message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE, text=title)
     dialog.set_default_size(560, -1)
@@ -1692,7 +1724,8 @@ def run_gui(prefix: Path, home: Path) -> int:
                 target = app_scheme.status()["target"] if app_scheme is not None else None
                 name = target["name"] if target and target["kind"] == "remote" else None
                 unsaved = bool(app_scheme is not None and app_scheme.access_unsaved)
-                if not confirm_lifecycle(Gtk, window, action, keep, name, unsaved, recovery, chinese):
+                if not confirm_lifecycle(Gtk, window, action, {**observation, "keepRunning": keep},
+                                         name, unsaved, recovery, chinese):
                     return False
             # Native consent runs a nested GTK loop. Recheck web/native owners
             # and the actual service policy before admitting any exit.
@@ -1709,7 +1742,7 @@ def run_gui(prefix: Path, home: Path) -> int:
             if (unowned_remote and not service.shutdown_pending and not service.attached
                     and after["running"] == "unknown" and after_keep == "unknown"):
                 after_keep = "unowned"
-            if (after_keep != keep or keep in ("unknown", "checking")
+            if (after_keep != keep or after["running"] != observation["running"] or keep in ("unknown", "checking")
                     or after["running"] == "unknown" and not unowned_remote):
                 raise LaunchError(tr("Local service outcome is unknown. Stay and check again.",
                                      "本地服务的退出结果未知。请留在应用中并重新检查。"))

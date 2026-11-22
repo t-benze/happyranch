@@ -1983,6 +1983,38 @@ class LocalControlsTests(unittest.TestCase):
             self.controls.process(self.requests.get_nowait())
         return self.results[-1]
 
+    def test_stopped_on_quit_and_relaunch_render_actual_service_consequence(self) -> None:
+        self.fixture.state["UnitFileState"], self.fixture.linger = "enabled", "yes"
+        result, error = self.run_request("local.stop")
+        self.assertIsNone(error)
+        observed = self.controls.observe()
+        self.assertEqual((observed["running"], observed["keepRunning"]), ("stopped", "on"))
+        rendered = []
+        class Dialog:
+            def __init__(self, **kwargs: object) -> None:
+                pass
+            def format_secondary_text(self, text: str) -> None:
+                rendered.append(text)
+            def get_message_area(self) -> object:
+                return SimpleNamespace(get_children=lambda: [])
+            def run(self) -> int:
+                return 0
+            def __getattr__(self, _name: str) -> object:
+                return lambda *_args: None
+        gtk = SimpleNamespace(MessageDialog=Dialog, MessageType=SimpleNamespace(WARNING=0),
+            ButtonsType=SimpleNamespace(NONE=0), ResponseType=SimpleNamespace(CANCEL=0, OK=1))
+        for action in ("quit", "relaunch"):
+            for chinese in (False, True):
+                with self.subTest(action=action, chinese=chinese):
+                    self.assertFalse(window.confirm_lifecycle(gtk, None, action, observed,
+                                                             None, False, False, chinese))
+                    self.assertIn("已经停止" if chinese else "already stopped", rendered[-1])
+                    self.assertNotIn("将保持运行" if chinese else "keeps running", rendered[-1])
+                    self.assertNotIn("这会停止" if chinese else "This stops", rendered[-1])
+        self.service.close_window()
+        self.assertEqual(self.controls.observe()["running"], "stopped")
+        self.assertNotIn("start", self.fixture.verbs())
+
     def test_status_observes_actual_lifetime_and_foreground_is_read_only(self) -> None:
         f = self.fixture
         for enabled, linger, expected in ((False, False, "off"), (True, True, "on"),
@@ -2149,7 +2181,8 @@ class StartupLifecycleTests(unittest.TestCase):
             for chinese in (False, True):
                 for keep in ("off", "partial", "on"):
                     with self.subTest(action=action, chinese=chinese, keep=keep):
-                        title, text = window.lifecycle_copy(action, keep, "Studio Host", True, True, chinese)
+                        title, text = window.lifecycle_copy(action, {"running": "running", "keepRunning": keep},
+                                                            "Studio Host", True, True, chinese)
                         self.assertIn("Studio Host", text)
                         self.assertIn("保持运行" if chinese else "keeps running", text)
                         self.assertIn("新的邀请" if chinese else "new invite", text)
@@ -2173,13 +2206,28 @@ class StartupLifecycleTests(unittest.TestCase):
             (desktop / "invite_v2.py").write_bytes(
                 (Path(window.__file__).parents[3] / "runtime/remote_access/invite_v2.py").read_bytes())
             for name in ("native-connection-bridge.v1.json", "remote-client-config-policy.v1.json"):
-                (desktop / name).write_text("{}")
+                (desktop / name).write_bytes((Path(window.__file__).parents[3] / "protocol" / name).read_bytes())
             (prefix / "web/dist").mkdir(parents=True)
             (prefix / "web/dist/index.html").write_text("<html></html>")
             (prefix / "build-info.json").write_text(json.dumps({"source_sha": "a" * 40}))
             known = {"current": 1, "min_client": 1}
             digest = window.relaunch_assets(prefix, known)
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            for name, corruptions in (
+                ("native-connection-bridge.v1.json", ("{", "{}", '{"commands":[],"events":{}}')),
+                ("remote-client-config-policy.v1.json", ("{", "{}", '{"version":1,"entries":[{}]}')),
+            ):
+                resource = desktop / name
+                original = resource.read_bytes()
+                try:
+                    for malformed in corruptions:
+                        with self.subTest(resource=name, malformed=malformed):
+                            resource.write_text(malformed)
+                            with self.assertRaises(window.LaunchError):
+                                window.relaunch_assets(prefix, known)
+                finally:
+                    resource.write_bytes(original)
+            self.assertEqual(window.relaunch_assets(prefix, known), digest)
             (prefix / "web/dist/app.js").write_text("// changed installed UI\n")
             changed = window.relaunch_assets(prefix, known)
             self.assertNotEqual(changed, digest)
