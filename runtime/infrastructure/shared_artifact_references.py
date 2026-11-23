@@ -121,6 +121,23 @@ class ReferenceProof:
                 self.references[token, None].add(source)
         return set(_TASK.findall(text))
 
+    def _attachments(self, value: object, source: str) -> None:
+        """Declared shared attachment payloads preserve generation pins."""
+        if isinstance(value, str):
+            self._text(value, source)
+        elif isinstance(value, list):
+            for item in value:
+                self._attachments(item, source)
+        elif isinstance(value, dict):
+            name = value.get('artifact_name')
+            if name:
+                self._add(name, source, value.get('generation'))
+            elif not value.get('thread_attachment_id'):
+                for item in value.values():
+                    self._attachments(item, source)
+        else:
+            raise ReferenceUnavailable('malformed_attachment_payload')
+
     def _scan(self) -> None:
         tasks = {r['id']: r for r in self._read(
             'SELECT id,status,parent_task_id,brief,final_output_summary FROM tasks')}
@@ -162,8 +179,7 @@ class ReferenceProof:
                     raise ReferenceUnavailable('malformed_system_payload')
                 for key in ('attachments', 'attachment_names', 'shared_artifacts'):
                     if key in payload:
-                        for value in self._strings(payload[key]):
-                            self._text(value, r['thread_id'])
+                        self._attachments(payload[key], r['thread_id'])
         links = self._read("SELECT l.name,l.generation,l.thread_id,l.message_seq,l.ordinal FROM shared_artifact_thread_links l JOIN threads t ON t.id=l.thread_id WHERE t.status='open'")
         pinned = {(r['thread_id'], r['message_seq'], r['ordinal']) for r in links}
         for r in links:
@@ -185,6 +201,10 @@ class ReferenceProof:
                 # No authoritative retirement-of-in-flight-reader receipt exists.
                 # Retirement is insufficient to authorize source destruction.
                 self.uncertain_sources.add(name)
+        # Recovery selects current eligible versions, then reads outside the
+        # SQL selection fence. All eligible versions above stay live; retirement
+        # cannot prove an already-selected reader has stopped. Materialization
+        # history supplies additional positive evidence, never reader exclusion.
         for r in self._read('SELECT version_id,skill_id,content_hash,id FROM custom_skill_materializations'):
             v = versions.get(r['version_id'])
             if not v or (v['skill_id'], v['content_hash']) != (r['skill_id'], r['content_hash']):
@@ -201,6 +221,32 @@ class ReferenceProof:
         return 'absent', []
 
 
+def reference_outcomes(org: object, conn: sqlite3.Connection, rows: list[dict], *,
+                       deadline: float, origin: str | None = None) -> dict[tuple[str, int], tuple[str, list[str]]]:
+    """Fresh complete projection for a batch inside its final writer fence.
+
+    Caller retains shared_artifact_transaction through transition/unlink/COMMIT.
+    Read every outcome before auditing; own audit writes invalidate bookends.
+    No projection survives a COMMIT, await, or release of the Database RLock.
+    """
+    if conn is not org.db._conn or not conn.in_transaction:
+        raise ReferenceUnavailable('writer_fence_required')
+    try:
+        proof = ReferenceProof(conn, slug=org.slug,
+            store=org.db._shared_artifact_service.store, deadline=deadline, origin=origin)
+        return {(r['name'],r['generation']):proof.outcome(r) for r in rows}
+    except (sqlite3.Error, OSError, ValueError, TypeError, RecursionError):
+        return {(r['name'],r['generation']):('indeterminate',['reference_scan_unavailable']) for r in rows}
+
+
+def audit_protection(org: object, row: dict, outcome: str, references: list[str]) -> None:
+    """Every sweep rechecks and audits holds, without granting new retention."""
+    if outcome != 'absent':
+        org.db._shared_artifact_service._event(row, 'artifact_protected', 'daemon', source='system',
+            reason='dependency_check_unavailable' if outcome == 'indeterminate' else 'live_dependency',
+            references=references, outcome=outcome)
+
+
 def effective_mode(org: object, conn: sqlite3.Connection, *, now: datetime | None = None) -> tuple[str, str | None]:
     try:
         mode = load_org_config(OrgPaths(org.root)).shared_artifacts_cleanup_mode
@@ -212,7 +258,7 @@ def effective_mode(org: object, conn: sqlite3.Connection, *, now: datetime | Non
     now = now or datetime.now(timezone.utc)
     try:
         started = datetime.fromisoformat(state['rollout_started_at'])
-        elapsed = now >= started + timedelta(days=7)
+        elapsed = started.utcoffset() == timedelta(0) and now >= started + timedelta(days=7)
     except (TypeError, ValueError):
         elapsed = False
     for ok, reason in ((elapsed, 'preview_seven_days_required'),
@@ -229,17 +275,9 @@ def install_reference_seams(org: object, *, origin: str | None = None) -> None:
     db = org.db
 
     def checker(conn: sqlite3.Connection, row: dict) -> str:
-        service = db._shared_artifact_service
-        try:
-            proof = ReferenceProof(conn, slug=org.slug, store=service.store,
-                                   deadline=time.monotonic()+30, origin=origin)
-            outcome, refs = proof.outcome(row)
-        except (sqlite3.Error, OSError, ValueError, TypeError, RecursionError):
-            outcome, refs = 'indeterminate', ['reference_scan_unavailable']
-        if outcome != 'absent':
-            service._event(row, 'artifact_protected', 'daemon', source='system',
-                           reason='dependency_check_unavailable' if outcome == 'indeterminate' else 'live_dependency',
-                           references=refs, outcome=outcome)
+        outcome, refs = reference_outcomes(org, conn, [row],
+            deadline=time.monotonic()+30, origin=origin)[row['name'],row['generation']]
+        audit_protection(org, row, outcome, refs)
         return outcome
 
     def mode(conn: sqlite3.Connection) -> str:

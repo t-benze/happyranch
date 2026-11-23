@@ -160,3 +160,17 @@ standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQ
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
 bounded review evidence, not proof of Python execution or activation.
+
+## Slice B reference projection (source only)
+
+`shared_artifact_references.reference_outcomes` reads the complete bounded org
+corpus under the caller's retained writer transaction. Outcomes are collected
+before own audit writes; no snapshot survives COMMIT or lock release. The final
+lifecycle/unlink caller must retain that fence through its decision. Structured
+shared attachments preserve generation pins. Non-retired B2 versions and every
+materialization record hold their source. Retired sources lacking authoritative
+in-flight reader exclusion remain indeterminate; retirement does not authorize
+deletion. Recovery selects an eligible current version before reading its source,
+so the same conservative hold covers a previously selected recovery reader.
+Neither this module nor installation sets source_protection_verified, preview
+acceptance or inventory review. Full rollout remains separately held.
