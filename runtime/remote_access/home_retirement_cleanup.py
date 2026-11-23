@@ -1,4 +1,4 @@
-"""Selective original private-leaf removal under fresh retirement proofs.
+"""Selective original private/managed-leaf removal under fresh proofs.
 
 Native artifacts, trust state, operation locks and saved evidence are retained.
 An absent original is current absence, never an acknowledgement of who removed
@@ -12,7 +12,9 @@ from pathlib import PurePosixPath
 from typing import Callable
 
 from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY, _DIRECTORY_FLAGS, _signature
-from runtime.remote_access.home_retirement_inventory import LegacyInventory, _PrivateMembers
+from runtime.remote_access.home_retirement_inventory import (
+    LegacyInventory, LegacyManagedMembers, LegacyPrivateMembers, _ManagedMembers, _PrivateMembers,
+)
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
 from runtime.remote_access.legacy_home_receipt import LIVE_MEMBERS
 
@@ -33,6 +35,17 @@ class PrivateCleanup:
                  before_effect: Callable[[], None]) -> None:
         self.journal, self.original, self.before_effect = journal, original, before_effect
 
+    _mutable = _MUTABLE
+    _closed = _CLOSED
+    _retained = frozenset()
+
+    def _inventory(self) -> LegacyPrivateMembers | LegacyManagedMembers:
+        return self.original.private
+
+    def _members(self) -> dict[str, tuple[int, ...] | None]:
+        return {path: signature for path, signature in self._inventory().members.items()
+                if path not in self._retained}
+
     def _guard(self) -> None:
         self.journal.fence.require(self.journal.io)
         if self.journal.load() != self.original:
@@ -45,19 +58,19 @@ class PrivateCleanup:
 
     def _parents(self, walker: _PrivateMembers) -> None:
         for path, current in walker.directory_identities.items():
-            original = self.original.private.directories.get(path)
+            original = self._inventory().directories.get(path)
             if original is None or current[:5] != original[:5]:
                 raise RetirementUncertain()
 
     def _observe(self) -> dict[str, tuple[int, ...] | None]:
-        members = self.original.private.members
+        members = self._members()
         result: dict[str, tuple[int, ...] | None] = {}
-        for relative in sorted({str(PurePosixPath(path).parent) for path in members}):
+        for relative in sorted({str(PurePosixPath(path).parent) for path in self._inventory().members}):
             walker = self._walker()
             with walker._directory(relative, contents_may_change=True) as parent:
                 self._parents(walker)
-                if parent is not None and relative in _CLOSED:
-                    allowed = {PurePosixPath(path).name for path in members
+                if parent is not None and relative in self._closed:
+                    allowed = {PurePosixPath(path).name for path in self._inventory().members
                                if str(PurePosixPath(path).parent) == relative}
                     with os.scandir(parent) as entries:
                         for index, entry in enumerate(entries):
@@ -72,7 +85,7 @@ class PrivateCleanup:
                     except FileNotFoundError:
                         current = None
                     if current is not None:
-                        fields = 6 if path in _MUTABLE else 9
+                        fields = 6 if path in self._mutable else 9
                         if original is None or current[:fields] != original[:fields]:
                             raise RetirementUncertain()
                         if stat.S_ISDIR(current[4]):
@@ -108,7 +121,7 @@ class PrivateCleanup:
         try:
             self._guard()
             self._observe()  # Refuse any known drift before the first effect.
-            for path in sorted(self.original.private.members):
+            for path in sorted(self._members()):
                 self._guard()
                 current = self._observe()[path]
                 relative, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
@@ -116,7 +129,7 @@ class PrivateCleanup:
                 with walker._directory(relative, contents_may_change=True) as parent:
                     self._parents(walker)
                     if parent is None:
-                        if self.original.private.members[path] is not None:
+                        if self._members()[path] is not None:
                             raise RetirementUncertain()
                         continue
                     try:
@@ -144,3 +157,29 @@ class PrivateCleanup:
                 raise RetirementUncertain()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
+
+
+class ManagedCleanup(PrivateCleanup):
+    """Original managed leaves with the denied trust pair/lock retained.
+
+    The required caller guard independently reads the real trust pair and
+    original native quiescence. This owner never opens or removes that proof.
+    """
+
+    _retained = frozenset('var/lib/happyranch-connector/' + name for name in
+        ('trust-state.json', 'trust-state.json.anchor', 'trust-state.json.lock'))
+    _closed = frozenset(('var/lib/happyranch-connector', 'var/lib/happyranch-tsnet-sidecar',
+        'run/happyranch-connector', 'run/happyranch-tsnet-sidecar'))
+
+    def _inventory(self) -> LegacyManagedMembers:
+        return self.original.managed
+
+    @property
+    def _mutable(self) -> frozenset[str]:
+        return frozenset(path for path in self._members() if path.startswith(('var/', 'run/')))
+
+    def _walker(self) -> _ManagedMembers:
+        walker = _ManagedMembers(LegacyInventory(self.journal.io), self.original.ownership)
+        if walker.account != self.original.managed.account:
+            raise RetirementUncertain()
+        return walker

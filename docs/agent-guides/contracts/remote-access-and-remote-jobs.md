@@ -4558,8 +4558,20 @@ reconcile original auxiliary non-lock leaf absence, so fresh saved recovery can
 repeat both phases in either order. The strict held-operation context remains
 unchanged. Both cleanup families synchronize and independently read back prior
 leaf absence; observed absence alone is not durability evidence.
-Managed trust/native artifacts, accounts, saved evidence and final publication
-remain outside these partial cleanup entries.
+`StoppedRetirement.remove_managed` supplies the same per-effect stopped/cutoff
+and held-operation guards to original managed configurations and runtime leaves.
+It reuses the private cleanup owner's no-follow parent/target, sync and absence
+readback mechanics with the saved managed inventory and shared-account custody.
+Configurations retain complete original signatures; stopped runtime leaves may
+flush contents but retain original device/inode/custody/type/link count. Closed
+runtime directories reject unknown names, including beside retained trust state.
+The trust state, anchor and lock remain retained for the guard's independent real
+denied-state readback; this partial entry never opens or removes those leaves.
+Fresh saved recovery can finish remaining original leaves, synchronize earlier
+absences and repeat without unlink/native/IPC replay after private and auxiliary
+cleanup. The original records, native artifacts, accounts and operation lock
+domains remain available and required. Full domain/native/trust cleanup, account
+disposition and final publication remain separate unfinished obligations.
 `StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
 phase through fresh objects. It loads all three original records without
 rediscovery/capture, cross-checks their identity/account/release/boot/PID binding,

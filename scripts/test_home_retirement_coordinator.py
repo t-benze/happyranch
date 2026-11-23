@@ -628,6 +628,19 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
                 again.remove_auxiliary()
                 assert len(removed) == 5
                 assert all(not (active.root / path).exists() for path in owner.original.private.members)
+                # A new explicit operation retains the original records and
+                # cutoff proof after the other two cleanup families are gone.
+                managed = StoppedRetirement.from_saved(active.io, active.fence)
+                managed.remove_managed()
+                leaves = set(owner.original.managed.members) - {
+                    'var/lib/happyranch-connector/trust-state.json',
+                    'var/lib/happyranch-connector/trust-state.json.anchor',
+                    'var/lib/happyranch-connector/trust-state.json.lock'}
+                assert all(not (active.root / path).exists() for path in leaves)
+                final = StoppedRetirement.from_saved(active.io, active.fence)
+                final.remove_managed()
+                assert all(not (active.root / path).exists() for path in leaves)
+                final.require()
         assert active.effects() == effects and active.frames == frames
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
         assert all((active.root / path).exists() for path in OPERATION_LOCKS)

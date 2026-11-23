@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
 from runtime.remote_access.home_retirement import RetirementUncertain
-from runtime.remote_access.home_retirement_cleanup import PrivateCleanup
+from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
@@ -298,6 +298,20 @@ class StoppedRetirement:
         with held_auxiliary_operations(self._owner.journal, self._owner.original, cleanup=True) as exclusion:
             exclusion.remove_leaves(before_effect=self.require)
             self.require()
+
+    def remove_managed(self) -> None:
+        """Remove original managed leaves while retaining cutoff evidence.
+
+        This partial entry keeps trust/native artifacts and operation domains
+        for fresh explicit recovery. Every removal needs current independent
+        stopped/cutoff proof and held original issuer/minter exclusion.
+        """
+        self.require()
+        with held_auxiliary_operations(self._owner.journal, self._owner.original, cleanup=True) as exclusion:
+            def guard() -> None:
+                self.require()
+                exclusion.require()
+            ManagedCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove()
 
     @contextmanager
     def held_operations(self) -> Iterator[AuxiliaryExclusion]:

@@ -2082,27 +2082,28 @@ def test_private_cleanup_interruption_keeps_original_evidence_and_checks_next_ef
         assert fixture.effects() == []
 
 
-@pytest.mark.parametrize('family', ['private', 'auxiliary'])
+@pytest.mark.parametrize('family', ['private', 'auxiliary', 'managed'])
 @pytest.mark.parametrize('boundary', ['complete', 'sync-failure', 'reappearance'])
 def test_cleanup_recovery_synchronizes_previously_removed_originals(
         fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, family: str, boundary: str) -> None:
-    from runtime.remote_access.home_retirement_cleanup import PrivateCleanup
+    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
     from runtime.remote_access.home_retirement_journal import RetirementJournal
     from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
     auxiliary_setup(fixture)
     with retirement_fence(fixture.io) as fence:
         journal = RetirementJournal(fixture.io, fence)
         original = journal.capture(fixture.inventory.observe(fence=fence))
-        members = original.private.members if family == 'private' else original.auxiliary.members
+        members = getattr(original, family).members
         leaves = {path: signature for path, signature in members.items()
                   if signature is not None and (family == 'private'
-                      or stat.S_ISREG(signature[4]) and path not in OPERATION_LOCKS)}
+                      or stat.S_ISREG(signature[4]) and path not in (*OPERATION_LOCKS, *MANAGED_OPAQUE[:3]))}
         # Model the persisted unlink with its parent sync interrupted, without
         # claiming the cleanup owner caused or acknowledged these absences.
         for path, signature in leaves.items():
             target = fixture.root / path
             target.rmdir() if stat.S_ISDIR(signature[4]) else target.unlink()
-        target = fixture.root / (PRIVATE_KEY if family == 'private' else OPERATION)
+        target = fixture.root / (PRIVATE_KEY if family == 'private' else
+            MANAGED_OPAQUE[3] if family == 'managed' else OPERATION)
         required = {str((fixture.root / path).parent) for path in leaves}
         synced, injected, removals = [], [], []
         real_sync, real_unlink = os.fsync, os.unlink
@@ -2121,8 +2122,9 @@ def test_cleanup_recovery_synchronizes_previously_removed_originals(
         def recover():
             fresh = RetirementJournal(fixture.io, fence)
             saved = fresh.load()
-            if family == 'private':
-                PrivateCleanup(fresh, saved, before_effect=lambda: None).remove()
+            if family in ('private', 'managed'):
+                cleanup = PrivateCleanup if family == 'private' else ManagedCleanup
+                cleanup(fresh, saved, before_effect=lambda: None).remove()
             else:
                 with held_auxiliary_operations(fresh, saved, cleanup=True) as exclusion:
                     exclusion.remove_leaves(before_effect=lambda: None)
@@ -2140,3 +2142,139 @@ def test_cleanup_recovery_synchronizes_previously_removed_originals(
         assert fixture.snapshot() == (injected[0] if injected else before)
         assert RetirementJournal(fixture.io, fence).load() == original
         assert not (fixture.root / STATE / 'home-retirement.json').exists()
+
+
+@pytest.mark.parametrize('state', ['unchanged', 'runtime-flush', 'missing-original'])
+def test_managed_cleanup_removes_original_nontrust_leaves_and_reuses_absence(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        retained = {path: ((fixture.root / path).read_bytes(), (fixture.root / path).stat().st_ino)
+                    for path in (*MANAGED_OPAQUE[:3], BINARY, ACCOUNT_RECORD,
+                        'retained-native/saved-home', 'home/release/.local/share/happyranch/daemon.token')}
+        if state == 'runtime-flush':
+            (fixture.root / MANAGED_OPAQUE[3]).write_bytes(b'synthetic-stop-flush')
+        elif state == 'missing-original':
+            (fixture.root / 'etc/happyranch/connector.json').unlink()
+        guards, removed, synced = [], [], []
+        real_unlink, real_sync, real_open = os.unlink, os.fsync, os.open
+        def unlink(name, *, dir_fd=None):
+            removed.append(str(Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name))
+            real_unlink(name, dir_fd=dir_fd)
+        def sync(fd):
+            synced.append(os.readlink(f'/proc/self/fd/{fd}'))
+            real_sync(fd)
+        def no_opaque_open(name, *args, **kwargs):
+            assert Path(name).name not in {Path(path).name for path in MANAGED_OPAQUE}
+            return real_open(name, *args, **kwargs)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            scoped.setattr(os, 'fsync', sync)
+            scoped.setattr(os, 'open', no_opaque_open)
+            ManagedCleanup(journal, original, before_effect=lambda: guards.append(True)).remove()
+            count = len(removed)
+            fresh = RetirementJournal(fixture.io, fence)
+            ManagedCleanup(fresh, fresh.load(), before_effect=lambda: guards.append(True)).remove()
+        leaves = set(original.managed.members) - set(MANAGED_OPAQUE[:3])
+        assert len(removed) == count and count >= 12
+        assert all(not (fixture.root / path).exists() for path in leaves)
+        assert len(guards) > count and all(str(Path(path).parent) in synced for path in removed)
+        assert {path: ((fixture.root / path).read_bytes(), (fixture.root / path).stat().st_ino)
+                for path in retained} == retained
+        assert journal.load() == original and fixture.effects() == []
+        assert not (fixture.root / STATE / 'home-retirement.json').exists()
+
+
+@pytest.mark.parametrize('drift', ['config-write', 'runtime-replacement', 'parent-replacement',
+    'parent-mode', 'symlink', 'hardlink', 'unknown-state', 'unknown-trust', 'originally-absent', 'account'])
+def test_managed_cleanup_refuses_drift_before_any_removal(fixture: InventoryFixture, drift: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        target = fixture.root / MANAGED_OPAQUE[3]
+        if drift == 'config-write':
+            (fixture.root / 'etc/happyranch/connector.json').write_bytes(b'synthetic-foreign-config')
+        elif drift == 'runtime-replacement':
+            target.rename(fixture.root / 'kept-original-runtime')
+            target.write_bytes(b'synthetic-replaced-runtime')
+            target.chmod(0o600)
+        elif drift == 'parent-replacement':
+            parent = target.parent
+            saved = fixture.root / 'kept-original-parent'
+            parent.rename(saved)
+            parent.mkdir(mode=0o700)
+            # Keep every runtime leaf inode/custody unchanged so only the
+            # replaced parent guard owns this refusal.
+            for child in saved.iterdir():
+                child.rename(parent / child.name)
+        elif drift == 'parent-mode':
+            target.parent.chmod(0o750)
+        elif drift == 'symlink':
+            target.unlink()
+            target.symlink_to(fixture.root / MANAGED_OPAQUE[0])
+        elif drift == 'hardlink':
+            os.link(target, fixture.root / 'kept-runtime-link')
+        elif drift in ('unknown-state', 'unknown-trust'):
+            fixture.file(('var/lib/happyranch-tsnet-sidecar' if drift == 'unknown-state'
+                else 'var/lib/happyranch-connector') + '/foreign', b'synthetic-foreign')
+        elif drift == 'originally-absent':
+            fixture.file('run/happyranch-connector/control.sock', b'synthetic-foreign-new-leaf')
+        else:
+            lookup = fixture.io._lookup_user
+            fixture.io._lookup_user = lambda name: (SimpleNamespace(pw_name=name,
+                pw_uid=os.getuid() + 1, pw_gid=os.getgid()) if name == 'happyranch' else lookup(name))
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ManagedCleanup(journal, original, before_effect=lambda: None).remove()
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('boundary', ['first-guard', 'next-guard', 'next-target', 'sync'])
+def test_managed_cleanup_interruption_preserves_originals_and_checks_next_effect(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        leaves = sorted(path for path, value in original.managed.members.items()
+                        if value is not None and path not in MANAGED_OPAQUE[:3])
+        guards, removed = [], []
+        real_unlink, real_sync = os.unlink, os.fsync
+        def guard():
+            guards.append(True)
+            if (boundary == 'first-guard' and len(guards) == 2
+                    or boundary == 'next-guard' and removed):
+                raise RetirementUncertain()
+        def unlink(name, *, dir_fd=None):
+            real_unlink(name, dir_fd=dir_fd)
+            removed.append(name)
+            if boundary == 'next-target':
+                (fixture.root / leaves[1]).write_bytes(b'synthetic-foreign-between-effects')
+        def sync(fd):
+            if boundary == 'sync' and removed and os.readlink(f'/proc/self/fd/{fd}') == str((fixture.root / leaves[0]).parent):
+                raise OSError('synthetic-sync-failure')
+            real_sync(fd)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            scoped.setattr(os, 'fsync', sync)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                ManagedCleanup(journal, original, before_effect=guard).remove()
+        assert len(removed) == (0 if boundary == 'first-guard' else 1)
+        assert (fixture.root / leaves[1]).is_file()
+        assert RetirementJournal(fixture.io, fence).load() == original
+        assert not (fixture.root / STATE / 'home-retirement.json').exists()
+        if boundary != 'next-target':
+            fresh = RetirementJournal(fixture.io, fence)
+            ManagedCleanup(fresh, fresh.load(), before_effect=lambda: None).remove()
+            assert all(not (fixture.root / path).exists() for path in leaves)
+        assert all((fixture.root / path).is_file() for path in MANAGED_OPAQUE[:3])
+        assert fixture.effects() == []

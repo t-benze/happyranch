@@ -54,6 +54,14 @@ phases in either order, retaining original lock domains. Already absent original
 leaves still require synchronization of their original parents and absent-name
 readback; Remove abstracts those durability operations rather than treating
 absence as an acknowledged earlier sync.
+`remove_managed` now applies the same Remove obligations to the saved original
+managed non-trust leaves, with shared-account parent custody, immutable config
+signatures and runtime inode/custody continuity. Closed runtime names, fresh
+stopped/denial/held-operation guards and explicit absent-parent sync/readback
+remain real-code obligations. The trust pair/lock, native artifacts and all
+serialization domains stay retained for independent recovery. Full removal,
+account disposition and final publication still require their own owners.
+
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They
