@@ -2725,8 +2725,8 @@ Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name`
 
 ## Org Settings Storage (THR-095)
 
-The 5 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
-`working_hours`, `reviewer_agents` — are stored in the **`org_settings`** SQLite table (same per-org DB
+The 5 settings-API-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
+`working_hours`, `reviewer_agents` (no web control since THR-336; API only) — are stored in the **`org_settings`** SQLite table (same per-org DB
 as `tasks` / `audit_log`). `org/config.yaml` is a **git-tracked seed file only**;
 the daemon **never** reads or writes these keys from the file once the one-shot
 seed migration has run (first daemon startup after upgrade).  The seed also
@@ -3158,7 +3158,7 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, a thread artifact attachment and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
 
 J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 

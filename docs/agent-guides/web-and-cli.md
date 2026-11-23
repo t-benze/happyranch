@@ -688,7 +688,7 @@ and eligibility dialogs, and schedule **Edit** (the policy classifies
 other schedule operations are unchanged). Host-wide create organization (Add
 organization, onboarding) and custom-CLI failed-connection Validate
 (`/retry`)/Clear (`/forget`) say “Unavailable on this connection. Do this on
-{Host}.” Settings → Capacity and Coding are named unavailable (the Host shares
+{Host}.” Settings → Capacity is named unavailable (the Host shares
 no reads): “{page} is unavailable on this connection”, with recovery to change
 it on the Host or switch to This computer; Capacity adds “Affects all
 organizations on {Host}”. Language and HappyRanch on this computer are local
@@ -2474,7 +2474,7 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
-**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB shipped; Usage presentation W4d-2).
 
 **W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, historically checked by a `format.test.ts` source scan retired under THR-343). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
@@ -2482,40 +2482,34 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **Agent retirement (THR-296):** the active agent detail pane (`features/agents/AgentDetailPane.tsx`) ends with a **Retire agent** section that opens `RetireAgentDialog`. The dialog lists the consequences, requires an explicit destructive confirm, and calls `POST /agents/{agent_name}/retire` once through `useRetireAgent` with the existing Founder bearer; the confirm is disabled while the request runs. The daemon is the only eligibility authority: a refusal stays in the open dialog with the server's code, message, blocking work and team members verbatim (only `agent_not_quiescent` and `team_not_empty` get an en/zh-CN headline) and the agent stays active. A refusal is a 4xx answer other than 404; a lost response, a 5xx or a 404 leaves the outcome unknown, so the dialog re-reads the roster: an agent that is gone is treated as retired, one still listed is reported as such, and if that read fails the dialog says the outcome is unconfirmed instead of claiming the agent is active. Settlement (success or failure) first cancels every in-flight read of the active roster, teams, enrollments, identities and the retained retired source, including first loads, then invalidates them, so a read that began before the retirement cannot be stored as fresh; success navigates to `?view=terminated&source=<agent>` for every role, and that retained knowledge detail offers Distill (a retired manager is a Distill source since TASK-15902). For a manager, decided from the roster role, the dialog additionally says its definition is preserved and that its now-empty team is also removed. The UI adds no eligibility rule for this.
 
-**W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
+**W4d-1** translates KB chrome, including list/detail/candidates,
 search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
-its supported DialogContent close control, and artifact upload/download/delete
-confirmation. `VITE_ENABLE_KB_COMPOSE` remains unchanged. Candidate/Compose and
-artifact action errors are pure F1 category/raw descriptors rendered through the
-current translator, so generated messages retranslate without repeating a
+its supported DialogContent close control. `VITE_ENABLE_KB_COMPOSE` remains
+unchanged. Candidate/Compose action errors are pure F1 category/raw descriptors
+rendered through the current translator, so generated messages retranslate without repeating a
 mutation; unknown codes and nonblank raw diagnostics remain verbatim, while
 absent/blank diagnostics use the localized fallback. KB authored content,
-type/topic/tags/slug/names/IDs and artifact canonical names, path segments,
-file-derived titles/provenance identifiers remain byte-verbatim. Only artifact
-client-derived type LABELS translate; classification/parsing and stored data
-remain unchanged. Counts use explicit-locale display plus plural objects.
+type/topic/tags/slug/names/IDs remain byte-verbatim. Counts use explicit-locale
+display plus plural objects.
 KB card/detail share relative-age rounding and catalog units, with explicit
-unavailable display for invalid dates. Artifact filename calendar dates use the
-existing `monthDayYear` shape in UTC without shifting the day; invalid calendar
-dates render an unavailable label. Modified times use viewer-local `dateTime`
-with explicit locale. The English modified-time shape now zero-pads the hour
-(e.g. `02:05 PM`), and invalid KB age displays `Age unavailable` instead of
-`NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
-localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
-binary thresholds/rounding; other attachment consumers retain their legacy
-optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
+unavailable display for invalid dates. Invalid KB age displays `Age unavailable`
+instead of `NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
+localized fallbacks. DrawerContent has no closeLabel/control; Compose's
 DialogContent does, and is localized. The KB drawer fits below 640px without
 changing desktop width. At that narrow breakpoint the scrollable filter rail
 stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
-in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2. W5b supersedes the historical preview default with full browser resolution
+in both locales instead of applying a CSS uppercase transform. `kb` coverage is
+translated; `usage` is translated by W4d-2. W5b supersedes the historical preview default with full browser resolution
 and bilingual availability disclosure; native N0/N1 remain deferred.
-Browser evidence adds representative KB list/detail/candidates and artifact
-list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
-upload filename/selected File/focus/control-preservation switch in both directions
-with zero requests. Final-head evidence is recorded in the task handoff.
+Browser evidence retains representative KB list/detail/candidates rows in
+`web/scripts/w4a-browser-evidence.mjs`. The standalone Artifacts page, its
+navigation entry, page-only translations and browser evidence rows are removed
+(THR-392); its legacy routes are copy-free redirects (`not-applicable` coverage).
+Shared storage, daemon file API, CLI put/list/get and thread artifact links remain.
+J1 browser download coverage uses a thread attachment; see the
+[J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343).
 
 System Assistant mounted copy is retired under THR-294.
 W5a finite mounted coverage is accepted with PR993. W5b replaces the historical
@@ -2523,7 +2517,7 @@ preview default/disclosure with bilingual availability and full browser-language
 resolution. Native preference persistence remains deferred to N0/N1.
 `web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `usage`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
@@ -2586,8 +2580,8 @@ Settings GET `/api/v1/orgs/{slug}/settings` and PUT
 Founder PUT accepts `reviewer_agents: []` as deliberate none; null, duplicate,
 blank and unknown IDs refuse. Omitted fields preserve policy. The internal v2
 marker is never client-writable. Existing Founder/org/publication boundaries
-remain. B1 provides the backend/TS contract; B3 (2026-11-14) adds the
-Settings ▸ Organization reviewer choice described in the Settings section.
+remain. B1 provides the backend/TS contract. The B3 Settings ▸ Organization
+reviewer choice was removed (THR-336); see the Settings section.
 Snapshot path/status checks do not prove response-property parity: review
 `getSettings`/`putOrgSettings`, TS models, route classification and fixtures.
 The retired web openapi-coverage suite remains NOT RUN.
@@ -2916,8 +2910,13 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (invocation timeout only; threads are always on, so the UI shows no Enabled toggle — `threads.enabled` is an inert legacy key that old config files may still carry and the settings route still tolerates and round-trips, but the web UI neither shows nor sends it and nothing gates on it), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
-**Reviewer agents (B3, 2026-11-14).** Settings ▸ Organization edits the generic
-inline-chain `reviewer_agents` setting; it does not select Coding workflow roles,
+**Reviewer agents (B3, 2026-11-14; UI removed THR-336).** Since THR-336 the web
+app has no `reviewer_agents` control: Settings ▸ Organization never sends the key
+(every Save omits it), so the setting is changeable only through the settings
+API (PUT `/settings/org`), and new orgs default to none. Its runtime use (chain
+verdict safety net, authority validation) is unchanged. Historical B3 contract:
+Settings ▸ Organization edited the generic
+inline-chain `reviewer_agents` setting; it did not select Coding workflow roles,
 install workflows or allow runs. The picker lists the active roster from the
 existing agents read, plus an explicit None; requests carry permanent IDs while
 chips and options show current names (`name · id`). The field renders the
@@ -2930,12 +2929,11 @@ flow, but `reviewer_agents` is sent only when the Founder deliberately changed
 it (an unrelated Save omits the key); a successful Save re-syncs from the PUT
 response. A save response always updates the Settings cache of the org it was
 written to, even after an org switch. Locale switches issue no request and keep
-the draft and focus. Browser evidence:
-`web/scripts/w4a-browser-evidence.mjs --slice reviewer-settings [--reviewer-case <ids>]`
-against an ordinary dist with a stateful synthetic Settings daemon.
+the draft and focus. (Its `--slice reviewer-settings` browser evidence was
+removed with the picker.)
 
 The response includes operator-only `threads.default_turn_cap`, which has no
-browser control (`reviewer_agents` was operator-only until B3, above). Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
+browser control (nor, since THR-336, does `reviewer_agents`, above). Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
 
 **Backend routes:**
 
@@ -5349,7 +5347,11 @@ ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-o
 Task details/list/roots and thread linked-task summaries carry nullable
 `originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
 keeps its creation meaning. Task grouping/column/detail use origin with literal
-fallback for older servers. The task detail rail cites the original task with a
+fallback for older servers. The Tasks list THREAD column id links to that thread's
+detail page through the provider-aware thread routes (`originating_thread_id`,
+else literal `dispatched_from_thread_id`); it is a sibling overlay anchor, not
+nested in the row's task link, so clicking it opens the thread, not the task.
+Rows with no thread keep the em-dash (THR-395). The task detail rail cites the original task with a
 revisit arrow; a thread linked-task entry is one bordered rail row (THR-376
 `.rail-link`) carrying a separate shared `StatusBadge` (full status) and task
 `IdBadge` (current task ID), the whole row linked to that task, with no
@@ -5414,14 +5416,16 @@ and explicitly GET that key after transport uncertainty; current configuration
 may be newer than the returned original receipt. Unsafe JavaScript integers
 refuse rather than round a CAS. This backend has no new CLI command;
 existing agent mapping publication cannot replace Founder-owned defaults after
-S1. The page below consumes this client. No configuration save enables the currently disabled engine. See
+S1. Since THR-336 no web page consumes this client (the mirror stays for the
+route contract; routes stay for API/CLI). No configuration save enables the currently disabled engine. See
 [R2](../specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
 
 ### Founder coding settings page
 
-Historical (THR-320). Since U8b (TASK-15605) `CodingSection` no longer edits: it points
-to Workflows → Setup and offers only the read-only original-key lookup described in
-§ U8b. The editor contract below is retained as history for its saved records.
+Historical (THR-320). Since U8b (TASK-15605) `CodingSection` no longer edited; THR-336
+removed the Settings → Coding tab entirely (the URL redirects to Workflows → Setup and
+the original-key lookup is API/CLI-only, § U8b). The editor contract below is retained
+as history for its saved records.
 
 `/orgs/:slug/settings/coding` mounted `CodingSection` outside the general settings
 gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
@@ -5656,8 +5660,8 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 
 The published human-terminal command is
 `python3 scripts/setup_coding.py --org happyranch`, followed by Workflows → Setup
-at `/orgs/ORG/workflows/setup`. Settings → Coding is only a pointer with read-only
-original-save recovery; it no longer edits historical repo-bearing settings.
+at `/orgs/ORG/workflows/setup`. Settings → Coding was removed (THR-336); its URL
+redirects to Setup and historical original-save recovery is API/CLI-only.
 Use the actual reviewed pinned source update supplied by root; the runtime guide
 specifies bootstrap, strict flags, all-runtime maintenance and private recovery
 material. No agent may run host setup effects. Managed/unknown attribution and
@@ -6025,7 +6029,7 @@ The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the
 [U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
-U8b (below) adds Setup/Save custody and the Settings → Coding redirect.
+U8b (below) adds Setup/Save custody and the Settings → Coding pointer (removed by THR-336).
 
 ## U8b Workflows Setup and Settings → Coding redirect (TASK-15605)
 
@@ -6061,11 +6065,13 @@ expected_generation, and the receipt panel compares generations ordinally. Draft
 per org (never persisted), so navigation, org A→B→A and locale changes keep them with no
 request. The settings GET's 404 `sequential_settings_not_found` means "nothing saved
 yet" and does not fence the org; every other 403/404 keeps the U8a org-wide fence and F6
-applies to the settings read. `/orgs/:slug/settings/coding` no longer edits: it points to
-Workflows → Setup and keeps historical repo-bearing saves recoverable by a read-only
-GET `/settings/coding?operation_key=KEY` lookup (the old send fence was memory-only, so
-recovery is by the original key the old page displayed). Nothing there sends a PUT,
-converts or resends the historical command. See the
+applies to the settings read. `/orgs/:slug/settings/coding` no longer edits. Since
+THR-336 the Settings → Coding tab is removed and that URL redirects to
+`/orgs/:slug/workflows/setup` (in the desktop dialog host an unknown Settings page opens
+Capacity). Historical repo-bearing saves stay recoverable only via API/CLI with the
+read-only GET `/settings/coding?operation_key=KEY` (the old send fence was memory-only,
+so recovery is by the original key the old page displayed). Nothing in the web app
+sends that PUT, converts or resends the historical command. See the
 [U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
 
 ## U7b repo-free settings and original save (TASK-15482)

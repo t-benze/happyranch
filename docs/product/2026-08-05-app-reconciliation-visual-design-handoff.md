@@ -59,6 +59,10 @@ These rules apply to every frame below.
 
 ## #574 — Artifact card time and provenance
 
+> Superseded by THR-392: the standalone Artifacts page and its cards are removed.
+> The target and acceptance evidence below are historical design context.
+> Shared storage, daemon API, CLI put/list/get and thread artifact links remain.
+
 **Target route and states:** `/orgs/:slug/artifacts`, artifact cards for convention-matching and neutral filenames, with valid and unavailable `modified_at` values.
 
 **Layout and interaction:** retain the card hierarchy: type/thumbnail, title, optional provenance line, then file metadata/actions. Render a labeled modified time from the existing `modified_at` field (for example, `Modified Aug 5, 2026`); it is file modification time, not authoring time. Render agent/thread/date provenance only when it is deterministically derived from the documented filename convention, and keep its derived nature visually secondary. For a neutral filename, omit provenance rather than displaying a bare `—`. For unavailable/invalid modification time, show `Modified time unavailable`; do not make up a time or source.
@@ -101,7 +105,7 @@ These rules apply to every frame below.
 
 ## #577 — Intent-first navigation pilot
 
-**Target routes and states:** only the Founder-approved normal AppShell pilot routes. The crosswalk starts from current destinations: Dashboard, Threads, Tasks, Jobs, Todos; Agents, Teams, Work Hours; Skills, Settings; KB, Artifacts, Audit, Dreams, Usage, Health. Existing route paths, `/schedule` → Work Hours Wakes, and `/spend` → Usage remain compatibility targets.
+**Target routes and states:** only the Founder-approved normal AppShell pilot routes. The crosswalk starts from current destinations: Dashboard, Threads, Tasks, Jobs, Todos; Agents, Teams, Work Hours; Skills, Settings; KB, Audit, Dreams, Usage, Health. THR-392 removes the Artifacts navigation destination; its legacy URL redirects to Threads. Existing route paths, `/schedule` → Work Hours Wakes, and `/spend` → Usage remain compatibility targets.
 
 **Layout and interaction:** express the selected group as a text heading plus navigational structure, not a color-only sidebar treatment. Retain selected organization context and make current destination/group discoverable. Dashboard, assistant, summary cards, and evidence surfaces visibly hand off to their canonical record; they do not imply an action happened inside the triage surface. Command palette, help, top bar, and route highlight must stay aligned with the chosen crosswalk. Design the smallest founder-approved group/surfaces first; do not render all groups as an all-at-once shell replacement.
 

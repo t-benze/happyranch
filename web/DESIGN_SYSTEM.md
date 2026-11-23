@@ -159,8 +159,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   (THR-376 r2 K2/K4).
 - `InboxRow`'s `thread` layout uses Hanken 14px / 600
   (`font-sans text-sm font-semibold`); its historical `default` layout stays
-  unchanged. Artifact titles use the same Hanken 14px / 600; artifact folder
-  paths use JetBrains Mono 13.5px / 600 (`font-mono text-nav font-semibold`).
+  unchanged.
 - `PageTitle` (`patterns/PageTitle.tsx`, THR-376 PR6) is the title block of
   every top-level page (each Sidebar destination's list/index page): an
   optional `eyebrow` (`text-eyebrow uppercase text-text-muted`), exactly one
@@ -236,9 +235,8 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `SegmentedControl`; when several options can be on at once, or clicking
   the active option clears it back to "all" (facet rails, tag pills, legend
   filters, day pickers), keep independent `aria-pressed` toggle buttons.
-  Adopted on Tasks (group by), Threads (All/Open/Done), Artifacts (type
-  filter), Audit (time window), Health (window), Home top-token threads
-  (window), Skills / Custom skills (current/removed) and Todos (status
+  Adopted on Tasks (group by), Threads (All/Open/Done), Audit (time window),
+  Health (window), Home top-token threads (window), Skills / Custom skills (current/removed) and Todos (status
   filter). A small fixed set of sibling sub-views of one page also uses it
   (THR-376 r2 A12): Work Hours (Overview/Wakes) and Workflows
   (Definitions/Setup/Runs); the caller derives `value` from the URL and

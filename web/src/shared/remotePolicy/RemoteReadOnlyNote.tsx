@@ -9,8 +9,8 @@
  *               retire/restore, a toggle): "Nothing was sent."
  * - hostWide  → a host-wide action (create org, runtime, custom CLI
  *               retry/forget) that is unavailable on a remote connection.
- * - unavailable → a page whose reads the Host does not share (Capacity,
- *               Coding): named, with reason and recovery, never fake values.
+ * - unavailable → a page whose reads the Host does not share (Capacity):
+ *               named, with reason and recovery, never fake values.
  *
  * Policy and target state live in `@/lib/remotePolicy`; this is presentation.
  */
@@ -49,7 +49,7 @@ export function RemoteReadOnlyNote({
   );
 }
 
-/** A Settings page the remote Host does not share (Capacity, Coding). */
+/** A Settings page the remote Host does not share (Capacity). */
 export function RemoteUnavailablePage({
   host,
   page,

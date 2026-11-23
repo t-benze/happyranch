@@ -24,10 +24,10 @@
  * `agents/:agent_name`, `agents/:agent_name/team-escalation-policy` and its
  * owned dialogs/panels) and Skills (every `skills*` route token and its owned
  * surfaces); user/daemon values (policy bodies, contract ids, digests, agent
- * names, skill names/slugs/bodies, versions, provenance) stay verbatim. W4d-1 migrates KB and Artifacts including gated Compose and upload/action chrome.
+ * names, skill names/slugs/bodies, versions, provenance) stay verbatim. W4d-1 migrates KB including gated Compose and action chrome.
  * W4d-2 translates Usage presentation; the mounted Assistant dock and
  * conversation controls are also translated. W5a completes the accepted finite
- * mounted-state audit; W5b enables full browser locale resolution. The 21
+ * mounted-state audit; W5b enables full browser locale resolution. The 20
  * translated/3 not-applicable entries are inventory, not rendering proof.
  * Fallback English is never treated as coverage.
  * Redirect-only/catch-all
@@ -104,9 +104,9 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'redirects',
-    routeTokens: ['/orgs/:slug', 'spend', 'schedule'],
+    routeTokens: ['/orgs/:slug', 'spend', 'schedule', 'artifacts'],
     status: 'not-applicable',
-    surfaces: ['OrgLayout (org-context wrapper, no copy)', 'NavigateToHome', 'SpendRedirect', 'ScheduleRedirect'],
+    surfaces: ['OrgLayout (org-context wrapper, no copy)', 'NavigateToHome', 'SpendRedirect', 'ScheduleRedirect', 'retired Artifacts Navigate redirects'],
   },
   {
     namespace: 'onboarding',
@@ -252,12 +252,6 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     surfaces: ['WorkHoursOverviewPage', 'WorkHoursWakesView', 'WorkHoursAgentDetailPage', 'TierEditorDialog'],
   },
   {
-    namespace: 'artifacts',
-    routeTokens: ['artifacts'],
-    status: 'translated',
-    surfaces: ['ArtifactsPage'],
-  },
-  {
     namespace: 'settings',
     surfaceOwners: {
       EligibilityEditorDialog: 'src/shared/work-hours/EligibilityEditorDialog.tsx',
@@ -272,8 +266,6 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'executors',
       'preferences',
     ],
-    // THR-320 Founder coding page; `coding` also names other route modules.
-    qualifiedRouteTokens: ['SettingsPage.tsx:coding'],
     status: 'translated',
     surfaces: [
       'SettingsPage',
@@ -281,7 +273,6 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'DaemonCapacitySection',
       'OrganizationSection',
       'ExecutorsSection',
-      'CodingSection',
       'PreferencesSection',
       'EligibilityEditorDialog',
     ],
@@ -295,9 +286,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'SettingsPage.tsx:assistant',
       'SettingsPage.tsx:system',
       'SettingsPage.tsx:agents',
+      // THR-336: the removed Coding tab's URL redirects to Workflows → Setup.
+      'SettingsPage.tsx:coding',
       'SettingsPage.tsx:*',
     ],
-    surfaces: ['settings index/assistant/system/agents/* redirects'],
+    surfaces: ['settings index/assistant/system/agents/coding/* redirects'],
   },
   {
     namespace: 'app-shell',

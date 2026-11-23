@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB/Artifacts + W4d-2 Usage + W5b full browser activation contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB + W4d-2 Usage + W5b full browser activation contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB/Artifacts + W4d-2 Usage)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB + W4d-2 Usage)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -21,7 +21,10 @@
 > mounted Todos, Work Hours (incl. the shared `EligibilityEditorDialog`) and
 > Audit route families. **W4c** translated the mounted Agents
 > (`agents`, `agents/:agent_name`, `agents/:agent_name/team-escalation-policy`)
-> and Skills (every `skills*` token) route families; KB/Artifacts are translated by **W4d-1**; Usage presentation is translated by **W4d-2**.
+> and Skills (every `skills*` token) route families; KB is translated by **W4d-1**; Usage presentation is translated by **W4d-2**.
+> THR-392 removes the standalone Artifacts page, its navigation entry, page-only
+> strings and browser evidence rows. Legacy page routes are copy-free redirects;
+> shared storage, daemon API, CLI put/list/get and thread artifact links remain.
 > System Assistant dock/conversation controls are retired (THR-294). W5a finite
 > mounted coverage is accepted (PR993); W5b enables full browser resolution at
 > the entry and AppShell and replaces the obsolete secondary-page disclosure.
@@ -186,7 +189,7 @@ Delivery status at W1 (keep separate from later phases):
 | Runtime Health + Dreams (W4a-1: HealthPage; DreamsPage feed/rail + DreamDetailPane drawer) | **shipped — W4a-1** |
 | Todos + Work Hours + Audit (W4b: TodosPage/TodoDetailPage/TodoRow/StatusPill + Confirm/Edit dialogs; Work Hours OverviewPage/WakesView/AgentDetailPage + TierEditorDialog + shared EligibilityEditorDialog; AuditPage/AuditTimeline/filters + catalog-templated narrative) | **shipped — W4b** |
 | Agents + Skills (W4c: AgentsPage/AgentDetailPane/AgentDetailDrawer/PendingEnrollmentsTab + AddAgentDialog; TeamEscalationPolicyPage/Card; SkillsPage/SkillValidationPage/SkillDetailPage/SkillAssignmentPanel and the custom-skill list/create/detail pages) | **shipped — W4c** |
-| KB + Artifacts chrome (W4d-1) | **shipped — W4d-1** |
+| KB chrome (W4d-1) | **shipped — W4d-1** |
 | Usage chrome (W4d-2) | **shipped — W4d-2** |
 | Mounted Assistant dock + conversation controls | en/zh-CN app-owned visible and accessible copy; component and ordinary-build browser evidence in the task handoff |
 | Final mounted-console audit | **W5a accepted — PR993**; W5b enables full-mode browser-language defaults |
@@ -327,40 +330,32 @@ selector:
   neither the disclosure nor any browser/system-language defaulting.
 
 
-**W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
+**W4d-1** translates KB chrome, including list/detail/candidates,
 search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
-its supported DialogContent close control, and artifact upload/download/delete
-confirmation. `VITE_ENABLE_KB_COMPOSE` remains unchanged. Candidate/Compose and
-artifact action errors are pure F1 category/raw descriptors rendered through the
-current translator, so generated messages retranslate without repeating a
+its supported DialogContent close control. `VITE_ENABLE_KB_COMPOSE` remains
+unchanged. Candidate/Compose action errors are pure F1 category/raw descriptors
+rendered through the current translator, so generated messages retranslate without repeating a
 mutation; unknown codes and nonblank raw diagnostics remain verbatim, while
 absent/blank diagnostics use the localized fallback. KB authored content,
-type/topic/tags/slug/names/IDs and artifact canonical names, path segments,
-file-derived titles/provenance identifiers remain byte-verbatim. Only artifact
-client-derived type LABELS translate; classification/parsing and stored data
-remain unchanged. Counts use explicit-locale display plus plural objects.
+type/topic/tags/slug/names/IDs remain byte-verbatim. Counts use explicit-locale
+display plus plural objects.
 KB card/detail share relative-age rounding and catalog units, with explicit
-unavailable display for invalid dates. Artifact filename calendar dates use the
-existing `monthDayYear` shape in UTC without shifting the day; invalid calendar
-dates render an unavailable label. Modified times use viewer-local `dateTime`
-with explicit locale. The English modified-time shape now zero-pads the hour
-(e.g. `02:05 PM`), and invalid KB age displays `Age unavailable` instead of
-`NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
-localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
-binary thresholds/rounding; other attachment consumers retain their legacy
-optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
+unavailable display for invalid dates. Invalid KB age displays `Age unavailable`
+instead of `NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
+localized fallbacks. DrawerContent has no closeLabel/control; Compose's
 DialogContent does, and is localized. The KB drawer fits below 640px without
 changing desktop width. At that narrow breakpoint the scrollable filter rail
 stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
-in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
+in both locales instead of applying a CSS uppercase transform. `kb` coverage is
+translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
 and bilingual availability disclosure; native N0/N1 remain deferred.
-Browser evidence adds representative KB list/detail/candidates and artifact
-list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
-upload filename/selected File/focus/control-preservation switch in both directions
-with zero requests. Final-head evidence is recorded in the task handoff.
+Browser evidence retains representative KB list/detail/candidates rows in
+`web/scripts/w4a-browser-evidence.mjs`; the Artifacts list/folder/upload and
+filename/File/focus-switch rows were removed with the page. Current J1 browser
+artifact download coverage uses a thread attachment; see the
+[J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343).
 
 **W4d-2** translates the app-owned Usage v1 Workload/Efficiency presentation,
 including column/run-type labels, CLI default (not pinned), comparison/coverage/
@@ -509,10 +504,11 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W4d-2 exactly twenty namespaces are `translated` (`root-shell`,
+test. The historical W4d-2 `translated` inventory excludes the retired Artifacts
+namespace and lists `root-shell`,
 `not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
 `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`,
-`work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`); every
+`work-hours`, `audit`, `agents`, `skills`, `kb`, `usage`; every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 (production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
@@ -728,7 +724,7 @@ Frontend readiness map (actual evidence):
 
 | Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1), Todos/Work Hours/Audit (W4b), Agents/Skills (W4c) and KB/Artifacts (W4d-1); Usage presentation (W4d-2); the mounted Assistant dock and conversation controls are translated with component and ordinary-build browser evidence |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1), Todos/Work Hours/Audit (W4b), Agents/Skills (W4c) and KB (W4d-1); Usage presentation (W4d-2); the mounted Assistant dock and conversation controls are translated with component and ordinary-build browser evidence |
 | Public language selector | N/A — W3b-2 | Historical W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
@@ -750,9 +746,9 @@ No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
 translation campaign beyond W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 (W4a-1 translated Health
 and Dreams; W4b translated Todos, Work Hours and Audit; W4c translated Agents
-and Skills; W4d-1 translates KB and Artifacts; W4d-2 translates Usage presentation; the mounted Assistant dock and conversation controls are translated), deployment, or caller migration of display
+and Skills; W4d-1 translates KB; W4d-2 translates Usage presentation; the mounted Assistant dock and conversation controls are translated), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB/Artifacts, W4d-2 Usage route families and mounted Assistant presentation. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB, W4d-2 Usage route families and mounted Assistant presentation. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs` (the former command palette's cache-only switch window was

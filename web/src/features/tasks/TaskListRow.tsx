@@ -34,6 +34,11 @@ export interface TaskListRoutes {
   detail(taskId: string): string;
 }
 
+/** Thread route helper injected by the feature caller (THR-395). */
+export interface TaskListThreadRoutes {
+  detail(threadId: string): string;
+}
+
 /** The named Tasks grid is shared by the header and every desktop row. */
 const COL = {
   status: 'min-w-0', task: 'min-w-0', title: 'min-w-0',
@@ -167,9 +172,10 @@ export interface TaskListRowProps {
   task: TaskRecord;
   to: string;
   taskRoutes: TaskListRoutes;
+  threadRoutes: TaskListThreadRoutes;
 }
 
-export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Element {
+export function TaskListRow({ task, to, taskRoutes, threadRoutes }: TaskListRowProps): JSX.Element {
   const { t, render } = useTranslation();
   const rollup = severityRollupStatus(task);
   const waiting = resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
@@ -179,59 +185,75 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
 
   return (
     <div className={`border-border-default border-b ${task.status === 'superseded' ? 'opacity-60' : ''}`}>
-      <Link
-        to={to}
-        className={`${ROW_FLEX} hover:bg-surface-hover tasks-row rounded-md text-sm no-underline transition-colors`}
-      >
-        {/* STATUS — compact primary task status only, whitespace-nowrap to prevent wrapping */}
-        <div className={`${COL.status} tasks-status whitespace-nowrap`}>
-          <StatusBadge status={task.status} />
-        </div>
-        {/* TASK — monospace task-id badge */}
-        <div className={`${COL.task} tasks-id truncate`} title={task.task_id}>
-          <IdBadge id={task.task_id} kind="task" />
-        </div>
-        {/* TITLE — headline text + optional second-line context (waiting qualifier
-            and/or worst-child severity rollup), both clipped to the title column */}
-        <div className={`${COL.title} flex flex-col items-start justify-center gap-0.5 overflow-hidden`}>
-          <span className="text-text-primary text-task-title w-full min-w-0 truncate font-semibold" title={task.brief}>{briefHeadline(task.brief)}</span>
-          {(waiting || rollup !== task.status) && (
-            <div className="flex max-w-full items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
-              {waiting && (
-                <span className="text-text-muted truncate">
-                  {waiting}
-                </span>
-              )}
-              {waiting && rollup !== task.status && (
-                <span className="text-border-default" aria-hidden>
-                  ·
-                </span>
-              )}
-              {rollup !== task.status && <SubtaskRollup status={rollup} />}
+      {/* THR-395: the thread link cannot nest inside the row Link (no nested
+          anchors), so it lives in a sibling overlay grid below that repeats
+          the row's grid template; `group` keeps the row hover while the
+          pointer is over the thread link. */}
+      <div className="group relative">
+        <Link
+          to={to}
+          className={`${ROW_FLEX} group-hover:bg-surface-hover tasks-row rounded-md text-sm no-underline transition-colors`}
+        >
+          {/* STATUS — compact primary task status only, whitespace-nowrap to prevent wrapping */}
+          <div className={`${COL.status} tasks-status whitespace-nowrap`}>
+            <StatusBadge status={task.status} />
+          </div>
+          {/* TASK — monospace task-id badge */}
+          <div className={`${COL.task} tasks-id truncate`} title={task.task_id}>
+            <IdBadge id={task.task_id} kind="task" />
+          </div>
+          {/* TITLE — headline text + optional second-line context (waiting qualifier
+              and/or worst-child severity rollup), both clipped to the title column */}
+          <div className={`${COL.title} flex flex-col items-start justify-center gap-0.5 overflow-hidden`}>
+            <span className="text-text-primary text-task-title w-full min-w-0 truncate font-semibold" title={task.brief}>{briefHeadline(task.brief)}</span>
+            {(waiting || rollup !== task.status) && (
+              <div className="flex max-w-full items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
+                {waiting && (
+                  <span className="text-text-muted truncate">
+                    {waiting}
+                  </span>
+                )}
+                {waiting && rollup !== task.status && (
+                  <span className="text-border-default" aria-hidden>
+                    ·
+                  </span>
+                )}
+                {rollup !== task.status && <SubtaskRollup status={rollup} />}
+              </div>
+            )}
+          </div>
+          {/* AGENT — AgentChip or em-dash fallback */}
+          <div className={`${COL.agent} truncate`} title={agent ?? undefined}>
+            {agent ? (
+              <AgentChip name={agent} role={agentChipRole(agent)} />
+            ) : (
+              <span className="text-text-muted">—</span>
+            )}
+          </div>
+          {/* THREAD — invisible IdBadge placeholder (holds the column width; the
+              real link is in the overlay below) or em-dash fallback */}
+          <div className={`${COL.thread} tasks-id truncate`}>
+            {thread ? (
+              <span className="invisible" aria-hidden><IdBadge id={thread} kind="thread" /></span>
+            ) : (
+              <span className="text-text-muted">—</span>
+            )}
+          </div>
+          {/* UPDATED — relative age */}
+          <div className={`${COL.updated} text-task-meta font-mono text-text-muted whitespace-nowrap tabular-nums`}>
+            {relativeAge(task.updated_at, t)}
+          </div>
+        </Link>
+        {thread && (
+          <div className={`${ROW_FLEX} tasks-row pointer-events-none absolute inset-0 text-sm`}>
+            <div className={`${COL.thread} tasks-id col-start-5 truncate`} title={thread}>
+              <span className="pointer-events-auto [&_span]:text-info">
+                <IdBadge id={thread} kind="thread" to={threadRoutes.detail(thread)} />
+              </span>
             </div>
-          )}
-        </div>
-        {/* AGENT — AgentChip or em-dash fallback */}
-        <div className={`${COL.agent} truncate`} title={agent ?? undefined}>
-          {agent ? (
-            <AgentChip name={agent} role={agentChipRole(agent)} />
-          ) : (
-            <span className="text-text-muted">—</span>
-          )}
-        </div>
-        {/* THREAD — IdBadge or em-dash fallback */}
-        <div className={`${COL.thread} tasks-id truncate`} title={thread ?? undefined}>
-          {thread ? (
-            <span className="[&>span]:text-info"><IdBadge id={thread} kind="thread" /></span>
-          ) : (
-            <span className="text-text-muted">—</span>
-          )}
-        </div>
-        {/* UPDATED — relative age */}
-        <div className={`${COL.updated} text-task-meta font-mono text-text-muted whitespace-nowrap tabular-nums`}>
-          {relativeAge(task.updated_at, t)}
-        </div>
-      </Link>
+          </div>
+        )}
+      </div>
 
       {/* Supersede / revisit lineage — siblings of the row Link (no nested
           anchors), preserving the navigation TaskCard previously offered. */}

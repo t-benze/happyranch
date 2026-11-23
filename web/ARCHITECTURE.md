@@ -54,9 +54,10 @@ lookup runs under the same org admission generation/abort/refusal policy, and th
 editor never rehydrates from a read older than its own committed generation, nor adopts
 a conflict read below the known committed generation. For `generation_stale` the
 read must be strictly newer than the refused basis; for `operation_conflict` it
-may equal that basis (both also respect the committed floor). Settings →
-Coding (`features/settings/sections/CodingSection`) is a pointer to Setup plus a
-read-only original-key lookup for historical saves. See
+may equal that basis (both also respect the committed floor). The former
+Settings → Coding tab was removed (THR-336): `/orgs/:slug/settings/coding`
+redirects to Workflows → Setup, and the historical original-key lookup
+(GET `/settings/coding?operation_key=KEY`) is reachable only via API/CLI. See
 `docs/specs/2026-11-12-sequential-coding-u8.md`.
 
 ## Layers (strict)
@@ -333,7 +334,7 @@ production builds.
 **W3b-1** translated the mounted Tasks route family (`features/tasks/**`: list/detail panes, filters, status/rollup/fan-out presentation, states and the owned Cancel/Revisit/ResolveEscalation dialogs). `StatusBadge` takes an optional localized `waitingLabels` prop with an English default (Jobs/TaskCard callers unchanged). Dialog errors are `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) rendered at render time; briefs, notes, names, IDs, machine values, unknown flavors/work-status states and raw event actions/payloads stay verbatim, and group/lineage React keys are locale-neutral so a switch keeps rows, dialogs, drafts and focus with no request. Browser evidence: `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
 **W3b-2** translated the mounted Jobs route family (`features/jobs/**`: list chrome/status groups/callout/columns/relative age, detail states/actions/command card/cascade/gated notice/rail/output, and the owned Run/Reject dialogs). Daemon values (IDs, titles, script text, rationale, agent names, status tokens, `exit <code>`, stdout/stderr, reasons) stay verbatim. Run/Reject/Stop errors are `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same boundary as `classifyTaskError`). W3b-2 also enabled the opt-in language preview: Settings ▸ Preferences ▸ Language is mounted in ordinary builds, at that historical stage an unset preference stayed English and the selector disclosed untranslated secondary pages. W5b supersedes both with full browser resolution and bilingual availability copy. Browser evidence: `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
-**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB shipped; Usage presentation W4d-2).
 
 **W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, historically checked by the retired format source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
@@ -406,40 +407,36 @@ Both env gates are no-ops for every ordinary build. See
 `docs/specs/2026-09-20-web-i18n-design.md`.
 
 
-**W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
+**W4d-1** translates KB chrome, including list/detail/candidates,
 search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
-its supported DialogContent close control, and artifact upload/download/delete
-confirmation. `VITE_ENABLE_KB_COMPOSE` remains unchanged. Candidate/Compose and
-artifact action errors are pure F1 category/raw descriptors rendered through the
-current translator, so generated messages retranslate without repeating a
-mutation; unknown codes and nonblank raw diagnostics remain verbatim, while
-absent/blank diagnostics use the localized fallback. KB authored content,
-type/topic/tags/slug/names/IDs and artifact canonical names, path segments,
-file-derived titles/provenance identifiers remain byte-verbatim. Only artifact
-client-derived type LABELS translate; classification/parsing and stored data
-remain unchanged. Counts use explicit-locale display plus plural objects.
-KB card/detail share relative-age rounding and catalog units, with explicit
-unavailable display for invalid dates. Artifact filename calendar dates use the
-existing `monthDayYear` shape in UTC without shifting the day; invalid calendar
-dates render an unavailable label. Modified times use viewer-local `dateTime`
-with explicit locale. The English modified-time shape now zero-pads the hour
-(e.g. `02:05 PM`), and invalid KB age displays `Age unavailable` instead of
-`NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
-localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
-binary thresholds/rounding; other attachment consumers retain their legacy
-optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
-DialogContent does, and is localized. The KB drawer fits below 640px without
-changing desktop width. At that narrow breakpoint the scrollable filter rail
-stacks above the feed, and the header actions stack below the title so list
-copy stays readable; desktop retains the side rail and header layout. Raw KB
-type badges retain their stored case (for example, `sop` rather than `SOP`)
-in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2. W5b supersedes the historical preview default with full browser resolution
-and bilingual availability disclosure; native N0/N1 remain deferred.
-Browser evidence adds representative KB list/detail/candidates and artifact
-list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
-upload filename/selected File/focus/control-preservation switch in both directions
-with zero requests. Final-head evidence is recorded in the task handoff.
+its supported DialogContent close control. `VITE_ENABLE_KB_COMPOSE` remains
+unchanged. Candidate/Compose errors are pure F1 category/raw descriptors rendered
+through the current translator, so generated messages retranslate without
+repeating a mutation; unknown codes and nonblank raw diagnostics remain verbatim,
+while absent/blank diagnostics use the localized fallback. KB authored content,
+type/topic/tags/slug/names/IDs remain byte-verbatim. Counts use explicit-locale
+display plus plural objects. KB card/detail share relative-age rounding and
+catalog units, with explicit unavailable display for invalid dates. Invalid KB
+age displays `Age unavailable` instead of `NaNd`; F1 replaces synthetic HTTP
+action failures with raw diagnostics or localized fallbacks. DrawerContent has no
+closeLabel/control; Compose's DialogContent does, and is localized. The KB drawer
+fits below 640px without changing desktop width. At that narrow breakpoint the
+scrollable filter rail stacks above the feed, and the header actions stack below
+the title so list copy stays readable; desktop retains the side rail and header
+layout. Raw KB type badges retain their stored case (for example, `sop` rather
+than `SOP`) in both locales instead of applying a CSS uppercase transform. `kb`
+coverage is translated; `usage` is translated by W4d-2. W5b supersedes the
+historical preview default with full browser resolution and bilingual
+availability disclosure; native N0/N1 remain deferred. Browser evidence retains
+representative KB list/detail/candidates rows in
+`web/scripts/w4a-browser-evidence.mjs`. Final-head evidence is recorded in the
+task handoff.
+
+The standalone Shared Artifacts browsing page was removed under THR-392.
+Legacy `/orgs/:slug/artifacts` URLs redirect to that org's Threads; bare
+`/artifacts` URLs use the normal home/org selection. Shared upload/download/list
+APIs and the CLI remain available. Thread artifact attachments continue using
+`lib/api/artifacts.ts`; removing the browsing page does not change those links.
 
 
 ### Usage presentation locales (THR-118 W4d-2)

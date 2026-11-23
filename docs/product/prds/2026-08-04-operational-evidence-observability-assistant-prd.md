@@ -35,6 +35,10 @@ Non-goals: currency billing, SLA claims, artifact diff/check/review history with
 
 1. **FR-1–4 Evidence:** dashboard/summary, KB records/search/stats, and all counters/statuses identify their source or are marked derived/unavailable/stale.
 2. **FR-5–7 Artifacts:** list/tree/metadata/download/upload/delete and participant-scoped thread attachments expose retained provenance and authoritative external/repository linkage when inspection data is absent.
+
+   THR-392 supersedes this item's standalone browsing-page presentation targets.
+   Shared storage, daemon file API, CLI put/list/get and thread artifact links remain.
+
 3. **FR-8–9 Audit:** provide filterable/paginated append-only timeline and create linked corrective events rather than rewriting historical meaning.
 4. **FR-10–12 Usage:** show defined token categories and cache activity separately, preserve metric window/source, and never imply currency/cost absent a metering record.
 5. **FR-13–15 Dreams/KB:** show dream/reflection/candidate origin, status, proposer/decision evidence where retained; accept/dismiss only through allowed review transition; keep private learning distinct from shared KB.

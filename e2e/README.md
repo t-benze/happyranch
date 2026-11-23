@@ -331,9 +331,16 @@ After E07, a genuine alpha task provider runs the real `kb add --from-file` and
 argv/source/parent-PID witnesses and successful HTTP writes are required. API
 reads compare KB slug/title/body and artifact name/size/exact UTF8 bytes against
 independent literals. The browser opens the real KB drawer and checks its full
-paragraphs; the Artifacts card must show the exact name, size and API modification
-time. Its own Download button must emit a Playwright download with the exact
-filename and byte-identical content. Metadata alone is insufficient.
+paragraphs. The retired `/orgs/alpha/artifacts` URL must redirect to Threads,
+with no Artifacts sidebar link. A founder-only synthetic thread references the
+uploaded shared artifact through the public compose API without waking an agent.
+Its rendered attachment button must show the exact name and size, and emit a
+Playwright download with the exact filename and byte-identical content while
+retaining the thread URL. The public message attachment is independently checked;
+API modification metadata remains covered by `J1.api-content`. The browser saves
+`raw/j1-thread-artifact.png` showing the nav and attachment. Metadata alone is
+insufficient. THR-392 removes only the standalone browsing page; the seven J1
+variants, CLI/API checks, daily schedule and merge gates remain unchanged.
 
 Both missing and incorrect bearer reads of the existing list/detail/blob paths
 must return the precise401 response without changing either org's files or SQL.

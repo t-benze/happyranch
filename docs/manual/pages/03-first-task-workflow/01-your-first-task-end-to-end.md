@@ -124,11 +124,11 @@ happyranch artifacts list
 happyranch artifacts get <name> --output ./local-copy
 ```
 
-Web:
+In the web app, open or download artifact attachments from their thread messages.
+The standalone Artifacts page is removed; `/orgs/:slug/artifacts` redirects to
+that org's Threads. Shared storage, the daemon API and CLI put/list/get remain.
 
-- Artifacts: `/orgs/:slug/artifacts`
-
-![placeholder: Artifacts surface listing a completed task output file](TODO)
+![placeholder: Thread message with a downloadable artifact attachment](TODO)
 
 Short text summaries live on the task. Files live in Artifacts.
 
@@ -139,7 +139,7 @@ Short text summaries live on the task. Files live in Artifacts.
 | Dispatch | Not in stable v1 web path | `happyranch run --brief "..."` |
 | Monitor | Tasks, Threads | `tail`, `details`, `tasks` |
 | Respond | Task detail, Threads, Jobs | `resolve-escalation`, `cancel`, `jobs ...` |
-| Retrieve | Task detail, Artifacts | `details`, `recall`, `artifacts get` |
+| Retrieve | Task detail, Threads attachment links | `details`, `recall`, `artifacts get` |
 
 That is the v1 HappyRanch operating model. Larger work uses the same loop with
 more subtasks, more thread coordination, and more artifacts.
@@ -154,7 +154,7 @@ more subtasks, more thread coordination, and more artifacts.
   CLI-only `resolve-escalation --task-id <id> --decision supersede`, and separate
   `happyranch cancel <task_id>`.
 - Jobs: `/orgs/:slug/jobs`, `/orgs/:slug/jobs/:job_id`, and `happyranch jobs ...`.
-- Retrieve: `/orgs/:slug/artifacts`, `happyranch artifacts ...`,
+- Retrieve: thread artifact links, `happyranch artifacts ...`,
   `happyranch details`, and `happyranch recall`.
 
 
