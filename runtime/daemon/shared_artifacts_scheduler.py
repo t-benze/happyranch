@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from contextlib import ExitStack, nullcontext
 
 from runtime.daemon.shared_artifacts_notices import NoticeUnavailable, SharedArtifactNotices
 from runtime.infrastructure.shared_artifact_references import (
@@ -119,7 +120,7 @@ def sweep(org: object, window: str, *, deadline: float | None = None,
     db, svc = org.db, org.db._shared_artifact_service
     now, run_id = svc.clock(), str(uuid.uuid4())
     result = dict(run_id=run_id,window_id=window,cutoff=_iso(now),cursor='',
-                  complete=False,processed=0,expired=0,deleted=0,protected=0,notices=0,legacy=0)
+                  complete=False,processed=0,expired=0,deleted=0,protected=0,q3_deferred=0,notices=0,legacy=0)
     notices = SharedArtifactNotices(org)
     try:
         # Issued operations alone are restart-reconciled, even in a serviced
@@ -141,72 +142,84 @@ def sweep(org: object, window: str, *, deadline: float | None = None,
             if refusal:
                 _audit(org,'artifact_mode_refused',dict(effective_mode=mode,reason=refusal))
             _audit(org,'artifact_sweep_started',result)
-        # The same deadline is passed through A's inventory/hash/quota work.
-        with db.shared_artifact_transaction() as conn:
-            quota = svc.quota_crossing_uncommitted(conn,deadline=deadline)
-            rows = [dict(r) for r in conn.execute('SELECT g.* FROM shared_artifact_generations g JOIN shared_artifacts a ON a.name=g.name AND a.current_generation=g.generation ORDER BY g.name LIMIT 100001')]
-            if len(rows) > 100000:
-                raise NoticeUnavailable('artifact_inventory_incomplete')
-            notices.deliver_quota(conn,rows,quota=quota,now=now,mode=mode,deadline=deadline)
-            result.update(used_bytes=quota['used_bytes'],reserved_bytes=quota['reserved_bytes'])
-        while time.monotonic() < deadline and not (stop and stop.is_set()):
-            delete_ids = []
-            with db.shared_artifact_transaction() as conn:
-                rows = [dict(r) for r in conn.execute('SELECT g.*,a.revision FROM shared_artifacts a JOIN shared_artifact_generations g ON g.name=a.name AND g.generation=a.current_generation WHERE g.name>? ORDER BY g.name LIMIT 250',(result['cursor'],))]
-                if not rows:
-                    result['complete'] = True
-                    break
-                # Entire batch proof collected before own metadata/audit writes.
-                outcomes = reference_outcomes(org,conn,rows,deadline=deadline,origin=origin)
-                for row in rows:
-                    if time.monotonic() >= deadline or (stop and stop.is_set()):
+        with ExitStack() as fences:
+            # Preview retains one writer fence through every keyset batch. It
+            # needs one observational projection; enforce keeps fresh batch and
+            # final-unlink proofs, with no cached negative crossing a COMMIT.
+            preview_conn = fences.enter_context(db.shared_artifact_transaction()) if mode == 'preview' else None
+            # The same deadline is passed through A's inventory/hash/quota work.
+            with (nullcontext(preview_conn) if preview_conn is not None else db.shared_artifact_transaction()) as conn:
+                quota = svc.quota_crossing_uncommitted(conn,deadline=deadline)
+                rows = [dict(r) for r in conn.execute('SELECT g.* FROM shared_artifact_generations g JOIN shared_artifacts a ON a.name=g.name AND a.current_generation=g.generation ORDER BY g.name LIMIT 100001')]
+                if len(rows) > 100000:
+                    raise NoticeUnavailable('artifact_inventory_incomplete')
+                if preview_conn is not None:
+                    # Classify the whole inventory before own audit/notice writes.
+                    # Values are used only by nonmutating preview, inside this fence.
+                    preview_outcomes = reference_outcomes(org,conn,rows,deadline=deadline,origin=origin) if rows else {}
+                notices.deliver_quota(conn,rows,quota=quota,now=now,mode=mode,deadline=deadline)
+                result.update(used_bytes=quota['used_bytes'],reserved_bytes=quota['reserved_bytes'])
+            while time.monotonic() < deadline and not (stop and stop.is_set()):
+                delete_ids = []
+                with (nullcontext(preview_conn) if preview_conn is not None else db.shared_artifact_transaction()) as conn:
+                    rows = [dict(r) for r in conn.execute('SELECT g.*,a.revision FROM shared_artifacts a JOIN shared_artifact_generations g ON g.name=a.name AND g.generation=a.current_generation WHERE g.name>? ORDER BY g.name LIMIT 250',(result['cursor'],))]
+                    if not rows:
+                        result['complete'] = True
                         break
-                    if mode == 'enforce' and effective_mode(org,conn,now=svc.clock())[0] != mode:
-                        raise NoticeUnavailable('mode_changed_during_sweep')
-                    outcome, refs = outcomes[row['name'],row['generation']]
-                    audit_protection(org,row,outcome,refs)
-                    result['protected'] += int(outcome != 'absent')
-                    if outcome == 'indeterminate':
-                        result['reference_incomplete'] = True
-                    if (mode == 'enforce' and row['state'] == 'pending-attribution'
-                        and now >= _date(row['created_at'])+timedelta(hours=24)):
-                        svc.lifecycle_transition_uncommitted(conn,name=row['name'],generation=row['generation'],
-                            expected_revision=row['revision'],action='timeout',reason='attribution_timeout',
-                            reference_outcome=outcome,effective_mode=mode,operation_id=str(uuid.uuid4()))
-                        row = db._shared_artifact_uncommitted(conn,row['name'],row['generation'])
-                    if row['state'] == 'legacy_unclassified' or not row['expires_at']:
-                        result['legacy'] += int(row['state'] == 'legacy_unclassified')
-                    elif row['state'] in ('active','pending-attribution') and now >= _date(row['expires_at']):
-                        transition = svc.lifecycle_transition_uncommitted(conn,name=row['name'],generation=row['generation'],
-                            expected_revision=row['revision'],action='expire',reason='retention_expired',
-                            reference_outcome=outcome,effective_mode=mode,operation_id=str(uuid.uuid4()))
-                        result['expired'] += int(transition.get('mutated',False))
-                        row = db._shared_artifact_uncommitted(conn,row['name'],row['generation'])
-                    elif row['state'] == 'recoverable' and now >= _date(row['recoverable_until']):
-                        if mode == 'enforce' and outcome == 'absent':
-                            pending = conn.execute("SELECT operation_id FROM shared_artifact_operations WHERE name=? AND phase NOT IN ('committed','aborted')",(row['name'],)).fetchone()
-                            if pending:
-                                result['operation_pending'] = True
-                                result['cursor'] = row['name']
-                                result['processed'] += 1
-                                continue
-                            operation_id = str(uuid.uuid4())
-                            svc.prepare_delete_uncommitted(conn,name=row['name'],generation=row['generation'],
-                                expected_revision=row['revision'],reference_outcome=outcome,effective_mode=mode,
-                                operation_id=operation_id,deadline=deadline)
-                            delete_ids.append(operation_id)
-                        elif mode == 'preview':
-                            svc._event(row,'artifact_preview','daemon',source='system',
-                                       mutated=False,outcome='would_delete',references=refs)
-                    try:
-                        result['notices'] += notices.deliver_file(conn,row,now=now,mode=mode,deadline=deadline)
-                    except NoticeUnavailable:
-                        result['notice_pending'] = True
-                    result['cursor'] = row['name']
-                    result['processed'] += 1
-            # Intent COMMIT precedes the fresh final fence. No proof crosses it.
-            for operation_id in delete_ids:
-                result['deleted'] += int(finish_delete(org,operation_id,deadline=deadline,stop=stop,origin=origin))
+                    # Entire batch proof collected before own metadata/audit writes.
+                    outcomes = preview_outcomes if preview_conn is not None else reference_outcomes(org,conn,rows,deadline=deadline,origin=origin)
+                    for row in rows:
+                        if time.monotonic() >= deadline or (stop and stop.is_set()):
+                            break
+                        if mode == 'enforce' and effective_mode(org,conn,now=svc.clock())[0] != mode:
+                            raise NoticeUnavailable('mode_changed_during_sweep')
+                        outcome, refs = outcomes[row['name'],row['generation']]
+                        audit_protection(org,row,outcome,refs)
+                        result['protected'] += int(outcome != 'absent')
+                        if outcome == 'indeterminate':
+                            if refs == ['Q3:reader_exclusion_unavailable']:
+                                result['q3_deferred'] += 1
+                            else:
+                                result['reference_incomplete'] = True
+                        if (mode == 'enforce' and row['state'] == 'pending-attribution'
+                            and now >= _date(row['created_at'])+timedelta(hours=24)):
+                            svc.lifecycle_transition_uncommitted(conn,name=row['name'],generation=row['generation'],
+                                expected_revision=row['revision'],action='timeout',reason='attribution_timeout',
+                                reference_outcome=outcome,effective_mode=mode,operation_id=str(uuid.uuid4()))
+                            row = db._shared_artifact_uncommitted(conn,row['name'],row['generation'])
+                        if row['state'] == 'legacy_unclassified' or not row['expires_at']:
+                            result['legacy'] += int(row['state'] == 'legacy_unclassified')
+                        elif row['state'] in ('active','pending-attribution') and now >= _date(row['expires_at']):
+                            transition = svc.lifecycle_transition_uncommitted(conn,name=row['name'],generation=row['generation'],
+                                expected_revision=row['revision'],action='expire',reason='retention_expired',
+                                reference_outcome=outcome,effective_mode=mode,operation_id=str(uuid.uuid4()))
+                            result['expired'] += int(transition.get('mutated',False))
+                            row = db._shared_artifact_uncommitted(conn,row['name'],row['generation'])
+                        elif row['state'] == 'recoverable' and now >= _date(row['recoverable_until']):
+                            if mode == 'enforce' and outcome == 'absent':
+                                pending = conn.execute("SELECT operation_id FROM shared_artifact_operations WHERE name=? AND phase NOT IN ('committed','aborted')",(row['name'],)).fetchone()
+                                if pending:
+                                    result['operation_pending'] = True
+                                    result['cursor'] = row['name']
+                                    result['processed'] += 1
+                                    continue
+                                operation_id = str(uuid.uuid4())
+                                svc.prepare_delete_uncommitted(conn,name=row['name'],generation=row['generation'],
+                                    expected_revision=row['revision'],reference_outcome=outcome,effective_mode=mode,
+                                    operation_id=operation_id,deadline=deadline)
+                                delete_ids.append(operation_id)
+                            elif mode == 'preview':
+                                svc._event(row,'artifact_preview','daemon',source='system',
+                                           mutated=False,outcome='would_delete',references=refs)
+                        try:
+                            result['notices'] += notices.deliver_file(conn,row,now=now,mode=mode,deadline=deadline)
+                        except NoticeUnavailable:
+                            result['notice_pending'] = True
+                        result['cursor'] = row['name']
+                        result['processed'] += 1
+                # Intent COMMIT precedes the fresh final fence. No proof crosses it.
+                for operation_id in delete_ids:
+                    result['deleted'] += int(finish_delete(org,operation_id,deadline=deadline,stop=stop,origin=origin))
         if result.get('notice_pending') or result.get('reference_incomplete') or result.get('operation_pending'):
             result['complete'] = False
         result['outcome'] = 'complete' if result['complete'] else 'incomplete'

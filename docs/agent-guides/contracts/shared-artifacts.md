@@ -169,8 +169,10 @@ retain their existing meanings; task/thread provenance lives only in payload.
 ASGI/SQLite/filesystem cases without a daemon lifespan, listener, provider or live
 org. `--case metadata|provisional|journal|custom|quota|shape` selects a group.
 B uses `uv run --frozen python scripts/test_shared_artifacts_b.py --case` with
-`all|manual-delete|quota-chunks|references|handoff-paths|history|live-cap|notices|sweep|sweep-shape` (default all). This is a
-standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL shape case) outside the retired Python suite. It adds no CI
+`all|manual-delete|quota-chunks|references|handoff-paths|history|live-cap|notices|sweep|sweep-q3|sweep-incomplete|sweep-shape` (default all). This is a
+standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL
+shape case with ~66k projected rows /19.4MB selected text and conservative
+four-times clock pacing) outside the retired Python suite. It adds no CI
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
 bounded review evidence, not proof of Python execution or activation.
@@ -217,8 +219,24 @@ materialization record hold their source. Retired sources lacking authoritative
 in-flight reader exclusion remain indeterminate; retirement does not authorize
 deletion. Recovery selects an eligible current version before reading its source,
 so the same conservative hold covers a previously selected recovery reader.
+An exact `['Q3:reader_exclusion_unavailable']` outcome from a completed
+projection is a decided deferral: protected, counted toward quota, audited and
+rechecked every sweep. It increments `q3_deferred` in `artifact_sweep_finished`
+without marking reference scope incomplete, so a complete preview can set
+`rollout_started_at`. Any other indeterminate reason list, including Q3 mixed
+with another failure, still makes the sweep incomplete and withholds that clock.
 Neither this module nor installation sets source_protection_verified, preview
 acceptance or inventory review. Full rollout remains separately held.
+
+Preview collects every current-inventory outcome once before its own audit and
+notice writes, retaining the original `BEGIN IMMEDIATE` and Database RLock
+through all 250-row keyset batches. No COMMIT, await or lock release occurs
+between projection and preview processing. These observational values authorize
+no expiry or deletion. This avoids repeated parsing of the full live projection
+(about 2.85–3.29s per proof on 7,523 files; 31 proofs exceed the pass budget).
+The single 60s pass budget and 32MiB/100,000-row reference bounds remain.
+Enforce/off still obtain a fresh per-batch proof; `finish_delete` always obtains
+a fresh final negative after the intent COMMIT under its retained unlink fence.
 
 ## Slice B notices (source only)
 

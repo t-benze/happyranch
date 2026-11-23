@@ -15,7 +15,7 @@ import tempfile
 import time
 import threading
 from zoneinfo import ZoneInfo
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
 from datetime import datetime, timedelta
@@ -894,6 +894,68 @@ async def sweep_case(root: Path) -> None:
             print('PASS sweep:preview/gates/off/invalid/window/budget;live hold ends with fresh7d;full recovery;unlink+tombstone;restart after final-audit failure;inode replacement hold;reference arrival/attachment writer final fence;reclaimed-byte audit')
 
 
+async def sweep_completeness_case(root: Path, *, q3_only: bool) -> None:
+    """Accounted Q3 holds complete preview; unknown evidence never starts rollout."""
+    from runtime.daemon.shared_artifacts_scheduler import sweep
+    scenarios = ('q3',) if q3_only else ('malformed', 'snapshot', 'other', 'mixed')
+    for scenario in scenarios:
+        with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+            async with fixture(root/scenario) as (org, client):
+                db = org.db
+                db.insert_thread(ThreadRecord(id='THR-q3', subject='Synthetic source holds'))
+                for name in ('retired.bin', 'purged.bin', 'protected.bin'):
+                    response = await client.post(PREFIX+'/artifacts', params=dict(
+                        agent='worker', thread_id='THR-q3', purpose='Persistent source',
+                        retention='default', expires_at=(NOW+timedelta(hours=1)).isoformat()),
+                        files={'file': (name, b'synthetic Q3 source')})
+                    assert response.status_code == 200, response.text
+                install_reference_seams(org)
+                svc = db._shared_artifact_service
+                svc.clock = lambda: NOW+timedelta(hours=2)
+                with db.shared_artifact_transaction() as conn:
+                    for index, name in enumerate(('retired.bin', 'purged.bin'), 1):
+                        conn.execute('INSERT INTO custom_skills(id,org_slug,slug,name,origin_kind,created_at,created_by,retired_at,purged_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                            (f'skill-{index}', org.slug, f'source-{index}', 'Synthetic', 'human', NOW.isoformat(), 'founder', NOW.isoformat(), NOW.isoformat() if index == 2 else None))
+                        row = db.get_shared_artifact(name)
+                        conn.execute('INSERT INTO custom_skill_versions(id,skill_id,content_hash,content_artifact_key,created_at,author_kind,author_identity) VALUES(?,?,?,?,?,?,?)',
+                            (index, f'skill-{index}', row['sha256'], name, NOW.isoformat(), 'human', 'founder'))
+                    conn.execute("UPDATE shared_artifact_generations SET protected_source=1 WHERE name='protected.bin'")
+                if scenario == 'malformed':
+                    db.append_thread_message(thread_id='THR-q3', speaker='worker', kind=ThreadMessageKind.MESSAGE,
+                                             body_markdown='[artifact:../invalid]')
+                before = snapshot(org)
+                scan = ReferenceProof._scan
+                def changed_snapshot(proof: ReferenceProof) -> None:
+                    scan(proof)
+                    proof.conn.execute("UPDATE threads SET subject='changed during proof' WHERE id='THR-q3'")
+                def changed_reasons(*args: object, **kwargs: object) -> dict:
+                    outcomes = reference_outcomes(*args, **kwargs)
+                    reasons = ['dependency_check_unavailable'] if scenario == 'other' else [
+                        'Q3:reader_exclusion_unavailable', 'dependency_check_unavailable']
+                    outcomes['protected.bin', 1] = ('indeterminate', reasons)
+                    return outcomes
+                with ExitStack() as stack:
+                    if scenario == 'snapshot':
+                        stack.enter_context(patch.object(ReferenceProof, '_scan', changed_snapshot))
+                    if scenario in ('other', 'mixed'):
+                        stack.enter_context(patch('runtime.daemon.shared_artifacts_scheduler.reference_outcomes', changed_reasons))
+                    result = sweep(org, 'completeness-'+scenario)
+                print(json.dumps(dict(case='sweep-'+scenario, result=result)), flush=True)
+                assert result['complete'] is q3_only, (scenario, result)
+                assert bool(result.get('reference_incomplete')) is not q3_only, result
+                assert result['protected'] == 3 and result['expired'] == result['deleted'] == 0, result
+                assert result['used_bytes'] == 3*len(b'synthetic Q3 source'), result
+                assert result['q3_deferred'] == (3 if q3_only else 2 if scenario in ('other','mixed') else 0), result
+                state = db._conn.execute('SELECT rollout_started_at,last_completed_window FROM shared_artifact_org_state').fetchone()
+                assert tuple(state) == ((svc.clock().isoformat(), 'completeness-q3') if q3_only else (None, None)), tuple(state)
+                assert snapshot(org) == before, 'held artifact metadata or bytes changed'
+                audits = [json.loads(r[0]) for r in db._conn.execute("SELECT payload FROM audit_log WHERE action='artifact_protected'")]
+                assert len(audits) == 3 and all(p['reason'] == 'dependency_check_unavailable' for p in audits), audits
+                finished = json.loads(db._conn.execute("SELECT payload FROM audit_log WHERE action='artifact_sweep_finished'").fetchone()[0])
+                assert finished['q3_deferred'] == result['q3_deferred'] and finished['complete'] is q3_only
+                print('PASS sweep-completeness:'+scenario+':protected/counting/audited/unchanged;rollout='+str(q3_only))
+
+
 async def sweep_shape_case(root: Path) -> None:
     from runtime.daemon.shared_artifacts_scheduler import sweep
     async with fixture(root,workers=('worker','engineering_manager')) as (org,client):
@@ -903,12 +965,46 @@ async def sweep_shape_case(root: Path) -> None:
             with (svc.store.root/f'legacy-{index:05}.bin').open('wb') as stream:
                 stream.truncate(226667)
         install_reference_seams(org)
+        # Exercise ~66k rows /19.4MB, slightly above the live 17.7MB projection,
+        # including metadata history, open-thread text and bounded task handoffs.
+        db = org.db
+        db.insert_thread(ThreadRecord(id='THR-projection', subject='Synthetic live projection'))
         with org.db.shared_artifact_transaction() as conn:
+            conn.executemany('INSERT INTO tasks(id,status,brief,created_at,updated_at) VALUES(?,?,?,?,?)',
+                ((f'TASK-{i}', 'pending' if i == 1 else 'completed',
+                  f'Read TASK-{i+1}' if i < 3 else '[artifact:legacy-00000.bin]' if i == 3 else '',
+                  NOW.isoformat(), NOW.isoformat()) for i in range(1,19001)))
+            conn.executemany('INSERT INTO threads(id,subject,status,started_at) VALUES(?,?,?,?)',
+                ((f'THR-closed-{i}', 'Synthetic closed history', 'archived', NOW.isoformat()) for i in range(20000)))
+            text = 'Synthetic live discussion with ordinary Markdown words and punctuation. '*9
+            conn.executemany('INSERT INTO thread_messages(thread_id,seq,speaker,kind,body_markdown,created_at) VALUES(?,?,?,?,?,?)',
+                (('THR-projection', i, 'worker', 'message', text, NOW.isoformat()) for i in range(1,27001)))
             conn.execute("INSERT INTO shared_artifact_operations(operation_id,name,generation,operation,phase,reserved_bytes,created_at,updated_at) VALUES('shape-reservation','pending.bin',1,'put','reserved',2299997500,?,?)",(NOW.isoformat(),NOW.isoformat()))
-        started=time.monotonic()
-        result=sweep(org,'shape-7500',deadline=started+60)
-        elapsed=time.monotonic()-started
+            proof = ReferenceProof(conn,slug=org.slug,store=svc.store,deadline=time.monotonic()+30)
+            assert 66000 <= proof.rows < 67000 and 17_000_000 <= proof.bytes < 20_000_000, (proof.rows,proof.bytes)
+            metrics = dict(projection_rows=proof.rows,projection_bytes=proof.bytes)
+        # Conservative four-times wall-clock pacing makes the actual unchanged
+        # 60s budget fail promptly if full parsing returns to every batch.
+        monotonic = time.monotonic
+        started=monotonic()
+        boundaries = []
+        def trace(statement: str) -> None:
+            if statement in ('BEGIN IMMEDIATE', 'COMMIT', 'ROLLBACK'):
+                boundaries.append(statement)
+            elif 'WHERE g.name>' in statement and 'LIMIT 250' in statement:
+                boundaries.append('batch')
+        db._conn.set_trace_callback(trace)
+        try:
+            with patch('time.monotonic', lambda: started+4*(monotonic()-started)):
+                result=sweep(org,'shape-7500')
+        finally:
+            db._conn.set_trace_callback(None)
+        elapsed=monotonic()-started
         assert result['complete'] and result['processed']==7500 and result['legacy']==7500,result
+        batches = [i for i, boundary in enumerate(boundaries) if boundary == 'batch']
+        assert len(batches) == 31 and set(boundaries[batches[0]:batches[-1]+1]) == {'batch'}, boundaries
+        assert result['protected']==1 and not result.get('reference_incomplete'), result
+        assert db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0]
         assert result['used_bytes']==7500*226667
         assert org.db._conn.execute('SELECT COUNT(*) FROM shared_artifact_generations WHERE expires_at IS NOT NULL').fetchone()[0]==0
         assert len(list(svc.store.root.glob('legacy-*.bin')))==7500
@@ -920,12 +1016,13 @@ async def sweep_shape_case(root: Path) -> None:
         assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0]==1
         assert elapsed<60
         print(f'PASS integrated quota:80% real latch;7500 file entries;chunks={len(messages)};max_bytes={max(len(m[0].encode()) for m in messages)};same_sweep_budget={elapsed:.3f}s')
+        print(json.dumps(dict(case='sweep-shape',elapsed_seconds=elapsed,budget_elapsed_seconds=4*elapsed,sweep=result,**metrics)),flush=True)
         print(f'PASS sweep-shape:7500 files;bytes={result["used_bytes"]};30 keyset batches;shared_elapsed={elapsed:.3f}s;no legacy expiry/unlink')
 
 
 async def main(case: str) -> None:
     if case == 'all':
-        for selected in ('manual-delete','quota-chunks','references','handoff-paths','history','live-cap','notices','sweep','sweep-shape'):
+        for selected in ('manual-delete','quota-chunks','references','handoff-paths','history','live-cap','notices','sweep','sweep-q3','sweep-incomplete','sweep-shape'):
             await main(selected)
         print('All selected Slice B private acceptance cases passed.')
         return
@@ -941,6 +1038,9 @@ async def main(case: str) -> None:
             await sweep_case(root/'sweep')
         if case == 'sweep-shape':
             await sweep_shape_case(root/'shape')
+        if case in ('sweep-q3','sweep-incomplete'):
+            (root/'completeness').mkdir()
+            await sweep_completeness_case(root/'completeness',q3_only=case == 'sweep-q3')
         if case == 'notices':
             await notices_case(root/'notices')
         if case == 'references':
@@ -959,6 +1059,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
         'all', 'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
-        'quota-chunks', 'references', 'handoff-paths', 'history', 'live-cap', 'notices', 'sweep', 'sweep-shape',
+        'quota-chunks', 'references', 'handoff-paths', 'history', 'live-cap', 'notices', 'sweep', 'sweep-q3', 'sweep-incomplete', 'sweep-shape',
     ), default='all')
     asyncio.run(main(parser.parse_args().case))
