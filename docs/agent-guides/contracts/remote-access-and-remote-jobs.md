@@ -4503,8 +4503,19 @@ start/restart, account modification, package-database write or file cleanup is
 provided. The coordinator must obtain actual persistent revocation and original
 transport acknowledgement first, persist this separate native observation with
 the original cleanup evidence, and hold real operation exclusion. These native
-observations are currently in-memory prerequisites; their durable composition
-and original-death recovery remain unfinished.
+observations can be persisted by `home_retirement_transport_journal.ManagedTransportJournal`
+in fixed root-private `home-retirement-transport.json`. The closed bounded record
+binds managed identity/account/release/live-sidecar and the serialization-directory
+inode to the original unit/executable/link/ancestor/boot/process observations.
+Exclusive capture synchronizes file and parent, checks the same inode/bytes
+through both boundaries, then rechecks the original native observation. Unknown,
+torn or foreign records are retained. Explicit loading resynchronizes complete
+valid evidence without discovering current native owners or adopting changed
+artifacts; a live loader also keeps its original record inode pinned. A complete
+interrupted write can be explicitly synchronized, while partial bytes refuse.
+The record is neither an effect acknowledgement nor a death/cutoff proof; the
+full coordinator must compose it with original inventory and serving-peer pins
+before effects. That composition and original-death recovery remain unfinished.
 
 These records are evidence prerequisites, not removal capabilities or successful
 recovery results. They do not parse or revoke trust authority or publish

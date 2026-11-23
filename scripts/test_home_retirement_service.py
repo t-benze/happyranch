@@ -6,6 +6,7 @@ This owner-only venue does not claim migration revoke/ack or installed proof.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -625,3 +626,212 @@ def test_managed_original_process_identity_survives_each_native_effect(
     assert changed == [True]
     assert v.effects() == [['systemctl', 'stop', MANAGED_UNITS[2]]]
     assert (v.root / PACKAGE_REGISTRY).is_file() and (v.root / PYTHON).is_file()
+
+
+TRANSPORT_JOURNAL = 'var/lib/happyranch-remote-access/home-retirement-transport.json'
+
+
+def test_managed_original_native_journal_is_durable_and_never_recaptures_replacements(
+        managed_service: ManagedFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    syncs, sync = [], os.fsync
+    def synchronized(fd):
+        syncs.append(os.readlink(f'/proc/self/fd/{fd}'))
+        sync(fd)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'fsync', synchronized)
+        original = ManagedTransportJournal(owner).capture()
+    target = v.root / TRANSPORT_JOURNAL
+    assert syncs == [str(target), str(target.parent)]
+    assert target.stat().st_mode & 0o777 == 0o600 and target.stat().st_nlink == 1
+    record = json.loads(target.read_bytes())
+    assert record['format'] == 'home-retirement-transport@1'
+    assert record['managed']['identity'] == ['tenant', 'home', 'connector']
+    assert record['observation']['processes']['happyranch-connector.service'] == [111, 456]
+    assert set(record) == {'format', 'directory', 'managed', 'observation'}
+    path = v.root / PYTHON
+    retained = v.root.parent / 'retained-original-python'
+    path.rename(retained)
+    path.write_bytes(retained.read_bytes())
+    path.chmod(0o755)
+    before = v.snapshot()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(owner, 'observe', lambda **kwargs: pytest.fail('loader recaptured current native state'))
+        assert ManagedTransportJournal(owner).load() == original
+    assert v.snapshot() == before and v.effects() == []
+    assert owner.observe() != original
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.stop_and_disable(original)
+    assert v.effects() == [] and v.snapshot() == before
+
+
+@pytest.mark.parametrize('damage', ['mode', 'hardlink', 'symlink', 'fifo', 'empty', 'oversized', 'torn',
+    'duplicate', 'format', 'extra', 'directory', 'identity', 'account-bool', 'path', 'signature-bool',
+    'native', 'process', 'boot'])
+def test_unknown_managed_native_journal_is_preserved_without_effects(
+        managed_service: ManagedFixture, damage: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    ManagedTransportJournal(owner).capture()
+    target = v.root / TRANSPORT_JOURNAL
+    record = json.loads(target.read_bytes())
+    if damage == 'mode': target.chmod(0o644)
+    elif damage == 'hardlink': os.link(target, v.root.parent / 'retained-journal-link')
+    elif damage in ('symlink', 'fifo'):
+        retained = v.root.parent / 'retained-original-journal'
+        target.rename(retained)
+        if damage == 'symlink': target.symlink_to(retained)
+        else: os.mkfifo(target, 0o600)
+    elif damage in ('empty', 'oversized', 'torn', 'duplicate'):
+        target.write_bytes({'empty': b'', 'oversized': b'x' * 65537, 'torn': b'{"format":',
+            'duplicate': target.read_bytes().replace(b'"format":', b'"format":"foreign","format":', 1)}[damage])
+    else:
+        if damage == 'format': record['format'] = 'home-retirement-transport@2'
+        elif damage == 'extra': record['complete'] = True
+        elif damage == 'directory': record['directory'][1] += 1
+        elif damage == 'identity': record['managed']['identity'][2] = 'foreign'
+        elif damage == 'account-bool': record['managed']['account'][0] = True
+        elif damage == 'path': record['observation']['artifacts']['home/release/daemon.token'] = record['observation']['artifacts'][PYTHON]
+        elif damage == 'signature-bool': record['observation']['artifacts'][PYTHON][1] = True
+        elif damage == 'native': record['observation']['properties'][MANAGED_UNITS[0]].append(['Names', 'foreign'])
+        elif damage == 'process': record['observation']['processes'][MANAGED_UNITS[0]][0] += 1
+        elif damage == 'boot': record['observation']['boot_id'] = 'unknown'
+        target.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+    before = v.snapshot()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransportJournal(owner).load()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransportJournal(owner).capture()
+    assert v.snapshot() == before and v.effects() == []
+
+
+@pytest.mark.parametrize('failure', ['write', 'file-sync', 'parent-sync'])
+def test_interrupted_managed_native_publication_keeps_evidence_for_explicit_sync(
+        managed_service: ManagedFixture, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    target = v.root / TRANSPORT_JOURNAL
+    sync, write = os.fsync, os.write
+    def interrupted(fd):
+        if os.readlink(f'/proc/self/fd/{fd}') == str(target if failure == 'file-sync' else target.parent):
+            raise OSError('synthetic sync interruption')
+        sync(fd)
+    with monkeypatch.context() as scoped:
+        if failure == 'write': scoped.setattr(os, 'write', lambda fd, data: write(fd, data[:len(data) // 2]))
+        else: scoped.setattr(os, 'fsync', interrupted)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ManagedTransportJournal(owner).capture()
+    assert target.is_file() and v.effects() == []
+    before = v.snapshot()
+    if failure == 'write':
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ManagedTransportJournal(owner).load()
+    else:
+        assert ManagedTransportJournal(owner).load() == owner.observe()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransportJournal(owner).capture()
+    assert v.snapshot() == before and v.effects() == []
+
+
+@pytest.mark.parametrize('when', ['capture-file', 'capture-parent', 'load-file', 'load-parent'])
+def test_managed_native_journal_pins_original_inode_through_both_syncs(
+        managed_service: ManagedFixture, monkeypatch: pytest.MonkeyPatch, when: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    journal = ManagedTransportJournal(ManagedTransport(v.io, v.fence, v.managed))
+    target = v.root / TRANSPORT_JOURNAL
+    if when.startswith('load'): journal.capture()
+    changed, sync = [], os.fsync
+    def replace_during_sync(fd):
+        sync(fd)
+        if not changed and os.readlink(f'/proc/self/fd/{fd}') == str(target if when.endswith('file') else target.parent):
+            retained = v.root.parent / 'retained-original-journal'
+            target.rename(retained)
+            target.write_bytes(retained.read_bytes())
+            target.chmod(0o600)
+            changed.append(True)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'fsync', replace_during_sync)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            (journal.load if when.startswith('load') else journal.capture)()
+    assert changed == [True] and v.effects() == []
+    assert target.read_bytes() == (v.root.parent / 'retained-original-journal').read_bytes()
+
+
+def test_managed_native_journal_rejects_live_record_replacement_and_wrong_binding(
+        managed_service: ManagedFixture) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    journal = ManagedTransportJournal(owner)
+    journal.capture()
+    target = v.root / TRANSPORT_JOURNAL
+    retained = v.root.parent / 'retained-original-journal'
+    target.rename(retained)
+    target.write_bytes(retained.read_bytes())
+    target.chmod(0o600)
+    before = v.snapshot()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        journal.load()
+    foreign = ManagedTransport(v.io, v.fence, replace(v.managed, control_plane_id='foreign'))
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransportJournal(foreign).load()
+    assert v.snapshot() == before and v.effects() == []
+
+
+@pytest.mark.parametrize('drift', ['process', 'executable'])
+def test_managed_native_journal_rechecks_original_after_publication(
+        managed_service: ManagedFixture, drift: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    original = owner.observe()
+    changed = []
+    def after_publication(count):
+        if (v.root / TRANSPORT_JOURNAL).exists() and not changed:
+            if drift == 'process':
+                target = v.root / 'proc/111/stat'
+                target.write_bytes(target.read_bytes().replace(b'456', b'457'))
+            else:
+                target = v.root / PYTHON
+                retained = v.root.parent / 'retained-original-python'
+                target.rename(retained)
+                target.write_bytes(retained.read_bytes())
+                target.chmod(0o755)
+            changed.append(True)
+    v.on_show = after_publication
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransportJournal(owner).capture()
+    assert changed == [True] and v.effects() == []
+    assert ManagedTransportJournal(owner).load() == original
+    assert owner.observe() != original
+
+
+def test_managed_native_journal_requires_its_live_serialization_domain(
+        managed_service: ManagedFixture) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+    v = managed_service
+    journal = ManagedTransportJournal(ManagedTransport(v.io, v.fence, v.managed))
+    journal.capture()
+    before = v.snapshot()
+    other = ManagedFixture(v.root.parent / 'other-root')
+    try:
+        journal.fence = other.fence
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            journal.load()
+    finally:
+        other.close()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        journal.load()
+    assert v.snapshot() == before and v.effects() == [] and other.effects() == []
