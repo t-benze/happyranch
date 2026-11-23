@@ -26,6 +26,7 @@ struct WebView: NSViewRepresentable {
         var owner: WebView
         var scheme: AppScheme?
         private var navigation: WKNavigation?
+        private var requestedDocumentURL: URL?
         private var loadID = UUID()
         private var downloads: [WKDownload] = []
         private(set) var callbackURLs: [String] = []
@@ -37,40 +38,75 @@ struct WebView: NSViewRepresentable {
             parts?.user = nil; parts?.password = nil; parts?.query = nil; parts?.fragment = nil
             let appURL = parts?.scheme == "happyranch-app" && parts?.host == "app"
             let value = DiagnosticsRedactor.redact(appURL ? (parts?.string ?? "nil") : (url == nil ? "nil" : "non-app-url"))
+            recordDiagnostic(event, value)
+        }
+        private func recordDiagnostic(_ event: String, _ value: String) {
             if callbackURLs.count == 16 { callbackURLs.removeFirst() }
-            callbackURLs.append("\(event)=\(String(value.prefix(1024)))")
+            callbackURLs.append("\(event)=\(String(DiagnosticsRedactor.redact(value).prefix(1024)))")
         }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             recordCallback("action", url: action.request.url)
-            guard let target = action.request.url else { decisionHandler(.cancel); return }
-            if target.scheme == "blob", action.shouldPerformDownload {
-                decisionHandler(.download); return
+            func decide(_ policy: WKNavigationActionPolicy, _ reason: String) {
+                let name = policy == .allow ? "allow" : policy == .download ? "download" : "cancel"
+                recordDiagnostic("action-policy", "\(name); guard=\(reason)")
+                decisionHandler(policy)
             }
-            guard action.targetFrame?.isMainFrame == true,
-                  let route = try? AppSchemeRoute(target), !route.path.hasPrefix("/api/") else {
-                decisionHandler(.cancel)
+            guard let target = action.request.url else { decide(.cancel, "missing-url"); return }
+            if target.scheme == "blob", action.shouldPerformDownload {
+                decide(.download, "blob-download"); return
+            }
+            let route = try? AppSchemeRoute(target)
+            let refusal: String?
+            if action.targetFrame?.isMainFrame != true { refusal = "not-main-frame" }
+            else if route == nil { refusal = "invalid-app-route" }
+            else if route?.path.hasPrefix("/api/") == true { refusal = "api-navigation" }
+            else { refusal = nil }
+            if let refusal {
+                decide(.cancel, refusal)
                 if ["https", "http"].contains(target.scheme ?? ""), action.navigationType == .linkActivated {
                     NSWorkspace.shared.open(target)
                 }
                 return
             }
-            guard scheme?.allowsNavigation == true else { decisionHandler(.cancel); return }
-            decisionHandler(.allow)
+            guard scheme?.allowsNavigation == true else { decide(.cancel, "owner-protection"); return }
+            requestedDocumentURL = target
+            decide(.allow, "passed")
         }
         func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
             recordCallback("response", url: response.response.url)
-            guard response.isForMainFrame, let http = response.response as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode), let url = http.url, (try? AppSchemeRoute(url)) != nil else {
-                decisionHandler(.cancel); return
+            let received = response.response
+            let emitted = scheme?.documentResponse
+            let http = received as? HTTPURLResponse
+            recordCallback("response-source", url: emitted?.url)
+            // MIME metadata is untrusted text; keep no embedded URL or secret.
+            let mime = DiagnosticsRedactor.redact(received.mimeType ?? "nil").replacingOccurrences(
+                of: #"[A-Za-z][A-Za-z0-9+.-]*://[^\s"<>]+"#, with: "[URL]", options: .regularExpression)
+            recordDiagnostic("response-metadata", "class=\(String(reflecting: type(of: received))); mimeType=\(String(mime.prefix(128))); status=\(http.map { String($0.statusCode) } ?? "unavailable"); sourceStatus=\(emitted.map { String($0.statusCode) } ?? "unavailable"); mainFrame=\(response.isForMainFrame); canShowMIMEType=\(response.canShowMIMEType)")
+            func decide(_ policy: WKNavigationResponsePolicy, _ reason: String) {
+                recordDiagnostic("response-policy", "\(policy == .allow ? "allow" : "cancel"); guard=\(reason)")
+                decisionHandler(policy)
             }
-            decisionHandler(.allow)
+            guard response.isForMainFrame else { decide(.cancel, "not-main-frame"); return }
+            guard let url = received.url else { decide(.cancel, "missing-url"); return }
+            guard (try? AppSchemeRoute(url)) != nil else { decide(.cancel, "invalid-app-route"); return }
+            // WebKit reconstructs non-HTTP schemes as URLResponse, dropping
+            // the HTTP subclass/status. Validate the exact native response
+            // emitted for this document instead of depending on that cast.
+            guard let emitted else { decide(.cancel, "missing-document-response"); return }
+            guard emitted.url == url else { decide(.cancel, "document-response-url-mismatch"); return }
+            guard (200...299).contains(emitted.statusCode) else { decide(.cancel, "source-status-not-2xx"); return }
+            if let http, !(200...299).contains(http.statusCode) { decide(.cancel, "response-status-not-2xx"); return }
+            guard received.mimeType == emitted.mimeType else { decide(.cancel, "mime-type-mismatch"); return }
+            guard response.canShowMIMEType else { decide(.cancel, "mime-type-not-displayable"); return }
+            decide(.allow, "passed")
         }
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             recordCallback("provisional", url: webView.url)
             self.navigation = navigation; loadID = UUID()
-            scheme?.documentDidStart()
+            scheme?.documentDidStart(url: requestedDocumentURL)
+            requestedDocumentURL = nil
         }
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             recordCallback("commit", url: webView.url)

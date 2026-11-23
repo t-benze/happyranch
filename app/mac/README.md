@@ -64,6 +64,16 @@ no-follow descriptor reader, serves the pinned index for SPA routes/deep reload,
 and enforces CSP plus an independent WebKit resource allowlist. Release map
 removal also removes those entries from the packaged manifest.
 
+Main-frame response policy requires the current document's exact native-loader
+response and its 2xx status, the app route, matching MIME type and WebKit display
+support. WebKit reconstructs custom-scheme responses as `URLResponse`, so the
+policy does not require its HTTP subclass to survive. Document retirement clears
+the native response receipt. Bounded redacted callback diagnostics record action
+and response decisions, the exact refusing guard, response class/MIME/status and
+native source status alongside the sanitized callback URL. Health refusal tests
+must reach readiness with at least one health invocation and successful relay
+context/bind; a navigation failure cannot satisfy a negative health row.
+
 `AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
 32 requests (two with bodies), 64 MiB bodies and the native target generation.
 The document-start adapter serializes request bodies, assigns cancellation IDs

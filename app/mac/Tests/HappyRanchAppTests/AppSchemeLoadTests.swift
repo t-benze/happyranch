@@ -103,6 +103,14 @@ final class AppSchemeLoadTests: XCTestCase {
                 }
                 XCTAssertEqual(loaded, ready ? [selected] : [], detail(health))
                 XCTAssertEqual(failed, ready ? [] : [selected], detail(health))
+                XCTAssertGreaterThanOrEqual(transport.healthInvocations, 1, detail("Every row must reach health admission"))
+                if !ready {
+                    XCTAssertEqual(failures.count, 1, detail("Exactly one health admission refusal"))
+                    XCTAssertEqual(failures.first?.stage, .readiness, detail("Navigation failure cannot satisfy a health refusal"))
+                    XCTAssertEqual(failures.first?.admission.contextRead, "valid", detail())
+                    XCTAssertEqual(failures.first?.admission.bind, "true", detail())
+                    XCTAssertEqual(failures.first?.admission.readiness, label.hasPrefix("busy") ? "busy" : "incompatible", detail())
+                }
                 if ready {
                     phase = "ready: post-forward lost reply"
                     // The transport input models a send followed by loss before any

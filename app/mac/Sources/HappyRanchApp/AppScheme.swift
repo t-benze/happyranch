@@ -120,6 +120,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var documentOwners = AppSchemeOwnerSummary()
     private var document = UUID()
     private var documentContext: String?
+    private var documentURL: URL?
+    private(set) var documentResponse: HTTPURLResponse?
     private var hasDocument = false
     private var state = "target_starting"
     private var hostContract: [String: Int]?
@@ -189,7 +191,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var nonGETPending: Bool {
         owners.values.contains { !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }
     }
-    func documentDidStart() {
+    func documentDidStart(url: URL? = nil) {
+        documentURL = url; documentResponse = nil
         documentContext = nil
         document = UUID(); hasDocument = true
         documentOwners.retire(nonGETPending: nonGETPending)
@@ -404,7 +407,11 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private func respond(_ task: any WKURLSchemeTask, status: Int, headers: [String: String]) {
         var fields = headers
         fields["Content-Security-Policy"] = Self.csp; fields["X-Content-Type-Options"] = "nosniff"; fields["Cache-Control"] = "no-store"
-        task.didReceive(HTTPURLResponse(url: task.request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: fields)!)
+        let response = HTTPURLResponse(url: task.request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: fields)!
+        // Keep the producer's status for the current navigation: WebKit's
+        // non-HTTP URLResponse reconstruction does not retain that subclass.
+        if response.url == documentURL { documentResponse = response }
+        task.didReceive(response)
     }
     private func reply(_ task: any WKURLSchemeTask, status: Int, code: String) {
         respond(task, status: status, headers: ["content-type": "application/json"])
