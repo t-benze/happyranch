@@ -10,6 +10,7 @@ recovery inventory and original connector cutoff remain separate prerequisites.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import platform
@@ -17,6 +18,7 @@ import re
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterator, Mapping
@@ -27,7 +29,9 @@ from runtime.remote_access.home_retirement import (
 )
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_service import OwnedService, ServiceIdentity, ServiceObservation
-from runtime.remote_access.legacy_home_receipt import HomeActivationReceipt, LIVE_MEMBERS, OWNED_LINK_TARGET
+from runtime.remote_access.legacy_home_receipt import (
+    HomeActivationReceipt, HomeActivationTransaction, LIVE_MEMBERS, OWNED_LINK_TARGET,
+)
 
 if TYPE_CHECKING:
     from runtime.remote_access.installer import ManagedInstaller
@@ -103,6 +107,21 @@ class LegacyManagedMembers:
 
     def __repr__(self) -> str:
         return "LegacyManagedMembers(<redacted>)"
+
+
+@dataclass(frozen=True, repr=False)
+class LegacyAuxiliaryMembers:
+    """Original root-private journals; no mint, cleanup or effect authority."""
+
+    members: Mapping[str, tuple[int, ...] | None] = field(repr=False)
+    directories: Mapping[str, tuple[int, ...]] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("members", "directories"):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+
+    def __repr__(self) -> str:
+        return "LegacyAuxiliaryMembers(<redacted>)"
 
 
 class LegacyInventory:
@@ -321,6 +340,31 @@ class LegacyInventory:
     def require_managed(self, ownership: LegacyOwnership, observed: LegacyManagedMembers,
                         *, fence: RetirementFence) -> None:
         if type(observed) is not LegacyManagedMembers or self.managed_members(ownership, fence=fence) != observed:
+            raise RetirementUncertain()
+
+    def auxiliary_members(self, observed: LegacyOwnership, *, fence: RetirementFence) -> LegacyAuxiliaryMembers:
+        """Inventory existing issuer, transaction and minter state without creation.
+
+        Directory/issuer-lock contention refuses. These sampled locks are not
+        retained by the returned evidence; the coordinator must separately hold
+        actual quiescence/exclusion before deleting any captured member.
+        """
+        try:
+            fence.require(self.io)
+            self.require(observed, fence=fence)
+            reader = _AuxiliaryMembers(self, observed, fence)
+            first = reader.observe()
+            self.require(observed, fence=fence)
+            if reader.observe() != first:
+                raise RetirementUncertain()
+            fence.require(self.io)
+            return first
+        except (OSError, ValueError, RuntimeError, KeyError, AttributeError, TypeError):
+            raise RetirementUncertain() from None
+
+    def require_auxiliary(self, ownership: LegacyOwnership, observed: LegacyAuxiliaryMembers,
+                          *, fence: RetirementFence) -> None:
+        if type(observed) is not LegacyAuxiliaryMembers or self.auxiliary_members(ownership, fence=fence) != observed:
             raise RetirementUncertain()
 
 
@@ -684,3 +728,112 @@ class _ManagedMembers(_PrivateMembers):
         return LegacyManagedMembers(identity, control, release_uid, self.account, live,
             members, self.directory_identities,
             {"etc/happyranch/" + name: hashlib.sha256(item[0]).hexdigest() for name, item in files.items()})
+
+
+class _AuxiliaryMembers(_PrivateMembers):
+    _MINTER = STATE_DIRECTORY + "/home-minter"
+    _ISSUER = STATE_DIRECTORY + "/home-issuer"
+    _USERS = ("happyranch-invite", "happyranch-node")
+    _RECEIPT = "home-issuer-publication.json"
+    _TRANSACTION = "home-activation-txn.json"
+    _MAX_OPERATIONS = 4096
+
+    def __init__(self, inventory: LegacyInventory, ownership: LegacyOwnership, fence: RetirementFence) -> None:
+        super().__init__(inventory, ownership)
+        self.fence = fence
+        self.parents.update({name: (self.io.root_owner, 0o700) for name in (
+            self._MINTER, self._ISSUER, *(self._MINTER + "/" + user for user in self._USERS))})
+
+    def _operation(self, parent: int, name: str) -> tuple[int, ...]:
+        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or (before.st_uid, before.st_gid) != self.io.root_owner
+                or stat.S_IMODE(before.st_mode) != 0o600 or not 0 < before.st_size <= 160):
+            raise RetirementUncertain()
+        descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
+        try:
+            if _signature(os.fstat(descriptor)) != _signature(before):
+                raise RetirementUncertain()
+            data = os.read(descriptor, 161)
+            started, expires, end = data.decode("ascii").split("\n")
+            start, expiry = datetime.fromisoformat(started), datetime.fromisoformat(expires)
+            if (end or start.utcoffset() != timedelta(0) or expiry.utcoffset() != timedelta(0)
+                    or not timedelta(0) < expiry - start <= timedelta(minutes=5)
+                    or data != (start.isoformat() + "\n" + expiry.isoformat() + "\n").encode("ascii")
+                    or _signature(os.fstat(descriptor)) != _signature(before)
+                    or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != _signature(before)):
+                raise RetirementUncertain()
+            return _signature(before)
+        finally:
+            os.close(descriptor)
+
+    def _minter(self) -> dict[str, tuple[int, ...] | None]:
+        result: dict[str, tuple[int, ...] | None] = {}
+        with self._directory(self._MINTER) as parent:
+            if parent is not None:
+                with os.scandir(parent) as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= 2 or entry.name not in self._USERS:
+                            raise RetirementUncertain()
+            result[self._MINTER] = None if parent is None else _signature(os.fstat(parent))
+        count = 0
+        for user in self._USERS:
+            relative = self._MINTER + "/" + user
+            with self._directory(relative) as parent:
+                result[relative] = None if parent is None else _signature(os.fstat(parent))
+                if parent is None:
+                    continue
+                fcntl.flock(parent, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                with os.scandir(parent) as entries:
+                    for entry in entries:
+                        count += 1
+                        if count > self._MAX_OPERATIONS or re.fullmatch(r"operation-[0-9a-f]{64}", entry.name) is None:
+                            raise RetirementUncertain()
+                        result[relative + "/" + entry.name] = self._operation(parent, entry.name)
+        return result
+
+    def observe(self) -> LegacyAuxiliaryMembers:
+        self.directory_identities = {}
+        self.fence.require(self.io)
+        # Reuse the existing independently receipted issuer directory and its
+        # closed data-only journal parser. Minting/uncertain rows are historical
+        # evidence here, never an assertion that key cleanup has completed.
+        receipt, present = self.io._issuer_inventory(db_retired=True)
+        if present and receipt is None:
+            raise RetirementUncertain()
+        result: dict[str, tuple[int, ...] | None] = {}
+        with self._directory(self._ISSUER) as parent:
+            if (parent is not None) != present:
+                raise RetirementUncertain()
+            result[self._ISSUER] = None if parent is None else _signature(os.fstat(parent))
+            members = {} if parent is None else self.io._issuer_members(parent, db_retired=True)
+            for name in ("invite-issuer.json", "invite-issuer.lock"):
+                result[self._ISSUER + "/" + name] = members[name][0] if name in members else None
+        saved = self.inventory._receipt(self._RECEIPT, self.fence, optional=True)
+        if (saved is None) != (receipt is None) or saved is not None and self.io._json(saved[0]) != receipt:
+            raise RetirementUncertain()
+        result[STATE_DIRECTORY + "/" + self._RECEIPT] = None if saved is None else saved[1]
+        transaction = None
+        with self._directory(STATE_DIRECTORY) as parent:
+            if parent is None:
+                raise RetirementUncertain()
+            self.io._headscale_no_pending(parent, self._TRANSACTION)
+            try:
+                info = os.stat(self._TRANSACTION, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not 0 < info.st_size <= 16384:
+                    raise RetirementUncertain()
+                data = self.io._read_file(parent, self._TRANSACTION, owner=self.io.root_owner, mode=0o600)
+                if _signature(os.stat(self._TRANSACTION, dir_fd=parent, follow_symlinks=False)) != _signature(info):
+                    raise RetirementUncertain()
+                transaction = data, _signature(info)
+        if transaction is not None:
+            parsed = HomeActivationTransaction.parse(transaction[0])
+            if self.ownership.activation is None or not parsed.matches(self.ownership.activation):
+                raise RetirementUncertain()
+        result[STATE_DIRECTORY + "/" + self._TRANSACTION] = None if transaction is None else transaction[1]
+        result.update(self._minter())
+        self.fence.require(self.io)
+        return LegacyAuxiliaryMembers(result, self.directory_identities)

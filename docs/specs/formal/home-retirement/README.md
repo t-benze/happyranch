@@ -11,6 +11,7 @@ manifest or deletion authority.
 | Model boundary | Production boundary / obligation |
 | --- | --- |
 | Fence | Original installer-directory flock and persistent historical pending-name refusal in `home_retirement_fence`. |
+| Original evidence before Burn | `home_retirement_journal` preserves closed original service/private/managed/auxiliary identities with exclusive publication, sync and readback. Fresh loads retain those observations, rather than recapturing partially cleaned or replaced members. This is evidence, not an effect acknowledgement; the model still abstracts file custody and durability. |
 | Burn / Deny / BeginClose / AckClose / FailClose | Actual serving `PinnedPairingManager.revoke_all`, anchored per-device transactions and original `StreamRegistry`, consumed through `home_retirement_cutoff`. Partial commits survive failure. A fresh registry cannot reset a failed close. |
 | OriginalDies | Independent original-process death and transport quiescence proof, **not** a successful response from a replacement process. This recovery owner is still to be implemented. |
 | ObserveCutoff | Successful original-owner physical acknowledgement plus independent anchored burn/deny readback. No Boolean or phase intent substitutes for these. |

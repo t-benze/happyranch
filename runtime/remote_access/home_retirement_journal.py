@@ -21,7 +21,8 @@ from runtime.remote_access.home_retirement import (
 )
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import (
-    LegacyInventory, LegacyManagedMembers, LegacyOwnership, LegacyPrivateMembers, _PrivateMembers,
+    LegacyAuxiliaryMembers, LegacyInventory, LegacyManagedMembers, LegacyOwnership, LegacyPrivateMembers,
+    _AuxiliaryMembers, _PrivateMembers,
 )
 from runtime.remote_access.home_retirement_service import ServiceIdentity, ServiceObservation, _PROPERTIES
 from runtime.remote_access.legacy_home_receipt import HomeActivationReceipt, LIVE_MEMBERS, OWNED_LINK_TARGET
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from runtime.remote_access.installer import ManagedInstaller
 
 _NAME = "home-retirement-inventory.json"
-_LIMIT = 32768
+_LIMIT = 1024 * 1024
 _CONFIGS = frozenset("etc/happyranch/" + name for name in (
     "connector.json", "sidecar.json", "policy.json", "release-daemon.json",
     "daemon.token", "provision.json", "invite-issuer.json"))
@@ -49,6 +50,11 @@ _TLS = frozenset(("etc/happyranch/headscale/server.crt", "etc/happyranch/headsca
 _PRIVATE = {name.lstrip("/") for name in LIVE_MEMBERS if not name.endswith("/observe.sock")} | _CA | _PUBLIC
 _RECEIPTS = frozenset(("headscale-account.json", "headscale-publication.json", "home-activation.json"))
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_AUXILIARY = frozenset(STATE_DIRECTORY + "/" + path for path in (
+    "home-issuer", "home-issuer/invite-issuer.json", "home-issuer/invite-issuer.lock",
+    "home-issuer-publication.json", "home-activation-txn.json", "home-minter",
+    "home-minter/happyranch-invite", "home-minter/happyranch-node"))
+_OPERATION = re.compile(re.escape(STATE_DIRECTORY) + r"/home-minter/happyranch-(invite|node)/operation-[0-9a-f]{64}")
 
 
 def _encode(value: dict) -> bytes:
@@ -68,8 +74,8 @@ def _signature_value(value: object, *, absent: bool = False) -> tuple[int, ...] 
     return tuple(value)
 
 
-def _signatures(value: object, *, absent: bool = False) -> dict[str, tuple[int, ...] | None]:
-    if type(value) is not dict or len(value) > 96:
+def _signatures(value: object, *, absent: bool = False, limit: int = 96) -> dict[str, tuple[int, ...] | None]:
+    if type(value) is not dict or len(value) > limit:
         raise RetirementUncertain()
     return {key: _signature_value(item, absent=absent) for key, item in value.items()}
 
@@ -86,16 +92,18 @@ class OriginalInventory:
     ownership: LegacyOwnership
     private: LegacyPrivateMembers
     managed: LegacyManagedMembers
+    auxiliary: LegacyAuxiliaryMembers
 
     def __repr__(self) -> str:
         return "OriginalInventory(<redacted>)"
 
     def _record(self) -> dict:
-        ownership, private, managed = self.ownership, self.private, self.managed
+        ownership, private, managed, auxiliary = self.ownership, self.private, self.managed, self.auxiliary
         return dict(service=asdict(ownership.service), native=asdict(ownership.native),
             activation=None if ownership.activation is None else json.loads(ownership.activation.to_bytes()),
             receipt_digests=dict(ownership.receipt_digests), receipt_identities=dict(ownership.receipt_identities),
             private=dict(members=dict(private.members), directories=dict(private.directories)),
+            auxiliary=dict(members=dict(auxiliary.members), directories=dict(auxiliary.directories)),
             managed=dict(identity=list(managed.identity), control_plane_id=managed.control_plane_id,
                 release_uid=managed.release_uid, account=list(managed.account), live_sidecar=managed.live_sidecar,
                 members=dict(managed.members), directories=dict(managed.directories), digests=dict(managed.digests)))
@@ -103,7 +111,7 @@ class OriginalInventory:
     @classmethod
     def _parse(cls, value: dict) -> OriginalInventory:
         if type(value) is not dict or value.keys() != {
-                "service", "native", "activation", "receipt_digests", "receipt_identities", "private", "managed"}:
+                "service", "native", "activation", "receipt_digests", "receipt_identities", "private", "managed", "auxiliary"}:
             raise RetirementUncertain()
         service = ServiceIdentity(**value["service"])
         activation = None if value["activation"] is None else HomeActivationReceipt.parse(_encode(value["activation"]).rstrip())
@@ -121,8 +129,9 @@ class OriginalInventory:
         digests, identities = _digests(value["receipt_digests"]), _signatures(value["receipt_identities"])
         if digests.keys() != identities.keys() or digests.keys() != (_RECEIPTS if activation else _RECEIPTS - {"home-activation.json"}):
             raise RetirementUncertain()
-        private, managed = value["private"], value["managed"]
+        private, managed, auxiliary = value["private"], value["managed"], value["auxiliary"]
         if (type(private) is not dict or private.keys() != {"members", "directories"}
+                or type(auxiliary) is not dict or auxiliary.keys() != {"members", "directories"}
                 or type(managed) is not dict or managed.keys() != {"identity", "control_plane_id", "release_uid",
                     "account", "live_sidecar", "members", "directories", "digests"}
                 or type(managed["identity"]) is not list or len(managed["identity"]) != 3
@@ -143,11 +152,18 @@ class OriginalInventory:
         managed_digests = _digests(managed["digests"])
         if managed_digests.keys() != {path for path in _CONFIGS if managed_members[path] is not None}:
             raise RetirementUncertain()
-        private_dirs, managed_dirs = _signatures(private["directories"]), _signatures(managed["directories"])
-        allowed_dirs = {"."} | {str(parent) for path in allowed_private | _MANAGED for parent in
-            PurePosixPath(path).parents if str(parent) != "."}
+        auxiliary_members = _signatures(auxiliary["members"], absent=True, limit=len(_AUXILIARY) + 4096)
+        if (not _AUXILIARY <= auxiliary_members.keys() or any(path not in _AUXILIARY and _OPERATION.fullmatch(path) is None
+                for path in auxiliary_members) or any(signature is None for path, signature in auxiliary_members.items()
+                    if path not in _AUXILIARY)):
+            raise RetirementUncertain()
+        private_dirs, managed_dirs, auxiliary_dirs = (_signatures(item["directories"])
+                                                     for item in (private, managed, auxiliary))
+        allowed_dirs = {"."} | {str(parent) for path in allowed_private | _MANAGED | _AUXILIARY
+            for parent in PurePosixPath(path).parents if str(parent) != "."}
+        allowed_dirs.update(STATE_DIRECTORY + "/home-minter/" + user for user in ("happyranch-invite", "happyranch-node"))
         if any(path not in allowed_dirs or not stat.S_ISDIR(signature[4])
-               for values in (private_dirs, managed_dirs) for path, signature in values.items()):
+               for values in (private_dirs, managed_dirs, auxiliary_dirs) for path, signature in values.items()):
             raise RetirementUncertain()
         if activation is not None and (managed["release_uid"], managed["identity"][1], managed["identity"][2],
                 managed["control_plane_id"]) != (activation.release_uid, activation.home_id, activation.connector_id, activation.control_plane_id):
@@ -155,7 +171,7 @@ class OriginalInventory:
         return cls(LegacyOwnership(service, observed, activation, digests, identities),
             LegacyPrivateMembers(private_members, private_dirs), LegacyManagedMembers(tuple(managed["identity"]),
                 managed["control_plane_id"], managed["release_uid"], tuple(managed["account"]), managed["live_sidecar"],
-                managed_members, managed_dirs, managed_digests))
+                managed_members, managed_dirs, managed_digests), LegacyAuxiliaryMembers(auxiliary_members, auxiliary_dirs))
 
 
 class RetirementJournal:
@@ -247,11 +263,15 @@ class RetirementJournal:
             self.fence.require(self.io)
             walker = _PrivateMembers(LegacyInventory(self.io), original.ownership)
             walker.parents.update({name: (original.managed.account, 0o700) for name in _RUNTIME})
+            walker.parents.update({name: (self.io.root_owner, 0o700) for name in (
+                _AuxiliaryMembers._MINTER, _AuxiliaryMembers._ISSUER,
+                *(_AuxiliaryMembers._MINTER + "/" + user for user in _AuxiliaryMembers._USERS))})
             members = dict(original.private.members)
-            for path, signature in original.managed.members.items():
-                if path in members and members[path] != signature:
-                    raise RetirementUncertain()
-                members[path] = signature
+            for observation in (original.managed, original.auxiliary):
+                for path, signature in observation.members.items():
+                    if path in members and members[path] != signature:
+                        raise RetirementUncertain()
+                    members[path] = signature
             members.update({STATE_DIRECTORY + "/" + name: signature
                             for name, signature in original.ownership.receipt_identities.items()})
             service, native = original.ownership.service, original.ownership.native
@@ -260,10 +280,11 @@ class RetirementJournal:
             if service.link is not None:
                 members[service.link] = native.link
             directories = dict(original.private.directories)
-            for path, signature in original.managed.directories.items():
-                if path in directories and directories[path] != signature:
-                    raise RetirementUncertain()
-                directories[path] = signature
+            for observation in (original.managed, original.auxiliary):
+                for path, signature in observation.directories.items():
+                    if path in directories and directories[path] != signature:
+                        raise RetirementUncertain()
+                    directories[path] = signature
             for relative in sorted({str(PurePosixPath(path).parent) for path in members}):
                 with walker._directory(relative) as parent:
                     for path, expected in members.items():
@@ -296,9 +317,11 @@ class RetirementJournal:
             inventory = LegacyInventory(self.io)
             private = inventory.private_members(ownership, fence=self.fence)
             managed = inventory.managed_members(ownership, fence=self.fence)
+            auxiliary = inventory.auxiliary_members(ownership, fence=self.fence)
             inventory.require_private(ownership, private, fence=self.fence)
             inventory.require_managed(ownership, managed, fence=self.fence)
-            original = OriginalInventory(ownership, private, managed)
+            inventory.require_auxiliary(ownership, auxiliary, fence=self.fence)
+            original = OriginalInventory(ownership, private, managed, auxiliary)
             data = _encode(dict(format="home-retirement-inventory@1", directory=self._root(), original=original._record()))
             # Validate the closed serialization before publishing any bytes.
             OriginalInventory._parse(self.io._json(data)["original"])

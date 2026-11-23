@@ -4455,12 +4455,28 @@ permitted, while its inode/custody/mode remain pinned. That comparison is for
 the pre-mutation boundary: real revocation owns and must authenticate its later
 trust-pair writes separately.
 
+`auxiliary_members` adds the existing independently receipted root-private issuer
+directory, closed issuer journal/lock pair, matching data-only activation
+transaction and fixed per-user minter reservations. The transaction data parser
+lives with the retained historical receipt schema; the old store only reexports
+those types while its writers await removal. Issuer minting/uncertain outcomes
+are historical observations, not key-cleanup acknowledgements. No issuer or
+minter operation, directory, lock file or reservation is initialized. Unknown,
+torn, unsafe, partial or contended state refuses without repair. Minter records
+have exact hashed names, root-private custody and canonical UTC windows of at
+most five minutes, with a total 4096-record work bound. Actual existing issuer
+file/per-user directory locks must be available during observation. These are
+sampled locks; the returned snapshot does not retain cleanup exclusion. Original
+auxiliary member and ancestor identities join the durable journal, whose byte
+budget is 1 MiB. Loading keeps saved original observations after disappearance
+or replacement; it grants no effect acknowledgement.
+
 These records are evidence prerequisites, not removal capabilities or successful
-recovery results. They do not prove managed unit/process ownership, parse or
-revoke trust authority, or inventory issuer/minter journals; nor do they stop,
-delete or publish retirement. The original connector pin must precede remaining
-inventory capture. The explicit coordinator must establish the separate proofs,
-complete the remaining cleanup inventory, preserve it before effects and account
+recovery results. They do not prove managed unit/process ownership or parse or
+revoke trust authority; nor do they stop, delete or publish retirement. The
+original connector pin must precede remaining inventory capture. The explicit
+coordinator must establish the separate proofs, complete the remaining cleanup
+inventory, preserve it before effects, hold actual operation exclusion and account
 for intentional revocation writes without adopting replacements. A matching
 current hash or same-named candidate is never lineage by itself.
 

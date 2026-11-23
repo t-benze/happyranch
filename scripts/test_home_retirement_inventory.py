@@ -1031,9 +1031,9 @@ def test_managed_numeric_leaf_owner_is_observed_before_any_content_open(
     managed_setup(fixture)
     with retirement_fence(fixture.io) as fence:
         ownership = fixture.inventory.observe(fence=fence)
-        original_stat = os.stat
+        original_stat, original_open = os.stat, os.open
         target = fixture.root / path
-        seen = []
+        seen, opened = [], []
         def different_owner(name, *args, **kwargs):
             result = original_stat(name, *args, **kwargs)
             actual = Path(os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}")) / name if kwargs.get("dir_fd") is not None else Path(name)
@@ -1043,12 +1043,17 @@ def test_managed_numeric_leaf_owner_is_observed_before_any_content_open(
                 result = os.stat_result(parts)
                 seen.append(True)
             return result
+        def observe_open(name, *args, **kwargs):
+            actual = Path(os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}")) / name if kwargs.get("dir_fd") is not None else Path(name)
+            opened.append(actual)
+            return original_open(name, *args, **kwargs)
         before = fixture.snapshot()
         with monkeypatch.context() as scoped:
             scoped.setattr(inventory.os, "stat", different_owner)
+            scoped.setattr(inventory.os, "open", observe_open)
             with pytest.raises(RetirementUncertain, match="^migration pending$"):
                 fixture.inventory.managed_members(ownership, fence=fence)
-        assert seen and fixture.snapshot() == before and fixture.effects() == []
+        assert seen and target not in opened and fixture.snapshot() == before and fixture.effects() == []
 
 
 @pytest.mark.parametrize("path", ["etc/happyranch/connector.json", MANAGED_OPAQUE[0]])
@@ -1145,7 +1150,19 @@ def test_unknown_original_inventory_is_preserved_without_effects_or_recapture(
     from runtime.remote_access.home_retirement_journal import RetirementJournal
     managed_setup(fixture)
     with retirement_fence(fixture.io) as fence:
-        RetirementJournal(fixture.io, fence).capture(fixture.inventory.observe(fence=fence))
+        try:
+            RetirementJournal(fixture.io, fence).capture(fixture.inventory.observe(fence=fence))
+        except RetirementUncertain as error:
+            # Preserve closed diagnostics while making an unexpected initial
+            # capture failure attributable, including suppressed inner frames.
+            import traceback
+            frames = []
+            current = error
+            while current is not None:
+                frames.extend((Path(frame.filename).name, frame.name, frame.lineno)
+                    for frame in traceback.extract_tb(current.__traceback__))
+                current = current.__context__
+            pytest.fail(f"valid initial inventory capture refused: {frames}")
         target = fixture.root / JOURNAL
         record = json.loads(target.read_bytes())
         original = record["original"]
@@ -1160,7 +1177,7 @@ def test_unknown_original_inventory_is_preserved_without_effects_or_recapture(
             else:
                 os.mkfifo(target, 0o600)
         elif damage in ("empty", "oversized", "torn", "duplicate"):
-            target.write_bytes({"empty": b"", "oversized": b"x" * 32769, "torn": b'{"format":',
+            target.write_bytes({"empty": b"", "oversized": b"x" * (1024 * 1024 + 1), "torn": b'{"format":',
                 "duplicate": target.read_bytes().replace(b'"format":', b'"format":"home-retirement-inventory@1","format":', 1)}[damage])
         else:
             if damage == "format": record["format"] = "home-retirement-inventory@2"
@@ -1294,3 +1311,228 @@ def test_original_journal_requires_same_live_serialization_domain(fixture: Inven
     with pytest.raises(RetirementUncertain, match="^migration pending$"):
         journal.load()
     assert fixture.snapshot() == before and fixture.effects() == []
+
+
+ISSUER = STATE + "/home-issuer"
+ISSUER_RECEIPT = STATE + "/home-issuer-publication.json"
+MINTER = STATE + "/home-minter"
+OPERATION = MINTER + "/happyranch-invite/operation-" + "1" * 64
+TRANSACTION = STATE + "/home-activation-txn.json"
+
+
+def auxiliary_setup(fixture: InventoryFixture) -> None:
+    managed_setup(fixture)
+    folder = fixture.directory(ISSUER)
+    fixture.put_json(ISSUER_RECEIPT, dict(version=1, directory="/" + ISSUER,
+        uid=os.getuid(), gid=os.getgid(), device=folder.stat().st_dev, inode=folder.stat().st_ino))
+    fixture.put_json(ISSUER + "/invite-issuer.json", dict(operation_id="b" * 32, binding_digest="a" * 64,
+        not_before=100.0, expires_at=399.0, outcome="uncertain"))
+    fixture.file(ISSUER + "/invite-issuer.lock", b"")
+    for user in ("happyranch-invite", "happyranch-node"):
+        fixture.file(MINTER + "/" + user + "/operation-" + "1" * 64,
+            b"2026-01-01T00:00:00+00:00\n2026-01-01T00:04:00+00:00\n")
+    fixture.put_json(TRANSACTION, dict(format="home-activation-txn@1",
+        **{key: fixture.activation[key] for key in ("release_uid", "home_id", "control_plane_id", "connector_id",
+            "activation_generation", "operation_id", "ca_der_sha256", "dial_ip")},
+        phase="failed_uncertain", effects=[dict(name="preflight", state="intent", member_digests={})]))
+    for relative in (ISSUER, MINTER, MINTER + "/happyranch-invite", MINTER + "/happyranch-node"):
+        (fixture.root / relative).chmod(0o700)
+
+
+def test_auxiliary_journals_are_observed_without_minting_recovery_or_private_data_access(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot()
+        real_open, opened = os.open, []
+        forbidden = {str(fixture.root / path) for path in (OPAQUE, PRIVATE_KEY, *MANAGED_OPAQUE,
+            "home/release/.local/share/happyranch/daemon.token")}
+        def bounded_open(name, *args, **kwargs):
+            candidate = str(Path(os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}")) / name) if kwargs.get("dir_fd") is not None else str(name)
+            opened.append(candidate)
+            assert candidate not in forbidden
+            return real_open(name, *args, **kwargs)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "open", bounded_open)
+            observed = fixture.inventory.auxiliary_members(ownership, fence=fence)
+            fixture.inventory.require_auxiliary(ownership, observed, fence=fence)
+        assert {ISSUER, ISSUER_RECEIPT, OPERATION, TRANSACTION} <= observed.members.keys()
+        assert observed.members[OPERATION][1] == (fixture.root / OPERATION).stat().st_ino
+        assert repr(observed) == "LegacyAuxiliaryMembers(<redacted>)"
+        assert fixture.snapshot() == before and fixture.effects() == []
+        saved = RetirementJournal(fixture.io, fence).capture(ownership)
+        assert saved.auxiliary == observed
+        (fixture.root / OPERATION).unlink()
+        before = fixture.snapshot()
+        assert RetirementJournal(fixture.io, fence).load().auxiliary == observed
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+def test_absent_auxiliary_state_never_initializes_or_claims_cleanup(fixture: InventoryFixture) -> None:
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot()
+        observed = fixture.inventory.auxiliary_members(ownership, fence=fence)
+        assert all(value is None for value in observed.members.values())
+        assert len(observed.members) == 8
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize("damage", ["receipt-missing", "receipt-inode", "receipt-mode", "issuer-unknown",
+    "issuer-pending", "issuer-partial", "issuer-malformed", "issuer-lock-mode", "minter-name", "minter-mode",
+    "operation-symlink", "operation-hardlink", "operation-fifo", "operation-mode", "operation-empty",
+    "operation-large", "operation-malformed", "operation-timezone", "operation-window", "operation-name", "issuer-unreceipted-empty", "transaction-binding",
+    "transaction-malformed", "transaction-pending", "transaction-mode"])
+def test_unknown_auxiliary_evidence_is_preserved_without_effects(
+        fixture: InventoryFixture, damage: str) -> None:
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        if damage.startswith("receipt-"):
+            target = fixture.root / ISSUER_RECEIPT
+            if damage == "receipt-missing": target.unlink()
+            elif damage == "receipt-mode": target.chmod(0o644)
+            else:
+                record = json.loads(target.read_bytes())
+                record["inode"] += 1
+                target.write_bytes(json.dumps(record).encode())
+        elif damage.startswith("issuer-"):
+            target = fixture.root / ISSUER
+            if damage == "issuer-unreceipted-empty":
+                for name in ("invite-issuer.json", "invite-issuer.lock"):
+                    (target / name).unlink()
+                (fixture.root / ISSUER_RECEIPT).unlink()
+            elif damage in ("issuer-unknown", "issuer-pending"):
+                (target / ("foreign" if damage == "issuer-unknown" else "invite-issuer.pending")).write_bytes(b"synthetic-private-state")
+            elif damage == "issuer-partial": (target / "invite-issuer.lock").unlink()
+            elif damage == "issuer-lock-mode": (target / "invite-issuer.lock").chmod(0o644)
+            else: (target / "invite-issuer.json").write_bytes(b"{unknown}")
+        elif damage.startswith("minter-"):
+            if damage == "minter-name": (fixture.root / MINTER / "foreign-user").mkdir(mode=0o700)
+            else: (fixture.root / MINTER).chmod(0o755)
+        elif damage.startswith("transaction-"):
+            target = fixture.root / TRANSACTION
+            if damage == "transaction-binding":
+                record = json.loads(target.read_bytes())
+                record["operation_id"] = "f" * 32
+                target.write_bytes(json.dumps(record).encode())
+            elif damage == "transaction-mode": target.chmod(0o644)
+            elif damage == "transaction-pending": target.with_name("." + target.name + ".pending").write_bytes(b"synthetic-pending")
+            else: target.write_bytes(b"{unknown}")
+        else:
+            target = fixture.root / OPERATION
+            if damage in ("operation-symlink", "operation-fifo"):
+                target.unlink()
+                if damage == "operation-symlink": target.symlink_to(fixture.root / "retained-native/saved-home")
+                else: os.mkfifo(target, 0o600)
+            elif damage == "operation-name": target.rename(target.with_name("operation-unknown"))
+            elif damage == "operation-hardlink": os.link(target, fixture.root / "external-operation")
+            elif damage == "operation-mode": target.chmod(0o644)
+            else:
+                target.write_bytes({"operation-empty": b"", "operation-large": b"x" * 161,
+                    "operation-malformed": b"unknown\nunknown\n",
+                    "operation-timezone": b"2026-01-01T00:00:00\n2026-01-01T00:04:00\n",
+                    "operation-window": b"2026-01-01T00:00:00+00:00\n2026-01-01T00:06:00+00:00\n"}[damage])
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            fixture.inventory.auxiliary_members(ownership, fence=fence)
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize("relative", [ISSUER + "/invite-issuer.lock", MINTER + "/happyranch-invite", MINTER + "/happyranch-node"])
+def test_auxiliary_live_operation_lock_refuses_without_cleanup_or_repair(
+        fixture: InventoryFixture, relative: str) -> None:
+    import fcntl
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        descriptor = os.open(fixture.root / relative, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = fixture.snapshot()
+            with pytest.raises(RetirementUncertain, match="^migration pending$"):
+                fixture.inventory.auxiliary_members(ownership, fence=fence)
+            assert fixture.snapshot() == before and fixture.effects() == []
+        finally:
+            os.close(descriptor)
+        observed = fixture.inventory.auxiliary_members(ownership, fence=fence)
+        assert observed.members[OPERATION] is not None
+
+
+@pytest.mark.parametrize("relative", [OPERATION, ISSUER_RECEIPT, TRANSACTION])
+def test_auxiliary_saved_original_inode_is_never_recaptured_as_current(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, relative: str) -> None:
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        observed = fixture.inventory.auxiliary_members(ownership, fence=fence)
+        target = fixture.root / relative
+        target.rename(fixture.root / "preserved-original-auxiliary")
+        target.write_bytes((fixture.root / "preserved-original-auxiliary").read_bytes())
+        target.chmod(0o600)
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            fixture.inventory.require_auxiliary(ownership, observed, fence=fence)
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize("relative", [OPERATION, ISSUER_RECEIPT, TRANSACTION])
+def test_auxiliary_original_snapshot_is_rechecked_after_blocking_native_observations(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, relative: str) -> None:
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        read, replaced = [], []
+        operation = inventory._AuxiliaryMembers._operation
+        def original_operation(*args, **kwargs):
+            result = operation(*args, **kwargs)
+            read.append(True)
+            return result
+        def native_barrier():
+            if read and not replaced:
+                target = fixture.root / relative
+                saved = fixture.root.parent / "retained-original-auxiliary"
+                target.rename(saved)
+                target.write_bytes(saved.read_bytes())
+                target.chmod(0o600)
+                replaced.append(True)
+        monkeypatch.setattr(inventory._AuxiliaryMembers, "_operation", original_operation)
+        fixture.on_getent = native_barrier
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            fixture.inventory.auxiliary_members(ownership, fence=fence)
+        assert read and replaced == [True] and fixture.effects() == []
+
+
+def test_auxiliary_operation_budget_refuses_without_partial_effects(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot()
+        monkeypatch.setattr(inventory._AuxiliaryMembers, "_MAX_OPERATIONS", 1)
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            fixture.inventory.auxiliary_members(ownership, fence=fence)
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+def test_auxiliary_journal_preserves_a_populated_original_operation_inventory(fixture: InventoryFixture) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    auxiliary_setup(fixture)
+    for index in range(130):
+        fixture.file(MINTER + "/happyranch-invite/operation-" + f"{index + 2:064x}",
+            b"2026-01-01T00:00:00+00:00\n2026-01-01T00:04:00+00:00\n")
+    for relative in (MINTER, MINTER + "/happyranch-invite", MINTER + "/happyranch-node"):
+        (fixture.root / relative).chmod(0o700)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        try:
+            original = RetirementJournal(fixture.io, fence).capture(ownership)
+        except RetirementUncertain:
+            pytest.fail("valid populated original operation inventory was refused")
+        assert len([path for path in original.auxiliary.members if "/operation-" in path]) == 132
+        assert 32768 < (fixture.root / JOURNAL).stat().st_size <= 1024 * 1024
+        assert RetirementJournal(fixture.io, fence).load().auxiliary == original.auxiliary
+        assert fixture.effects() == []
