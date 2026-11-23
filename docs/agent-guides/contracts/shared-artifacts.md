@@ -158,7 +158,7 @@ retain their existing meanings; task/thread provenance lives only in payload.
 ASGI/SQLite/filesystem cases without a daemon lifespan, listener, provider or live
 org. `--case metadata|provisional|journal|custom|quota|shape` selects a group.
 B uses `uv run --frozen python scripts/test_shared_artifacts_b.py --case` with
-`all|manual-delete|quota-chunks|references|history|live-cap|notices|sweep|sweep-shape` (default all). This is a
+`all|manual-delete|quota-chunks|references|handoff-paths|history|live-cap|notices|sweep|sweep-shape` (default all). This is a
 standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL shape case) outside the retired Python suite. It adds no CI
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
