@@ -1,4 +1,4 @@
-"""E2 ordinary lifecycle and foreground admission; no activation or unit writer."""
+"""Read-only legacy inventory and closed retired home admission adapters."""
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +8,7 @@ import re
 import ssl
 from dataclasses import dataclass
 
+from runtime.remote_access.home_retirement import MESSAGE
 from runtime.remote_access import invite_v2
 from runtime.remote_access.home_activation import (
     ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH, MEMBER_PATHS,
@@ -86,21 +87,21 @@ class HomeProfileAdmission:
             return result
 
     def require(self, *, ordinary: bool = True) -> HomeAdmission:
-        """Full protected admission; inventory may observe any parsed current phase."""
+        """Observe legacy custody only; ordinary home admission is retired."""
+        if ordinary:
+            raise InstallerError(MESSAGE)
         preparing = self.io._headscale_preparing
         try:
             if os.geteuid() != 0:
                 raise InstallerError("home lifecycle requires root")
             self.io._refuse_install_transaction()
-            if ordinary and self.io._check_enrollment():
-                raise InstallerError("home restart requires no enrollment input")
             files = self._files(("connector.json", "sidecar.json", "policy.json", "provision.json",
                                  "release-daemon.json", "daemon.token"))
             record = self.io._json(files["provision.json"])
             if record.get("layout") not in ("source", "deb"):
                 raise InstallerError("home layout invalid")
             self.io.layout = record["layout"]
-            if not ordinary and "home_binding" not in self.io._json(files["sidecar.json"]):
+            if "home_binding" not in self.io._json(files["sidecar.json"]):
                 return self._inert_inventory(files)
             sidecar = parse_live_pair(self.io, files)
             generation = sidecar["home_binding"]["activation_generation"]
@@ -108,9 +109,7 @@ class HomeProfileAdmission:
             txns = HomeActivationTransactionStore(root=self.io.root, root_owner=self.io.root_owner)
             receipt = store.read(expected_generation=generation)
             txn = txns.read_optional()
-            if (ordinary and receipt.phase != "ready") or txn is None or not txn.matches(receipt):
-                raise InstallerError("home activation not admitted")
-            if ordinary and txn.phase != "joined":
+            if txn is None or not txn.matches(receipt):
                 raise InstallerError("home activation not admitted")
             effect = next((e for e in txn.effects if e.name == "home_config" and e.state == "done"), None)
             live = {p: files[p.rsplit("/", 1)[1]] for p in CONFIG_MEMBERS}
@@ -142,19 +141,6 @@ class HomeProfileAdmission:
                 expected_generation=generation, root=self.io.root, root_owner=self.io.root_owner)
             gate.inspect()
             self._members(receipt)
-            if ordinary:
-                units = self.observed_units(HomeAdmission(receipt, files))
-                present, _ = self.io._inventory_units(self.io._json(files["connector.json"]), observed_units=units)
-                if len(present) != len(UNITS):
-                    raise InstallerError("home unit absent")
-            # Gate inventory permits absence for pre-activation/cleanup. Ordinary
-            # ready admission additionally requires the one literal owned link.
-            if ordinary:
-                from runtime.remote_access.home_activation import OWNED_LINK, OWNED_LINK_TARGET
-                with self.io._publication_parent(OWNED_LINK.rsplit("/", 1)[0].lstrip("/")) as (parent, check):
-                    if os.readlink(OWNED_LINK.rsplit("/", 1)[1], dir_fd=parent) != OWNED_LINK_TARGET:
-                        raise InstallerError("home link absent")
-                    check()
             if (store.read(expected_generation=generation) != receipt or txns.read_optional() != txn
                     or self._files(tuple(files)) != files):
                 raise InstallerError("home admission changed")
@@ -221,21 +207,8 @@ class HomeProfileAdmission:
                 check()
 
     def foreground(self, config: object) -> None:
-        """Ruling 15: fixed service UID and root-custodied configs, no protected reads."""
-        try:
-            service = self.io._account(create=False)
-            if service is None or service[0] == 0 or os.geteuid() != service[0]:
-                raise InstallerError("home foreground service account required")
-            files = self._files(("connector.json", "sidecar.json"))
-            parse_live_pair(self.io, files)
-            from runtime.remote_access.managed_provider import ManagedProviderConfig
-            from runtime.remote_access.supervisor import ConnectorConfig
-            raw = self.io._json(files["connector.json"])
-            managed = raw.pop("managed")
-            if ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed)) != config:
-                raise InstallerError("home foreground config mismatch")
-        except Exception:
-            raise InstallerError("home foreground custody invalid") from None
+        """Retained entry for callers holding old saved home configuration."""
+        raise InstallerError(MESSAGE)
 
     def observed_units(self, admitted: HomeAdmission) -> dict[str, str]:
         """Comparison only; E2b owns first publication/selection under intent."""

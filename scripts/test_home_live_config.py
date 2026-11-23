@@ -8,11 +8,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from dataclasses import replace
 from typing import Any
 
 import pytest
+
+from runtime.remote_access.home_retirement import MESSAGE
 
 from runtime.remote_access import home_activation_owner as adapters
 from runtime.remote_access import home_live_config as h
@@ -361,7 +364,7 @@ def test_installer_refuses_live_profile_and_rollover_preflight_is_read_only(venu
     receipt = finish_config(v)
     io = v.receipts._io
     before = configs(v), v.records()
-    with pytest.raises(InstallerError, match="home control binding not provisioned"):
+    with pytest.raises(InstallerError, match="^" + re.escape(MESSAGE) + "$"):
         io.install()
     with pytest.raises(InstallerError):
         io._validate_configs({path.rsplit("/", 1)[1]: data for path, data in configs(v).items()},

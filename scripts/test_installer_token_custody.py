@@ -23,6 +23,8 @@ from typing import Callable, Iterator
 
 import pytest
 
+from runtime.remote_access.home_retirement import MESSAGE
+
 from runtime.remote_access import installer as module
 from runtime.remote_access import release_verifier
 from runtime.remote_access import cli as connector_cli
@@ -2198,7 +2200,7 @@ def test_staged_identity_refuses_before_units_or_service_calls(fixture: Fixture,
     fixture.installer = module.ManagedInstaller(
         root=fixture.root, root_owner=fixture.installer.root_owner, manager=fixture.manager,
         lookup_user=fixture.installer._lookup_user, lookup_group=fixture.installer._lookup_group)
-    with pytest.raises(module.InstallerError, match="^home control binding not provisioned; requires slice 3b-2$"):
+    with pytest.raises(module.InstallerError, match="^" + re.escape(MESSAGE) + "$"):
         if operation.startswith("install"):
             fixture.installer.install(enrollment_key_file=fixture.key if operation == "install" else None)
         elif operation == "drift":
@@ -2253,7 +2255,7 @@ def test_staged_identity_cli_preserves_lifecycle_inventory(
     code = connector_cli.main([operation, "--config", str(parent / "connector.json")])
     output = capsys.readouterr()
     assert code == 1
-    assert output.err == "error: home control binding not provisioned; requires slice 3b-2\n"
+    assert output.err == "error: " + MESSAGE + "\n"
     assert output.out == ""
     assert staged_inventory(fixture) == before
     assert manager_calls == []
@@ -2311,7 +2313,7 @@ def test_staged_identity_cannot_bypass_via_supervisor(
     monkeypatch.setattr(fixture.manager, "restart", lambda unit: fixture.manager.calls.append(("restart", unit)), raising=False)
     monkeypatch.setattr(fixture.manager, "install", lambda *args, **kwargs: fixture.manager.calls.append(("install",)), raising=False)
     before = staged_inventory(fixture)
-    with pytest.raises(ConnectorConfigError, match="^home control binding not provisioned; requires slice 3b-2$"):
+    with pytest.raises(ConnectorConfigError, match="^" + re.escape(MESSAGE) + "$"):
         getattr(supervisor, operation)()
     assert staged_inventory(fixture) == before
     assert fixture.manager.calls == []
@@ -3280,7 +3282,8 @@ def expire_staged_policy(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> d
         @classmethod
         def now(cls, tz: object = None) -> datetime:
             return delayed if tz is None else delayed.astimezone(tz)
-    monkeypatch.setattr(module, "datetime", DelayedClock)
+    from runtime.remote_access import installer_validation
+    monkeypatch.setattr(installer_validation, "datetime", DelayedClock)
     return delayed
 
 
@@ -3355,7 +3358,7 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
     for operation in (fixture.installer.install, fixture.installer._write_units,
                       supervisor.install, supervisor.start, supervisor.restart, supervisor.enable, supervisor.run):
         with pytest.raises((module.InstallerError, ConnectorConfigError),
-                           match="^home control binding not provisioned; requires slice 3b-2$"):
+                           match="^" + re.escape(MESSAGE) + "$"):
             operation()
     completed = staged_inventory(fixture)
     manager.calls.clear()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import pwd
 import ssl
 from dataclasses import replace
@@ -16,6 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from runtime.remote_access.home_retirement import MESSAGE
 
 from runtime.remote_access import home_activation_owner as h, installer
 from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS
@@ -575,7 +578,7 @@ def test_installer_stays_inert_for_live_profile(venue):
                home_binding={key: getattr(v.prepared, key) for key in
                    ("home_id", "control_plane_id", "connector_id", "activation_generation")})
     path.write_bytes(json.dumps(raw).encode())
-    with pytest.raises(installer.InstallerError, match="home control binding not provisioned"):
+    with pytest.raises(installer.InstallerError, match="^" + re.escape(MESSAGE) + "$"):
         v.receipts._io.install()
     with pytest.raises(installer.InstallerError):
         v.receipts._io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()

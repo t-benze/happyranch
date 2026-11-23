@@ -3051,16 +3051,16 @@ The roughly 1500-line split places items 1/2/4 here. home_admission.py composes
 existing readers, protected provenance, shared renderer and HomeUnitGate. It
 inverts only the shared exact insertion, authenticates the reconstructed prepared
 bytes against provision.json, then rerenders and checks complete live txn bytes.
-Ready ordinary install is a keyless re-enable/start of already-validated existing
-units, without unit rewriting, key staging or minting. Supervisor start/restart/
-enable requires the fixed on-disk connector config to equal its parsed config;
-foreground run uses the separate fixed-account custody boundary. Legacy inert
-config and unit renderings are unchanged. Existing non-start lifecycle refusals
-remain until their separately owned work lands.
+P24 retires ordinary home install, supervisor start/restart/enable and foreground
+serving, including a valid saved ready receipt. These entries refuse before native
+effects with: “Home mode has been retired. Sign in to use your account's private
+network. Your local work is kept.” No account admission or home fallback is added.
+Read-only legacy inventory remains available for ownership-sensitive cleanup;
+non-home managed lifecycle and renewal retain their existing checks.
 
 Inventory's protected current receipt supplies phase/G for observation of inert
 prepared configs; installation IDs and release UID are independently bound through
-versioned prepared provenance. Live ordinary admission always takes G from the
+versioned prepared provenance. Live legacy inventory takes G from the
 sidecar binding. This observation is never an activation/adoption grant. Fixed
 home CA/invite/config-directory entries and observe.sock are recognized only with
 that binding; unknown config/state/unit/link entries continue to refuse. Before
@@ -3162,8 +3162,8 @@ receipt deletion in this primitive. Missing links need no disable operation.
 The gate retains the inert scanner's load roots, literal-reference checks,
 65536-entry shared bound, 32-depth bound and 65536-byte foreign-policy bound,
 using literal no-follow parents/readers and revalidating sampled metadata.
-E2a now wires this gate into protected ordinary admission and phase-aware
-inventory. E2b adds first publication only through Prepare and the intent-bound
+E2a retains this gate for phase-aware legacy inventory; P24 refuses ordinary
+home admission. E2b adds first publication only through Prepare and the intent-bound
 managed_services owner; ordinary installation does not publish a first home unit.
 I5d-1's `ManagedInstaller.publish_home_units()` fills the clean-install fragment
 publication prerequisite; I5d-2 selects it from public Enable. Under the existing

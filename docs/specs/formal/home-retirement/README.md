@@ -390,3 +390,10 @@ frozen legacy config/DERP/policy bytes. It no longer prepares a new home
 installation or imports the activation composition to exercise real cleanup.
 The activation-only disable/re-enable scenario stays in its activation venue
 pending owner disposition; this fixture separation adds no model transition.
+
+Ordinary home install and supervisor start/restart/enable/foreground now refuse
+valid legacy state with the accepted retirement message before native effects.
+The retained HomeProfileAdmission adapter permits only explicit read-only
+legacy inventory. This implements OldAdmission refusal without a new model
+action, account-positive path or destructive startup transition. Other Python
+activation/provisioning owners remain pending their separate source retirement.

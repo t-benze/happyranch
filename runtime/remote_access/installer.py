@@ -3853,11 +3853,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             managed = raw.get("managed")
             profile = managed.get("profile") if isinstance(managed, dict) else None
             if profile == "linux-managed-identity-v1" or raw.get("Profile") == "linux-managed-identity-v1":
-                from runtime.remote_access.home_admission import HomeProfileAdmission
-                try:
-                    return HomeProfileAdmission(self).require()
-                except InstallerError:
-                    raise InstallerError("home control binding not provisioned; requires slice 3b-2") from None
+                from runtime.remote_access.home_retirement import MESSAGE
+                raise InstallerError(MESSAGE)
 
     def _write_units(self) -> None:
         if self._refuse_staged_identity() is not None:

@@ -12,6 +12,7 @@ from runtime.remote_access import home_admission as h, installer, supervisor
 from runtime.remote_access.home_activation import ACTIVATION_PATH, OWNED_LINK, OWNED_LINK_TARGET
 from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, EFFECTS, TRANSACTION_PATH, Effect
 from runtime.remote_access.installer import InstallerError, UNITS
+from runtime.remote_access.home_retirement import MESSAGE
 from scripts.test_home_activation_owner import venue as owner_venue
 from scripts.test_home_live_config import finish_config, venue as live_venue
 from scripts.test_home_activation_txn import put
@@ -52,23 +53,27 @@ def config(v):
     return supervisor.ConnectorConfig(**raw, managed=supervisor.ManagedProviderConfig(**managed))
 
 
-def test_ready_composed_admission_and_keyless_restart(venue):
+def test_ready_home_admission_and_restart_are_retired(venue):
     v, io = venue, venue.receipts._io
     records = v.records()
     before = {p: v.path(p).read_bytes() for p in CONFIG_MEMBERS}
-    assert h.HomeProfileAdmission(io).require().receipt == v.ready
-    io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
-                          for name in ("connector.json", "sidecar.json", "policy.json")})
+    with pytest.raises(InstallerError, match=MESSAGE.replace(".", r"\.")):
+        h.HomeProfileAdmission(io).require()
+    with pytest.raises(InstallerError):
+        io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
+                              for name in ("connector.json", "sidecar.json", "policy.json")})
     assert io.inventory().state == "owned-activated"
     assert io.inventory().detail == "ready"
-    assert set(io.install()) == set(UNITS)
-    assert mutating(v) == [["enable", UNITS[3]], ["enable", UNITS[2]], ["start", UNITS[2]]]
+    with pytest.raises(InstallerError) as refused:
+        io.install()
+    assert str(refused.value) == MESSAGE
+    assert mutating(v) == []
     assert v.records() == records and {p: v.path(p).read_bytes() for p in CONFIG_MEMBERS} == before
     assert not v.path("/etc/happyranch/enrollment.key").exists()
     assert not v.mints
     with pytest.raises(InstallerError): io.uninstall(purge=True)
     with pytest.raises(InstallerError): io._write_units()
-    assert mutating(v) == [["enable", UNITS[3]], ["enable", UNITS[2]], ["start", UNITS[2]]]
+    assert mutating(v) == []
 
 
 @pytest.mark.parametrize("case", ["unprovisioned", "partial", "forged", "stale", "pending-receipt",
@@ -186,11 +191,13 @@ def test_supervisor_root_lifecycle_is_bound(venue, monkeypatch, method):
     v, io = venue, venue.receipts._io
     monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
     svc = supervisor.ConnectorSupervisor(config=config(v), config_path=Path("/etc/happyranch/connector.json"), manager=io.manager)
-    getattr(svc, method)()
-    assert mutating(v) == [[method, UNITS[0]]]
+    with pytest.raises(supervisor.ConnectorConfigError) as refused:
+        getattr(svc, method)()
+    assert str(refused.value) == MESSAGE
+    assert mutating(v) == []
     put(v.path(ACTIVATION_PATH), replace(v.ready, phase="failed_uncertain").to_bytes())
     with pytest.raises(supervisor.ConnectorConfigError): getattr(svc, method)()
-    assert mutating(v) == [[method, UNITS[0]]]
+    assert mutating(v) == []
 
 
 @pytest.mark.parametrize("case", ["valid", "failed-receipt", "wrong-user", "config-drift", "symlink", "mode", "mismatch"])
@@ -209,10 +216,9 @@ def test_foreground_uses_custody_without_protected_reads(venue, monkeypatch, cas
     def protected(*args, **kwargs): raise AssertionError("foreground read protected records")
     monkeypatch.setattr(h.HomeActivationStore, "read", protected)
     monkeypatch.setattr(h.HomeActivationTransactionStore, "read_optional", protected)
-    if case in {"valid", "failed-receipt"}:
+    with pytest.raises(InstallerError) as refused:
         h.HomeProfileAdmission(io).foreground(cfg)
-    else:
-        with pytest.raises(InstallerError): h.HomeProfileAdmission(io).foreground(cfg)
+    assert str(refused.value) == MESSAGE
     assert not mutating(v) and not v.mints
 
 
@@ -221,8 +227,11 @@ def test_supervisor_foreground_checks_before_run_loop(venue, monkeypatch):
     monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
     monkeypatch.setattr(h.os, "geteuid", lambda: io._service_owner[0])
     svc = supervisor.ConnectorSupervisor(config=config(v), config_path=Path("/etc/happyranch/connector.json"))
-    monkeypatch.setattr(svc, "_run_loop", lambda **kwargs: 17)
-    assert svc.run() == 17
+    ran = []
+    monkeypatch.setattr(svc, "_run_loop", lambda **kwargs: ran.append(True))
+    with pytest.raises(supervisor.ConnectorConfigError) as refused:
+        svc.run()
+    assert str(refused.value) == MESSAGE and ran == []
     svc.config.home_id = "foreign"
     with pytest.raises(supervisor.ConnectorConfigError): svc.run()
     assert not mutating(v)
