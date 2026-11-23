@@ -366,3 +366,13 @@ to RestoreEntry/Detect, and artifact rollback to RollbackArtifact. Abort and
 completed readback have no replay. This adds no model action or proof predicate;
 executed results belong to the task evidence, while full installed replacement,
 exhaustive publication boundaries and TLC remain separate obligations.
+
+The R02.g canonical-entry rows now interrupt staged-file/parent sync, rename,
+post-rename return, final-parent sync and post-readback return. Recovery of an
+already published record maps to the existing SyncReceipt and ReadFinal actions:
+the explicit entry holds its original final inode through file/parent fsync and
+fresh retired-fact/name readback, without rewriting or replaying earlier effects.
+Read-only detection performs no sync. The lower keeper observes sync refusal and
+replacement/reappearance during confirmation; the composed rows retain their
+actual produced-receipt R03/R04 checks. No model state/action/configuration or
+TLC result is added by this concrete boundary mapping.

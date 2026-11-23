@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from runtime.remote_access import home_retirement as entry
+from runtime.remote_access import home_retirement_upgrade as upgrade
 from runtime.remote_access import retirement_io
 from runtime.remote_access import pairing
 from runtime.remote_access import home_retirement_inventory as inventory
@@ -198,6 +199,10 @@ def test_fixed_entry_preserves_fresh_completed_and_refused_layouts(tmp_path, mon
     ('active', 'preparation'), ('active', 'ceremony'), ('active', 'first-device'),
     ('active', 'failed-close'), ('active', 'controller-stop'), ('active', 'controller-disable'),
     ('active', 'account'), ('active', 'before-publication'),
+    ('inert', 'final-file-sync'), ('inert', 'final-stage-parent-sync'),
+    ('inert', 'final-rename'), ('inert', 'final-renamed'),
+    ('inert', 'final-parent-sync'), ('inert', 'final-return'),
+    ('active', 'final-parent-sync'),
     ('active', 'preinst-fragment'), ('inert', 'preinst-publication'), ('active', 'preinst-first-device'),
 ], indirect=['active'])
 def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_reappearance(active, monkeypatch, capsys, request, boundary, tmp_path):
@@ -260,6 +265,11 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
     preinst = packaged_preinst(tmp_path, monkeypatch, active.root, installed) if generated else None
     invoke = preinst.invoke if preinst else lambda: entry.main([])
     real_unlink, real_write, real_open = os.unlink, os.write, os.open
+    real_sync, real_rename, real_retire = os.fsync, installer_type._rename_provision_entry, upgrade.retire
+    final_syncs = []
+    final_path = active.root / FINAL
+    pending_path = final_path.with_name('.home-retirement.json.pending')
+    published = boundary in ('final-renamed', 'final-parent-sync', 'final-return')
     revoke, revoke_calls = active.manager.revoke_device if not inert else None, []
     def interrupt_revoke(device, **kwargs):
         revoke_calls.append(device)
@@ -288,6 +298,32 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
             interrupted.append(True)
             return real_write(fd, data[:11])
         return real_write(fd, data)
+    def sync(fd):
+        path = Path(os.readlink(f'/proc/self/fd/{fd}'))
+        if path in (pending_path, final_path, final_path.parent):
+            final_syncs.append(path)
+        selected = (boundary == 'final-file-sync' and path == pending_path
+            or boundary == 'final-stage-parent-sync' and path == final_path.parent and pending_path.exists()
+            or boundary == 'final-parent-sync' and path == final_path.parent and final_path.exists())
+        if selected and not interrupted:
+            interrupted.append(True)
+            raise OSError('synthetic interrupted final sync')
+        real_sync(fd)
+    def rename(parent, source, target, *, updating=False):
+        selected = source == pending_path.name and target == final_path.name and not interrupted
+        if selected and boundary == 'final-rename':
+            interrupted.append(True)
+            raise OSError('synthetic interruption before final rename')
+        real_rename(parent, source, target, updating=updating)
+        if selected and boundary == 'final-renamed':
+            interrupted.append(True)
+            raise OSError('synthetic uncertainty after actual final rename')
+    def retire(io):
+        result = real_retire(io)
+        if boundary == 'final-return' and not interrupted:
+            interrupted.append(True)
+            raise OSError('synthetic lost return after actual final readback')
+        return result
     # The existing lower fixture owns a fence for direct-owner tests. End that
     # test-side context so the shipping entry acquires the real directory flock.
     with ExitStack() as serving:
@@ -302,18 +338,23 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
             patch.setattr(os, 'unlink', unlink)
             patch.setattr(os, 'write', write)
             patch.setattr(os, 'open', open_file)
+            if boundary.startswith('final-'):
+                patch.setattr(os, 'fsync', sync)
+                patch.setattr(installer_type, '_rename_provision_entry', staticmethod(rename))
+                patch.setattr(upgrade, 'retire', retire)
             if boundary in ('ceremony', 'first-device'):
                 patch.setattr(active.manager, 'revoke_device', interrupt_revoke)
             assert invoke() == 1
         if boundary == 'failed-close':
             assert streams[0].cleanup_failed and active.reopened()[0].devices[devices[0]].revoked
             interrupted.append(True)
-        assert interrupted and not (active.root / FINAL).exists()
+        assert interrupted and final_path.exists() == published
+        published_inode = final_path.stat().st_ino if published else None
         # Fresh detection neither repairs the interrupted phase nor supplies
         # effect authority. Explicit recovery with incomplete original custody
         # must also preserve every remaining artifact/native/account effect.
         before, effects = active.snapshot(), active.effects()
-        assert HomeRetirement(fresh_installer(layout='deb')).detect().state == 'migration pending'
+        assert HomeRetirement(fresh_installer(layout='deb')).detect().state == ('retired' if published else 'migration pending')
         assert active.snapshot() == before and active.effects() == effects
         proof = active.root / (PIN if boundary == 'preparation' else INVENTORY)
         proof.chmod(0o644)
@@ -349,7 +390,18 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
             with pytest.raises(StreamClosed):
                 streams[0].receive()
         state['fault'] = ''
-        assert invoke() == 0
+        if boundary.startswith('final-'):
+            final_syncs.clear()
+            with monkeypatch.context() as patch:
+                patch.setattr(os, 'fsync', sync)
+                assert invoke() == 0
+            if published:
+                assert final_path.stat().st_ino == published_inode
+                assert final_syncs == [final_path, final_path.parent]
+            else:
+                assert pending_path in final_syncs and final_path.parent in final_syncs
+        else:
+            assert invoke() == 0
     produced = (active.root / FINAL).read_bytes()
     assert json.loads(produced) == {'account': 'absent', 'format': 'home-retirement@1', 'state': 'retired'}
     assert not state['user'] and not state['group']

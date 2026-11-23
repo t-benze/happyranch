@@ -14,10 +14,61 @@ import pytest
 from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY as STATE
 from runtime.remote_access.home_retirement_fence import retirement_fence
 from runtime.remote_access.home_retirement_publication import publish_final
+from runtime.remote_access.home_retirement_upgrade import retire
 from scripts.test_home_retirement import Fixture, FINAL
 
 EXPECTED = b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
 PENDING = STATE + '/.home-retirement.json.pending'
+
+
+@pytest.mark.parametrize('case', ['complete', 'file-sync', 'parent-sync',
+    'replacement-during-sync', 'reappearance-during-sync'])
+def test_completed_entry_resyncs_real_published_receipt_before_success(tmp_path, monkeypatch, case):
+    fixture = Fixture(tmp_path / 'root')
+    fixture.directory(STATE)
+    with retirement_fence(fixture.io) as fence:
+        assert publish_final(fixture.io, fence, require=lambda: 'absent') == EXPECTED
+    final = fixture.root / FINAL
+    original_inode = final.stat().st_ino
+    before, syncs, changed = fixture.snapshot(), [], []
+    real_sync = os.fsync
+    def sync(fd):
+        path = Path(os.readlink(f'/proc/self/fd/{fd}'))
+        syncs.append(str(path.relative_to(fixture.root)))
+        if (case == 'file-sync' and path == final
+                or case == 'parent-sync' and path == fixture.root / STATE):
+            raise OSError('synthetic interrupted completed-receipt sync')
+        real_sync(fd)
+        if path == final and case == 'replacement-during-sync':
+            final.rename(final.with_name('original-receipt'))
+            fixture.file(FINAL, EXPECTED)
+            changed.append(fixture.snapshot())
+        if path == final and case == 'reappearance-during-sync':
+            fixture.file('etc/happyranch/invite-issuer.json', b'synthetic-reappearance')
+            changed.append(fixture.snapshot())
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', sync)
+        # Ordinary detection never completes durability or mutates evidence.
+        fixture.detect('retired')
+        assert syncs == []
+        if case == 'complete':
+            assert retire(fixture.io).state == 'retired'
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                retire(fixture.io)
+    assert syncs == ([FINAL] if case == 'file-sync' else [FINAL, STATE])
+    assert fixture.snapshot() == (changed[-1] if changed else before)
+    assert final.read_bytes() == EXPECTED
+    if case == 'replacement-during-sync':
+        assert final.stat().st_ino != original_inode
+        assert final.with_name('original-receipt').stat().st_ino == original_inode
+    else:
+        assert final.stat().st_ino == original_inode
+    if not changed:
+        assert retire(fixture.io).state == 'retired'
+        assert fixture.snapshot() == before
+    # Fixture.run permits only read-only systemctl show, never destructive effects.
+    assert all(call[:3] == ['systemctl', 'show', 'happyranch-headscale.service'] for call in fixture.calls)
 
 
 @pytest.mark.parametrize('case', ['complete', 'file-sync', 'stage-parent-sync', 'rename',

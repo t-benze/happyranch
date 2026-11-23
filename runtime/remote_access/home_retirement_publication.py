@@ -11,7 +11,7 @@ import os
 from typing import TYPE_CHECKING, Callable
 
 from runtime.remote_access.home_retirement import (
-    ACCOUNT, HomeRetirement, RECEIPT, RetirementUncertain, STATE_DIRECTORY, UNIT,
+    ACCOUNT, HomeRetirement, RECEIPT, RetirementStatus, RetirementUncertain, STATE_DIRECTORY, UNIT,
     _ABSENT_UNIT, _FILE_FLAGS, _FINAL_BYTES, _FINAL_PENDING, _LEGACY_PATHS,
     _RETAINED, _RETAINED_BYTES, _signature,
 )
@@ -19,6 +19,37 @@ from runtime.remote_access.home_retirement_fence import RetirementFence
 
 if TYPE_CHECKING:
     from runtime.remote_access.installer import ManagedInstaller
+
+
+def confirm_final(io: ManagedInstaller) -> RetirementStatus:
+    """Finish uncertain final syncs without rewriting or replaying retirement.
+
+    A prior rename may have succeeded before its parent sync or return failed.
+    Explicit recovery pins that final inode through both syncs and fresh facts;
+    ordinary detection remains read-only.
+    """
+    reader = HomeRetirement(io)
+    try:
+        with reader._entry(STATE_DIRECTORY + '/' + RECEIPT) as (parent, name, info):
+            if info is None or name != RECEIPT:
+                raise RetirementUncertain()
+            expected = reader._read(parent, name, info, private=True)
+            descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
+            try:
+                if _signature(os.fstat(descriptor)) != _signature(info):
+                    raise RetirementUncertain()
+                os.fsync(descriptor)
+                os.fsync(parent)
+                if reader._read(parent, name, info, private=True) != expected:
+                    raise RetirementUncertain()
+                status = reader.detect()
+                if status.state != 'retired' or reader._read(parent, name, info, private=True) != expected:
+                    raise RetirementUncertain()
+                return status
+            finally:
+                os.close(descriptor)
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+        raise RetirementUncertain() from None
 
 
 def publish_final(io: ManagedInstaller, fence: RetirementFence, *, require: Callable[[], str]) -> bytes:

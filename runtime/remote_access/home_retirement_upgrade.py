@@ -17,6 +17,7 @@ from runtime.remote_access.home_retirement_inert import InertRetirement
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal, _NAME as _INVENTORY
 from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion
+from runtime.remote_access.home_retirement_publication import confirm_final
 from runtime.remote_access.home_retirement_service import OwnedService
 from runtime.remote_access.home_retirement_transport import ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE
@@ -159,8 +160,10 @@ def retire(io: ManagedInstaller) -> RetirementStatus:
         raise RetirementUncertain()
     reader = HomeRetirement(io)
     status = reader.detect()
-    if status.state in ('fresh', 'retired'):
+    if status.state == 'fresh':
         return status
+    if status.state == 'retired':
+        return confirm_final(io)
     # Existing final evidence with drift is never a new retirement/adoption.
     if reader._receipt() is not None:
         raise RetirementUncertain()

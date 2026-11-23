@@ -4835,6 +4835,11 @@ It accepts no arguments, requires root, emits the retirement copy before any
 effect, and reports only bounded status. Fresh or independently confirmed retired
 layouts return without acquiring a fence or replaying effects. Existing final
 evidence with drift refuses before any new retirement attempt.
+An explicit completed invocation additionally pins the protected final inode,
+fsyncs it and its parent, and repeats retired-fact and named-inode readback.
+This completes a rename whose sync or return was interrupted; sync failure or
+concurrent replacement/reappearance refuses without rewriting the receipt.
+Ordinary status detection remains read-only and performs no fsync.
 
 `home_retirement_upgrade.retire` holds the existing installer directory flock
 and permanent refusal fence across the canonical sequence. First preparation
@@ -4910,6 +4915,14 @@ managed quiescence and committed denial permit the separate recovery path.
 Further legitimate ceremony burns on a failed retry do not undo earlier denies.
 Every successful row must produce its final record through the real writer,
 then reuse that record for repeat-without-effects and reappearance refusal.
+The final-publication rows additionally interrupt staged-file fsync, staged-parent
+fsync, no-replace rename, the return after actual rename, final-parent fsync and
+the return after actual final readback. The final-parent case includes both
+active and inert origins. Explicit recovery completes remaining publication or
+syncs the already published same inode; the real resulting receipt feeds the
+same repeat and reappearance checks. The lower publication keeper separately
+checks completed-entry sync refusal, inode replacement and legacy reappearance
+during sync, using output from the actual production writer.
 The `active-preinst-fragment`, `active-preinst-first-device` and
 `inert-preinst-publication` rows additionally
 extract the actual package control entry and execute its transmitted child
