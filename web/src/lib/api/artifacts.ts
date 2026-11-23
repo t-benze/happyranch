@@ -31,6 +31,16 @@ export interface UploadArtifactArgs {
   file: File;
   name?: string;
   agent: string;
+  /**
+   * Optional Shared Artifacts origin metadata (docs/agent-guides/contracts/
+   * shared-artifacts.md). Omit all of them for the founder provisional
+   * `pending-attribution` upload (pre-ID compose); the server binds it on
+   * attach. When a real thread exists, send `threadId` + `purpose` +
+   * `retention`. Only supplied fields are sent.
+   */
+  threadId?: string;
+  purpose?: string;
+  retention?: 'default' | 'reference';
 }
 
 export interface ListArtifactsResponse {
@@ -82,6 +92,9 @@ async function uploadWithToken(
 ): Promise<Fenced> {
   const params = new URLSearchParams({ agent: args.agent });
   if (args.name) params.set('name', args.name);
+  if (args.threadId) params.set('thread_id', args.threadId);
+  if (args.purpose) params.set('purpose', args.purpose);
+  if (args.retention) params.set('retention', args.retention);
   const form = new FormData();
   form.set('file', args.file, args.name ?? args.file.name);
   const upload = await prepareMultipartUpload(
