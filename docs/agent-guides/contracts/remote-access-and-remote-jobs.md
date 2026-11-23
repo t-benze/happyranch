@@ -4476,6 +4476,22 @@ auxiliary member and ancestor identities join the durable journal, whose byte
 budget is 1 MiB. Loading keeps saved original observations after disappearance
 or replacement; it grants no effect acknowledgement.
 
+`home_retirement_coordinator.ActiveRetirement` composes active pre-effect
+preparation under the same actual installer I/O and live fence. Independent
+historical lineage and native observations select the connector process; real
+serving-peer status durably pins it before the complete original inventory.
+Both original journals must publish, synchronize and agree with that same
+controller/managed identity, boot, PID/start, release UID and account. Fresh
+original member/controller/native/peer comparisons precede real revoke-all,
+which returns only the original serving registry's acknowledgement plus anchored
+denial readback. Unknown, interrupted or replaced evidence refuses; no failed
+close can become a receipt or restore committed authority. This active-only
+composition supplies neither an inert fallback nor native stop/cleanup/final
+publication or package replacement. Those later stages remain unfinished.
+Standalone composition checks run through real inventory/journals/anchored
+store/private IPC with synthetic native facts:
+`uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.
+
 `home_retirement_transport.ManagedTransport` separately observes the fixed
 connector/sidecar, managed target and release-verifier activation units. Frozen
 historical Debian unit digests and protected installed `happyranch.md5sums`

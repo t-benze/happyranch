@@ -1,0 +1,244 @@
+"""Active preparation/cutoff through real inventory, journals and private IPC.
+
+Run: uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short
+Only OS ownership/NSS/proc/systemd and the installed package are synthetic.
+No fixture computes an inventory, acknowledgement or retirement receipt.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from runtime.remote_access import home_retirement_cutoff as cutoff
+from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY
+from runtime.remote_access.home_retirement_coordinator import ActiveRetirement
+from runtime.remote_access.home_retirement_inventory import LegacyInventory
+from runtime.remote_access.home_retirement_journal import RetirementJournal
+from runtime.remote_access.home_retirement_transport import ManagedTransport
+from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+from runtime.remote_access.streams import StreamClosed
+from scripts.test_home_retirement_cutoff import RecoveryFixture, PIN
+from scripts.test_home_retirement_inventory import InventoryFixture, managed_setup, ACCOUNT_RECORD, PUBLICATION
+from scripts.test_home_retirement_service import MANAGED_UNITS, LINK, BINARY
+
+INVENTORY = STATE_DIRECTORY + '/home-retirement-inventory.json'
+NATIVE = STATE_DIRECTORY + '/home-retirement-transport.json'
+FINAL = STATE_DIRECTORY + '/home-retirement.json'
+
+
+@pytest.fixture
+def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    native = RecoveryFixture(tmp_path / 'root')
+    legacy = InventoryFixture(tmp_path / 'legacy-input', monkeypatch)
+    managed_setup(legacy)
+    # Overlay independent historical inputs, retaining the real trust pair,
+    # socket owner and native package fixture already present in the root.
+    for source in legacy.root.rglob('*'):
+        target = native.root / source.relative_to(legacy.root)
+        if target.exists() or target.is_symlink():
+            continue
+        if source.is_symlink():
+            target.symlink_to(str(source.readlink()).replace(str(legacy.root), str(native.root)))
+        elif source.is_dir():
+            target.mkdir(mode=source.stat().st_mode & 0o777)
+        else:
+            shutil.copy2(source, target)
+    legacy.root = native.root
+    legacy.io = native.io
+    legacy.properties['FragmentPath'] = str(native.root / 'etc/systemd/system/happyranch-headscale.service')
+    # A distinct synthetic system account is essential: an exclusive controller
+    # cannot share the managed account or its process inventory. The existing
+    # metadata seam models foreign numeric custody without host chown/useradd.
+    uid = gid = os.getuid() + 1
+    legacy.record.update(uid=uid, gid=gid)
+    legacy.publication.update(uid=uid, gid=gid)
+    legacy.put_json(ACCOUNT_RECORD, legacy.record)
+    legacy.put_json(PUBLICATION, legacy.publication)
+    legacy.file('etc/login.defs', f'UID_MIN {uid + 1}\nGID_MIN {gid + 1}\nSYS_UID_MIN 1\nSYS_GID_MIN 1\n'.encode(), 0o644)
+    legacy.file('proc/123/status', f'Uid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t{gid}\t{gid}\t{gid}\t{gid}\n'.encode())
+    for relative in ('etc/happyranch/headscale', 'var/lib/happyranch-headscale', 'run/happyranch-headscale',
+                     'var/lib/happyranch-connector', 'run/happyranch-connector',
+                     'var/lib/happyranch-tsnet-sidecar', 'run/happyranch-tsnet-sidecar'):
+        (native.root / relative).chmod(0o700)
+    original_run = native.run
+    def run(argv, **kwargs):
+        if argv[:3] == ['systemctl', 'show', 'happyranch-headscale.service']:
+            return legacy.run(argv, **kwargs)
+        if argv[:1] == ['getent']:
+            native.calls.append(argv)
+            return (0, f'happyranch-headscale:x:{uid}:{gid}::/nonexistent:/usr/sbin/nologin\n'
+                    if argv[1] == 'passwd' else f'happyranch-headscale:x:{gid}:\n')
+        if argv == ['passwd', '--status', 'happyranch-headscale']:
+            native.calls.append(argv)
+            return 0, 'happyranch-headscale L 2026-01-01 0 99999 7 -1\n'
+        if argv[:1] == ['ps']:
+            code, output = original_run(argv, **kwargs)
+            return code, output + f'123 {uid} {uid} {uid} {uid}\n'
+        return original_run(argv, **kwargs)
+    def user(name):
+        if name == 'happyranch-headscale':
+            return SimpleNamespace(pw_name=name, pw_uid=uid, pw_gid=gid, pw_dir='/nonexistent', pw_shell='/usr/sbin/nologin')
+        assert name in ('happyranch', 'root', 'release')
+        return SimpleNamespace(pw_name=name, pw_uid=os.getuid(), pw_gid=os.getgid())
+    def group(name):
+        assert name in ('happyranch-headscale', 'happyranch')
+        return SimpleNamespace(gr_name=name, gr_gid=gid if name == 'happyranch-headscale' else os.getgid(), gr_mem=[])
+    native.io._run, native.io._lookup_user, native.io._lookup_group = run, user, group
+    native.io.manager._run = run
+    real_stat, real_fstat = os.stat, os.fstat
+    prefixes = tuple(native.root / name for name in ('etc/happyranch/headscale', 'var/lib/happyranch-headscale',
+        'run/happyranch-headscale', 'proc/123'))
+    def owner(info, path):
+        if any(path == prefix or path.is_relative_to(prefix) for prefix in prefixes):
+            result = SimpleNamespace(**{key: getattr(info, key) for key in dir(info) if key.startswith('st_')})
+            result.st_uid, result.st_gid = uid, gid
+            return result
+        return info
+    def observed_stat(name, *args, dir_fd=None, **kwargs):
+        info = real_stat(name, *args, dir_fd=dir_fd, **kwargs)
+        path = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name if dir_fd is not None else Path(name)
+        return owner(info, path)
+    monkeypatch.setattr(os, 'stat', observed_stat)
+    monkeypatch.setattr(os, 'fstat', lambda fd: owner(real_fstat(fd), Path(os.readlink(f'/proc/self/fd/{fd}'))))
+    native.inventory = LegacyInventory(native.io)
+    try:
+        yield native
+    finally:
+        native.close()
+
+
+def test_active_preparation_pins_all_original_evidence_before_real_revoke(active, monkeypatch):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    real_sync, real_send = os.fsync, cutoff._send
+    synced, sent = set(), []
+    def sync(fd):
+        real_sync(fd)
+        info = os.fstat(fd)
+        synced.add((info.st_dev, info.st_ino))
+    def send(connection, request):
+        method = request.get('method', 'commit')
+        if not sent:
+            assert request['method'] == 'status'
+            assert not (active.root / INVENTORY).exists() and not (active.root / NATIVE).exists()
+        paths = (PIN, INVENTORY, NATIVE) if method in ('revoke-all@1', 'commit') else (PIN,)
+        for path in paths:
+            info = (active.root / path).stat()
+            parent = (active.root / path).parent.stat()
+            assert (info.st_dev, info.st_ino) in synced
+            assert (parent.st_dev, parent.st_ino) in synced
+        sent.append(method)
+        return real_send(connection, request)
+    monkeypatch.setattr(os, 'fsync', sync)
+    monkeypatch.setattr(cutoff, '_send', send)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        assert owner.original == RetirementJournal(active.io, active.fence).load()
+        assert owner.native == ManagedTransportJournal(ManagedTransport(active.io, active.fence, owner.original.managed)).load()
+        assert not active.reopened()[0].devices[device].revoked
+        assert active.closed == [] and stream.receive() == b'synthetic-live-frame'
+        assert active.effects() == [] and not (active.root / FINAL).exists()
+        receipt = owner.revoke()
+        receipt.require()
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+        assert active.effects() == [] and not (active.root / FINAL).exists()
+        assert (active.root / 'retained-native/saved-home').read_bytes() == b'synthetic-P25-saved-home'
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert (active.root / LINK).is_symlink()
+        assert 'revoke-all@1' in sent and 'commit' in sent
+
+
+@pytest.mark.parametrize('damage', ['controller', 'managed-config', 'package', 'original-process',
+    'inventory-unknown', 'native-unknown', 'inventory-sync', 'native-sync'])
+def test_active_capture_uncertainty_preserves_authority_and_never_reaches_revoke(active, monkeypatch, damage):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    unknown = None
+    if damage == 'controller':
+        (active.root / 'etc/systemd/system/happyranch-headscale.service').write_bytes(b'foreign controller')
+    elif damage == 'managed-config':
+        (active.root / 'etc/happyranch/connector.json').write_bytes(b'{}')
+    elif damage == 'package':
+        (active.root / 'var/lib/dpkg/info/happyranch.md5sums').unlink()
+    elif damage == 'original-process':
+        active.native[MANAGED_UNITS[0]].update(MainPID='0', ActiveState='inactive', SubState='dead', ControlGroup='')
+    elif damage.endswith('-unknown'):
+        unknown = active.root / (INVENTORY if damage.startswith('inventory') else NATIVE)
+        unknown.write_bytes(b'synthetic-unknown-evidence')
+        unknown.chmod(0o600)
+    else:
+        target = active.root / (INVENTORY if damage.startswith('inventory') else NATIVE)
+        real_sync = os.fsync
+        def sync(fd):
+            if Path(os.readlink(f'/proc/self/fd/{fd}')) == target:
+                raise OSError('synthetic interrupted original journal sync')
+            return real_sync(fd)
+        monkeypatch.setattr(os, 'fsync', sync)
+    with active.serving(monkeypatch):
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ActiveRetirement.capture(active.io, active.fence)
+        assert not active.reopened()[0].devices[device].revoked
+        assert active.closed == [] and stream.receive() == b'synthetic-live-frame'
+        assert not any(b'"revoke-all@1"' in frame for frame in active.frames)
+        assert active.effects() == [] and not (active.root / FINAL).exists()
+        if unknown is not None:
+            assert unknown.read_bytes() == b'synthetic-unknown-evidence'
+        assert (active.root / 'retained-native/saved-home').read_bytes() == b'synthetic-P25-saved-home'
+
+
+@pytest.mark.parametrize('damage', ['private-key', 'controller-process', 'managed-process',
+    'inventory-replacement', 'native-replacement', 'peer-binding', 'trust-generation'])
+def test_active_revoke_revalidates_original_owners_before_any_mutation(active, monkeypatch, damage):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        if damage == 'private-key':
+            (active.root / (STATE_DIRECTORY + '/home-ca/ca.key')).write_bytes(b'synthetic-changed-key')
+        elif damage in ('controller-process', 'managed-process'):
+            path = active.root / f"proc/{123 if damage == 'controller-process' else active.pid}/stat"
+            path.write_bytes(path.read_bytes().replace(b'321' if damage == 'controller-process' else b'456', b'987'))
+        elif damage.endswith('-replacement'):
+            path = active.root / (INVENTORY if damage.startswith('inventory') else NATIVE)
+            replacement = path.with_name('.same-bytes-replacement')
+            replacement.write_bytes(path.read_bytes())
+            replacement.chmod(0o600)
+            replacement.replace(path)
+        elif damage == 'peer-binding':
+            owner.cutoff.peer = replace(owner.cutoff.peer, started=owner.cutoff.peer.started + 1)
+        else:
+            active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+        frames = len(active.frames)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke()
+        assert len(active.frames) == frames
+        assert not active.reopened()[0].devices[device].revoked
+        assert active.closed == [] and stream.receive() == b'synthetic-live-frame'
+        assert active.effects() == [] and not (active.root / FINAL).exists()
+
+
+def test_active_failed_close_preserves_real_denial_and_all_original_evidence(active, monkeypatch):
+    device, _ = active.grant('device')
+    def failed_close():
+        raise OSError('synthetic physical close failure')
+    stream = active.stream(device, 'device', close=failed_close)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        before = {path: (active.root / path).read_bytes() for path in (PIN, INVENTORY, NATIVE)}
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke()
+        assert active.reopened()[0].devices[device].revoked
+        assert active.closed == ['device'] and owner.cutoff._acknowledged is None
+        assert stream.cleanup_failed
+        with pytest.raises(StreamClosed):
+            stream.receive()
+        assert {path: (active.root / path).read_bytes() for path in before} == before
+        assert active.effects() == [] and not (active.root / FINAL).exists()
