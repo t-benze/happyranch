@@ -728,7 +728,15 @@ def test_saved_active_preparation_refuses_uncertain_originals_without_recapture(
 
 @pytest.mark.parametrize('phase', ['ceremony', 'first-device'])
 def test_partial_revoke_recovery_preserves_commits_and_finishes_through_original_owner(active, monkeypatch, phase):
-    grants = [active.grant(node) for node in ('first', 'second')]
+    from runtime.remote_access import pairing
+    # Persisted JSON orders device IDs, independently of grant creation order.
+    # Keep the interruption's first/second labels deterministic without changing
+    # real grant, revoke, stream or recovery behavior.
+    token_hex, identifiers = pairing.secrets.token_hex, iter(('1' * 32, '2' * 32))
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pairing, 'secrets', SimpleNamespace(token_hex=
+            lambda size: next(identifiers) if size == 16 else token_hex(size)))
+        grants = [active.grant(node) for node in ('first', 'second')]
     streams = [active.stream(device, node) for (device, _), node in zip(grants, ('first', 'second'))]
     active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
     with active.serving(monkeypatch):
