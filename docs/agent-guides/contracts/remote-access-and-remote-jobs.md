@@ -4711,7 +4711,11 @@ specific owned disable removes it. The original boot remains fixed throughout
 all effects; the active coordinator supplies its real per-effect cutoff guard,
 followed by a new native observation before each call. An original process may become absent, but a new/reused process or
 resurrection of an originally inactive unit refuses further effects. Receipts
-become unusable after drift. No
+become unusable after drift. Confirmation uses the same original parent
+device/inode/custody/mode comparison as native continuation: selective sibling
+directory removal may change parent link counts/timestamps, while files,
+activation links, boot, native properties and process facts remain exact.
+Replaced or mode-changed parents still refuse. No
 start/restart, account modification, package-database write or file cleanup is
 provided. The coordinator must obtain actual persistent revocation and original
 transport acknowledgement first, persist this separate native observation with

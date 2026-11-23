@@ -422,6 +422,8 @@ def test_managed_stop_disable_requires_exact_package_process_and_native_readback
         (v.root / 'etc/systemd/system' / MANAGED_UNITS[1]).write_bytes((
             Path(__file__).parent / 'fixtures/home-retirement' / ('managed-' + MANAGED_UNITS[1])).read_bytes())
     owner = ManagedTransport(v.io, v.fence, v.managed)
+    private_root = v.root / 'var/lib/happyranch-headscale'
+    private_root.mkdir(mode=0o700)
     before = v.snapshot()
     observed = owner.observe()
     assert v.snapshot() == before and v.effects() == []
@@ -435,6 +437,12 @@ def test_managed_stop_disable_requires_exact_package_process_and_native_readback
         MANAGED_UNITS[3], MANAGED_UNITS[4])] + [['systemctl', 'disable', name] for name in MANAGED_LINKS]
     owner.confirm(receipt)
     count = len(v.effects())
+    # Selective private cleanup changes the still-original shared parent's
+    # link count/timestamps, not its identity or the managed native members.
+    private_root.rmdir()
+    assert owner.observe(stopped=True, disabled=True) != receipt.observation
+    owner.confirm(receipt)
+    assert len(v.effects()) == count
     again = owner.stop_and_disable(owner.observe())
     owner.confirm(again)
     assert len(v.effects()) == count
@@ -582,7 +590,7 @@ def test_replacement_before_managed_stop_or_disable_has_zero_effects(
     assert (v.root.parent / 'retained-pre-effect-original').lstat().st_ino > 0
 
 
-@pytest.mark.parametrize('damage', ['fragment', 'registry', 'process', 'boot'])
+@pytest.mark.parametrize('damage', ['fragment', 'registry', 'process', 'boot', 'parent-reuse', 'parent-mode'])
 def test_managed_stop_receipt_cannot_authorize_later_changed_state(managed_service: ManagedFixture, damage: str) -> None:
     from runtime.remote_access.home_retirement_transport import ManagedTransport
     v = managed_service
@@ -595,6 +603,11 @@ def test_managed_stop_receipt_cannot_authorize_later_changed_state(managed_servi
         path.write_bytes((v.root.parent / 'retained-fragment').read_bytes())
         path.chmod(0o644)
     elif damage == 'registry': (v.root / PACKAGE_REGISTRY).write_bytes(b'unknown-registry')
+    elif damage == 'parent-reuse':
+        (v.root / 'etc/systemd').rename(v.root.parent / 'retained-systemd')
+        (v.root / 'etc/systemd').mkdir(mode=0o755)
+        (v.root.parent / 'retained-systemd/system').rename(v.root / 'etc/systemd/system')
+    elif damage == 'parent-mode': (v.root / 'etc/systemd').chmod(0o700)
     elif damage == 'boot':
         path = v.root / 'proc/sys/kernel/random/boot_id'
         path.chmod(0o600)

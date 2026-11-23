@@ -439,5 +439,14 @@ class ManagedTransport:
             raise RetirementUncertain() from None
 
     def confirm(self, receipt: ManagedStopReceipt) -> None:
-        if type(receipt) is not ManagedStopReceipt or self.observe(stopped=True, disabled=True) != receipt.observation:
+        if type(receipt) is not ManagedStopReceipt:
+            raise RetirementUncertain()
+        current = self.observe(stopped=True, disabled=True)
+        original = receipt.observation
+        # Selective sibling cleanup can change a shared parent's contents.
+        # Keep its original inode/custody/mode, as during native continuation;
+        # every file/link and all boot/native/process facts remain exact.
+        self._same_artifacts(original, current, set())
+        if (current.boot_id != original.boot_id or current.properties != original.properties
+                or current.processes != original.processes):
             raise RetirementUncertain()

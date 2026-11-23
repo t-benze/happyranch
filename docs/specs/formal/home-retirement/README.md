@@ -83,7 +83,10 @@ roots may be rmdir'd under the same fresh proofs and held operation exclusion.
 Original immediate-parent identity, parent sync and absent-name readback are
 required even after interrupted removal. Missing/replaced parents, reappearing
 roots/leaves and unknown/nonempty roots refuse; no recursive traversal or rmdir
-replay is supplied. Native/trust/account/lock-domain and final publication
+replay is supplied. Managed stop confirmation retains original parent
+device/inode/custody/mode through sibling removal, allowing only its resulting
+link-count/timestamp changes; files/links and boot/native/process facts remain
+exact. Native/trust/account/lock-domain and final publication
 obligations remain separate; model actions and completion claims are unchanged.
 
 The model's additional inert initial branch abstracts these independently
