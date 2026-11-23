@@ -410,3 +410,8 @@ They construct only retained readers and native observation adapters, rather
 than activation/admin/minter owners or a live-config publication transition.
 Their production inventory and refusal assertions remain unchanged; this test
 setup separation changes no model transition or execution-evidence claim.
+
+The helper's fixed generation child now selects the retained legacy readback
+module. Its root-only zero-option entry emits the same closed metadata snapshot
+without a writer import. This command movement adds no authority or model action;
+helper authentication and original transport budgets remain separate obligations.

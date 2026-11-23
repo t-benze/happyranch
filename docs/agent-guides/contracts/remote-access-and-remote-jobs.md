@@ -3064,7 +3064,10 @@ the remaining retiring writers temporarily inherit or re-export the same code.
 This movement changes no custody, generation, pending, token or lock predicate. B6 cleanup,
 retained staged-inventory checks and the borrowed publication lock also use those
 readers directly. The retained admission fixture supplies historical input files
-without constructing activation or provisioning owners.
+without constructing activation or provisioning owners. The fixed helper's
+generation metadata child now executes `runtime.remote_access.legacy_home_readback`;
+its root-only/no-option gate and closed read-only snapshot schema are unchanged.
+The activation writer module no longer provides that command entry.
 
 Inventory's protected current receipt supplies phase/G for observation of inert
 prepared configs; installation IDs and release UID are independently bound through

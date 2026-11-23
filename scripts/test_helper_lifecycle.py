@@ -350,5 +350,5 @@ def test_concrete_generation_reader_fences_lifecycle(venue: Any, monkeypatch: An
     assert calls
     for index, (command, kwargs) in enumerate(calls):
         assert command == ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
-                           'runtime.remote_access.home_activation')
+                           'runtime.remote_access.legacy_home_readback')
         assert kwargs['env'] == {} and kwargs['cwd'] == '/' and 0 < kwargs['timeout'] <= (122 if index < 2 else 480)

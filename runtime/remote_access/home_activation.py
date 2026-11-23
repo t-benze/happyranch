@@ -1,7 +1,6 @@
 """Inert B1 records and A5 custody/publication; no activation or recovery caller."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Callable
@@ -132,22 +131,3 @@ class HomeActivationStore(LegacyHomeReadback):
                     # No pending cleanup/adoption: failed publication is inspection evidence.
         except (OSError, InstallerError, HeadscaleServiceError):
             raise HomeActivationError("state") from None
-
-
-def helper_snapshot() -> bytes:
-    """Fixed bundled -I metadata read; no full receipt, node identity or secrets."""
-    receipt = HomeActivationStore().current()
-    value = None if receipt is None else {
-        'generation': receipt.activation_generation, 'operation': receipt.operation_id,
-        'release_uid': receipt.release_uid, 'phase': receipt.phase}
-    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n'
-
-
-if __name__ == '__main__':
-    import sys
-    if len(sys.argv) != 1 or os.geteuid() != 0:
-        raise SystemExit('unavailable')
-    try:
-        sys.stdout.buffer.write(helper_snapshot())
-    except Exception:
-        raise SystemExit('unavailable') from None

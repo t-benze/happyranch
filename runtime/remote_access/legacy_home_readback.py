@@ -212,3 +212,21 @@ def render_home_live_configs(connector: bytes, sidecar: bytes,
     except Exception:
         raise ActivationRefused() from None
 
+
+def helper_snapshot() -> bytes:
+    """Fixed bundled -I metadata read; no full receipt, node identity or secrets."""
+    receipt = LegacyHomeReadback().current()
+    value = None if receipt is None else {
+        'generation': receipt.activation_generation, 'operation': receipt.operation_id,
+        'release_uid': receipt.release_uid, 'phase': receipt.phase}
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 1 or os.geteuid() != 0:
+        raise SystemExit('unavailable')
+    try:
+        sys.stdout.buffer.write(helper_snapshot())
+    except Exception:
+        raise SystemExit('unavailable') from None

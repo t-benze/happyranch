@@ -17,7 +17,7 @@ import pytest
 
 from runtime.remote_access.installer import ManagedInstaller
 
-from runtime.remote_access import home_activation as activation
+from runtime.remote_access import legacy_home_readback, home_activation as activation
 from runtime.remote_access.home_activation import HomeActivationError, HomeActivationReceipt, HomeActivationStore
 from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, IssuerError, read_home_invite_config
 
@@ -533,11 +533,11 @@ def test_current_absence_revalidates_before_return(store: HomeActivationStore, t
 
 def test_helper_snapshot_is_closed_and_read_only(store: HomeActivationStore, tmp_path: Path,
                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(activation, 'HomeActivationStore', lambda: store)
-    assert activation.helper_snapshot() == b'null\n'
+    monkeypatch.setattr(legacy_home_readback, 'LegacyHomeReadback', lambda: store)
+    assert legacy_home_readback.helper_snapshot() == b'null\n'
     path = put(tmp_path, RECEIPT, receipt().to_bytes())
     original = path.read_bytes()
-    assert json.loads(activation.helper_snapshot()) == {
+    assert json.loads(legacy_home_readback.helper_snapshot()) == {
         'generation': 7, 'operation': 'b' * 32, 'release_uid': 1000, 'phase': 'prepared'}
     assert path.read_bytes() == original
 

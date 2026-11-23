@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
-           'runtime.remote_access.home_activation')
+           'runtime.remote_access.legacy_home_readback')
 
 
 class GenerationUnavailable(ValueError):
