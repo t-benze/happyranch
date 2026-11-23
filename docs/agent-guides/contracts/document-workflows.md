@@ -447,8 +447,23 @@ compensation, and release before publication capture or awaited bootstrap.
 Missing dependency rows are never proof of an empty canonical requirement set.
 A profile contender refuses an unfinished ordinary canonical batch before its
 global operation claim; startup authority recovery owns interrupted batches. Removal leaves
-an outstanding consumer unbound and the org fenced until an explicit coherent
-rebind/removal. Cold startup recovers only complete eligible interrupted profile
+an outstanding consumer unbound and the org fenced. Explicit valid same-profile
+register/reconnect (ordinary or direct-connect claimed projection) and a consumer's
+explicit move to another executor may adopt only a complete same-profile remove
+in `forward_recovery_required`. The original operation ID, kind, captured members,
+target generation, coordinator invocation and prepared publication bindings stay
+unchanged; no fresh operation or terminal marker admits the writer. Incomplete or
+inconsistent mirrors/bindings, other states/kinds, unrelated consumers and original
+invocations spanning other profiles remain refused. Invalid rebinds retain the
+prior durable operation/fence through existing validation. A terminal projection
+loser acquires no durable operation/publication ownership. Partial consumer moves
+commit under the retained binding while the entire captured closure stays fenced;
+only coherence allows `_finalize` to publish the changed canonical roster and
+terminalize the old remove. Reconnect that restores coherence finalizes immediately.
+Incoherent publication logs org/profile/operation and dependency identity, state and
+generation diagnostics without adapter payloads. Independent native startup holds
+are not cleared or bypassed by adoption. Cold startup recovers only complete eligible
+interrupted profile
 operations through their existing synchronous owner; a post-commit republish
 failure preserves the writer's established response while
 leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
