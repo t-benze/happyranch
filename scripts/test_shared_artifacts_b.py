@@ -620,13 +620,15 @@ async def sweep_case(root: Path) -> None:
 
 async def sweep_shape_case(root: Path) -> None:
     from runtime.daemon.shared_artifacts_scheduler import sweep
-    async with fixture(root) as (org,client):
+    async with fixture(root,workers=('worker','engineering_manager')) as (org,client):
         assert (await client.get(PREFIX+'/artifacts')).status_code==200
         svc=org.db._shared_artifact_service
         for index in range(7500):
             with (svc.store.root/f'legacy-{index:05}.bin').open('wb') as stream:
                 stream.truncate(226667)
         install_reference_seams(org)
+        with org.db.shared_artifact_transaction() as conn:
+            conn.execute("INSERT INTO shared_artifact_operations(operation_id,name,generation,operation,phase,reserved_bytes,created_at,updated_at) VALUES('shape-reservation','pending.bin',1,'put','reserved',2299997500,?,?)",(NOW.isoformat(),NOW.isoformat()))
         started=time.monotonic()
         result=sweep(org,'shape-7500',deadline=started+60)
         elapsed=time.monotonic()-started
@@ -634,7 +636,13 @@ async def sweep_shape_case(root: Path) -> None:
         assert result['used_bytes']==7500*226667
         assert org.db._conn.execute('SELECT COUNT(*) FROM shared_artifact_generations WHERE expires_at IS NOT NULL').fetchone()[0]==0
         assert len(list(svc.store.root.glob('legacy-*.bin')))==7500
+        messages=org.db._conn.execute("SELECT system_payload_json FROM thread_messages WHERE kind='system'").fetchall()
+        payloads=[json.loads(m[0]) for m in messages]
+        assert sum(len(p['files']) for p in payloads)==7500
+        assert all(len(m[0].encode())<=32*1024 for m in messages)
+        assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0]==1
         assert elapsed<60
+        print(f'PASS integrated quota:80% real latch;7500 file entries;chunks={len(messages)};max_bytes={max(len(m[0].encode()) for m in messages)};same_sweep_budget={elapsed:.3f}s')
         print(f'PASS sweep-shape:7500 files;bytes={result["used_bytes"]};30 keyset batches;shared_elapsed={elapsed:.3f}s;no legacy expiry/unlink')
 
 
