@@ -1804,6 +1804,11 @@ TLS, root/systemd or packaged remote-access acceptance.
 
 ### Inert Linux home CA materializer (THR-327 slice 3b-2e)
 
+Historical contract: THR-378 P24 removes this command's source and package
+entry. These old bytes/paths describe legacy custody and interruption evidence,
+not an available new provisioning or issuance path. Shared `homeca` and
+transport/client consumers remain; retirement uses independent saved readers.
+
 The root-run Go command reuses `homeca`; it adds no new cryptographic profile,
 trust store, CA replacement, network action or service. The inert installer
 preparation now invokes it through the existing command runner; no supervisor,
@@ -2359,6 +2364,11 @@ real local minting, protected IPC/authentication and installed/native acceptance
 remain in the later serial 3c-2b slice.
 
 ### Inert Linux home admin transport (THR-327 slice 3b-2g-1 prefix)
+
+Historical contract: THR-378 P24 removes this command's source and package
+entry. These old bytes/paths describe legacy custody and interruption evidence,
+not an available new provisioning or issuance path. Shared `homeca` and
+transport/client consumers remain; retirement uses independent saved readers.
 
 This prefix delivers items 1 and 2: `home_admin.RootHeadscaleAdminOperations`,
 `DurableOperationRecordStore` and the uncalled `RootHomeInviteMinter` composition.
@@ -4310,7 +4320,6 @@ client transport and migration custody pins remain. Incoming preinst uses the
 protected old installed capability before payload replacement; package absence
 alone proves no migration effect. Earlier packaging/CA sections describe the
 historical layout being retired. Installed acceptance is separately NOT RUN.
-
 
 `python -m runtime.remote_access.installer home-retirement-status --layout deb`
 is a read-only Linux observation. Its JSON always carries the exact message:

@@ -1868,7 +1868,12 @@ disposition in release evidence.
 
 ### Inert home admin prefix (3b-2g-1)
 
-The package now includes root:root 0755
+THR-378 P24 removes this command's source and new-package build/validation
+requirements. The following describes the protected old installation consumed
+by retirement; it supplies no current issuance or provisioning entry. Shared
+`homeca`, transport and client packages remain for P25.
+
+The historical package included root:root 0755
 `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`, beside the
 home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
 module and existing collected notices. Packaging never invokes it. Only the
