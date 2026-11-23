@@ -176,6 +176,7 @@ text bound; required live-closure text exceeding that bound still makes the
 proof indeterminate. The100,000-row and shared deadline bounds also cover the
 task metadata scan; unknown statuses and missing/malformed required handoffs
 remain indeterminate. Open-thread and skill-source projection is unchanged.
+Foreign-org qualified task paths are not same-org handoffs.
 Outcomes are collected
 before own audit writes; no snapshot survives COMMIT or lock release. The final
 lifecycle/unlink caller must retain that fence through its decision. Structured

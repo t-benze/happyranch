@@ -344,6 +344,67 @@ async def references_case(root: Path) -> None:
             assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_protected'").fetchone()[0] >= 1
 
 
+async def handoff_paths_case(root: Path) -> None:
+    """Task path qualification at the real proof, replacement and preview boundaries."""
+    from runtime.daemon.shared_artifacts_scheduler import sweep
+    root.mkdir(parents=True)
+    cases = (
+        ('foreign-relative', '/orgs/demo/tasks/TASK-1/cancel', True),
+        ('foreign-api', '/api/v1/orgs/demo/tasks/TASK-1/cancel', True),
+        ('foreign-absolute', 'https://synthetic.test/orgs/demo/tasks/TASK-1/cancel', True),
+        ('foreign-absolute-api', 'https://synthetic.test/api/v1/orgs/demo/tasks/TASK-1/cancel', True),
+        ('same-relative', '/orgs/alpha/tasks/TASK-1/cancel', False),
+        ('same-api', '/api/v1/orgs/alpha/tasks/TASK-1/cancel', False),
+        ('same-absolute', 'https://synthetic.test/orgs/alpha/tasks/TASK-1/cancel', False),
+        ('same-absolute-api', 'https://synthetic.test/api/v1/orgs/alpha/tasks/TASK-1/cancel', False),
+        ('bare', 'TASK-1', False),
+        ('foreign-and-bare', '/orgs/demo/tasks/TASK-1/cancel then TASK-1', False),
+    )
+    with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+        for label, text, complete in cases:
+            async with fixture(root/label) as (org, client):
+                db = org.db
+                install_reference_seams(org)
+                db.insert_thread(ThreadRecord(id='THR-path', subject='Synthetic path reference'))
+                params = dict(agent='worker', thread_id='THR-path',
+                              purpose='Persistent path acceptance', retention='default')
+                response = await client.post(PREFIX+'/artifacts', params=params,
+                    files={'file': ('path.bin', b'original path bytes')})
+                assert response.status_code == 200, response.text
+                db._shared_artifact_service.clock = lambda: NOW
+                db.insert_task(TaskRecord(id='TASK-100', brief='Live parent', assigned_agent='worker'))
+                db.insert_task(TaskRecord(id='TASK-101', status=TaskStatus.COMPLETED,
+                    parent_task_id='TASK-100', brief='Direct child', assigned_agent='worker'))
+                with db.shared_artifact_transaction() as conn:
+                    conn.execute(
+                        'INSERT INTO task_results(task_id,agent,session_id,output_summary,created_at) '
+                        'VALUES(?,?,?,?,?)', ('TASK-101', 'worker', 'path-result', 'POST '+text, NOW.isoformat()))
+                    assert conn.execute("SELECT id FROM tasks WHERE id='TASK-1'").fetchone() is None
+                before = snapshot(org)
+                response = await client.post(PREFIX+'/artifacts', params=params,
+                    files={'file': ('path.bin', b'replacement path bytes')})
+                assert response.status_code == (200 if complete else 503), (label, response.text)
+                if not complete:
+                    assert response.json()['detail']['code'] == 'artifact_reference_check_unavailable', response.text
+                with db.shared_artifact_transaction() as conn:
+                    row = db.get_shared_artifact('path.bin')
+                    outcome = reference_outcomes(org, conn, [row], deadline=time.monotonic()+60)
+                    assert outcome['path.bin', row['generation']][0] == (
+                        'absent' if complete else 'indeterminate'), (label, outcome)
+                result = sweep(org, 'handoff-path-'+label)
+                assert result['complete'] is complete, (label, result)
+                assert bool(result.get('reference_incomplete', False)) is (not complete), (label, result)
+                assert result['effective_mode'] == 'preview', result
+                started = db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0]
+                assert started == (NOW.isoformat() if complete else None), (label, started)
+                if not complete:
+                    assert snapshot(org) == before, label
+                    assert result['protected'] == 1, result
+                expected = b'replacement path bytes' if complete else b'original path bytes'
+                assert (org.root/'artifacts'/'path.bin').read_bytes() == expected, label
+                print(f'PASS handoff-paths:{label}:replacement{response.status_code}:preview_complete={complete}')
+
+
 async def history_case(root: Path) -> None:
     """Closed production-sized history must not consume the live text budget."""
     from runtime.daemon.shared_artifacts_scheduler import sweep
@@ -775,7 +836,7 @@ async def sweep_shape_case(root: Path) -> None:
 
 async def main(case: str) -> None:
     if case == 'all':
-        for selected in ('manual-delete','quota-chunks','references','history','live-cap','notices','sweep','sweep-shape'):
+        for selected in ('manual-delete','quota-chunks','references','handoff-paths','history','live-cap','notices','sweep','sweep-shape'):
             await main(selected)
         print('All selected Slice B private acceptance cases passed.')
         return
@@ -795,6 +856,8 @@ async def main(case: str) -> None:
             await notices_case(root/'notices')
         if case == 'references':
             await references_case(root/'references')
+        if case == 'handoff-paths':
+            await handoff_paths_case(root/'handoff-paths')
         if case == 'history':
             await history_case(root/'history')
         if case == 'live-cap':
@@ -807,6 +870,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
         'all', 'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
-        'quota-chunks', 'references', 'history', 'live-cap', 'notices', 'sweep', 'sweep-shape',
+        'quota-chunks', 'references', 'handoff-paths', 'history', 'live-cap', 'notices', 'sweep', 'sweep-shape',
     ), default='all')
     asyncio.run(main(parser.parse_args().case))

@@ -19,6 +19,7 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
 
 _TASK = re.compile(r"(?<![A-Za-z0-9_-])TASK-[0-9]+(?![A-Za-z0-9_-])")
+_ORG_TASK = re.compile(r"/(?:api/v1/)?orgs/([^/]+)/tasks/(?P<task>TASK-[0-9]+)(?=/|$)")
 _EXPLICIT = re.compile(r"\[artifact:([^\]]*)\]")
 _TOKEN = re.compile(r"[^\s`\"'<>\[\]{}(),;!*]+")
 _LIVE = {'pending', 'in_progress', 'escalated'}
@@ -97,9 +98,15 @@ class ReferenceProof:
             self._add(match[1], source)
         if text.count('[artifact:') != len(_EXPLICIT.findall(text)):
             raise ReferenceUnavailable('malformed_reference')
+        foreign_handoffs = set()
         for match in _TOKEN.finditer(text):
             token = match[0]
             parsed = urlsplit(token)
+            qualified = _ORG_TASK.match(parsed.path)
+            if qualified and qualified[1] != self.slug:
+                # Exclude this path segment only; a bare occurrence of the same
+                # task ID elsewhere in the text remains a required handoff.
+                foreign_handoffs.add(match.start() + token.index(parsed.path) + qualified.start('task'))
             prefix = f'/api/v1/orgs/{self.slug}/artifacts/'
             if parsed.path.startswith(prefix):
                 if parsed.netloc and (not self.origin or
@@ -124,7 +131,7 @@ class ReferenceProof:
                     except InvalidArtifactName:
                         continue
                     self.references[candidate, None].add(source)
-        return set(_TASK.findall(text))
+        return {m[0] for m in _TASK.finditer(text) if m.start() not in foreign_handoffs}
 
     def _attachments(self, value: object, source: str) -> None:
         """Declared shared attachment payloads preserve generation pins."""
