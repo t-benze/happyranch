@@ -497,63 +497,58 @@ def test_namespace_guard_before_capture(mount: Any, monkeypatch: pytest.MonkeyPa
 
 
 def test_late_service_custody_disable_requires_fresh_namespace(
-        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    v, m = composition, mount
+        custody: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    # The namespace exists before historical service directories appear. No
+    # activation/provisioning owner constructs this retained Disable prestate.
+    m = mount
+    root = custody.root
+    path = lambda name: root / name.lstrip('/')
     unit = Path(__file__).resolve().parents[1] / 'packaging/linux/systemd/happyranch-remote-access-helper.service'
     entries = [line.split('=', 1)[1] for line in unit.read_text().splitlines()
                if line.startswith('ReadWritePaths=')]
     def projection() -> tuple[Path, ...]:
-        return tuple(v.path(entry.lstrip('-')) for entry in entries
-                     if not entry.startswith('-') or v.path(entry[1:]).is_dir())
+        return tuple(path(entry.lstrip('-')) for entry in entries
+                     if not entry.startswith('-') or path(entry[1:]).is_dir())
     writable = projection()
-    assert not v.path('/var/lib/happyranch-headscale').exists()
+    assert not path('/var/lib/happyranch-headscale').exists()
     original_statvfs = m.statvfs
-    def statvfs(path: str) -> Any:
-        full = v.path(path)
-        result = original_statvfs(full)  # Absence is observed, not pre-created.
+    def statvfs(name: str) -> Any:
+        full = path(name)
+        result = original_statvfs(full)
         return SimpleNamespace(f_flag=result.f_flag if any(full.is_relative_to(p) for p in writable)
                                else os.ST_RDONLY)
     monkeypatch.setattr(m.h.os, 'statvfs', statvfs)
-    uid = os.getuid()
-    m.helper.connection.call_sync.return_value = Variant('', (uid,))
-    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
-    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture(m.message.get_member(), uid)
-    def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
-        return v.lifecycle.dispatch(m.message.get_member(), uid, step, expected,
-            deadline=time.monotonic() + remaining, **options)
-    m.reader.effect.side_effect = effect
-    m.message.get_member = lambda: 'Enable'
-    m.admit()
-    assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
-    db = v.path('/var/lib/happyranch-headscale/db.sqlite')
+    activation, _ = b6_setup(custody, monkeypatch, capsys, staging=True)
+    b6_minters(root)
+    db = path('/var/lib/happyranch-headscale/db.sqlite')
     assert db.is_file()
-    v.observers.close()
+    lifecycle = backend.HelperLifecycleBackend(custody.installer)
+    m.reader.current_generation.side_effect = lambda _: lifecycle.capture('Disable', 1000)
+    def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
+        if step == 'stop':
+            # Existing synthetic native boundary; real cleanup stays below.
+            custody.installer._confirm_quiescent()
+            custody.installer._headscale_stopped()
+            return {'outcome': 'in_progress', 'residue': []}
+        return lifecycle.dispatch('Disable', 1000, step, expected, **options)
+    m.reader.effect.side_effect = effect
     m.message.get_member = lambda: 'Disable'
-    m.helper._error.reset_mock()
-    # First the settled Enable instance is sealed; even a racing call refuses.
+    before = staged_inventory(custody)
     m.helper._dispatch(m.message)
     m.helper._error.assert_called_once_with(m.message, 'unavailable')
-    m.renew()
-    # A hypothetical stale namespace is independently caught before capture.
-    calls, reads = m.helper.authority.call.call_count, m.reader.current_generation.call_count
-    audit = m.helper.audit.path.read_bytes()
-    effects, inventory = m.reader.effect.call_count, staged_inventory(v.fixture)
-    m.helper._dispatch(m.message)
-    assert m.helper._error.call_args.args == (m.message, 'unavailable')
-    assert m.helper.authority.call.call_count == calls and m.reader.current_generation.call_count == reads
-    assert m.helper.audit.path.read_bytes() == audit and db.is_file()
-    assert m.reader.effect.call_count == effects and not m.helper.control.revoke_all.called
-    assert staged_inventory(v.fixture) == inventory
-    assert v.receipts.current() is not None and m.helper.inflight is None
-    # Model EROFS for unlink/rmdir outside each instance's initial RW projection,
-    # as in TASK-17944. The actual B6 cleanup owner executes unchanged.
+    assert not m.helper.authority.call.called and not m.reader.current_generation.called
+    assert not m.helper.audit.path.exists() and db.is_file() and activation.exists()
+    assert not m.reader.effect.called and not m.helper.control.revoke_all.called
+    assert staged_inventory(custody) == before and m.helper.inflight is None
+    # A fresh helper gets the current writable projection. Model EROFS outside
+    # that projection while the actual B6 cleanup removes the admitted inputs.
     writable = projection()
     blocked = []
     unlink, rmdir = os.unlink, os.rmdir
     def remove(original: Any, name: Any, *, dir_fd: Any = None) -> Any:
         parent = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) if dir_fd is not None else Path.cwd()
         full = parent / name
-        if full.is_relative_to(v.root) and not any(full.is_relative_to(p) for p in writable):
+        if full.is_relative_to(root) and not any(full.is_relative_to(p) for p in writable):
             blocked.append(full)
             raise OSError(errno.EROFS, 'modeled helper namespace is read-only')
         return original(name, dir_fd=dir_fd)
@@ -564,7 +559,7 @@ def test_late_service_custody_disable_requires_fresh_namespace(
         fault.setattr(os, 'rmdir', lambda name, *, dir_fd=None: remove(rmdir, name, dir_fd=dir_fd))
         m.admit()
     assert not blocked and m.helper.lifecycle_result == {'outcome': 'off', 'residue': []}
-    assert not db.exists() and v.receipts.current() is None
+    assert not db.exists() and not activation.exists()
 
 
 @pytest.mark.parametrize('revoke', ['succeeded', 'unavailable', 'changed', 'expired', 'lost_reply'])

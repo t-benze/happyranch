@@ -3953,6 +3953,11 @@ transaction deadline forwarding, removed-owner stream closure (including failure
 and denied admission after runtime rotation and connector restart. No host
 systemd, system bus or installed polkit acceptance is exercised.
 
+The retained Disable namespace keeper seeds historical service files directly,
+without activating or provisioning a home. It observes the stale writable-path
+projection refusing before capture/auth/revoke, then runs actual B6 cleanup in a
+fresh projection. Separate native-stop cases retain owned-stop ordering.
+
 I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
 I3b's retained focused selection is
