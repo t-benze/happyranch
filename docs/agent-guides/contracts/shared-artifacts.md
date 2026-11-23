@@ -174,3 +174,21 @@ deletion. Recovery selects an eligible current version before reading its source
 so the same conservative hold covers a previously selected recovery reader.
 Neither this module nor installation sets source_protection_verified, preview
 acceptance or inventory review. Full rollout remains separately held.
+
+## Slice B notices (source only)
+
+`SharedArtifactNotices` uses A's atomic notice/quota writers. Receipt-linked
+thread IDs are reusable only with open system provenance, matching notice
+channel and exact active participants. Founder is visible through the existing
+inbox and is never an agent participant. Expiry identity is generation plus
+expiry; due time, actual delivery time and lateness are explicit. Human, unknown
+and retired owners use recorded accountable agent, origin-team manager, then
+engineering_manager; an unavailable route remains pending without false delivery.
+Timeout notices use upload +24h and upload +90d expiry even during preview,
+without changing lifecycle metadata. Quota crossings include every file entry
+in bounded full-JSON chunks, with all managers participating in one storage
+thread; chunk messages/receipt/audit and latch commit together. Required fields
+are in tagless system_payload, which the existing inbox and CLI show in full.
+`uv run --frozen python scripts/test_shared_artifacts_b.py --case notices`
+checks the real private API inbox and CLI rendering. QA browser rendering remains
+independent acceptance; source delivery does not activate live notices.

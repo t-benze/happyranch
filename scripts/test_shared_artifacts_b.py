@@ -13,7 +13,10 @@ from pathlib import Path
 import sys
 import tempfile
 import time
-from datetime import timedelta
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -98,6 +101,7 @@ async def manual_delete_case(root: Path, *, mode: str, live: bool = False) -> No
 async def quota_chunks_case(root: Path) -> None:
     """One crossing must retain every bounded visible chunk without duplicate replay."""
     async with fixture(root) as (org, _client):
+        assert (await _client.get(PREFIX+'/artifacts')).status_code == 200
         org.db.insert_thread(ThreadRecord(id='THR-notice', subject='Private quota notice'))
         payloads = [dict(notice_type='artifact_quota', crossing_sequence=1,
                         routing=dict(agent='manager', reason='accountable_manager', thread_id='THR-notice'),
@@ -172,6 +176,19 @@ async def quota_chunks_case(root: Path) -> None:
         elapsed = time.monotonic()-started
         assert maximum <= 32*1024 and elapsed < 60
         assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0] == 2
+        from runtime.daemon.shared_artifacts_notices import SharedArtifactNotices
+        production_rows = [dict(name=f['file_name'],state='active',owner='worker',owner_kind='agent',
+                                owner_agent_id='worker',expires_at=f['expiry_date'],purpose=f['purpose']) for f in shape]
+        with db.shared_artifact_transaction() as conn:
+            built_seqs = SharedArtifactNotices(org).deliver_quota(conn,production_rows,
+                quota=dict(crossing=True,crossing_sequence=3,used_bytes=4000000000,reserved_bytes=0,quota_bytes=5000000000,above=True),
+                now=NOW,mode='preview',deadline=started+60)
+        built = db._conn.execute("SELECT system_payload_json FROM thread_messages WHERE thread_id=(SELECT destination_thread_id FROM shared_artifact_notice_receipts WHERE generation=3 AND notice_kind='quota_alert') ORDER BY seq").fetchall()
+        # This is a new, provenance-verified management thread.
+        assert [f['file_name'] for r in built for f in json.loads(r[0])['files']] == [f['file_name'] for f in shape]
+        assert all(len(r[0].encode()) <= 32*1024 for r in built)
+        assert time.monotonic()-started < 60
+        print(f'PASS production quota builder:7500 files;{len(built_seqs)} messages;max_bytes={max(len(r[0].encode()) for r in built)};elapsed={time.monotonic()-started:.3f}s')
         print(f'PASS quota-chunks: all chunks/replay/rollback;7500 entries;300 messages;max_bytes={maximum};elapsed={elapsed:.3f}s')
 
 
@@ -276,6 +293,104 @@ async def references_case(root: Path) -> None:
             assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_protected'").fetchone()[0] >= 1
 
 
+async def notices_case(root: Path) -> None:
+    from runtime.daemon.shared_artifacts_notices import SharedArtifactNotices, NoticeUnavailable
+    from cli.commands.threads import cmd_threads_show
+    with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+        async with fixture(root, workers=('worker','engineering_manager')) as (org,client):
+            db = org.db
+            db.insert_thread(ThreadRecord(id='THR-origin',subject='Synthetic origin'))
+            response = await client.post(PREFIX+'/artifacts',params=dict(agent='worker',thread_id='THR-origin',purpose='Persistent notice source',retention='default'),files={'file':('visible-source.bin',b'visible source')})
+            assert response.status_code == 200
+            svc = db._shared_artifact_service
+            row = db.get_shared_artifact('visible-source.bin')
+            notices = SharedArtifactNotices(org)
+            def deliver(when: object, item: dict = row) -> int:
+                with db.shared_artifact_transaction() as conn:
+                    return notices.deliver_file(conn,item,now=when,mode='preview',deadline=time.monotonic()+60)
+            assert deliver(NOW+timedelta(days=82)) == 0
+            before = snapshot(org)
+            assert deliver(NOW+timedelta(days=83)) == 1
+            assert snapshot(org) == before, 'notices must not mutate lifecycle or bytes'
+            notices = SharedArtifactNotices(org)
+            assert deliver(NOW+timedelta(days=85)) == 0
+            receipt = db._conn.execute("SELECT * FROM shared_artifact_notice_receipts WHERE notice_kind='expiry'").fetchone()
+            thread_id = receipt['destination_thread_id']
+            inbox = await client.get(PREFIX+'/threads',params={'status':'open'})
+            assert any(t['thread_id']==thread_id and 'worker' in t['participants'] for t in inbox.json()['threads'])
+            detail = await client.get(PREFIX+'/threads/'+thread_id)
+            assert detail.status_code == 200
+            payload = detail.json()['messages'][0]['system_payload']
+            assert payload['late_delivery'] is False
+            required = ('file_name','expiry_date','owner_kind','owner','routing','purpose','recovery_deadline','renew_command','restore_command')
+            assert all(key in payload for key in required)
+            assert not ({'kind_tag','event'} & payload.keys())
+            assert payload['file_name']=='visible-source.bin' and payload['owner']=='worker'
+            output = StringIO()
+            transport = SimpleNamespace(get=lambda path: detail)
+            with patch('cli.commands.threads.OpcClient.from_env',return_value=transport), patch('cli.commands.threads._shared._fetch_available_orgs',return_value=['alpha']), patch('cli.commands.threads.identities.labels',return_value={}), redirect_stdout(output):
+                cmd_threads_show(SimpleNamespace(org='alpha',thread_id=thread_id,json=False))
+            visible = output.getvalue()
+            assert all(word in visible for word in ('visible-source.bin',row['expires_at'],'worker','routing','happyranch artifacts renew','happyranch artifacts restore'))
+            print('CLI SHOW PRIVATE NOTICE\n'+visible)
+            # Renewal changes the receipt identity; actual late timestamp remains truthful.
+            svc.clock = lambda: NOW+timedelta(days=85)
+            svc.renew(row['name'],agent='worker',continuing_use='continued design review',expires_at=(NOW+timedelta(days=100)).isoformat())
+            row.update(db.get_shared_artifact(row['name']))
+            assert deliver(NOW+timedelta(days=95)) == 1
+            latest = db._conn.execute('SELECT system_payload_json FROM thread_messages WHERE thread_id=? ORDER BY seq DESC LIMIT 1',(thread_id,)).fetchone()
+            assert json.loads(latest[0])['late_delivery'] is True
+            assert json.loads(latest[0])['delivered_at'] == (NOW+timedelta(days=95)).isoformat()
+            # Synthetic recorded accountable routes, with real persisted inbox messages.
+            for index,(owner_kind,owner,label) in enumerate((('human','founder','human'),('agent','retired-agent','retired'),(None,None,'unknown'))):
+                item = dict(row,expires_at=(NOW+timedelta(days=101+index)).isoformat(),owner_kind=owner_kind,owner=owner,owner_agent_id='manager')
+                assert deliver(NOW+timedelta(days=120),item) == 1
+                r = db._conn.execute("SELECT destination_thread_id,payload_json FROM shared_artifact_notice_receipts WHERE expires_at=?",(item['expires_at'],)).fetchone()
+                p = json.loads(r['payload_json'])
+                assert p['routing']['agent']=='manager' and 'recorded_accountable_manager' in p['routing']['reason']
+                assert db.is_thread_participant(r['destination_thread_id'],'manager')
+                assert not db.is_thread_participant(r['destination_thread_id'],'founder')
+            provisional = await client.post(PREFIX+'/artifacts',params={'agent':'founder'},files={'file':('unbound.bin',b'provisional')})
+            assert provisional.status_code==200
+            item = db.get_shared_artifact('unbound.bin')
+            before = snapshot(org)
+            assert deliver(datetime.fromisoformat(item['created_at'])+timedelta(hours=24),item)==1
+            assert snapshot(org)==before
+            r=db._conn.execute("SELECT payload_json FROM shared_artifact_notice_receipts WHERE name='unbound.bin'").fetchone()
+            assert json.loads(r[0])['expiry_date']==(datetime.fromisoformat(item['created_at'])+timedelta(days=90)).isoformat()
+            assert json.loads(r[0])['routing']['agent']=='engineering_manager'
+            # Audit failure rolls back message, thread creation and receipt.
+            failed = dict(row,expires_at=(NOW+timedelta(days=130)).isoformat())
+            count=db._conn.execute('SELECT COUNT(*) FROM thread_messages').fetchone()[0]
+            with patch.object(db,'insert_audit_log_uncommitted',side_effect=RuntimeError('synthetic_notice_audit_failure')):
+                try:
+                    deliver(NOW+timedelta(days=131),failed)
+                    raise AssertionError('audit failure missing')
+                except RuntimeError:
+                    pass
+            assert db._conn.execute('SELECT COUNT(*) FROM thread_messages').fetchone()[0]==count
+            with patch.object(notices,'_active',return_value=False):
+                with db.shared_artifact_transaction() as conn:
+                    try:
+                        notices.deliver_file(conn,failed,now=NOW+timedelta(days=131),mode='off',deadline=time.monotonic()+60)
+                    except NoticeUnavailable:
+                        pass
+            assert db._conn.execute('SELECT delivery_state FROM shared_artifact_notice_receipts WHERE expires_at=?',(failed['expires_at'],)).fetchone()[0]=='pending'
+            # Actual latch and all messages share one transaction across restart/rearm.
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("INSERT INTO shared_artifact_operations(operation_id,name,generation,operation,phase,reserved_bytes,created_at,updated_at) VALUES('synthetic-reservation','pending.bin',1,'put','reserved',4000000000,?,?)",(NOW.isoformat(),NOW.isoformat()))
+            for reserve,expected in ((4000000000,True),(4000000000,False),(0,False),(4000000000,True)):
+                notices=SharedArtifactNotices(org)
+                with db.shared_artifact_transaction() as conn:
+                    conn.execute("UPDATE shared_artifact_operations SET reserved_bytes=? WHERE operation_id='synthetic-reservation'",(reserve,))
+                    quota=svc.quota_crossing_uncommitted(conn)
+                    assert quota['crossing'] is expected
+                    seqs=notices.deliver_quota(conn,[db.get_shared_artifact('visible-source.bin')],quota=quota,now=NOW,mode='off',deadline=time.monotonic()+60)
+                    assert bool(seqs) is expected
+            assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0]==2
+            print('PASS notices: private inbox/real CLI full JSON;exact due/replay/renewal/late;human-retired-unknown manager;24h timeout;pending/audit rollback;quota crossing-repeat-below-recross')
+
+
 async def main(case: str) -> None:
     with tempfile.TemporaryDirectory(prefix='shared-artifact-B-') as directory:
         root = Path(directory)
@@ -285,6 +400,8 @@ async def main(case: str) -> None:
         if case in ('manual-delete', 'manual-delete-enforce'):
             await manual_delete_case(root / 'enforce', mode='enforce')
             await manual_delete_case(root / 'live', mode='enforce', live=True)
+        if case == 'notices':
+            await notices_case(root/'notices')
         if case == 'references':
             await references_case(root/'references')
         if case == 'quota-chunks':
@@ -295,6 +412,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
         'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
-        'quota-chunks', 'references',
+        'quota-chunks', 'references', 'notices',
     ), default='manual-delete')
     asyncio.run(main(parser.parse_args().case))
