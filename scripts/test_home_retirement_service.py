@@ -10,7 +10,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -281,3 +281,311 @@ def test_service_identity_has_no_arbitrary_target_selector(service: ServiceFixtu
         replace(service.identity, executable="usr/bin/foreign")
     with pytest.raises(RetirementUncertain):
         replace(service.identity, link="etc/systemd/system/foreign.service")
+
+
+MANAGED_UNITS = ('happyranch-connector.service', 'happyranch-tsnet-sidecar.service',
+    'happyranch-managed.target', 'happyranch-release-verifier.socket', 'happyranch-release-verifier.service')
+MANAGED_LINKS = {
+    'happyranch-managed.target': 'etc/systemd/system/multi-user.target.wants/happyranch-managed.target',
+    'happyranch-release-verifier.socket': 'etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket',
+}
+PYTHON = 'opt/happyranch-desktop/python/bin/python3.12'
+SIDECAR = 'opt/happyranch-desktop/bin/happyranch-tsnet-sidecar'
+PACKAGE_REGISTRY = 'var/lib/dpkg/info/happyranch.md5sums'
+
+
+class ManagedFixture(Fixture):
+    """Native owner venue; managed-config lineage is an independent prerequisite.
+
+    Fake NSS/systemd/proc observations and a protected synthetic package registry
+    supply inputs. Frozen historical unit bytes are independent of the native
+    owner. No fixture computes retirement, revoke, stop receipts or cleanup.
+    """
+    def __init__(self, root: Path, *, home: bool = True) -> None:
+        from runtime.remote_access.home_retirement_inventory import LegacyManagedMembers
+        from runtime.remote_access.home_retirement_fence import retirement_fence
+        super().__init__(root)
+        self.home = home
+        self.on_show = lambda count: None
+        self.show_count = 0
+        self.fail, self.lie, self.ps_extra = None, None, ''
+        self.native = {}
+        self.managed = LegacyManagedMembers(('tenant', 'home', 'connector'), 'control', 1234,
+            (os.getuid(), os.getgid()), home, {}, {}, {})
+        frozen = Path(__file__).parent / 'fixtures/home-retirement'
+        for name in MANAGED_UNITS:
+            source = frozen / ('managed-home-sidecar.service' if home and name == MANAGED_UNITS[1] else 'managed-' + name)
+            self.file('etc/systemd/system/' + name, source.read_bytes(), 0o644)
+            props = dict(Id=name, Names=name, FragmentPath=str(root / 'etc/systemd/system' / name),
+                DropInPaths='', LoadState='loaded', ActiveState='active', SubState='running' if name.endswith('.service') else
+                    'listening' if name.endswith('.socket') else 'active',
+                UnitFileState='enabled' if name in MANAGED_LINKS else 'disabled' if name != MANAGED_UNITS[4] else 'static',
+                Job='', NeedDaemonReload='no')
+            if name.endswith('.service'):
+                pid = {MANAGED_UNITS[0]: 111, MANAGED_UNITS[1]: 222, MANAGED_UNITS[4]: 333}[name]
+                props.update(MainPID=str(pid), ControlPID='0', ControlGroup='/system.slice/' + name,
+                    User='root' if name == MANAGED_UNITS[4] else 'happyranch', Group='happyranch', DynamicUser='no', Transient='no')
+                self.file(f'proc/{pid}/status', (f'Uid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\n'
+                    f'Gid:\t{os.getgid()}\t{os.getgid()}\t{os.getgid()}\t{os.getgid()}\n').encode())
+                self.file(f'proc/{pid}/stat', (str(pid) + ' (managed worker) ' + ' '.join(['S', *(['0'] * 18), '456', '0']) + '\n').encode())
+                self.file(f'proc/{pid}/cgroup', ('0::/system.slice/' + name + '\n').encode())
+                binary = SIDECAR if name == MANAGED_UNITS[1] else PYTHON
+                (root / f'proc/{pid}/exe').symlink_to(str(root / binary))
+                executable = '/opt/happyranch-desktop/python/bin/python3'
+                argv = ([executable, '-I', '-m', 'runtime.remote_access.cli', 'run', '--managed', '--config', '/etc/happyranch/connector.json']
+                    if name == MANAGED_UNITS[0] else [executable, '-I', '-m', 'runtime.remote_access.release_verifier']
+                    if name == MANAGED_UNITS[4] else ['/opt/happyranch-desktop/bin/happyranch-tsnet-sidecar', '--config',
+                        '/etc/happyranch/sidecar.json', '--credential-file',
+                        '/run/credentials/happyranch-tsnet-sidecar.service/enrollment-key'])
+                self.file(f'proc/{pid}/cmdline', ('\0'.join(argv) + '\0').encode())
+            self.native[name] = props
+        for name, relative in MANAGED_LINKS.items():
+            self.directory(str(Path(relative).parent))
+            (root / relative).symlink_to('/etc/systemd/system/' + name)
+        self.file(PYTHON, b'synthetic-installed-python', 0o755)
+        self.file(SIDECAR, b'synthetic-installed-sidecar', 0o755)
+        self.file(PACKAGE_REGISTRY, ''.join(hashlib.md5((root / path).read_bytes()).hexdigest() + '  ' + path + '\n'
+            for path in (PYTHON, SIDECAR)).encode(), 0o644)
+        self.file('proc/sys/kernel/random/boot_id', b'11111111-1111-4111-8111-111111111111\n', 0o444)
+        self.directory('var/lib/happyranch-remote-access')
+        self.fence_context = retirement_fence(self.io)
+        self.fence = self.fence_context.__enter__()
+
+    def close(self) -> None:
+        self.fence_context.__exit__(None, None, None)
+
+    def lookup_user(self, name: str) -> SimpleNamespace:
+        assert name in ('happyranch', 'root')
+        return SimpleNamespace(pw_name=name, pw_uid=os.getuid(), pw_gid=os.getgid())
+
+    def lookup_group(self, name: str) -> SimpleNamespace:
+        assert name == 'happyranch'
+        return SimpleNamespace(gr_name=name, gr_gid=os.getgid(), gr_mem=[])
+
+    def run(self, argv: list[str], **kwargs: object) -> tuple[int, str]:
+        self.calls.append(argv)
+        if argv[:2] == ['systemctl', 'show']:
+            self.show_count += 1
+            self.on_show(self.show_count)
+            return 0, '\n'.join(key + '=' + self.native[argv[2]][key] for key in
+                (arg.removeprefix('--property=') for arg in argv[3:]))
+        if argv[:2] == ['ps', '-eo']:
+            return 0, ''.join(' '.join([props['MainPID'], *([str(os.getuid())] * 4)]) + '\n' for props in self.native.values()
+                if props.get('MainPID', '0') != '0') + self.ps_extra
+        assert argv[:2] in (['systemctl', 'stop'], ['systemctl', 'disable']) and argv[2] in MANAGED_UNITS
+        if self.fail == tuple(argv[1:]): return 1, 'synthetic-private-native-failure'
+        if self.lie != tuple(argv[1:]):
+            props = self.native[argv[2]]
+            if argv[1] == 'stop':
+                props.update(ActiveState='inactive', SubState='dead')
+                if 'MainPID' in props: props.update(MainPID='0', ControlGroup='')
+            else:
+                (self.root / MANAGED_LINKS[argv[2]]).unlink()
+                props['UnitFileState'] = 'disabled'
+        return 0, ''
+
+    def effects(self) -> list[list[str]]:
+        return [argv for argv in self.calls if argv[:2] in (['systemctl', 'stop'], ['systemctl', 'disable'])]
+
+
+@pytest.fixture
+def managed_service(tmp_path: Path) -> Iterator[ManagedFixture]:
+    fixture = ManagedFixture(tmp_path / 'root')
+    try:
+        yield fixture
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize('home', [False, True])
+def test_managed_stop_disable_requires_exact_package_process_and_native_readback(managed_service: ManagedFixture, home: bool) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    if not home:
+        v.managed = replace(v.managed, live_sidecar=False)
+        (v.root / 'etc/systemd/system' / MANAGED_UNITS[1]).write_bytes((
+            Path(__file__).parent / 'fixtures/home-retirement' / ('managed-' + MANAGED_UNITS[1])).read_bytes())
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    before = v.snapshot()
+    observed = owner.observe()
+    assert v.snapshot() == before and v.effects() == []
+    assert observed.processes == {MANAGED_UNITS[0]: (111, 456), MANAGED_UNITS[1]: (222, 456), MANAGED_UNITS[4]: (333, 456)}
+    assert repr(observed) == 'ManagedObservation(<redacted>)'
+    receipt = owner.stop_and_disable(observed)
+    assert receipt.observation.processes == {MANAGED_UNITS[0]: None, MANAGED_UNITS[1]: None, MANAGED_UNITS[4]: None}
+    assert all(dict(props)['ActiveState'] == 'inactive' for props in receipt.observation.properties.values())
+    assert all(receipt.observation.artifacts[path] is None for path in MANAGED_LINKS.values())
+    assert v.effects() == [['systemctl', 'stop', name] for name in (MANAGED_UNITS[2], MANAGED_UNITS[1], MANAGED_UNITS[0],
+        MANAGED_UNITS[3], MANAGED_UNITS[4])] + [['systemctl', 'disable', name] for name in MANAGED_LINKS]
+    owner.confirm(receipt)
+    count = len(v.effects())
+    again = owner.stop_and_disable(owner.observe())
+    owner.confirm(again)
+    assert len(v.effects()) == count
+    assert all((v.root / path).read_bytes() for path in (PYTHON, SIDECAR, PACKAGE_REGISTRY))
+    assert all((v.root / 'etc/systemd/system' / name).exists() for name in MANAGED_UNITS)
+
+
+@pytest.mark.parametrize('damage', ['binary', 'registry-digest', 'registry-missing', 'registry-duplicate', 'registry-mode',
+    'unit', 'alias', 'dropin', 'same-stem', 'shared-consumer', 'pid-reuse', 'executable', 'argv', 'cgroup',
+    'extra-process', 'native-name', 'native-path', 'native-reload', 'native-control-pid', 'nss-user', 'nss-group',
+    'missing-unit', 'unit-mode', 'registry-symlink', 'binary-hardlink', 'binary-mode', 'missing-boot', 'boot-mode',
+    'boot-change', 'parent-reuse', 'link-reuse'])
+def test_foreign_managed_ownership_has_zero_native_or_file_effects(managed_service: ManagedFixture, damage: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    expected = owner.observe()
+    if damage == 'binary': (v.root / SIDECAR).write_bytes(b'foreign-candidate-self-hash')
+    elif damage.startswith('registry-'):
+        target = v.root / PACKAGE_REGISTRY
+        if damage == 'registry-missing': target.unlink()
+        elif damage == 'registry-symlink':
+            target.rename(v.root.parent / 'retained-registry')
+            target.symlink_to(v.root.parent / 'retained-registry')
+        elif damage == 'registry-mode': target.chmod(0o666)
+        elif damage == 'registry-duplicate': target.write_bytes(target.read_bytes() * 2)
+        else: target.write_bytes(target.read_bytes().replace(hashlib.md5((v.root / SIDECAR).read_bytes()).hexdigest().encode(), b'0' * 32))
+    elif damage == 'unit': (v.root / 'etc/systemd/system' / MANAGED_UNITS[0]).write_bytes(b'[Service]\nUser=foreign\n')
+    elif damage == 'missing-unit': (v.root / 'etc/systemd/system' / MANAGED_UNITS[0]).unlink()
+    elif damage == 'unit-mode': (v.root / 'etc/systemd/system' / MANAGED_UNITS[0]).chmod(0o666)
+    elif damage == 'binary-hardlink': os.link(v.root / SIDECAR, v.root / 'external-binary')
+    elif damage == 'binary-mode': (v.root / SIDECAR).chmod(0o777)
+    elif damage in ('missing-boot', 'boot-mode', 'boot-change'):
+        path = v.root / 'proc/sys/kernel/random/boot_id'
+        if damage == 'missing-boot': path.unlink()
+        elif damage == 'boot-mode': path.chmod(0o644)
+        else:
+            path.chmod(0o600)
+            path.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+            path.chmod(0o444)
+    elif damage == 'parent-reuse':
+        (v.root / 'etc/systemd').rename(v.root.parent / 'retained-systemd')
+        (v.root / 'etc/systemd').mkdir(mode=0o755)
+        (v.root.parent / 'retained-systemd/system').rename(v.root / 'etc/systemd/system')
+    elif damage == 'link-reuse':
+        path = v.root / MANAGED_LINKS[MANAGED_UNITS[2]]
+        path.rename(v.root.parent / 'retained-link')
+        path.symlink_to('/etc/systemd/system/' + MANAGED_UNITS[2])
+    elif damage == 'nss-user':
+        v.io._lookup_user = lambda name: SimpleNamespace(pw_name=name, pw_uid=os.getuid() + 1, pw_gid=os.getgid())
+    elif damage == 'nss-group':
+        v.io._lookup_group = lambda name: SimpleNamespace(gr_name=name, gr_gid=os.getgid() + 1, gr_mem=[])
+    elif damage == 'alias': (v.root / 'etc/systemd/system/foreign.service').symlink_to('/etc/systemd/system/' + MANAGED_UNITS[0])
+    elif damage == 'dropin': v.file('run/systemd/system/service.d/foreign.conf', b'[Service]\nEnvironment=FOREIGN=1\n', 0o644)
+    elif damage == 'same-stem': v.file('etc/systemd/system/happyranch-connector.timer', b'[Timer]\nOnBootSec=1\n', 0o644)
+    elif damage == 'shared-consumer': v.file('etc/systemd/system/foreign.service', b'[Service]\nUser=happyranch\n', 0o644)
+    elif damage == 'pid-reuse':
+        target = v.root / 'proc/111/stat'
+        target.write_bytes(target.read_bytes().replace(b'456', b'457'))
+    elif damage == 'executable':
+        target = v.root / 'proc/111/exe'
+        target.unlink()
+        target.symlink_to(str(v.root / SIDECAR))
+    elif damage == 'argv': (v.root / 'proc/111/cmdline').write_bytes(b'foreign-program\0')
+    elif damage == 'cgroup': (v.root / 'proc/222/cgroup').write_bytes(b'0::/foreign.scope\n')
+    elif damage == 'extra-process': v.ps_extra = f'444 {os.getuid()} {os.getuid()} {os.getuid()} {os.getuid()}\n'
+    else:
+        key = {'native-name': 'Names', 'native-path': 'FragmentPath', 'native-reload': 'NeedDaemonReload',
+               'native-control-pid': 'ControlPID'}[damage]
+        v.native[MANAGED_UNITS[0]][key] = 'foreign' if key != 'ControlPID' else '444'
+    before = v.snapshot()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.stop_and_disable(expected)
+    assert v.snapshot() == before and v.effects() == []
+
+
+@pytest.mark.parametrize('effect', [('stop', MANAGED_UNITS[2]), ('disable', MANAGED_UNITS[2])])
+@pytest.mark.parametrize('fault', ['error', 'zero-without-effect'])
+def test_managed_native_uncertainty_never_produces_stop_receipt(
+        managed_service: ManagedFixture, effect: tuple[str, str], fault: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    if fault == 'error': v.fail = effect
+    else: v.lie = effect
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    expected = owner.observe()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.stop_and_disable(expected)
+    assert v.effects()[-1] == ['systemctl', *effect]
+    assert all((v.root / 'etc/systemd/system' / name).exists() for name in MANAGED_UNITS)
+    assert (v.root / PACKAGE_REGISTRY).exists()
+
+
+@pytest.mark.parametrize('path', [SIDECAR, PACKAGE_REGISTRY, 'etc/systemd/system/' + MANAGED_UNITS[0], MANAGED_LINKS[MANAGED_UNITS[2]]])
+def test_managed_original_artifacts_are_rechecked_after_blocking_native_observation(
+        managed_service: ManagedFixture, path: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    def swap(count: int) -> None:
+        if count == 10:
+            target = v.root / path
+            saved = v.root.parent / 'preserved-original-native-member'
+            target.rename(saved)
+            if saved.is_symlink(): target.symlink_to(os.readlink(saved))
+            else:
+                target.write_bytes(saved.read_bytes())
+                target.chmod(0o755 if path == SIDECAR else 0o644)
+    v.on_show = swap
+    before = len(v.effects())
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        ManagedTransport(v.io, v.fence, v.managed).observe()
+    assert len(v.effects()) == before and (v.root.parent / 'preserved-original-native-member').lstat().st_ino > 0
+
+
+@pytest.mark.parametrize('phase', ['stop', 'disable'])
+@pytest.mark.parametrize('path', [SIDECAR, PACKAGE_REGISTRY, 'etc/systemd/system/' + MANAGED_UNITS[0], MANAGED_LINKS[MANAGED_UNITS[2]]])
+def test_replacement_before_managed_stop_or_disable_has_zero_effects(
+        managed_service: ManagedFixture, monkeypatch: pytest.MonkeyPatch, phase: str, path: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    if phase == 'disable':
+        for props in v.native.values():
+            props.update(ActiveState='inactive', SubState='dead')
+            if 'MainPID' in props: props.update(MainPID='0', ControlGroup='')
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    expected = owner.observe()
+    observe, changed, observations = owner.observe, [], []
+    def replace_after_observation(*args: Any, **kwargs: Any) -> Any:
+        result = observe(*args, **kwargs)
+        observations.append(True)
+        if not changed and (phase == 'stop' and len(observations) == 2 or phase == 'disable' and kwargs.get('stopped')):
+            target = v.root / path
+            saved = v.root.parent / 'retained-pre-effect-original'
+            target.rename(saved)
+            if saved.is_symlink(): target.symlink_to(os.readlink(saved))
+            else:
+                target.write_bytes(saved.read_bytes())
+                target.chmod(0o755 if path == SIDECAR else 0o644)
+            changed.append(True)
+        return result
+    monkeypatch.setattr(owner, 'observe', replace_after_observation)
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.stop_and_disable(expected)
+    assert changed == [True] and v.effects() == []
+    assert (v.root.parent / 'retained-pre-effect-original').lstat().st_ino > 0
+
+
+@pytest.mark.parametrize('damage', ['fragment', 'registry', 'process', 'boot'])
+def test_managed_stop_receipt_cannot_authorize_later_changed_state(managed_service: ManagedFixture, damage: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    receipt = owner.stop_and_disable(owner.observe())
+    effects = list(v.effects())
+    if damage == 'fragment':
+        path = v.root / 'etc/systemd/system' / MANAGED_UNITS[0]
+        path.rename(v.root.parent / 'retained-fragment')
+        path.write_bytes((v.root.parent / 'retained-fragment').read_bytes())
+        path.chmod(0o644)
+    elif damage == 'registry': (v.root / PACKAGE_REGISTRY).write_bytes(b'unknown-registry')
+    elif damage == 'boot':
+        path = v.root / 'proc/sys/kernel/random/boot_id'
+        path.chmod(0o600)
+        path.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+        path.chmod(0o444)
+    else: v.native[MANAGED_UNITS[0]].update(ActiveState='active', SubState='running', MainPID='111', ControlGroup='/system.slice/' + MANAGED_UNITS[0])
+    before = v.snapshot()
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.confirm(receipt)
+    assert v.snapshot() == before and v.effects() == effects

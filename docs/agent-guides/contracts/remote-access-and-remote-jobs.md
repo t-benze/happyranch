@@ -4471,9 +4471,37 @@ auxiliary member and ancestor identities join the durable journal, whose byte
 budget is 1 MiB. Loading keeps saved original observations after disappearance
 or replacement; it grants no effect acknowledgement.
 
+`home_retirement_transport.ManagedTransport` separately observes the fixed
+connector/sidecar, managed target and release-verifier activation units. Frozen
+historical Debian unit digests and protected installed `happyranch.md5sums`
+package provenance authenticate the units and two executable files; a candidate
+self-hash is not provenance. Registry work is bounded to 16 MiB/65536 entries,
+and each executable is streamed within 256 MiB. This uses the existing package
+builder's installed-file registry under the same cooperative-root limitation,
+not a new signed-package or adversarial-root guarantee. Unsafe/unknown/missing
+or replaced registry, fragments, aliases/drop-ins, activation links, ancestors,
+NSS binding, PID/start/boot, executable inode, exact argv or cgroup refuses.
+Shared-account process inventory must contain precisely the owned service PIDs;
+the separate root verifier still has its own exact process/cgroup observation.
+Immutable members are rechecked after blocking native calls. Strict fixed kernel
+boot observation is shared with the original connector cutoff reader.
+
+Its ownership-only stop/disable operation requires the caller's earlier actual
+`ManagedObservation`, freshly validates before each effect and confirms actual
+native/process/link results. Stop and disable uncertainty preserves artifacts
+and produces no receipt. Positive inactive/disabled facts skip already completed
+native effects. Original activation-link identity stays pinned until that
+specific owned disable removes it; receipts become unusable after drift. No
+start/restart, account modification, package-database write or file cleanup is
+provided. The coordinator must obtain actual persistent revocation and original
+transport acknowledgement first, persist this separate native observation with
+the original cleanup evidence, and hold real operation exclusion. These native
+observations are currently in-memory prerequisites; their durable composition
+and original-death recovery remain unfinished.
+
 These records are evidence prerequisites, not removal capabilities or successful
-recovery results. They do not prove managed unit/process ownership or parse or
-revoke trust authority; nor do they stop, delete or publish retirement. The
+recovery results. They do not parse or revoke trust authority or publish
+retirement. The
 original connector pin must precede remaining inventory capture. The explicit
 coordinator must establish the separate proofs, complete the remaining cleanup
 inventory, preserve it before effects, hold actual operation exclusion and account

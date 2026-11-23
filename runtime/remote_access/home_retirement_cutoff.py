@@ -200,20 +200,8 @@ class RetirementCutoff:
             raise RetirementUncertain() from None
 
     def _boot_id(self) -> str:
-        """Fixed no-follow kernel boot identity, never a caller-selected file."""
-        from runtime.remote_access.home_retirement_service import OwnedService
-        with self.io._publication_parent("proc/sys/kernel/random") as (parent, revalidate):
-            info = os.stat("boot_id", dir_fd=parent, follow_symlinks=False)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or (info.st_uid, info.st_gid) != self.io.root_owner
-                    or stat.S_IMODE(info.st_mode) != 0o444):
-                raise RetirementUncertain()
-            value = OwnedService._proc_read(parent, "boot_id")
-            revalidate()
-            if (_signature(os.stat("boot_id", dir_fd=parent, follow_symlinks=False)) != _signature(info)
-                    or not value.endswith("\n") or _BOOT_ID.fullmatch(value[:-1]) is None):
-                raise RetirementUncertain()
-            return value[:-1]
+        from runtime.remote_access.home_retirement_service import boot_identity
+        return boot_identity(self.io)
 
     def _peer_record(self) -> bytes:
         # This protected intent contains only nonsecret identity, never trust

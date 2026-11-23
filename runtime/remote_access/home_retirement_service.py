@@ -33,6 +33,22 @@ _PROPERTIES = (
 )
 
 
+def boot_identity(io: ManagedInstaller) -> str:
+    """Fixed no-follow kernel identity shared by retirement native observers."""
+    with io._publication_parent("proc/sys/kernel/random") as (parent, revalidate):
+        info = os.stat("boot_id", dir_fd=parent, follow_symlinks=False)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_uid, info.st_gid) != io.root_owner or stat.S_IMODE(info.st_mode) != 0o444):
+            raise RetirementUncertain()
+        value = OwnedService._proc_read(parent, "boot_id")
+        revalidate()
+        if (_signature(os.stat("boot_id", dir_fd=parent, follow_symlinks=False)) != _signature(info)
+                or not value.endswith("\n") or re.fullmatch(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value[:-1]) is None):
+            raise RetirementUncertain()
+        return value[:-1]
+
+
 @dataclass(frozen=True)
 class ServiceIdentity:
     """Fixed legacy member selected by the coordinator's protected inventory.

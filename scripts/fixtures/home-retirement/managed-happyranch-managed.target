@@ -1,0 +1,6 @@
+[Unit]
+Description=HappyRanch managed remote access
+Wants=happyranch-release-verifier.socket happyranch-connector.service happyranch-tsnet-sidecar.service
+
+[Install]
+WantedBy=multi-user.target

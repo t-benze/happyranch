@@ -1,0 +1,14 @@
+[Unit]
+Description=HappyRanch release verifier socket
+PartOf=happyranch-managed.target
+
+[Socket]
+ListenStream=/run/happyranch-release-verifier/control.sock
+SocketUser=root
+SocketGroup=happyranch
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=happyranch-managed.target
