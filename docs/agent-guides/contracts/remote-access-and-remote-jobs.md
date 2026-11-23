@@ -4519,6 +4519,18 @@ boot or processes cannot become its new owner. The returned `StoppedRetirement`
 readback freshly requires saved records, both native stop receipts and independent
 cutoff proof. It is never a final retired record. Selective cleanup, account
 disposition, final publication and package replacement remain unfinished.
+`StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
+phase through fresh objects. It loads all three original records without
+rediscovery/capture, cross-checks their identity/account/release/boot/PID binding,
+and requires actual anchored denial, independent original death and complete
+managed quiescence. Dedicated controller fragment/executable identities and
+all managed artifacts must still match the saved originals. Fresh stopped and
+disabled native observations produce only new in-process readbacks, with no
+IPC request, stop/disable replay, trust initialization or final publication.
+An independently proven later boot can satisfy original death; missing/torn
+records, replaced artifacts, a still-live original, active/merely stopped-enabled
+units, or live/missing trust remain pending. Other interrupted phases, selective
+cleanup and final publication still require their separate recovery owners.
 Standalone composition checks run through real inventory/journals/anchored
 store/private IPC with synthetic native facts:
 `uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.

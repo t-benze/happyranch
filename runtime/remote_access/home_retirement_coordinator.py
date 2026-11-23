@@ -81,19 +81,7 @@ class ActiveRetirement:
         try:
             io, fence = self.journal.io, self.journal.fence
             fence.require(io)
-            managed = self.original.managed
-            if ((self.cutoff.identity.tenant_id, self.cutoff.identity.home_id, self.cutoff.identity.connector_id)
-                    != managed.identity or self.cutoff.account != managed.account
-                    or self.cutoff.release_uid != managed.release_uid
-                    or self.cutoff.peer.boot_id != self.native.boot_id
-                    or (self.cutoff.peer.pid, self.cutoff.peer.started)
-                        != self.native.processes['happyranch-connector.service']
-                    or self.cutoff.io is not io or self.native_journal.io is not io
-                    or self.cutoff.fence is not fence or self.native_journal.fence is not fence
-                    or self.native_journal.transport.managed != self.original.managed
-                    or self.native_journal.load() != self.native
-                    or self.journal.load() != self.original):
-                raise RetirementUncertain()
+            self._require_records()
             self.journal.require_original_members(self.original)
             if (OwnedService(io, self.original.ownership.service).observe() != self.original.ownership.native
                     or self.native_journal.transport.observe() != self.native):
@@ -132,7 +120,19 @@ class ActiveRetirement:
             before_effect=receipt.require)
 
     def _require_records(self) -> None:
-        if self.journal.load() != self.original or self.native_journal.load() != self.native:
+        io, fence, managed = self.journal.io, self.journal.fence, self.original.managed
+        fence.require(io)
+        if ((self.cutoff.identity.tenant_id, self.cutoff.identity.home_id, self.cutoff.identity.connector_id)
+                != managed.identity or self.cutoff.account != managed.account
+                or self.cutoff.release_uid != managed.release_uid
+                or self.cutoff.peer.boot_id != self.native.boot_id
+                or (self.cutoff.peer.pid, self.cutoff.peer.started)
+                    != self.native.processes['happyranch-connector.service']
+                or self.cutoff.io is not io or self.native_journal.io is not io
+                or self.cutoff.fence is not fence or self.native_journal.fence is not fence
+                or self.native_journal.transport.managed != managed
+                or self.native_journal.load() != self.native
+                or self.journal.load() != self.original):
             raise RetirementUncertain()
 
     def revoke_and_stop_services(self) -> StoppedRetirement:
@@ -176,6 +176,45 @@ class StoppedRetirement:
 
     def __repr__(self) -> str:
         return 'StoppedRetirement(<redacted>)'
+
+    @classmethod
+    def from_saved(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
+        """Explicit read-only recovery of the fully stopped/disabled phase.
+
+        Load all original records without discovery or recapture. Only fresh
+        independent original-death/denial/quiescence and exact original native
+        artifacts can produce new in-process readbacks. Partial stop/disable,
+        cleanup and final publication require their separate recovery owners.
+        No native effect or registry replacement is attempted here.
+        """
+        try:
+            fence.require(io)
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            managed = original.managed
+            if original.ownership.activation is None or not managed.live_sidecar:
+                raise RetirementUncertain()
+            transport = ManagedTransport(io, fence, managed)
+            native_journal = ManagedTransportJournal(transport)
+            native = native_journal.load()
+            cutoff = RetirementCutoff.from_saved_peer(io, fence,
+                ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
+                    connector_id=managed.identity[2]), managed.release_uid)
+            owner = ActiveRetirement(journal, original, native_journal, native, cutoff)
+            owner._require_records()
+            denied = OriginalDeathRecovery(cutoff, native_journal).recover()
+            controller = OwnedService(io, original.ownership.service)
+            current_controller = controller.observe(stopped=True, disabled=True)
+            controller._same_members(original.ownership.native, current_controller)
+            current_managed = transport.stopped_original(native)
+            if transport.observe(stopped=True, disabled=True) != current_managed:
+                raise RetirementUncertain()
+            result = cls(owner, OwnedStopReceipt(controller.identity.unit, current_controller),
+                ManagedStopReceipt(current_managed), denied)
+            result.require()
+            return result
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
 
     def require(self) -> None:
         owner = self._owner

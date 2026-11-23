@@ -35,6 +35,11 @@ minter writer lock descriptions through `held_operations`, with original-member
 and native/cutoff readback. Absent domains are not created or declared locked.
 This supplies operation exclusion only; the model's Remove action still needs
 the unfinished selective cleanup/recovery owner.
+Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
+already stopped/disabled phase using all three saved original records, exact
+original native artifacts and independent death/denial/quiescence proof. They
+perform no IPC or native replay and produce no final retirement record. This
+covers one post-native recovery boundary, not every modeled Crash phase.
 
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof

@@ -17,7 +17,7 @@ import pytest
 
 from runtime.remote_access import home_retirement_cutoff as cutoff
 from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_coordinator import ActiveRetirement
+from runtime.remote_access.home_retirement_coordinator import ActiveRetirement, StoppedRetirement
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import RetirementJournal
 from runtime.remote_access.home_retirement_transport import ManagedTransport
@@ -398,3 +398,63 @@ def test_active_managed_stop_requires_complete_independent_proof_after_peer_loss
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('case', ['same-boot', 'new-boot', 'missing-inventory', 'missing-native', 'missing-peer',
+    'torn-inventory', 'changed-controller', 'changed-managed', 'active-managed', 'controller-enabled',
+    'live-trust', 'missing-trust', 'original-live'])
+def test_stopped_explicit_recovery_uses_saved_original_and_never_replays(active, monkeypatch, case):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        original, native = owner.original, owner.native
+        native_target_stop(active)
+        produced = owner.revoke_and_stop_services()
+        produced.require()
+    # The native post-effect inputs above came from the actual stop/disable
+    # entry; no test fixture seeds an acknowledgement or recovery result.
+    if case in ('missing-inventory', 'missing-native', 'missing-peer'):
+        (active.root / {'missing-inventory': INVENTORY, 'missing-native': NATIVE, 'missing-peer': PIN}[case]).unlink()
+    elif case == 'torn-inventory':
+        (active.root / INVENTORY).write_bytes(b'{"format":')
+    elif case in ('changed-controller', 'changed-managed'):
+        name = 'happyranch-headscale.service' if case == 'changed-controller' else 'happyranch-connector.service'
+        path = active.root / 'etc/systemd/system' / name
+        saved = active.root.parent / 'original-native-fragment'
+        path.rename(saved)
+        shutil.copy2(saved, path)
+    elif case == 'active-managed':
+        active.native['happyranch-managed.target'].update(ActiveState='active', SubState='active')
+    elif case == 'controller-enabled':
+        (active.root / LINK).symlink_to('/etc/systemd/system/happyranch-headscale.service')
+        active.controller.properties['UnitFileState'] = 'enabled'
+    elif case == 'live-trust':
+        active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+    elif case == 'missing-trust':
+        (active.path.parent / 'trust-state.json.anchor').unlink()
+    elif case == 'original-live':
+        (active.root.parent / f'retained-proc-{active.pid}').rename(active.root / f'proc/{active.pid}')
+    elif case == 'new-boot':
+        path = active.root / 'proc/sys/kernel/random/boot_id'
+        path.chmod(0o644)
+        path.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+        path.chmod(0o444)
+    before, effects, frames = active.snapshot(), active.effects(), list(active.frames)
+    if case in ('same-boot', 'new-boot'):
+        recovered = StoppedRetirement.from_saved(active.io, active.fence)
+        recovered.require()
+        assert recovered._owner is not owner
+        assert recovered._owner.original == original and recovered._owner.native == native
+        assert recovered._owner.cutoff._acknowledged is None
+        with recovered.held_operations() as exclusion:
+            exclusion.require()
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+        assert active.io.home_retirement_status()['state'] == 'migration pending'
+    else:
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            StoppedRetirement.from_saved(active.io, active.fence)
+    assert active.snapshot() == before and active.effects() == effects and active.frames == frames
+    assert not (active.root / FINAL).exists()
