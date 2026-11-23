@@ -620,6 +620,14 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
                 recovered = StoppedRetirement.from_saved(active.io, active.fence)
                 recovered.remove_auxiliary()
                 assert len(removed) == 5
+                # Explicit recovery can finish private cleanup after auxiliary
+                # removal, then repeat both phases without replaying effects.
+                recovered.remove_private()
+                again = StoppedRetirement.from_saved(active.io, active.fence)
+                again.remove_private()
+                again.remove_auxiliary()
+                assert len(removed) == 5
+                assert all(not (active.root / path).exists() for path in owner.original.private.members)
         assert active.effects() == effects and active.frames == frames
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
         assert all((active.root / path).exists() for path in OPERATION_LOCKS)

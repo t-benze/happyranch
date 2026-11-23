@@ -2080,3 +2080,63 @@ def test_private_cleanup_interruption_keeps_original_evidence_and_checks_next_ef
             PrivateCleanup(fresh, fresh.load(), before_effect=lambda: None).remove()
             assert all(not (fixture.root / path).exists() for path in original.private.members)
         assert fixture.effects() == []
+
+
+@pytest.mark.parametrize('family', ['private', 'auxiliary'])
+@pytest.mark.parametrize('boundary', ['complete', 'sync-failure', 'reappearance'])
+def test_cleanup_recovery_synchronizes_previously_removed_originals(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, family: str, boundary: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import PrivateCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        members = original.private.members if family == 'private' else original.auxiliary.members
+        leaves = {path: signature for path, signature in members.items()
+                  if signature is not None and (family == 'private'
+                      or stat.S_ISREG(signature[4]) and path not in OPERATION_LOCKS)}
+        # Model the persisted unlink with its parent sync interrupted, without
+        # claiming the cleanup owner caused or acknowledged these absences.
+        for path, signature in leaves.items():
+            target = fixture.root / path
+            target.rmdir() if stat.S_ISDIR(signature[4]) else target.unlink()
+        target = fixture.root / (PRIVATE_KEY if family == 'private' else OPERATION)
+        required = {str((fixture.root / path).parent) for path in leaves}
+        synced, injected, removals = [], [], []
+        real_sync, real_unlink = os.fsync, os.unlink
+        def sync(fd):
+            parent = os.readlink(f'/proc/self/fd/{fd}')
+            if parent == str(target.parent) and boundary == 'sync-failure':
+                raise OSError('synthetic interrupted recovery sync')
+            real_sync(fd)
+            synced.append(parent)
+            if parent == str(target.parent) and boundary == 'reappearance' and not injected:
+                target.write_bytes(b'synthetic-foreign-reappearance')
+                injected.append(fixture.snapshot())
+        def unlink(name, *, dir_fd=None):
+            removals.append(name)
+            return real_unlink(name, dir_fd=dir_fd)
+        def recover():
+            fresh = RetirementJournal(fixture.io, fence)
+            saved = fresh.load()
+            if family == 'private':
+                PrivateCleanup(fresh, saved, before_effect=lambda: None).remove()
+            else:
+                with held_auxiliary_operations(fresh, saved, cleanup=True) as exclusion:
+                    exclusion.remove_leaves(before_effect=lambda: None)
+        before = fixture.snapshot()
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'fsync', sync)
+            scoped.setattr(os, 'unlink', unlink)
+            if boundary == 'complete':
+                recover()
+                assert required <= set(synced), 'absent original parent was not synchronized'
+            else:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    recover()
+        assert not removals and fixture.effects() == []
+        assert fixture.snapshot() == (injected[0] if injected else before)
+        assert RetirementJournal(fixture.io, fence).load() == original
+        assert not (fixture.root / STATE / 'home-retirement.json').exists()

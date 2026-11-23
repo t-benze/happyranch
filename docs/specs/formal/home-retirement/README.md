@@ -49,8 +49,11 @@ cleanup contexts reconcile absent original non-lock leaves without recapture.
 Closed directory names, full remaining-leaf identity, parent sync and absence
 readback are real-code obligations abstracted by Remove. Lock-domain removal,
 managed/native cleanup and final completion remain unfinished. Private cleanup
-currently precedes this auxiliary phase; its strict context cannot reconcile
-already removed auxiliary leaves.
+now uses explicit cleanup-mode exclusion so fresh saved recovery can repeat both
+phases in either order, retaining original lock domains. Already absent original
+leaves still require synchronization of their original parents and absent-name
+readback; Remove abstracts those durability operations rather than treating
+absence as an acknowledged earlier sync.
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They

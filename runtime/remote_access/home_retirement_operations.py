@@ -132,10 +132,12 @@ class AuxiliaryExclusion:
                     try:
                         current = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
                     except FileNotFoundError:
-                        continue
-                    if current != expected:
-                        raise RetirementUncertain()
-                    os.unlink(name, dir_fd=parent)
+                        current = None
+                    if current is not None:
+                        if current != expected:
+                            raise RetirementUncertain()
+                        os.unlink(name, dir_fd=parent)
+                    # Reconcile a prior unlink whose parent sync was lost.
                     os.fsync(parent)
                     try:
                         os.stat(name, dir_fd=parent, follow_symlinks=False)

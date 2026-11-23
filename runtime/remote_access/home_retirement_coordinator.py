@@ -280,7 +280,8 @@ class StoppedRetirement:
         Native artifacts, original records, managed trust and operation locks
         remain available for independent recovery. No final receipt is emitted.
         """
-        with self.held_operations() as exclusion:
+        self.require()
+        with held_auxiliary_operations(self._owner.journal, self._owner.original, cleanup=True) as exclusion:
             def guard() -> None:
                 self.require()
                 exclusion.require()

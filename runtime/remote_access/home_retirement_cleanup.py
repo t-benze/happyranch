@@ -111,19 +111,27 @@ class PrivateCleanup:
             for path in sorted(self.original.private.members):
                 self._guard()
                 current = self._observe()[path]
-                if current is None:
-                    continue
                 relative, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
                 walker = self._walker()
                 with walker._directory(relative, contents_may_change=True) as parent:
                     self._parents(walker)
-                    if parent is None or _signature(os.stat(name, dir_fd=parent,
-                            follow_symlinks=False)) != current:
+                    if parent is None:
+                        if self.original.private.members[path] is not None:
+                            raise RetirementUncertain()
+                        continue
+                    try:
+                        named = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                    except FileNotFoundError:
+                        named = None
+                    if named != current:
                         raise RetirementUncertain()
-                    if stat.S_ISDIR(current[4]):
-                        os.rmdir(name, dir_fd=parent)
-                    else:
-                        os.unlink(name, dir_fd=parent)
+                    if current is not None:
+                        if stat.S_ISDIR(current[4]):
+                            os.rmdir(name, dir_fd=parent)
+                        else:
+                            os.unlink(name, dir_fd=parent)
+                    # A previous unlink may have lost its parent sync. Fresh
+                    # absence alone is not its durability acknowledgement.
                     os.fsync(parent)
                     try:
                         os.stat(name, dir_fd=parent, follow_symlinks=False)

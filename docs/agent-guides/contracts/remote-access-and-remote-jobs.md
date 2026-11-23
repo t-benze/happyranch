@@ -4533,7 +4533,10 @@ the pinned parent must match the observed leaf on both descriptor and name
 before and after the emptiness check. Every removal synchronizes its
 parent and reads back absence. Explicit reuse accepts positively observed
 absence, never claims who removed it, never recaptures replacements and never
-replays absent removals. Ancestor inode/custody/mode remain pinned across
+replays absent removals. Reuse synchronizes each still-original parent and
+reads back absence even when the original leaf was already absent, so a lost
+parent sync cannot be mistaken for durable removal. A missing originally
+present leaf parent refuses. Ancestor inode/custody/mode remain pinned across
 intentional contents changes; ordinary inventory observations keep their
 existing full metadata checks. Native artifacts, saved records, managed trust,
 operation locks and local work remain retained. This is partial cleanup only,
@@ -4550,8 +4553,11 @@ regular leaves reject unknown or replaced artifacts before effects. Directory
 contents metadata alone may change during this selective cleanup. No leaf
 contents are opened. Fresh saved objects can repeat auxiliary cleanup without
 unlink replay, but removing the lock domains themselves remains a later
-obligation. Private cleanup currently precedes auxiliary cleanup because its
-unchanged-original held context does not reconcile removed auxiliary leaves.
+obligation. Private cleanup uses the same explicit cleanup-mode exclusion to
+reconcile original auxiliary non-lock leaf absence, so fresh saved recovery can
+repeat both phases in either order. The strict held-operation context remains
+unchanged. Both cleanup families synchronize and independently read back prior
+leaf absence; observed absence alone is not durability evidence.
 Managed trust/native artifacts, accounts, saved evidence and final publication
 remain outside these partial cleanup entries.
 `StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
