@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import HappyRanchSupervisor
 @testable import HappyRanchApp
@@ -38,7 +39,12 @@ struct ConnectionContractTests {
     }
 
     private func fixture() throws -> URL {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        // Preserve /private: Foundation URL normalization can reintroduce an
+        // alias that the production no-follow reader correctly refuses.
+        let temporary = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(temporary) }
+        let root = URL(fileURLWithFileSystemRepresentation: temporary, isDirectory: true, relativeTo: nil)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         try Data("hello".utf8).write(to: root.appendingPathComponent("index.html"))
         let manifest = #"{"version":1,"entry":"index.html","resources":[{"path":"index.html","bytes":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}"#
