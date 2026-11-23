@@ -4420,6 +4420,10 @@ or staging absence is recorded without claiming an owned deletion. The captured
 member/directory identities are immutable, redacted in repr, and freshly compared
 by `require_private`; a later same-byte replacement or disappearance cannot be
 silently adopted as the original snapshot.
+Ancestors above the managed root remain pinned by device/inode, numeric
+custody and mode, while unrelated sibling activity above that root is excluded
+from inventory drift. At and below the root, full directory metadata stays
+pinned; in-root changes and ancestor replacement still refuse.
 
 `managed_members` separately validates the fixed managed connector/sidecar
 configuration and shared runtime custody under the same live fence. Protected

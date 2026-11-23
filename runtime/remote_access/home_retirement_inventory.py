@@ -409,9 +409,14 @@ class _PrivateMembers:
                 opened.append(child)
                 info = os.fstat(child)
                 current /= part
-                if not stat.S_ISDIR(info.st_mode) or _signature(info) != _signature(before):
+                # Outer ancestors select the root by identity/custody. Their
+                # sibling contents are not part of the managed inventory.
+                inside = current.is_relative_to(self.io.root)
+                signature = _signature(info) if inside else _signature(info)[:5]
+                expected = _signature(before) if inside else _signature(before)[:5]
+                if not stat.S_ISDIR(info.st_mode) or signature != expected:
                     raise RetirementUncertain()
-                if current.is_relative_to(self.io.root):
+                if inside:
                     rule = self.parents.get(str(current.relative_to(self.io.root)))
                     if rule is None:
                         if (info.st_uid, info.st_gid) != self.io.root_owner or info.st_mode & 0o022:
@@ -419,12 +424,12 @@ class _PrivateMembers:
                     elif (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (*rule[0], rule[1]):
                         raise RetirementUncertain()
                     self._remember_directory(str(current.relative_to(self.io.root)), info)
-                parents.append((descriptor, part, child, _signature(info)))
+                parents.append((descriptor, part, child, signature))
                 descriptor = child
             yield None if missing is not None else descriptor
             for ancestor, name, child, signature in parents:
-                if (_signature(os.fstat(child)) != signature
-                        or _signature(os.stat(name, dir_fd=ancestor, follow_symlinks=False)) != signature):
+                if (_signature(os.fstat(child))[:len(signature)] != signature
+                        or _signature(os.stat(name, dir_fd=ancestor, follow_symlinks=False))[:len(signature)] != signature):
                     raise RetirementUncertain()
             if missing is not None:
                 try:

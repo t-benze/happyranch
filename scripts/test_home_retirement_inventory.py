@@ -1142,6 +1142,62 @@ def test_original_inventory_is_durable_closed_and_reopens_without_adopting_curre
             reopened.managed.members[MANAGED_OPAQUE[0]] = None
 
 
+@pytest.mark.parametrize("activity", ["outer-sibling", "inner-sibling", "outer-mode", "outer-replacement"])
+def test_original_inventory_distinguishes_outer_activity_from_owned_directory_drift(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, activity: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        real_open, changed = os.open, []
+        outer_mode = stat.S_IMODE(fixture.root.parent.stat().st_mode)
+        sibling = (fixture.root.parent if activity.startswith("outer-") else fixture.root) / "unrelated-sibling"
+        def open_during_activity(path, flags, *args, **kwargs):
+            nonlocal sibling
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if (not changed and flags == inventory._DIRECTORY_FLAGS
+                    and Path(os.readlink(f"/proc/self/fd/{descriptor}")) == fixture.root / "var/lib/happyranch-headscale"):
+                # A deterministic external writer during a real inventory walk.
+                # It supplies no decision/receipt and never changes production.
+                sibling.write_bytes(b"synthetic-independent-sibling")
+                if activity == "outer-mode":
+                    fixture.root.parent.chmod(0o755)
+                elif activity == "outer-replacement":
+                    parent = fixture.root.parent
+                    retained = parent.with_name(parent.name + "-retained-original")
+                    parent.rename(retained)
+                    parent.mkdir(mode=0o700)
+                    (retained / fixture.root.name).rename(fixture.root)
+                    sibling = retained / sibling.name
+                changed.append(True)
+            return descriptor
+        with monkeypatch.context() as scoped:
+            scoped.setattr(inventory.os, "open", open_during_activity)
+            if activity == "outer-sibling":
+                saved = RetirementJournal(fixture.io, fence).capture(ownership)
+                assert saved.private.members[OPAQUE] is not None
+                assert RetirementJournal(fixture.io, fence).load() == saved
+            else:
+                try:
+                    with pytest.raises(RetirementUncertain, match="^migration pending$"):
+                        RetirementJournal(fixture.io, fence).capture(ownership)
+                finally:
+                    # Restore only the injected fixture ancestor before the
+                    # independent lifetime-lock revalidation on context exit.
+                    if activity == "outer-mode":
+                        fixture.root.parent.chmod(outer_mode)
+                    elif activity == "outer-replacement":
+                        parent = fixture.root.parent
+                        retained = parent.with_name(parent.name + "-retained-original")
+                        fixture.root.rename(retained / fixture.root.name)
+                        parent.rmdir()
+                        retained.rename(parent)
+                        sibling = parent / sibling.name
+        assert changed == [True] and sibling.read_bytes() == b"synthetic-independent-sibling"
+        assert fixture.effects() == []
+        assert (fixture.root / "retained-native/saved-home").read_bytes() == b"synthetic-P25-saved-home"
+
+
 @pytest.mark.parametrize("damage", ["mode", "hardlink", "symlink", "fifo", "empty", "oversized", "torn",
     "duplicate", "format", "directory", "extra", "path", "parent", "missing-managed", "missing-private",
     "digest", "signature", "signature-bool", "account", "release", "identity", "activation", "native", "receipts"])
