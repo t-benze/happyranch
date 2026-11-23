@@ -13,6 +13,8 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import threading
+from zoneinfo import ZoneInfo
 from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
@@ -32,7 +34,7 @@ async def manual_delete_case(root: Path, *, mode: str, live: bool = False) -> No
     with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
         async with fixture(root) as (org, client):
             (org.root/'org'/'config.yaml').write_text(
-                'reviewer_agents: [other]\nshared_artifacts:\n  cleanup_mode: '+mode+'\n')
+                'reviewer_agents: [other]\nshared_artifacts:\n  cleanup_mode: '+repr(mode)+'\n')
             install_reference_seams(org)
             org.db.insert_thread(ThreadRecord(id='THR-origin', subject='Synthetic origin'))
             put = await client.post(
@@ -391,6 +393,179 @@ async def notices_case(root: Path) -> None:
             print('PASS notices: private inbox/real CLI full JSON;exact due/replay/renewal/late;human-retired-unknown manager;24h timeout;pending/audit rollback;quota crossing-repeat-below-recross')
 
 
+async def sweep_case(root: Path) -> None:
+    from runtime.daemon.shared_artifacts_scheduler import sweep, finish_delete, current_window
+    from runtime.models import ThreadAttachment
+    from runtime.infrastructure.shared_artifact_service import SharedArtifactError, SharedArtifactService
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.infrastructure.database import Database
+    with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+        async with fixture(root) as (org,client):
+            db=org.db
+            db.insert_thread(ThreadRecord(id='THR-origin',subject='Lifecycle acceptance'))
+            for name in ('expire.bin','crash.bin','replacement.bin','fence.bin','hash.bin','symlink.bin'):
+                response=await client.post(PREFIX+'/artifacts',params=dict(agent='worker',thread_id='THR-origin',purpose='Persistent source',retention='default',expires_at=(NOW+timedelta(hours=1)).isoformat()),files={'file':(name,b'synthetic lifecycle bytes')})
+                assert response.status_code==200
+            svc=db._shared_artifact_service
+            when=[NOW+timedelta(hours=2)]
+            svc.clock=lambda:when[0]
+            install_reference_seams(org)
+            before=snapshot(org)
+            result=sweep(org,'preview-1')
+            assert result['complete'] and result['effective_mode']=='preview',result
+            assert snapshot(org)==before
+            assert db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0]==when[0].isoformat()
+            assert sweep(org,'preview-1')['outcome']=='already_serviced'
+            config=org.root/'org'/'config.yaml'
+            config.write_text('reviewer_agents: [other]\nshared_artifacts: {cleanup_mode: enforce}\n')
+            result=sweep(org,'premature')
+            assert result['effective_mode']=='preview' and snapshot(org)==before
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE shared_artifact_org_state SET rollout_started_at=?,preview_acceptance='synthetic',inventory_review_id='synthetic',source_protection_verified=1",((NOW-timedelta(days=8)).isoformat(),))
+            when[0]=NOW+timedelta(days=8)
+            db.append_thread_message(thread_id='THR-origin',speaker='worker',kind=ThreadMessageKind.MESSAGE,body_markdown='[artifact:expire.bin]')
+            result=sweep(org,'live-hold')
+            assert db.get_shared_artifact('expire.bin')['state']=='active'
+            assert db.get_shared_artifact('crash.bin')['state']=='recoverable'
+            assert db.get_shared_artifact('crash.bin')['recoverable_until']==(when[0]+timedelta(days=7)).isoformat()
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE threads SET status='archived' WHERE id='THR-origin'")
+            when[0]+=timedelta(days=1)
+            assert sweep(org,'hold-ended')['expired']==1
+            assert db.get_shared_artifact('expire.bin')['recoverable_until']==(when[0]+timedelta(days=7)).isoformat()
+            when[0]=NOW+timedelta(days=15)-timedelta(microseconds=1)
+            assert sweep(org,'before-deadline')['deleted']==0
+            when[0]=NOW+timedelta(days=15)
+            def prepare(name: str, operation_id: str) -> None:
+                with db.shared_artifact_transaction() as conn:
+                    row=db._shared_artifact_uncommitted(conn,name)
+                    outcome=reference_outcomes(org,conn,[row],deadline=time.monotonic()+60)[name,row['generation']][0]
+                    svc.prepare_delete_uncommitted(conn,name=name,generation=row['generation'],expected_revision=row['revision'],reference_outcome=outcome,effective_mode='enforce',operation_id=operation_id,deadline=time.monotonic()+60)
+            prepare('crash.bin','synthetic-crash-delete')
+            audit=db.insert_audit_log_uncommitted
+            def fail_final(**kwargs: object) -> None:
+                if kwargs['action']=='artifact_delete':
+                    import sqlite3
+                    raise sqlite3.OperationalError('synthetic_final_audit_failure')
+                return audit(**kwargs)
+            with patch.object(db,'insert_audit_log_uncommitted',side_effect=fail_final):
+                try:
+                    finish_delete(org,'synthetic-crash-delete',deadline=time.monotonic()+60)
+                    raise AssertionError('final audit failure missing')
+                except Exception as exc:
+                    assert 'synthetic_final_audit_failure' in str(exc)
+            assert not (svc.store.root/'crash.bin').exists()
+            assert db.get_shared_artifact('crash.bin')['state']=='recoverable'
+            assert db._conn.execute("SELECT phase FROM shared_artifact_operations WHERE operation_id='synthetic-crash-delete'").fetchone()[0]=='issued'
+            # New SQLite connection + new service reconstructs only durable facts.
+            recovered=Database(Path(db._conn.execute('PRAGMA database_list').fetchone()[2]))
+            recovered_org=SimpleNamespace(db=recovered,root=org.root,slug=org.slug,teams=org.teams)
+            SharedArtifactService(recovered,ArtifactStore(svc.store.root),clock=lambda:when[0])
+            install_reference_seams(recovered_org)
+            try:
+                assert finish_delete(recovered_org,'synthetic-crash-delete',deadline=time.monotonic()+60)
+                assert recovered.get_shared_artifact('crash.bin')['state']=='deleted'
+                assert recovered._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_delete' AND task_id='artifact:crash.bin'").fetchone()[0]==1
+            finally:
+                recovered.close()
+            # Same-hash inode replacement after intent is held, never re-unlinked.
+            prepare('replacement.bin','synthetic-replacement-delete')
+            path=svc.store.root/'replacement.bin'
+            alternate=svc.store.root/'replacement-new.bin'
+            alternate.write_bytes(path.read_bytes())
+            alternate.replace(path)
+            assert not finish_delete(org,'synthetic-replacement-delete',deadline=time.monotonic()+60)
+            assert path.exists() and db.get_shared_artifact('replacement.bin')['state']=='recoverable'
+            prepare('hash.bin','synthetic-hash-delete')
+            hash_path=svc.store.root/'hash.bin'
+            hash_path.write_bytes(b'changed lifecycle bytes!')
+            assert not finish_delete(org,'synthetic-hash-delete',deadline=time.monotonic()+60)
+            assert hash_path.exists()
+            prepare('symlink.bin','synthetic-symlink-delete')
+            symlink_path=svc.store.root/'symlink.bin'
+            symlink_path.unlink()
+            symlink_path.symlink_to(svc.store.root/'replacement.bin')
+            try:
+                finish_delete(org,'synthetic-symlink-delete',deadline=time.monotonic()+60)
+                raise AssertionError('symlink replacement accepted')
+            except SharedArtifactError:
+                pass
+            assert symlink_path.is_symlink() and path.exists()
+            # Reference committed after preparation wins the fresh final fence.
+            db.insert_thread(ThreadRecord(id='THR-fence',subject='Concurrent reference'))
+            prepare('fence.bin','synthetic-fence-delete')
+            db.append_thread_message(thread_id='THR-fence',speaker='worker',kind=ThreadMessageKind.MESSAGE,body_markdown='[artifact:fence.bin]')
+            assert not finish_delete(org,'synthetic-fence-delete',deadline=time.monotonic()+60)
+            assert (svc.store.root/'fence.bin').exists()
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE threads SET status='archived' WHERE id='THR-fence'")
+            entered,release,writer_started,writer_done=(threading.Event() for _ in range(4))
+            identity=svc.identity
+            def barrier(path: Path, **kwargs: object) -> dict:
+                value=identity(path,**kwargs)
+                entered.set()
+                assert release.wait(5), 'bounded fence release missing'
+                return value
+            errors=[]
+            def attach() -> None:
+                writer_started.set()
+                try:
+                    db.append_thread_message(thread_id='THR-origin',speaker='worker',kind=ThreadMessageKind.MESSAGE,
+                        attachments=[ThreadAttachment(artifact_name='fence.bin',display_name='fence.bin',uploaded_by='worker')])
+                except SharedArtifactError as exc:
+                    errors.append(exc.status)
+                finally:
+                    writer_done.set()
+            with patch.object(svc,'identity',side_effect=barrier):
+                task=asyncio.create_task(asyncio.to_thread(finish_delete,org,'synthetic-fence-delete',deadline=time.monotonic()+60))
+                assert await asyncio.to_thread(entered.wait,5)
+                writer=threading.Thread(target=attach)
+                writer.start()
+                assert await asyncio.to_thread(writer_started.wait,1)
+                assert not await asyncio.to_thread(writer_done.wait,.05), 'reference writer escaped final fence'
+                release.set()
+                assert await task
+                await asyncio.to_thread(writer.join,5)
+            assert writer_done.is_set() and errors==[410]
+            assert db.get_shared_artifact('fence.bin')['state']=='deleted'
+            # Default/off/invalid and deadline exhaustion never retire bytes.
+            config.write_text('reviewer_agents: [other]\nshared_artifacts: {cleanup_mode: \"off\"}\n')
+            when[0]=NOW+timedelta(days=17)
+            assert sweep(org,'off')['effective_mode']=='off'
+            assert db.get_shared_artifact('expire.bin')['state']=='recoverable'
+            config.write_text('reviewer_agents: [other]\nshared_artifacts: {cleanup_mode: invalid}\n')
+            assert sweep(org,'invalid')['effective_mode']=='preview'
+            assert db.get_shared_artifact('expire.bin')['state']=='recoverable'
+            result=sweep(org,'exhausted',deadline=time.monotonic()-1)
+            assert not result['complete'] and result['deadline_exhausted']
+            with db.shared_artifact_transaction() as conn:
+                deletion=json.loads(conn.execute("SELECT payload FROM audit_log WHERE action='artifact_delete' AND task_id='artifact:fence.bin'").fetchone()[0])
+                assert deletion['reclaimed_bytes']==len(b'synthetic lifecycle bytes')
+            assert current_window(NOW,ZoneInfo('UTC'))=='2026-11-22T04:00:00+00:00'
+            assert current_window(NOW+timedelta(hours=4),ZoneInfo('UTC'))=='2026-11-23T04:00:00+00:00'
+            print('PASS sweep:preview/gates/off/invalid/window/budget;live hold ends with fresh7d;full recovery;unlink+tombstone;restart after final-audit failure;inode replacement hold;reference arrival/attachment writer final fence;reclaimed-byte audit')
+
+
+async def sweep_shape_case(root: Path) -> None:
+    from runtime.daemon.shared_artifacts_scheduler import sweep
+    async with fixture(root) as (org,client):
+        assert (await client.get(PREFIX+'/artifacts')).status_code==200
+        svc=org.db._shared_artifact_service
+        for index in range(7500):
+            with (svc.store.root/f'legacy-{index:05}.bin').open('wb') as stream:
+                stream.truncate(226667)
+        install_reference_seams(org)
+        started=time.monotonic()
+        result=sweep(org,'shape-7500',deadline=started+60)
+        elapsed=time.monotonic()-started
+        assert result['complete'] and result['processed']==7500 and result['legacy']==7500,result
+        assert result['used_bytes']==7500*226667
+        assert org.db._conn.execute('SELECT COUNT(*) FROM shared_artifact_generations WHERE expires_at IS NOT NULL').fetchone()[0]==0
+        assert len(list(svc.store.root.glob('legacy-*.bin')))==7500
+        assert elapsed<60
+        print(f'PASS sweep-shape:7500 files;bytes={result["used_bytes"]};30 keyset batches;shared_elapsed={elapsed:.3f}s;no legacy expiry/unlink')
+
+
 async def main(case: str) -> None:
     with tempfile.TemporaryDirectory(prefix='shared-artifact-B-') as directory:
         root = Path(directory)
@@ -400,6 +575,10 @@ async def main(case: str) -> None:
         if case in ('manual-delete', 'manual-delete-enforce'):
             await manual_delete_case(root / 'enforce', mode='enforce')
             await manual_delete_case(root / 'live', mode='enforce', live=True)
+        if case == 'sweep':
+            await sweep_case(root/'sweep')
+        if case == 'sweep-shape':
+            await sweep_shape_case(root/'shape')
         if case == 'notices':
             await notices_case(root/'notices')
         if case == 'references':
@@ -412,6 +591,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
         'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
-        'quota-chunks', 'references', 'notices',
+        'quota-chunks', 'references', 'notices', 'sweep', 'sweep-shape',
     ), default='manual-delete')
     asyncio.run(main(parser.parse_args().case))

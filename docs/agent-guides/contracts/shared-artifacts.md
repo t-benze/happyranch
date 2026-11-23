@@ -140,8 +140,9 @@ validation and classification. A's transition seam refuses mutation without
 enforce mode, accepted preview, reviewed inventory, source verification and seven
 elapsed preview days. Legacy remains outside automatic expiry. Expiry starts a
 full seven-day recovery at the actual unavailable transition. Preview/off never
-start an unavailable interval merely because a date passed. DELETE is preview
-only in A. B must complete the audited retirement path before enabling it.
+start an unavailable interval merely because a date passed. DELETE uses the same effective-mode/reference gates: preview/off returns a
+nonmutating preview; gated enforce enters recoverable retirement. Only the
+scheduler later unlinks through the durable intent and final writer fence.
 
 GET resolves generation metadata before bytes. Unavailable rows return
 `410 artifact_unavailable` with date, owner, reason, recovery/deletion dates and
@@ -192,3 +193,36 @@ are in tagless system_payload, which the existing inbox and CLI show in full.
 `uv run --frozen python scripts/test_shared_artifacts_b.py --case notices`
 checks the real private API inbox and CLI rendering. QA browser rendering remains
 independent acceptance; source delivery does not activate live notices.
+
+## Slice B daily lifecycle (source only)
+
+`shared_artifacts_scheduler` runs at04:00 org-local time after30s warm-up, takes
+the latest real occurrence (fold0; nonexistent occurrences skipped), and claims
+one persisted audit window. It uses250-row keysets and one60s monotonic deadline
+passed through inventory, reference, notice and byte-identity work. An incomplete
+pass records its cursor; unseen work waits for a later daily window. Only issued
+delete intents are reconciled within a serviced window; incomplete destructive
+passes are not replayed. Native work retains org lifetime and cancellation
+custody through its terminal result before database close.
+
+A's day-one accounting may register previously unseen legacy blobs; preview
+never changes existing lifecycle state, expiry, recovery interval or bytes. It
+can persist notices, audits, quota latch, inventory observations and a completed
+preview start. Legacy null-expiry files remain unclassified and are never
+automatically expired/deleted. A live reference holds expiry; removal starts a
+full7d recovery at the actual transition. After recovery, A commits intent and
+audit before B reacquires a fresh complete reference proof and exact no-follow
+identity under one writer fence through unlink, tombstone and audit. Missing
+bytes can reconcile only a previously issued intent; changed inode/hash/symlink
+bytes remain held. Final failure leaves the durable issued intent explainable.
+`reconcile_usage_uncommitted`, `quota_crossing_uncommitted` and
+`prepare_delete_uncommitted` accept an optional shared deadline; omitted keeps
+their prior behavior. `lifecycle_transition_uncommitted` accepts optional
+reclaimed_bytes for B's final deletion audit; omitted keeps its prior payload.
+
+Mode defaults to preview. YAML off must be written as `cleanup_mode: "off"`;
+boolean/invalid/unreadable config holds mutation. Enforce requires7 elapsed
+preview days, explicit preview acceptance, inventory review and independently
+verified source protection. Source delivery sets none of those approval flags.
+Turning preview/off stops new destructive decisions; issued effects retain
+journal custody. No live activation, deploy or restart is part of this PR.
