@@ -239,8 +239,8 @@ disable/lost-reply progress, while selective cleanup and publication recovery
 remain unfinished. The dedicated owner also pins its original still-present
 activation link across stop and disable.
 
-Explicit active/inert `remove_original_receipts` additionally maps the final
-historical account/publication/activation receipt leaves to `Remove(m)`. The
+Explicit active/inert `remove_original_receipts` maps the final historical
+account/publication/activation receipt leaves to `RemoveOriginalReceipt(r)`. The
 saved inventory remains provenance after an individual receipt is absent;
 complete current native/cutoff, other cleanup and final account readback guard
 each effect. `require_retired` observes absent names or exact locked static
@@ -248,8 +248,11 @@ consumer retention without account effects. Ordinary account deletion remains
 strict about the original receipt. Parent sync/absence recovery can finish
 partial removal without native/account/IPC replay. Original recovery journals
 and the old-payload fence survive; this is not `WriteReceipt`/`ReadFinal`, and
-does not claim any completed R02→R03/R04 or package gate. The existing abstract
-Remove action already requires complete current facts; no new action is added.
+does not claim any completed R02→R03/R04 or package gate. The finite original
+receipt set remains separate from earlier artifact removal, preserving receipts
+through account effects. FinalFacts requires their complete removal; the
+existing removal-authorization and no-startup-destruction properties include
+this set. TLC execution remains NOT RUN.
 
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof

@@ -5,6 +5,7 @@ CONSTANT SkipFreshOwnership, SkipFence
 Devices == {"device-a", "device-b"}
 Owners == Devices \cup {"removed-owner"}
 Members == {"database", "private-keys", "unit", "activation"}
+OriginalReceipts == {"account", "publication", "activation-receipt"}
 CloseStates == {"open", "inflight", "failed", "acknowledged"}
 Observations == {"cutoff", "stop", "disable", "cleanup", "final"}
 VARIABLE s
@@ -16,7 +17,7 @@ Init == \E owned \in {"exact", "foreign"}, exclusive \in BOOLEAN, inert \in BOOL
   s = [fence |-> FALSE, burned |-> inert, denied |-> IF inert THEN Devices ELSE {},
        close |-> [d \in Owners |-> "open"], original |-> IF inert THEN "dead" ELSE "live",
        owner |-> owned, exclusive |-> exclusive, stopped |-> FALSE,
-       disabled |-> FALSE, removed |-> {}, account |-> "present",
+       disabled |-> FALSE, removed |-> {}, removedReceipts |-> {}, account |-> "present",
        receipt |-> "absent", observed |-> {}, explicit |-> FALSE,
        available |-> TRUE, source |-> "old", stable |-> FALSE,
        reported |-> "pending", permit |-> FALSE, foreignEffects |-> 0,
@@ -29,6 +30,7 @@ CutoffFacts == s.fence /\ Denied /\ Closed
 CleanupFacts == CutoffFacts /\ s.owner = "exact" /\ s.stopped /\ s.disabled
 FinalFacts == CleanupFacts /\ s.removed = Members
               /\ s.account \in {"absent", "owned-disabled"}
+              /\ s.removedReceipts = OriginalReceipts
 Run == s.explicit /\ s.available
 Own == s.owner = "exact" \/ SkipFreshOwnership
 
@@ -119,6 +121,13 @@ AccountDisposition ==
                THEN (IF s.account = "present" THEN "user-absent" ELSE "absent")
                ELSE "owned-disabled"]
 
+\* Historical authority receipts survive through all account effects.
+RemoveOriginalReceipt(r) ==
+  /\ Run /\ CleanupFacts /\ s.removed = Members
+  /\ s.account \in {"absent", "owned-disabled"}
+  /\ r \notin s.removedReceipts
+  /\ s' = [s EXCEPT !.removedReceipts = @ \cup {r}]
+
 ObserveCleanup ==
   /\ Run /\ FinalFacts /\ "cleanup" \notin s.observed
   /\ s' = [s EXCEPT !.observed = @ \cup {"cleanup"}]
@@ -193,6 +202,7 @@ Progress == SelectExplicit \/ Fence \/ Burn
   \/ (\E d \in Owners : BeginClose(d) \/ AckClose(d))
   \/ ObserveCutoff \/ Stop \/ ObserveStop \/ Disable \/ ObserveDisable
   \/ (\E m \in Members : Remove(m)) \/ AccountDisposition
+  \/ (\E r \in OriginalReceipts : RemoveOriginalReceipt(r))
   \/ ObserveCleanup \/ WriteReceipt \/ SyncReceipt \/ ReadFinal \/ GateUnpack
 
 Next == Progress \/ (\E d \in Owners : FailClose(d)) \/ OriginalDies
@@ -205,6 +215,7 @@ TypeOK ==
   /\ s.close \in [Owners -> CloseStates] /\ s.original \in {"live", "dead"}
   /\ s.owner \in {"exact", "foreign"} /\ s.exclusive \in BOOLEAN
   /\ s.stopped \in BOOLEAN /\ s.disabled \in BOOLEAN /\ s.removed \subseteq Members
+  /\ s.removedReceipts \subseteq OriginalReceipts
   /\ s.account \in {"present", "user-absent", "absent", "owned-disabled"}
   /\ s.receipt \in {"absent", "torn", "written", "durable"}
   /\ s.observed \subseteq Observations /\ s.explicit \in BOOLEAN
@@ -225,8 +236,13 @@ NewListenerGated == s.accountListener => s.accountAuthority /\ FinalFacts /\ s.r
 DenialMonotone == [][s.denied \subseteq s'.denied /\ (s.burned => s'.burned)]_vars
 FenceNeverReopened == [][s.fence => s'.fence]_vars
 NoOldAdmissionAfterFence == [][s.fence => s'.oldAccepted = s.oldAccepted]_vars
-RemovalAuthorized == [][s.removed # s'.removed => Run /\ CleanupFacts /\ "disable" \in s.observed]_vars
+RemovalAuthorized == [][
+  /\ (s.removed # s'.removed => Run /\ CleanupFacts /\ "disable" \in s.observed)
+  /\ (s.removedReceipts # s'.removedReceipts => Run /\ CleanupFacts
+      /\ s.removed = Members /\ s.account \in {"absent", "owned-disabled"})
+  ]_vars
 NoStartupDestruction == [][~s.explicit => s'.removed = s.removed
+  /\ s'.removedReceipts = s.removedReceipts
   /\ (~s.stopped => ~s'.stopped) /\ (~s.disabled => ~s'.disabled)]_vars
 
 Spec == Init /\ [][Next]_vars
