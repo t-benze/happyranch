@@ -89,6 +89,19 @@ link-count/timestamp changes; files/links and boot/native/process facts remain
 exact. Native/trust/account/lock-domain and final publication
 obligations remain separate; model actions and completion claims are unchanged.
 
+Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
+fixed original systemd fragments, including fresh partial-removal/lost-parent-
+sync recovery without native or unlink replay. Cleanup-aware native observations
+permit only original-fragment absence, with exact original cached inactive
+definitions or not-found/empty definitions; remaining artifacts/parents,
+accounts and complete current native quiescence stay required. Active cleanup
+continues to require independent original-peer death and anchored denial;
+inert cleanup retains original/current absent authority. Held original operation
+domains guard each effect. Ordinary stop/disable stays strict. Binaries, trust,
+accounts, lock domains and final publication remain separate obligations;
+there is no new model action or final-completion claim. Installed native
+behavior and TLC remain NOT RUN.
+
 The model's additional inert initial branch abstracts these independently
 proven empty authority facts as already satisfied Denied/Closed predicates.
 Stop still requires fencing, explicit selection, ownership and fresh cutoff

@@ -2,8 +2,8 @@
 
 Absence alone supplies no cutoff proof for an active installation. This owner
 requires historical inert provenance, original and current absent authority,
-and fresh complete native quiescence. Selective leaf cleanup retains native
-artifacts, accounts, operation locks and original journals. It neither
+and fresh complete native quiescence. Selective leaf/fragment cleanup retains
+executables, accounts, operation locks and original journals. It neither
 initializes trust nor emits a final receipt or package replacement gate.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
+from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup, UnitCleanup
 from runtime.remote_access.home_retirement_cutoff import _PEER_RECORD
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, LegacyManagedMembers, LegacyOwnership
@@ -119,7 +119,7 @@ class InertRetirement:
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 
-    def require(self, *, disabled: bool = False, cleanup: bool = False) -> None:
+    def require(self, *, disabled: bool = False, cleanup: bool = False, native_cleanup: bool = False) -> None:
         """Read back original inert lineage and current quiescence every time."""
         try:
             io, fence = self.journal.io, self.journal.fence
@@ -132,6 +132,7 @@ class InertRetirement:
                     or any(dict(props)['ActiveState'] not in ('inactive', 'failed')
                            for props in self.native.properties.values())
                     or cleanup and not disabled
+                    or native_cleanup and not cleanup
                     or any(HomeRetirement(io)._present(STATE_DIRECTORY + '/' + name) for name in _ACTIVE_RECORDS)):
                 raise RetirementUncertain()
             managed = ManagedCleanup(self.journal, self.original, before_effect=lambda: None)
@@ -166,14 +167,41 @@ class InertRetirement:
             empty_authority()
             members()
             controller = OwnedService(io, self.original.ownership.service)
-            controller._same_members(self.original.ownership.native, controller.observe(stopped=True, disabled=True))
+            if native_cleanup:
+                controller.observe_cleanup(self.original.ownership.native)
+            else:
+                controller._same_members(self.original.ownership.native, controller.observe(stopped=True, disabled=True))
             transport = self.native_journal.transport
-            current = transport.stopped_original(self.native)
-            if disabled and transport.observe(stopped=True, disabled=True) != current:
+            current = transport.observe_cleanup(self.native) if native_cleanup else transport.stopped_original(self.native)
+            if disabled and not native_cleanup and transport.observe(stopped=True, disabled=True) != current:
                 raise RetirementUncertain()
             empty_authority()
             members()
             fence.require(io)
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_unit_fragments(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Explicit original-fragment cleanup with inert partial-removal recovery.
+
+        Original and current absent authority, complete native quiescence and
+        held operation domains remain mandatory before each removal. No active
+        layout fallback, native replay, binary/account removal or final receipt.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def require() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True)
+            require()
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                UnitCleanup(journal, original, owner.native, before_effect=guard).remove()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

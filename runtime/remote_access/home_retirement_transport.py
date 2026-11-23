@@ -14,7 +14,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Callable, Mapping
+from typing import TYPE_CHECKING, AbstractSet, Callable, Mapping
 
 from runtime.remote_access.home_retirement import (
     HomeRetirement, RetirementUncertain, _DBUS_ROOTS, _DIRECTORY_FLAGS,
@@ -135,7 +135,7 @@ class ManagedTransport:
             finally:
                 os.close(descriptor)
 
-    def _files(self) -> dict[str, tuple[int, ...] | None]:
+    def _files(self, *, cleanup: bool = False) -> dict[str, tuple[int, ...] | None]:
         raw, registry = self._read(_REGISTRY)
         expected = {}
         for index, line in enumerate(raw.decode('utf-8').splitlines()):
@@ -158,6 +158,9 @@ class ManagedTransport:
             result[path] = signature
         for name, digest in self.digests.items():
             path = 'etc/systemd/system/' + name
+            if cleanup and not self.reader._present(path):
+                result[path] = None
+                continue
             raw, signature = self._read(path)
             if hashlib.sha256(raw).hexdigest() != digest:
                 raise RetirementUncertain()
@@ -251,17 +254,24 @@ class ManagedTransport:
                     scan(parent, relative, 0, relative in _DBUS_ROOTS)
         return result
 
-    def _native(self) -> dict[str, tuple[tuple[str, str], ...]]:
+    def _native(self, missing: AbstractSet[str] = frozenset()) -> dict[str, tuple[tuple[str, str], ...]]:
         result = {}
         for name in _UNITS:
             props = self.io.manager.show_properties(name, _COMMON + (_SERVICE if name in _EXECUTABLES else ()))
             fixed = dict(Id=name, Names=name, FragmentPath=str(self.io.root / 'etc/systemd/system' / name),
                 DropInPaths='', LoadState='loaded', Job='', NeedDaemonReload='no')
+            unloaded = name in missing and props.get('LoadState') == 'not-found'
+            if name in missing:
+                fixed.pop('NeedDaemonReload')
+                if unloaded:
+                    fixed.update(FragmentPath='', LoadState='not-found')
+                if props.get('NeedDaemonReload') not in ({'no'} if unloaded else {'no', 'yes'}):
+                    raise RetirementUncertain()
             if set(props) != set(_COMMON + (_SERVICE if name in _EXECUTABLES else ())) or any(props.get(k) != v for k, v in fixed.items()):
                 raise RetirementUncertain()
             if name in _EXECUTABLES:
-                expected_user = 'root' if name == 'happyranch-release-verifier.service' else 'happyranch'
-                if (any(props.get(k) != v for k, v in dict(User=expected_user, Group='happyranch',
+                expected_user = '' if unloaded else 'root' if name == 'happyranch-release-verifier.service' else 'happyranch'
+                if (any(props.get(k) != v for k, v in dict(User=expected_user, Group='' if unloaded else 'happyranch',
                         DynamicUser='no', Transient='no', ControlPID='0').items())
                         or not props['MainPID'].isascii() or not props['MainPID'].isdigit()):
                     raise RetirementUncertain()
@@ -274,7 +284,7 @@ class ManagedTransport:
             elif (props['ActiveState'], props['SubState']) not in (
                     ('inactive', 'dead'), ('active', 'listening' if name.endswith('.socket') else 'active')):
                 raise RetirementUncertain()
-            if props['UnitFileState'] not in ('enabled', 'disabled', 'static'):
+            if props['UnitFileState'] not in (('', 'disabled', 'static') if name in missing else ('enabled', 'disabled', 'static')):
                 raise RetirementUncertain()
             result[name] = tuple(sorted(props.items()))
         return result
@@ -342,13 +352,17 @@ class ManagedTransport:
             raise RetirementUncertain()
         return result
 
-    def observe(self, *, stopped: bool = False, disabled: bool = False) -> ManagedObservation:
+    def observe(self, *, stopped: bool = False, disabled: bool = False,
+                cleanup: ManagedObservation | None = None) -> ManagedObservation:
         try:
+            if cleanup is not None and (type(cleanup) is not ManagedObservation or not stopped or not disabled):
+                raise RetirementUncertain()
             self._account()
             boot = boot_identity(self.io)
-            artifacts = self._files()
+            artifacts = self._files(cleanup=cleanup is not None)
             links = self._links()
-            properties = self._native()
+            missing = {name for name in _UNITS if artifacts['etc/systemd/system/' + name] is None}
+            properties = self._native(missing)
             for name in _UNITS:
                 enabled = any(unit == name and links[path] is not None for path, unit in _LINKS.items())
                 if (dict(properties[name])['UnitFileState'] == 'enabled') != enabled or disabled and enabled:
@@ -357,13 +371,23 @@ class ManagedTransport:
                     raise RetirementUncertain()
             processes = self._processes(properties, artifacts)
             self._account()
-            if (self._native() != properties or self._processes(properties, artifacts) != processes
-                    or self._links() != links or self._files() != artifacts or boot_identity(self.io) != boot):
+            if (self._native(missing) != properties or self._processes(properties, artifacts) != processes
+                    or self._links() != links or self._files(cleanup=cleanup is not None) != artifacts
+                    or boot_identity(self.io) != boot):
                 raise RetirementUncertain()
             self.fence.require(self.io)
-            return ManagedObservation(boot, {**artifacts, **links}, properties, processes)
+            result = ManagedObservation(boot, {**artifacts, **links}, properties, processes)
+            if cleanup is not None:
+                removed = {'etc/systemd/system/' + name for name in missing}
+                removed.update(path for path in _LINKS if result.artifacts[path] is None)
+                self._same_artifacts(cleanup, result, removed)
+            return result
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, ServiceManagerError):
             raise RetirementUncertain() from None
+
+    def observe_cleanup(self, original: ManagedObservation) -> ManagedObservation:
+        """Fresh quiescence after only original fixed fragments may be absent."""
+        return self.observe(stopped=True, disabled=True, cleanup=original)
 
     @staticmethod
     def _same_members(original: ManagedObservation, current: ManagedObservation,

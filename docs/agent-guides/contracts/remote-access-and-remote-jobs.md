@@ -4627,6 +4627,26 @@ or reappearing leaf stays pending. Shared parents, operation domains, native
 artifacts, accounts and journals survive. Leaf-only cleanup entries retain
 their existing semantics; after directory removal, recover through the explicit
 directory entry rather than trying to remove leaves from missing parents.
+Explicit `StoppedRetirement.remove_unit_fragments(io, fence)` and the inert
+owner's same entry remove only the six fixed original systemd fragments through
+`home_retirement_cleanup.UnitCleanup`. Both load the original journals rather
+than recapturing a partially removed layout. The original systemd parent and
+remaining fragment signatures stay pinned; each unlink (or prior absence)
+requires parent synchronization and absent-name readback. Fresh explicit
+recovery finishes remaining originals without stop/disable/unlink replay.
+Every effect still requires held original issuer/minter domains and current
+complete native stopped/disabled/process-empty facts. The active entry also
+requires independently proven original-peer death and real anchored denial;
+the inert entry requires original and current empty authority, with no active
+fallback. Missing fragments are admitted only by explicit cleanup observations:
+systemd may retain the exact inactive cached original fragment path, or report
+a not-found definition with empty fragment/user/group fields. Aliases, drop-ins,
+jobs, activation links, foreign cached paths, active processes and changed
+original parents/files refuse. Ordinary native observations and stop/disable
+remain strict about present fragments. No daemon reload is performed here.
+Executables, the package registry, accounts, trust, original journals and lock
+domains remain required and retained. This is partial native cleanup, not
+final retirement or authorization to replace the package.
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held

@@ -26,8 +26,9 @@ class RecoveredCutoffReceipt:
 
 
 class OriginalDeathRecovery:
-    def __init__(self, cutoff: RetirementCutoff, journal: ManagedTransportJournal) -> None:
+    def __init__(self, cutoff: RetirementCutoff, journal: ManagedTransportJournal, *, native_cleanup: bool = False) -> None:
         self.cutoff, self.journal, self.transport = cutoff, journal, journal.transport
+        self.native_cleanup = native_cleanup
         if ((cutoff.io.root, cutoff.io.root_owner) != (journal.io.root, journal.io.root_owner)
                 or cutoff.account != self.transport.managed.account
                 or cutoff.release_uid != self.transport.managed.release_uid
@@ -88,12 +89,13 @@ class OriginalDeathRecovery:
                 raise RetirementUncertain()
             state, generation = owner.snapshot()
             owner._denied(state)
-            current = self.transport.stopped_original(original)
+            observe = self.transport.observe_cleanup if self.native_cleanup else self.transport.stopped_original
+            current = observe(original)
             self._original_gone(current.boot_id)
             owner._require_original_peer()
             state, after = owner.snapshot()
             owner._denied(state)
-            if after != generation or self.transport.stopped_original(original) != current:
+            if after != generation or observe(original) != current:
                 raise RetirementUncertain()
             self._original_gone(current.boot_id)
             owner.remaining()

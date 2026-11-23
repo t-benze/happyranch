@@ -119,6 +119,49 @@ def test_owned_stop_receipt_requires_native_and_process_readback(service: Servic
     assert service.effects() == [], "fresh explicit recovery must not replay proven stopped/disabled effects"
 
 
+@pytest.mark.parametrize('case', ['present', 'cached', 'unloaded', 'replaced', 'binary', 'active', 'alias',
+    'foreign-cached', 'reload-present', 'process', 'enabled', 'job', 'dropin'])
+def test_controller_cleanup_observation_retains_original_ownership(service: ServiceFixture, case: str) -> None:
+    original = service.owner.observe()
+    service.owner.stop_and_disable(expected=original)
+    if case not in ('present', 'replaced', 'binary', 'reload-present'):
+        (service.root / FRAGMENT).unlink()
+        service.properties.update(NeedDaemonReload='yes', UnitFileState='')
+    if case == 'unloaded':
+        service.properties.update(LoadState='not-found', FragmentPath='', NeedDaemonReload='no', User='', Group='')
+    elif case in ('replaced', 'binary'):
+        path = service.root / (BINARY if case == 'binary' else FRAGMENT)
+        path.rename(service.root.parent / 'original-kept')
+        service.file(str(path.relative_to(service.root)), BINARY_BYTES if case == 'binary' else UNIT_BYTES,
+            0o755 if case == 'binary' else 0o644)
+    elif case == 'active':
+        service.properties.update(ActiveState='active', SubState='running', MainPID='123',
+            ControlGroup='/system.slice/' + SERVICE)
+    elif case == 'alias':
+        (service.root / 'etc/systemd/system/foreign.service').symlink_to('/' + FRAGMENT)
+    elif case == 'foreign-cached':
+        service.properties['FragmentPath'] = '/usr/lib/systemd/system/foreign.service'
+    elif case == 'reload-present':
+        service.properties['NeedDaemonReload'] = 'yes'
+    elif case == 'process':
+        service.ps_output = ' '.join(['999', *([str(os.getuid())] * 4)]) + '\n'
+    elif case == 'enabled':
+        service.properties['UnitFileState'] = 'enabled'
+    elif case == 'job':
+        service.properties['Job'] = '99'
+    elif case == 'dropin':
+        service.properties['DropInPaths'] = '/etc/foreign.conf'
+    before, effects = service.snapshot(), service.effects()
+    if case in ('present', 'cached', 'unloaded'):
+        observed = OwnedService(service.io, service.identity).observe_cleanup(original)
+        assert (observed.fragment is None) == (case != 'present')
+        assert observed.executable == original.executable and observed.process is None and observed.link is None
+    else:
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            service.owner.observe_cleanup(original)
+    assert service.snapshot() == before and service.effects() == effects
+
+
 @pytest.mark.parametrize("key,value", [
     ("Id", "foreign.service"), ("Names", SERVICE + " alias.service"),
     ("FragmentPath", "/usr/lib/systemd/system/foreign.service"), ("DropInPaths", "/etc/foreign.conf"),
@@ -411,6 +454,67 @@ def managed_service(tmp_path: Path) -> Iterator[ManagedFixture]:
         yield fixture
     finally:
         fixture.close()
+
+
+@pytest.mark.parametrize('case', ['present', 'cached', 'unloaded', 'all-unloaded', 'replaced', 'binary',
+    'parent', 'active', 'process', 'foreign-cached', 'alias', 'enabled', 'job', 'dropin', 'reload-present'])
+def test_managed_cleanup_observation_retains_original_ownership(managed_service: ManagedFixture, case: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    fixture = managed_service
+    owner = ManagedTransport(fixture.io, fixture.fence, fixture.managed)
+    original = owner.observe()
+    owner.stop_and_disable(original)
+    name = MANAGED_UNITS[0]
+    path = fixture.root / 'etc/systemd/system' / name
+    if case not in ('present', 'replaced', 'binary', 'parent', 'reload-present'):
+        for unit in MANAGED_UNITS if case == 'all-unloaded' else (name,):
+            (fixture.root / 'etc/systemd/system' / unit).unlink()
+            fixture.native[unit].update(NeedDaemonReload='yes', UnitFileState='')
+    if case in ('unloaded', 'all-unloaded'):
+        for unit in MANAGED_UNITS if case == 'all-unloaded' else (name,):
+            props = fixture.native[unit]
+            props.update(LoadState='not-found', FragmentPath='', NeedDaemonReload='no')
+            if unit.endswith('.service'):
+                props.update(User='', Group='')
+    elif case in ('replaced', 'binary'):
+        path = fixture.root / PYTHON if case == 'binary' else path
+        data, mode = path.read_bytes(), path.stat().st_mode & 0o777
+        path.rename(fixture.root.parent / 'original-kept')
+        fixture.file(str(path.relative_to(fixture.root)), data, mode)
+    elif case == 'parent':
+        path = fixture.root / 'etc/systemd/system'
+        saved = fixture.root.parent / 'original-unit-parent'
+        path.rename(saved)
+        import shutil
+        shutil.copytree(saved, path, symlinks=True)
+    elif case == 'active':
+        fixture.native[name].update(ActiveState='active', SubState='running', MainPID='111',
+            ControlGroup='/system.slice/' + name)
+    elif case == 'process':
+        fixture.ps_extra = ' '.join(['999', *([str(os.getuid())] * 4)]) + '\n'
+    elif case == 'foreign-cached':
+        fixture.native[name]['FragmentPath'] = '/usr/lib/systemd/system/foreign.service'
+    elif case == 'alias':
+        (fixture.root / 'etc/systemd/system/foreign.service').symlink_to('/etc/systemd/system/' + name)
+    elif case == 'reload-present':
+        fixture.native[name]['NeedDaemonReload'] = 'yes'
+    elif case == 'enabled':
+        fixture.native[name]['UnitFileState'] = 'enabled'
+    elif case == 'job':
+        fixture.native[name]['Job'] = '99'
+    elif case == 'dropin':
+        fixture.native[name]['DropInPaths'] = '/etc/foreign.conf'
+    before, effects = fixture.snapshot(), fixture.effects()
+    if case in ('present', 'cached', 'unloaded', 'all-unloaded'):
+        observed = ManagedTransport(fixture.io, fixture.fence, fixture.managed).observe_cleanup(original)
+        assert (observed.artifacts['etc/systemd/system/' + name] is None) == (case != 'present')
+        assert all(value is None for value in observed.processes.values())
+        assert observed.artifacts[PYTHON] == original.artifacts[PYTHON]
+        assert observed.artifacts[SIDECAR] == original.artifacts[SIDECAR]
+    else:
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.observe_cleanup(original)
+    assert fixture.snapshot() == before and fixture.effects() == effects
 
 
 @pytest.mark.parametrize('home', [False, True])

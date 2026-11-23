@@ -785,6 +785,90 @@ def test_stopped_private_cleanup_uses_real_proofs_and_preserves_explicit_recover
         assert not (active.root / FINAL).exists()
 
 
+@pytest.mark.parametrize('case', ['complete', 'lost-sync', 'denial-between-units', 'foreign-unit',
+    'foreign-parent', 'native-active'])
+def test_stopped_unit_cleanup_recovers_only_original_fragments(active, monkeypatch, case):
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, writer_lock
+    auxiliary_journal_setup(active.controller)
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        native_target_stop(active)
+        owner.revoke_and_stop_services()
+    paths = {'etc/systemd/system/' + name for name in (*MANAGED_UNITS, 'happyranch-headscale.service')}
+    retained = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in (PIN, INVENTORY, NATIVE, BINARY)}
+    effects, frames = active.effects(), list(active.frames)
+    if case == 'foreign-unit':
+        path = active.root / 'etc/systemd/system/happyranch-connector.service'
+        data = path.read_bytes()
+        path.rename(active.root.parent / 'original-unit')
+        active.file(str(path.relative_to(active.root)), data, 0o644)
+    elif case == 'native-active':
+        active.native['happyranch-managed.target'].update(ActiveState='active', SubState='active')
+    elif case == 'foreign-parent':
+        path = active.root / 'etc/systemd/system'
+        saved = active.root.parent / 'original-unit-parent'
+        path.rename(saved)
+        shutil.copytree(saved, path, symlinks=True)
+    before = active.snapshot()
+    # Fresh detection is read-only and cannot resume cleanup on its own.
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    assert active.snapshot() == before and active.effects() == effects
+    real_unlink, real_sync = os.unlink, os.fsync
+    removed, synced = [], []
+    def unlink(name, *, dir_fd=None):
+        path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(active.root))
+        if path in paths:
+            assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+        real_unlink(name, dir_fd=dir_fd)
+        if path in paths:
+            removed.append(path)
+            if case == 'denial-between-units' and len(removed) == 1:
+                active.manager.issue_invite_record('e' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+    def sync(fd):
+        if Path(os.readlink(f'/proc/self/fd/{fd}')) == active.root / 'etc/systemd/system':
+            synced.append(len(removed))
+            if case == 'lost-sync' and len(synced) == 1:
+                raise OSError('synthetic lost unit-parent sync')
+        real_sync(fd)
+    def fresh():
+        io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+            run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
+        StoppedRetirement.remove_unit_fragments(io, active.fence)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'unlink', unlink)
+        scoped.setattr(os, 'fsync', sync)
+        if case == 'complete':
+            fresh()
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+            assert len(removed) == (1 if case in ('lost-sync', 'denial-between-units') else 0)
+        if case in ('complete', 'lost-sync'):
+            fresh()
+            assert set(removed) == paths and len(removed) == len(paths)
+            assert all(not (active.root / path).exists() for path in paths)
+            sync_count = len(synced)
+            fresh()
+            assert len(removed) == len(paths) and len(synced) == sync_count + len(paths)
+        else:
+            after = active.snapshot()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+            assert active.snapshot() == after
+            if not removed:
+                assert after == before
+    assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+    with pytest.raises(StreamClosed):
+        stream.receive()
+    assert active.effects() == effects and active.frames == frames
+    assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+            for path in retained} == retained
+    assert not (active.root / FINAL).exists()
+
+
 @pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
 def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay(active, monkeypatch, boundary):
     from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, writer_lock

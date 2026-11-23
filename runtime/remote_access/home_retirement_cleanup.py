@@ -1,6 +1,6 @@
-"""Selective original private/managed-leaf removal under fresh proofs.
+"""Selective original private/managed leaves and unit fragments under fresh proofs.
 
-Native artifacts, trust state, operation locks and saved evidence are retained.
+Native executables, trust state, operation locks and saved evidence are retained.
 An absent original is current absence, never an acknowledgement of who removed
 it. This explicit owner does not publish a final retired receipt.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import PurePosixPath
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY, _DIRECTORY_FLAGS, _signature
 from runtime.remote_access.home_retirement_inventory import (
@@ -17,6 +17,9 @@ from runtime.remote_access.home_retirement_inventory import (
 )
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
 from runtime.remote_access.legacy_home_receipt import LIVE_MEMBERS
+
+if TYPE_CHECKING:
+    from runtime.remote_access.home_retirement_transport import ManagedObservation
 
 _MUTABLE = frozenset(path.lstrip('/') for path in LIVE_MEMBERS)
 _CLOSED = frozenset(('etc/happyranch/headscale', 'var/lib/happyranch-headscale',
@@ -257,3 +260,28 @@ class ManagedCleanup(PrivateCleanup):
         if walker.account != self.original.managed.account:
             raise RetirementUncertain()
         return walker
+
+
+class UnitCleanup(PrivateCleanup):
+    """Six fixed original fragments, retaining binaries and native evidence.
+
+    The coordinator supplies fresh cleanup-aware native/death/denial proof.
+    Original parent identities come from the saved managed native observation;
+    no current candidate is captured as provenance for removal.
+    """
+
+    _mutable = frozenset()
+    _closed = frozenset()
+
+    def __init__(self, journal: RetirementJournal, original: OriginalInventory,
+                 native: ManagedObservation, *, before_effect: Callable[[], None]) -> None:
+        super().__init__(journal, original, before_effect=before_effect)
+        members = {path: value for path, value in native.artifacts.items()
+                   if path.startswith('etc/systemd/system/') and path.endswith(('.service', '.socket', '.target'))
+                   and '/' not in path.removeprefix('etc/systemd/system/')}
+        members['etc/systemd/system/' + original.ownership.service.unit] = original.ownership.native.fragment
+        self._units = LegacyPrivateMembers(members, {path.removeprefix('directory:'): value
+            for path, value in native.artifacts.items() if path.startswith('directory:') and value is not None})
+
+    def _inventory(self) -> LegacyPrivateMembers:
+        return self._units

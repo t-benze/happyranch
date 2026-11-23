@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
+from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup, UnitCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
@@ -460,6 +460,33 @@ class StoppedRetirement:
                 self.require()
                 exclusion.require()
             ManagedCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove()
+
+    @classmethod
+    def remove_unit_fragments(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish original fragment removal, including fresh partial recovery.
+
+        This explicit entry loads the same original records and never resumes
+        stop/disable. Every removal still needs all native owners independently
+        quiescent/disabled, original-peer death, anchored denial and held
+        original issuer/minter domains. Binaries, trust and accounts remain.
+        """
+        try:
+            owner = cls._saved_owner(io, fence)
+            controller = OwnedService(io, owner.original.ownership.service)
+            recovery = OriginalDeathRecovery(owner.cutoff, owner.native_journal, native_cleanup=True)
+            def require() -> None:
+                owner._require_records()
+                controller.observe_cleanup(owner.original.ownership.native)
+                recovery.recover().require()
+                controller.observe_cleanup(owner.original.ownership.native)
+            require()
+            with held_auxiliary_operations(owner.journal, owner.original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                UnitCleanup(owner.journal, owner.original, owner.native, before_effect=guard).remove()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
 
     @contextmanager
     def held_operations(self) -> Iterator[AuxiliaryExclusion]:

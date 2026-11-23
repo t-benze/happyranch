@@ -82,7 +82,7 @@ class ServiceIdentity:
 
 @dataclass(frozen=True)
 class ServiceObservation:
-    fragment: tuple[int, ...]
+    fragment: tuple[int, ...] | None
     executable: tuple[int, ...]
     link: tuple[int, ...] | None
     properties: tuple[tuple[str, str], ...]
@@ -274,7 +274,8 @@ class OwnedService:
         except (OSError, ValueError, RuntimeError, KeyError, ServiceManagerError):
             raise RetirementUncertain() from None
 
-    def _observe(self, *, stopped: bool, disabled: bool) -> ServiceObservation:
+    def _observe(self, *, stopped: bool, disabled: bool,
+                 cleanup: ServiceObservation | None = None) -> ServiceObservation:
         identity = self.identity
         # NSS receipts/lineage are the coordinator's separate prerequisite;
         # re-observe numeric/name bindings here so account replacement is closed.
@@ -282,7 +283,9 @@ class OwnedService:
         if ((user.pw_name, user.pw_uid, user.pw_gid) != (identity.account, identity.uid, identity.gid)
                 or (group.gr_name, group.gr_gid) != (identity.account, identity.gid)):
             raise RetirementUncertain()
-        fragment = self._regular("etc/systemd/system/" + identity.unit, identity.fragment_sha256)
+        path = "etc/systemd/system/" + identity.unit
+        missing = cleanup is not None and not self.reader._present(path)
+        fragment = None if missing else self._regular(path, identity.fragment_sha256)
         executable = self._regular(identity.executable, identity.executable_sha256, executable=True)
         link = self._links(disabled=disabled)
         props = self.io.manager.show_properties(identity.unit, _PROPERTIES)
@@ -290,6 +293,12 @@ class OwnedService:
             FragmentPath=str(self.io.root / "etc/systemd/system" / identity.unit), DropInPaths="",
             NeedDaemonReload="no", LoadState="loaded", ControlPID="0", Job="",
             User=identity.account, Group=identity.account, DynamicUser="no", Transient="no")
+        if missing:
+            fixed.pop("NeedDaemonReload")
+            if props.get("LoadState") == "not-found":
+                fixed.update(FragmentPath="", LoadState="not-found", User="", Group="")
+            if props.get("NeedDaemonReload") not in ({"no"} if props.get("LoadState") == "not-found" else {"no", "yes"}):
+                raise RetirementUncertain()
         if (set(props) != set(_PROPERTIES) or any(props.get(key) != value for key, value in fixed.items())
                 or not props["MainPID"].isascii() or not props["MainPID"].isdigit()):
             raise RetirementUncertain()
@@ -300,7 +309,7 @@ class OwnedService:
         elif (stopped or props["ActiveState"] != "active" or props["SubState"] != "running" or pid <= 0
                 or props["ControlGroup"] != "/system.slice/" + identity.unit):
             raise RetirementUncertain()
-        if props["UnitFileState"] not in ("enabled", "disabled", "static"):
+        if props["UnitFileState"] not in (("", "disabled", "static") if missing else ("enabled", "disabled", "static")):
             raise RetirementUncertain()
         if ((props["UnitFileState"] == "enabled") != (link is not None)
                 or disabled and props["UnitFileState"] == "enabled"):
@@ -312,9 +321,27 @@ class OwnedService:
                 or self._process(pid) != process
                 or self._links(disabled=disabled) != link
                 or self._regular(identity.executable, identity.executable_sha256, executable=True) != executable
-                or self._regular("etc/systemd/system/" + identity.unit, identity.fragment_sha256) != fragment):
+                or (None if missing and not self.reader._present(path)
+                    else self._regular(path, identity.fragment_sha256)) != fragment):
+            raise RetirementUncertain()
+        if cleanup is not None and (cleanup.fragment is None or fragment is not None and fragment != cleanup.fragment
+                or executable != cleanup.executable or process is not None or link is not None):
             raise RetirementUncertain()
         return ServiceObservation(fragment, executable, link, tuple(sorted(props.items())), process)
+
+    def observe_cleanup(self, original: ServiceObservation) -> ServiceObservation:
+        """Read stopped/disabled original ownership after explicit fragment removal.
+
+        Only the fixed saved fragment may be absent. Executable and account
+        remain original; aliases, activation, jobs and processes still refuse.
+        This performs no stop, disable, reload or removal.
+        """
+        try:
+            if type(original) is not ServiceObservation:
+                raise RetirementUncertain()
+            return self._observe(stopped=True, disabled=True, cleanup=original)
+        except (OSError, ValueError, RuntimeError, KeyError, ServiceManagerError):
+            raise RetirementUncertain() from None
 
     @staticmethod
     def _same_members(first: ServiceObservation, current: ServiceObservation) -> None:

@@ -28,6 +28,58 @@ def fresh(fixture):
 
 
 @pytest.mark.parametrize('active', ['inert'], indirect=True)
+@pytest.mark.parametrize('boundary', ['complete', 'authority-between-units'])
+def test_inert_unit_cleanup_requires_current_empty_authority(active, monkeypatch, boundary):
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, TRANSACTION, writer_lock
+    from scripts.test_home_retirement_service import MANAGED_UNITS, BINARY
+    auxiliary_journal_setup(active.controller)
+    (active.root / TRANSACTION).unlink()
+    owner = InertRetirement.capture(active.io, active.fence)
+    owner.stop_and_disable()
+    paths = {'etc/systemd/system/' + name for name in (*MANAGED_UNITS, 'happyranch-headscale.service')}
+    records = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+               for path in (INVENTORY, NATIVE, BINARY)}
+    before = active.snapshot()
+    active.calls.clear()
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    assert active.snapshot() == before and active.effects() == []
+    real_unlink, removed = os.unlink, []
+    def unlink(name, *, dir_fd=None):
+        path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(active.root))
+        if path in paths:
+            assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+        real_unlink(name, dir_fd=dir_fd)
+        if path in paths:
+            removed.append(path)
+            if boundary == 'authority-between-units' and len(removed) == 1:
+                active.file(TRUST, b'synthetic-reappearing-authority', 0o600)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'unlink', unlink)
+        if boundary == 'complete':
+            InertRetirement.remove_unit_fragments(fresh(active), active.fence)
+            assert set(removed) == paths and len(removed) == len(paths)
+            InertRetirement.remove_unit_fragments(fresh(active), active.fence)
+            assert len(removed) == len(paths)
+            after = active.snapshot()
+            assert set(before) - set(after) == paths
+            for path in set(after) - {'etc/systemd/system'}:
+                assert after[path] == before[path], path
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                InertRetirement.remove_unit_fragments(fresh(active), active.fence)
+            assert len(removed) == 1
+            after = active.snapshot()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                InertRetirement.remove_unit_fragments(fresh(active), active.fence)
+            assert active.snapshot() == after
+    assert active.effects() == []
+    assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+            for path in records} == records
+    assert (active.root / 'retained-native/saved-home').read_bytes() == b'synthetic-P25-saved-home'
+    assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('active', ['inert'], indirect=True)
 def test_inert_native_disable_has_no_trust_initialization_or_replay(active):
     owner = InertRetirement.capture(active.io, active.fence)
     originals = {path: ((active.root / path).stat().st_ino, (active.root / path).read_bytes())
