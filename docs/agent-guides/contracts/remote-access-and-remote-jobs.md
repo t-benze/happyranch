@@ -4553,8 +4553,15 @@ or disappeared; present inode/custody/type/link count, immutable private files,
 the original trust lock and other ancestors remain pinned. Unknown runtime
 members refuse. Each remaining controller effect rechecks these facts and the
 acknowledgement before the existing managed-stop sequence. Failed physical
-closure cannot be reset. Partial managed stop uses the separate independent
-death/quiescence recovery; this entry grants no cleanup or final receipt.
+closure cannot be reset. This same entry can finish interrupted managed
+target/sidecar stop while the saved original connector remains live and freshly
+acknowledges its real registry. It skips each positively stopped native effect.
+Only an independently stopped/process-empty sidecar's fixed runtime leaves may
+flush or disappear; surviving inode/custody/type/link count remain original.
+Active sidecar runtime, the live connector's runtime and managed configurations
+stay pinned, and unknown runtime members refuse. Lost original-peer contact
+still requires the separate independent death/quiescence recovery. This entry
+grants no cleanup or final receipt.
 
 `StoppedRetirement.remove_private` now joins that actual stopped/cutoff proof
 and held issuer/minter exclusion to selective original private-leaf cleanup.

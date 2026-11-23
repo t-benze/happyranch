@@ -398,6 +398,80 @@ def test_controller_recovery_refuses_changed_originals_and_failed_close(active, 
 
 
 
+@pytest.mark.parametrize('case', ['target-failure', 'target-lost-reply', 'sidecar-failure',
+    'sidecar-lost-reply', 'sidecar-inode', 'sidecar-unknown', 'live-sidecar-flush',
+    'connector-process', 'connector-runtime', 'managed-config'])
+def test_partial_managed_stop_recovery_rechecks_originals_and_skips_complete_effects(active, monkeypatch, case):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    unit = ('happyranch-managed.target' if case.startswith('target-') else
+            'happyranch-tsnet-sidecar.service')
+    lost = case not in ('target-failure', 'sidecar-failure', 'live-sidecar-flush')
+    run = active.io._run
+    def interrupt(argv, **kwargs):
+        if argv == ['systemctl', 'stop', unit]:
+            if lost:
+                run(argv, **kwargs)
+            return 1, 'synthetic interrupted managed stop'
+        return run(argv, **kwargs)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        active.io._run = active.io.manager._run = interrupt
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_services()
+        active.io._run = active.io.manager._run = run
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert stream.closed and active.native['happyranch-connector.service']['ActiveState'] == 'active'
+        sidecar_state = active.root / 'var/lib/happyranch-tsnet-sidecar/tailscaled.state'
+        if case in ('sidecar-lost-reply', 'live-sidecar-flush'):
+            sidecar_state.write_bytes(sidecar_state.read_bytes() + b'synthetic-stopped-flush')
+            if case == 'sidecar-lost-reply':
+                (active.root / 'run/happyranch-tsnet-sidecar/health.json').unlink(missing_ok=True)
+        elif case == 'sidecar-inode':
+            data = sidecar_state.read_bytes()
+            sidecar_state.rename(active.root.parent / 'retained-sidecar-state')
+            sidecar_state.write_bytes(data)
+            sidecar_state.chmod(0o600)
+        elif case == 'sidecar-unknown':
+            (sidecar_state.parent / 'unknown').write_bytes(b'synthetic-unknown')
+        elif case == 'connector-process':
+            path = active.root / f'proc/{active.pid}/stat'
+            path.write_bytes(path.read_bytes().replace(b'456', b'999'))
+        elif case == 'connector-runtime':
+            (active.root / 'run/happyranch-connector/unknown').write_bytes(b'synthetic-unknown')
+        elif case == 'managed-config':
+            (active.root / 'etc/happyranch/connector.json').write_bytes(b'synthetic-changed-config')
+        records = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                   for path in (PIN, INVENTORY, NATIVE)}
+        before, effects = active.snapshot(), active.effects()
+        if case.endswith(('failure', 'lost-reply')):
+            # The manager finishes the interrupted target's consumer shutdown
+            # while the next stop returns. Supply only native observations,
+            # never a cutoff/stop receipt or installed-systemd claim.
+            def finish_native(argv, **kwargs):
+                result = run(argv, **kwargs)
+                if argv[:2] == ['systemctl', 'stop'] and result[0] == 0:
+                    active.native_gone('absent')
+                return result
+            active.io._run = active.io.manager._run = finish_native
+            stopped = ActiveRetirement.resume_controller(active.io, active.fence)
+            stopped.require()
+            remaining = [argv for argv in active.effects()[len(effects):] if argv[1] == 'stop']
+            expected = ('happyranch-managed.target' if case == 'target-failure' else
+                        'happyranch-connector.service' if case == 'sidecar-lost-reply' else
+                        'happyranch-tsnet-sidecar.service')
+            assert remaining == [['systemctl', 'stop', expected]]
+            assert stopped._owner.original == owner.original and stopped._owner.native == owner.native
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                ActiveRetirement.resume_controller(active.io, active.fence)
+            assert active.snapshot() == before and active.effects() == effects
+        assert active.closed == ['device']
+        assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in records} == records
+        assert not (active.root / FINAL).exists()
+
+
 def native_target_stop(active, *, drift=None):
     """Synthetic systemd PartOf result and proc facts, never a cutoff proof."""
     run = active.io._run

@@ -215,12 +215,14 @@ class ActiveRetirement:
 
     @classmethod
     def resume_controller(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
-        """Finish interrupted controller effects with the SAME live connector.
+        """Finish controller/managed effects with the SAME live connector.
 
         Fresh native readback must prove the controller stopped, then skips
         completed disable. Before-stop recovery uses ``resume_revoke``. Managed
         boot/process/artifacts must still match, and actual original-registry
         acknowledgement is obtained again; no saved phase supplies authority.
+        A previously stopped sidecar may have flushed its original runtime;
+        current stopped/process-empty native readback is required each time.
         """
         try:
             owner = StoppedRetirement._saved_owner(io, fence)
@@ -230,17 +232,23 @@ class ActiveRetirement:
             controller = OwnedService(io, owner.original.ownership.service)
             current = controller.observe(stopped=True)
             controller._same_members(owner.original.ownership.native, current)
-            owner.journal.require_controller_members(owner.original)
+            sidecar = 'happyranch-tsnet-sidecar.service'
+            owner.journal.require_controller_members(owner.original, sidecar_stopped=(
+                current_managed.processes[sidecar] is None
+                and dict(current_managed.properties[sidecar])['ActiveState'] in ('inactive', 'failed')))
             owner.cutoff.capture_original()
             receipt = owner.cutoff.revoke()
 
             def guard() -> None:
                 owner._require_records()
                 receipt.require()
-                transport._same_members(owner.native, transport.observe(), set())
+                observed_managed = transport.observe()
+                transport._same_members(owner.native, observed_managed, set())
                 observed = controller.observe(stopped=True)
                 controller._same_members(owner.original.ownership.native, observed)
-                owner.journal.require_controller_members(owner.original)
+                owner.journal.require_controller_members(owner.original, sidecar_stopped=(
+                    observed_managed.processes[sidecar] is None
+                    and dict(observed_managed.properties[sidecar])['ActiveState'] in ('inactive', 'failed')))
 
             guard()
             result = controller.stop_and_disable(expected=current, before_effect=guard)

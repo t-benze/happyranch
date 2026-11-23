@@ -270,18 +270,20 @@ class RetirementJournal:
         """
         self._require_members(original, revoked_pair=True)
 
-    def require_controller_members(self, original: OriginalInventory) -> None:
+    def require_controller_members(self, original: OriginalInventory, *, sidecar_stopped: bool = False) -> None:
         """Original artifacts after an independently observed controller effect.
 
         The caller separately proves current native ownership and real cutoff.
         A disabled original link may be absent. Only a stopped controller's
-        fixed runtime leaves may be flushed or absent; present inode/custody
-        and immutable files remain original. This supplies no native authority.
+        fixed runtime leaves may be flushed or absent; the same applies to an
+        independently stopped/process-empty sidecar. Present inode/custody and
+        immutable files remain original. This supplies no native authority.
         """
-        self._require_members(original, revoked_pair=True, controller_recovery=True)
+        self._require_members(original, revoked_pair=True, controller_recovery=True,
+            sidecar_stopped=sidecar_stopped)
 
     def _require_members(self, original: OriginalInventory, *, revoked_pair: bool,
-                         controller_recovery: bool = False) -> None:
+                         controller_recovery: bool = False, sidecar_stopped: bool = False) -> None:
         try:
             self.fence.require(self.io)
             trust_parent = 'var/lib/happyranch-connector'
@@ -301,6 +303,8 @@ class RetirementJournal:
                             for name, signature in original.ownership.receipt_identities.items()})
             service, native = original.ownership.service, original.ownership.native
             runtime = {'var/lib/happyranch-headscale', 'run/happyranch-headscale'} if controller_recovery else set()
+            if sidecar_stopped:
+                runtime.update(('var/lib/happyranch-tsnet-sidecar', 'run/happyranch-tsnet-sidecar'))
             members["etc/systemd/system/" + service.unit] = native.fragment
             members[service.executable] = native.executable
             if service.link is not None:
@@ -313,7 +317,7 @@ class RetirementJournal:
                     directories[path] = signature
             for relative in sorted({str(PurePosixPath(path).parent) for path in members}):
                 with walker._directory(relative) as parent:
-                    if parent is not None and relative in runtime:
+                    if parent is not None and (relative in runtime or controller_recovery and relative in _RUNTIME):
                         allowed = {PurePosixPath(path).name for path in members
                                    if str(PurePosixPath(path).parent) == relative}
                         with os.scandir(parent) as entries:

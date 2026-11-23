@@ -85,6 +85,13 @@ Before-stop recovery uses `resume_revoke`. Only the disabled original
 link and stopped controller runtime contents/absence can differ, with present
 inode/custody and immutable originals retained. This is an R02.d prerequisite,
 not full cleanup/publication or a substitute for independent managed death.
+The same entry also covers partial target/sidecar Stop with that original
+connector still live. Each completed effect is skipped from current readback;
+only independently stopped/process-empty sidecar runtime may flush/disappear,
+with original surviving inode/custody retained. Active runtime/configuration
+and unknown runtime members still refuse. Dead-peer partial-native recovery
+remains outside this entry; the model abstracts Stop rather than these native
+substeps and is not execution evidence for them.
 
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
