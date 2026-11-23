@@ -10723,6 +10723,45 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
         assert _layout(db._conn) == before, 'A2 fixture failed exact trigger/layout restoration'
 
     if a2_case in (None, 'historical'):
+        # Constructor metadata is the sole non-marker populated-table exception.
+        # Observe the production initializer and rollback; do not mock its guard.
+        state_cases = (
+            ('quota_above', 1), ('crossing_sequence', 1),
+            ('reconciliation_status', 'complete'), ('rollout_started_at', 'started'),
+            ('last_completed_window', 'window'), ('preview_acceptance', '{}'),
+            ('inventory_review_id', 'review'), ('source_protection_verified', 1),
+            ('id', 2), ('extra_row', 2), ('unrelated_task', None),
+        )
+        with tempfile.TemporaryDirectory(prefix='a2-native-state-') as scratch:
+            for field, value in state_cases:
+                db = Database(Path(scratch) / (field + '.db'))
+                try:
+                    conn = db._conn
+                    if field == 'unrelated_task':
+                        db.insert_task(TaskRecord(id='TASK-synthetic', assigned_agent='synthetic',
+                            team='synthetic', brief='Existing native work'))
+                    else:
+                        # Only synthetic corrupt input construction needs this;
+                        # native CHECK enforcement is restored before the owner.
+                        conn.execute('PRAGMA ignore_check_constraints=ON')
+                        if field == 'extra_row':
+                            conn.execute('INSERT INTO shared_artifact_org_state(id) VALUES (?)', (value,))
+                        else:
+                            conn.execute('UPDATE shared_artifact_org_state SET "' + field + '"=?', (value,))
+                        conn.commit()
+                        conn.execute('PRAGMA ignore_check_constraints=OFF')
+                    assert conn.execute('PRAGMA ignore_check_constraints').fetchone()[0] == 0
+                    before = list(conn.iterdump())
+                    try:
+                        initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                    except ValueError as exc:
+                        assert str(exc) == 'workflow_coding_fresh_creation_requires_empty_native_database', (field, str(exc))
+                    else:
+                        raise AssertionError('A2 fresh J accepted non-default native state: ' + field)
+                    assert list(conn.iterdump()) == before, 'A2 refusal changed native rows/schema: ' + field
+                    print('PASS A2-J refuses non-default native state with rollback:', field, flush=True)
+                finally:
+                    db.close()
 
         with tempfile.TemporaryDirectory(prefix='a2-historical-') as scratch:
             # Historical constructor defaults are observed independently of the
@@ -10731,15 +10770,18 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                 db = Database(Path(scratch) / (expected + str(requested) + '.db'))
                 try:
                     assert not _layout(db._conn)[0], 'A2 generic Database installed workflow storage'
+                    default_state = [(1, 0, 0, 'incomplete', None, None, None, None, 0)]
+                    assert [tuple(row) for row in db._conn.execute('SELECT * FROM shared_artifact_org_state')] == default_state
                     kwargs = {} if requested is None else dict(layout=requested)
                     initialize_complete_org_schema(db, expected_org_slug='scratch', **kwargs)
                     assert validate_workflow_schema(db._conn, expected_org_slug='scratch') == expected, 'A2 historical default changed'
                     assert _layout(db._conn) == _canonical_layout(expected, coding_extension=expected == 'J', owner_indexed=True)
                     assert not read_sequential_history(db._conn, expected_org_slug='scratch').layout.sequential
+                    assert [tuple(row) for row in db._conn.execute('SELECT * FROM shared_artifact_org_state')] == default_state
                 finally:
                     db.close()
-            assert hashlib.sha256(inspect.getsource(initialize_complete_org_schema).encode()).hexdigest() == 'd0b462c6dd54bda7bef702a43fc0293cfbaadc3486f29e17c6fe9ef03406a582', 'A2 historical initializer bytes changed'
-            print('PASS A2-H historical default G and explicit G/H/I/J; independent references; exact initializer bytes', flush=True)
+            assert hashlib.sha256(inspect.getsource(initialize_complete_org_schema).encode()).hexdigest() == '2b57c1701843fc7001a24b7c7271ff4b4c79cff6d957e9de6215b490950f9339', 'A2 reviewed initializer bytes changed'
+            print('PASS A2-H historical default G and explicit G/H/I/J; pristine singleton preserved; independent references; exact reviewed initializer bytes', flush=True)
 
     async def a2_route_registration():
         with tempfile.TemporaryDirectory(prefix='a2-fresh-catalog-') as scratch:

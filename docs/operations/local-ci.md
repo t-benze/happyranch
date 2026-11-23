@@ -126,6 +126,13 @@ containment and mounting remain separate acceptance; source checks do not prove
 them. Required keepers and boundary-lint follow the task brief. Full schema/all,
 retired units, skipped integration and Product E2E are outside this focused run.
 
+The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --fresh-catalog=historical`
+selection (also Python3.12) covers default G and explicit G/H/I/J initialization,
+the exact reviewed initializer bytes, preservation of the constructor's pristine
+shared-artifact singleton, and transactional refusal of every non-default field,
+alternate/extra IDs and unrelated native task data. The J exception changes no
+constructor seed or native-work emptiness guard.
+
 ## Focused pre-session task scratch cleanup (THR-307 seq388/389)
 
 `uv run --frozen pytest scripts/test_task_scratch_launch.py -v --tb=short`
