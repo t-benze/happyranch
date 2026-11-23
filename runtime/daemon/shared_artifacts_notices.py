@@ -86,16 +86,24 @@ class SharedArtifactNotices:
                      mode: str, deadline: float) -> int:
         if time.monotonic() >= deadline:
             raise NoticeUnavailable('notice_budget_exhausted')
-        if row['state'] in ('deleted','legacy_unclassified'):
+        if row['state'] == 'legacy_unclassified':
             return 0
         notices = []
-        if row['state'] == 'pending-attribution' and now >= _date(row['created_at'])+timedelta(hours=24):
-            row = {**row, 'expires_at':row.get('expires_at') or _iso(_date(row['created_at'])+timedelta(days=90))}
-            notices.append(('attribution_timeout',_date(row['created_at'])+timedelta(hours=24)))
-        if row.get('expires_at') and now >= _date(row['expires_at'])-timedelta(days=7):
-            notices.append(('expiry',_date(row['expires_at'])-timedelta(days=7)))
+        pending = conn.execute("SELECT expires_at,payload_json FROM shared_artifact_notice_receipts WHERE name=? AND generation=? AND notice_kind='attribution_timeout' AND delivery_state!='delivered'",(row['name'],row['generation'])).fetchall()
+        for receipt in pending:
+            recorded = json.loads(receipt['payload_json'] or '{}')
+            historical = dict(row,expires_at=receipt['expires_at'],
+                              owner_agent_id=recorded.get('owner_agent_id') or row.get('owner_agent_id'))
+            notices.append(('attribution_timeout',_date(row['created_at'])+timedelta(hours=24),historical))
+        if (row['state'] == 'pending-attribution' and not pending
+            and now >= _date(row['created_at'])+timedelta(hours=24)):
+            historical = {**row, 'expires_at':row.get('expires_at') or _iso(_date(row['created_at'])+timedelta(days=90))}
+            notices.append(('attribution_timeout',_date(row['created_at'])+timedelta(hours=24),historical))
+        if row['state'] != 'deleted' and row.get('expires_at') and now >= _date(row['expires_at'])-timedelta(days=7):
+            notices.append(('expiry',_date(row['expires_at'])-timedelta(days=7),row))
         delivered = 0
-        for kind, due in notices:
+        current_expiry = row.get('expires_at')
+        for kind, due, row in notices:
             key = (row['name'],row['generation'],row['expires_at'],kind)
             prior = conn.execute('SELECT delivery_state FROM shared_artifact_notice_receipts WHERE name=? AND generation=? AND expires_at=? AND notice_kind=?',key).fetchone()
             if prior and prior[0] == 'delivered':
@@ -113,6 +121,7 @@ class SharedArtifactNotices:
                 'notice_service':'shared_artifacts','notice_channel':'owner',
                 'routing':dict(agent=agent,reason=reason,thread_id=thread_id),
                 'notice_due_at':_iso(due),'delivered_at':_iso(now),'late_delivery':now > due,
+                'current_expiry':current_expiry,'attribution_status':row.get('attribution_status'),
                 'effective_mode':mode}
             self.db.shared_artifact_notice_uncommitted(name=row['name'],generation=row['generation'],
                 expires_at=row['expires_at'],notice_kind=kind,destination_thread_id=thread_id,payload=payload)

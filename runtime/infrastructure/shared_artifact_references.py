@@ -111,14 +111,16 @@ class ReferenceProof:
                 if generation and (len(generation) != 1 or not generation[0].isdigit()):
                     raise ReferenceUnavailable('malformed_generation')
                 self._add(name, source, int(generation[0]) if generation else None)
-            elif not parsed.scheme and not parsed.query and not parsed.fragment:
-                # An entire validated token only. No suffix, case folding or
-                # guessed extension/path match; exact lookup is below.
-                try:
-                    self.store.validate_name(token)
-                except InvalidArtifactName:
-                    continue
-                self.references[token, None].add(source)
+            elif (not parsed.netloc and not parsed.query and not parsed.fragment
+                  and (not parsed.scheme or token.endswith(':'))):
+                # Keep the whole binary-spelled key and a token delimited by
+                # terminal prose punctuation. No internal substring matching.
+                for candidate in dict.fromkeys((token, token.rstrip('.:?'))):
+                    try:
+                        self.store.validate_name(candidate)
+                    except InvalidArtifactName:
+                        continue
+                    self.references[candidate, None].add(source)
         return set(_TASK.findall(text))
 
     def _attachments(self, value: object, source: str) -> None:

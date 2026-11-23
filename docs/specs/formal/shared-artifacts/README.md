@@ -44,3 +44,47 @@ Actual review evidence, TASK-18746, TLC2.19 / OpenJDK21, 2026-11-23:
   it is deliberately not a production behavior or passing configuration.
 
 Model checks are review evidence **only**, not a required check or CI gate.
+
+## Slice B lifecycle and quota chunk companions
+
+`LifecycleSweep.tla` models one artifact with expiry at day1, actual expiry
+transition plus7 full recovery days, explicit operator approval (all rollout
+gates abstracted together), preview/off/enforce, live reference arrival/removal,
+identity replacement, committed delete intent, final writer fence, unlink,
+crash before tombstone, and missing-byte restart reconciliation. `Expire` maps
+to A's lifecycle transition; `Prepare` to A's durable delete intent;
+`Fence/Unlink/Finalize/RecoverMissing` to B's `finish_delete`. Reference arrival
+serializes outside the final writer fence. A byte effect without a final row
+remains explainable by its issued intent.
+
+`QuotaChunks.tla` models two crossing identities, three ordered chunks each,
+transaction-local staging, all-message/receipt/audit/latch COMMIT, crash rollback,
+rearm below threshold and stable sequence replay. These map to B's quota notice
+builder and A's `shared_artifact_quota_alert_uncommitted`, inside the same
+transaction as `quota_crossing_uncommitted`. No per-chunk receipt key or new
+schema is modeled or implemented.
+
+Using the same pinned jar, Java21, workers1/fp0/seed1, run from this folder:
+
+```sh
+java -XX:+UseParallelGC -Xmx512m -cp /absolute/tla2tools.jar tlc2.TLC -workers 1 -fp 0 -seed 1 -metadir /absolute/task-scratch/sweep -config sweep.cfg LifecycleSweep
+java -XX:+UseParallelGC -Xmx512m -cp /absolute/tla2tools.jar tlc2.TLC -workers 1 -fp 0 -seed 1 -metadir /absolute/task-scratch/quota -config quota-chunks.cfg QuotaChunks
+```
+
+TASK-18791 actual TLC2.19 results, 2026-11-23 (each under1s):
+
+| Config | Exit | Result |
+| --- | --- | --- |
+| sweep.cfg |0| No error;22,950 generated /3,075 distinct, queue0, depth25. TypeOK, NoLiveUnlink, FullRecovery, ExplainableBytes and TombstoneAudit. |
+| negative-fence.cfg |12 expected| NoLiveUnlink counterexample: reference arrives between final proof and unlink when writer exclusion is deliberately broken;8,306 generated /1,111 distinct, depth16. |
+| quota-chunks.cfg |0| No error;63 generated /23 distinct, queue0, depth14. TypeOK, AllOrNothing, OneAudit and StableReplay. |
+| negative-quota-chunks.cfg |12 expected| AllOrNothing counterexample after first chunk becomes visible before receipt/audit COMMIT;4 generated /3 distinct, depth3. |
+
+The negative configs demonstrate sensitivity, never passing production modes.
+The models establish bounded safety only. They do not prove Python refinement,
+scanner completeness, Q3 reader exclusion, real inode/hash custody, cancellation,
+clock/DST implementation, quotas in real bytes, liveness or deployed activation.
+Those remain private venue/independent QA obligations. Crash may retain an issued
+intent indefinitely while preview/off, a new reference or uncertain identity
+holds it; no unconditional reclamation is claimed. Legacy is outside modeled
+destructive eligibility. Required checks and workflows remain unchanged.

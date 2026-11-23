@@ -2122,6 +2122,37 @@ Format: ISO-8601 with offset plus the zone label, e.g.
 when only an offset is derivable. The wall clock is an injectable `now` callable
 (default `datetime.now(timezone.utc)`) so prompt snapshot tests are deterministic.
 
+## Org Config: Shared Artifacts cleanup (source only)
+
+`shared_artifacts.cleanup_mode` defaults to `preview`; allowed strings are
+`preview`, `enforce`, and `"off"` (quote off so YAML does not read a boolean).
+Unknown/unreadable config holds mutation with an audited refusal. The daily
+artifact scheduler is separate from workspace cleanup and the disk sweeper:
+04:00 in the effective org timezone, 30-second warm-up, latest-current-window
+catch-up only, fold0 for ambiguous occurrences and skip nonexistent ones.
+Audit rows persist the window/run identity and an honest incomplete cursor.
+Keyset batches contain250 current generations; one60-second monotonic budget
+covers inventory, reference projection, notices, identity hashing and deletion.
+A capped/unavailable proof holds affected work; unseen rows wait for another
+window. Only previously issued delete intents are restart-reconciled.
+
+Preview preserves existing artifact state/expiry/bytes and consumes no recovery
+interval. Inventory registration, notices, quota latch and audits still persist;
+legacy files receive null expiry. Off suspends cleanup while notice/quota paths
+continue. A first complete preview stores its completion time. Enforce remains
+effective preview until seven elapsed preview days, recorded preview acceptance,
+inventory review and verified Q3 source protection all exist. This code supplies
+no automatic approval or activation setter and never sets those three gates.
+Retired B2 sources without authoritative reader exclusion remain held. Deployment,
+independent Q3 verification and an explicitly authorized operator release/config
+workflow remain prerequisites; source delivery establishes none of them.
+
+Rollback to preview/off stops new destructive decisions. Already issued unlink
+custody remains in the durable journal until an exact safe reconciliation; mode
+rollback cannot resurrect bytes. The loop drains native work on cancellation
+before the org database closes. See the [Shared Artifacts contract](contracts/shared-artifacts.md)
+for notice routing, final-fence behavior and verification commands.
+
 ## Org Config: Dreaming
 
 Per-org `dreaming:` config controls the private nightly reflection scheduler: enablement, local schedule time/timezone, catch-up behavior, and agent include/exclude selection.

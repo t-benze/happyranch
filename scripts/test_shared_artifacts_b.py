@@ -243,9 +243,39 @@ async def references_case(root: Path) -> None:
             check('live','direct-child')
             with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE tasks SET status='completed',brief='Done' WHERE id IN ('TASK-101','TASK-102','TASK-103')")
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET status='pending',brief='Read TASK-999999' WHERE id='TASK-100'")
+            check('indeterminate','required-handoff-missing')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET status='unknown',brief='No artifacts' WHERE id='TASK-100'")
+            check('indeterminate','unknown-task-status')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET status='in_progress',brief='source.bin',block_kind='delegated' WHERE id='TASK-100'")
+            check('live','delegated-wait')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET brief='No artifacts',final_output_summary='source.bin',block_kind='blocked_on_job' WHERE id='TASK-100'")
+            check('live','job-wait-final-summary')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET final_output_summary=NULL WHERE id='TASK-100'")
+                conn.execute("INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES('TASK-100','worker','synthetic-reference',?)",(NOW.isoformat(),))
+            for field,value in (('output_summary','source.bin'),('decision_json',json.dumps({'handoff':['source.bin']})),('risks_flagged',json.dumps(['source.bin']))):
+                with db.shared_artifact_transaction() as conn:
+                    conn.execute(f"UPDATE task_results SET {field}=? WHERE session_id='synthetic-reference'",(value,))
+                check('live','result-'+field)
+                with db.shared_artifact_transaction() as conn:
+                    conn.execute(f"UPDATE task_results SET {field}=NULL WHERE session_id='synthetic-reference'")
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE task_results SET decision_json='{' WHERE session_id='synthetic-reference'")
+            check('indeterminate','malformed-result-json')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE task_results SET decision_json=NULL WHERE session_id='synthetic-reference'")
+                conn.execute("UPDATE tasks SET status='completed',brief='Done',block_kind=NULL WHERE id='TASK-100'")
             for text,expected,label in (
                 ('[artifact:source.bin]','live','explicit'),
                 ('`source.bin`','live','exact-token'),
+                ('Keep source.bin.','live','markdown-punctuation'),
+                ('source.bin:','live','colon-punctuation'),
+                ('source.bin?','live','question-punctuation'),
                 ('prefix-source.bin suffixsource.bin SOURCE.bin','absent','no-substring-or-case-fold'),
                 ('/api/v1/orgs/alpha/artifacts/source%2Ebin?generation=1','live','url-once-pin'),
                 ('/api/v1/orgs/alpha/artifacts/source.bin?generation=2','absent','other-generation'),
@@ -267,6 +297,16 @@ async def references_case(root: Path) -> None:
             with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE threads SET status='archived' WHERE id='THR-ref'")
             check('absent','archived-only')
+            from runtime.models import ThreadAttachment
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE threads SET status='open' WHERE id='THR-ref'")
+                conn.execute("DELETE FROM thread_messages WHERE thread_id='THR-ref'")
+            db.append_thread_message(thread_id='THR-ref',speaker='worker',kind=ThreadMessageKind.MESSAGE,
+                attachments=[ThreadAttachment(artifact_name='source.bin',display_name='source.bin',uploaded_by='worker')])
+            check('live','actual-shared-attachment')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE threads SET status='archived' WHERE id='THR-ref'")
+
             check('indeterminate','deadline',deadline=time.monotonic()-1)
             with patch('runtime.infrastructure.shared_artifact_references._MAX_ROWS',0):
                 check('indeterminate','row-cap')
@@ -292,6 +332,12 @@ async def references_case(root: Path) -> None:
             with db.shared_artifact_transaction() as conn:
                 conn.execute("INSERT INTO custom_skill_materializations(skill_id,agent_name,session_context,session_id,version_id,content_hash,success,created_at) VALUES('skill','worker','thread','synthetic',1,?,1,?)",(row['sha256'],NOW.isoformat()))
             check('live','retired-materialization-reader')
+            with db.shared_artifact_transaction() as conn:
+                used,reserved=db._shared_artifact_service.reconcile_usage_uncommitted(conn)
+                assert used==len(b'synthetic reference source') and reserved==0
+            stream,_metadata=db._shared_artifact_service.open_download(row['name'])
+            with stream:
+                assert stream.read()==b'synthetic reference source'
             assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_protected'").fetchone()[0] >= 1
 
 
@@ -361,6 +407,21 @@ async def notices_case(root: Path) -> None:
             r=db._conn.execute("SELECT payload_json FROM shared_artifact_notice_receipts WHERE name='unbound.bin'").fetchone()
             assert json.loads(r[0])['expiry_date']==(datetime.fromisoformat(item['created_at'])+timedelta(days=90)).isoformat()
             assert json.loads(r[0])['routing']['agent']=='engineering_manager'
+            late_bound = await client.post(PREFIX+'/artifacts',params={'agent':'founder'},files={'file':('bound-after-timeout.bin',b'provisional then bound')})
+            assert late_bound.status_code == 200
+            with patch('runtime.infrastructure.shared_artifact_service._utc',return_value=NOW+timedelta(hours=25)):
+                overdue = await client.get(PREFIX+'/artifacts/bound-after-timeout.bin')
+                assert overdue.status_code == 200
+            from runtime.models import ThreadAttachment
+            db.append_thread_message(thread_id='THR-origin',speaker='worker',kind=ThreadMessageKind.MESSAGE,
+                attachments=[ThreadAttachment(artifact_name='bound-after-timeout.bin',display_name='bound-after-timeout.bin',uploaded_by='founder')])
+            bound=db.get_shared_artifact('bound-after-timeout.bin')
+            assert bound['state']=='active' and bound['expires_at'] != (NOW+timedelta(days=90)).isoformat()
+            assert deliver(NOW+timedelta(hours=25),bound)==1
+            queued=db._conn.execute("SELECT delivery_state,payload_json FROM shared_artifact_notice_receipts WHERE name='bound-after-timeout.bin' AND notice_kind='attribution_timeout'").fetchone()
+            assert queued['delivery_state']=='delivered'
+            assert json.loads(queued['payload_json'])['expiry_date']==(NOW+timedelta(days=90)).isoformat()
+            assert json.loads(queued['payload_json'])['current_expiry']==bound['expires_at']
             # Audit failure rolls back message, thread creation and receipt.
             failed = dict(row,expires_at=(NOW+timedelta(days=130)).isoformat())
             count=db._conn.execute('SELECT COUNT(*) FROM thread_messages').fetchone()[0]
@@ -403,7 +464,7 @@ async def sweep_case(root: Path) -> None:
         async with fixture(root) as (org,client):
             db=org.db
             db.insert_thread(ThreadRecord(id='THR-origin',subject='Lifecycle acceptance'))
-            for name in ('expire.bin','crash.bin','replacement.bin','fence.bin','hash.bin','symlink.bin'):
+            for name in ('auto.bin','expire.bin','crash.bin','replacement.bin','fence.bin','hash.bin','symlink.bin'):
                 response=await client.post(PREFIX+'/artifacts',params=dict(agent='worker',thread_id='THR-origin',purpose='Persistent source',retention='default',expires_at=(NOW+timedelta(hours=1)).isoformat()),files={'file':(name,b'synthetic lifecycle bytes')})
                 assert response.status_code==200
             svc=db._shared_artifact_service
@@ -436,6 +497,14 @@ async def sweep_case(root: Path) -> None:
             when[0]=NOW+timedelta(days=15)-timedelta(microseconds=1)
             assert sweep(org,'before-deadline')['deleted']==0
             when[0]=NOW+timedelta(days=15)
+            db.insert_thread(ThreadRecord(id='THR-auto',subject='Hold other acceptance files'))
+            db.append_thread_message(thread_id='THR-auto',speaker='worker',kind=ThreadMessageKind.MESSAGE,
+                body_markdown=' '.join('[artifact:'+n+']' for n in ('crash.bin','replacement.bin','fence.bin','hash.bin','symlink.bin')))
+            automated=sweep(org,'actual-recovery-deadline')
+            assert automated['deleted']==1 and db.get_shared_artifact('auto.bin')['state']=='deleted',automated
+            assert not (svc.store.root/'auto.bin').exists()
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE threads SET status='archived' WHERE id='THR-auto'")
             def prepare(name: str, operation_id: str) -> None:
                 with db.shared_artifact_transaction() as conn:
                     row=db._shared_artifact_uncommitted(conn,name)
@@ -567,6 +636,11 @@ async def sweep_shape_case(root: Path) -> None:
 
 
 async def main(case: str) -> None:
+    if case == 'all':
+        for selected in ('manual-delete','quota-chunks','references','notices','sweep','sweep-shape'):
+            await main(selected)
+        print('All selected Slice B private acceptance cases passed.')
+        return
     with tempfile.TemporaryDirectory(prefix='shared-artifact-B-') as directory:
         root = Path(directory)
         if case in ('manual-delete', 'manual-delete-default'):
@@ -590,7 +664,7 @@ async def main(case: str) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
-        'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
+        'all', 'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
         'quota-chunks', 'references', 'notices', 'sweep', 'sweep-shape',
-    ), default='manual-delete')
+    ), default='all')
     asyncio.run(main(parser.parse_args().case))

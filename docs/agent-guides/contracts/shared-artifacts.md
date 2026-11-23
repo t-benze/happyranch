@@ -1,8 +1,8 @@
 # Shared Artifacts contract and transition interfaces
 
 Normative policy: [Founder-approved retention design](../../specs/2026-11-23-shared-artifacts-retention.md)
-(THR-392 seq13/14). This is Slice A source delivery. It does not establish live
-rollout, notices, classification, or destructive activation.
+(THR-392 seq13/14). Slices A/B are source delivery only. They do not establish
+live rollout, notices, legacy classification, or destructive activation.
 
 Files must be needed after their originating task and require downloadable-file
 delivery. Routine screenshots/logs and task verification stay in task output;
@@ -156,7 +156,9 @@ retain their existing meanings; task/thread provenance lives only in payload.
 
 `uv run --frozen python scripts/test_shared_artifacts.py` runs finite private
 ASGI/SQLite/filesystem cases without a daemon lifespan, listener, provider or live
-org. `--case metadata|provisional|journal|custom|quota|shape` selects a group. This is a
+org. `--case metadata|provisional|journal|custom|quota|shape` selects a group.
+B uses `uv run --frozen python scripts/test_shared_artifacts_b.py --case` with
+`all|manual-delete|quota-chunks|references|notices|sweep|sweep-shape` (default all). This is a
 standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL shape case) outside the retired Python suite. It adds no CI
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
@@ -186,7 +188,8 @@ expiry; due time, actual delivery time and lateness are explicit. Human, unknown
 and retired owners use recorded accountable agent, origin-team manager, then
 engineering_manager; an unavailable route remains pending without false delivery.
 Timeout notices use upload +24h and upload +90d expiry even during preview,
-without changing lifecycle metadata. Quota crossings include every file entry
+without changing lifecycle metadata. A queued timeout receipt survives later binding;
+its historical upload-based expiry and the current expiry are both visible. Quota crossings include every file entry
 in bounded full-JSON chunks, with all managers participating in one storage
 thread; chunk messages/receipt/audit and latch commit together. Required fields
 are in tagless system_payload, which the existing inbox and CLI show in full.

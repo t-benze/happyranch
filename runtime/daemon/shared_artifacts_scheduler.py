@@ -161,6 +161,8 @@ def sweep(org: object, window: str, *, deadline: float | None = None,
                 for row in rows:
                     if time.monotonic() >= deadline or (stop and stop.is_set()):
                         break
+                    if mode == 'enforce' and effective_mode(org,conn,now=svc.clock())[0] != mode:
+                        raise NoticeUnavailable('mode_changed_during_sweep')
                     outcome, refs = outcomes[row['name'],row['generation']]
                     audit_protection(org,row,outcome,refs)
                     result['protected'] += int(outcome != 'absent')
@@ -254,8 +256,11 @@ async def shared_artifacts_scheduler_loop(state: object) -> None:
                                     await asyncio.shield(work)
                                 except asyncio.CancelledError:
                                     continue
-                            work.result()
+                            try:
+                                work.result()
+                            except Exception:
+                                logger.exception('Shared artifact native pass failed during cancellation')
                             raise
-                except (OSError,ValueError,sqlite3.Error):
+                except (OSError,ValueError,sqlite3.Error,RuntimeError):
                     logger.exception('Shared artifact pass held for org %s',org.slug)
         await asyncio.sleep(60)
