@@ -43,10 +43,18 @@ receipts/pins before later Disable checks. Neither recovery nor new runs renew
 wider-goal allowances.
 
 Native decision parsing uses the supplied reader ledger's original traversal
-allowance: 65536 for the sequential reader and 16384 for Coding authority.
+allowance: 65536 for the sequential reader and 32768 for Coding authority.
 Prechecks reserve on that same ledger before the next operation. No parser
-creates a replacement allowance or raises these existing ceilings; byte, SQL
+creates a replacement allowance or raises these ceilings; byte, SQL
 and deadline bounds remain unchanged.
+
+The retained Coding reader's internal traversal ceiling is 32768. The former
+16384 ceiling could reject an ordinary mixed Draft/Coding Start@2 callback
+during complete post-write validation: the R2 pilot's 6682-byte native decision
+needed 19293 steps including retained schema/history. The same finite ceiling
+applies to admission, reopen and cancellation readers; parsers never replenish
+it. The 8192 candidate, 16 MiB retained-byte and 1 MiB value bounds, sequential
+65536-step ceiling, and all pinned run limits are unchanged.
 
 ### Founder API-only Draft configuration
 
@@ -1526,7 +1534,7 @@ charges: each retained row/byte/work counter is added back to C on success or
 refusal, and C's byte/work/deadline checks run before success. L meters retained
 SQL under the same original deadline. No allowance replenishes. Seeding the wider new-reader metadata
 charges
-into the original 16 MiB/16384-step counters would reject even empty Coding.
+into the original 16 MiB/32768-step counters would reject even empty Coding.
 Retained readers may refuse at their own original caps. Their acquisition is
 bounded by those caps plus L's SQL meter and the shared deadline, **not
 pre-reservation against C's 64 MiB cap**. Retained document/ownership queries

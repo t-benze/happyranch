@@ -191,7 +191,7 @@ def read_source_admission_history(conn: sqlite3.Connection, *, expected_org_slug
     complete schema admission/entitled selection are caller prerequisites.
 
     SELECTs only; no await, transaction control, write, file/network/roster I/O.
-    One8192-row/16384-step/16MiB budget includes conservative decoded-byte copies;
+    One8192-row/32768-step/16MiB budget includes conservative decoded-byte copies;
     all variable values and complete raw audit payloads <=1MiB, source20/P64/
     setup1024. Native NULL/empty/REAL/raw UTF8 observations are never normalized.
     Limits do not prove total SQLite/process/JSON-object memory consumption.

@@ -41,7 +41,7 @@ stale-selection rejection at the reducer boundary, with zero persisted changes.
 | C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |
 | C22 | Five fixed historical resource hashes. Raw base/head comparisons below are separate and mandatory; all does not invent a raw oracle. |
 | C23–C26 | Actual manager/worker and node briefs; two real identities' generations/CAS/global operation keys and admitted pins; unchanged Coding Setup list/export; exact documented Founder API sequence. |
-| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding refuses at its unchanged 16384 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
+| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding also admits after 16384 units, then refuses at its finite 32768 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
 
 Retain the ordinary focused keepers on **both** Python versions:
 `--start2=all`, `--setup-admission=all`, `--generic-abi=all`, `--s8a=all`,
@@ -4151,6 +4151,18 @@ queue IDs. They do not establish live provider or deployment acceptance. Run
 required long selections through durable jobs and inspect their actual receipts.
 
 ## Start2 public admission and continuation cases
+
+`--start2=populated_long_batch` adds 18817 ordinary tasks and 33940 results,
+composes a mixed Draft/Coding batch with a 4096-byte request and requires the
+real callback's two runs, memberships and receipt. Its actual saved native
+decision must also parse after 16384 traversal units on the original Coding
+ledger without changing native rows. Malformed stored decisions still refuse.
+The fresh public fixture's admission alone also succeeds with the former cap;
+the copied pilot DB owns the historical whole-callback fail/pass proof. The
+shared-ledger assertions own the new supported traversal range and isolate
+retained reader work from native-history row count.
+The retained Coding traversal cap is 32768; `--bounded-acquisition` covers exact
+work exhaustion and withholding at cap+1, with row/byte/value bounds unchanged.
 
 The existing private ASGI/SQLite schema-load venue supports
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start2=all`
