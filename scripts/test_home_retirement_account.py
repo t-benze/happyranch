@@ -7,6 +7,7 @@ Only NSS/native OS effects are synthetic; no final receipt is seeded.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -161,6 +162,16 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
             owner = ActiveRetirement.capture(active.io, active.fence)
             native_target_stop(active)
             owner.revoke_and_stop_services()
+        # Read committed denial while the real trust pair still exists.
+        # Reopening its store after intentional removal would create a new lock.
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+        denied_members = {}
+        for suffix in ('', '.anchor', '.lock'):
+            path = 'var/lib/happyranch-connector/trust-state.json' + suffix
+            info = (active.root / path).stat()
+            denied_members[path] = [info.st_dev, info.st_ino]
     def io():
         return ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
             run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
@@ -174,14 +185,15 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
         for method in ('remove_auxiliary', 'remove_private', 'remove_managed', 'remove_private_directories'):
             getattr(StoppedRetirement.from_saved(io(), active.fence), method)()
     for method in ('remove_unit_fragments', 'remove_controller_executable', 'remove_managed_directories',
-                   'remove_operation_domains', 'remove_connector_directory' if inert else 'remove_trust'):
+                   'remove_connector_directory' if inert else 'remove_trust', 'remove_operation_domains'):
         getattr(cleanup, method)(io(), active.fence)
     state = account_adapter(active.io, active.calls, fault=boundary)
     if boundary == 'native-after-userdel':
         state['after_user'] = lambda: active.native['happyranch-managed.target'].update(
             ActiveState='active', SubState='active')
     records = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
-        for path in (INVENTORY, NATIVE, ACCOUNT_RECORD, 'retained-native/saved-home')}
+        for path in (INVENTORY, NATIVE, ACCOUNT_RECORD, 'retained-native/saved-home',
+            *(() if inert else ('var/lib/happyranch-remote-access/home-retirement-denied.json',)))}
     before, effects, frames = active.snapshot(), active.effects(), list(getattr(active, 'frames', []))
     with pytest.raises(RetirementUncertain, match='^migration pending$'):
         cleanup.retire_account(io(), active.fence)
@@ -205,6 +217,9 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     assert not state['user'] and not state['group'] and not (active.root / FINAL).exists()
     assert active.io.home_retirement_status()['state'] == 'migration pending'
     if not inert:
-        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        bridge = json.loads((active.root / 'var/lib/happyranch-remote-access/home-retirement-denied.json').read_bytes())
+        assert {path: signature[:2] for path, signature in bridge['members'].items()} == denied_members
+        assert all(not (active.root / path).exists() for path in denied_members)
+        assert active.closed == ['device']
         with pytest.raises(StreamClosed):
             stream.receive()
