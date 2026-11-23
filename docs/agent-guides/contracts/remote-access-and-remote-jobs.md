@@ -4529,6 +4529,18 @@ boot or processes cannot become its new owner. The returned `StoppedRetirement`
 readback freshly requires saved records, both native stop receipts and independent
 cutoff proof. It is never a final retired record. Selective cleanup, account
 disposition, final publication and package replacement remain unfinished.
+Explicit `ActiveRetirement.resume_revoke` reopens partial ceremony/device
+commits through the same saved, still-live original serving process. The current
+pair/anchor must pass the retained real trust reader; only those two intentionally
+rewritten files and their parent's contents metadata are delegated to that owner.
+The original trust lock, every non-trust member/ancestor and dedicated/managed
+native identities remain pinned. Real revoke-all must finish persistent denial
+and receive physical acknowledgement from that original registry before reusing
+the same native-stop sequence. Retrying cannot reset terminal physical-close
+failure; unavailable/changed peers or malformed trust remain pending and require
+their separate independent-death recovery. No cleanup or final receipt follows
+from saved phase/denial alone.
+
 `StoppedRetirement.remove_private` now joins that actual stopped/cutoff proof
 and held issuer/minter exclusion to selective original private-leaf cleanup.
 `home_retirement_cleanup.PrivateCleanup` loads the saved original inventory;

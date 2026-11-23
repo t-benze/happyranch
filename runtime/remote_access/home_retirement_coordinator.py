@@ -26,6 +26,7 @@ from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE_RECORD
 from runtime.remote_access.identity import ConnectorIdentity
+from runtime.remote_access.state_store import StateStoreError
 
 if TYPE_CHECKING:
     from runtime.remote_access.installer import ManagedInstaller
@@ -181,7 +182,34 @@ class ActiveRetirement:
         quiescence and anchored denial proof can replace it. Partial native stop
         is not that proof and cannot authorize the next effect.
         """
-        receipt = self.revoke()
+        return self._stop_services(self.revoke())
+
+    @classmethod
+    def resume_revoke(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
+        """Finish partial committed denial through the saved LIVE original owner.
+
+        Current trust comes from the real anchored pair, never the pre-revoke
+        inventory or a new registry. No original artifact/native owner can be
+        replaced. Failed physical closure cannot become an acknowledgement by
+        retrying; only the separate independent-death path can recover it.
+        """
+        try:
+            owner = StoppedRetirement._saved_owner(io, fence)
+            owner._require_records()
+            owner.journal.require_revoke_members(owner.original)
+            owner.cutoff.snapshot()
+            controller = OwnedService(io, owner.original.ownership.service)
+            if (controller.observe() != owner.original.ownership.native
+                    or owner.native_journal.transport.observe() != owner.native):
+                raise RetirementUncertain()
+            owner.cutoff.capture_original()
+            owner.journal.require_revoke_members(owner.original)
+            receipt = owner.cutoff.revoke()
+            return owner._stop_services(receipt)
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, StateStoreError):
+            raise RetirementUncertain() from None
+
+    def _stop_services(self, receipt: CutoffReceipt) -> StoppedRetirement:
         controller_receipt = self._stop_controller(receipt)
         controller = OwnedService(self.journal.io, self.original.ownership.service)
         recovery = OriginalDeathRecovery(self.cutoff, self.native_journal)

@@ -24,6 +24,7 @@ from runtime.remote_access.home_retirement_journal import RetirementJournal
 from runtime.remote_access.home_retirement_transport import ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
 from runtime.remote_access.streams import StreamClosed
+from runtime.remote_access.pairing import PairingError
 from scripts.test_home_retirement_cutoff import RecoveryFixture, PIN
 from scripts.test_home_retirement_inventory import InventoryFixture, managed_setup, ACCOUNT_RECORD, PUBLICATION
 from scripts.test_home_retirement_service import MANAGED_UNITS, LINK, BINARY
@@ -190,7 +191,7 @@ def test_active_capture_uncertainty_preserves_authority_and_never_reaches_revoke
             ActiveRetirement.capture(active.io, active.fence)
         assert not active.reopened()[0].devices[device].revoked
         assert active.closed == [] and stream.receive() == b'synthetic-live-frame'
-        assert not any(b'"revoke-all@1"' in frame for frame in active.frames if frame)
+        assert not any(b'"revoke-all@1"' in frame for frame in active.frames)
         assert active.effects() == [] and not (active.root / FINAL).exists()
         if unknown is not None:
             assert unknown.read_bytes() == b'synthetic-unknown-evidence'
@@ -723,3 +724,82 @@ def test_saved_active_preparation_refuses_uncertain_originals_without_recapture(
         assert all(json.loads(frame).get('method', 'status') == 'status' for frame in active.frames[len(frames):] if frame)
         assert not (active.root / FINAL).exists()
         assert active.reopened()[0].devices[device].revoked is (drift == 'denial')
+
+
+@pytest.mark.parametrize('phase', ['ceremony', 'first-device'])
+def test_partial_revoke_recovery_preserves_commits_and_finishes_through_original_owner(active, monkeypatch, phase):
+    grants = [active.grant(node) for node in ('first', 'second')]
+    streams = [active.stream(device, node) for (device, _), node in zip(grants, ('first', 'second'))]
+    active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        revoke, calls = active.manager.revoke_device, []
+        def interrupt(device, **kwargs):
+            calls.append(device)
+            if len(calls) == (1 if phase == 'ceremony' else 2):
+                raise PairingError('authorization_expired')
+            return revoke(device, **kwargs)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(active.manager, 'revoke_device', interrupt)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                owner.revoke()
+        state, _ = active.reopened()
+        assert state.invite_record is state.pending_approval is state.delivery is None
+        assert sum(device.revoked for device in state.devices.values()) == (phase == 'first-device')
+        assert active.closed == ([] if phase == 'ceremony' else ['first'])
+        assert streams[0].closed is (phase == 'first-device') and not streams[1].closed
+        assert active.effects() == []
+        records = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                   for path in (PIN, INVENTORY, NATIVE)}
+        native_target_stop(active)
+        stopped = ActiveRetirement.resume_revoke(active.io, active.fence)
+        stopped.require()
+        assert all(device.revoked for device in active.reopened()[0].devices.values())
+        assert active.closed == ['first', 'second'] and all(stream.closed for stream in streams)
+        assert active.effects() and all(props['ActiveState'] == 'inactive' for props in active.native.values())
+        assert stopped._owner.original == owner.original and stopped._owner.native == owner.native
+        assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in records} == records
+        assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('drift', ['private-key', 'managed-process', 'trust-lock', 'corrupt-trust', 'failed-close'])
+def test_partial_revoke_recovery_keeps_uncertainty_and_failed_physical_close_pending(active, monkeypatch, drift):
+    device, _ = active.grant('device')
+    def fail_close():
+        raise OSError('synthetic failed original physical cleanup')
+    stream = active.stream(device, 'device', close=fail_close if drift == 'failed-close' else None)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        if drift == 'failed-close':
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                owner.revoke()
+        else:
+            def interrupt(*args, **kwargs):
+                raise PairingError('authorization_expired')
+            with monkeypatch.context() as scoped:
+                scoped.setattr(active.manager, 'revoke_device', interrupt)
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    owner.revoke()
+            if drift == 'private-key':
+                (active.root / (STATE_DIRECTORY + '/home-ca/ca.key')).write_bytes(b'synthetic-changed-key')
+            elif drift == 'managed-process':
+                path = active.root / f'proc/{active.pid}/stat'
+                path.write_bytes(path.read_bytes().replace(b'456', b'999'))
+            elif drift == 'trust-lock':
+                path = active.path.with_name(active.path.name + '.lock')
+                path.rename(active.root / 'kept-original-trust-lock')
+                path.write_bytes(b'')
+                path.chmod(0o600)
+            else:
+                active.path.write_bytes(b'{synthetic-corrupt-trust')
+        before, effects, closed = active.snapshot(), active.effects(), list(active.closed)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ActiveRetirement.resume_revoke(active.io, active.fence)
+        assert active.effects() == effects == [] and active.closed == closed
+        if drift == 'failed-close':
+            assert stream.cleanup_failed and stream.closed
+            assert active.reopened()[0].devices[device].revoked
+        else:
+            assert active.snapshot() == before
+        assert not (active.root / FINAL).exists()

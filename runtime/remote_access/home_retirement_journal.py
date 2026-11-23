@@ -259,8 +259,22 @@ class RetirementJournal:
         This check is intentionally unsuitable after revocation changes the
         trust pair. That separate owner must authenticate its own new state.
         """
+        self._require_members(original, revoked_pair=False)
+
+    def require_revoke_members(self, original: OriginalInventory) -> None:
+        """Pin non-trust originals while the real pair owner validates denies.
+
+        Only the fixed state/anchor pair can have changed through committed
+        revocation. The original trust lock, parent inode/custody/mode and every
+        other member remain exact. This is not trust validation or cutoff proof.
+        """
+        self._require_members(original, revoked_pair=True)
+
+    def _require_members(self, original: OriginalInventory, *, revoked_pair: bool) -> None:
         try:
             self.fence.require(self.io)
+            trust_parent = 'var/lib/happyranch-connector'
+            changed = {trust_parent + '/trust-state.json', trust_parent + '/trust-state.json.anchor'} if revoked_pair else set()
             walker = _PrivateMembers(LegacyInventory(self.io), original.ownership)
             walker.parents.update({name: (original.managed.account, 0o700) for name in _RUNTIME})
             walker.parents.update({name: (self.io.root_owner, 0o700) for name in (
@@ -288,7 +302,7 @@ class RetirementJournal:
             for relative in sorted({str(PurePosixPath(path).parent) for path in members}):
                 with walker._directory(relative) as parent:
                     for path, expected in members.items():
-                        if str(PurePosixPath(path).parent) != relative:
+                        if str(PurePosixPath(path).parent) != relative or path in changed:
                             continue
                         try:
                             current = None if parent is None else _signature(os.stat(
@@ -299,7 +313,8 @@ class RetirementJournal:
                             raise RetirementUncertain()
             for path, expected in directories.items():
                 current = walker.directory_identities.get(path)
-                if current is None or (current[:5] != expected[:5] if path == STATE_DIRECTORY else current != expected):
+                mutable = path == STATE_DIRECTORY or revoked_pair and path == trust_parent
+                if current is None or (current[:5] != expected[:5] if mutable else current != expected):
                     raise RetirementUncertain()
             self.fence.require(self.io)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):

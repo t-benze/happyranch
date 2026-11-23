@@ -69,6 +69,14 @@ absent native journal or synchronizing a complete existing one. Missing/torn
 inventory/peer or post-revoke drift stays pending without recapture; the model
 abstracts this original-evidence durability and does not prove the I/O path.
 
+`ActiveRetirement.resume_revoke` additionally covers partial Burn/Deny while
+the saved original serving owner is still live. Current anchored trust is parsed
+by the retained real pair owner, while every other original member, trust lock
+and native identity stay pinned. Only a new actual original-registry physical
+acknowledgement admits the existing native-stop sequence; a failed original close
+is never reset. This implements an R02.b prerequisite, not final completion or
+an alternative death proof.
+
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They
