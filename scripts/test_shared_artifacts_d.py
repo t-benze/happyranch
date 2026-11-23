@@ -204,9 +204,11 @@ def gates_case(root: Path) -> None:
         assert (org.root / 'artifacts' / 'source.bin').read_bytes() == b'synthetic legacy source.bin'
         count = org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_classify'").fetchone()[0]
         assert count == 1
+        previews = org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_preview' AND task_id='artifact:source.bin'").fetchone()[0]
         replay = invoke(org, inventory, review, apply=True)
         assert replay['items'][0]['reason'] == 'legacy_metadata_required'
         assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_classify'").fetchone()[0] == count
+        assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_preview' AND task_id='artifact:source.bin'").fetchone()[0] == previews, 'repeat mislabeled an already classified item as legacy'
         print('PASS gates: missing/self-written review, week alone, premature week, acceptance, exact day7, repeat')
 
 

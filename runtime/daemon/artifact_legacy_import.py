@@ -165,7 +165,7 @@ def run_import(org: object, fence: OrgAccessFence, inventory: Inventory, review:
                         # Never leave an active null-expiry intermediate state.
                         raise ValueError('retirement_transition_refused')
                 entry.update(outcome='classified', state=classified['state'], mutated=True)
-            elif row:
+            elif row and row['state'] == 'legacy_unclassified':
                 svc._event(row, 'artifact_preview', receipt['reviewer_agent_id'],
                     inventory_digest=receipt['inventory_digest'], review_id=receipt['review_id'],
                     mutated=False, outcome='legacy_unclassified', reason=entry['reason'])
