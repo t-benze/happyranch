@@ -337,3 +337,9 @@ registry. Fresh installer objects reuse real surviving files, and each completed
 row must feed its produced receipt into R03/R04. These are concrete entry checks,
 not additional modeled authority or a TLC result. R02.h/package replacement and
 installed preinst acceptance remain separate unfinished work.
+
+The fixed entry now constructs the retained `RetirementIO` adapter, sharing
+existing filesystem/config custody checks while historical issuer/invite
+readback avoids provisioning owners. This is a dependency boundary for the
+incoming pre-unpack bundle, with no new modeled action or proof authority.
+Generated preinst, replacement scenarios and installed ordering remain separate.

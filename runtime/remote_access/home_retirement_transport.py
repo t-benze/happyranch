@@ -227,7 +227,7 @@ class ManagedTransport:
                                     or re.search(rb'(?m)^\s*(User|Group)\s*=\s*happyranch\s*$', data)):
                                 known = self.digests.get(entry.name) if path == 'etc/systemd/system/' + entry.name else None
                                 allowed = ([known] if known else []) + _ALLOWED_OTHER.get(path, [])
-                                from runtime.remote_access.installer import _owned_helper_unit
+                                from runtime.remote_access.helper_unit import _owned_helper_unit
                                 if (hashlib.sha256(data).hexdigest() not in allowed
                                         and not _owned_helper_unit(path, info, data, self.io.root_owner)):
                                     raise RetirementUncertain()

@@ -318,3 +318,28 @@ class HomeActivationTransaction:
             raise HomeActivationError()
         record["effects"] = tuple(Effect(**item) for item in effects)
         return cls(**record)
+
+
+@dataclass(frozen=True, repr=False)
+class HomeInviteConfigRecord:
+    """Historical B1 invite binding, decoded without importing an issuer."""
+
+    release_uid: int
+    home_id: str
+    control_plane_id: str
+    connector_id: str
+    ca_der_sha256: str
+    dial_ip: str
+    control_url: str
+
+    def __post_init__(self) -> None:
+        _validate_identity(self)
+        if type(self.control_url) is not str or self.control_url != CONTROL_URL:
+            raise HomeActivationError()
+
+    @classmethod
+    def parse(cls, data: bytes) -> HomeInviteConfigRecord:
+        record = _decode_record(data, frozenset(("format", *IDENTITY_KEYS, "control_url")),
+                                "home-invite-config@2")
+        record.pop("format")
+        return cls(**record)

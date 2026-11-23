@@ -292,7 +292,7 @@ class HomeRetirement:
                             or relative.endswith(".d") and item.name.endswith(".conf")):
                         data = self._read(parent, item.name, info)
                         if b"happyranch-headscale" in data:
-                            from runtime.remote_access.installer import _owned_helper_unit
+                            from runtime.remote_access.helper_unit import _owned_helper_unit
                             path = relative + "/" + item.name
                             retained = path in account_consumers and UNIT.encode() not in data
                             if not retained and not _owned_helper_unit(path, info, data, self.io.root_owner):
@@ -371,9 +371,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args or sys.platform != 'linux' or os.geteuid() != 0:
             raise RetirementUncertain()
-        from runtime.remote_access.installer import ManagedInstaller
+        from runtime.remote_access.retirement_io import RetirementIO
         from runtime.remote_access.home_retirement_upgrade import retire
-        result = retire(ManagedInstaller(layout='deb'))
+        result = retire(RetirementIO(layout='deb'))
     except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
         result = RetirementStatus('migration pending', 'retirement unconfirmed')
     print(json.dumps(result.public(), sort_keys=True))

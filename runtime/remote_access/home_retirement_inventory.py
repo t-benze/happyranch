@@ -622,7 +622,7 @@ class _ManagedMembers(_PrivateMembers):
             return files
 
     def _provenance(self, files: dict[str, tuple[bytes, tuple[int, ...]]]) -> tuple[tuple[str, str, str], str, int, bool]:
-        from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, IssuerError
+        from runtime.remote_access.legacy_home_receipt import HomeInviteConfigRecord, HomeActivationError
         from runtime.remote_access.legacy_home_receipt import CONTROL_URL, IDENTITY_KEYS
         from runtime.remote_access.release_verifier import validate_record
 
@@ -672,7 +672,7 @@ class _ManagedMembers(_PrivateMembers):
         if "invite-issuer.json" in data:
             try:
                 invite = HomeInviteConfigRecord.parse(data["invite-issuer.json"])
-            except IssuerError:
+            except HomeActivationError:
                 raise RetirementUncertain() from None
             if ((invite.release_uid, invite.home_id, invite.connector_id, invite.control_plane_id)
                     != (release["uid"], identity[1], identity[2], control)

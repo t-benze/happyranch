@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import ctypes
-import errno
 import fcntl
 import grp
 import hashlib
@@ -30,8 +28,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
-from urllib.parse import urlsplit
 
+from runtime.remote_access.helper_unit import PACKAGED_HELPER_UNIT, PACKAGED_HELPER_UNIT_BYTES, _owned_helper_unit
+from runtime.remote_access.installer_io import InstallerError, InstallerIO
+from runtime.remote_access.installer_validation import InstallerValidation
+from runtime.remote_access.legacy_issuer_readback import LegacyIssuerReadback
 from runtime.remote_access import headscale_service as headscale
 from runtime.remote_access import home_headscale
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
@@ -77,39 +78,6 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 _RUNTIME_DIAGNOSTIC_LIMIT = 8
 _RUNTIME_DIAGNOSTIC_BYTES = 65536
-PACKAGED_HELPER_UNIT = "usr/lib/systemd/system/happyranch-remote-access-helper.service"
-# Trusted package policy, never loaded from the filesystem being inventoried.
-# Native packaging checks bind both the shipped and installed unit to these bytes.
-PACKAGED_HELPER_UNIT_BYTES = b"""[Unit]
-Description=HappyRanch remote access helper
-
-[Service]
-Type=dbus
-BusName=ai.happyranch.RemoteAccess1
-User=root
-ExecStart=/usr/bin/python3 -I /opt/happyranch-desktop/bin/happyranch-remote-access-helper
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=yes
-ReadWritePaths=/etc
-ReadWritePaths=/var/lib/happyranch-remote-access
-ReadWritePaths=-/var/lib/happyranch-headscale
-ReadWritePaths=-/var/lib/happyranch-connector
-ReadWritePaths=-/var/lib/happyranch-tsnet-sidecar
-ReadWritePaths=-/run/happyranch-headscale
-ReadWritePaths=-/run/happyranch-connector
-ReadWritePaths=-/run/happyranch-tsnet-sidecar
-ReadWritePaths=-/opt/happyranch
-"""
-
-
-def _owned_helper_unit(path: str, info: os.stat_result, data: bytes,
-                       owner: tuple[int, int]) -> bool:
-    """K1/K2 exact package policy; owner maps root only in the existing temp-root venue."""
-    return (path == PACKAGED_HELPER_UNIT and stat.S_ISREG(info.st_mode)
-            and info.st_nlink == 1 and (info.st_uid, info.st_gid) == owner
-            and stat.S_IMODE(info.st_mode) == 0o644 and data == PACKAGED_HELPER_UNIT_BYTES)
 
 
 def _runtime_diagnostic(name: str, info: os.stat_result, owner: tuple[int, int] | None) -> bool:
@@ -200,10 +168,6 @@ def _replacement_staging(record: dict) -> tuple[tuple[tuple[str, str], ...], tup
     return (_V2_STAGING_FILES, _V2_STAGING_PHASES) if record["version"] == 2 else (_STAGING_FILES, _STAGING_PHASES)
 
 
-class InstallerError(RuntimeError):
-    """An unsafe path, incompatible account, command failure, or unit drift."""
-
-
 @dataclass(frozen=True)
 class InstallInventory:
     """Read-only classification, never authority to remove or replay files."""
@@ -249,7 +213,7 @@ def managed_units(layout: str = "source", *, connector_config: dict | None = Non
     }
 
 
-class ManagedInstaller:
+class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
     """Root operator installer with injectable commands and account lookup.
 
     ``root`` redirects filesystem operations for disposable verification only;
@@ -1726,6 +1690,7 @@ class ManagedInstaller:
                     raise
         return record
 
+
     @staticmethod
     def _headscale_no_pending(parent: int, name: str) -> None:
         try:
@@ -1733,6 +1698,7 @@ class ManagedInstaller:
         except FileNotFoundError:
             return
         raise headscale.HeadscaleServiceError("publication-uncertain")
+
 
     def _headscale_members(self, extended: bool = True) -> dict[str, tuple[tuple[int, int], int]]:
         members = {f"/{headscale.CUSTODY[0]}/{name}": (self._headscale_owner, 0o600)
@@ -2100,104 +2066,6 @@ class ManagedInstaller:
                     or (self._headscale_owner is not None and self._headscale_owner[0] in map(int, fields))):
                 raise headscale.HeadscaleServiceError("cleanup-uncertain")
 
-    def _issuer_receipt(self) -> dict | None:
-        try:
-            with self._directory(headscale.INSTALLER_STATE) as parent:
-                self._headscale_no_pending(parent, "home-issuer")
-                self._headscale_no_pending(parent, _ISSUER_RECEIPT)
-                data = self._read_file(parent, _ISSUER_RECEIPT, owner=self.root_owner, mode=0o600)
-        except FileNotFoundError:
-            return None
-        record = self._json(data)
-        if (record.keys() != {"version", "directory", "uid", "gid", "device", "inode"}
-                or type(record["version"]) is not int or record["version"] != 1
-                or record["directory"] != "/" + HOME_ISSUER
-                or any(type(record[k]) is not int or record[k] < 0 for k in ("uid", "gid", "device", "inode"))
-                or (record["uid"], record["gid"]) != self.root_owner):
-            raise InstallerError("issuer receipt")
-        return record
-
-    @staticmethod
-    def _issuer_signature(info: os.stat_result) -> tuple[int, ...]:
-        return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
-                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-    def _issuer_members(self, directory: int, *, db_retired: bool = False) -> dict[str, tuple[tuple[int, ...], bytes]]:
-        names = set()
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                names.add(entry.name)
-                if len(names) > 2 or entry.name not in {"invite-issuer.json", "invite-issuer.lock"}:
-                    raise InstallerError("issuer residue")
-        if names and names != {"invite-issuer.json", "invite-issuer.lock"}:
-            raise InstallerError("issuer residue")
-        members = {}
-        for name in sorted(names):
-            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            if name == "invite-issuer.lock":
-                fd = os.open(name, _FILE_FLAGS, dir_fd=directory)
-                try:
-                    info = os.fstat(fd)
-                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 0
-                            or (info.st_uid, info.st_gid) != self.root_owner
-                            or stat.S_IMODE(info.st_mode) != 0o600
-                            or self._issuer_signature(info) != self._issuer_signature(before)):
-                        raise InstallerError("issuer lock")
-                finally:
-                    os.close(fd)
-                data = b""
-            else:
-                data = self._read_file(directory, name, owner=self.root_owner, mode=0o600)
-                record = self._json(data)
-                if (len(data) > 4096
-                        or record.keys() != {"operation_id", "binding_digest", "not_before", "expires_at", "outcome"}
-                        or any(type(record[k]) is not str or re.fullmatch(pattern, record[k]) is None
-                               for k, pattern in (("operation_id", "[0-9a-f]{32}"), ("binding_digest", "[0-9a-f]{64}")))
-                        or type(record["outcome"]) is not str
-                        or record["outcome"] not in ({"issued", "refused", "expired", "encoding", "pairing", "recovered"}
-                                                    | ({"minting", "uncertain"} if db_retired else set()))
-                        or any(type(record[k]) not in (int, float) or not 0 <= record[k] < 253402300300
-                               or not math.isfinite(record[k]) for k in ("not_before", "expires_at"))
-                        or json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() != data):
-                    raise InstallerError("issuer journal")
-            if self._issuer_signature(os.stat(name, dir_fd=directory, follow_symlinks=False)) != self._issuer_signature(before):
-                raise InstallerError("issuer changed")
-            members[name] = self._issuer_signature(before), data
-        return members
-
-    def _issuer_inventory(self, *, cleanup: bool = False, db_retired: bool = False) -> tuple[dict | None, bool]:
-        receipt = self._issuer_receipt()
-        present = False
-        try:
-            with self._directory(headscale.INSTALLER_STATE) as parent:
-                os.stat("home-issuer", dir_fd=parent, follow_symlinks=False)
-                present = True
-        except FileNotFoundError:
-            pass
-        if not present:
-            # Retained cleanup receipts never license recreating an old directory.
-            if receipt is not None and not cleanup:
-                raise InstallerError("issuer directory missing") from None
-            return receipt, False
-        with self._directory(HOME_ISSUER) as directory:
-            info = os.fstat(directory)
-            if info.st_nlink != 2:
-                raise InstallerError("issuer directory")
-            members = self._issuer_members(directory, db_retired=db_retired)
-            if "invite-issuer.lock" in members:
-                lock = os.open("invite-issuer.lock", _FILE_FLAGS, dir_fd=directory)
-                try:
-                    if self._issuer_signature(os.fstat(lock)) != members["invite-issuer.lock"][0]:
-                        raise InstallerError("issuer lock changed")
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                finally:
-                    os.close(lock)
-        if receipt is None:
-            if cleanup or members:
-                raise InstallerError("issuer directory unreceipted")
-        elif (receipt["device"], receipt["inode"]) != (info.st_dev, info.st_ino):
-            raise InstallerError("issuer directory changed")
-        return receipt, True
 
     def _prepare_issuer(self) -> None:
         receipt, present = self._issuer_inventory()
@@ -3224,73 +3092,6 @@ class ManagedInstaller:
                 layout[path] = (0o700, self._headscale_owner)
         return layout
 
-    @contextmanager
-    def _directory(self, relative: str = "", *, create: bool = False) -> Iterator[int]:
-        """Walk literal parents with directory descriptors, never symlinks."""
-        descriptor = os.open("/", _DIR_FLAGS)
-        try:
-            for part in self.root.parts[1:]:
-                child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
-                os.close(descriptor)
-                descriptor = child
-            self._check_directory(descriptor, str(self.root), None)
-            layout = self._layout()
-            parts = Path(relative).parts
-            for index, part in enumerate(parts):
-                prefix = str(Path(*parts[:index + 1]))
-                expected = layout.get(prefix)
-                try:
-                    child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
-                except FileNotFoundError:
-                    if not create:
-                        raise
-                    mode, owner = expected or (0o755, self.root_owner)
-                    if owner is None:
-                        raise InstallerError("cannot create service directories without a validated happyranch account")
-                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
-                    child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
-                    try:
-                        os.fchown(child, *owner)
-                        os.fchmod(child, mode)
-                    except BaseException:
-                        os.close(child)
-                        raise
-                os.close(descriptor)
-                descriptor = child
-                self._check_directory(descriptor, prefix, expected)
-            yield descriptor
-        finally:
-            os.close(descriptor)
-
-    def _check_directory(
-        self, descriptor: int, path: str, expected: tuple[int, tuple[int, int] | None] | None,
-    ) -> None:
-        info = os.fstat(descriptor)
-        if (expected is None and path == "var/log" and info.st_uid == self.root_owner[0]
-                and not info.st_mode & 0o002):
-            # Ubuntu's root:syslog 0775 ancestor trusts syslog members for log
-            # entries. Never extend that trust to managed directories/parents.
-            try:
-                log_gid = self._lookup_group("syslog").gr_gid
-            except KeyError:
-                pass
-            else:
-                if info.st_gid == log_gid:
-                    return
-        owner = expected[1] if expected else self.root_owner
-        allowed_modes = (expected[0],) if expected else ()
-        if expected and path == _CREDSTORE:
-            allowed_modes += (0o755,)
-        if expected and path in {_STATE_DIRS[0], "run/happyranch-connector"}:
-            # Creation follows systemd's mode; the trust-state store tightens
-            # state on save; the identity unit also tightens its runtime dir.
-            # Preserve either known safe mode without changing ownership.
-            allowed_modes += (0o700,)
-        if ((owner is not None and (info.st_uid, info.st_gid) != owner) or info.st_mode & 0o022
-                or (expected and stat.S_IMODE(info.st_mode) not in allowed_modes)):
-            raise InstallerError(f"unsafe directory ownership or mode: {path}")
-        if owner is None:
-            raise InstallerError(f"cannot validate existing service directory ownership without a happyranch account: {path}")
 
     def _read_unit(self, parent: int, name: str) -> bytes:
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -3340,37 +3141,6 @@ class ManagedInstaller:
             for descriptor in reversed(opened):
                 os.close(descriptor)
 
-    @staticmethod
-    def _read_file(
-        parent: int, name: str, *, owner: tuple[int, int] | None = None,
-        mode: int | None = None, source_uid: int | None = None,
-    ) -> bytes:
-        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if not stat.S_ISREG(named.st_mode):
-            raise InstallerError("unsafe provisioning file type")
-        descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
-        try:
-            info = os.fstat(descriptor)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 65536
-                    or info.st_mode & 0o022 or (owner is not None and (info.st_uid, info.st_gid) != owner)
-                    or (source_uid is not None and info.st_uid != source_uid)
-                    or (mode is not None and stat.S_IMODE(info.st_mode) != mode)
-                    or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)):
-                raise InstallerError("unsafe provisioning file ownership, mode, links or size")
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                data = stream.read(65536)
-            after = os.fstat(descriptor)
-            named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            def signature(value: os.stat_result) -> tuple[int, ...]:
-                return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
-                        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-            if (len(data) > 65536 or not data.strip()
-                    or len(data) != info.st_size or signature(named) != signature(info)
-                    or signature(info) != signature(after) or signature(info) != signature(named_after)):
-                raise InstallerError("empty, oversized or changing provisioning file")
-            return data
-        finally:
-            os.close(descriptor)
 
     def _input(self, path: Path, *, token: bool = False, source_uid: int | None = None) -> bytes:
         if token and (type(source_uid) is not int or not 0 < source_uid < 2**32 - 1):
@@ -3386,116 +3156,6 @@ class ManagedInstaller:
                 raise InstallerError("daemon token source must contain a nonempty UTF8 token") from None
         return data
 
-    @staticmethod
-    def _json(data: bytes) -> dict:
-        def pairs(items: list[tuple[str, object]]) -> dict:
-            result: dict = {}
-            for key, value in items:
-                if key in result:
-                    raise ValueError
-                result[key] = value
-            return result
-        try:
-            value = json.loads(data, object_pairs_hook=pairs)
-            if not isinstance(value, dict):
-                raise ValueError
-            return value
-        except (ValueError, UnicodeError):
-            raise InstallerError("invalid provisioning JSON object") from None
-
-    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False, partial: bool = False,
-                          require_current: bool = True) -> None:
-        # Reuse shipping connector/policy validators; never start a supervisor.
-        # Only inert inventory/replacement recovery omits currentness. Schema,
-        # artifact and cross-config checks still apply; admission defaults closed.
-        from runtime.remote_access.managed_provider import ManagedProviderConfig
-        from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
-        from runtime.remote_access.supervisor import ConnectorConfig
-
-        try:
-            cfg = None
-            if not partial or "connector.json" in files:
-                raw = self._json(files["connector.json"])
-                managed = raw.pop("managed")
-                if not isinstance(managed, dict) or raw.get("lab") is not None or raw.get("diy") is not None:
-                    raise ValueError
-                cfg = ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed))
-                cfg.validate()
-                if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
-                        or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
-                        or cfg.daemon_port is not None
-                        or not 1 <= cfg.managed.bind_port <= 65535
-                        or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
-                        or cfg.policy_path != "/etc/happyranch/policy.json"
-                        or cfg.state_path != "/var/lib/happyranch-connector/trust-state.json"
-                        or cfg.credentials_directory is not None or cfg.exec_start is not None
-                        or cfg.managed_dir_root is not None or cfg.unit_name != UNITS[0]
-                        or any(value != "happyranch-connector" for value in (cfg.state_dir, cfg.run_dir, cfg.logs_dir))
-                        or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
-                               for value in (cfg.watchdog_sec, cfg.poll_seconds, cfg.restart_sec))):
-                    raise ValueError
-                if (cfg.managed.profile == "linux-managed-identity-v1"
-                        and (cfg.excluded_daemon_ports != [8765] or not cfg.managed.control_plane_id)):
-                    raise ValueError
-            if not partial or "policy.json" in files:
-                policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
-                if require_current:
-                    policy.require_current(datetime.now(timezone.utc))
-            if partial and "sidecar.json" not in files:
-                return
-            sidecar = self._json(files["sidecar.json"])
-            profile = cfg.managed.profile if cfg is not None else sidecar.get("Profile")
-            if profile == "linux-managed-identity-v1":
-                if not staged and "home_binding" in sidecar:
-                    from runtime.remote_access.home_admission import HomeProfileAdmission
-                    admitted = HomeProfileAdmission(self).require()
-                    if any(admitted.files.get(name) != data for name, data in files.items()):
-                        raise ValueError
-                    return
-                # An inert staged bundle, not a runnable home transport. In
-                # particular, never publish a URL without its protected CA.
-                if (sidecar.keys() != {"Profile", "StateDir", "RoleIdentity", "DERPPolicy",
-                                      "ListenAddr", "ExcludedDaemonPorts"}
-                        or sidecar["Profile"] != profile
-                        or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
-                        or not isinstance(sidecar["RoleIdentity"], str)
-                        or not sidecar["RoleIdentity"].startswith("home-sidecar-")
-                        or len(sidecar["RoleIdentity"]) <= len("home-sidecar-")
-                        or (cfg is not None and sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}")
-                        or sidecar["DERPPolicy"] != "private-only" or sidecar["ListenAddr"] != ":443"
-                        or sidecar["ExcludedDaemonPorts"] != [8765]):
-                    raise ValueError
-                return
-            required = {"StateDir", "ControlURL", "RoleIdentity", "ExpectedPeer", "DERPPolicy", "ListenAddr", "ConnectorAddr"}
-            if (not required <= sidecar.keys() <= required | {"ExcludedDaemonPorts"}
-                    or any(not isinstance(sidecar[key], str) for key in required)):
-                raise ValueError
-            sidecar_excluded = sidecar.get("ExcludedDaemonPorts", [])
-            if (not isinstance(sidecar_excluded, list)
-                    or any(type(port) is not int or not 1 <= port <= 65535 for port in sidecar_excluded)):
-                raise ValueError
-            excluded = sorted({8765, *(cfg.excluded_daemon_ports if cfg is not None else []), *sidecar_excluded})
-            if cfg is not None and (cfg.managed.bind_port in excluded
-                    or sidecar["ConnectorAddr"] != f"127.0.0.1:{cfg.managed.bind_port}"):
-                raise ValueError
-            if (cfg is not None and staged and self.layout == "deb"
-                    and (cfg.excluded_daemon_ports != excluded or sidecar_excluded != excluded)):
-                raise ValueError
-            control = urlsplit(sidecar["ControlURL"])
-            listen = re.fullmatch(r"(?:\[[^\]]+\]|[^:]*):([0-9]+)", sidecar["ListenAddr"])
-            ingress = re.fullmatch(r"127\.0\.0\.1:([0-9]+)", sidecar["ConnectorAddr"])
-            if (control.scheme != "https" or not control.hostname or control.username is not None
-                    or control.password is not None or control.hostname.lower() == "controlplane.tailscale.com"
-                    or not sidecar["RoleIdentity"].startswith("home-sidecar-")
-                    or len(sidecar["RoleIdentity"]) <= len("home-sidecar-")
-                    or not sidecar["ExpectedPeer"].strip() or sidecar["DERPPolicy"] != "private-only"
-                    or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
-                    or listen is None or not 1 <= int(listen[1]) <= 65535
-                    or ingress is None or not 1 <= int(ingress[1]) <= 65535 or int(ingress[1]) in excluded):
-                raise ValueError
-        except Exception:
-            # Validators can include input values. Keep all diagnostics secret-free.
-            raise InstallerError("invalid connector, sidecar or current policy provisioning") from None
 
     def _check_deb_payload(self) -> None:
         if self.layout != "deb":
@@ -3549,47 +3209,6 @@ class ManagedInstaller:
                 finally:
                     os.close(descriptor)
 
-    @contextmanager
-    def _publication_parent(self, relative: str = "etc/happyranch") -> Iterator[tuple[int, Callable[[], None]]]:
-        """Pin every literal ancestor until the last pre-rename validation."""
-        descriptor = os.open("/", _DIR_FLAGS)
-        opened = [descriptor]
-        parents = []
-        layout = self._layout()
-        path = Path("/")
-        try:
-            for part in (self.root / relative).parts[1:]:
-                named = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
-                child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
-                opened.append(child)
-                info = os.fstat(child)
-                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
-                    raise InstallerError("publication parent changed while opening")
-                path /= part
-                managed_relative = str(path.relative_to(self.root)) if path.is_relative_to(self.root) else None
-                if managed_relative is not None:
-                    self._check_directory(child, str(self.root) if managed_relative == "." else managed_relative,
-                                          layout.get(managed_relative))
-                parents.append((descriptor, part, child, info))
-                descriptor = child
-
-            def revalidate() -> None:
-                try:
-                    for ancestor, name, child, before in parents:
-                        named = os.stat(name, dir_fd=ancestor, follow_symlinks=False)
-                        current = os.fstat(child)
-                        expected = (before.st_dev, before.st_ino, before.st_uid, before.st_gid, before.st_mode)
-                        for info in (named, current):
-                            if ((info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) != expected
-                                    or not stat.S_ISDIR(info.st_mode)):
-                                raise InstallerError("publication parent changed before rename")
-                except OSError:
-                    raise InstallerError("publication parent unavailable before rename") from None
-
-            yield descriptor, revalidate
-        finally:
-            for descriptor in reversed(opened):
-                os.close(descriptor)
 
     @staticmethod
     def _refuse_provision_entry(parent: int, name: str) -> None:
@@ -3944,21 +3563,6 @@ class ManagedInstaller:
                         os.unlink(pending, dir_fd=parent)
                         os.fsync(parent)
 
-    @staticmethod
-    def _rename_provision_entry(parent: int, source: str, target: str, *, updating: bool = False) -> None:
-        # Plain rename can clobber a late target. Keep the shared O_EXCL
-        # publication/quarantine contract atomic; no fallback.
-        try:
-            rename = ctypes.CDLL(None, use_errno=True).renameat2
-        except AttributeError:
-            raise InstallerError("atomic no-replace rename is unavailable") from None
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        if rename(parent, os.fsencode(source), parent, os.fsencode(target), 0 if updating else 1):
-            error = ctypes.get_errno()
-            if error == errno.EEXIST:
-                raise InstallerError("provisioning destination appeared before rename")
-            raise OSError(error, "atomic provisioning rename failed")
 
     def _validate_install_record(self, name: str, data: bytes, *, replacement: bool = False) -> None:
         """Destination-bound records, with v1 provenance/recovery kept verbatim.
@@ -3994,10 +3598,8 @@ class ManagedInstaller:
                         or "target" in value and not isinstance(value["target"], str)):
                     raise InstallerError("invalid first replacement inventory")
             return
-        if name == "provision.json" and "version" not in record:
-            # Preserve the legacy provision() output and its reader contract.
-            if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
-                raise InstallerError("invalid legacy provisioning record")
+        if name == "provision.json":
+            self._validate_provision_record(data)
             return
         keys = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
         phases = {"provisioned"}

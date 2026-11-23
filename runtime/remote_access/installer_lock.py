@@ -20,7 +20,7 @@ def installer_state_lock(io: ManagedInstaller) -> Iterator[int]:
     Activation and policy renewal must serialize on this same inode while the
     legacy activation callers remain installed.
     """
-    from runtime.remote_access.installer import InstallerError
+    from runtime.remote_access.installer_io import InstallerError
 
     try:
         with io._publication_parent(INSTALLER_STATE) as (parent, revalidate):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import builtins
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from runtime.remote_access import home_retirement as entry
-from runtime.remote_access import installer
+from runtime.remote_access import retirement_io
 from runtime.remote_access import pairing
 from runtime.remote_access.home_retirement import HomeRetirement
 from runtime.remote_access.pairing import PairingError
@@ -24,6 +25,19 @@ from scripts.test_home_retirement import Fixture
 from scripts.test_home_retirement_account import account_adapter, deletions
 from scripts.test_home_retirement_coordinator import active, native_target_stop, FINAL, INVENTORY, PIN
 from scripts.test_home_retirement_inventory import auxiliary_journal_setup, TRANSACTION
+
+
+def block_retired_imports(monkeypatch):
+    """The incoming bundle cannot borrow unavailable provisioning owners."""
+    original = builtins.__import__
+    forbidden = {'installer', 'headscale_service', 'home_headscale', 'home_activation',
+                 'home_activation_txn', 'home_activation_backend', 'home_admission', 'invite_issuer'}
+    def retained(name, globals=None, locals=None, fromlist=(), level=0):
+        if (name.removeprefix('runtime.remote_access.') in forbidden
+                or name == 'runtime.remote_access' and forbidden.intersection(fromlist or ())):
+            raise RuntimeError('retired production dependency unavailable')
+        return original(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, '__import__', retained)
 
 
 @pytest.mark.parametrize('case', ['fresh', 'retired', 'drift', 'malformed', 'arguments', 'nonroot'])
@@ -36,12 +50,15 @@ def test_fixed_entry_preserves_fresh_completed_and_refused_layouts(tmp_path, mon
         fixture.file('etc/happyranch/invite-issuer.json')
     before = fixture.snapshot()
     constructed = []
+    io_type = retirement_io.RetirementIO
     def installed(**kwargs):
         assert kwargs == {'layout': 'deb'}
         constructed.append(True)
-        return fixture.io
-    monkeypatch.setattr(installer, 'ManagedInstaller', installed)
+        return io_type(root=fixture.root, root_owner=fixture.io.root_owner, layout='deb',
+            run=fixture.io._run, lookup_user=fixture.io._lookup_user, lookup_group=fixture.io._lookup_group)
+    monkeypatch.setattr(retirement_io, 'RetirementIO', installed)
     monkeypatch.setattr(os, 'geteuid', lambda: 1000 if case == 'nonroot' else 0)
+    block_retired_imports(monkeypatch)
     result = entry.main(['--root=/caller-selected'] if case == 'arguments' else [])
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == entry.MESSAGE and len(lines) == 2
@@ -105,14 +122,14 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
             return 1, 'synthetic uncertainty after actual native/account effect'
         return result
     active.io._run = active.io.manager._run = native
-    installer_type, constructed = installer.ManagedInstaller, []
+    installer_type, constructed = retirement_io.RetirementIO, []
     def fresh_installer(**kwargs):
         assert kwargs == {'layout': 'deb'}
         io = installer_type(root=active.root, root_owner=active.io.root_owner, layout='deb',
             run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
         constructed.append(True)
         return io
-    monkeypatch.setattr(installer, 'ManagedInstaller', fresh_installer)
+    monkeypatch.setattr(retirement_io, 'RetirementIO', fresh_installer)
     real_unlink, real_write, real_open = os.unlink, os.write, os.open
     revoke, revoke_calls = active.manager.revoke_device if not inert else None, []
     def interrupt_revoke(device, **kwargs):
@@ -151,6 +168,7 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
         # observes the test user's identity throughout the retirement.
         monkeypatch.setattr(entry, 'os', SimpleNamespace(**(vars(os) | {'geteuid': lambda: 0})))
         active.fence_context.__exit__(None, None, None)
+        block_retired_imports(monkeypatch)
         with monkeypatch.context() as patch:
             patch.setattr(os, 'unlink', unlink)
             patch.setattr(os, 'write', write)

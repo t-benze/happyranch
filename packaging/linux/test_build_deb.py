@@ -514,7 +514,7 @@ class DebPackageTests(unittest.TestCase):
     def helper_unit_reference() -> bytes:
         # Packaging's stdlib-only venue reads the trusted source literal without
         # importing application dependencies or any scanned filesystem value.
-        source = BUILDER.parents[2] / 'runtime/remote_access/installer.py'
+        source = BUILDER.parents[2] / 'runtime/remote_access/helper_unit.py'
         assignment, = (node for node in ast.parse(source.read_bytes()).body
                        if isinstance(node, ast.Assign) and any(
                            isinstance(target, ast.Name) and target.id == 'PACKAGED_HELPER_UNIT_BYTES'

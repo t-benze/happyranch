@@ -177,7 +177,7 @@ class OwnedService:
                                 or relative.endswith(".d") and entry.name.endswith(".conf")):
                             data = self.reader._read(parent, entry.name, info)
                             if identity.unit.encode() in data or identity.account.encode() in data:
-                                from runtime.remote_access.installer import _owned_helper_unit
+                                from runtime.remote_access.helper_unit import _owned_helper_unit
                                 if not _owned_helper_unit(path, info, data, self.io.root_owner):
                                     if account_consumers is None or identity.unit.encode() in data:
                                         raise RetirementUncertain()

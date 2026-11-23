@@ -4856,6 +4856,16 @@ Only final publication plus independent retired readback returns success for a
 legacy layout. The generated incoming Debian preinst bundle, its packaging
 dependency closure and installed upgrade acceptance remain unfinished.
 
+The fixed entry constructs `RetirementIO`, which uses the same no-follow
+filesystem, directory custody, parent pinning, atomic rename and configuration
+validators as the retained installer. Historical issuer inventory and invite
+binding decoding have no provisioning or issuance effects and import no retired
+controller/activation/issuer owner. The helper-unit policy is shared directly
+with package validation. The old installer keeps its existing layout and error
+aliases while its remaining local-owner removal is unfinished. Canonical entry
+cases construct this actual retained adapter and forbid borrowing retired
+modules; this dependency cut is not evidence of generated preinst or dpkg timing.
+
 Focused entry venue:
 `uv run --frozen pytest scripts/test_home_retirement_entry.py -v --tb=short`.
 Its native and filesystem adapters cannot establish installed dpkg ordering.
