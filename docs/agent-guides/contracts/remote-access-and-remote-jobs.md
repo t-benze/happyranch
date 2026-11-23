@@ -4541,6 +4541,21 @@ failure; unavailable/changed peers or malformed trust remain pending and require
 their separate independent-death recovery. No cleanup or final receipt follows
 from saved phase/denial alone.
 
+`ActiveRetirement.resume_controller` covers controller stop/disable interruption
+while that same original connector is still live. Current anchored trust and a
+new real original-registry acknowledgement remain mandatory. Fresh controller
+native readback must prove it stopped, then skips completed disable, preserving
+its original fragment, binary and any remaining activation-link inode. Recovery
+before an actual stop uses `resume_revoke`; a live controller never enters this
+stopped-controller path. Managed boot/process/artifacts must remain original.
+Only a freshly stopped controller's fixed runtime leaves may have been flushed
+or disappeared; present inode/custody/type/link count, immutable private files,
+the original trust lock and other ancestors remain pinned. Unknown runtime
+members refuse. Each remaining controller effect rechecks these facts and the
+acknowledgement before the existing managed-stop sequence. Failed physical
+closure cannot be reset. Partial managed stop uses the separate independent
+death/quiescence recovery; this entry grants no cleanup or final receipt.
+
 `StoppedRetirement.remove_private` now joins that actual stopped/cutoff proof
 and held issuer/minter exclusion to selective original private-leaf cleanup.
 `home_retirement_cleanup.PrivateCleanup` loads the saved original inventory;

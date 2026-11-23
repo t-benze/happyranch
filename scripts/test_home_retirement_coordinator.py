@@ -305,19 +305,95 @@ def test_active_controller_stop_rechecks_original_process_and_cutoff_before_each
         assert not (active.root / FINAL).exists()
 
 
-@pytest.mark.parametrize('failure', ['stop', 'disable'])
+@pytest.mark.parametrize('failure', ['stop', 'disable', 'lost-stop-reply', 'lost-disable-reply'])
 def test_active_controller_native_failure_retains_denial_and_recovery_evidence(active, monkeypatch, failure):
     device, _ = active.grant('device')
     active.stream(device, 'device')
     with active.serving(monkeypatch):
         owner = ActiveRetirement.capture(active.io, active.fence)
-        active.controller.fail = failure
+        operation = 'disable' if 'disable' in failure else 'stop'
+        run = active.io._run
+        if failure.startswith('lost-'):
+            def lose_reply(argv, **kwargs):
+                result = run(argv, **kwargs)
+                return (1, 'synthetic lost controller reply') if argv == [
+                    'systemctl', operation, 'happyranch-headscale.service'] else result
+            active.io._run = active.io.manager._run = lose_reply
+        else:
+            active.controller.fail = failure
         with pytest.raises(RetirementUncertain, match='^migration pending$'):
             owner.revoke_and_stop_controller()
         assert active.effects() == [['systemctl', 'stop', 'happyranch-headscale.service']] + (
-            [['systemctl', 'disable', 'happyranch-headscale.service']] if failure == 'disable' else [])
+            [['systemctl', 'disable', 'happyranch-headscale.service']] if operation == 'disable' else [])
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()
+        active.controller.fail = None
+        active.io._run = active.io.manager._run = run
+        if failure == 'lost-disable-reply':
+            # Real stop can flush an original database and remove its WAL.
+            # Recovery must retain the original surviving inode/custody.
+            database = active.root / 'var/lib/happyranch-headscale/db.sqlite'
+            database.write_bytes(database.read_bytes() + b'synthetic-stop-flush')
+            (database.parent / 'db.sqlite-wal').unlink(missing_ok=True)
+        records = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                   for path in (PIN, INVENTORY, NATIVE)}
+        effects = len(active.effects())
+        native_target_stop(active)
+        recovered = (ActiveRetirement.resume_revoke if failure == 'stop' else
+                     ActiveRetirement.resume_controller)(active.io, active.fence)
+        recovered.require()
+        remaining = (['stop', 'disable'] if failure == 'stop' else
+                     [] if failure == 'lost-disable-reply' else ['disable'])
+        assert [argv[1] for argv in active.effects()[effects:]
+                if argv[2] == 'happyranch-headscale.service'] == remaining
+        assert active.closed == ['device']
+        assert recovered._owner.original == owner.original and recovered._owner.native == owner.native
+        assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in records} == records
+        assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('drift', ['controller-process', 'controller-link', 'private-key',
+    'runtime-inode', 'runtime-unknown', 'managed-process', 'failed-close'])
+def test_controller_recovery_refuses_changed_originals_and_failed_close(active, monkeypatch, drift):
+    device, _ = active.grant('device')
+    def close():
+        if drift == 'failed-close':
+            raise OSError('synthetic terminal physical close failure')
+    stream = active.stream(device, 'device', close=close)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        active.controller.fail = 'disable'
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_controller()
+        active.controller.fail = None
+        if drift == 'controller-process':
+            active.controller.properties.update(ActiveState='active', SubState='running', MainPID='123',
+                ControlGroup='/system.slice/happyranch-headscale.service')
+            active.controller.process_start(999)
+        elif drift == 'controller-link':
+            path = active.root / LINK
+            path.rename(active.root.parent / 'kept-controller-link')
+            path.symlink_to('/etc/systemd/system/happyranch-headscale.service')
+        elif drift == 'private-key':
+            (active.root / (STATE_DIRECTORY + '/home-ca/ca.key')).write_bytes(b'synthetic-changed-key')
+        elif drift == 'runtime-inode':
+            path = active.root / 'var/lib/happyranch-headscale/db.sqlite'
+            path.rename(active.root.parent / 'kept-runtime')
+            path.write_bytes(b'synthetic-replaced-runtime')
+            path.chmod(0o600)
+        elif drift == 'runtime-unknown':
+            (active.root / 'var/lib/happyranch-headscale/unknown').write_bytes(b'synthetic-unknown')
+        elif drift == 'managed-process':
+            path = active.root / f'proc/{active.pid}/stat'
+            path.write_bytes(path.read_bytes().replace(b'456', b'999'))
+        before, effects, closed = active.snapshot(), active.effects(), list(active.closed)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ActiveRetirement.resume_controller(active.io, active.fence)
+        assert active.snapshot() == before and active.effects() == effects and active.closed == closed
+        assert active.reopened()[0].devices[device].revoked
+        assert stream.closed and (stream.cleanup_failed is (drift == 'failed-close'))
         assert not (active.root / FINAL).exists()
 
 

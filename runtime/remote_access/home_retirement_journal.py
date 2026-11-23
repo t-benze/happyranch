@@ -270,7 +270,18 @@ class RetirementJournal:
         """
         self._require_members(original, revoked_pair=True)
 
-    def _require_members(self, original: OriginalInventory, *, revoked_pair: bool) -> None:
+    def require_controller_members(self, original: OriginalInventory) -> None:
+        """Original artifacts after an independently observed controller effect.
+
+        The caller separately proves current native ownership and real cutoff.
+        A disabled original link may be absent. Only a stopped controller's
+        fixed runtime leaves may be flushed or absent; present inode/custody
+        and immutable files remain original. This supplies no native authority.
+        """
+        self._require_members(original, revoked_pair=True, controller_recovery=True)
+
+    def _require_members(self, original: OriginalInventory, *, revoked_pair: bool,
+                         controller_recovery: bool = False) -> None:
         try:
             self.fence.require(self.io)
             trust_parent = 'var/lib/happyranch-connector'
@@ -289,6 +300,7 @@ class RetirementJournal:
             members.update({STATE_DIRECTORY + "/" + name: signature
                             for name, signature in original.ownership.receipt_identities.items()})
             service, native = original.ownership.service, original.ownership.native
+            runtime = {'var/lib/happyranch-headscale', 'run/happyranch-headscale'} if controller_recovery else set()
             members["etc/systemd/system/" + service.unit] = native.fragment
             members[service.executable] = native.executable
             if service.link is not None:
@@ -301,6 +313,13 @@ class RetirementJournal:
                     directories[path] = signature
             for relative in sorted({str(PurePosixPath(path).parent) for path in members}):
                 with walker._directory(relative) as parent:
+                    if parent is not None and relative in runtime:
+                        allowed = {PurePosixPath(path).name for path in members
+                                   if str(PurePosixPath(path).parent) == relative}
+                        with os.scandir(parent) as entries:
+                            for index, entry in enumerate(entries):
+                                if index >= 128 or entry.name not in allowed:
+                                    raise RetirementUncertain()
                     for path, expected in members.items():
                         if str(PurePosixPath(path).parent) != relative or path in changed:
                             continue
@@ -309,11 +328,18 @@ class RetirementJournal:
                                 PurePosixPath(path).name, dir_fd=parent, follow_symlinks=False))
                         except FileNotFoundError:
                             current = None
+                        if controller_recovery and path == service.link and current is None:
+                            continue
+                        if relative in runtime:
+                            fields = 9 if expected is not None and stat.S_ISDIR(expected[4]) else 6
+                            if current is not None and (expected is None or current[:fields] != expected[:fields]):
+                                raise RetirementUncertain()
+                            continue
                         if current != expected:
                             raise RetirementUncertain()
             for path, expected in directories.items():
                 current = walker.directory_identities.get(path)
-                mutable = path == STATE_DIRECTORY or revoked_pair and path == trust_parent
+                mutable = path == STATE_DIRECTORY or revoked_pair and path == trust_parent or path in runtime
                 if current is None or (current[:5] != expected[:5] if mutable else current != expected):
                     raise RetirementUncertain()
             self.fence.require(self.io)

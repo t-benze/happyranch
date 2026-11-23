@@ -211,6 +211,44 @@ class ActiveRetirement:
 
     def _stop_services(self, receipt: CutoffReceipt) -> StoppedRetirement:
         controller_receipt = self._stop_controller(receipt)
+        return self._stop_managed(receipt, controller_receipt)
+
+    @classmethod
+    def resume_controller(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
+        """Finish interrupted controller effects with the SAME live connector.
+
+        Fresh native readback must prove the controller stopped, then skips
+        completed disable. Before-stop recovery uses ``resume_revoke``. Managed
+        boot/process/artifacts must still match, and actual original-registry
+        acknowledgement is obtained again; no saved phase supplies authority.
+        """
+        try:
+            owner = StoppedRetirement._saved_owner(io, fence)
+            transport = owner.native_journal.transport
+            current_managed = transport.observe()
+            transport._same_members(owner.native, current_managed, set())
+            controller = OwnedService(io, owner.original.ownership.service)
+            current = controller.observe(stopped=True)
+            controller._same_members(owner.original.ownership.native, current)
+            owner.journal.require_controller_members(owner.original)
+            owner.cutoff.capture_original()
+            receipt = owner.cutoff.revoke()
+
+            def guard() -> None:
+                owner._require_records()
+                receipt.require()
+                transport._same_members(owner.native, transport.observe(), set())
+                observed = controller.observe(stopped=True)
+                controller._same_members(owner.original.ownership.native, observed)
+                owner.journal.require_controller_members(owner.original)
+
+            guard()
+            result = controller.stop_and_disable(expected=current, before_effect=guard)
+            return owner._stop_managed(receipt, result)
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, StateStoreError):
+            raise RetirementUncertain() from None
+
+    def _stop_managed(self, receipt: CutoffReceipt, controller_receipt: OwnedStopReceipt) -> StoppedRetirement:
         controller = OwnedService(self.journal.io, self.original.ownership.service)
         recovery = OriginalDeathRecovery(self.cutoff, self.native_journal)
         def guard() -> None:

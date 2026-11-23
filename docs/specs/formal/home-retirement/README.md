@@ -77,6 +77,15 @@ acknowledgement admits the existing native-stop sequence; a failed original clos
 is never reset. This implements an R02.b prerequisite, not final completion or
 an alternative death proof.
 
+`ActiveRetirement.resume_controller` covers interrupted Stop/Disable of the
+controller while the original managed serving owner remains live. Fresh real
+acknowledgement and original managed identity precede each remaining effect;
+native readback requires the controller stopped and skips completed disable.
+Before-stop recovery uses `resume_revoke`. Only the disabled original
+link and stopped controller runtime contents/absence can differ, with present
+inode/custody and immutable originals retained. This is an R02.d prerequisite,
+not full cleanup/publication or a substitute for independent managed death.
+
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They
