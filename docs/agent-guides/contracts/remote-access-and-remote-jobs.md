@@ -4495,7 +4495,10 @@ Its ownership-only stop/disable operation requires the caller's earlier actual
 native/process/link results. Stop and disable uncertainty preserves artifacts
 and produces no receipt. Positive inactive/disabled facts skip already completed
 native effects. Original activation-link identity stays pinned until that
-specific owned disable removes it; receipts become unusable after drift. No
+specific owned disable removes it. The original boot remains fixed throughout
+all effects; an original process may become absent, but a new/reused process or
+resurrection of an originally inactive unit refuses further effects. Receipts
+become unusable after drift. No
 start/restart, account modification, package-database write or file cleanup is
 provided. The coordinator must obtain actual persistent revocation and original
 transport acknowledgement first, persist this separate native observation with

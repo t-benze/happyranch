@@ -368,6 +368,12 @@ class ManagedTransport:
     @staticmethod
     def _same_members(original: ManagedObservation, current: ManagedObservation,
                       removed: set[str]) -> None:
+        # An earlier owned stop permits disappearance, never a replacement
+        # process or a new boot to become the owner of remaining effects.
+        if (current.boot_id != original.boot_id
+                or any(value is not None and value != original.processes[name]
+                       for name, value in current.processes.items())):
+            raise RetirementUncertain()
         def stable(key: str, value: tuple[int, ...] | None) -> tuple[int, ...] | None:
             return value[:5] if key.startswith('directory:') and value is not None else value
         if {key: stable(key, None if key in removed else value) for key, value in original.artifacts.items()} != {

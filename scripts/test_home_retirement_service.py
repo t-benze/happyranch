@@ -589,3 +589,39 @@ def test_managed_stop_receipt_cannot_authorize_later_changed_state(managed_servi
     with pytest.raises(RetirementUncertain, match='^migration pending$'):
         owner.confirm(receipt)
     assert v.snapshot() == before and v.effects() == effects
+
+
+@pytest.mark.parametrize('drift', ['pid-start', 'boot', 'resurrection'])
+def test_managed_original_process_identity_survives_each_native_effect(
+        managed_service: ManagedFixture, monkeypatch: pytest.MonkeyPatch, drift: str) -> None:
+    from runtime.remote_access.home_retirement_transport import ManagedTransport
+    v = managed_service
+    connector = v.native[MANAGED_UNITS[0]]
+    if drift == 'resurrection':
+        connector.update(ActiveState='inactive', SubState='dead', MainPID='0', ControlGroup='')
+    owner = ManagedTransport(v.io, v.fence, v.managed)
+    original = owner.observe()
+    changed, observe = [], owner.observe
+    def after_first_owned_stop(*args, **kwargs):
+        result = observe(*args, **kwargs)
+        if v.effects() and not changed:
+            assert v.effects() == [['systemctl', 'stop', MANAGED_UNITS[2]]]
+            if drift == 'pid-start':
+                target = v.root / 'proc/111/stat'
+                target.write_bytes(target.read_bytes().replace(b'456', b'457'))
+            elif drift == 'boot':
+                target = v.root / 'proc/sys/kernel/random/boot_id'
+                target.chmod(0o644)
+                target.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+                target.chmod(0o444)
+            else:
+                connector.update(ActiveState='active', SubState='running', MainPID='111',
+                    ControlGroup='/system.slice/' + MANAGED_UNITS[0])
+            changed.append(True)
+        return result
+    monkeypatch.setattr(owner, 'observe', after_first_owned_stop)
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        owner.stop_and_disable(original)
+    assert changed == [True]
+    assert v.effects() == [['systemctl', 'stop', MANAGED_UNITS[2]]]
+    assert (v.root / PACKAGE_REGISTRY).is_file() and (v.root / PYTHON).is_file()
