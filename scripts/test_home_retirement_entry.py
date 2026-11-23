@@ -10,6 +10,7 @@ from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,8 +99,9 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
     # test-side context so the shipping entry acquires the real directory flock.
     serving = nullcontext() if inert else active.serving(monkeypatch)
     with serving:
-        # Bind under the real test-user custody before simulating root entry.
-        monkeypatch.setattr(os, 'geteuid', lambda: 0)
+        # Simulate root admission only here; real listener/store custody still
+        # observes the test user's identity throughout the retirement.
+        monkeypatch.setattr(entry, 'os', SimpleNamespace(**(vars(os) | {'geteuid': lambda: 0})))
         active.fence_context.__exit__(None, None, None)
         with monkeypatch.context() as patch:
             patch.setattr(os, 'unlink', unlink)
