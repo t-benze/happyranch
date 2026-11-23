@@ -861,9 +861,12 @@ class SharedArtifactService:
         self._insert(conn,'shared_artifact_inventory_reviews',review)
 
     def classify_legacy_uncommitted(self, conn: object, *, name: str, metadata: dict,
-                                    review_id: str, inventory_digest: str, expected_hash: str) -> dict:
+                                    review_id: str, inventory_digest: str, expected_hash: str,
+                                    expected_size: int | None = None) -> dict:
         """D applies an exactly reviewed item after both inventory and preview gates."""
-        review = conn.execute('SELECT * FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
+        if conn is not self.db._conn or not conn.in_transaction:
+            raise RuntimeError('artifact_classification_requires_transaction')
+        review = conn.execute('SELECT inventory_digest,reviewer_agent_id FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
         rollout = conn.execute('SELECT * FROM shared_artifact_org_state WHERE id=1').fetchone()
         if (not review or review['inventory_digest'] != inventory_digest or not rollout['preview_acceptance']
             or not rollout['rollout_started_at'] or self.clock() < _date(rollout['rollout_started_at'])+timedelta(days=RECOVERY_DAYS)):
@@ -871,8 +874,10 @@ class SharedArtifactService:
         row = self._row(conn,name)
         if not row or row['state'] != 'legacy_unclassified':
             raise SharedArtifactError(409,'artifact_classification_invalid')
-        observed = self.identity(self.store.path_for(name))
-        if row['sha256'] != expected_hash or observed['sha256'] != expected_hash:
+        self.store.validate_name(name)
+        observed = self.identity(self.store.root / name)
+        if (row['sha256'] != expected_hash or observed['sha256'] != expected_hash
+            or (expected_size is not None and (row['size_bytes'] != expected_size or observed['size_bytes'] != expected_size))):
             raise SharedArtifactError(409,'artifact_inventory_changed')
         permitted = {'owner_kind','owner','owner_agent_id','origin_task_id','origin_thread_id',
                      'purpose','retention_class','reference_reason','created_at','expires_at','state','attribution_status','requested_expires_at'}

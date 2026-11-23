@@ -2142,7 +2142,12 @@ legacy files receive null expiry. Off suspends cleanup while notice/quota paths
 continue. A first complete preview stores its completion time. Enforce remains
 effective preview until seven elapsed preview days, recorded preview acceptance,
 inventory review and verified Q3 source protection all exist. This code supplies
-no automatic approval or activation setter and never sets those three gates.
+no automatic approval or activation setter; the scheduler never sets those three gates.
+The separately operated [reviewed legacy importer](../operations/shared-artifacts-classification.md)
+records only authenticated inventory review, under the existing exclusive org
+fence with a per-item transaction; it never sets preview acceptance or source
+verification, changes cleanup mode or unlinks bytes. Classification requires
+both review and the elapsed preview week and reclaims no space.
 Retired B2 sources without authoritative reader exclusion remain held. Deployment,
 independent Q3 verification and an explicitly authorized operator release/config
 workflow remain prerequisites; source delivery establishes none of them.
