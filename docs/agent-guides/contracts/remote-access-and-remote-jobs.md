@@ -14,8 +14,12 @@ describe host compatibility without changing the endpoint set or access policy.
 Existing fields and conditional `host_sessions` remain; see the
 [health response and contract-bump rule](../web-and-cli.md#host-compatibility-health-metadata).
 Native readiness/reconnect/Restart compatibility checks are implemented on Linux
-in PR #1767 (merged `921f126e`); Mac checks remain pending. See the
+in PR #1767 (merged `921f126e`). See the
 [Linux admission/reset boundaries](../../specs/2026-11-17-web-native-bridge.md#v2-compatibility-rule).
+Mac readiness/reconnect compatibility checks are implemented in source in
+PR #1839 (MAC-1). Native Mac qualification is recorded by the PR's
+exact-final-head Mac build/QA evidence; see the
+[MAC-1 section in `app/mac/README.md`](../../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 
 ## macOS connector lifecycle slice (THR-360, C1+C2)
 
