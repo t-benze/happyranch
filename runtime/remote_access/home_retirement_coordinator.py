@@ -286,6 +286,18 @@ class StoppedRetirement:
                 exclusion.require()
             PrivateCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove()
 
+    def remove_auxiliary(self) -> None:
+        """Remove original issuer/minter leaves, retaining all lock domains.
+
+        Fresh saved recovery can repeat this entry after partial removal.
+        Neither absent leaves nor held locks substitute for native/cutoff
+        proof, and this partial cleanup never publishes final retirement.
+        """
+        self.require()
+        with held_auxiliary_operations(self._owner.journal, self._owner.original, cleanup=True) as exclusion:
+            exclusion.remove_leaves(before_effect=self.require)
+            self.require()
+
     @contextmanager
     def held_operations(self) -> Iterator[AuxiliaryExclusion]:
         """Join actual stopped/cutoff proof to held original operation locks.

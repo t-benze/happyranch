@@ -584,3 +584,44 @@ def test_stopped_private_cleanup_uses_real_proofs_and_preserves_explicit_recover
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert RetirementJournal(active.io, active.fence).load() == owner.original
         assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
+def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay(active, monkeypatch, boundary):
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, writer_lock
+    auxiliary_journal_setup(active.controller)
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        native_target_stop(active)
+        stopped = owner.revoke_and_stop_services()
+        effects, frames = active.effects(), list(active.frames)
+        real_unlink, removed = os.unlink, []
+        auxiliary = {str(active.root / path) for path in owner.original.auxiliary.members}
+        def unlink(name, *, dir_fd=None):
+            path = str(Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name)
+            if path in auxiliary:
+                assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+            real_unlink(name, dir_fd=dir_fd)
+            if path in auxiliary:
+                removed.append(path)
+                if boundary == 'denial-between-leaves' and len(removed) == 1:
+                    active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            if boundary == 'denial-between-leaves':
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    stopped.remove_auxiliary()
+                assert len(removed) == 1
+            else:
+                stopped.remove_auxiliary()
+                assert len(removed) == 5
+                recovered = StoppedRetirement.from_saved(active.io, active.fence)
+                recovered.remove_auxiliary()
+                assert len(removed) == 5
+        assert active.effects() == effects and active.frames == frames
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert all((active.root / path).exists() for path in OPERATION_LOCKS)
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()

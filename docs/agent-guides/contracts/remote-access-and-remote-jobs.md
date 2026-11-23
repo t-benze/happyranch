@@ -4538,6 +4538,22 @@ intentional contents changes; ordinary inventory observations keep their
 existing full metadata checks. Native artifacts, saved records, managed trust,
 operation locks and local work remain retained. This is partial cleanup only,
 not completed account disposition, full cleanup or final publication.
+`StoppedRetirement.remove_auxiliary` separately removes only the saved original
+issuer journal, issuer publication, activation transaction and minter operation
+leaves. Every unlink requires fresh stopped/native/cutoff proof and the held
+original issuer/minter lock descriptions, then parent sync and absence readback.
+Its explicit cleanup context accepts prior absence of original non-lock leaves
+without recapture; unchanged-original contexts remain strict. Original lock
+names and all originally present directories must remain, with pinned
+inode/custody/mode. Closed issuer/minter names and full signatures on remaining
+regular leaves reject unknown or replaced artifacts before effects. Directory
+contents metadata alone may change during this selective cleanup. No leaf
+contents are opened. Fresh saved objects can repeat auxiliary cleanup without
+unlink replay, but removing the lock domains themselves remains a later
+obligation. Private cleanup currently precedes auxiliary cleanup because its
+unchanged-original held context does not reconcile removed auxiliary leaves.
+Managed trust/native artifacts, accounts, saved evidence and final publication
+remain outside these partial cleanup entries.
 `StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
 phase through fresh objects. It loads all three original records without
 rediscovery/capture, cross-checks their identity/account/release/boot/PID binding,

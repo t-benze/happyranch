@@ -42,6 +42,15 @@ cleanup, account disposition and final publication remain unfinished.
 Empty service-owned directory leaves are opened relative to their pinned parent
 and compared by descriptor/name to the original custody; they are not inferred
 to be root-owned ancestors. The model abstracts this no-follow custody proof.
+`remove_auxiliary` now supplies partial issuer/minter leaf cleanup with fresh
+stopped/cutoff proof and held original serialization domains before every
+unlink. Original lock files/directories remain pinned and retained; fresh
+cleanup contexts reconcile absent original non-lock leaves without recapture.
+Closed directory names, full remaining-leaf identity, parent sync and absence
+readback are real-code obligations abstracted by Remove. Lock-domain removal,
+managed/native cleanup and final completion remain unfinished. Private cleanup
+currently precedes this auxiliary phase; its strict context cannot reconcile
+already removed auxiliary leaves.
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They

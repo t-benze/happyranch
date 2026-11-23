@@ -1381,6 +1381,10 @@ TRANSACTION = STATE + "/home-activation-txn.json"
 
 def auxiliary_setup(fixture: InventoryFixture) -> None:
     managed_setup(fixture)
+    auxiliary_journal_setup(fixture)
+
+
+def auxiliary_journal_setup(fixture: InventoryFixture) -> None:
     folder = fixture.directory(ISSUER)
     fixture.put_json(ISSUER_RECEIPT, dict(version=1, directory="/" + ISSUER,
         uid=os.getuid(), gid=os.getgid(), device=folder.stat().st_dev, inode=folder.stat().st_ino))
@@ -1809,6 +1813,133 @@ def test_held_auxiliary_requires_unchanged_saved_record_and_live_fence(
             with held_auxiliary_operations(journal, original):
                 pytest.fail('closed fence must not acquire exclusion')
         assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('state', ['complete', 'absent-leaf', 'interrupted'])
+def test_auxiliary_cleanup_removes_original_nonlock_leaves_and_reopens(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    fixture.file('local-work/keep', b'synthetic-local-work')
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        leaves = {path for path, signature in original.auxiliary.members.items()
+                  if signature is not None and stat.S_ISREG(signature[4]) and path not in OPERATION_LOCKS}
+        if state == 'absent-leaf':
+            (fixture.root / OPERATION).unlink()
+        saved = (fixture.root / STATE / 'home-retirement-inventory.json').read_bytes()
+        real_unlink, real_fsync, real_open = os.unlink, os.fsync, os.open
+        removed, synced, proof_calls, pending_sync = [], [], [], []
+        def guarded():
+            assert all(writer_lock(fixture.root, path) == 73 for path in OPERATION_LOCKS)
+            proof_calls.append(len(removed))
+        def unlink(name, *, dir_fd=None):
+            path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(fixture.root))
+            assert path in leaves and path not in OPERATION_LOCKS
+            real_unlink(name, dir_fd=dir_fd)
+            removed.append(path)
+            pending_sync.append(str(Path(path).parent))
+        def sync(fd):
+            real_fsync(fd)
+            if pending_sync:
+                relative = str(Path(os.readlink(f'/proc/self/fd/{fd}')).relative_to(fixture.root))
+                assert relative == pending_sync.pop(0)
+                synced.append(relative)
+                if state == 'interrupted' and len(removed) == 1:
+                    raise OSError('synthetic interrupted parent sync')
+        def opened(name, flags, *args, dir_fd=None, **kwargs):
+            path = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name if dir_fd is not None else Path(name)
+            assert path not in {fixture.root / leaf for leaf in leaves}, 'opaque auxiliary leaf opened'
+            return real_open(name, flags, *args, dir_fd=dir_fd, **kwargs)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            scoped.setattr(os, 'fsync', sync)
+            scoped.setattr(os, 'open', opened)
+            if state == 'interrupted':
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                        exclusion.remove_leaves(before_effect=guarded)
+                assert len(removed) == 1
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                exclusion.remove_leaves(before_effect=guarded)
+            count = len(removed)
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                exclusion.remove_leaves(before_effect=guarded)
+            assert len(removed) == count and len(removed) == len(set(removed))
+        assert set(removed) == leaves - ({OPERATION} if state == 'absent-leaf' else set())
+        assert len(synced) == len(removed) and proof_calls
+        assert all(not (fixture.root / path).exists() for path in leaves)
+        assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
+        assert (fixture.root / STATE / 'home-retirement-inventory.json').read_bytes() == saved
+        assert journal.load() == original
+        assert (fixture.root / 'local-work/keep').read_bytes() == b'synthetic-local-work'
+        assert not (fixture.root / STATE / 'home-retirement.json').exists() and fixture.effects() == []
+
+
+@pytest.mark.parametrize('damage', ['leaf', 'lock', 'parent', 'unknown', 'missing-lock', 'missing-domain', 'originally-absent'])
+def test_auxiliary_cleanup_refuses_unowned_or_missing_serialization_domains(
+        fixture: InventoryFixture, damage: str) -> None:
+    import shutil
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    data = (fixture.root / TRANSACTION).read_bytes()
+    if damage == 'originally-absent':
+        (fixture.root / TRANSACTION).unlink()
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        if damage in ('leaf', 'lock', 'parent'):
+            target = fixture.root / (OPERATION if damage == 'leaf' else OPERATION_LOCKS[0 if damage == 'lock' else 1])
+            saved = fixture.root.parent / 'preserved-original'
+            target.rename(saved)
+            shutil.copytree(saved, target) if saved.is_dir() else shutil.copy2(saved, target)
+        elif damage == 'unknown':
+            fixture.file(ISSUER + '/unrecognized', b'synthetic-foreign')
+        elif damage == 'missing-lock':
+            (fixture.root / OPERATION_LOCKS[0]).unlink()
+        elif damage == 'missing-domain':
+            (fixture.root / OPERATION_LOCKS[1]).rename(fixture.root.parent / 'preserved-original-domain')
+        else:
+            fixture.file(TRANSACTION, data)
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                exclusion.remove_leaves(before_effect=lambda: None)
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('failure', ['proof-loss', 'target-replacement'])
+def test_auxiliary_cleanup_checks_each_next_effect(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        real_unlink, removed, after = os.unlink, [], []
+        def guard():
+            if removed and failure == 'proof-loss':
+                raise RetirementUncertain()
+        def unlink(name, *, dir_fd=None):
+            real_unlink(name, dir_fd=dir_fd)
+            removed.append(name)
+            if len(removed) == 1 and failure == 'target-replacement':
+                target = fixture.root / ISSUER / 'invite-issuer.json'
+                data = target.read_bytes()
+                target.rename(fixture.root.parent / 'preserved-original-leaf')
+                fixture.file(ISSUER + '/invite-issuer.json', data)
+            after.append(fixture.snapshot())
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                    exclusion.remove_leaves(before_effect=guard)
+        assert len(removed) == 1 and fixture.snapshot() == after[0] and fixture.effects() == []
+        assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
 
 
 @pytest.mark.parametrize('state', ['unchanged', 'runtime-flush', 'missing-original'])
