@@ -120,11 +120,6 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
                      'libexec/remote-access/helper_generation.py',
                      'libexec/remote-access/helper_lifecycle.py',
                      'libexec/remote-access/helper_invite.py',
-                     'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
-                     'libexec/remote-access/happyranch-home-admin',
-                     'licenses/headscale-LICENSE',
-                     'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
-                     'licenses/headscale/go-runtime/LICENSE',
                      'python/bin/python3', 'web/dist/index.html',
                      'share/happyranch/desktop/happyranch_window.py',
                      'share/happyranch/desktop/host_bridge.py',
@@ -141,10 +136,12 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
     except (OSError, ValueError, UnicodeError):
         parser.error('invalid main resource manifest or assets')
 
-    for name in ('happyranch-home-ca', 'happyranch-home-admin'):
-        materializer = payload / 'libexec/remote-access' / name
-        if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
-            parser.error('unsafe home runner payload')
+    # Do not reintroduce local control or issuance through a stale payload.
+    for retired in ('libexec/headscale/headscale',
+                    'libexec/remote-access/happyranch-home-ca',
+                    'libexec/remote-access/happyranch-home-admin'):
+        if os.path.lexists(payload / retired):
+            parser.error('retired local controller payload: ' + retired)
 
     # Inspect foreign-architecture payloads without executing them. Reject old
     # unsafe tarballs; build-payload repairs and tests the native interpreter.

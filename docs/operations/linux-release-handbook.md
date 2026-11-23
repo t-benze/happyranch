@@ -204,43 +204,20 @@ saved credentials or a network-state profile.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
-The payload also carries the official **Headscale v0.25.1** native Linux asset
-at `libexec/headscale/headscale` (installed as
-`/opt/happyranch-desktop/libexec/headscale/headscale`, mode 0755, root-owned by
-dpkg). This fixed path sits outside `bin/` and the daemon's bundled-bin PATH
-surface. It has no wrapper or symlink and stays inert; TASK-16780 owns service
-and installer wiring. Building the payload never executes it or starts/enables
-a service. No download happens at Enable.
+THR-378 P24 retires the local Headscale server and the root-run home CA/admin
+executables. New payloads do not download Headscale or build
+`happyranch-home-ca` / `happyranch-home-admin`. The Debian builder refuses a
+stale payload containing any of those three executables; they are no longer
+required inputs. Headscale-only binary/toolchain notice collection is removed;
+all retained Python, npm, sidecar and client notices remain. Historical pins
+remain migration custody evidence. Python ELF checking remains restricted to
+`python/`.
 
-The same native Go build also ships the inert root-run home CA materializer at
-`libexec/remote-access/happyranch-home-ca` (installed as
-`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca`, root:root
-0755). It is outside `bin/`, `/usr/bin` and `HAPPYRANCH_BUNDLED_BIN`; no service
-or helper calls it yet. Its fixed `ensure`, `renew-leaf` and `status` verbs and
-root-only staging custody are described in the [remote-access contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
-The command uses stdlib and the existing first-party `homeca` package only.
-Python ELF repair/checking remains restricted to `python/`.
-
-`packaging/linux/headscale-pin.json` pins tag, official amd64/arm64 asset names,
-SHA-256 values and embedded Go version. The already-verified managed Python
-downloads over HTTPS into private build scratch, allowing only github.com and
-its explicit release CDN `release-assets.githubusercontent.com` on redirects.
-Each request has a 20-second socket timeout; streaming is capped at 128 MiB
-and a 180-second deadline (checked after bounded socket reads, including EOF).
-No new build tool is needed. `LINUX_HEADSCALE_DOWNLOAD_FAILED` or
-`LINUX_HEADSCALE_SHA256_MISMATCH` aborts before the binary is installed or
-inspected. The pin was checked against upstream release `checksums.txt` and
-fresh downloads of both assets.
-
-Headscale's exact pinned BSD-3-Clause license ships in
-`licenses/headscale-LICENSE`. `headscale-modules.json` inventories the verified
-binary's linked modules from `go version -m`; their original notices are in
-`licenses/headscale/modules/`. Downloads use private Go module and GOPATH
-checksum-state caches, the public proxy and checksum DB, and must match the embedded module sums. Missing
-originals fail the build. `headscale-build-info.json` records asset/tag/hash,
-Go 1.23.4 and the matching toolchain module sum; `headscale/go-runtime/` retains
-that toolchain's license and vendor notices. All are also copied to the .deb's
-`/usr/share/doc/happyranch/licenses/`.
+Incoming preinst completes canonical retirement using the protected original
+installed interpreter and its available tools before permitting payload
+replacement. Removing an executable from the new archive does not establish
+retirement of an old installation. Installed dpkg/systemd acceptance remains
+separate from the synthetic package checks.
 
 After copying the interpreter and runtime wheels,
 `python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
@@ -276,8 +253,8 @@ native packaging checks below also cover this exclusion, inventory output and
 refusal of unlicensed near-miss or escaping replacements.
 
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
-`build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`,
-`libexec/headscale/headscale` and `libexec/remote-access/happyranch-home-ca`.
+`build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`
+and retained helper adapters under `libexec/remote-access/`.
 The payload additionally contains the zero-option
 `bin/happyranch-remote-access-policy-renew`, which launches only the fixed bundled
 Python `-I -m runtime.remote_access.policy_renew` with an empty environment.

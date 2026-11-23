@@ -4302,6 +4302,16 @@ Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
 
 ### Home retirement observations (THR-378 P24)
 
+**Current package boundary:** new payloads omit the local Headscale server and
+`happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives
+carrying those executable paths. The build no longer downloads Headscale or
+collects its removed binary/toolchain notices. Retained dependency notices,
+client transport and migration custody pins remain. Incoming preinst uses the
+protected old installed capability before payload replacement; package absence
+alone proves no migration effect. Earlier packaging/CA sections describe the
+historical layout being retired. Installed acceptance is separately NOT RUN.
+
+
 `python -m runtime.remote_access.installer home-retirement-status --layout deb`
 is a read-only Linux observation. Its JSON always carries the exact message:
 “Home mode has been retired. Sign in to use your account's private network.

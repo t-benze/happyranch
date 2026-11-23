@@ -23,6 +23,13 @@ manifest or deletion authority.
 | ReplaceForeign / RollbackArtifact | Sampled ownership may change before the next effect; foreign/reappearing artifacts stay pending without stop/disable/removal or restored authority. |
 | OldAdmission / LaterAccountAuthority / AccountListen | Fence rejects old admission. A hypothetical later listener needs separate account authority plus confirmed retirement; this represents S02's future gate, not a positive account path on main. |
 
+New payload construction excludes the local Headscale, home CA and admin
+executables, and the Debian validator refuses their stale paths. This supports
+GateUnpack/ReplacePayload without changing model actions: incoming preinst must
+finish canonical retirement using the original installed capability first.
+Retained client/shared transport and their notices remain. Synthetic package
+checks do not establish installed dpkg or systemd acceptance.
+
 ## Incremental implementation records
 
 The records below retain the scope limits of each earlier implementation slice.
