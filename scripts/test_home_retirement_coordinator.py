@@ -6,6 +6,7 @@ No fixture computes an inventory, acknowledgement or retirement receipt.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -189,7 +190,7 @@ def test_active_capture_uncertainty_preserves_authority_and_never_reaches_revoke
             ActiveRetirement.capture(active.io, active.fence)
         assert not active.reopened()[0].devices[device].revoked
         assert active.closed == [] and stream.receive() == b'synthetic-live-frame'
-        assert not any(b'"revoke-all@1"' in frame for frame in active.frames)
+        assert not any(b'"revoke-all@1"' in frame for frame in active.frames if frame)
         assert active.effects() == [] and not (active.root / FINAL).exists()
         if unknown is not None:
             assert unknown.read_bytes() == b'synthetic-unknown-evidence'
@@ -653,3 +654,72 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
         assert all((active.root / path).exists() for path in OPERATION_LOCKS)
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('boundary', ['prepared', 'inventory-parent-sync', 'native-parent-sync'])
+def test_saved_active_preparation_finishes_publication_before_real_revoke(active, monkeypatch, boundary):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        if boundary == 'prepared':
+            ActiveRetirement.capture(active.io, active.fence)
+        else:
+            target = INVENTORY if boundary == 'inventory-parent-sync' else NATIVE
+            real_sync = os.fsync
+            interrupted = []
+            def sync(fd):
+                if (Path(os.readlink(f'/proc/self/fd/{fd}')) == active.root / STATE_DIRECTORY
+                        and (active.root / target).exists()):
+                    interrupted.append(True)
+                    raise OSError('synthetic interrupted preparation parent sync')
+                real_sync(fd)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'fsync', sync)
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    ActiveRetirement.capture(active.io, active.fence)
+            assert interrupted
+        saved = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                 for path in (PIN, INVENTORY, NATIVE) if (active.root / path).exists()}
+        effects = active.effects()
+        recovered = ActiveRetirement.from_saved(active.io, active.fence)
+        assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in saved} == saved
+        assert (active.root / NATIVE).is_file()
+        assert all(json.loads(frame).get('method', 'status') == 'status' for frame in active.frames if frame)
+        assert not active.reopened()[0].devices[device].revoked and active.closed == []
+        assert stream.receive() == b'synthetic-live-frame'
+        receipt = recovered.revoke()
+        receipt.require()
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert active.effects() == effects and not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('drift', ['missing-peer', 'missing-inventory', 'torn-native',
+    'private-key', 'managed-process', 'denial'])
+def test_saved_active_preparation_refuses_uncertain_originals_without_recapture(active, monkeypatch, drift):
+    from scripts.test_home_retirement_inventory import PRIVATE_KEY
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        ActiveRetirement.capture(active.io, active.fence)
+        if drift == 'missing-peer':
+            (active.root / PIN).unlink()
+        elif drift == 'missing-inventory':
+            (active.root / INVENTORY).unlink()
+        elif drift == 'torn-native':
+            (active.root / NATIVE).write_bytes(b'{synthetic-interrupted')
+        elif drift == 'private-key':
+            (active.root / PRIVATE_KEY).write_bytes(b'synthetic-changed-private-key')
+        elif drift == 'managed-process':
+            path = active.root / f'proc/{active.pid}/stat'
+            path.write_bytes(path.read_bytes().replace(b'456', b'999'))
+        else:
+            active.manager.revoke_all(expected_generation=active.reopened()[1])
+        before, effects = active.snapshot(), active.effects()
+        frames = list(active.frames)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            ActiveRetirement.from_saved(active.io, active.fence)
+        assert active.snapshot() == before and active.effects() == effects
+        assert all(json.loads(frame).get('method', 'status') == 'status' for frame in active.frames[len(frames):] if frame)
+        assert not (active.root / FINAL).exists()
+        assert active.reopened()[0].devices[device].revoked is (drift == 'denial')

@@ -4502,7 +4502,17 @@ original member/controller/native/peer comparisons precede real revoke-all,
 which returns only the original serving registry's acknowledgement plus anchored
 denial readback. Unknown, interrupted or replaced evidence refuses; no failed
 close can become a receipt or restore committed authority. This active-only
-composition supplies no inert fallback. Its explicit `revoke_and_stop_controller`
+composition supplies no inert fallback. Explicit `ActiveRetirement.from_saved`
+can reopen complete pre-revoke inventory and the saved original peer, including
+interrupted parent synchronization. Original members and the dedicated native
+owner must still match before status is requested from that same saved serving
+process. If the managed-native record was never created, this entry completes
+its first publication; complete existing records are resynchronized, never
+replaced. Torn/unknown evidence, missing inventory/peer, changed original native
+owners or committed trust changes remain pending. It neither recaptures the
+inventory nor substitutes status for revoke/physical acknowledgement. Preparation
+interrupted before a complete original inventory remains pending. Its explicit
+`revoke_and_stop_controller`
 passes the saved original controller observation and actual live cutoff receipt
 to `OwnedService`: both stop and disable freshly require that receipt, then
 re-observe controller identity after the potentially blocking guard. Changed

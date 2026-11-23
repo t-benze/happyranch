@@ -62,6 +62,13 @@ remain real-code obligations. The trust pair/lock, native artifacts and all
 serialization domains stay retained for independent recovery. Full removal,
 account disposition and final publication still require their own owners.
 
+Explicit `ActiveRetirement.from_saved` covers the pre-Burn preparation
+interruption with a complete original inventory and saved peer. It rechecks
+original members/native ownership and the same live peer before finishing an
+absent native journal or synchronizing a complete existing one. Missing/torn
+inventory/peer or post-revoke drift stays pending without recapture; the model
+abstracts this original-evidence durability and does not prove the I/O path.
+
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They

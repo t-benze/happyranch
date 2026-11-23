@@ -14,7 +14,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
-from runtime.remote_access.home_retirement import RetirementUncertain
+from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY
 from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
@@ -24,7 +24,7 @@ from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion,
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery, RecoveredCutoffReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
-from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE_RECORD
 from runtime.remote_access.identity import ConnectorIdentity
 
 if TYPE_CHECKING:
@@ -72,6 +72,42 @@ class ActiveRetirement:
             native_journal = ManagedTransportJournal(transport)
             if native_journal.capture() != native:
                 raise RetirementUncertain()
+            owner = cls(journal, original, native_journal, native, cutoff)
+            owner.require_original()
+            return owner
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def from_saved(cls, io: ManagedInstaller, fence: RetirementFence) -> ActiveRetirement:
+        """Explicit pre-revoke recovery without replacing saved original facts.
+
+        A complete inventory and original serving-peer pin are required. If
+        preparation stopped before publishing the native journal, finish that
+        first publication only after original-member/native/peer readback.
+        Existing complete records are resynchronized, never overwritten. Any
+        committed trust change requires the separate post-revoke recovery path.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            managed = original.managed
+            if original.ownership.activation is None or not managed.live_sidecar:
+                raise RetirementUncertain()
+            cutoff = RetirementCutoff.from_saved_peer(io, fence,
+                ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
+                    connector_id=managed.identity[2]), managed.release_uid)
+            journal.require_original_members(original)
+            if OwnedService(io, original.ownership.service).observe() != original.ownership.native:
+                raise RetirementUncertain()
+            # This is status/readback from the saved original process, not a
+            # second registry, revoke acknowledgement or new peer discovery.
+            cutoff.capture_original()
+            journal.require_original_members(original)
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, managed))
+            with native_journal.transport.reader._entry(STATE_DIRECTORY + '/' + _NATIVE_RECORD) as (_, _, info):
+                missing = info is None
+            native = native_journal.capture() if missing else native_journal.load()
             owner = cls(journal, original, native_journal, native, cutoff)
             owner.require_original()
             return owner
