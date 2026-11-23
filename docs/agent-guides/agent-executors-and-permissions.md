@@ -1217,10 +1217,12 @@ The built-in prompt drives the candidate through:
 1. **Self-discovery** — the CLI uses ``command -v`` or ``which`` to
    resolve its own absolute binary path and exits with a clear error if
    the binary is not found or not executable.
-2. **Sequential conformance check-ins** — four independent ``curl``
+2. **Conformance check-ins** — four independent ``curl``
    commands POST ``workspace_access``, ``loopback_reachable``,
    ``cli_callback``, and ``emit_envelope`` in order. Each response is
-   printed; a failed request stops the sequence.
+   printed; a failed request stops the sequence. POST each step once; the
+   daemon accepts any order. On a rerun, ``arrived:false`` only means that
+   the step was already recorded.
 3. **Completion gate** — the fourth (``emit_envelope``) response is
    captured and checked: the script reads the returned JSON and exits
    unless ``"all_complete":true`` is present. This is a **mechanical
@@ -1240,9 +1242,9 @@ source code:
   pre-handler rejection (``_check_registration_token`` — invalid,
   expired, consumed, or non-registration-form token) and post-handler
   validation (``validate_runtime`` — consumed mid-flight).
-- **400 (incomplete conformance)** — names the pending steps and
-  instructs the candidate to complete them sequentially and await
-  ``all_complete:true``.
+- **400 (incomplete conformance)** — names the pending steps and requests
+  ``all_complete:true``. Its sequential wording is advisory; the daemon
+  does not require check-ins to arrive in order.
 - **422 (bad path)** — reports whether the path is non-absolute,
   non-existent, or non-executable so the candidate can correct it.
 - **500 (write failure)** — releases the token for retry and advises
