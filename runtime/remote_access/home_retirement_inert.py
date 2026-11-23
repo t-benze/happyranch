@@ -2,18 +2,23 @@
 
 Absence alone supplies no cutoff proof for an active installation. This owner
 requires historical inert provenance, original and current absent authority,
-and fresh complete native quiescence. It neither initializes trust nor emits a
-final receipt. Cleanup, account disposition and package replacement are separate.
+and fresh complete native quiescence. Selective leaf cleanup retains native
+artifacts, accounts, operation locks and original journals. It neither
+initializes trust nor emits a final receipt or package replacement gate.
 """
 from __future__ import annotations
 
+import os
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
+from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
 from runtime.remote_access.home_retirement_cutoff import _PEER_RECORD
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, LegacyManagedMembers, LegacyOwnership
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
+from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE_RECORD
@@ -95,7 +100,26 @@ class InertRetirement:
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 
-    def require(self, *, disabled: bool = False) -> None:
+    @classmethod
+    def resume_cleanup(cls, io: ManagedInstaller, fence: RetirementFence) -> InertRetirement:
+        """Load complete originals after interrupted explicit leaf removal.
+
+        No first publication or native effect is attempted. Missing originals,
+        native uncertainty and new authority refuse before any removal.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            owner.require(disabled=True, cleanup=True)
+            with held_auxiliary_operations(journal, original, cleanup=True):
+                owner.require(disabled=True, cleanup=True)
+            return owner
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    def require(self, *, disabled: bool = False, cleanup: bool = False) -> None:
         """Read back original inert lineage and current quiescence every time."""
         try:
             io, fence = self.journal.io, self.journal.fence
@@ -107,16 +131,48 @@ class InertRetirement:
                     or any(process is not None for process in self.native.processes.values())
                     or any(dict(props)['ActiveState'] not in ('inactive', 'failed')
                            for props in self.native.properties.values())
+                    or cleanup and not disabled
                     or any(HomeRetirement(io)._present(STATE_DIRECTORY + '/' + name) for name in _ACTIVE_RECORDS)):
                 raise RetirementUncertain()
-            self.journal.require_original_members(self.original)
+            managed = ManagedCleanup(self.journal, self.original, before_effect=lambda: None)
+            def empty_authority() -> None:
+                # These parents belong to the managed service account; the
+                # root-only status reader cannot walk them on an installed host.
+                for path in _AUTHORITY:
+                    relative = str(PurePosixPath(path).parent)
+                    walker = managed._walker()
+                    with walker._directory(relative, contents_may_change=cleanup) as parent:
+                        managed._parents(walker)
+                        if parent is None:
+                            if relative in self.original.managed.directories:
+                                raise RetirementUncertain()
+                            continue
+                        try:
+                            os.stat(PurePosixPath(path).name, dir_fd=parent, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        raise RetirementUncertain()
+            def members() -> None:
+                if not cleanup:
+                    self.journal.require_original_members(self.original)
+                    return
+                # Cleanup admits only absence of original leaves, never their
+                # replacement or loss of the historical ownership receipts.
+                for name, expected in self.original.ownership.receipt_identities.items():
+                    if LegacyInventory(io)._receipt(name, fence)[1] != expected:
+                        raise RetirementUncertain()
+                for owner in (PrivateCleanup, ManagedCleanup):
+                    owner(self.journal, self.original, before_effect=lambda: None)._observe()
+            empty_authority()
+            members()
             controller = OwnedService(io, self.original.ownership.service)
             controller._same_members(self.original.ownership.native, controller.observe(stopped=True, disabled=True))
             transport = self.native_journal.transport
             current = transport.stopped_original(self.native)
             if disabled and transport.observe(stopped=True, disabled=True) != current:
                 raise RetirementUncertain()
-            self.journal.require_original_members(self.original)
+            empty_authority()
+            members()
             fence.require(io)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
@@ -133,3 +189,20 @@ class InertRetirement:
         transport.confirm(managed)
         self.require(disabled=True)
         return dedicated, managed
+
+    def remove_leaves(self) -> None:
+        """Remove only original non-lock leaves under fresh inert proof.
+
+        Explicit recovery reconciles lost parent syncs without unlink replay.
+        Current absence is never a substitute for native stopped/disabled proof.
+        """
+        self.require(disabled=True, cleanup=True)
+        with held_auxiliary_operations(self.journal, self.original, cleanup=True) as exclusion:
+            def guard() -> None:
+                self.require(disabled=True, cleanup=True)
+                exclusion.require()
+            guard()
+            PrivateCleanup(self.journal, self.original, before_effect=guard).remove()
+            exclusion.remove_leaves(before_effect=guard)
+            ManagedCleanup(self.journal, self.original, before_effect=guard).remove()
+            guard()

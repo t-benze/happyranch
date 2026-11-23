@@ -70,8 +70,13 @@ stopped/process-empty. Complete original journals are reused, and an absent
 native journal can receive its first publication before effects. Native
 readback skips completed disables after interruption; original members and
 quiescence are checked again before each remaining effect. Active/unknown
-evidence cannot enter this path. Cleanup, account disposition, final receipt
-and pre-unpack integration remain unfinished.
+evidence cannot enter this path. Its explicit `remove_leaves`/`resume_cleanup`
+also map to Remove: current stopped/disabled proof, original empty authority,
+remaining-leaf custody and held original operation locks guard each selective
+private/auxiliary/managed removal. Lost parent sync is reconciled without
+unlink replay using the same originals. These entries retain native artifacts,
+accounts, journals and lock domains; removal of those final obligations,
+account disposition, final receipt and pre-unpack integration remain unfinished.
 
 The model's additional inert initial branch abstracts these independently
 proven empty authority facts as already satisfied Denied/Closed predicates.

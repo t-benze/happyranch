@@ -4504,8 +4504,16 @@ complete original-member and native readback can finish that publication.
 Missing/torn original inventory or torn/foreign native evidence stays pending.
 Before each remaining native disable, original members, custody, native
 ownership and complete quiescence are checked again. Current native readback
-skips completed effects after a lost reply. This entry supplies no cleanup,
-account disposition, final retirement receipt or package replacement gate.
+skips completed effects after a lost reply. Once every native owner is freshly
+stopped/disabled, `remove_leaves` composes selective private, auxiliary and
+managed leaf removal under the original operation locks. `resume_cleanup`
+reopens the same complete originals after partial removal or lost parent sync;
+it neither recaptures inventory nor attempts native effects. Remaining leaf
+custody, historical ownership receipts, current empty authority and complete
+native quiescence are checked before every effect. Absent original leaves are
+resynchronized and read back without unlink replay. Native artifacts, lock
+domains, accounts and saved originals remain required/retained. This entry
+supplies no account disposition, final receipt or package replacement gate.
 
 `home_retirement_coordinator.ActiveRetirement` composes active pre-effect
 preparation under the same actual installer I/O and live fence. Independent
