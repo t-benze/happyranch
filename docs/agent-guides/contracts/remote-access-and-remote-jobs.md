@@ -4492,8 +4492,17 @@ to `OwnedService`: both stop and disable freshly require that receipt, then
 re-observe controller identity after the potentially blocking guard. Changed
 original process/native identity or lost denial refuses the next effect; a
 failed native command preserves committed denial and original recovery evidence.
-The managed connector remains live for these checks. Managed shutdown,
-selective cleanup, final publication and package replacement remain unfinished.
+The managed connector remains live for these controller checks.
+`revoke_and_stop_services` then supplies a fresh per-effect guard to the managed
+native owner. It keeps both saved records and the stopped controller pinned.
+Each managed effect requires the actual live receipt, or, after peer loss, the
+existing independent original-death/anchored-denial/all-managed-quiescence proof.
+An unavailable peer or partial native stop alone refuses the next effect. Fresh
+managed identity is compared again after the guard; changed original artifacts,
+boot or processes cannot become its new owner. The returned `StoppedRetirement`
+readback freshly requires saved records, both native stop receipts and independent
+cutoff proof. It is never a final retired record. Selective cleanup, account
+disposition, final publication and package replacement remain unfinished.
 Standalone composition checks run through real inventory/journals/anchored
 store/private IPC with synthetic native facts:
 `uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.
@@ -4519,7 +4528,8 @@ native/process/link results. Stop and disable uncertainty preserves artifacts
 and produces no receipt. Positive inactive/disabled facts skip already completed
 native effects. Original activation-link identity stays pinned until that
 specific owned disable removes it. The original boot remains fixed throughout
-all effects; an original process may become absent, but a new/reused process or
+all effects; the active coordinator supplies its real per-effect cutoff guard,
+followed by a new native observation before each call. An original process may become absent, but a new/reused process or
 resurrection of an originally inactive unit refuses further effects. Receipts
 become unusable after drift. No
 start/restart, account modification, package-database write or file cleanup is

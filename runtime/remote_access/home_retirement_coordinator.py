@@ -2,9 +2,10 @@
 
 The explicit caller must hold the original retirement fence. This owner joins
 original evidence before revocation and can guard dedicated controller native
-effects with the actual live cutoff receipt. It does not stop the managed
-connector, remove artifacts, change accounts, admit package replacement or
-publish a retired receipt.
+effects with the actual live cutoff receipt. Managed native effects additionally
+require that live receipt or the existing independent original-death/quiescence
+proof. No artifact cleanup, account change, package replacement or final retired
+receipt is supplied.
 Inert/pre-activation retirement and post-effect recovery have separate proofs.
 """
 from __future__ import annotations
@@ -17,7 +18,8 @@ from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
-from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedTransport
+from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery, RecoveredCutoffReceipt
+from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
 from runtime.remote_access.identity import ConnectorIdentity
 
@@ -120,7 +122,62 @@ class ActiveRetirement:
         connector, authorize cleanup, or turn native partial progress into final
         retirement. Explicit recovery must use the durable original evidence.
         """
-        receipt = self.revoke()
+        return self._stop_controller(self.revoke())
+
+    def _stop_controller(self, receipt: CutoffReceipt) -> OwnedStopReceipt:
         controller = OwnedService(self.journal.io, self.original.ownership.service)
         return controller.stop_and_disable(expected=self.original.ownership.native,
             before_effect=receipt.require)
+
+    def _require_records(self) -> None:
+        if self.journal.load() != self.original or self.native_journal.load() != self.native:
+            raise RetirementUncertain()
+
+    def revoke_and_stop_services(self) -> StoppedRetirement:
+        """Join saved original evidence to all fixed native stop/disable effects.
+
+        A live original acknowledgement can guard an effect. When that peer has
+        gone, only the existing independent original-death plus all-managed
+        quiescence and anchored denial proof can replace it. Partial native stop
+        is not that proof and cannot authorize the next effect.
+        """
+        receipt = self.revoke()
+        controller_receipt = self._stop_controller(receipt)
+        controller = OwnedService(self.journal.io, self.original.ownership.service)
+        recovery = OriginalDeathRecovery(self.cutoff, self.native_journal)
+        def guard() -> None:
+            self._require_records()
+            controller.confirm(controller_receipt)
+            try:
+                receipt.require()
+            except RetirementUncertain:
+                recovery.recover().require()
+        guard()
+        transport = self.native_journal.transport
+        current = transport.observe()
+        # Owned controller disable intentionally changes the shared wants
+        # directory metadata. Its identity and every original managed artifact,
+        # boot and process remain pinned; no replacement is adopted here.
+        transport._same_members(self.native, current, set())
+        managed_receipt = transport.stop_and_disable(current, before_effect=guard)
+        proof = StoppedRetirement(self, controller_receipt, managed_receipt, recovery.recover())
+        proof.require()
+        return proof
+
+
+class StoppedRetirement:
+    """Fresh native quiescence/cutoff readback, never a final retirement record."""
+
+    def __init__(self, owner: ActiveRetirement, controller: OwnedStopReceipt,
+                 managed: ManagedStopReceipt, cutoff: RecoveredCutoffReceipt) -> None:
+        self._owner, self.controller, self.managed, self.cutoff = owner, controller, managed, cutoff
+
+    def __repr__(self) -> str:
+        return 'StoppedRetirement(<redacted>)'
+
+    def require(self) -> None:
+        owner = self._owner
+        owner._require_records()
+        OwnedService(owner.journal.io, owner.original.ownership.service).confirm(self.controller)
+        owner.native_journal.transport.confirm(self.managed)
+        self.cutoff.require()

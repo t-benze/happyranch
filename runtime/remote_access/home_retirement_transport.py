@@ -14,7 +14,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 
 from runtime.remote_access.home_retirement import (
     HomeRetirement, RetirementUncertain, _DBUS_ROOTS, _DIRECTORY_FLAGS,
@@ -401,7 +401,8 @@ class ManagedTransport:
         self._same_artifacts(original, current, removed)
         return current
 
-    def stop_and_disable(self, expected: ManagedObservation) -> ManagedStopReceipt:
+    def stop_and_disable(self, expected: ManagedObservation, *,
+                         before_effect: Callable[[], None] | None = None) -> ManagedStopReceipt:
         try:
             original = self.observe()
             if type(expected) is not ManagedObservation or original != expected:
@@ -411,6 +412,8 @@ class ManagedTransport:
                          'happyranch-release-verifier.socket', 'happyranch-release-verifier.service'):
                 before = self.observe()
                 self._same_members(original, before, removed)
+                if before_effect is not None:
+                    before_effect()
                 if self.observe() != before:
                     raise RetirementUncertain()
                 if dict(before.properties[name])['ActiveState'] not in ('inactive', 'failed'):
@@ -422,6 +425,8 @@ class ManagedTransport:
             for name in ('happyranch-managed.target', 'happyranch-release-verifier.socket'):
                 before = self.observe(stopped=True)
                 self._same_members(original, before, removed)
+                if before_effect is not None:
+                    before_effect()
                 if self.observe(stopped=True) != before:
                     raise RetirementUncertain()
                 if dict(before.properties[name])['UnitFileState'] == 'enabled':

@@ -317,3 +317,78 @@ def test_active_controller_native_failure_retains_denial_and_recovery_evidence(a
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert not (active.root / FINAL).exists()
+
+
+
+def native_target_stop(active, *, drift=None):
+    """Synthetic systemd PartOf result and proc facts, never a cutoff proof."""
+    run = active.io._run
+    def native(argv, **kwargs):
+        result = run(argv, **kwargs)
+        if argv == ['systemctl', 'stop', 'happyranch-managed.target'] and result[0] == 0:
+            active.native_gone('absent')
+            if drift == 'denial':
+                active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+            elif drift == 'unit':
+                (active.root / 'etc/systemd/system/happyranch-connector.service').write_bytes(b'foreign managed unit')
+        return result
+    active.io._run = active.io.manager._run = native
+
+
+def test_active_all_services_stop_uses_original_death_after_actual_target_quiescence(active, monkeypatch):
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        native_target_stop(active)
+        receipt = owner.revoke_and_stop_services()
+        receipt.require()
+        assert repr(receipt) == 'StoppedRetirement(<redacted>)'
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+        assert active.effects() == [['systemctl', 'stop', 'happyranch-headscale.service'],
+            ['systemctl', 'disable', 'happyranch-headscale.service'],
+            ['systemctl', 'stop', 'happyranch-managed.target'],
+            ['systemctl', 'disable', 'happyranch-managed.target'],
+            ['systemctl', 'disable', 'happyranch-release-verifier.socket']]
+        assert all(props['ActiveState'] == 'inactive' for props in active.native.values())
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()
+        # A later mutation invalidates the readback rather than authorizing
+        # cleanup from a stale successful native result.
+        active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            receipt.require()
+
+
+@pytest.mark.parametrize('missing', ['partial-native-stop', 'denial', 'unit'])
+def test_active_managed_stop_requires_complete_independent_proof_after_peer_loss(active, monkeypatch, missing):
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        if missing == 'partial-native-stop':
+            run = active.io._run
+            def native(argv, **kwargs):
+                result = run(argv, **kwargs)
+                if argv == ['systemctl', 'stop', 'happyranch-connector.service'] and result[0] == 0:
+                    (active.root / f'proc/{active.pid}').rename(active.root.parent / 'retained-original-process')
+                return result
+            active.io._run = active.io.manager._run = native
+        else:
+            native_target_stop(active, drift=missing)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_services()
+        attempted = active.effects()
+        assert attempted[:3] == [['systemctl', 'stop', 'happyranch-headscale.service'],
+            ['systemctl', 'disable', 'happyranch-headscale.service'], ['systemctl', 'stop', 'happyranch-managed.target']]
+        if missing == 'partial-native-stop':
+            assert attempted[3:] == [['systemctl', 'stop', 'happyranch-tsnet-sidecar.service'],
+                ['systemctl', 'stop', 'happyranch-connector.service']]
+            assert active.native['happyranch-release-verifier.service']['ActiveState'] == 'active'
+        else:
+            assert len(attempted) == 3
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()

@@ -26,8 +26,10 @@ manifest or deletion authority.
 The active coordinator now passes its real live cutoff receipt and saved
 controller observation into controller stop/disable. Each native effect follows
 a fresh receipt check and controller re-observation after that blocking check.
-This joins the model boundaries for that controller only; managed shutdown and
-selective cleanup/final publication remain unfinished.
+Managed stop/disable also consumes a fresh per-effect guard, joining the actual
+live receipt or existing independent original-death/denial/quiescence proof to
+each native effect. Its stopped readback is not a retired receipt. Selective
+cleanup, account disposition and final publication remain unfinished.
 
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof
