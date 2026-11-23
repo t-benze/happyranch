@@ -4713,6 +4713,27 @@ performs no unlink/rmdir/native/IPC replay. Other cleanup that needs the origina
 domains must precede this final auxiliary step. Trust, accounts and original
 journals remain; account disposition, final publication and the shipping
 retirement sequence are still unfinished.
+The active-only `StoppedRetirement.remove_trust(io, fence)` entry separately
+finishes the original denied connector trust triple and its empty state root.
+Before its first unlink, under the existing original trust lock, the real
+anchored-pair parser must observe complete denial. The owner exclusively writes,
+file/parent-syncs and reads back `home-retirement-denied.json`: only fixed member
+identities bound to the original managed identity, serving peer and retirement
+directory, never trust contents or a final retired claim. Each remaining member
+must exactly match that denied observation. Interrupted publication resynchronizes
+the same valid record; missing/malformed/foreign evidence cannot authorize a
+partly removed trust pair. A surviving original lock is acquired without creation
+and held even across its unlink; contention and replacement refuse.
+Every effect and explicit recovery independently rechecks saved original
+records, original-peer death, complete disabled/native quiescence and original
+directory custody. Neither this intermediate record nor absent trust/lock names
+is writer-death proof. The shared selective remover supplies per-leaf parent
+sync/absence readback and original empty-root rmdir recovery without replay.
+Unknown contents, differing remaining members, reappearing authority, lost
+native proof or replaced ancestors refuse. Ordinary cutoff/recovery readers
+remain strict and cannot use this record as an anchored trust snapshot. Original
+journals, dedicated-account disposition and final publication remain separate
+obligations; no startup, package or admission entry invokes this cleanup.
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held

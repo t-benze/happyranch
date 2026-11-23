@@ -509,6 +509,17 @@ class StoppedRetirement:
             raise RetirementUncertain() from None
 
     @classmethod
+    def remove_trust(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish original denied-trust removal with explicit partial recovery.
+
+        The saved denial identities cannot replace current independent original
+        death and native quiescence. Original journals/accounts remain required;
+        this cleanup does not publish the final retired receipt.
+        """
+        from runtime.remote_access.home_retirement_trust import TrustCleanup
+        TrustCleanup(cls._saved_owner(io, fence)).remove()
+
+    @classmethod
     def remove_controller_executable(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
         """Remove only the original dedicated binary, with partial-sync recovery.
 

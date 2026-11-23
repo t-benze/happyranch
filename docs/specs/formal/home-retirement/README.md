@@ -111,6 +111,20 @@ operation-domain cleanup without recreation or replay. Reappearing authority,
 unknown/replaced roots and native activity refuse. This uses the same Remove
 abstraction and changes no action, denial or final-completion predicate.
 
+The active-only `remove_trust` entry maps the same Remove boundary to the
+original completely denied trust triple and empty connector state root.
+The real anchored-pair parser, under the original lock, supplies denial before
+an exclusive identity-only intermediate record is synchronized/read back.
+Remaining members stay pinned to those denied files during partial removal;
+the model's monotone denial sets abstract that bridge, never a surviving
+authority store. Every subsequent effect/recovery independently requires
+original-peer death and complete current disabled/native quiescence; absence
+or the saved record alone supplies neither. Original ancestry, held surviving
+trust lock, parent sync, fresh absence and no removal replay remain real-code
+obligations. Missing/unknown evidence, remaining-file replacement, reappearance
+and native activity refuse. Original journals and account/final publication
+remain separate obligations. No model action or completion predicate changes.
+
 Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
 fixed original systemd fragments, including fresh partial-removal/lost-parent-
 sync recovery without native or unlink replay. Cleanup-aware native observations
