@@ -4527,7 +4527,10 @@ original-ancestor check and a current target comparison. Immutable leaves keep
 their full original signature. Controller runtime leaves may have been flushed
 during stop, but device/inode/custody/type/link count remain original. Only
 empty leaf directories use rmdir; there is no recursive deletion. Dedicated
-private directories reject unknown members. Every removal synchronizes its
+private directories reject unknown members. Empty leaf directories retain their
+saved original custody, including service-owned leaves: a no-follow open from
+the pinned parent must match the observed leaf on both descriptor and name
+before and after the emptiness check. Every removal synchronizes its
 parent and reads back absence. Explicit reuse accepts positively observed
 absence, never claims who removed it, never recaptures replacements and never
 replays absent removals. Ancestor inode/custody/mode remain pinned across

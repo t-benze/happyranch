@@ -11,7 +11,7 @@ import stat
 from pathlib import PurePosixPath
 from typing import Callable
 
-from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY, _signature
+from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY, _DIRECTORY_FLAGS, _signature
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, _PrivateMembers
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
 from runtime.remote_access.legacy_home_receipt import LIVE_MEMBERS
@@ -78,12 +78,22 @@ class PrivateCleanup:
                         if stat.S_ISDIR(current[4]):
                             # Empty original leaf directories are removed with
                             # rmdir only. No recursive traversal or removal.
-                            with walker._directory(path, contents_may_change=True) as child:
-                                if child is None:
+                            # The leaf can belong to the original service
+                            # account. The parent walker owns ancestors; the
+                            # saved leaf signature owns this empty directory.
+                            child = os.open(PurePosixPath(path).name, _DIRECTORY_FLAGS, dir_fd=parent)
+                            try:
+                                if _signature(os.fstat(child)) != current:
                                     raise RetirementUncertain()
                                 with os.scandir(child) as entries:
                                     if next(entries, None) is not None:
                                         raise RetirementUncertain()
+                                if (_signature(os.fstat(child)) != current
+                                        or _signature(os.stat(PurePosixPath(path).name, dir_fd=parent,
+                                            follow_symlinks=False)) != current):
+                                    raise RetirementUncertain()
+                            finally:
+                                os.close(child)
                     result[path] = current
         return result
 

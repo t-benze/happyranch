@@ -39,6 +39,9 @@ to the stopped/cutoff and held-operation guards through `remove_private`. It
 checks saved original leaves/ancestors before each effect, synchronizes and
 reads back absence, and explicit reuse skips absent originals. Managed/native
 cleanup, account disposition and final publication remain unfinished.
+Empty service-owned directory leaves are opened relative to their pinned parent
+and compared by descriptor/name to the original custody; they are not inferred
+to be root-owned ancestors. The model abstracts this no-follow custody proof.
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They
