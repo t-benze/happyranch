@@ -1,7 +1,7 @@
 # Shared Artifacts contract and transition interfaces
 
 Normative policy: [Founder-approved retention design](../../specs/2026-11-23-shared-artifacts-retention.md)
-(THR-392 seq13/14). Slices A/B are source delivery only. They do not establish
+(THR-392 seq13/14). Slices A/B/D are source delivery only. They do not establish
 live rollout, notices, legacy classification, or destructive activation.
 
 Files must be needed after their originating task and require downloadable-file
@@ -118,6 +118,15 @@ legacy/held, never silently assigned an expiry or deleted.
 
 ## B and D imports
 
+The offline operator importer and its exact manifest/review schemas are documented
+in [reviewed legacy classification](../../operations/shared-artifacts-classification.md).
+It acquires the existing exclusive org-access fence before Database construction;
+a live daemon/session holder refuses admission. Dry-run is the default. Apply
+requires exact inventory/review digests, a persisted session-bound
+`engineering_manager` task-result acceptance, seven elapsed preview days and
+preview acceptance. It never sets preview/source-verification gates or unlinks
+bytes; all legacy bytes count from day one and classification reclaims no space.
+
 Use `SharedArtifactService` and `SharedArtifactsMixin`, not direct counter owners.
 All `*_uncommitted` calls require the same org Database connection inside its
 `shared_artifact_transaction()` (BEGIN IMMEDIATE, shared RLock, rollback through
@@ -133,7 +142,7 @@ COMMIT). Do not call committing thread append methods within it.
 | `prepare_delete_uncommitted(...)` | B persists exact identity/revision/hash intent before its separately fenced unlink; A never unlinks public bytes. |
 | `reconcile_operation(operation_id)` | Reconcile only positive exact staging/publication identity. Uncertain or peer bytes stay held; no generic retry/unlink. |
 | `record_inventory_review_uncommitted(conn,review=...)` | D supplies authenticated immutable digest/reviewer/task/citation/decisions/time receipt; updates/deletes are prohibited. |
-| `classify_legacy_uncommitted(...)` | D validates exact item decision and full attribution, then applies only matching current hash with reviewed inventory and seven-day preview gates. No import-side unlink. |
+| `classify_legacy_uncommitted(...)` | D validates exact item decision and full attribution, then applies only matching current no-follow hash/size with reviewed inventory and seven-day preview gates. Optional `expected_size` adds D's exact reviewed byte bound. No import-side unlink. |
 
 The org-state singleton holds rollout start, preview acceptance, reviewed
 inventory, source-proof verification, completed window and quota latch. B owns
@@ -165,6 +174,12 @@ standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQ
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
 bounded review evidence, not proof of Python execution or activation.
+
+D uses `uv run --frozen python scripts/test_shared_artifacts_d.py` (optional
+`--case manifest|gates|classification|drift|retirement_gates|coordination|rollback|shape`)
+in private SQLite/filesystem data, including the 7,521-file/1,770,412,702-byte
+TASK-18706 shape. It adds no required check. Apply uses one existing transaction
+per item with fresh reference proof; no new retry/crash protocol is added.
 
 ## Slice B reference projection (source only)
 

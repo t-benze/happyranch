@@ -866,7 +866,7 @@ class SharedArtifactService:
         """D applies an exactly reviewed item after both inventory and preview gates."""
         if conn is not self.db._conn or not conn.in_transaction:
             raise RuntimeError('artifact_classification_requires_transaction')
-        review = conn.execute('SELECT * FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
+        review = conn.execute('SELECT inventory_digest,reviewer_agent_id FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
         rollout = conn.execute('SELECT * FROM shared_artifact_org_state WHERE id=1').fetchone()
         if (not review or review['inventory_digest'] != inventory_digest or not rollout['preview_acceptance']
             or not rollout['rollout_started_at'] or self.clock() < _date(rollout['rollout_started_at'])+timedelta(days=RECOVERY_DAYS)):

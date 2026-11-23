@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+from runtime.config import Settings
 from runtime.daemon import runtimes
 from runtime.infrastructure.artifact_store import ArtifactStore
 from runtime.infrastructure.database import Database
@@ -79,7 +80,8 @@ def preview(org: object, inventory: Inventory, review: Review | None, *, review_
             mode, mode_reason = effective_mode(org, conn, now=svc.clock())
             result.update(effective_mode=mode, mode_reason=mode_reason)
             rows = [db._shared_artifact_uncommitted(conn, item.name) for item in inventory.items]
-            outcomes = reference_outcomes(org, conn, [r for r in rows if r], deadline=deadline)
+            outcomes = reference_outcomes(org, conn, [r for r in rows if r], deadline=deadline,
+                                          origin=org.reference_origin)
             for item, row in zip(inventory.items, rows):
                 reference = outcomes.get((row['name'], row['generation'])) if row else None
                 entry, _ = item_preview(org, conn, item, deadline=deadline, reference=reference)
@@ -88,10 +90,17 @@ def preview(org: object, inventory: Inventory, review: Review | None, *, review_
                 entry['will_apply'] = entry['outcome'] == 'eligible' and not result['blocked_reasons']
                 result['items'].append(entry)
             names = {item.name for item in inventory.items}
-            result['unlisted_legacy'] = [r[0] for r in conn.execute(
+            legacy = conn.execute(
                 "SELECT g.name FROM shared_artifact_generations g JOIN shared_artifacts a "
-                "ON a.name=g.name AND a.current_generation=g.generation WHERE g.state='legacy_unclassified' ORDER BY g.name")
-                if r[0] not in names]
+                "ON a.name=g.name AND a.current_generation=g.generation WHERE g.state='legacy_unclassified' ORDER BY g.name LIMIT 100001").fetchall()
+            if len(legacy) > 100000:
+                result['blocked_reasons'].append('legacy_metadata_inventory_incomplete')
+            result['unlisted_legacy'] = [r[0] for r in legacy if r[0] not in names]
+            if time.monotonic() >= deadline:
+                result['blocked_reasons'].append('preview_deadline_exhausted')
+            if result['blocked_reasons']:
+                for entry in result['items']:
+                    entry['will_apply'] = False
             result['unlisted_reason'] = 'not_in_reviewed_inventory; remains legacy_unclassified'
             raise _PreviewRollback
     except _PreviewRollback:
@@ -110,7 +119,7 @@ def run_import(org: object, fence: OrgAccessFence, inventory: Inventory, review:
     if not fence.exclusive or fence.root != org.root or inventory.org != org.slug:
         raise ValueError('exclusive_org_fence_required')
     if apply and (inventory_digest != digest(inventory) or review is None or review_digest != digest(review)):
-        raise ValueError('exact_inventory_and_review_digests_required')
+        raise SharedArtifactError(409, 'exact_inventory_and_review_digests_required')
     result = preview(org, inventory, review, review_error=review_error)
     if not apply:
         return result
@@ -124,15 +133,17 @@ def run_import(org: object, fence: OrgAccessFence, inventory: Inventory, review:
         fence.assert_held()
         if classification_gate(conn, svc.clock()):
             raise ValueError('classification_gate_changed')
-        authenticated_review(conn, inventory, review, now=svc.clock())
         svc.reconcile_usage_uncommitted(conn)
+        # The existing EX interval excludes other cooperative org writers.
+        # Persist one authenticated immutable receipt, rather than reserializing
+        # the entire manifest/review for every item in a large inventory.
+        receipt = _review_receipt(org, conn, inventory, review)
     result['items'] = []
     for item in inventory.items:
         with db.shared_artifact_transaction() as conn:
             fence.assert_held()
             if classification_gate(conn, svc.clock()):
                 raise ValueError('classification_gate_changed')
-            receipt = _review_receipt(org, conn, inventory, review)
             entry, metadata = item_preview(org, conn, item, deadline=time.monotonic() + 30)
             row = db._shared_artifact_uncommitted(conn, item.name)
             if row and entry.get('reference_outcome') != 'absent' and entry.get('reference_outcome'):
@@ -179,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         if re.fullmatch('[a-z0-9-]{1,40}', args.org) is None:
             raise ValueError('invalid_org')
         inventory = read_document(args.inventory, Inventory)
+        if inventory.org != args.org:
+            raise ValueError('inventory_org_mismatch')
         review, review_error = None, None
         try:
             review = read_document(args.review, Review)
@@ -186,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             review_error = 'manager_review_missing_or_invalid'
         if args.apply and (args.inventory_digest != digest(inventory) or review is None
                            or args.review_digest != digest(review)):
-            raise ValueError('exact_inventory_and_review_digests_required')
+            raise SharedArtifactError(409, 'exact_inventory_and_review_digests_required')
         runtime = args.runtime or runtimes.load().active
         if runtime is None or not runtime.is_absolute():
             raise ValueError('absolute_runtime_required')
@@ -199,11 +212,13 @@ def main(argv: list[str] | None = None) -> int:
         db = Database(root / 'happyranch.db', acquisition_timeout=0)
         fence.assert_held()
         teams = TeamsRegistry.load(root)
+        settings = Settings()
         org = SimpleNamespace(root=root, slug=args.org, db=db,
-            manager_ids={teams.executable_manager_for_team(t) for t in teams.teams()} - {None})
+            manager_ids={teams.executable_manager_for_team(t) for t in teams.teams()} - {None},
+            reference_origin=f'http://{settings.daemon_bind_host}:{settings.daemon_port}')
         SharedArtifactService(db, ArtifactStore.open_existing(root / 'artifacts'),
                               known_agents={agent.name for agent in list_agents(OrgPaths(root))})
-        install_reference_seams(org)
+        install_reference_seams(org, origin=org.reference_origin)
         result = run_import(org, fence, inventory, review, apply=args.apply,
             inventory_digest=args.inventory_digest, review_digest=args.review_digest, review_error=review_error)
         print(canonical(result))

@@ -102,7 +102,7 @@ SHARED_ARTIFACT_REVIEW_ACCEPTED <approval_digest>
 
 After completion, add its exact task ID and INTEGER result ID to `acceptance`;
 then compute the final review digest. Excluding the later citation avoids a
-circular hash. The importer reads the existing task/result records: assigned
+circular hash. The importer reads the existing same-org task/result records: assigned
 agent and result agent must both be permanent `engineering_manager`, the task
 and result must be completed, the result session must match the task's retained
 session, and that result must contain the exact acceptance line. Review time
@@ -135,11 +135,17 @@ python -m runtime.daemon.artifact_legacy_import --org ORG \
 Both digests must match. Apply also needs B's persisted first complete preview
 at least seven days ago and the separate persisted preview acceptance. The
 importer never sets those gates or source-protection verification. Authenticated
-review receipts use A's immutable row; classification cites the exact receipt.
+review receipts use A's immutable row, recorded once with legacy discovery before
+per-item classification; every classified row cites the exact receipt. The held
+EX interval excludes other cooperative org writers; immutable review approval
+is reused without repeatedly hashing a large manifest. Reference proofs are
+always fresh per item and never survive COMMIT.
 Current size/hash, literal no-follow ancestry, `legacy_unclassified` state,
 pending operations, known attribution and B's current reference proof are
 revalidated inside each item's transaction. Changed/missing/unsafe bytes and
-indeterminate references stay unclassified. Incomplete accounting refuses apply
+indeterminate references stay unclassified. Absolute artifact URLs use the same
+configured daemon host/port origin as B's scheduler.
+Incomplete accounting refuses apply
 entirely, without reporting a quota discount. Live dependencies are audited;
 default/reference grants remain bounded and B continues to defer expiry while
 the dependency lives. Retire additionally needs effective `enforce`, verified

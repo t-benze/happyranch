@@ -208,7 +208,7 @@ def item_preview(org: object, conn: object, item: InventoryItem, *, deadline: fl
             result['reason'] = 'artifact_operation_pending'
             return result, None
         outcome, refs = reference if reference is not None else reference_outcomes(
-            org, conn, [row], deadline=deadline)[row['name'], row['generation']]
+            org, conn, [row], deadline=deadline, origin=org.reference_origin)[row['name'], row['generation']]
         result.update(reference_outcome=outcome, references=refs)
         if outcome == 'indeterminate':
             result['reason'] = 'dependency_check_unavailable'
@@ -216,7 +216,8 @@ def item_preview(org: object, conn: object, item: InventoryItem, *, deadline: fl
             result['reason'] = 'review_undecided'
         elif not item.owner_agent_id or item.owner_agent_id not in svc.known_agents:
             result['reason'] = 'unknown_owner'
-        elif not item.manager_agent_id or item.manager_agent_id not in org.manager_ids:
+        elif (not item.manager_agent_id or item.manager_agent_id not in org.manager_ids
+              or item.manager_agent_id not in svc.known_agents):
             result['reason'] = 'unknown_manager'
         elif item.classification == 'retire' and outcome != 'absent':
             result['reason'] = 'live_dependency'
