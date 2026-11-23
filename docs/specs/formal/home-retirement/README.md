@@ -30,6 +30,15 @@ finish canonical retirement using the original installed capability first.
 Retained client/shared transport and their notices remain. Synthetic package
 checks do not establish installed dpkg or systemd acceptance.
 
+F02's ordinary `prepare-headscale` and `disable-headscale` CLI adapters now
+refuse before installer construction for both layouts, independently of saved
+state. `test_home_retirement.py::test_retired_operator_commands_have_no_effect`
+observes the exact copy, non-success, unchanged local/legacy files and zero native
+effects. This stronger entry-specific refusal adds no model transition; the
+OldAdmission action still abstracts legacy callers racing the retirement fence.
+Other programmatic/home helper owner retirement remains unfinished, so this
+mapping does not claim that every old admission path has been removed.
+
 ## Incremental implementation records
 
 The records below retain the scope limits of each earlier implementation slice.

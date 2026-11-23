@@ -2444,7 +2444,7 @@ HomeInviteConfig obtains home_endpoint only from the protected READY activation
 receipt, populated by B2 after the local node joins. The stable installation
 config carries neither endpoint nor activation generation. Items 4 and 5 now supply
 inert issuer-directory custody and the uncalled local-node mint composition.
-`prepare-headscale` publishes `home-issuer/` through the installer's literal
+The historical preparation owner publishes `home-issuer/` through the installer's literal
 no-follow, exclusive pending-directory/no-replace/fsync path and records its
 owner and directory identity in root:root 0600
 `home-issuer-publication.json` beside it. An existing exact safe empty directory

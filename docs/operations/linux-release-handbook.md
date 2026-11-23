@@ -402,8 +402,14 @@ see the [health contract](../agent-guides/web-and-cli.md#host-compatibility-heal
 
 ## Inert Headscale custody prefix (3b-2f-1)
 
-The explicit root operator command `python -m runtime.remote_access.installer
-prepare-headscale --layout deb` prepares the locked dedicated
+P24 retires ordinary `prepare-headscale` and `disable-headscale` commands for
+both installer layouts. They fail with the exact home-retirement message before
+installer construction or native effects. Use the canonical explicit retirement
+entry for upgrade/recovery and `home-retirement-status --layout deb` for read-only
+detection. The programmatic owners below still await their P24 source disposition;
+the following describes the historical custody they produced.
+
+The historical `ManagedInstaller.prepare_headscale` owner prepares the locked dedicated
 `happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,
 0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
 It also derives the LAN address and publishes receipted config/DERP YAML (the
