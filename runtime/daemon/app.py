@@ -371,6 +371,13 @@ async def _lifespan(app: FastAPI):
             workspace_cleanup_scheduler_loop(state)
         )
 
+        from runtime.daemon.shared_artifacts_scheduler import shared_artifacts_scheduler_loop
+        from runtime.infrastructure.shared_artifact_references import install_reference_seams
+        for org in state.orgs_snapshot().values():
+            artifacts.artifact_service(org)
+            install_reference_seams(org, origin=f'http://{org.settings.daemon_bind_host}:{org.settings.daemon_port}')
+        shared_artifacts_scheduler_task = asyncio.create_task(shared_artifacts_scheduler_loop(state))
+
         # ── Dashboard projection cold-start + periodic refresh ────────────
         # THR-129: per-org durable last-known-good cache, refreshed every 10s.
         # Load persisted snapshot synchronously (never block the event loop),
@@ -444,6 +451,8 @@ async def _lifespan(app: FastAPI):
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
         workspace_cleanup_scheduler_task.cancel()
+        shared_artifacts_scheduler_task.cancel()
+        await asyncio.gather(shared_artifacts_scheduler_task, return_exceptions=True)
         # Finish the existing task-consumer/native drain before the final job
         # KILL and finalizer wait. Early job TERM already fenced resume hooks.
         try:

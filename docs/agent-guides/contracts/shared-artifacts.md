@@ -1,8 +1,8 @@
 # Shared Artifacts contract and transition interfaces
 
 Normative policy: [Founder-approved retention design](../../specs/2026-11-23-shared-artifacts-retention.md)
-(THR-392 seq13/14). This is Slice A source delivery. It does not establish live
-rollout, notices, classification, or destructive activation.
+(THR-392 seq13/14). Slices A/B are source delivery only. They do not establish
+live rollout, notices, legacy classification, or destructive activation.
 
 Files must be needed after their originating task and require downloadable-file
 delivery. Routine screenshots/logs and task verification stay in task output;
@@ -128,7 +128,8 @@ COMMIT). Do not call committing thread append methods within it.
 | `reconcile_usage_uncommitted(conn)` | Complete bounded inventory, legacy registration and `(physical,reserved)` accounting; no TTL classification. |
 | `quota_crossing_uncommitted(conn)` | Durable latch/sequence. B must commit its alert message/receipt/audit in this same transaction, so retries cannot lose or duplicate crossings. |
 | `lifecycle_transition_uncommitted(...)` | B supplies exact revision, operation ID, reason, effective mode and same-fence full reference outcome. Timeout, preview, protection, recovery and final deleted metadata only; no byte unlink. |
-| `shared_artifact_notice_uncommitted(...)` | One tagless full-JSON system message, receipt and audit; replay returns original sequence. Quota notices use empty name/expiry, generation=crossing sequence and `notice_kind=quota_alert`, with config audit scope. B supplies verified destination and complete visible payload; no delivery activated here. |
+| `shared_artifact_notice_uncommitted(...)` | One tagless full-JSON system message, receipt and audit; replay returns original sequence. Quota notices delegate to the atomic chunk helper below; the singleton wrapper still returns the first sequence. B supplies verified destination and complete visible payload; no delivery activated here. |
+| `shared_artifact_quota_alert_uncommitted(...)` | Caller owns the crossing transaction. All ordered tagless chunks carry crossing_sequence, zero-based chunk_index and chunk_count; one existing receipt key `(empty name, crossing sequence, empty expiry, quota_alert)` stores chunk_count/message_seqs/payloads. Replay returns the stored sequences (old singleton receipts return their original sequence). One config-scoped artifact_quota_alert retains message_seq=first and adds chunk_count/message_seqs. Escaped JSON is at most32KiB per message and at most half the SQLite length limit; no schema change. |
 | `prepare_delete_uncommitted(...)` | B persists exact identity/revision/hash intent before its separately fenced unlink; A never unlinks public bytes. |
 | `reconcile_operation(operation_id)` | Reconcile only positive exact staging/publication identity. Uncertain or peer bytes stay held; no generic retry/unlink. |
 | `record_inventory_review_uncommitted(conn,review=...)` | D supplies authenticated immutable digest/reviewer/task/citation/decisions/time receipt; updates/deletes are prohibited. |
@@ -141,8 +142,9 @@ validation and classification. A's transition seam refuses mutation without
 enforce mode, accepted preview, reviewed inventory, source verification and seven
 elapsed preview days. Legacy remains outside automatic expiry. Expiry starts a
 full seven-day recovery at the actual unavailable transition. Preview/off never
-start an unavailable interval merely because a date passed. DELETE is preview
-only in A. B must complete the audited retirement path before enabling it.
+start an unavailable interval merely because a date passed. DELETE uses the same effective-mode/reference gates: preview/off returns a
+nonmutating preview; gated enforce enters recoverable retirement. Only the
+scheduler later unlinks through the durable intent and final writer fence.
 
 GET resolves generation metadata before bytes. Unavailable rows return
 `410 artifact_unavailable` with date, owner, reason, recovery/deletion dates and
@@ -156,8 +158,92 @@ retain their existing meanings; task/thread provenance lives only in payload.
 
 `uv run --frozen python scripts/test_shared_artifacts.py` runs finite private
 ASGI/SQLite/filesystem cases without a daemon lifespan, listener, provider or live
-org. `--case metadata|provisional|journal|custom|quota|shape` selects a group. This is a
+org. `--case metadata|provisional|journal|custom|quota|shape` selects a group.
+B uses `uv run --frozen python scripts/test_shared_artifacts_b.py --case` with
+`all|manual-delete|quota-chunks|references|handoff-paths|history|live-cap|notices|sweep|sweep-shape` (default all). This is a
 standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL shape case) outside the retired Python suite. It adds no CI
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
 bounded review evidence, not proof of Python execution or activation.
+
+## Slice B reference projection (source only)
+
+`shared_artifact_references.reference_outcomes` reads the complete bounded live
+projection under the caller's retained writer transaction. It first reads only
+task IDs, statuses and parent IDs to select `pending`, `in_progress` and
+`escalated` tasks plus their direct children. It then loads only those tasks'
+briefs, final summaries and results, following explicit TASK handoffs to closure
+with a visited set. Unrelated closed task/result text never consumes the32MiB
+text bound; required live-closure text exceeding that bound still makes the
+proof indeterminate. The100,000-row and shared deadline bounds also cover the
+task metadata scan; unknown statuses and missing/malformed required handoffs
+remain indeterminate. Open-thread and skill-source projection is unchanged.
+Relative and absolute org-qualified task paths compare org identity after the
+single percent-decode used by the ASGI path: only a valid decoded slug different
+from this org is foreign and excluded. Malformed escapes, invalid UTF-8,
+invalid slugs (including decoded slashes or a still-encoded percent after one
+decode) retain the handoff, so missing required tasks remain indeterminate.
+Outcomes are collected
+before own audit writes; no snapshot survives COMMIT or lock release. The final
+lifecycle/unlink caller must retain that fence through its decision. Structured
+shared attachments preserve generation pins. Non-retired B2 versions and every
+materialization record hold their source. Retired sources lacking authoritative
+in-flight reader exclusion remain indeterminate; retirement does not authorize
+deletion. Recovery selects an eligible current version before reading its source,
+so the same conservative hold covers a previously selected recovery reader.
+Neither this module nor installation sets source_protection_verified, preview
+acceptance or inventory review. Full rollout remains separately held.
+
+## Slice B notices (source only)
+
+`SharedArtifactNotices` uses A's atomic notice/quota writers. Receipt-linked
+thread IDs are reusable only with open system provenance, matching notice
+channel and exact active participants. Founder is visible through the existing
+inbox and is never an agent participant. Expiry identity is generation plus
+expiry; due time, actual delivery time and lateness are explicit. Human, unknown
+and retired owners use recorded accountable agent, origin-team manager, then
+engineering_manager; an unavailable route remains pending without false delivery.
+Timeout notices use upload +24h and upload +90d expiry even during preview,
+without changing lifecycle metadata. A queued timeout receipt survives later binding;
+its historical upload-based expiry and the current expiry are both visible. Quota crossings include every file entry
+in bounded full-JSON chunks; legacy entries direct managers to reviewed inventory
+classification, with renewal/restore commands unavailable until classified. All
+managers participate in one storage
+thread; chunk messages/receipt/audit and latch commit together. Required fields
+are in tagless system_payload, which the existing inbox and CLI show in full.
+`uv run --frozen python scripts/test_shared_artifacts_b.py --case notices`
+checks the real private API inbox and CLI rendering. QA browser rendering remains
+independent acceptance; source delivery does not activate live notices.
+
+## Slice B daily lifecycle (source only)
+
+`shared_artifacts_scheduler` runs at04:00 org-local time after30s warm-up, takes
+the latest real occurrence (fold0; nonexistent occurrences skipped), and claims
+one persisted audit window. It uses250-row keysets and one60s monotonic deadline
+passed through inventory, reference, notice and byte-identity work. An incomplete
+pass records its cursor; unseen work waits for a later daily window. Only issued
+delete intents are reconciled within a serviced window; incomplete destructive
+passes are not replayed. Native work retains org lifetime and cancellation
+custody through its terminal result before database close.
+
+A's day-one accounting may register previously unseen legacy blobs; preview
+never changes existing lifecycle state, expiry, recovery interval or bytes. It
+can persist notices, audits, quota latch, inventory observations and a completed
+preview start. Legacy null-expiry files remain unclassified and are never
+automatically expired/deleted. A live reference holds expiry; removal starts a
+full7d recovery at the actual transition. After recovery, A commits intent and
+audit before B reacquires a fresh complete reference proof and exact no-follow
+identity under one writer fence through unlink, tombstone and audit. Missing
+bytes can reconcile only a previously issued intent; changed inode/hash/symlink
+bytes remain held. Final failure leaves the durable issued intent explainable.
+`reconcile_usage_uncommitted`, `quota_crossing_uncommitted` and
+`prepare_delete_uncommitted` accept an optional shared deadline; omitted keeps
+their prior behavior. `lifecycle_transition_uncommitted` accepts optional
+reclaimed_bytes for B's final deletion audit; omitted keeps its prior payload.
+
+Mode defaults to preview. YAML off must be written as `cleanup_mode: "off"`;
+boolean/invalid/unreadable config holds mutation. Enforce requires7 elapsed
+preview days, explicit preview acceptance, inventory review and independently
+verified source protection. Source delivery sets none of those approval flags.
+Turning preview/off stops new destructive decisions; issued effects retain
+journal custody. No live activation, deploy or restart is part of this PR.
