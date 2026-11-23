@@ -268,6 +268,9 @@ async def references_case(root: Path) -> None:
                 conn.execute("UPDATE task_results SET decision_json='{' WHERE session_id='synthetic-reference'")
             check('indeterminate','malformed-result-json')
             with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE task_results SET decision_json='42' WHERE session_id='synthetic-reference'")
+            check('indeterminate','malformed-result-root')
+            with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE task_results SET decision_json=NULL WHERE session_id='synthetic-reference'")
                 conn.execute("UPDATE tasks SET status='completed',brief='Done',block_kind=NULL WHERE id='TASK-100'")
             for text,expected,label in (

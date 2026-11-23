@@ -66,6 +66,8 @@ class ReferenceProof:
             raise ReferenceUnavailable('reference_snapshot_changed')
 
     def _add(self, name: str, source: str, generation: int | None = None) -> None:
+        if not isinstance(name, str):
+            raise ReferenceUnavailable('malformed_reference')
         try:
             self.store.validate_name(name)
         except InvalidArtifactName as exc:
@@ -168,7 +170,10 @@ class ReferenceProof:
                 todo.extend(self._text(r['output_summary'], task_id))
                 for key in ('decision_json', 'risks_flagged'):
                     if r[key]:
-                        for value in self._strings(json.loads(r[key])):
+                        decoded = json.loads(r[key])
+                        if not isinstance(decoded, dict if key == 'decision_json' else list):
+                            raise ReferenceUnavailable('malformed_result_payload')
+                        for value in self._strings(decoded):
                             todo.extend(self._text(value, task_id))
         threads = self._read('SELECT id,status FROM threads')
         if any(t['status'] not in ('open', 'archived') for t in threads):
@@ -196,6 +201,8 @@ class ReferenceProof:
             if v['org_slug'] != self.slug:
                 raise ReferenceUnavailable('skill_source_provenance_unavailable')
             name = v['content_artifact_key']
+            if not isinstance(name, str):
+                raise ReferenceUnavailable('malformed_skill_source')
             self.store.validate_name(name)
             if not v['retired_at'] and not v['purged_at']:
                 self._add(name, f"B2:{v['id']}")
