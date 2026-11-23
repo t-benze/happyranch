@@ -2,6 +2,51 @@ import AppKit
 import WebKit
 import HappyRanchSupervisor
 
+/// Bounded native diagnostics; never retain the relay token or error userInfo.
+struct AppSchemeAdmissionDiagnostic: Sendable, CustomStringConvertible {
+    var contextRead = "not-attempted"
+    var bind = "not-attempted"
+    var readiness = "not-attempted"
+    var description: String { "context=\(contextRead), bind=\(bind), readiness=\(readiness)" }
+}
+
+struct AppSchemeLoadFailure: Error, Sendable, CustomStringConvertible {
+    enum Stage: String, Sendable {
+        case navigationProvisional = "navigation-provisional"
+        case navigationCommit = "navigation-commit"
+        case relayContextRead = "relay-context-read"
+        case bind
+        case documentIdentityCheck = "document-identity-check"
+        case readiness
+        case cancellationFence = "cancellation-fence"
+        case initialization
+        case contentProcessTermination = "content-process-termination"
+    }
+    let stage: Stage
+    let admission: AppSchemeAdmissionDiagnostic
+    let errorDomain: String?
+    let errorCode: Int?
+    let errorDescription: String?
+
+    init(stage: Stage, error: Error? = nil, admission: AppSchemeAdmissionDiagnostic = .init()) {
+        self.stage = stage; self.admission = admission
+        let native = error.map { $0 as NSError }
+        errorDomain = native.map { Self.safeText($0.domain) }
+        errorCode = native?.code
+        errorDescription = native.map { Self.safeText($0.localizedDescription) }
+    }
+    // Error descriptions can embed URLs. Omit their authority/query entirely,
+    // redact known credential forms, and bound the result before retaining it.
+    private static func safeText(_ text: String) -> String {
+        let redacted = DiagnosticsRedactor.redact(text).replacingOccurrences(
+            of: #"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"<>]+"#, with: "[URL]", options: .regularExpression)
+        return String(redacted.prefix(1024))
+    }
+    var description: String {
+        "stage=\(stage.rawValue), \(admission), NSError(domain=\(errorDomain ?? "none"), code=\(errorCode.map(String.init) ?? "none"), description=\(errorDescription ?? "none"))"
+    }
+}
+
 struct AppSchemeRoute {
     static let origin = "happyranch-app://app"
     let path: String
@@ -79,6 +124,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var state = "target_starting"
     private var hostContract: [String: Int]?
     private var incompatibleSide = "host"
+    private(set) var documentAdmission = AppSchemeAdmissionDiagnostic()
     private let promptURL: String?
     private let accessUnsaved: Bool
     private let configPolicy: [(String, [String])]
@@ -151,16 +197,46 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     func admitDocument() async throws {
         let expected = document
-        guard let view else { throw AppAPIError.cancelled }
-        let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
-        guard document == expected, self.view === view, let context = raw as? String,
-              context.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else { throw AppAPIError.cancelled }
-        documentContext = context
-        let bound = try await view.callAsyncJavaScript("return window.__hrAppAdmit?.(context);",
-            arguments: ["context": context], in: nil, in: .page)
-        guard document == expected, self.view === view, bound as? Bool == true else { throw AppAPIError.cancelled }
-        try await checkAdmission(refresh: true)
-        guard document == expected, self.view === view else { throw AppAPIError.cancelled }
+        var diagnostic = AppSchemeAdmissionDiagnostic()
+        var stage = AppSchemeLoadFailure.Stage.cancellationFence
+        defer { documentAdmission = diagnostic }
+        do {
+            guard let view else { throw AppAPIError.cancelled }
+            stage = .relayContextRead; diagnostic.contextRead = "in-flight"
+            documentAdmission = diagnostic
+            let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
+            diagnostic.contextRead = raw is String ? "string-unchecked" : "missing-or-non-string"
+            stage = .documentIdentityCheck
+            guard document == expected, self.view === view else { throw AppAPIError.cancelled }
+            stage = .relayContextRead
+            guard let context = raw as? String,
+                  context.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else { throw AppAPIError.cancelled }
+            diagnostic.contextRead = "valid"
+            documentContext = context
+            stage = .bind; diagnostic.bind = "in-flight"
+            documentAdmission = diagnostic
+            let bound = try await view.callAsyncJavaScript("return window.__hrAppAdmit?.(context);",
+                arguments: ["context": context], in: nil, in: .page)
+            diagnostic.bind = (bound as? Bool).map { $0 ? "true" : "false" } ?? "missing-or-non-boolean"
+            stage = .documentIdentityCheck
+            guard document == expected, self.view === view else { throw AppAPIError.cancelled }
+            stage = .bind
+            guard bound as? Bool == true else { throw AppAPIError.cancelled }
+            stage = .readiness; diagnostic.readiness = "in-flight"
+            documentAdmission = diagnostic
+            try await checkAdmission(refresh: true)
+            diagnostic.readiness = state
+            stage = .documentIdentityCheck
+            guard document == expected, self.view === view else { throw AppAPIError.cancelled }
+        } catch {
+            if diagnostic.contextRead == "in-flight" { diagnostic.contextRead = "threw" }
+            if diagnostic.bind == "in-flight" { diagnostic.bind = "threw" }
+            if stage == .readiness {
+                diagnostic.readiness = state
+                if error is CancellationError || (error as? AppAPIError) == .cancelled { stage = .cancellationFence }
+            }
+            throw AppSchemeLoadFailure(stage: stage, error: error, admission: diagnostic)
+        }
     }
 
     /// A post-admission readiness observation changes status and future send

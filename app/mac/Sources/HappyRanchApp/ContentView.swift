@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import HappyRanchSupervisor
+import os
 
 /// Main uses the one packaged app origin. `url` identifies the selected native
 /// owner for existing release-load callbacks; it is never loaded by WebKit.
@@ -11,7 +12,12 @@ struct WebView: NSViewRepresentable {
     var accessUnsaved = false
     var readiness: AppAPIHealth?
     var onLoaded: (@MainActor (URL) -> Void)?
-    var onFailed: (@MainActor (URL) -> Void)?
+    var onFailed: (@MainActor (URL, AppSchemeLoadFailure) -> Void)?
+    private static let logger = Logger(subsystem: "com.happyranch.app", category: "AppSchemeLoad")
+
+    private static func logFailure(_ failure: AppSchemeLoadFailure, callbacks: [String] = []) {
+        logger.error("App load failed: \(failure.stage.rawValue, privacy: .public); \(failure.description, privacy: .private); callbacks=\(callbacks.joined(separator: "; "), privacy: .private)")
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -22,9 +28,21 @@ struct WebView: NSViewRepresentable {
         private var navigation: WKNavigation?
         private var loadID = UUID()
         private var downloads: [WKDownload] = []
+        private(set) var callbackURLs: [String] = []
         init(_ owner: WebView) { self.owner = owner }
+        private func recordCallback(_ event: String, url: URL?) {
+            // Keep app path/trailing-slash evidence, never credentials/query or
+            // a data/blob/foreign URL that could contain a body or a secret.
+            var parts = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+            parts?.user = nil; parts?.password = nil; parts?.query = nil; parts?.fragment = nil
+            let appURL = parts?.scheme == "happyranch-app" && parts?.host == "app"
+            let value = DiagnosticsRedactor.redact(appURL ? (parts?.string ?? "nil") : (url == nil ? "nil" : "non-app-url"))
+            if callbackURLs.count == 16 { callbackURLs.removeFirst() }
+            callbackURLs.append("\(event)=\(String(value.prefix(1024)))")
+        }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+            recordCallback("action", url: action.request.url)
             guard let target = action.request.url else { decisionHandler(.cancel); return }
             if target.scheme == "blob", action.shouldPerformDownload {
                 decisionHandler(.download); return
@@ -42,6 +60,7 @@ struct WebView: NSViewRepresentable {
         }
         func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+            recordCallback("response", url: response.response.url)
             guard response.isForMainFrame, let http = response.response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode), let url = http.url, (try? AppSchemeRoute(url)) != nil else {
                 decisionHandler(.cancel); return
@@ -49,10 +68,15 @@ struct WebView: NSViewRepresentable {
             decisionHandler(.allow)
         }
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            recordCallback("provisional", url: webView.url)
             self.navigation = navigation; loadID = UUID()
             scheme?.documentDidStart()
         }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            recordCallback("commit", url: webView.url)
+        }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            recordCallback("finish", url: webView.url)
             guard let navigation, self.navigation === navigation, let scheme,
                   let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
             let expected = loadID, selected = owner.url
@@ -62,22 +86,38 @@ struct WebView: NSViewRepresentable {
                     try await scheme.admitDocument()
                     guard loadID == expected, self.navigation === navigation, self.scheme === scheme,
                           webView.url == url, owner.url == selected else { return }
+                    WebView.logger.debug("App load admitted: \(scheme.documentAdmission.description, privacy: .public)")
                     onLoaded?(selected)
                 } catch {
                     guard loadID == expected, self.scheme === scheme, owner.url == selected else { return }
-                    onFailed?(selected)
+                    let failure = (error as? AppSchemeLoadFailure) ?? AppSchemeLoadFailure(stage: .readiness, error: error)
+                    WebView.logFailure(failure, callbacks: callbackURLs)
+                    onFailed?(selected, failure)
                 }
             }
         }
-        private func failed(_ navigation: WKNavigation?) {
+        private func failed(_ navigation: WKNavigation?, failure: AppSchemeLoadFailure) {
             guard let navigation, self.navigation === navigation else { return }
             loadID = UUID(); self.navigation = nil; scheme?.documentDidStart()
-            owner.onFailed?(owner.url)
+            WebView.logFailure(failure, callbacks: callbackURLs)
+            owner.onFailed?(owner.url, failure)
         }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(navigation) }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(navigation) }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            recordCallback("navigation-commit-failed", url: webView.url)
+            recordCallback("failing-url", url: (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            failed(navigation, failure: AppSchemeLoadFailure(stage: .navigationCommit, error: error))
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            recordCallback("navigation-provisional-failed", url: webView.url)
+            recordCallback("failing-url", url: (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            failed(navigation, failure: AppSchemeLoadFailure(stage: .navigationProvisional, error: error))
+        }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            loadID = UUID(); navigation = nil; scheme?.close(); owner.onFailed?(owner.url)
+            recordCallback("content-process-terminated", url: webView.url)
+            loadID = UUID(); navigation = nil; scheme?.close()
+            let failure = AppSchemeLoadFailure(stage: .contentProcessTermination)
+            WebView.logFailure(failure, callbacks: callbackURLs)
+            owner.onFailed?(owner.url, failure)
         }
         func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
         func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
@@ -104,7 +144,9 @@ struct WebView: NSViewRepresentable {
             return view
         } catch {
             let view = WKWebView(frame: .zero, configuration: config)
-            Task { onFailed?(url) }
+            let failure = AppSchemeLoadFailure(stage: .initialization, error: error)
+            Self.logFailure(failure)
+            Task { onFailed?(url, failure) }
             return view
         }
     }
@@ -132,7 +174,7 @@ struct ContentView: View {
                         accessUnsaved: appDelegate.homeInvite.bridgeHasUnsavedAccess,
                         readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
                         onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
-                        onFailed: { appDelegate.homeInvite.webFailed(url: $0, lifetime: lifetime) })
+                        onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
                         .id(urlString + lifetime.attempt.uuidString + lifetime.document.uuidString + appDelegate.appTargetGeneration.uuidString)
                     if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
                         HomeSessionStatus(model: appDelegate.homeInvite)

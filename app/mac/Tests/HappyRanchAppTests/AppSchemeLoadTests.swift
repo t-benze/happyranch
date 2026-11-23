@@ -8,10 +8,12 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
     let body: Data
     private let lock = NSLock()
     private var writes = 0
+    private var healthReads = 0
     private var held: AppAPITransfer?
     private var suspendHealth = false
     private var heldHealth: AppAPITransfer?
     var mutations: Int { lock.withLock { writes } }
+    var healthInvocations: Int { lock.withLock { healthReads } }
     var pending: AppAPITransfer? { lock.withLock { held } }
     var pendingHealth: AppAPITransfer? { lock.withLock { heldHealth } }
     func suspendNextHealth() { lock.withLock { suspendHealth = true } }
@@ -32,6 +34,7 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
         guard method == "GET", target == "/api/v1/health" else {
             transfer.finish(AppAPIError.invalidResponse); return transfer
         }
+        lock.withLock { healthReads += 1 }
         if lock.withLock({
             guard suspendHealth else { return false }
             suspendHealth = false; heldHealth = transfer; return true
@@ -56,7 +59,8 @@ final class AppSchemeLoadTests: XCTestCase {
             ("ready", #"{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":false}}"#, true)
         ] {
             var phase = "resolve physical temporary directory"
-            func detail(_ message: String = "") -> String { "[\(label)] \(phase): \(message)" }
+            var diagnostics: () -> String = { "loader not initialized" }
+            func detail(_ message: String = "") -> String { "[\(label)] \(phase): \(message); \(diagnostics())" }
             do {
                 // Foundation may strip /private after resolving symlinks. The
                 // descriptor loader requires the physical path with no aliases.
@@ -76,12 +80,16 @@ final class AppSchemeLoadTests: XCTestCase {
                 let transport = SchemeHealthFixture(body: Data(health.utf8))
                 let selected = URL(string: "http://127.0.0.1:49152/")!
                 var loaded: [URL] = [], failed: [URL] = []
+                var failures: [AppSchemeLoadFailure] = []
                 let owner = WebView(url: selected, transport: transport, remote: false,
-                    onLoaded: { loaded.append($0) }, onFailed: { failed.append($0) })
+                    onLoaded: { loaded.append($0) }, onFailed: { failed.append($0); failures.append($1) })
                 let coordinator = owner.makeCoordinator()
                 phase = "AppScheme.init / ConnectionAssets (temporary=\(FileManager.default.temporaryDirectory.path), assets=\(assets.path))"
                 let scheme = try AppScheme(root: assets, transport: transport, remote: false, policyURL: policy)
                 defer { scheme.close() }
+                diagnostics = {
+                    "failures=\(failures.map(\.description)); callbacks=\(coordinator.callbackURLs); admission={\(scheme.documentAdmission)}; healthInvocations=\(transport.healthInvocations)"
+                }
                 coordinator.scheme = scheme
                 let config = WKWebViewConfiguration()
                 scheme.configure(config)
@@ -119,7 +127,7 @@ final class AppSchemeLoadTests: XCTestCase {
                         arguments: ["generation": scheme.generation], in: nil, in: .page) as? String
                     let pendingDeadline = Date().addingTimeInterval(5)
                     while transport.pending == nil && Date() < pendingDeadline { try await Task.sleep(for: .milliseconds(10)) }
-                    let pending = try XCTUnwrap(transport.pending)
+                    let pending = try XCTUnwrap(transport.pending, detail())
                     let documentURL = view.url
                     for busy in [true, false] {
                         phase = "ready: publish busy=\(busy) and retain draft/transfer"
@@ -128,7 +136,7 @@ final class AppSchemeLoadTests: XCTestCase {
                         let status = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, in: .page)
                         XCTAssertEqual(status as? String, busy ? "busy" : "ready", detail())
                         let retained = try await view.callAsyncJavaScript("return [window.__hrAppContext, window.unsentDraft];", arguments: [:], in: nil, in: .page) as? [String]
-                        XCTAssertEqual(retained, [try XCTUnwrap(context), "unsent task brief"], detail())
+                        XCTAssertEqual(retained, [try XCTUnwrap(context, detail()), "unsent task brief"], detail())
                         XCTAssertEqual(view.url, documentURL, detail())
                         XCTAssertFalse(pending.isCancelled, detail("Busy/ready must not stop an in-flight mutation"))
                         XCTAssertEqual(transport.mutations, 2, detail("Readiness recovery must never replay"))
@@ -140,7 +148,7 @@ final class AppSchemeLoadTests: XCTestCase {
                     let olderAdmission = Task { try await scheme.admitDocument() }
                     let healthDeadline = Date().addingTimeInterval(5)
                     while transport.pendingHealth == nil && Date() < healthDeadline { try await Task.sleep(for: .milliseconds(10)) }
-                    let olderHealth = try XCTUnwrap(transport.pendingHealth)
+                    let olderHealth = try XCTUnwrap(transport.pendingHealth, detail())
                     for busy in [true, false] {
                         scheme.updateReadiness(try AppAPIHealth(status: 200, data: Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy)}}".utf8)))
                     }
@@ -176,9 +184,9 @@ final class AppSchemeLoadTests: XCTestCase {
                         phase = "ready: replacement \(path) admission"
                         try await scheme.admitDocument()
                         let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
-                        return try XCTUnwrap(raw as? String)
+                        return try XCTUnwrap(raw as? String, detail())
                     }
-                    let old = try XCTUnwrap(context)
+                    let old = try XCTUnwrap(context, detail())
                     let cleanReceipt = try await push(clean, context: old)
                     XCTAssertEqual(cleanReceipt, "accepted", detail())
                     XCTAssertTrue(scheme.allowsNavigation, detail())
