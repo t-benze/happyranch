@@ -1595,3 +1595,217 @@ def test_auxiliary_journal_preserves_a_populated_original_operation_inventory(fi
         assert 32768 < (fixture.root / JOURNAL).stat().st_size <= 1024 * 1024
         assert RetirementJournal(fixture.io, fence).load().auxiliary == original.auxiliary
         assert fixture.effects() == []
+
+
+OPERATION_LOCKS = (ISSUER + '/invite-issuer.lock', MINTER + '/happyranch-invite', MINTER + '/happyranch-node')
+
+
+def writer_lock(root: Path, relative: str) -> int:
+    """A fresh process opens the same shipping serialization inode."""
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, '-c', '''
+import fcntl, os, sys
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(73)
+finally:
+    os.close(descriptor)
+''', str(root / relative)], capture_output=True).returncode
+
+
+@pytest.mark.parametrize('relative', OPERATION_LOCKS)
+def test_held_auxiliary_exclusion_blocks_real_writer_until_context_exit(
+        fixture: InventoryFixture, relative: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        before = fixture.snapshot()
+        assert writer_lock(fixture.root, relative) == 0
+        with held_auxiliary_operations(journal, original) as exclusion:
+            assert repr(exclusion) == 'AuxiliaryExclusion(<redacted>)'
+            exclusion.require()
+            assert writer_lock(fixture.root, relative) == 73
+            # Revalidation must neither reopen/release the actual writer lock
+            # nor lose it while another named domain is being checked.
+            exclusion.require()
+            assert writer_lock(fixture.root, relative) == 73
+        assert writer_lock(fixture.root, relative) == 0
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            exclusion.require()
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('relative', OPERATION_LOCKS)
+def test_held_auxiliary_contention_releases_earlier_locks_without_effects(
+        fixture: InventoryFixture, relative: str) -> None:
+    import fcntl
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        before = fixture.snapshot()
+        descriptor = os.open(fixture.root / relative, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original):
+                    pytest.fail('contended original must not enter caller operation')
+            for candidate in OPERATION_LOCKS:
+                assert writer_lock(fixture.root, candidate) == (73 if candidate == relative else 0)
+        finally:
+            os.close(descriptor)
+        for candidate in OPERATION_LOCKS:
+            assert writer_lock(fixture.root, candidate) == 0
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('relative', [OPERATION, ISSUER_RECEIPT, TRANSACTION, *OPERATION_LOCKS])
+@pytest.mark.parametrize('phase', ['before-acquire', 'held'])
+def test_held_auxiliary_never_adopts_replaced_original_evidence(
+        fixture: InventoryFixture, relative: str, phase: str) -> None:
+    import shutil
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        def replace_original() -> dict:
+            target = fixture.root / relative
+            saved = fixture.root.parent / 'original-auxiliary-member'
+            target.rename(saved)
+            if saved.is_dir():
+                shutil.copytree(saved, target)
+            else:
+                shutil.copy2(saved, target)
+            return fixture.snapshot()
+        if phase == 'before-acquire':
+            before = replace_original()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original):
+                    pytest.fail('replacement must not acquire original exclusion')
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original):
+                    before = replace_original()
+                    # Context exit itself must check even without caller require.
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+def test_held_auxiliary_refuses_replacement_during_lock_acquisition(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    import fcntl
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        real_flock, replaced = fcntl.flock, []
+        def flock(descriptor, operation):
+            result = real_flock(descriptor, operation)
+            if not replaced and Path(os.readlink(f'/proc/self/fd/{descriptor}')) == fixture.root / OPERATION_LOCKS[0]:
+                target = fixture.root / OPERATION_LOCKS[0]
+                target.rename(fixture.root.parent / 'original-held-issuer-lock')
+                fixture.file(OPERATION_LOCKS[0], b'')
+                replaced.append(fixture.snapshot())
+            return result
+        with monkeypatch.context() as scoped:
+            scoped.setattr(fcntl, 'flock', flock)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original):
+                    pytest.fail('a lock on an unlinked original is not named exclusion')
+        assert replaced and fixture.snapshot() == replaced[0] and fixture.effects() == []
+        assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
+
+
+@pytest.mark.parametrize('body_failure', [False, True])
+def test_held_auxiliary_context_releases_all_descriptions_on_caller_failure(
+        fixture: InventoryFixture, body_failure: bool) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    class CallerFailure(Exception):
+        pass
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        before = fixture.snapshot()
+        def operation():
+            with held_auxiliary_operations(journal, original) as exclusion:
+                assert all(writer_lock(fixture.root, path) == 73 for path in OPERATION_LOCKS)
+                if body_failure:
+                    raise CallerFailure()
+                return exclusion
+        if body_failure:
+            with pytest.raises(CallerFailure):
+                operation()
+        else:
+            operation()
+        assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('issuer_empty', [False, True])
+def test_held_auxiliary_never_initializes_an_absent_lock_domain(
+        fixture: InventoryFixture, issuer_empty: bool) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    if issuer_empty:
+        auxiliary_setup(fixture)
+        for name in ('invite-issuer.json', 'invite-issuer.lock'):
+            (fixture.root / ISSUER / name).unlink()
+    else:
+        managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        before = fixture.snapshot()
+        if issuer_empty:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original):
+                    pytest.fail('empty issuer has no original lock to exclude an old writer')
+        else:
+            with held_auxiliary_operations(journal, original) as exclusion:
+                exclusion.require()
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('damage', ['record', 'expired-fence'])
+def test_held_auxiliary_requires_unchanged_saved_record_and_live_fence(
+        fixture: InventoryFixture, damage: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        if damage == 'record':
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                with held_auxiliary_operations(journal, original) as exclusion:
+                    record = fixture.root / STATE / 'home-retirement-inventory.json'
+                    data = record.read_bytes()
+                    record.rename(fixture.root.parent / 'original-inventory-record')
+                    fixture.file(STATE + '/home-retirement-inventory.json', data)
+                    before = fixture.snapshot()
+                    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                        exclusion.require()
+                    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                        with held_auxiliary_operations(journal, original):
+                            pytest.fail('replacement saved record must not enter')
+            assert fixture.snapshot() == before and fixture.effects() == []
+            assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
+    if damage == 'expired-fence':
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            with held_auxiliary_operations(journal, original):
+                pytest.fail('closed fence must not acquire exclusion')
+        assert fixture.snapshot() == before and fixture.effects() == []

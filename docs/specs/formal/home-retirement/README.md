@@ -30,6 +30,11 @@ Managed stop/disable also consumes a fresh per-effect guard, joining the actual
 live receipt or existing independent original-death/denial/quiescence proof to
 each native effect. Its stopped readback is not a retired receipt. Selective
 cleanup, account disposition and final publication remain unfinished.
+The stopped coordinator can additionally hold the exact original issuer and
+minter writer lock descriptions through `held_operations`, with original-member
+and native/cutoff readback. Absent domains are not created or declared locked.
+This supplies operation exclusion only; the model's Remove action still needs
+the unfinished selective cleanup/recovery owner.
 
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof

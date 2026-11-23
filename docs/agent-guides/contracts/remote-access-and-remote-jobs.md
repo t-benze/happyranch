@@ -4476,6 +4476,22 @@ auxiliary member and ancestor identities join the durable journal, whose byte
 budget is 1 MiB. Loading keeps saved original observations after disappearance
 or replacement; it grants no effect acknowledgement.
 
+`home_retirement_operations.held_auxiliary_operations` keeps the existing
+original issuer file lock and both existing per-user minter directory locks
+exclusively held across its entire context. Every use revalidates the saved
+original journal, live fence, auxiliary names/ancestors and the actual held
+descriptions. Lock contention or replacement refuses and closes every acquired
+description, including on caller failure. It does not sample and release locks
+between checks. No absent directory or lock is initialized; absence stays an
+observation, not a held writer lock or proof of writer death. An existing issuer
+directory without its original lock refuses. Only the serialization directory's
+contents metadata may differ after original journal publication; its original
+inode/custody/mode and all auxiliary members remain pinned. This unchanged-member
+context cannot reconcile intentional removals or authorize selective cleanup.
+`StoppedRetirement.held_operations` joins the context to fresh saved-record,
+native stopped/disabled and independent cutoff readback before and after caller
+work. This supplies no final receipt, key-cleanup proof or package gate.
+
 `home_retirement_coordinator.ActiveRetirement` composes active pre-effect
 preparation under the same actual installer I/O and live fence. Independent
 historical lineage and native observations select the connector process; real

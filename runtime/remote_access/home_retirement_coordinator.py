@@ -10,13 +10,15 @@ Inert/pre-activation retirement and post-effect recovery have separate proofs.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Iterator
 
 from runtime.remote_access.home_retirement import RetirementUncertain
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
+from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion, held_auxiliary_operations
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery, RecoveredCutoffReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
@@ -181,3 +183,18 @@ class StoppedRetirement:
         OwnedService(owner.journal.io, owner.original.ownership.service).confirm(self.controller)
         owner.native_journal.transport.confirm(self.managed)
         self.cutoff.require()
+
+    @contextmanager
+    def held_operations(self) -> Iterator[AuxiliaryExclusion]:
+        """Join actual stopped/cutoff proof to held original operation locks.
+
+        Absence is never a held lock. This unchanged-original context provides
+        no removal or recovery of partial removal, and emits no final receipt.
+        """
+        self.require()
+        with held_auxiliary_operations(self._owner.journal, self._owner.original) as exclusion:
+            self.require()
+            exclusion.require()
+            yield exclusion
+            self.require()
+            exclusion.require()

@@ -355,11 +355,17 @@ def test_active_all_services_stop_uses_original_death_after_actual_target_quiesc
         assert all(props['ActiveState'] == 'inactive' for props in active.native.values())
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert not (active.root / FINAL).exists()
+        with receipt.held_operations() as exclusion:
+            exclusion.require()
+            assert not (active.root / FINAL).exists()
         # A later mutation invalidates the readback rather than authorizing
         # cleanup from a stale successful native result.
         active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
         with pytest.raises(RetirementUncertain, match='^migration pending$'):
             receipt.require()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            with receipt.held_operations():
+                pytest.fail('stale native/cutoff proof must not enter operation exclusion')
 
 
 @pytest.mark.parametrize('missing', ['partial-native-stop', 'denial', 'unit'])
