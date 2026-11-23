@@ -116,6 +116,13 @@ class SharedArtifactsMixin:
         from runtime.models import ThreadMessageKind
         if not self._conn.in_transaction:
             raise RuntimeError('shared_artifact_notice_requires_transaction')
+        if notice_kind == 'quota_alert':
+            if name or expires_at:
+                raise ValueError('quota_notice_uses_empty_name_and_expiry')
+            return self.shared_artifact_quota_alert_uncommitted(
+                crossing_sequence=generation, destination_thread_id=destination_thread_id,
+                payloads=[payload], agent=agent,
+            )[0]
         key = (name, generation, expires_at, notice_kind)
         prior = self._conn.execute(
             'SELECT message_seq,delivery_state FROM shared_artifact_notice_receipts '
@@ -159,6 +166,68 @@ class SharedArtifactsMixin:
                      'message_seq':seq,'outcome':'delivered'},
         )
         return seq
+
+    def shared_artifact_quota_alert_uncommitted(
+        self, *, crossing_sequence: int, destination_thread_id: str,
+        payloads: list[dict], agent: str = 'daemon',
+    ) -> list[int]:
+        """Commit all bounded chunks with one receipt/audit in the caller's fence.
+
+        The storage writer uses json.dumps with SQLite's length limit, without
+        an application message cap. Use a conservative 32 KiB subset (including
+        escaped JSON), reserving room for the rest of the SQLite message row.
+        """
+        from runtime.models import ThreadMessageKind
+        if not self._conn.in_transaction:
+            raise RuntimeError('shared_artifact_notice_requires_transaction')
+        key = ('', crossing_sequence, '', 'quota_alert')
+        prior = self._conn.execute(
+            'SELECT message_seq,delivery_state,payload_json FROM shared_artifact_notice_receipts '
+            'WHERE name=? AND generation=? AND expires_at=? AND notice_kind=?', key,
+        ).fetchone()
+        if prior and prior['delivery_state'] == 'delivered':
+            # Pre-chunk receipts contain a single payload, still a valid replay.
+            stored = json.loads(prior['payload_json'])
+            return stored.get('message_seqs', [prior['message_seq']])
+        if not payloads:
+            raise ValueError('quota_notice_requires_payloads')
+        chunks = [dict(payload, crossing_sequence=crossing_sequence,
+                       chunk_index=index, chunk_count=len(payloads))
+                  for index, payload in enumerate(payloads)]
+        limit = min(32 * 1024, self._conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH) // 2)
+        for payload in chunks:
+            if 'kind_tag' in payload or 'event' in payload:
+                raise ValueError('shared_artifact_notice_requires_tagless_payload')
+            if len(json.dumps(payload).encode('utf-8')) > limit:
+                raise ValueError('quota_notice_chunk_too_large')
+        seqs = [self._append_thread_message_uncommitted(
+            thread_id=destination_thread_id, speaker='system',
+            kind=ThreadMessageKind.SYSTEM, system_payload=payload,
+        ) for payload in chunks]
+        self._conn.execute(
+            'INSERT INTO shared_artifact_notice_receipts '
+            '(name,generation,expires_at,notice_kind,destination_thread_id,message_seq,'
+            'delivery_state,payload_json) VALUES(?,?,?,?,?,?,?,?) '
+            'ON CONFLICT(name,generation,expires_at,notice_kind) DO UPDATE SET '
+            'destination_thread_id=excluded.destination_thread_id,message_seq=excluded.message_seq,'
+            'delivery_state=excluded.delivery_state,payload_json=excluded.payload_json',
+            (*key, destination_thread_id, seqs[0], 'delivered', json.dumps({
+                'chunk_count':len(chunks), 'message_seqs':seqs, 'payloads':chunks})),
+        )
+        common = dict.fromkeys(('owner_kind','owner','owner_agent_id','origin_task_id',
+                                'origin_thread_id','state','reason','size_bytes','expires_at'))
+        self.insert_audit_log_uncommitted(
+            task_id='config:shared_artifacts', agent=agent, action='artifact_quota_alert',
+            payload={**common, **chunks[0], 'source':'system','name':'',
+                     'generation':crossing_sequence,'operation_id':chunks[0].get('operation_id'),
+                     'before_state':None,'after_state':None,
+                     'effective_mode':chunks[0].get('effective_mode','preview'),
+                     'expires_at':'','notice_kind':'quota_alert',
+                     'crossing_sequence':crossing_sequence,
+                     'destination_thread_id':destination_thread_id,'message_seq':seqs[0],
+                     'chunk_count':len(chunks),'message_seqs':seqs,'outcome':'delivered'},
+        )
+        return seqs
 
     def _append_thread_message_uncommitted(self, **kwargs: object) -> int:
         """Join every existing attachment writer's transaction without committing."""

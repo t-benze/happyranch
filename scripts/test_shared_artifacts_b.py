@@ -2,7 +2,7 @@
 
 Run: uv run --frozen python scripts/test_shared_artifacts_b.py --case manual-delete
 Manager item7: effective enforce retires; preview/off are nonmutating.
---case quota-chunks exposes the A-owned multi-message quota receipt gap.
+--case quota-chunks checks atomic bounded multi-message quota delivery.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -103,20 +104,75 @@ async def quota_chunks_case(root: Path) -> None:
                         files=[dict(file_name=f'chunk-{i}.bin', expiry_date=NOW.isoformat(),
                                     owner_kind='agent', owner='worker', purpose='Synthetic quota proof',
                                     recovery_deadline=None, renew_command=f'happyranch artifacts renew chunk-{i}.bin',
-                                    restore_command=f'happyranch artifacts restore chunk-{i}.bin')]) for i in range(2)]
-        sequences = []
-        with org.db.shared_artifact_transaction():
-            for payload in payloads:
-                sequences.append(org.db.shared_artifact_notice_uncommitted(
-                    name='', generation=1, expires_at='', notice_kind='quota_alert',
-                    destination_thread_id='THR-notice', payload=payload))
-        messages = org.db._conn.execute(
+                                    restore_command=f'happyranch artifacts restore chunk-{i}.bin')],
+                        chunk_index=i, chunk_count=2) for i in range(2)]
+        db = org.db
+        with db.shared_artifact_transaction():
+            sequences = db.shared_artifact_quota_alert_uncommitted(
+                crossing_sequence=1, destination_thread_id='THR-notice', payloads=payloads)
+        messages = db._conn.execute(
             "SELECT seq,system_payload_json FROM thread_messages WHERE thread_id='THR-notice' ORDER BY seq").fetchall()
         visible = [json.loads(r['system_payload_json']) for r in messages]
         print(json.dumps(dict(case='quota-chunks', sequences=sequences, persisted_payloads=visible)), flush=True)
-        assert len(visible) == 2 and visible == payloads, (
-            'A notice key collapses distinct bounded chunks of the same quota crossing; '
-            'B cannot deliver all file details through the required helper')
+        assert len(visible) == 2 and visible == payloads, 'Every quota chunk must be visible'
+        # Restart-style replay reads the durable receipt, not an in-memory cache.
+        with db.shared_artifact_transaction():
+            replay = db.shared_artifact_quota_alert_uncommitted(
+                crossing_sequence=1, destination_thread_id='THR-notice', payloads=[{'ignored':'retry'}])
+            assert replay == sequences
+            assert db.shared_artifact_notice_uncommitted(
+                name='', generation=1, expires_at='', notice_kind='quota_alert',
+                destination_thread_id='THR-notice', payload={'ignored':'wrapper retry'}) == sequences[0]
+        receipt = db._conn.execute("SELECT * FROM shared_artifact_notice_receipts WHERE notice_kind='quota_alert'").fetchall()
+        assert len(receipt) == 1
+        assert json.loads(receipt[0]['payload_json']) == dict(chunk_count=2, message_seqs=sequences, payloads=payloads)
+        audits = db._conn.execute("SELECT task_id,payload FROM audit_log WHERE action='artifact_quota_alert'").fetchall()
+        assert len(audits) == 1 and audits[0]['task_id'] == 'config:shared_artifacts'
+        assert json.loads(audits[0]['payload'])['message_seqs'] == sequences
+        # A second-chunk failure and an audit failure must roll back the whole
+        # caller transaction, including its quota crossing latch.
+        append = db._append_thread_message_uncommitted
+        calls = 0
+        def fail_second(**kwargs: object) -> int:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError('synthetic_second_chunk_failure')
+            return append(**kwargs)
+        for method, failure in (('_append_thread_message_uncommitted', fail_second),
+                                ('insert_audit_log_uncommitted', RuntimeError('synthetic_audit_failure'))):
+            kwargs = {'side_effect':failure}
+            try:
+                with patch.object(db, method, **kwargs):
+                    with db.shared_artifact_transaction() as conn:
+                        conn.execute('UPDATE shared_artifact_org_state SET quota_above=1,crossing_sequence=2 WHERE id=1')
+                        db.shared_artifact_quota_alert_uncommitted(
+                            crossing_sequence=2, destination_thread_id='THR-notice', payloads=payloads)
+                raise AssertionError('failure was not injected')
+            except RuntimeError as exc:
+                assert 'synthetic_' in str(exc)
+            assert db._conn.execute("SELECT COUNT(*) FROM thread_messages WHERE thread_id='THR-notice'").fetchone()[0] == 2
+            assert db._conn.execute('SELECT crossing_sequence FROM shared_artifact_org_state').fetchone()[0] == 0
+            assert db._conn.execute('SELECT COUNT(*) FROM shared_artifact_notice_receipts').fetchone()[0] == 1
+        # 7,500 complete entries through the actual message/receipt/audit writer.
+        # 25 entries/chunk stays well within the conservative escaped-JSON bound.
+        started = time.monotonic()
+        shape = [dict(payloads[i % 2]['files'][0], file_name=f'owner-2026-11-23-file-{i:05}.bin') for i in range(7500)]
+        chunks = [dict(notice_type='artifact_quota', files=shape[i:i+25]) for i in range(0,7500,25)]
+        with db.shared_artifact_transaction():
+            seqs = db.shared_artifact_quota_alert_uncommitted(
+                crossing_sequence=2, destination_thread_id='THR-notice', payloads=chunks)
+        shape_rows = db._conn.execute("SELECT system_payload_json FROM thread_messages WHERE thread_id='THR-notice' AND seq>? ORDER BY seq",(sequences[-1],)).fetchall()
+        persisted = [json.loads(r[0]) for r in shape_rows]
+        assert [f for chunk in persisted for f in chunk['files']] == shape
+        assert len(seqs) == len(persisted) == 300
+        assert all(p['crossing_sequence'] == 2 and p['chunk_count'] == 300 and p['chunk_index'] == i
+                   for i,p in enumerate(persisted))
+        maximum = max(len(r[0].encode()) for r in shape_rows)
+        elapsed = time.monotonic()-started
+        assert maximum <= 32*1024 and elapsed < 60
+        assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0] == 2
+        print(f'PASS quota-chunks: all chunks/replay/rollback;7500 entries;300 messages;max_bytes={maximum};elapsed={elapsed:.3f}s')
 
 
 async def main(case: str) -> None:
