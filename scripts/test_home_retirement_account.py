@@ -274,6 +274,22 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
             return 0, ''
         return previous_run(argv, **kwargs)
     active.io._run = active.io.manager._run = native_reload
+    real_write = os.write
+    partial_writes = []
+    def interrupted_publication_write(fd, data):
+        if Path(os.readlink(f'/proc/self/fd/{fd}')) == active.root / STATE / '.home-retirement.json.pending':
+            partial_writes.append(data[:11])
+            return real_write(fd, data[:11])
+        return real_write(fd, data)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'write', interrupted_publication_write)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            cleanup.publish_final(io(), active.fence)
+    staged = active.root / STATE / '.home-retirement.json.pending'
+    staged_inode = staged.stat().st_ino
+    assert partial_writes == [b'{"account":'] and staged.read_bytes() == partial_writes[0]
+    assert not (active.root / FINAL).exists()
+    assert io().home_retirement_status()['state'] == 'migration pending'
     real_sync = os.fsync
     publication_interrupted = []
     def lost_publication_sync(fd):
@@ -292,6 +308,7 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     produced = cleanup.publish_final(io(), active.fence)
     assert produced == b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
     assert (active.root / FINAL).read_bytes() == produced
+    assert (active.root / FINAL).stat().st_ino == staged_inode
     complete = active.snapshot()
     identity = (active.root / FINAL).stat().st_ino
     # R03 consumes the record generated after the actual earlier interruption.

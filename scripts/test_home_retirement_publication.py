@@ -118,8 +118,12 @@ def test_final_publication_requires_facts_syncs_and_recovers_without_rewrite(tmp
                 assert not renames
             if case == 'short-write':
                 assert (fixture.root / PENDING).read_bytes() == EXPECTED[:-1]
-                with pytest.raises(RetirementUncertain):
-                    publish_final(fixture.io, fence, require=require)
+                # The initial interrupted call and read-only detection stay
+                # pending; explicit fresh proof may complete its missing byte.
+                staged_inode = (fixture.root / PENDING).stat().st_ino
+                assert publish_final(fixture.io, fence, require=require) == EXPECTED
+                assert (fixture.root / FINAL).stat().st_ino == staged_inode
+                fixture.detect('retired')
             if case == 'reappearance':
                 assert (fixture.root / FINAL).read_bytes() == EXPECTED
                 with pytest.raises(RetirementUncertain):
@@ -149,3 +153,90 @@ def test_produced_final_keeps_only_private_inert_provenance_with_exact_fence(tmp
         fixture.file(STATE + '/home-unknown.json', b'synthetic-unknown-evidence')
     fixture.detect('retired' if case in ('inventory', 'transport', 'peer', 'denied') else 'migration pending')
     assert (fixture.root / FINAL).read_bytes() == EXPECTED
+
+
+@pytest.mark.parametrize('case', ['empty', 'prefix', 'last-byte', 'repair-short-write',
+    'proof-lost', 'nonprefix', 'mode', 'hardlink', 'symlink', 'replacement-during-proof'])
+def test_interrupted_stage_requires_canonical_prefix_and_fresh_proof_before_completion(tmp_path, monkeypatch, case):
+    fixture = Fixture(tmp_path / 'root')
+    fixture.directory(STATE)
+    fixture.file('retained-local/work', b'synthetic-retained-work')
+    stage = fixture.root / PENDING
+    real_write, real_open = os.write, os.open
+    prefix = 0 if case == 'empty' else len(EXPECTED) - 1 if case == 'last-byte' else 11
+    with retirement_fence(fixture.io) as fence:
+        def interrupted_write(fd, data):
+            return real_write(fd, data[:prefix])
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'write', interrupted_write)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                publish_final(fixture.io, fence, require=lambda: 'absent')
+        assert stage.read_bytes() == EXPECTED[:prefix]
+        original_inode = stage.stat().st_ino
+        # Detection sees an actual interrupted production write and never repairs.
+        fixture.detect('migration pending')
+        fixture.detect('migration pending')
+        if case == 'nonprefix':
+            stage.write_bytes(b'synthetic-unknown-stage')
+        elif case == 'mode':
+            stage.chmod(0o644)
+        elif case == 'hardlink':
+            os.link(stage, fixture.root / 'retained-local/stage-link')
+        elif case == 'symlink':
+            stage.unlink()
+            stage.symlink_to(fixture.root / 'retained-local/work')
+        before, repairs, opened = fixture.snapshot(), [], []
+        def open_stage(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if path == Path(PENDING).name and flags & os.O_RDWR:
+                opened.append(descriptor)
+            return descriptor
+        replaced = False
+        def require():
+            nonlocal replaced
+            if case == 'proof-lost':
+                raise RetirementUncertain()
+            if case == 'replacement-during-proof' and opened and not replaced:
+                replaced = True
+                stage.rename(fixture.root / 'retained-local/original-stage')
+                fixture.file(PENDING, EXPECTED[:prefix])
+            return 'absent'
+        def write(fd, data):
+            repairs.append(data)
+            return real_write(fd, data[:1] if case == 'repair-short-write' else data)
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'open', open_stage)
+            patch.setattr(os, 'write', write)
+            if case in ('empty', 'prefix', 'last-byte'):
+                assert publish_final(fixture.io, fence, require=require) == EXPECTED
+            else:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    publish_final(fixture.io, fence, require=require)
+        if case in ('empty', 'prefix', 'last-byte', 'repair-short-write'):
+            if case == 'repair-short-write':
+                assert repairs == [EXPECTED[prefix:]]
+                assert stage.read_bytes() == EXPECTED[:prefix + 1]
+                assert not (fixture.root / FINAL).exists()
+                assert publish_final(fixture.io, fence, require=require) == EXPECTED
+            assert (fixture.root / FINAL).stat().st_ino == original_inode
+            assert not stage.exists()
+            complete = fixture.snapshot()
+            assert publish_final(fixture.io, fence, require=require) == EXPECTED
+            assert fixture.snapshot() == complete
+            fixture.detect('retired')
+            fixture.detect('retired')
+            fixture.file('etc/happyranch/invite-issuer.json', b'synthetic-reappearance')
+            fixture.detect('migration pending')
+            with pytest.raises(RetirementUncertain):
+                publish_final(fixture.io, fence, require=require)
+        else:
+            assert not repairs and not (fixture.root / FINAL).exists()
+            if case == 'replacement-during-proof':
+                assert replaced and stage.stat().st_ino != original_inode
+                assert stage.read_bytes() == EXPECTED[:prefix]
+                assert (fixture.root / 'retained-local/original-stage').read_bytes() == EXPECTED[:prefix]
+            else:
+                assert fixture.snapshot() == before
+        assert (fixture.root / 'retained-local/work').read_bytes() == b'synthetic-retained-work'
+        assert not any(argv[0] in ('userdel', 'groupdel') or argv[:2] in
+            (['systemctl', 'stop'], ['systemctl', 'disable']) for argv in fixture.calls)

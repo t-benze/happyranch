@@ -2,7 +2,8 @@
 
 The active/inert owners supply their existing full account/native/cleanup
 readback. This writer does not revoke, stop, delete or reconstruct provenance.
-A complete staged record may be resynchronized; unknown/torn records refuse.
+A canonical-prefix staged record may be completed under fresh full proof;
+unknown staged bytes and any malformed final record refuse.
 """
 from __future__ import annotations
 
@@ -51,7 +52,8 @@ def publish_final(io: ManagedInstaller, fence: RetirementFence, *, require: Call
         except FileNotFoundError:
             return None
         data = reader._read(parent, name, info, private=True)
-        if data != _FINAL_BYTES:
+        valid = _FINAL_BYTES.startswith(data) if name == _FINAL_PENDING else data == _FINAL_BYTES
+        if not valid:
             raise RetirementUncertain()
         return data, _signature(info)
 
@@ -82,11 +84,26 @@ def publish_final(io: ManagedInstaller, fence: RetirementFence, *, require: Call
                 finally:
                     os.close(descriptor)
             expected = read(parent, name)
-            descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
+            partial = expected is not None and expected[0] != _FINAL_BYTES
+            descriptor = os.open(name, _FILE_FLAGS | (os.O_RDWR if partial else 0), dir_fd=parent)
             try:
                 if expected is None or _signature(os.fstat(descriptor)) != expected[1]:
                     raise RetirementUncertain()
                 guard()
+                if partial:
+                    # Only the fixed canonical prefix is repairable. Retain the
+                    # original open inode and recheck its named identity after
+                    # the potentially blocking complete proof, before writing.
+                    if (read(parent, name) != expected
+                            or _signature(os.fstat(descriptor)) != expected[1]):
+                        raise RetirementUncertain()
+                    os.lseek(descriptor, len(expected[0]), os.SEEK_SET)
+                    suffix = _FINAL_BYTES[len(expected[0]):]
+                    if os.write(descriptor, suffix) != len(suffix):
+                        raise RetirementUncertain()
+                    expected = _FINAL_BYTES, _signature(os.fstat(descriptor))
+                    if read(parent, name) != expected:
+                        raise RetirementUncertain()
                 os.fsync(descriptor)
                 os.fsync(parent)
                 check()

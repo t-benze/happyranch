@@ -235,7 +235,7 @@ class HomeRetirement:
                         continue
                     if publishing and item.name == _FINAL_PENDING:
                         info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
-                        if self._read(parent, item.name, info, private=True) != _FINAL_BYTES:
+                        if not _FINAL_BYTES.startswith(self._read(parent, item.name, info, private=True)):
                             raise RetirementUncertain()
                         continue
                     if item.name.startswith(("home-", ".home-", "headscale-", ".headscale-")):

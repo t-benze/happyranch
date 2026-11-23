@@ -4798,8 +4798,14 @@ the fixed nonsecret `home-retirement@1` account-absent record, synchronizes its
 private staged inode and parent, uses the installer's atomic no-replace rename,
 synchronizes the parent and checks the original open inode and fresh detector.
 A complete staged/final record can be resynchronized after interruption without
-rewriting a published final inode. Unknown or torn staging/final evidence stays
-pending and is retained; torn-stage recovery remains unfinished.
+rewriting a published final inode. A protected single-link 0600 staging file
+containing an exact canonical prefix, including an empty interrupted write,
+may be completed only under the same fresh full proof and fence. The writer
+pins its open inode, rechecks its named identity after proof, and writes only
+the missing suffix before the normal sync/rename/readback sequence. Another
+short write remains pending and can resume from its actual prefix. Detection
+never repairs a stage. Nonprefix bytes, unsafe/replaced staging evidence and
+every malformed final record remain pending and preserved.
 
 The four fixed root-private recovery records (inventory, native transport, peer
 and denied-member identities) survive unpack as inert provenance. With a final
