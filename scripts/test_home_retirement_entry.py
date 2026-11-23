@@ -24,6 +24,7 @@ import pytest
 from runtime.remote_access import home_retirement as entry
 from runtime.remote_access import retirement_io
 from runtime.remote_access import pairing
+from runtime.remote_access import home_retirement_inventory as inventory
 from runtime.remote_access.home_retirement import HomeRetirement
 from runtime.remote_access.pairing import PairingError
 from scripts.test_home_retirement import Fixture
@@ -83,6 +84,11 @@ def packaged_preinst(tmp_path, monkeypatch, root, installed):
                     if module.__name__ == 'runtime.remote_access.retirement_io':
                         io_type = module.RetirementIO
                         module.RetirementIO = lambda **kwargs: installed(io_type, **kwargs)
+                    if module.__name__ == 'runtime.remote_access.home_retirement_inventory':
+                        # Match the existing external-artifact adapter in the
+                        # parent fixture. Fresh child modules must compare the
+                        # synthetic binary against that independent trusted pin.
+                        module._BINARIES = dict(inventory._BINARIES)
                     if module.__name__ == 'runtime.remote_access.home_retirement':
                         module.os = SimpleNamespace(**(vars(os) | {'geteuid': lambda: 0}))
                     assert module.__file__.startswith('<incoming-preinst:')

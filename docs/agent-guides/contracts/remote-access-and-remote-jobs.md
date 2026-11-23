@@ -4916,9 +4916,11 @@ extract the actual package control entry and execute its transmitted child
 program and inline sources in the same temporary-root composition. Only the
 process/native/filesystem boundaries are adapted; canonical retirement supplies
 the real commits, cutoff, cleanup, final receipt and return gate. Fresh incoming
-module namespaces and IO objects are created for each attempt. Completed
-readback precedes a synthetic retained-source replacement: missing old interpreter
-capability refuses, restored capability with the extracted retained sources
+module namespaces and IO objects are created for each attempt.
+The child receives the same independent synthetic released-binary pin as the
+existing native fixture; it still streams and verifies the candidate's digest.
+Completed readback precedes a synthetic retained-source replacement: missing old
+interpreter capability refuses, restored capability with the extracted retained sources
 reads the produced receipt without replay, and rollback reappearance refuses.
 `abort-upgrade` preserves the completed state without invoking the child.
 

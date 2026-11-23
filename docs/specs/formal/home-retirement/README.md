@@ -358,6 +358,8 @@ interruption compositions.
 Canonical owners, persistent revocation, original stream registry, cleanup and
 produced receipt remain real; only the process/native/filesystem boundary is
 adapted. Simulated isolated CPython3.12 capability is not installed execution.
+The fresh inline inventory receives the native fixture's independent synthetic
+released-binary pin; actual candidate digest verification remains in production.
 The same rows map preinst success/readback to GateUnpack, partial retained-source
 replacement with missing capability to ReplacePayload/Crash, restored capability
 to RestoreEntry/Detect, and artifact rollback to RollbackArtifact. Abort and
