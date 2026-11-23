@@ -1562,6 +1562,8 @@ class SchemaMixin:
 
 
     def _create_tables(self) -> None:
+        from runtime.infrastructure.db.shared_artifacts import install_shared_artifact_schema
+        install_shared_artifact_schema(self._conn)
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,

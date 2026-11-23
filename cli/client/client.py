@@ -163,6 +163,13 @@ class OpcClient:
         local_path: Path,
         name: str | None,
         agent: str,
+        task_id: str | None = None,
+        thread_id: str | None = None,
+        purpose: str | None = None,
+        retention: str | None = None,
+        reason: str | None = None,
+        expires_at: str | None = None,
+        operation_id: str | None = None,
     ) -> dict:
         """Upload a local file to the org's shared artifacts store.
 
@@ -170,6 +177,10 @@ class OpcClient:
         Raises on non-2xx.
         """
         params: dict[str, str] = {"agent": agent}
+        params.update({key:value for key,value in {
+            "task_id":task_id,"thread_id":thread_id,"purpose":purpose,"retention":retention,
+            "reason":reason,"expires_at":expires_at,"operation_id":operation_id,
+        }.items() if value is not None})
         if name is not None:
             params["name"] = name
         with local_path.open("rb") as fh:
@@ -182,7 +193,7 @@ class OpcClient:
         r.raise_for_status()
         return r.json()
 
-    def list_artifacts(self, *, slug: str, prefix: str = "") -> dict:
+    def list_artifacts(self, *, slug: str, prefix: str = "", available_only: bool = False) -> dict:
         """Return the org's artifact listing.
 
         Calls ``GET /api/v1/orgs/{slug}/artifacts``. Raises on non-2xx.
@@ -190,16 +201,18 @@ class OpcClient:
         params: dict[str, str] = {}
         if prefix:
             params["prefix"] = prefix
+        if available_only:
+            params["available_only"] = "true"
         r = self._client.get(f"/api/v1/orgs/{slug}/artifacts", params=params)
         r.raise_for_status()
         return r.json()
 
-    def get_artifact(self, *, slug: str, name: str) -> bytes:
+    def get_artifact(self, *, slug: str, name: str, generation: int | None = None) -> bytes:
         """Download an artifact by name and return its raw bytes.
 
         Calls ``GET /api/v1/orgs/{slug}/artifacts/{name}``. Raises on non-2xx.
         """
-        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts/{name}")
+        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts/{name}", params={"generation":generation} if generation else {})
         r.raise_for_status()
         return r.content
 

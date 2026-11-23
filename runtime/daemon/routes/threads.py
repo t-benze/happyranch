@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,7 +53,9 @@ from runtime.orchestrator.run_step import (
     _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
 )
 
-router = APIRouter(dependencies=[require_token()])
+from runtime.daemon.routes.artifacts import artifact_error_boundary, artifact_service
+
+router = APIRouter(dependencies=[require_token(), Depends(artifact_error_boundary)])
 
 # Special routing literal for addressing the founder. NOT a real agent name —
 # it never appears in `thread_participants`, never receives a ThreadInvocation,
@@ -223,6 +225,7 @@ def _create_agent_thread_locked(
 
 
 class AttachmentRefBody(BaseModel):
+    generation: int | None = None
     artifact_name: str = ""
     display_name: str | None = None
     content_type: str | None = None
@@ -309,6 +312,10 @@ def _normalize_attachments(
             status_code=422,
             detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
         )
+    from runtime.daemon.routes.artifacts import artifact_service, artifact_http_error
+    from runtime.infrastructure.shared_artifact_service import SharedArtifactError
+    from runtime.infrastructure.db.shared_artifacts import SharedThreadAttachment
+    service = artifact_service(org)
     seen: set[str] = set()
     store = _AttachmentReferenceReader(OrgPaths(org.root).artifacts_dir)
     out: list[ThreadAttachment] = []
@@ -340,17 +347,16 @@ def _normalize_attachments(
             display_name = ref.display_name.strip()
         _validate_display_name(display_name)
         content_type = _normalize_content_type(ref.content_type, artifact_name)
-        if not path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "artifact_not_found", "name": artifact_name},
-            )
-        stat = path.stat()
+        try:
+            row = service.lookup(artifact_name,ref.generation)
+        except SharedArtifactError as exc:
+            raise artifact_http_error(exc) from exc
         out.append(
-            ThreadAttachment(
+            SharedThreadAttachment(
+                generation=row.get("generation"),
                 artifact_name=artifact_name,
                 display_name=display_name,
-                size_bytes=stat.st_size,
+                size_bytes=row["size_bytes"],
                 content_type=content_type,
                 uploaded_by=uploaded_by,
             )
@@ -457,6 +463,43 @@ def _normalize_message_body(
     return body_markdown if has_text else None
 
 
+async def _compose_shared(
+    slug: str, org: object, *, body: object, speaker: str,
+    recipients: list[str], turn_cap: int, attachments: list[ThreadAttachment],
+    uploads: list[tuple[str, bytes, str | None]] | None = None,
+    private_uploads: list[tuple[str, bytes, str | None]] | None = None,
+) -> dict:
+    from runtime.daemon.routes.artifacts import artifact_service, artifact_http_error
+    from runtime.infrastructure.shared_artifact_service import SharedArtifactError
+    async with org.db_lock:
+        recipients = _resolve_message_recipients(org,recipients,body.body_markdown)
+        _validate_message_addresses(org,body.body_markdown,
+            founder_recipients=recipients if speaker == 'founder' else None)
+        service = artifact_service(org)
+        try:
+            thread_id,seq,arrivals = await asyncio.to_thread(org.db.compose_shared_thread,
+                thread=ThreadRecord(id='',subject=body.subject.strip(),turn_cap=turn_cap,
+                    composed_by=speaker,composed_from_task_id=getattr(body,'task_id',None),
+                    forwarded_from_id=getattr(body,'forwarded_from_id',None),
+                    forwarded_from_kind=getattr(body,'forwarded_from_kind',None)),
+                speaker=speaker,participants=([speaker] if speaker != 'founder' else [])+recipients,
+                recipients=[name for name in recipients if name not in (speaker,FOUNDER_LITERAL)],
+                initial_recipients=recipients,
+                body_markdown=body.body_markdown or None,attachments=attachments,
+                service=service,uploads=uploads,private_store=_attachment_store(org) if private_uploads else None,
+                private_uploads=private_uploads)
+        except SharedArtifactError as exc:
+            raise artifact_http_error(exc) from exc
+    for arrival in arrivals:
+        if arrival.invocation_token:
+            await org.thread_queue.put(ThreadJob(org_slug=slug,invocation_token=arrival.invocation_token))
+    await _publish_thread_event(org,slug,thread_id=thread_id,seq=seq,speaker=speaker,
+        kind='message',preview=body.body_markdown or _attachments_preview(attachments),status='open')
+    return {'thread_id':thread_id,'started_at':org.db.get_thread(thread_id).started_at.isoformat(),
+            'composed_by':speaker,'composed_from_task_id':getattr(body,'task_id',None),
+            'pending_replies':[a.agent_name for a in arrivals]}
+
+
 async def _compose_thread_multipart(
     slug: str, org: OrgDep, request: Request, *, uploaded_by: str,
 ) -> dict:
@@ -550,6 +593,23 @@ async def _compose_thread_multipart(
         _validate_display_name(getattr(file_field, 'filename', None) or "attachment")
     if not file_fields:
         _normalize_message_body(body.body_markdown, shared_attachments)
+
+    if request.query_params.get('shared_uploads') == 'true':
+        from runtime.infrastructure.artifact_store import MAX_ARTIFACT_BYTES
+        uploads = []
+        for file_field,content in zip(file_fields,uploaded_contents):
+            if len(content) > MAX_ARTIFACT_BYTES:
+                raise HTTPException(413,detail={'code':'artifact_too_large','max_bytes':MAX_ARTIFACT_BYTES})
+            filename = file_field.filename or 'attachment'
+            uploads.append((filename,content,getattr(file_field,'content_type',None)))
+        return await _compose_shared(slug,org,body=body,speaker='founder',recipients=raw_recipients,
+            turn_cap=turn_cap,attachments=shared_attachments,uploads=uploads)
+
+    if shared_attachments:
+        private_uploads = [(field.filename or 'attachment',content,getattr(field,'content_type',None))
+                           for field,content in zip(file_fields,uploaded_contents)]
+        return await _compose_shared(slug,org,body=body,speaker='founder',recipients=raw_recipients,
+            turn_cap=turn_cap,attachments=shared_attachments,private_uploads=private_uploads)
 
     async with org.db_lock:
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
@@ -728,6 +788,10 @@ async def compose_thread(
     # Self-exclusion is moot at compose time (founder is the speaker and is
     # not in recipients).
     addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
+
+    if attachments:
+        return await _compose_shared(slug,org,body=body,speaker='founder',recipients=raw_recipients,
+            turn_cap=turn_cap,attachments=attachments)
 
     async with org.db_lock:
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
@@ -924,6 +988,23 @@ async def _compose_agent_thread_multipart(
         _validate_display_name(getattr(file_field, 'filename', None) or "attachment")
     if not file_fields:
         _normalize_message_body(body.body_markdown, shared_attachments)
+
+    if request.query_params.get('shared_uploads') == 'true':
+        from runtime.infrastructure.artifact_store import MAX_ARTIFACT_BYTES
+        uploads = []
+        for file_field,content in zip(file_fields,uploaded_contents):
+            if len(content) > MAX_ARTIFACT_BYTES:
+                raise HTTPException(413,detail={'code':'artifact_too_large','max_bytes':MAX_ARTIFACT_BYTES})
+            filename = file_field.filename or 'attachment'
+            uploads.append((filename,content,getattr(file_field,'content_type',None)))
+        return await _compose_shared(slug,org,body=body,speaker=body.composer,recipients=raw_recipients,
+            turn_cap=turn_cap,attachments=shared_attachments,uploads=uploads)
+
+    if shared_attachments:
+        private_uploads = [(field.filename or 'attachment',content,getattr(field,'content_type',None))
+                           for field,content in zip(file_fields,uploaded_contents)]
+        return await _compose_shared(slug,org,body=body,speaker=body.composer,recipients=raw_recipients,
+            turn_cap=turn_cap,attachments=shared_attachments,private_uploads=private_uploads)
 
     async with org.db_lock:
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
@@ -1128,6 +1209,10 @@ async def compose_thread_as_agent(
     turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
 
     composed_from_task_id = body.task_id
+
+    if attachments:
+        return await _compose_shared(slug,org,body=body,speaker=body.composer,recipients=recipients,
+            turn_cap=turn_cap,attachments=attachments)
 
     async with org.db_lock:
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
@@ -1389,6 +1474,7 @@ async def tail_thread_endpoint(
     async def gen():
         # Replay missed messages first (not via the bus — directly from DB).
         with _stream_org_reader(request, org):
+            artifact_service(org)
             messages = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=1000)
         for m in messages:
             yield f"data: {_json.dumps(_msg_to_dict(m))}\n\n"
@@ -1416,6 +1502,7 @@ async def get_thread_endpoint(
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+    artifact_service(org)
     msgs = org.db.list_thread_messages(thread_id, limit=200)
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
@@ -1456,6 +1543,7 @@ async def list_thread_messages_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     effective_limit = min(limit, 1000)
     fetch_limit = effective_limit + 1
+    artifact_service(org)
     msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
     has_more = len(msgs) > effective_limit
     if has_more:
