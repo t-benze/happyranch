@@ -88,6 +88,17 @@ device/inode/custody/mode through sibling removal, allowing only its resulting
 link-count/timestamp changes; files/links and boot/native/process facts remain
 exact. Native/trust/account/lock-domain and final publication
 obligations remain separate; model actions and completion claims are unchanged.
+The explicit stopped/inert `remove_managed_directories` entries apply the same
+Remove obligations to the three original empty managed runtime/state roots.
+Original non-trust leaves must already be absent. The denied connector trust
+pair/lock and its directory remain for fresh independent cutoff readback;
+native-cleanup observations allow composition after original unit removal.
+Original immediate-parent identity, held operation exclusion, fresh active
+death/denial or inert empty-authority proof, parent sync and absent-name
+readback guard each effect and recovery without rmdir replay. Absent runtime
+roots supply no death proof, and missing/replaced parents, new authority or
+nonempty/replaced roots refuse. This uses the existing Remove abstraction;
+trust/domain/account/native-final cleanup and publication remain unfinished.
 
 Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
 fixed original systemd fragments, including fresh partial-removal/lost-parent-

@@ -4627,6 +4627,24 @@ or reappearing leaf stays pending. Shared parents, operation domains, native
 artifacts, accounts and journals survive. Leaf-only cleanup entries retain
 their existing semantics; after directory removal, recover through the explicit
 directory entry rather than trying to remove leaves from missing parents.
+Explicit `remove_managed_directories(io, fence)` on the stopped or inert owner
+similarly finishes only the three original empty managed roots:
+`/var/lib/happyranch-tsnet-sidecar`, `/run/happyranch-connector` and
+`/run/happyranch-tsnet-sidecar`. All original non-trust managed leaves must
+already be absent. The connector state directory and its denied trust
+pair/lock remain available for independent cutoff readback. Each rmdir needs
+fresh original-peer death/anchored denial or original/current inert empty
+authority, complete native stopped/disabled/process-empty readback, and held
+original issuer/minter exclusion. These explicit entries also compose after
+original unit-fragment removal using cleanup-aware native observations.
+Remaining roots and their immediate parents keep original inode/custody/mode;
+unknown/nonempty roots, replaced parents and new authority refuse. Recovery
+synchronizes every original immediate parent and reads back absence without
+rmdir replay. Inert empty-authority readback admits only these absent runtime
+roots under still-original immediate parents; missing ancestors refuse. No
+directory absence substitutes for native or cutoff proof. Binaries, accounts,
+trust, operation domains and original journals remain separate final-cleanup
+obligations, and no final retired receipt is published.
 Explicit `StoppedRetirement.remove_unit_fragments(io, fence)` and the inert
 owner's same entry remove only the six fixed original systemd fragments through
 `home_retirement_cleanup.UnitCleanup`. Both load the original journals rather

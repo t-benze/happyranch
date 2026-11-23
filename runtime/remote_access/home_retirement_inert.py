@@ -145,7 +145,9 @@ class InertRetirement:
                     with walker._directory(relative, contents_may_change=cleanup) as parent:
                         managed._parents(walker)
                         if parent is None:
-                            if relative in self.original.managed.directories:
+                            if (relative in self.original.managed.directories
+                                    and not (cleanup and relative in managed._removable_directories
+                                        and str(PurePosixPath(relative).parent) in walker.directory_identities)):
                                 raise RetirementUncertain()
                             continue
                         try:
@@ -178,6 +180,30 @@ class InertRetirement:
             empty_authority()
             members()
             fence.require(io)
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_managed_directories(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish original empty runtime/state roots under fresh inert proof.
+
+        The connector trust directory remains required. Each effect rechecks
+        original/current empty authority, native quiescence and held domains,
+        including explicit recovery after unit or partial directory removal.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def require() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True)
+            require()
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                ManagedCleanup(journal, original, before_effect=guard).remove_directories()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

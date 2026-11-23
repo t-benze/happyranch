@@ -40,6 +40,7 @@ class PrivateCleanup:
 
     _mutable = _MUTABLE
     _closed = _CLOSED
+    _removable_directories = _CLOSED
     _retained = frozenset()
 
     def _inventory(self) -> LegacyPrivateMembers | LegacyManagedMembers:
@@ -165,7 +166,7 @@ class PrivateCleanup:
         if any(value is not None for value in self._observe().values()):
             raise RetirementUncertain()
         result = {}
-        for path in sorted(_CLOSED):
+        for path in sorted(self._removable_directories):
             walker = self._walker()
             relative, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
             with walker._directory(relative, contents_may_change=True) as parent:
@@ -177,7 +178,7 @@ class PrivateCleanup:
                 except FileNotFoundError:
                     current = None
                 if current is not None:
-                    original = self.original.private.directories.get(path)
+                    original = self._inventory().directories.get(path)
                     if original is None or current[:5] != original[:5] or not stat.S_ISDIR(current[4]):
                         raise RetirementUncertain()
                     child = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
@@ -196,7 +197,7 @@ class PrivateCleanup:
         return result
 
     def remove_directories(self) -> None:
-        """Finish only the four original private roots after leaf removal.
+        """Finish only fixed original empty roots after leaf removal.
 
         Each immediate parent must still be original, even when the root is
         already absent. Recovery synchronizes that parent without replaying
@@ -205,7 +206,7 @@ class PrivateCleanup:
         try:
             self._guard()
             self._empty_directories()
-            for path in sorted(_CLOSED):
+            for path in sorted(self._removable_directories):
                 self._guard()
                 current = self._empty_directories()[path]
                 walker = self._walker()
@@ -247,6 +248,9 @@ class ManagedCleanup(PrivateCleanup):
         ('trust-state.json', 'trust-state.json.anchor', 'trust-state.json.lock'))
     _closed = frozenset(('var/lib/happyranch-connector', 'var/lib/happyranch-tsnet-sidecar',
         'run/happyranch-connector', 'run/happyranch-tsnet-sidecar'))
+    # The real denied trust pair/lock stays available for independent cutoff
+    # readback. It is a separate final-cleanup obligation, never an empty root.
+    _removable_directories = _closed - {'var/lib/happyranch-connector'}
 
     def _inventory(self) -> LegacyManagedMembers:
         return self.original.managed

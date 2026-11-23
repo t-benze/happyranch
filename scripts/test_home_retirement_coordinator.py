@@ -869,6 +869,107 @@ def test_stopped_unit_cleanup_recovers_only_original_fragments(active, monkeypat
     assert not (active.root / FINAL).exists()
 
 
+@pytest.mark.parametrize('active,boundary', [('active', 'complete'), ('active', 'lost-sync'),
+    ('active', 'authority-between-directories'), ('active', 'foreign-parent'),
+    ('inert', 'complete'), ('inert', 'authority-between-directories')], indirect=['active'])
+def test_managed_directory_cleanup_keeps_fresh_active_or_inert_proof(active, monkeypatch, request, boundary):
+    from runtime.remote_access.home_retirement_inert import InertRetirement
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, TRANSACTION, writer_lock
+    inert = request.node.callspec.params['active'] == 'inert'
+    auxiliary_journal_setup(active.controller)
+    if inert:
+        (active.root / TRANSACTION).unlink()
+        owner = InertRetirement.capture(active.io, active.fence)
+        owner.stop_and_disable()
+        owner.remove_leaves()
+    else:
+        device, _ = active.grant('device')
+        stream = active.stream(device, 'device')
+        with active.serving(monkeypatch):
+            owner = ActiveRetirement.capture(active.io, active.fence)
+            native_target_stop(active)
+            owner.revoke_and_stop_services()
+        # Fresh recovery owns a new request, never a reset within an effect.
+        StoppedRetirement.from_saved(active.io, active.fence).remove_managed()
+    cleanup = InertRetirement if inert else StoppedRetirement
+    if boundary == 'complete':
+        # Compose actual successful original-unit removal with this next phase.
+        cleanup.remove_unit_fragments(active.io, active.fence)
+    paths = {'var/lib/happyranch-tsnet-sidecar', 'run/happyranch-connector', 'run/happyranch-tsnet-sidecar'}
+    trust = 'var/lib/happyranch-connector/trust-state.json'
+    retained = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+                for path in (INVENTORY, NATIVE, BINARY, ACCOUNT_RECORD, PUBLICATION,
+                    *((PIN, trust + '.lock') if not inert else ()),
+                    *((trust, trust + '.anchor') if not inert and boundary != 'authority-between-directories' else ()))}
+    effects, frames = active.effects(), list(getattr(active, 'frames', []))
+    if boundary == 'foreign-parent':
+        path = active.root / 'run'
+        saved = active.root.parent / 'original-managed-run'
+        path.rename(saved)
+        shutil.copytree(saved, path, symlinks=True)
+    before = active.snapshot()
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    assert active.snapshot() == before and active.effects() == effects
+    real_rmdir, real_sync = os.rmdir, os.fsync
+    removed, synced, injected = [], [], []
+    def rmdir(name, *, dir_fd=None):
+        path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(active.root))
+        if path in paths:
+            assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+        real_rmdir(name, dir_fd=dir_fd)
+        if path in paths:
+            removed.append(path)
+            if boundary == 'authority-between-directories' and len(removed) == 1:
+                if inert:
+                    active.file(trust, b'synthetic-reappearing-authority', 0o600)
+                else:
+                    active.manager.issue_invite_record('e' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+                injected.append(active.snapshot())
+    def sync(fd):
+        parent = Path(os.readlink(f'/proc/self/fd/{fd}'))
+        if parent in {active.root / 'run', active.root / 'var/lib'}:
+            synced.append(parent)
+            if boundary == 'lost-sync' and removed and len(synced) == 1:
+                raise OSError('synthetic lost managed-directory parent sync')
+        real_sync(fd)
+    def fresh():
+        io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+            run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
+        cleanup.remove_managed_directories(io, active.fence)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'rmdir', rmdir)
+        scoped.setattr(os, 'fsync', sync)
+        if boundary == 'complete':
+            fresh()
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+            assert len(removed) == (0 if boundary == 'foreign-parent' else 1)
+        if boundary in ('complete', 'lost-sync'):
+            fresh()
+            assert set(removed) == paths and len(removed) == len(paths)
+            count = len(synced)
+            fresh()
+            assert len(removed) == len(paths) and len(synced) == count + len(paths)
+            assert all(not (active.root / path).exists() for path in paths)
+        else:
+            after = active.snapshot()
+            assert after == (injected[0] if injected else before)
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+            assert active.snapshot() == after
+    assert active.effects() == effects and list(getattr(active, 'frames', [])) == frames
+    assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+            for path in retained} == retained
+    assert all((active.root / path).exists() for path in OPERATION_LOCKS)
+    assert (active.root / 'retained-native/saved-home').read_bytes() == b'synthetic-P25-saved-home'
+    if not inert:
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+    assert not (active.root / FINAL).exists()
+
+
 @pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
 def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay(active, monkeypatch, boundary):
     from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, writer_lock

@@ -462,6 +462,32 @@ class StoppedRetirement:
             ManagedCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove()
 
     @classmethod
+    def remove_managed_directories(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish three original empty managed roots, retaining denied trust.
+
+        Reopen saved originals after partial cleanup, including unit removal.
+        Independent death/denial and current native quiescence still guard
+        each rmdir; absent runtime directories cannot supply those proofs.
+        """
+        try:
+            owner = cls._saved_owner(io, fence)
+            controller = OwnedService(io, owner.original.ownership.service)
+            recovery = OriginalDeathRecovery(owner.cutoff, owner.native_journal, native_cleanup=True)
+            def require() -> None:
+                owner._require_records()
+                controller.observe_cleanup(owner.original.ownership.native)
+                recovery.recover().require()
+                controller.observe_cleanup(owner.original.ownership.native)
+            require()
+            with held_auxiliary_operations(owner.journal, owner.original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                ManagedCleanup(owner.journal, owner.original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
     def remove_unit_fragments(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
         """Finish original fragment removal, including fresh partial recovery.
 
