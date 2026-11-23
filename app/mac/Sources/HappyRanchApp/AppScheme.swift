@@ -134,6 +134,38 @@ struct AppSchemeOwnerSummary {
     var allowsNavigation: Bool { !uncertain && blocking == "none" }
 }
 
+/// Closed lifecycle facts; header/body/context values never enter this record.
+struct AppSchemeStreamDiagnostic {
+    let requestID: String
+    let headerNames: [String]
+    let contentLengthPresent: Bool
+    let transferEncodingPresent: Bool
+    let expectedContentLength: Int64
+    var bytesDelivered = 0
+    var didFinish = false
+    var finishOnMainThread = false
+    var finishTaskCancelled = false
+    var taskStopped = false
+
+    init(requestID: String, response: HTTPURLResponse) {
+        self.requestID = requestID
+        let names = response.allHeaderFields.keys.compactMap { ($0 as? String)?.lowercased() }
+        let allowed = AppAPIHeaders.response.union(["content-length", "transfer-encoding", "content-security-policy",
+                                                    "x-content-type-options", "cache-control"])
+        headerNames = Set(names.map { allowed.contains($0) ? $0 : "other" }).sorted()
+        contentLengthPresent = names.contains("content-length")
+        transferEncodingPresent = names.contains("transfer-encoding")
+        expectedContentLength = response.expectedContentLength
+    }
+    var fields: [String: Any] {
+        ["requestID": requestID, "headerNames": headerNames, "contentLengthPresent": contentLengthPresent,
+         "transferEncodingPresent": transferEncodingPresent, "expectedContentLength": expectedContentLength,
+         "bytesDelivered": bytesDelivered, "didFinish": didFinish, "finishOnMainThread": finishOnMainThread,
+         "finishActor": didFinish ? "main" : "not-called", "finishTaskCancelled": finishTaskCancelled,
+         "taskStopped": taskStopped]
+    }
+}
+
 /// Main-frame app loader. All WK task callbacks are serialized on MainActor;
 /// stop removes ownership before cancelling upstream, so late bytes are ignored.
 @MainActor
@@ -170,6 +202,12 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     /// Optional diagnostic observer receives lifecycle IDs and closed document
     /// path classes, never raw URLs, headers or bytes. Used by qualification.
     var observe: ((String, String) -> Void)?
+    // Only the existing qualification observer enables capture; emitted on failure.
+    private(set) var streamDiagnostics: [AppSchemeStreamDiagnostic] = []
+
+    private func updateStream(_ id: String, _ change: (inout AppSchemeStreamDiagnostic) -> Void) {
+        if let index = streamDiagnostics.firstIndex(where: { $0.requestID == id }) { change(&streamDiagnostics[index]) }
+    }
 
     init(root: URL, transport: any AppAPITransport, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
         assets = try ConnectionAssets(root: root)
@@ -373,6 +411,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     private func stop(_ key: ObjectIdentifier) {
         guard let owner = owners.removeValue(forKey: key) else { return }
+        updateStream(owner.requestID) { $0.taskStopped = true }
         owner.worker?.cancel(); owner.upstream?.cancel(); observe?("native_stop", owner.requestID)
     }
 
@@ -427,18 +466,28 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                 switch event {
                 case .response(let status, let fields):
                     guard !began else { throw AppAPIError.invalidResponse }
-                    respond(owner.task, status: status, headers: fields); began = true
+                    let response = respond(owner.task, status: status, headers: fields); began = true
                     if status == 200 && fields["content-type"]?.lowercased().hasPrefix("text/event-stream") == true {
+                        if observe != nil {
+                            if streamDiagnostics.count == 32 { streamDiagnostics.removeFirst() }
+                            streamDiagnostics.append(AppSchemeStreamDiagnostic(requestID: owner.requestID, response: response))
+                        }
                         observe?("native_stream_open", owner.requestID)
                     }
                 case .bytes(let data):
                     guard began else { throw AppAPIError.invalidResponse }
-                    owner.task.didReceive(data); observe?("native_write", owner.requestID)
+                    owner.task.didReceive(data)
+                    updateStream(owner.requestID) { $0.bytesDelivered += data.count }
+                    observe?("native_write", owner.requestID)
                 }
             }
             guard let owner = owners[key] else { return }
             guard began else { throw AppAPIError.invalidResponse }
-            owner.task.didFinish(); observe?("native_finish", owner.requestID)
+            owner.task.didFinish()
+            updateStream(owner.requestID) {
+                $0.didFinish = true; $0.finishOnMainThread = Thread.isMainThread; $0.finishTaskCancelled = Task.isCancelled
+            }
+            observe?("native_finish", owner.requestID)
         } catch {
             owners[key]?.upstream?.cancel()
             guard let owner = owners[key] else { return }
@@ -464,7 +513,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         throw AppAPIError.unavailable
     }
-    private func respond(_ task: any WKURLSchemeTask, status: Int, headers: [String: String]) {
+    @discardableResult
+    private func respond(_ task: any WKURLSchemeTask, status: Int, headers: [String: String]) -> HTTPURLResponse {
         var fields = headers
         fields["Content-Security-Policy"] = Self.csp; fields["X-Content-Type-Options"] = "nosniff"; fields["Cache-Control"] = "no-store"
         let response = HTTPURLResponse(url: task.request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: fields)!
@@ -472,6 +522,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         // non-HTTP URLResponse reconstruction does not retain that subclass.
         if response.url == documentURL { documentResponse = response }
         task.didReceive(response)
+        return response
     }
     private func reply(_ task: any WKURLSchemeTask, status: Int, code: String) {
         respond(task, status: status, headers: ["content-type": "application/json"])

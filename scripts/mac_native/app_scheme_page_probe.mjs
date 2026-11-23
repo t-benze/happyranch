@@ -114,3 +114,66 @@ assert.equal(posts.at(-1).context, context, 'outgoing relay cannot acquire a rep
 receipt('{}');
 await late;
 console.log('PASS: shipped bootstrap diagnostics distinguish missing/refused/throwing stages without tokens; document-bound owner push, admission and receipt gates');
+
+// Execute the commissioned qualifier itself. Simulated upstream failures must
+// not prevent the later independent steps; this does not emulate WebKit EOF.
+const qualifierSource = readFileSync(resolve(root, 'app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift'), 'utf8');
+const qualifier = qualifierSource.split('private static let page = #"""\n')[1].split('\n"""#')[0];
+for (const fault of ['stream-eof', 'none', 'parse', 'emit', 'abort-read', 'download-fetch', 'download-save']) {
+  const events = [], calls = [], aborted = [];
+  const win = { happyranchConnection:{ call:async () => '{"generation":"synthetic"}' },
+    webkit:{ messageHandlers:{ macQualification:{ postMessage(item) {
+      if (fault === 'emit' && item.event === 'stream_end') throw Error('synthetic-private-value');
+      events.push(item);
+    } } } } };
+  const document = { getElementById:() => ({childElementCount:1}), body:{append() {}}, createElement:() => ({
+    click() { queueMicrotask(() => win.__hrQualificationDownload?.(fault !== 'download-save')); }, remove() {},
+  }) };
+  const fetch = async (path, options = {}) => {
+    const mode = path.split('/').at(-1); calls.push(mode);
+    if (mode === 'echo') return Response.json({bytes:20, intact:true});
+    if (mode === 'upload') return Response.json({fileBytes:10485760, intact:true});
+    if (mode === 'download') {
+      if (fault === 'download-fetch') return new Promise(() => {});
+      return new Response('mac1 download\n');
+    }
+    options.signal.addEventListener('abort', () => aborted.push(mode), {once:true});
+    return new Response(new ReadableStream({start(controller) {
+      if (fault === 'abort-read' && mode === 'abort') return;
+      const count = mode === 'stream' ? 5 : 2;
+      for (let index = 0; index < count; index++) controller.enqueue(new TextEncoder().encode(
+        fault === 'parse' && mode === 'stream' ? 'data: invalid\n\n' : `data: ${JSON.stringify({index,sentWallMs:Date.now()})}\n\n`));
+      if (!(fault === 'stream-eof' && mode === 'stream')) controller.close();
+    } }), {headers:{'Content-Type':'text/event-stream'}});
+  };
+  const environment = {window:win, top:win, document, fetch, location:{origin:'happyranch-app://app',pathname:'/onboarding'},
+    sessionStorage:{getItem:() => '1'}, Blob, FormData, Response, TextDecoder, TextEncoder, Uint8Array, AbortController, Date,
+    URL:{createObjectURL:() => 'blob:synthetic', revokeObjectURL() {}},
+    setTimeout:(callback, milliseconds) => setTimeout(callback, Math.min(milliseconds, 30)), clearTimeout};
+  let watchdog;
+  try {
+    await Promise.race([vm.runInNewContext(qualifier, environment), new Promise((_, reject) => {
+      watchdog = setTimeout(() => reject(Error(`${fault}: independent steps did not finish`)), 300);
+    })]);
+  } finally { clearTimeout(watchdog); }
+  assert.deepEqual(calls.slice(-3), ['stream','abort','download'], `${fault}: every independent step must run`);
+  const steps = events.filter(item => item.event === 'step');
+  assert.deepEqual(steps.map(item => item.step), ['stream','abort','download'], `${fault}: one result per step`);
+  const failedStep = ['stream-eof','parse','emit'].includes(fault) ? 'stream' : fault === 'abort-read' ? 'abort'
+    : fault.startsWith('download-') ? 'download' : null;
+  for (const step of steps) assert.equal(step.status, step.step === failedStep ? 'FAIL' : 'PASS', `${fault}/${step.step}`);
+  assert.ok(events.some(item => item.event === 'done'), `${fault}: terminal page receipt`);
+  if (failedStep) {
+    const diagnostic = events.find(item => item.event === 'step_diagnostic' && item.step === failedStep);
+    assert.ok(diagnostic, `${fault}: closed failure diagnostics`);
+    assert.ok(!JSON.stringify(diagnostic).includes('synthetic-private-value'));
+    if (fault === 'stream-eof') {
+      assert.equal(diagnostic.lastPageStep, 'read-pending');
+      assert.equal(diagnostic.framesReceived, 5);
+      assert.ok(diagnostic.bytesReceived > 0);
+    }
+    if (fault === 'emit') assert.equal(diagnostic.lastPageStep, 'end-emit');
+  } else assert.ok(!events.some(item => item.event === 'step_diagnostic'), 'successful runs emit no failure diagnostics');
+  assert.ok(aborted.includes('abort'), `${fault}: explicit abort reaches the fetch signal`);
+}
+console.log('PASS: qualifier bounds EOF/parse/emit/abort/download failures, continues every step and emits closed failure facts');

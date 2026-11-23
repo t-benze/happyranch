@@ -4206,6 +4206,13 @@ value-returning `contentWorld:` async API. Failure traces retain the result
 class for context, bind and diagnostics alongside the 15 closed page facts.
 Successful loader rows and ready checkpoints now emit those same closed facts
 and callback/health counts, collected separately from compiler output.
+The same portable page probe executes the commissioned qualifier with simulated
+missing EOF, malformed frame, failed completion emission, stalled abort and
+download fetch/save failures. It requires all later steps and closed failure
+facts; this checks qualifier control flow, not WebKit stream closure. The
+assessor additionally refuses missing/duplicate/failed step results or absent
+normal EOF. Native diagnostic tests check framing/lifecycle fields and value
+exclusion; their execution remains Mac-only.
 Portable execution does not establish native owner retention or admission.
 No retired Python units run. No shared web source changed in MAC-1;
 Web static analysis remains part of `scripts/local_ci.sh all`.
@@ -4224,6 +4231,15 @@ handler to use the deep path, preventing a reload of `/` plus redirect from
 passing. Failure-only closed diagnostics retain requested/served paths,
 navigation decision/path and final pathname, including navigation/admission
 failure and reload timeout.
+Normal stream, abort and download have independent 9s/4s/5s deadlines and emit
+individual PASS/FAIL results while continuing after failure. The download step
+awaits native saving. Overall PASS still requires every prior timing, abort,
+saved-byte and navigation assertion, all three step results and actual normal
+reader EOF. Failure-only diagnostics compare page/native byte and frame counts,
+last page stage, closed framing-header names/presence/expected length and
+didFinish main-thread/MainActor/cancellation/stopped facts. Build 62 established
+incremental receipts but failed EOF; the cause remains unproven. See the Mac
+contract above for diagnostic bounds and the watchdog limit.
 Only the QA leg may execute it after exact-head independent review APPROVE,
 within the PR's founder-approved combined unsigned build allowance (current
 ledger in the PR body). Native execution,

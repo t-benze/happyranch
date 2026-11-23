@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import WebKit
 import HappyRanchSupervisor
 import Darwin
@@ -44,6 +45,8 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var activeDownloads: [WKDownload] = []
     private var pageFinished = false
     private var downloadFinished = false
+    private var qualificationFailed = false
+    private var pageStreamFacts: [String: [String: Any]] = [:]
     private var reloadServedPath = "not-served"
     private var reloadNavigationPath = "not-observed"
     private var reloadNavigationDecision = "not-observed"
@@ -79,9 +82,10 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
         self.view = view; view.navigationDelegate = self
         DispatchQueue.main.asyncAfter(deadline: .now() + 34) { [weak self, weak view] in
-            guard let self, self.awaitingReload else { return }
-            self.logReloadFailure(finalPath: view?.url?.path)
-            self.log.write("failure", ["reason": "deep reload timeout"]); self.scheme.close(); exit(124)
+            guard let self else { return }
+            if self.awaitingReload { self.logReloadFailure(finalPath: view?.url?.path) }
+            self.logStreamFailure()
+            self.log.write("failure", ["reason": "qualification timeout"]); self.scheme.close(); exit(124)
         }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view; self.window = window
@@ -91,7 +95,29 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         guard message.webView === view, message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "happyranch-app", message.frameInfo.securityOrigin.host == "app",
               let item = message.body as? [String: Any], let event = item["event"] as? String,
-              ["root", "deep_reload", "receipt", "abort", "stream_end", "json", "upload", "blob", "done", "failure"].contains(event) else { return }
+              ["root", "deep_reload", "receipt", "abort", "stream_end", "stream_state", "step_diagnostic", "step", "json", "upload", "blob", "done", "failure"].contains(event) else { return }
+        if event == "stream_state" || event == "step_diagnostic" {
+            guard let step = item["step"] as? String, ["stream", "abort", "download"].contains(step) else { return }
+            let allowed = ["fetch-pending", "status", "read-pending", "read-done", "decode", "parse", "receipt-emit",
+                           "abort-emit", "abort-sent", "end-emit", "complete", "blob-pending", "blob-emit", "save-pending"]
+            var facts: [String: Any] = ["step": step]
+            facts["lastPageStep"] = (item["lastPageStep"] as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? "invalid"
+            for key in ["bytesReceived", "framesReceived", "pendingBytes"] {
+                if let number = item[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                   number.doubleValue >= 0, number.doubleValue <= 67108864, number.doubleValue.rounded() == number.doubleValue {
+                    facts[key] = number.intValue
+                }
+            }
+            pageStreamFacts[step] = facts
+            if event == "step_diagnostic" { qualificationFailed = true; logStreamFailure() }
+            return
+        }
+        if event == "step" {
+            guard let step = item["step"] as? String, ["stream", "abort", "download"].contains(step),
+                  let status = item["status"] as? String, ["PASS", "FAIL"].contains(status) else { return }
+            if status == "FAIL" { qualificationFailed = true }
+            log.write("step", ["step": step, "status": status]); return
+        }
         log.write(event, item)
         if event == "root" {
             awaitingReload = true
@@ -114,8 +140,13 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         if event == "done" { pageFinished = true; finishIfReady() }
         if event == "failure" {
             if awaitingReload { logReloadFailure(finalPath: view?.url?.path) }
+            logStreamFailure()
             scheme.close(); exit(1)
         }
+    }
+    private func logStreamFailure() {
+        for facts in pageStreamFacts.values { log.write("page_stream_failure", facts) }
+        for diagnostic in scheme.streamDiagnostics { log.write("native_stream_failure", diagnostic.fields) }
     }
     private func logReloadFailure(finalPath: String?) {
         log.write("deep_reload_failure", ["requestedPath": Self.reloadPath, "servedPath": reloadServedPath,
@@ -164,13 +195,21 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         activeDownloads.append(download); download.delegate = self
     }
     private func finishIfReady() {
-        if pageFinished && downloadFinished { scheme.close(); log.write("exit"); exit(0) }
+        guard pageFinished else { return }
+        let passed = !qualificationFailed && downloadFinished
+        if !passed { logStreamFailure() }
+        scheme.close(); log.write("exit"); exit(passed ? 0 : 1)
     }
     func downloadDidFinish(_ download: WKDownload) {
-        downloadFinished = true; log.write("download_finish"); finishIfReady()
+        downloadFinished = true; log.write("download_finish"); settlePageDownload(true)
     }
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        log.write("download_failure"); scheme.close(); exit(1)
+        qualificationFailed = true; log.write("download_failure"); settlePageDownload(false)
+    }
+    private func settlePageDownload(_ success: Bool) {
+        // No return value is consumed: intentionally use the callback overload.
+        view?.callAsyncJavaScript("window.__hrQualificationDownload?.(success);", arguments: ["success": success],
+            in: nil, in: .page, completionHandler: nil)
     }
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
                   completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
@@ -208,40 +247,86 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     const upload = await fetch('/api/v1/mac-qualification/upload', {method:'POST', headers:{...headers, 'Content-Type':encoded.headers.get('Content-Type')}, body:new Uint8Array(await encoded.arrayBuffer())});
     const uploaded = await upload.json(); emit('upload', uploaded);
     if (!upload.ok || uploaded.fileBytes !== 10485760 || !uploaded.intact) throw new Error('upload');
-    async function stream(mode) {
+    async function step(name, milliseconds, action) {
       const controller = new AbortController();
+      const facts = {step:name, bytesReceived:0, framesReceived:0, pendingBytes:0, lastPageStep:'fetch-pending'};
+      let timer, active = true;
+      const mark = lastPageStep => { if (active) { facts.lastPageStep = lastPageStep; emit('stream_state', facts); } };
+      try {
+        await Promise.race([action(controller, facts, mark, () => active), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('step timeout')), milliseconds);
+        })]);
+        emit('step', {step:name, status:'PASS'});
+      } catch {
+        // No error text: it may include body, URL or native context values.
+        emit('step_diagnostic', facts);
+        emit('step', {step:name, status:'FAIL'});
+      } finally { active = false; clearTimeout(timer); controller.abort(); }
+    }
+    async function stream(mode, controller, facts, mark, active) {
+      mark('fetch-pending');
       const response = await fetch('/api/v1/mac-qualification/' + mode, {headers, signal:controller.signal});
-      if (!response.ok) throw new Error('stream status');
+      mark('status'); if (!response.ok) throw new Error('stream status');
       const reader = response.body.getReader(), decoder = new TextDecoder();
       let pending = '', count = 0;
       try {
         while (true) {
-          const part = await reader.read(); if (part.done) break;
+          mark('read-pending');
+          const part = await reader.read();
+          if (!active()) return;
+          if (part.done) { mark('read-done'); break; }
+          facts.bytesReceived += part.value.byteLength;
+          mark('decode');
           pending += decoder.decode(part.value, {stream:true});
+          facts.pendingBytes = new TextEncoder().encode(pending).byteLength;
           let end;
           while ((end = pending.indexOf('\n\n')) !== -1) {
             const frame = pending.slice(0, end); pending = pending.slice(end + 2);
+            facts.framesReceived++; facts.pendingBytes = new TextEncoder().encode(pending).byteLength;
             if (!frame.startsWith('data: ')) continue;
+            mark('parse');
             const value = JSON.parse(frame.slice(6));
             // Emit NOW, before awaiting another chunk or stream completion.
             const receiptWallMs = Date.now();
+            mark('receipt-emit');
             emit('receipt', {mode, ...value, receiptWallMs}); count++;
             if (mode === 'abort' && count === 2) {
-              emit('abort', {pageWallMs:Date.now()}); controller.abort(); return;
+              mark('abort-emit'); emit('abort', {pageWallMs:Date.now()});
+              controller.abort(); mark('abort-sent'); return;
             }
           }
         }
-      } catch (error) { if (!controller.signal.aborted) throw error; }
+      } finally {
+        // A pending native read must not hold the next step, even on failure.
+        reader.cancel().catch(() => {});
+      }
+      if (mode !== 'stream' || count !== 5 || pending.length !== 0) throw new Error('stream completion');
+      mark('end-emit');
       emit('stream_end', {mode, count});
+      mark('complete');
     }
-    await stream('stream'); await stream('abort');
-    const response = await fetch('/api/v1/mac-qualification/download', {headers});
-    const blob = await response.blob(), text = await blob.text();
-    emit('blob', {text}); if (text !== 'mac1 download\n') throw new Error('download');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'mac1.txt';
-    document.body.append(link); link.click(); await pause(1200); link.remove(); URL.revokeObjectURL(link.href);
+    await step('stream', 9000, (...args) => stream('stream', ...args));
+    await step('abort', 4000, (...args) => stream('abort', ...args));
+    await step('download', 5000, async (controller, facts, mark, active) => {
+      const response = await fetch('/api/v1/mac-qualification/download', {headers, signal:controller.signal});
+      mark('status'); if (!response.ok) throw new Error('download status');
+      mark('blob-pending'); const blob = await response.blob(), text = await blob.text();
+      if (!active()) return;
+      facts.bytesReceived = blob.size;
+      mark('blob-emit'); emit('blob', {text}); if (text !== 'mac1 download\n') throw new Error('download');
+      const saved = new Promise(resolve => {
+        window.__hrQualificationDownload = resolve;
+        controller.signal.addEventListener('abort', () => resolve(false), {once:true});
+      });
+      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'mac1.txt';
+      try {
+        mark('save-pending'); document.body.append(link); link.click();
+        if (!await saved) throw new Error('download save');
+        mark('complete');
+      } finally { link.remove(); URL.revokeObjectURL(link.href); delete window.__hrQualificationDownload; }
+    });
     emit('done');
-  } catch (error) { emit('failure', {reason:String(error)}); }
+  } catch { emit('failure', {reason:'qualification'}); }
 })();
 """#
 

@@ -2,6 +2,30 @@ import XCTest
 @testable import HappyRanchApp
 
 final class AppSchemeRouteTests: XCTestCase {
+    func testStreamDiagnosticRetainsOnlyFramingAndLifecycleFacts() throws {
+        let privateValue = "synthetic-private-context"
+        let response = HTTPURLResponse(url: URL(string: "happyranch-app://app/api/v1/synthetic")!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: ["content-type": "text/event-stream", "content-length": "42",
+                "x-synthetic-private-name": privateValue, "etag": privateValue])!
+        var diagnostic = AppSchemeStreamDiagnostic(requestID: "synthetic-owner", response: response)
+        diagnostic.bytesDelivered = 42
+        diagnostic.didFinish = true; diagnostic.finishOnMainThread = true; diagnostic.taskStopped = true
+        let fields = diagnostic.fields
+        XCTAssertEqual(fields["headerNames"] as? [String], ["content-length", "content-type", "etag", "other"])
+        XCTAssertEqual(fields["contentLengthPresent"] as? Bool, true)
+        XCTAssertEqual(fields["transferEncodingPresent"] as? Bool, false)
+        XCTAssertEqual(fields["expectedContentLength"] as? Int64, 42)
+        XCTAssertEqual(fields["bytesDelivered"] as? Int, 42)
+        XCTAssertEqual(fields["didFinish"] as? Bool, true)
+        XCTAssertEqual(fields["finishActor"] as? String, "main")
+        XCTAssertEqual(fields["finishOnMainThread"] as? Bool, true)
+        XCTAssertEqual(fields["finishTaskCancelled"] as? Bool, false)
+        XCTAssertEqual(fields["taskStopped"] as? Bool, true)
+        let encoded = String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        XCTAssertFalse(encoded.contains(privateValue))
+        XCTAssertFalse(encoded.contains("x-synthetic-private-name"))
+    }
+
     func testAdmissionDiagnosticRetainsOnlyClosedResultTypesAndPageFacts() {
         let token = String(repeating: "22", count: 16)
         let cases: [(String, Any?)] = [

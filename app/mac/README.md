@@ -148,8 +148,12 @@ new Settings/Connection actions, toolbar/menu, local controls or launch policy i
 implemented here. The existing native Connection view remains for later slices.
 Those later Mac contracts are not qualified by this transport PR.
 
-Manual native qualification is **pending**, with scheme streaming chosen for
-measurement and no buffering conclusion/fallback yet. After independent review
+Build 62 measured incremental delivery of all five normal SSE events, but the
+page never reported EOF after native `didFinish`; qualification remains **FAIL**.
+The EOF cause is **unproven**. Framing headers are stripped before delivery,
+and the handler is MainActor-owned, but build 62 did not retain expected length,
+page read/parse/emit state or finish/stop facts. No speculative framing or
+buffering change is made. After independent review
 APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
 It compiles the product and focused parser/route tests once, launches that same
 product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
@@ -178,7 +182,28 @@ Each page receipt is sent immediately to native and fsynced to JSONL; timeout
 retains earlier events. Every one of five events at 1s intervals must arrive in
 under **500 ms** (less than half the interval); the two-event abort must stop its
 native owner within **500 ms**, with no writes from that owner afterward. No
-completion-only receipt array can pass. The suite also checks JSON POST/PUT,
+completion-only receipt array can pass. The normal stream must also reach actual
+reader EOF with all five data receipts and no partial trailing frame.
+Stream, abort and download run as independent steps with respective 9s, 4s and
+5s deadlines. Each emits one `step` PASS/FAIL and later steps still run after a
+failure. Download awaits the native WKDownload result within its own deadline;
+fetch bytes alone cannot pass saving. The assessor reports each step separately
+and requires all three PASS plus every existing timing/body/navigation check.
+Any failure remains an overall FAIL, even if later steps pass.
+
+Failure-only `page_stream_failure` records retain the last read/decode/parse/emit
+or save stage, received byte/frame counts and pending framing byte count.
+`native_stream_failure` records correlate native owner IDs with delivered byte
+counts, closed response-header names (unexpected names become `other`), framing
+header presence, expected content length and didFinish main-thread/MainActor,
+cancellation and task-stopped facts. Page progress stays in bounded native memory
+until failure; native snapshots are capped at 32 streams. Neither diagnostic
+contains header values, body bytes, context/credential values, arbitrary errors
+or URLs. Ordinary app startup does not enable this qualification observer.
+The 34s main-thread failure dump precedes the existing 35s hard watchdog; a blocked
+main thread can still leave only that hard-watchdog receipt.
+
+The suite also checks JSON POST/PUT,
 10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
 honestly expects `/onboarding`: the fixture returns a successful empty `orgs`
 list, exactly the `RootRedirect` branch in `web/src/routes.tsx`; it never converts

@@ -1687,14 +1687,25 @@ failures after resume conservatively fail the scheme request. Missing response
 headers never prove no send: interrupted mutations retain Result unknown in the
 shared web client, with no automatic retry.
 
-**Streaming decision: scheme-first, measurement pending.** No Mac build or
-native PASS is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
+**Streaming decision: incremental delivery measured in build 62; EOF failed.**
+All five normal receipts met the timing bound, but the page never reported
+stream completion after native finish. The cause remains unproven; no buffering
+fallback or speculative framing change is justified by that evidence. No native
+PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
 app-scheme` builds the actual product at the approved head and qualifies the
 shipping scheme/adapter against a synthetic local daemon using the built SPA.
 Every page event is emitted immediately to native and fsynced; final-only arrays
 are forbidden. Pass requires all five one-second-spaced events below 500 ms
 receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later
 writes for that owner. Timeouts retain partial JSONL in the report and fail.
+Stream, abort and download now have independent 9s/4s/5s deadlines and per-step
+PASS/FAIL receipts; later steps continue after failure. Overall PASS additionally
+requires actual normal reader EOF with five receipts and no partial frame,
+all three step results and native saved-file completion. Failure-only closed
+diagnostics retain page bytes/frames/last stage and native delivered bytes,
+framing-header names/presence/expected length and finish actor/thread/stopped
+state; no header/body/context/credential values are retained. Bounds and the
+hard-watchdog limitation are documented in `app/mac/README.md`.
 This is a local transport fixture with development tsnet stubs, not live remote,
 Keychain, packaged release, minimum-macOS or native save-panel acceptance.
 If measured buffering appears, native-message delivery and a web SSE helper

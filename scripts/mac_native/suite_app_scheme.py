@@ -220,17 +220,20 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
     stream_sends = [row for row in sends if row.get('event') == 'send' and row.get('mode') == 'stream']
     intervals = [b['sentWallMs'] - a['sentWallMs'] for a, b in zip(stream_sends, stream_sends[1:])]
     valid &= [row.get('index') for row in stream_sends] == list(range(5)) and all(900 <= gap <= 2000 for gap in intervals)
+    mode_valid = {'stream': bool(valid), 'abort': True}
     for mode, expected in (('stream', 5), ('abort', 2)):
         group = [row for row in rows if row.get('mode') == mode]
         sent = [row for row in sends if row.get('event') == 'send' and row.get('mode') == mode]
         if [row.get('index') for row in group] != list(range(expected)):
             valid = False
+            mode_valid[mode] = False
         for row in group:
             matches = [send for send in sent if send['index'] == row.get('index') and send['sentWallMs'] == row.get('sentWallMs')]
             latency = row['receiptWallMs'] - row['sentWallMs']
             measurements.append({'mode': mode, 'index': row['index'], 'latencyMs': latency,
                                  'sentWallMs': row['sentWallMs'], 'receiptWallMs': row['receiptWallMs']})
             valid &= len(matches) == 1 and 0 <= latency < LATENCY_MS
+            mode_valid[mode] &= len(matches) == 1 and 0 <= latency < LATENCY_MS
     aborts = [row for row in events if row.get('event') == 'abort']
     stops = [row for row in events if row.get('event') == 'native_stop']
     delay = None
@@ -252,14 +255,25 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
                       and row.get('intact') is True for row in events) for method in ('POST', 'PUT'))
     upload_ok = any(row.get('event') == 'upload' and row.get('fileBytes') == 10485760
                     and row.get('sha256') == UPLOAD_DIGEST and row.get('intact') is True for row in events)
+    ends = [row for row in events if row.get('event') == 'stream_end' and row.get('mode') == 'stream']
+    eof_ok = len(ends) == 1 and ends[0].get('count') == 5
+    observations = {'stream': mode_valid['stream'] and eof_ok, 'abort': mode_valid['abort'] and abort_ok,
+                    'download': download == b'mac1 download\n' and any(row.get('event') == 'download_finish' for row in events)}
+    step_results = {}
+    for step in ('stream', 'abort', 'download'):
+        results = [row for row in events if row.get('event') == 'step' and row.get('step') == step]
+        step_results[step] = 'PASS' if len(results) == 1 and results[0].get('status') == 'PASS' and observations[step] else 'FAIL'
+    steps_ok = all(value == 'PASS' for value in step_results.values())
+    failed = any(row.get('event') in ('failure', 'step_diagnostic', 'download_failure', 'watchdog') for row in events)
     complete = exit_code == 0 and any(row.get('event') == 'done' for row in events) and any(row.get('event') == 'download_finish' for row in events)
-    return {'status': 'PASS' if complete and valid and abort_ok and root_ok and deep_ok and json_ok and upload_ok
+    return {'status': 'PASS' if complete and steps_ok and not failed and valid and abort_ok and root_ok and deep_ok and json_ok and upload_ok
             and download == b'mac1 download\n' else 'FAIL',
             'path': 'WKURLSchemeHandler', 'fallback': 'NOT IMPLEMENTED; buffering requires manager follow-up',
             'threshold_ms': LATENCY_MS, 'threshold_reason': 'Less than half the 1s send interval excludes interval-sized buffering.',
             'measurements': measurements, 'send_intervals_ms': intervals, 'abort_delay_ms': delay, 'abort_pass': abort_ok,
             'post_stop_writes': post_stop_writes, 'stream_owners': stream_owners,
             'root_redirect_pass': root_ok, 'deep_reload_pass': deep_ok, 'json_pass': json_ok,
+            'stream_eof_pass': eof_ok, 'step_results': step_results,
             'upload_pass': upload_ok, 'download_pass': download == b'mac1 download\n',
             'complete': complete, 'partial': not complete}
 

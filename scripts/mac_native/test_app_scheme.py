@@ -29,6 +29,8 @@ def evidence() -> tuple[list[dict], list[dict]]:
             events.append(dict(event='receipt', mode=mode, index=index, sentWallMs=sent, receiptWallMs=sent + 25))
     events.extend([dict(event='abort', pageWallMs=11030),
                    dict(event='native_stop', nativeWallMs=11040, requestID='abort-owner'), dict(event='download_finish'), dict(event='done')])
+    events.append(dict(event='stream_end', mode='stream', count=5))
+    events.extend(dict(event='step', step=step, status='PASS') for step in ('stream', 'abort', 'download'))
     return events, sends
 
 
@@ -139,6 +141,32 @@ class QualificationVerdictTests(unittest.TestCase):
 
     def test_prompt_events_and_bounded_abort_pass(self) -> None:
         self.check_status(*evidence(), 'PASS')
+
+    def test_eof_and_each_independent_step_are_required(self) -> None:
+        for failure in ('missing_eof', 'wrong_eof_count', 'duplicate_eof', 'failure_event',
+                        'missing_step', 'failed_step', 'duplicate_step'):
+            with self.subTest(failure=failure):
+                events, sends = evidence()
+                eof = next(row for row in events if row['event'] == 'stream_end')
+                step = next(row for row in events if row.get('step') == 'stream')
+                if failure == 'missing_eof':
+                    events.remove(eof)
+                elif failure == 'wrong_eof_count':
+                    eof['count'] = 4
+                elif failure == 'duplicate_eof':
+                    events.append(eof.copy())
+                elif failure == 'failure_event':
+                    events.append(dict(event='failure', reason='qualification'))
+                elif failure == 'missing_step':
+                    events.remove(step)
+                elif failure == 'failed_step':
+                    step['status'] = 'FAIL'
+                else:
+                    events.append(step.copy())
+                self.check_status(events, sends, 'FAIL')
+                if failure != 'failure_event':
+                    self.assertEqual(assess(events, sends, 0, b'mac1 download\n')['step_results'],
+                                     {'stream': 'FAIL', 'abort': 'PASS', 'download': 'PASS'})
 
     def test_buffered_or_missing_receipts_never_pass(self) -> None:
         for failure in ('buffered', 'missing', 'duplicate', 'foreign_send', 'negative_latency', 'too_fast_send'):
