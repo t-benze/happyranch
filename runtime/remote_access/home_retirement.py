@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 MESSAGE = "Home mode has been retired. Sign in to use your account's private network. Your local work is kept."
 STATE_DIRECTORY = "var/lib/happyranch-remote-access"
 RECEIPT = "home-retirement.json"
+_FINAL_BYTES = b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
+_FINAL_PENDING = ".home-retirement.json.pending"
+_RECOVERY_RECORDS = frozenset(("home-retirement-inventory.json", "home-retirement-transport.json",
+    "home-retirement-peer.json", "home-retirement-denied.json"))
 UNIT = "happyranch-headscale.service"
 ACCOUNT = "happyranch-headscale"
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -196,13 +200,14 @@ class HomeRetirement:
             raise RetirementUncertain()
         return data
 
-    def _state_evidence(self, *, completed: bool) -> bool:
+    def _state_evidence(self, *, completed: bool, publishing: bool = False) -> bool:
         with self._entry(STATE_DIRECTORY + "/" + RECEIPT) as (parent, name, _):
             # A missing intermediate path is represented by its nearest existing
             # ancestor; do not inventory that unrelated directory as state.
             if name != RECEIPT:
                 return False
             found = False
+            recovery, fenced = False, False
             with os.scandir(parent) as entries:
                 for index, item in enumerate(entries):
                     if index >= 128:
@@ -211,9 +216,31 @@ class HomeRetirement:
                         continue
                     if completed and item.name in ("home-audit.jsonl", "home-audit.jsonl.1"):
                         continue
+                    if completed and item.name in _RECOVERY_RECORDS:
+                        recovery = True
+                        # Inert private recovery provenance remains available
+                        # across unpack. It supplies no completion authority.
+                        info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+                        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                or (info.st_uid, info.st_gid) != self.io.root_owner
+                                or stat.S_IMODE(info.st_mode) != 0o600):
+                            raise RetirementUncertain()
+                        continue
+                    if completed and item.name == ".home-activation.json.pending":
+                        fenced = True
+                        from runtime.remote_access.home_retirement_fence import _BYTES
+                        info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+                        if self._read(parent, item.name, info, private=True) != _BYTES:
+                            raise RetirementUncertain()
+                        continue
+                    if publishing and item.name == _FINAL_PENDING:
+                        info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
+                        if self._read(parent, item.name, info, private=True) != _FINAL_BYTES:
+                            raise RetirementUncertain()
+                        continue
                     if item.name.startswith(("home-", ".home-", "headscale-", ".headscale-")):
                         found = True
-            return found
+            return found or recovery and not fenced
 
     def _config_evidence(self) -> bool:
         with self._entry("etc/happyranch/sidecar.json") as (parent, name, info):

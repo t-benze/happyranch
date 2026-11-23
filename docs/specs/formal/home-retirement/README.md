@@ -17,11 +17,17 @@ manifest or deletion authority.
 | ObserveCutoff | Original-owner physical acknowledgement or independent original-death/managed-quiescence proof, plus anchored burn/deny readback. No Boolean or phase intent substitutes for these. |
 | Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the full coordinator still needs to consume all pinned evidence before effects. |
 | Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. Final cleanup evidence disposition/completion remains unfinished. |
-| WriteReceipt / SyncReceipt / ReadFinal | Accepted minimized completion publication, file/parent sync and fresh readback; never seeded success. Full writer remains to be implemented. |
+| WriteReceipt / SyncReceipt / ReadFinal | Account-absent publication in `home_retirement_publication` uses complete caller proof, staged file/parent sync, atomic no-replace rename and fresh readback; never seeded success. Retained-account and torn-stage recovery remain unfinished. |
 | GateUnpack / ReplacePayload / RestoreEntry | Accepted incoming canonical preinst before old-payload replacement, trusted recovery capability and partial replacement. Package entry remains to be implemented. |
 | Crash / InterruptWrite / Detect / SelectExplicit | Durable denies/effects survive; detection has no destructive action; only explicit recovery can progress. |
 | ReplaceForeign / RollbackArtifact | Sampled ownership may change before the next effect; foreign/reappearing artifacts stay pending without stop/disable/removal or restored authority. |
 | OldAdmission / LaterAccountAuthority / AccountListen | Fence rejects old admission. A hypothetical later listener needs separate account authority plus confirmed retirement; this represents S02's future gate, not a positive account path on main. |
+
+## Incremental implementation records
+
+The records below retain the scope limits of each earlier implementation slice.
+The boundary table above and final publication note describe current source;
+no source description establishes unexecuted composed or installed acceptance.
 
 The active coordinator now passes its real live cutoff receipt and saved
 controller observation into controller stop/disable. Each native effect follows
@@ -290,3 +296,13 @@ TLC parsing/model execution: **NOT RUN** in this source checkpoint. State
 counts, invariant success, liveness and sensitivity are unverified; a command
 listing is not evidence of their result. No CI trigger or dependency is added.
 Model checks are review evidence only; required checks remain lint/static.
+
+The explicit active/inert `publish_final` entries join the completed historical
+receipt absence to current account/native/cleanup proof before publication.
+They may reload only the already-proven removed fragments, then require absent
+service readback. Complete interrupted publication reuses the original staged
+or final inode; no account/native-stop/revoke effect is repeated. The fixed
+private recovery record family and permanent old-payload fence are retained
+as inert provenance across unpack. The model abstracts their custody/durability;
+retained-account and torn-stage completion still have a source implementation
+gap. Existing R02.a-h obligations are not all established by this slice.

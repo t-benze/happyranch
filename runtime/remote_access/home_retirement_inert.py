@@ -2,9 +2,10 @@
 
 Absence alone supplies no cutoff proof for an active installation. This owner
 requires historical inert provenance, original and current absent authority,
-and fresh complete native quiescence. Selective cleanup retains shared
-executables, accounts, operation locks and original journals. It neither
-initializes trust nor emits a final receipt or package replacement gate.
+and fresh complete native quiescence. Separate explicit cleanup/account entries
+precede account-absent final publication. Shared executables, original journals
+and the old-payload fence survive; no trust is initialized. The incoming
+package replacement gate remains separate and unfinished.
 """
 from __future__ import annotations
 
@@ -221,6 +222,25 @@ class InertRetirement:
             return AccountDisposition(journal, original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
+
+    @classmethod
+    def publish_final(cls, io: ManagedInstaller, fence: RetirementFence) -> bytes:
+        """Read all completed facts and publish the account-absent result.
+
+        Historical receipts must already be absent. No revoke, native-stop,
+        cleanup or account effect is replayed by this publication entry.
+        """
+        from runtime.remote_access.home_retirement_cleanup import OriginalReceiptCleanup
+        from runtime.remote_access.home_retirement_publication import publish_final
+        disposition = cls._account_disposition(io, fence, receipt_cleanup=True)
+        def require() -> str:
+            result = disposition.require_retired()
+            cleanup = OriginalReceiptCleanup(disposition.journal, disposition.original,
+                before_effect=disposition.require_retired)
+            if any(value is not None for value in cleanup._observe().values()):
+                raise RetirementUncertain()
+            return result
+        return publish_final(io, fence, require=require)
 
     @classmethod
     def remove_original_receipts(cls, io: ManagedInstaller, fence: RetirementFence) -> None:

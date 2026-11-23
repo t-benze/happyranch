@@ -257,6 +257,62 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
         path: value for path, value in records.items() if path not in originals}
     assert not (active.root / FINAL).exists()
     assert active.io.home_retirement_status()['state'] == 'migration pending'
+    # The production final entry decides when complete facts permit reload and
+    # publication. This adapter implements only the systemd cache observation.
+    previous_run = active.io._run
+    reloads = []
+    def native_reload(argv, **kwargs):
+        if argv == ['systemctl', 'daemon-reload']:
+            active.calls.append(argv)
+            reloads.append(True)
+            for props in (active.controller.properties, *active.native.values()):
+                assert not (active.root / 'etc/systemd/system' / props['Id']).exists()
+                props.update(LoadState='not-found', FragmentPath='', NeedDaemonReload='no',
+                    ActiveState='inactive', SubState='dead', UnitFileState='')
+                if 'MainPID' in props:
+                    props.update(MainPID='0', ControlPID='0', ControlGroup='', User='', Group='')
+            return 0, ''
+        return previous_run(argv, **kwargs)
+    active.io._run = active.io.manager._run = native_reload
+    real_sync = os.fsync
+    publication_interrupted = []
+    def lost_publication_sync(fd):
+        path = Path(os.readlink(f'/proc/self/fd/{fd}'))
+        selected = (path == active.root / STATE / '.home-retirement.json.pending'
+            if boundary == 'group-failure' else path == active.root / STATE and (active.root / FINAL).exists())
+        if not publication_interrupted and selected:
+            publication_interrupted.append(True)
+            raise OSError('synthetic final publication sync interruption')
+        real_sync(fd)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', lost_publication_sync)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            cleanup.publish_final(io(), active.fence)
+    assert publication_interrupted and reloads == [True]
+    produced = cleanup.publish_final(io(), active.fence)
+    assert produced == b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
+    assert (active.root / FINAL).read_bytes() == produced
+    complete = active.snapshot()
+    identity = (active.root / FINAL).stat().st_ino
+    # R03 consumes the record generated after the actual earlier interruption.
+    assert io().home_retirement_status()['state'] == 'retired'
+    assert io().home_retirement_status()['state'] == 'retired'
+    assert cleanup.publish_final(io(), active.fence) == produced
+    assert (active.root / FINAL).stat().st_ino == identity
+    assert active.snapshot() == complete and active.effects() == effects
+    assert list(getattr(active, 'frames', [])) == frames and reloads == [True]
+    assert deletions(active.calls) == (['userdel', 'groupdel', 'groupdel']
+        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+        for path in records if path not in originals} == {
+        path: value for path, value in records.items() if path not in originals}
+    # R04's reappearance follows real publication, not a seeded final receipt.
+    active.controller.file('etc/happyranch/invite-issuer.json', b'synthetic-foreign-reappearance')
+    drift = active.snapshot()
+    assert io().home_retirement_status()['state'] == 'migration pending'
+    with pytest.raises(RetirementUncertain):
+        cleanup.publish_final(io(), active.fence)
+    assert active.snapshot() == drift and (active.root / FINAL).read_bytes() == produced
 
 
 @pytest.mark.parametrize('case', ['absent', 'retained-consumer', 'account-present', 'group-present',

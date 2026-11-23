@@ -5,8 +5,9 @@ original evidence before revocation and can guard dedicated controller native
 effects with the actual live cutoff receipt. Managed native effects additionally
 require that live receipt or the existing independent original-death/quiescence
 proof. Stopped retirement can selectively remove original private leaves under
-fresh proofs and held operation exclusion. Account changes, package replacement
-and final retired publication remain separate obligations.
+fresh proofs and held operation exclusion. Separate explicit account/receipt
+cleanup entries precede account-absent final publication; incoming package
+replacement remains a separate unfinished obligation.
 Inert/pre-activation retirement and post-effect recovery have separate proofs.
 """
 from __future__ import annotations
@@ -546,6 +547,25 @@ class StoppedRetirement:
             return AccountDisposition(owner.journal, owner.original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, StateStoreError):
             raise RetirementUncertain() from None
+
+    @classmethod
+    def publish_final(cls, io: ManagedInstaller, fence: RetirementFence) -> bytes:
+        """Read all completed facts and publish the account-absent result.
+
+        Historical receipts must already be absent. No revoke, native-stop,
+        cleanup or account effect is replayed by this publication entry.
+        """
+        from runtime.remote_access.home_retirement_cleanup import OriginalReceiptCleanup
+        from runtime.remote_access.home_retirement_publication import publish_final
+        disposition = cls._account_disposition(io, fence)
+        def require() -> str:
+            result = disposition.require_retired()
+            cleanup = OriginalReceiptCleanup(disposition.journal, disposition.original,
+                before_effect=disposition.require_retired)
+            if any(value is not None for value in cleanup._observe().values()):
+                raise RetirementUncertain()
+            return result
+        return publish_final(io, fence, require=require)
 
     @classmethod
     def remove_original_receipts(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
