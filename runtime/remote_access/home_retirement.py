@@ -125,10 +125,14 @@ class HomeRetirement:
                 child = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
                 opened.append(child)
                 info = os.fstat(child)
-                if _signature(named) != _signature(info):
-                    raise RetirementUncertain()
                 current /= part
-                if current.is_relative_to(self.io.root):
+                inside = current.is_relative_to(self.io.root)
+                # Outside the managed root, sibling writes can change directory
+                # size/timestamps between stat and open without changing lineage.
+                fields = 9 if inside else 5
+                if _signature(named)[:fields] != _signature(info)[:fields]:
+                    raise RetirementUncertain()
+                if inside:
                     if ((info.st_uid, info.st_gid) != self.io.root_owner or info.st_mode & 0o022
                             or current == self.io.root / STATE_DIRECTORY and stat.S_IMODE(info.st_mode) != 0o700):
                         raise RetirementUncertain()

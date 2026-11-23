@@ -1143,8 +1143,9 @@ def test_original_inventory_is_durable_closed_and_reopens_without_adopting_curre
 
 
 @pytest.mark.parametrize("activity", ["outer-sibling", "inner-sibling", "outer-mode", "outer-replacement"])
+@pytest.mark.parametrize("boundary", ["inventory-walk", "ancestor-open"])
 def test_original_inventory_distinguishes_outer_activity_from_owned_directory_drift(
-        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, activity: str) -> None:
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, activity: str, boundary: str) -> None:
     from runtime.remote_access.home_retirement_journal import RetirementJournal
     managed_setup(fixture)
     with retirement_fence(fixture.io) as fence:
@@ -1152,11 +1153,13 @@ def test_original_inventory_distinguishes_outer_activity_from_owned_directory_dr
         real_open, changed = os.open, []
         outer_mode = stat.S_IMODE(fixture.root.parent.stat().st_mode)
         sibling = (fixture.root.parent if activity.startswith("outer-") else fixture.root) / "unrelated-sibling"
+        trigger = (fixture.root.parent if boundary == "ancestor-open" and activity.startswith("outer-")
+                   else fixture.root / "var/lib/happyranch-headscale")
         def open_during_activity(path, flags, *args, **kwargs):
             nonlocal sibling
             descriptor = real_open(path, flags, *args, **kwargs)
             if (not changed and flags == inventory._DIRECTORY_FLAGS
-                    and Path(os.readlink(f"/proc/self/fd/{descriptor}")) == fixture.root / "var/lib/happyranch-headscale"):
+                    and Path(os.readlink(f"/proc/self/fd/{descriptor}")) == trigger):
                 # A deterministic external writer during a real inventory walk.
                 # It supplies no decision/receipt and never changes production.
                 sibling.write_bytes(b"synthetic-independent-sibling")
