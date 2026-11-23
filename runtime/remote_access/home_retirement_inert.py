@@ -206,3 +206,16 @@ class InertRetirement:
             exclusion.remove_leaves(before_effect=guard)
             ManagedCleanup(self.journal, self.original, before_effect=guard).remove()
             guard()
+
+    def remove_private_directories(self) -> None:
+        """Finish only empty original private roots after selective leaves.
+
+        Current empty authority and stopped/disabled native ownership remain
+        mandatory, including after an interrupted rmdir and fresh recovery.
+        """
+        self.require(disabled=True, cleanup=True)
+        with held_auxiliary_operations(self.journal, self.original, cleanup=True) as exclusion:
+            def guard() -> None:
+                self.require(disabled=True, cleanup=True)
+                exclusion.require()
+            PrivateCleanup(self.journal, self.original, before_effect=guard).remove_directories()

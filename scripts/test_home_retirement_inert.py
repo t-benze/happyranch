@@ -246,6 +246,20 @@ def test_inert_leaf_cleanup_recovers_only_originals_with_fresh_proofs(active, mo
             InertRetirement.resume_cleanup(fresh(active), active.fence).remove_leaves()
             assert len(removed) == count and len(removed) == len(set(removed))
         assert lock_checks
+        if boundary == 'complete':
+            roots = ('etc/happyranch/headscale', 'run/happyranch-headscale',
+                'var/lib/happyranch-headscale', STATE_DIRECTORY + '/home-ca')
+            real_rmdir, directories = os.rmdir, []
+            def rmdir(name, *, dir_fd=None):
+                assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+                real_rmdir(name, dir_fd=dir_fd)
+                directories.append(name)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'rmdir', rmdir)
+                InertRetirement.resume_cleanup(fresh(active), active.fence).remove_private_directories()
+                assert all(not (active.root / path).exists() for path in roots)
+                InertRetirement.resume_cleanup(fresh(active), active.fence).remove_private_directories()
+            assert len(directories) == len(roots)
     assert active.effects() == []
     assert all((active.root / path).exists() for path in OPERATION_LOCKS)
     assert all((active.root / path).read_bytes() == data for path, data in native_files.items())

@@ -77,6 +77,14 @@ private/auxiliary/managed removal. Lost parent sync is reconciled without
 unlink replay using the same originals. These entries retain native artifacts,
 accounts, journals and lock domains; removal of those final obligations,
 account disposition, final receipt and pre-unpack integration remain unfinished.
+The stopped and inert `remove_private_directories` entries also map to Remove:
+after all private leaves are absent, only the four fixed original empty private
+roots may be rmdir'd under the same fresh proofs and held operation exclusion.
+Original immediate-parent identity, parent sync and absent-name readback are
+required even after interrupted removal. Missing/replaced parents, reappearing
+roots/leaves and unknown/nonempty roots refuse; no recursive traversal or rmdir
+replay is supplied. Native/trust/account/lock-domain and final publication
+obligations remain separate; model actions and completion claims are unchanged.
 
 The model's additional inert initial branch abstracts these independently
 proven empty authority facts as already satisfied Denied/Closed predicates.

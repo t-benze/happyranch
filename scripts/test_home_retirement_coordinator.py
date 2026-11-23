@@ -712,8 +712,11 @@ def test_native_recovery_finishes_only_remaining_owned_effects(active, monkeypat
     assert not (active.root / FINAL).exists()
 
 
-@pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
+@pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves', 'denial-between-directories'])
 def test_stopped_private_cleanup_uses_real_proofs_and_preserves_explicit_recovery(active, monkeypatch, boundary):
+    if boundary != 'denial-between-leaves':
+        from scripts.test_home_retirement_inventory import auxiliary_journal_setup
+        auxiliary_journal_setup(active.controller)
     device, _ = active.grant('device')
     active.stream(device, 'device')
     with active.serving(monkeypatch):
@@ -746,6 +749,36 @@ def test_stopped_private_cleanup_uses_real_proofs_and_preserves_explicit_recover
                 recovered.remove_private()
                 assert len(removed) == count
                 assert all(not (active.root / path).exists() for path in owner.original.private.members)
+        if boundary != 'denial-between-leaves':
+            from scripts.test_home_retirement_inventory import OPERATION_LOCKS, writer_lock
+            roots = ('etc/happyranch/headscale', 'run/happyranch-headscale',
+                'var/lib/happyranch-headscale', STATE_DIRECTORY + '/home-ca')
+            def fresh():
+                io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+                    run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
+                return StoppedRetirement.from_saved(io, active.fence)
+            real_rmdir, directories = os.rmdir, []
+            def rmdir(name, *, dir_fd=None):
+                assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+                real_rmdir(name, dir_fd=dir_fd)
+                directories.append(name)
+                if boundary == 'denial-between-directories' and len(directories) == 1:
+                    active.manager.issue_invite_record('e' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'rmdir', rmdir)
+                if boundary == 'complete':
+                    fresh().remove_private_directories()
+                    assert all(not (active.root / path).exists() for path in roots)
+                    fresh().remove_private_directories()
+                    assert len(directories) == len(roots)
+                else:
+                    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                        fresh().remove_private_directories()
+                    assert len(directories) == 1
+                    after = active.snapshot()
+                    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                        fresh().remove_private_directories()
+                    assert active.snapshot() == after
         assert active.effects() == effects
         assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
         assert RetirementJournal(active.io, active.fence).load() == owner.original

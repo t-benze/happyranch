@@ -4613,6 +4613,20 @@ intentional contents changes; ordinary inventory observations keep their
 existing full metadata checks. Native artifacts, saved records, managed trust,
 operation locks and local work remain retained. This is partial cleanup only,
 not completed account disposition, full cleanup or final publication.
+After private leaves are gone, explicit `remove_private_directories` on the
+stopped or inert owner removes only the four fixed original private roots:
+`/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`,
+`/run/happyranch-headscale` and the installer's `home-ca` directory. All must
+be empty; current native/cutoff (or proven inert empty authority) and held
+issuer/minter exclusion still guard each rmdir. The original root's
+inode/custody/mode and immediate parent's original identity remain mandatory.
+Fresh explicit recovery synchronizes each original immediate parent and reads
+back absence, including after a lost rmdir sync, without replaying rmdir or
+adopting a replacement. A missing/replaced parent, new/nonempty private root
+or reappearing leaf stays pending. Shared parents, operation domains, native
+artifacts, accounts and journals survive. Leaf-only cleanup entries retain
+their existing semantics; after directory removal, recover through the explicit
+directory entry rather than trying to remove leaves from missing parents.
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held

@@ -158,6 +158,80 @@ class PrivateCleanup:
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 
+    def _empty_directories(self) -> dict[str, tuple[int, ...] | None]:
+        if any(value is not None for value in self._observe().values()):
+            raise RetirementUncertain()
+        result = {}
+        for path in sorted(_CLOSED):
+            walker = self._walker()
+            relative, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
+            with walker._directory(relative, contents_may_change=True) as parent:
+                self._parents(walker)
+                if parent is None:
+                    raise RetirementUncertain()
+                try:
+                    current = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                except FileNotFoundError:
+                    current = None
+                if current is not None:
+                    original = self.original.private.directories.get(path)
+                    if original is None or current[:5] != original[:5] or not stat.S_ISDIR(current[4]):
+                        raise RetirementUncertain()
+                    child = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+                    try:
+                        if _signature(os.fstat(child)) != current:
+                            raise RetirementUncertain()
+                        with os.scandir(child) as entries:
+                            if next(entries, None) is not None:
+                                raise RetirementUncertain()
+                        if (_signature(os.fstat(child)) != current
+                                or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != current):
+                            raise RetirementUncertain()
+                    finally:
+                        os.close(child)
+                result[path] = current
+        return result
+
+    def remove_directories(self) -> None:
+        """Finish only the four original private roots after leaf removal.
+
+        Each immediate parent must still be original, even when the root is
+        already absent. Recovery synchronizes that parent without replaying
+        rmdir. Shared parents and serialization domains are never removed.
+        """
+        try:
+            self._guard()
+            self._empty_directories()
+            for path in sorted(_CLOSED):
+                self._guard()
+                current = self._empty_directories()[path]
+                walker = self._walker()
+                relative, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
+                with walker._directory(relative, contents_may_change=True) as parent:
+                    self._parents(walker)
+                    if parent is None:
+                        raise RetirementUncertain()
+                    try:
+                        named = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                    except FileNotFoundError:
+                        named = None
+                    if named != current:
+                        raise RetirementUncertain()
+                    if current is not None:
+                        os.rmdir(name, dir_fd=parent)
+                    os.fsync(parent)
+                    try:
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise RetirementUncertain()
+            self._guard()
+            if any(value is not None for value in self._empty_directories().values()):
+                raise RetirementUncertain()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
 
 class ManagedCleanup(PrivateCleanup):
     """Original managed leaves with the denied trust pair/lock retained.

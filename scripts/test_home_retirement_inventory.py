@@ -2144,6 +2144,96 @@ def test_cleanup_recovery_synchronizes_previously_removed_originals(
         assert not (fixture.root / STATE / 'home-retirement.json').exists()
 
 
+@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'nonempty', 'replaced',
+    'missing-parent', 'originally-absent', 'proof-loss', 'reappearance', 'leaf-present'])
+def test_private_directory_cleanup_recovers_only_original_empty_roots(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import PrivateCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    roots = ('etc/happyranch/headscale', 'run/happyranch-headscale',
+        'var/lib/happyranch-headscale', PRIVATE)
+    fixture.file('retained-work/task.db', b'synthetic-retained-local-work')
+    sentinel = fixture.root / 'retained-work/task.db'
+    kept = sentinel.stat().st_ino, sentinel.read_bytes()
+    if boundary == 'originally-absent':
+        for path in (fixture.root / PRIVATE).iterdir():
+            path.unlink()
+        (fixture.root / PRIVATE).rmdir()
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        PrivateCleanup(journal, original, before_effect=lambda: None).remove()
+        records = {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
+                   for path in (ACCOUNT_RECORD, PUBLICATION, STATE + '/home-retirement-inventory.json')}
+        if boundary == 'nonempty':
+            fixture.file(roots[0] + '/foreign', b'synthetic-foreign')
+        elif boundary == 'replaced':
+            (fixture.root / roots[0]).rename(fixture.root.parent / 'preserved-original-directory')
+            fixture.directory(roots[0]).chmod(0o700)
+        elif boundary == 'missing-parent':
+            (fixture.root / 'run').rename(fixture.root.parent / 'preserved-original-run')
+        elif boundary == 'originally-absent':
+            fixture.directory(PRIVATE).chmod(0o700)
+        elif boundary == 'leaf-present':
+            fixture.file(PRIVATE_KEY, b'synthetic-new-private-key')
+        before = fixture.snapshot()
+        removed, synced, after = [], [], []
+        real_rmdir, real_sync = os.rmdir, os.fsync
+        def guard():
+            if removed and boundary == 'proof-loss':
+                raise RetirementUncertain()
+        def rmdir(name, *, dir_fd=None):
+            path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(fixture.root))
+            real_rmdir(name, dir_fd=dir_fd)
+            removed.append(path)
+            after.append(fixture.snapshot())
+        def sync(fd):
+            parent = Path(os.readlink(f'/proc/self/fd/{fd}'))
+            if removed and parent == (fixture.root / removed[-1]).parent:
+                if boundary == 'lost-sync':
+                    raise OSError('synthetic lost rmdir parent sync')
+                if boundary == 'reappearance':
+                    fixture.directory(removed[-1]).chmod(0o700)
+                    after.append(fixture.snapshot())
+            real_sync(fd)
+            synced.append(parent)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'rmdir', rmdir)
+            scoped.setattr(os, 'fsync', sync)
+            cleanup = PrivateCleanup(journal, original, before_effect=guard)
+            if boundary == 'complete':
+                cleanup.remove_directories()
+            else:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    cleanup.remove_directories()
+        if boundary in ('complete', 'lost-sync', 'proof-loss'):
+            if boundary != 'complete':
+                assert len(removed) == 1 and fixture.snapshot() == after[-1]
+            synced.clear()
+            def recovery_sync(fd):
+                synced.append(Path(os.readlink(f'/proc/self/fd/{fd}')))
+                real_sync(fd)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'rmdir', rmdir)
+                scoped.setattr(os, 'fsync', recovery_sync)
+                for _ in range(2):
+                    fresh = RetirementJournal(fixture.io, fence)
+                    PrivateCleanup(fresh, fresh.load(), before_effect=lambda: None).remove_directories()
+            assert all(not (fixture.root / path).exists() for path in roots)
+            assert sorted(removed) == sorted(roots), 'original private roots were not removed exactly once'
+            assert all((fixture.root / path).parent in synced for path in roots)
+        elif boundary == 'reappearance':
+            assert len(removed) == 1 and fixture.snapshot() == after[-1]
+        else:
+            assert removed == [] and fixture.snapshot() == before
+        assert {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
+                for path in records} == records
+        assert (sentinel.stat().st_ino, sentinel.read_bytes()) == kept
+        assert fixture.effects() == [] and (fixture.root / BINARY).is_file()
+        assert not (fixture.root / STATE / 'home-retirement.json').exists()
+
+
 @pytest.mark.parametrize('state', ['unchanged', 'runtime-flush', 'missing-original'])
 def test_managed_cleanup_removes_original_nontrust_leaves_and_reuses_absence(
         fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, state: str) -> None:

@@ -434,6 +434,19 @@ class StoppedRetirement:
             exclusion.remove_leaves(before_effect=self.require)
             self.require()
 
+    def remove_private_directories(self) -> None:
+        """Finish empty private roots under current cutoff/native exclusion.
+
+        Leaf removal must already be complete. Fresh saved recovery can finish
+        a partial rmdir or lost parent sync; no native/account effect is replayed.
+        """
+        self.require()
+        with held_auxiliary_operations(self._owner.journal, self._owner.original, cleanup=True) as exclusion:
+            def guard() -> None:
+                self.require()
+                exclusion.require()
+            PrivateCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove_directories()
+
     def remove_managed(self) -> None:
         """Remove original managed leaves while retaining cutoff evidence.
 
