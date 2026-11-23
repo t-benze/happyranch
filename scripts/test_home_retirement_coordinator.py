@@ -599,11 +599,19 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
         effects, frames = active.effects(), list(active.frames)
         real_unlink, removed = os.unlink, []
         auxiliary = {str(active.root / path) for path in owner.original.auxiliary.members}
+        leaves = set(owner.original.managed.members) - {
+            'var/lib/happyranch-connector/trust-state.json',
+            'var/lib/happyranch-connector/trust-state.json.anchor',
+            'var/lib/happyranch-connector/trust-state.json.lock'}
+        managed_paths = {str(active.root / path) for path in leaves}
+        managed_removals = []
         def unlink(name, *, dir_fd=None):
             path = str(Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name)
-            if path in auxiliary:
+            if path in auxiliary or path in managed_paths:
                 assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
             real_unlink(name, dir_fd=dir_fd)
+            if path in managed_paths:
+                managed_removals.append(path)
             if path in auxiliary:
                 removed.append(path)
                 if boundary == 'denial-between-leaves' and len(removed) == 1:
@@ -632,14 +640,13 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
                 # cutoff proof after the other two cleanup families are gone.
                 managed = StoppedRetirement.from_saved(active.io, active.fence)
                 managed.remove_managed()
-                leaves = set(owner.original.managed.members) - {
-                    'var/lib/happyranch-connector/trust-state.json',
-                    'var/lib/happyranch-connector/trust-state.json.anchor',
-                    'var/lib/happyranch-connector/trust-state.json.lock'}
                 assert all(not (active.root / path).exists() for path in leaves)
+                count = len(managed_removals)
+                assert count > 0 and len(set(managed_removals)) == count
                 final = StoppedRetirement.from_saved(active.io, active.fence)
                 final.remove_managed()
                 assert all(not (active.root / path).exists() for path in leaves)
+                assert len(managed_removals) == count
                 final.require()
         assert active.effects() == effects and active.frames == frames
         assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
