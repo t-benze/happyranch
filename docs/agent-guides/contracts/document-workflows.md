@@ -501,7 +501,20 @@ inconsistent mirrors/identities/states. Failed reads or unknown membership hold
 the broader scope whose independence cannot be proved. An ordinary prepared
 journal remains org-local and retains its original invocation; absent PID/lease
 or a terminal task never settles it. Original native UNKNOWN/active ownership
-also prevents startup writers from adopting or republishing it on a later boot.
+generally also prevents startup adoption or republication on a later boot. The
+[bounded profile-remove exception](../agent-executors-and-permissions.md) accepts
+only an `unknown` record from `profile:remove_runtime_executor_profile` or
+`profile:remove_adapter_entry`, with empty agents/teams and absent from the mounted
+native owner's live writers. It requires the same local forward remove invocation's
+prepared profile-coordinator journal and valid original binding; the coordinator
+additionally validates the complete original same-profile group, every captured
+mirror in `forward_recovery_required`, and every original publication binding.
+Startup defers that component's synchronization to explicit rebind, retaining its
+fence until the existing finalizer can publish the coherent closure. Native history
+stays UNKNOWN. This exception does not apply on a later boot without that exact
+active forward remove/journal binding; other unsettled or unavailable native
+ownership, ordinary or mismatched journals, mixed-profile invocations and partially
+forward groups retain their startup holds.
 
 Complete pointer, journal, dependency/store/registry, operation, lease and native
 history/epoch images bracket discovery and are revalidated before mutation.

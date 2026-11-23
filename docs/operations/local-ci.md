@@ -4072,7 +4072,10 @@ retained standalone synthetic-org venue and real SQLite, adapter/profile binding
 canonical consumer writer and publication. No daemon lifespan, provider, listener
 or live state runs. It covers ordinary and claimed reconnect, consumer moves and
 partial closure, owner/refusal boundaries, invalid rebinds, terminal projection
-losers, warning diagnostics and retained independent native startup holds.
+losers, warning diagnostics and retained independent native startup holds. Fresh
+org/coordinator startup cases cover the forward remove's unknown native writer,
+explicit rebind through publication, unchanged native uncertainty, and unrelated,
+scoped, mismatched-journal, mixed-profile and partially-forward refusal evidence.
 This is outside retired Python units, skipped general integration, Product E2E
 and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
 is review evidence only.
