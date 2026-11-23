@@ -4463,7 +4463,8 @@ def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkey
 
 # I5d reuses the retained installer/NSS/native/materializer venue. No host effects.
 def home_publication_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> object:
-    from scripts.test_headscale_custody import Fixture as HeadscaleFixture, KernelDump, home
+    from scripts.home_legacy_fixture import LegacyNativeFixture as HeadscaleFixture, KernelDump
+    from runtime.remote_access import headscale_service as home
 
     head = HeadscaleFixture(fixture.root)
     io = fixture.installer
