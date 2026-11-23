@@ -29,6 +29,7 @@ from runtime.remote_access.identity import ConnectorIdentity
 from runtime.remote_access.state_store import StateStoreError
 
 if TYPE_CHECKING:
+    from runtime.remote_access.home_retirement_account import AccountDisposition
     from runtime.remote_access.installer import ManagedInstaller
 
 
@@ -528,6 +529,10 @@ class StoppedRetirement:
         remaining artifacts, native activity and numeric reuse stay pending.
         This is not final receipt publication or package replacement permission.
         """
+        return cls._account_disposition(io, fence).retire()
+
+    @classmethod
+    def _account_disposition(cls, io: ManagedInstaller, fence: RetirementFence) -> AccountDisposition:
         from runtime.remote_access.home_retirement_account import AccountDisposition
         from runtime.remote_access.home_retirement_cleanup import require_cleanup_absent
         from runtime.remote_access.home_retirement_trust import TrustCleanup
@@ -538,9 +543,24 @@ class StoppedRetirement:
                 trust.require_removed(account_cleanup=True)
             def require() -> None:
                 require_cleanup_absent(owner.journal, owner.original, owner.native, before_effect=native)
-            return AccountDisposition(owner.journal, owner.original, before_effect=require).retire()
+            return AccountDisposition(owner.journal, owner.original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, StateStoreError):
             raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_original_receipts(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Retire original authority receipts after proven final account state.
+
+        Fresh recovery loads the saved originals; it never retries user/group,
+        native or revoke effects. All new recovery evidence and the permanent
+        old-payload fence remain. This does not publish final retirement.
+        """
+        from runtime.remote_access.home_retirement_cleanup import OriginalReceiptCleanup
+        disposition = cls._account_disposition(io, fence)
+        def require() -> None:
+            disposition.require_retired()
+        OriginalReceiptCleanup(disposition.journal, disposition.original,
+            before_effect=require).remove()
 
     @classmethod
     def remove_controller_executable(cls, io: ManagedInstaller, fence: RetirementFence) -> None:

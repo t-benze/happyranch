@@ -237,6 +237,22 @@ class PrivateCleanup:
             raise RetirementUncertain() from None
 
 
+class OriginalReceiptCleanup(PrivateCleanup):
+    """Only the closed historical receipts saved before retirement effects.
+
+    The caller must freshly prove complete cleanup and account disposition
+    before each unlink/sync. Recovery journals and the admission fence survive.
+    Missing original receipts never authorize another account or native effect.
+    """
+
+    _mutable = _closed = frozenset()
+
+    def _inventory(self) -> LegacyPrivateMembers:
+        return LegacyPrivateMembers({STATE_DIRECTORY + '/' + name: signature
+            for name, signature in self.original.ownership.receipt_identities.items()},
+            self.original.private.directories)
+
+
 class ManagedCleanup(PrivateCleanup):
     """Original managed leaves with the denied trust pair/lock retained.
 

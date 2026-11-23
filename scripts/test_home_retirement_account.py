@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
-from runtime.remote_access.home_retirement import ACCOUNT, RetirementUncertain
+from runtime.remote_access.home_retirement import ACCOUNT, RetirementUncertain, STATE_DIRECTORY as STATE
 from runtime.remote_access.home_retirement_account import AccountDisposition
 from runtime.remote_access.home_retirement_fence import retirement_fence
 from runtime.remote_access.home_retirement_journal import RetirementJournal
@@ -226,3 +227,132 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
         assert active.closed == ['device']
         with pytest.raises(StreamClosed):
             stream.receive()
+    # Final receipt cleanup is a separate explicit production entry. Account
+    # effects and their evidence assertions above must already have completed.
+    originals = [STATE + '/' + name for name in owner.original.ownership.receipt_identities]
+    real_sync = os.fsync
+    interrupted = []
+    def lost_receipt_sync(fd):
+        if (not interrupted and not (active.root / ACCOUNT_RECORD).exists()
+                and Path(os.readlink(f'/proc/self/fd/{fd}')) == active.root / STATE):
+            interrupted.append(True)
+            raise OSError('synthetic original receipt parent sync interruption')
+        real_sync(fd)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', lost_receipt_sync)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            cleanup.remove_original_receipts(io(), active.fence)
+    assert interrupted and not (active.root / ACCOUNT_RECORD).exists()
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    cleanup.remove_original_receipts(io(), active.fence)
+    assert all(not (active.root / path).exists() for path in originals)
+    after = active.snapshot()
+    cleanup.remove_original_receipts(io(), active.fence)
+    assert active.snapshot() == after and active.effects() == effects
+    assert deletions(active.calls) == (['userdel', 'groupdel', 'groupdel']
+        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    assert list(getattr(active, 'frames', [])) == frames
+    assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
+        for path in records if path not in originals} == {
+        path: value for path, value in records.items() if path not in originals}
+    assert not (active.root / FINAL).exists()
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+
+
+@pytest.mark.parametrize('case', ['absent', 'retained-consumer', 'account-present', 'group-present',
+    'replaced-receipt', 'leaf-sync', 'reappearance', 'account-reappears', 'guard-refusal'])
+def test_original_receipt_cleanup_requires_final_account_and_recovers_without_replay(tmp_path, monkeypatch, case):
+    from runtime.remote_access.home_retirement_cleanup import OriginalReceiptCleanup
+    fixture = InventoryFixture(tmp_path / 'root', monkeypatch)
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        fixture.stopped()
+        (fixture.root / LINK).unlink()
+        fixture.properties['UnitFileState'] = 'disabled'
+        state = account_adapter(fixture.io, fixture.calls)
+        guarded = []
+        def proof():
+            guarded.append(True)
+            if case == 'guard-refusal':
+                raise RetirementUncertain()
+            # This lower keeper isolates full artifact/cutoff proof. The real
+            # composed keeper above supplies it without a synthetic success.
+            OwnedService(fixture.io, original.ownership.service).observe_cleanup(
+                original.ownership.native, account_cleanup=True)
+        if case == 'retained-consumer':
+            fixture.file('etc/systemd/system/operator.service', b'[Service]\nUser=happyranch-headscale\n', 0o644)
+        elif case == 'group-present':
+            state['user'] = False
+        elif case not in ('account-present', 'guard-refusal'):
+            assert AccountDisposition(journal, original, before_effect=proof).retire() == 'absent'
+        paths = {STATE + '/' + name for name in original.ownership.receipt_identities}
+        if case == 'replaced-receipt':
+            path = fixture.root / (STATE + '/headscale-publication.json')
+            data = path.read_bytes()
+            path.rename(fixture.root / 'saved-publication')
+            fixture.file(str(path.relative_to(fixture.root)), data)
+        preserved = {path: fixture.snapshot()[path] for path in (INVENTORY, 'retained-native/saved-home',
+            STATE + '/.home-activation.json.pending')}
+        before, prior_deletions = fixture.snapshot(), deletions(fixture.calls)
+        removed, synced = [], []
+        real_unlink, real_sync = os.unlink, os.fsync
+        interrupted = False
+        def unlink(name, *args, **kwargs):
+            real_unlink(name, *args, **kwargs)
+            if STATE + '/' + name in paths:
+                removed.append(name)
+                if case == 'reappearance' and len(removed) == 1:
+                    fixture.file(STATE + '/' + name, b'reappeared-foreign-evidence')
+                if case == 'account-reappears' and len(removed) == 1:
+                    state['user'] = state['group'] = True
+        def sync(fd):
+            nonlocal interrupted
+            if Path(os.readlink(f'/proc/self/fd/{fd}')) == fixture.root / STATE:
+                synced.append(True)
+                if not interrupted and case == 'leaf-sync' and removed:
+                    interrupted = True
+                    raise OSError('synthetic interrupted parent sync')
+            real_sync(fd)
+        def fresh():
+            current = RetirementJournal(fixture.io, fence)
+            disposition = AccountDisposition(current, original, before_effect=proof)
+            OriginalReceiptCleanup(current, original, before_effect=disposition.require_retired).remove()
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'unlink', unlink)
+            patch.setattr(os, 'fsync', sync)
+            if case in ('absent', 'retained-consumer'):
+                fresh()
+            else:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    fresh()
+        if case in ('absent', 'retained-consumer', 'leaf-sync'):
+            first = list(removed)
+            with monkeypatch.context() as patch:
+                patch.setattr(os, 'unlink', unlink)
+                fresh()
+                count = len(removed)
+                fresh()
+            assert all(not (fixture.root / path).exists() for path in paths)
+            assert len(removed) == count
+            assert len(removed) == len(paths)
+            assert first == removed[:len(first)] and synced
+        elif case == 'reappearance':
+            assert len(removed) == 1
+            assert (fixture.root / STATE / removed[0]).read_bytes() == b'reappeared-foreign-evidence'
+            with pytest.raises(RetirementUncertain):
+                fresh()
+        elif case == 'account-reappears':
+            assert len(removed) == 1 and state['user'] and state['group']
+            assert sum((fixture.root / path).exists() for path in paths) == len(paths) - 1
+            with pytest.raises(RetirementUncertain):
+                fresh()
+            # Strict deletion entry cannot adopt missing final-stage receipts.
+            with pytest.raises(RetirementUncertain):
+                AccountDisposition(journal, original, before_effect=proof).retire()
+        else:
+            assert not removed and fixture.snapshot() == before
+        assert deletions(fixture.calls) == prior_deletions
+        assert {path: fixture.snapshot()[path] for path in preserved} == preserved
+        assert guarded and fixture.effects() == [] and not (fixture.root / FINAL).exists()

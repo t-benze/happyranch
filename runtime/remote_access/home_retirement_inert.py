@@ -24,6 +24,7 @@ from runtime.remote_access.home_retirement_transport import ManagedObservation, 
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE_RECORD
 
 if TYPE_CHECKING:
+    from runtime.remote_access.home_retirement_account import AccountDisposition
     from runtime.remote_access.installer import ManagedInstaller
 
 _AUTHORITY = tuple('var/lib/happyranch-connector/trust-state.json' + suffix
@@ -120,7 +121,7 @@ class InertRetirement:
             raise RetirementUncertain() from None
 
     def require(self, *, disabled: bool = False, cleanup: bool = False, native_cleanup: bool = False,
-                account_cleanup: bool = False) -> None:
+                account_cleanup: bool = False, receipt_cleanup: bool = False) -> None:
         """Read back original inert lineage and current quiescence every time."""
         try:
             io, fence = self.journal.io, self.journal.fence
@@ -135,6 +136,7 @@ class InertRetirement:
                     or cleanup and not disabled
                     or native_cleanup and not cleanup
                     or account_cleanup and not native_cleanup
+                    or receipt_cleanup and not account_cleanup
                     or any(HomeRetirement(io)._present(STATE_DIRECTORY + '/' + name) for name in _ACTIVE_RECORDS)):
                 raise RetirementUncertain()
             managed = ManagedCleanup(self.journal, self.original, before_effect=lambda: None)
@@ -162,10 +164,12 @@ class InertRetirement:
                 if not cleanup:
                     self.journal.require_original_members(self.original)
                     return
-                # Cleanup admits only absence of original leaves, never their
-                # replacement or loss of the historical ownership receipts.
+                # Ordinary cleanup retains every historical receipt. Only the
+                # explicit final cleanup admits their original absence; a
+                # surviving receipt must still be the saved original.
                 for name, expected in self.original.ownership.receipt_identities.items():
-                    if LegacyInventory(io)._receipt(name, fence)[1] != expected:
+                    saved = LegacyInventory(io)._receipt(name, fence, optional=receipt_cleanup)
+                    if saved is not None and saved[1] != expected:
                         raise RetirementUncertain()
                 for owner in (PrivateCleanup, ManagedCleanup):
                     owner(self.journal, self.original, before_effect=lambda: None)._observe()
@@ -193,6 +197,11 @@ class InertRetirement:
         Historical and current empty authority/native quiescence remain required
         after each account effect. Original records survive for partial recovery.
         """
+        return cls._account_disposition(io, fence).retire()
+
+    @classmethod
+    def _account_disposition(cls, io: ManagedInstaller, fence: RetirementFence, *,
+                             receipt_cleanup: bool = False) -> AccountDisposition:
         from runtime.remote_access.home_retirement_account import AccountDisposition
         from runtime.remote_access.home_retirement_cleanup import require_cleanup_absent
         try:
@@ -201,16 +210,32 @@ class InertRetirement:
             native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
             owner = cls(journal, original, native_journal, native_journal.load())
             def native() -> None:
-                owner.require(disabled=True, cleanup=True, native_cleanup=True, account_cleanup=True)
+                owner.require(disabled=True, cleanup=True, native_cleanup=True, account_cleanup=True,
+                    receipt_cleanup=receipt_cleanup)
             def require() -> None:
                 require_cleanup_absent(journal, original, owner.native, before_effect=native)
                 if any(value is not None for value in InertConnectorCleanup(journal, original,
                         before_effect=native)._empty_directories().values()):
                     raise RetirementUncertain()
                 native()
-            return AccountDisposition(journal, original, before_effect=require).retire()
+            return AccountDisposition(journal, original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_original_receipts(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish only saved original receipts after inert final account proof.
+
+        Partial receipt removal keeps strict native/empty-authority and complete
+        artifact/account readback. New recovery journals and the fence survive;
+        no account/native effect or final publication is attempted.
+        """
+        from runtime.remote_access.home_retirement_cleanup import OriginalReceiptCleanup
+        disposition = cls._account_disposition(io, fence, receipt_cleanup=True)
+        def require() -> None:
+            disposition.require_retired()
+        OriginalReceiptCleanup(disposition.journal, disposition.original,
+            before_effect=require).remove()
 
     @classmethod
     def remove_managed_directories(cls, io: ManagedInstaller, fence: RetirementFence) -> None:

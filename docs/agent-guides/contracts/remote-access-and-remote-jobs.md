@@ -4756,6 +4756,25 @@ Nonzero native results preserve uncertainty. Explicit recovery re-observes
 remaining identities and skips positively absent effects, including user-only
 or both-name absence after an uncertain command. Receipt retirement is separate.
 
+The explicit active/inert `remove_original_receipts(io, fence)` entry then
+removes only the original account, publication and (for active layouts)
+activation receipts selected by the protected original inventory. Complete
+current native/cutoff, artifact absence and final account disposition are
+required before every unlink and parent sync. A partially removed account is
+not final disposition. `AccountDisposition.require_retired` performs readback
+only: either both original names are absent with no consumers, or the exact
+owned locked account remains for static consumers. It performs no user/group
+effect. The ordinary deletion entry still requires its original account receipt.
+
+Only this final-cleanup path admits an already absent original receipt. Every
+remaining receipt and its ancestry must still match the saved original;
+replacements, reappearing authority/account state or lost independent proof
+refuse further cleanup. Explicit recovery resynchronizes prior absence without
+unlink/native/account/IPC replay. All new original-evidence journals, serving
+peer/denied bridge and permanent old-payload fence remain. Detection stays
+pending: final receipt publication and evidence disposition are still separate
+obligations, and this entry grants no package-replacement permission.
+
 Only explicit account-stage native observation admits these proven original
 name absences and static consumers; ordinary native/stop/cleanup observations
 remain strict. Every account-stage readback still checks numeric reuse, native

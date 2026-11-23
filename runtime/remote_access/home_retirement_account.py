@@ -70,7 +70,7 @@ class AccountDisposition:
                  before_effect: Callable[[], None]) -> None:
         self.journal, self.original, self.before_effect = journal, original, before_effect
 
-    def _guard(self) -> tuple[tuple[bool, bool], set[str]]:
+    def _guard(self, *, receipt_cleanup: bool = False) -> tuple[tuple[bool, bool], set[str]]:
         from runtime.remote_access.home_retirement_inventory import LegacyInventory
         from runtime.remote_access.home_retirement_service import OwnedService
         io, original = self.journal.io, self.original
@@ -79,9 +79,9 @@ class AccountDisposition:
             raise RetirementUncertain()
         self.before_effect()
         name = 'headscale-account.json'
-        data, signature = LegacyInventory(io)._receipt(name, self.journal.fence)
-        if (signature != original.ownership.receipt_identities[name]
-                or hashlib.sha256(data).hexdigest() != original.ownership.receipt_digests[name]):
+        saved = LegacyInventory(io)._receipt(name, self.journal.fence, optional=receipt_cleanup)
+        if saved is not None and (saved[1] != original.ownership.receipt_identities[name]
+                or hashlib.sha256(saved[0]).hexdigest() != original.ownership.receipt_digests[name]):
             raise RetirementUncertain()
         current = account_status(io, original.ownership.service)
         consumers: set[str] = set()
@@ -92,6 +92,23 @@ class AccountDisposition:
             raise RetirementUncertain()
         self.journal.fence.require(io)
         return current, consumers
+
+    def require_retired(self) -> str:
+        """Read current final disposition without repeating account effects.
+
+        Final receipt cleanup may already have removed the original account
+        receipt. Its protected journal and mandatory complete caller proof stay
+        required. Partial user/group removal is not a final disposition.
+        """
+        try:
+            current, consumers = self._guard(receipt_cleanup=True)
+            if current == (False, False) and not consumers:
+                return 'absent'
+            if current == (True, True) and consumers:
+                return 'retained-disabled: static consumer'
+            raise RetirementUncertain()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
 
     def retire(self) -> str:
         """Delete only exclusive originals; preserve a locked static consumer.
