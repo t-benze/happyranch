@@ -187,17 +187,28 @@ per item with fresh reference proof; no new retry/crash protocol is added.
 projection under the caller's retained writer transaction. It first reads only
 task IDs, statuses and parent IDs to select `pending`, `in_progress` and
 `escalated` tasks plus their direct children. It then loads only those tasks'
-briefs, final summaries and results, following explicit TASK handoffs to closure
-with a visited set. Unrelated closed task/result text never consumes the32MiB
+briefs, final summaries and results, following explicit TASK handoffs to existing
+same-org tasks up to two hops (`_MAX_HANDOFF_DEPTH = 2`) with a visited set.
+Live tasks/direct children are depth 0; breadth-first traversal assigns the
+shortest depth. All selected text/payloads through depth 2 are parsed; a further
+handoff does not load task/result text unless independently within that set.
+Two hops measured approximately 17.6 MB /2.6 s against live read-only data,
+near half the unchanged 32 MiB cap; three hops used 21.7 MB /3.4 s. Unbounded
+traversal reaches almost the entire history, exhausting budgets and exposing
+every proof to unrelated historical malformed text. Valid text mentions of task IDs
+absent from that snapshot carry no dependency and are ignored. Unrelated closed
+task/result text outside the bounded set never consumes the32MiB
 text bound; required live-closure text exceeding that bound still makes the
 proof indeterminate. The100,000-row and shared deadline bounds also cover the
 task metadata scan; unknown statuses and missing/malformed required handoffs
+within the bound, malformed selected text/references/payloads and snapshot changes
 remain indeterminate. Open-thread and skill-source projection is unchanged.
 Relative and absolute org-qualified task paths compare org identity after the
 single percent-decode used by the ASGI path: only a valid decoded slug different
 from this org is foreign and excluded. Malformed escapes, invalid UTF-8,
 invalid slugs (including decoded slashes or a still-encoded percent after one
-decode) retain the handoff, so missing required tasks remain indeterminate.
+decode) retain the handoff, so missing required tasks within depth remain indeterminate.
+An existing handoff whose selected row cannot be read also remains indeterminate.
 Outcomes are collected
 before own audit writes; no snapshot survives COMMIT or lock release. The final
 lifecycle/unlink caller must retain that fence through its decision. Structured

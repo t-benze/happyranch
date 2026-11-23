@@ -323,7 +323,8 @@ by a hold; the next destructive pass still requires fresh negative references.
 
 ### Exact reference definition and fail-closed check
 
-The authoritative scan reads the complete same-org SQLite task/thread corpus,
+The authoritative scan reads the complete bounded live projection of the
+same-org SQLite task/thread corpus,
 not a filesystem name prefix or a recent-page sample:
 
 1. Live tasks are `pending`, `in_progress` (including delegated/job waits), and
@@ -331,10 +332,22 @@ not a filesystem name prefix or a recent-page sample:
    Parse `tasks.brief` and `tasks.final_output_summary`, and all
    `task_results.output_summary`, `decision_json` string values and
    `risks_flagged` belonging to that task or its direct children (parent-wake
-   inputs). Follow explicit same-org TASK-ID tokens in those fields to the
-   referenced task's brief/final summary/result fields, to closure. A visited
+   inputs). Follow explicit same-org TASK-ID tokens in those fields when the task
+   exists in the same-org snapshot, to its brief/final summary/result fields,
+   up to two handoff hops (`_MAX_HANDOFF_DEPTH = 2`). Live tasks and their
+   direct children are depth 0; breadth-first traversal gives each task its
+   shortest depth. All text/payloads at depths 0, 1 and 2 are parsed; handoffs
+   beyond depth 2 do not load task/result text unless independently in that set.
+   Live read-only measurements selected two hops: approximately 17.6 MB /2.6 s,
+   near half the unchanged 32 MiB cap, versus 21.7 MB /3.4 s at three hops.
+   Unbounded traversal reaches almost all task history, exhausting the byte/time
+   budget and letting unrelated historical malformed text poison every proof.
+   A valid text mention of a nonexistent task carries no dependency. Malformed or
+   undecodable org-qualified identities retain the required handoff. A visited
    set bounds cycles without discarding their already scanned references;
-   missing/unreadable required handoffs make absence indeterminate. Private
+   missing/unreadable required handoffs within the bound make absence
+   indeterminate. Malformed selected text/references/payloads and all existing
+   status, snapshot, row/byte and deadline failures remain indeterminate. Private
    task attachment `storage_key` is not itself a shared artifact reference.
    This is a definition of explicit stored dependencies: arbitrary files in
    output_dir, binaries and unstated future use are not scanned. Task authors

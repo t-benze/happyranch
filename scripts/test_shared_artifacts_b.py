@@ -241,11 +241,64 @@ async def references_case(root: Path) -> None:
                 conn.execute("UPDATE tasks SET brief='No artifacts' WHERE id='TASK-102'")
             db.insert_task(TaskRecord(id='TASK-103',status=TaskStatus.COMPLETED,parent_task_id='TASK-101',brief='source.bin',assigned_agent='worker'))
             check('live','direct-child')
+            # Live parent/direct child are depth0; two explicit handoffs are
+            # protected. A third hop must not load task or result payloads.
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET brief='Read TASK-104' WHERE id='TASK-103'")
+            for task_id, text in (('TASK-104', 'Read TASK-105'),
+                                  ('TASK-105', 'Read TASK-106'),
+                                  ('TASK-106', '[artifact:../invalid.bin]')):
+                db.insert_task(TaskRecord(id=task_id,status=TaskStatus.COMPLETED,
+                                          brief=text,assigned_agent='worker'))
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("INSERT INTO task_results(task_id,agent,session_id,decision_json,created_at) "
+                             "VALUES('TASK-106','worker','beyond-depth','{',?)",(NOW.isoformat(),))
+            reads = []
+            db._conn.set_trace_callback(reads.append)
+            try:
+                check('absent','handoff-depth3-not-loaded')
+            finally:
+                db._conn.set_trace_callback(None)
+            payload_reads = [sql for sql in reads if sql.startswith((
+                'SELECT id,brief,final_output_summary FROM tasks WHERE',
+                'SELECT task_id,output_summary,decision_json,risks_flagged FROM task_results WHERE'))]
+            assert payload_reads and all("'TASK-106'" not in sql for sql in payload_reads), payload_reads
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET brief='[artifact:source.bin] Read TASK-106' WHERE id='TASK-105'")
+            check('live','handoff-depth2-protects')
+            # The same malformed reference/payload is still indeterminate
+            # when it moves inside the selected set.
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET brief='[artifact:../invalid.bin]' WHERE id='TASK-105'")
+            check('indeterminate','handoff-depth2-malformed-reference')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("UPDATE tasks SET brief='No artifacts' WHERE id='TASK-105'")
+                conn.execute("UPDATE task_results SET task_id='TASK-105' WHERE session_id='beyond-depth'")
+            check('indeterminate','handoff-depth2-malformed-payload')
+            with db.shared_artifact_transaction() as conn:
+                conn.execute("DELETE FROM task_results WHERE session_id='beyond-depth'")
             with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE tasks SET status='completed',brief='Done' WHERE id IN ('TASK-101','TASK-102','TASK-103')")
             with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE tasks SET status='pending',brief='Read TASK-999999' WHERE id='TASK-100'")
-            check('indeterminate','required-handoff-missing')
+                conn.execute("INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES('TASK-100','worker','missing-mention',?)",(NOW.isoformat(),))
+            for table, field in (('tasks','brief'), ('tasks','final_output_summary'),
+                                 ('task_results','output_summary'), ('task_results','decision_json'),
+                                 ('task_results','risks_flagged')):
+                for existing in (False, True):
+                    text = 'Read TASK-999999' + (' and TASK-102' if existing else '')
+                    value = json.dumps({'handoff':text}) if field == 'decision_json' else (
+                        json.dumps([text]) if field == 'risks_flagged' else text)
+                    with db.shared_artifact_transaction() as conn:
+                        conn.execute("UPDATE tasks SET brief='No artifacts' WHERE id='TASK-100'")
+                        conn.execute("UPDATE tasks SET brief='Need [artifact:source.bin]' WHERE id='TASK-102'")
+                        conn.execute(f"UPDATE {table} SET {field}=? WHERE " + (
+                            "id='TASK-100'" if table == 'tasks' else "session_id='missing-mention'"), (value,))
+                    check('live' if existing else 'absent', 'missing-mention-'+field+('-existing' if existing else ''))
+                    with db.shared_artifact_transaction() as conn:
+                        conn.execute(f"UPDATE {table} SET {field}=? WHERE " + (
+                            "id='TASK-100'" if table == 'tasks' else "session_id='missing-mention'"),
+                            ('No artifacts' if field == 'brief' else None,))
             with db.shared_artifact_transaction() as conn:
                 conn.execute("UPDATE tasks SET status='unknown',brief='No artifacts' WHERE id='TASK-100'")
             check('indeterminate','unknown-task-status')
@@ -353,12 +406,12 @@ async def handoff_paths_case(root: Path) -> None:
         ('foreign-api', '/api/v1/orgs/demo/tasks/TASK-1/cancel', 200),
         ('foreign-absolute', 'https://synthetic.test/orgs/demo/tasks/TASK-1/cancel', 200),
         ('foreign-absolute-api', 'https://synthetic.test/api/v1/orgs/demo/tasks/TASK-1/cancel', 200),
-        ('same-relative', '/orgs/alpha/tasks/TASK-1/cancel', 503),
-        ('same-api', '/api/v1/orgs/alpha/tasks/TASK-1/cancel', 503),
-        ('same-absolute', 'https://synthetic.test/orgs/alpha/tasks/TASK-1/cancel', 503),
-        ('same-absolute-api', 'https://synthetic.test/api/v1/orgs/alpha/tasks/TASK-1/cancel', 503),
-        ('bare', 'TASK-1', 503),
-        ('foreign-and-bare', '/orgs/demo/tasks/TASK-1/cancel then TASK-1', 503),
+        ('same-relative', '/orgs/alpha/tasks/TASK-1/cancel', 200),
+        ('same-api', '/api/v1/orgs/alpha/tasks/TASK-1/cancel', 200),
+        ('same-absolute', 'https://synthetic.test/orgs/alpha/tasks/TASK-1/cancel', 200),
+        ('same-absolute-api', 'https://synthetic.test/api/v1/orgs/alpha/tasks/TASK-1/cancel', 200),
+        ('bare', 'TASK-1', 200),
+        ('foreign-and-bare', '/orgs/demo/tasks/TASK-1/cancel then TASK-1', 200),
     )
     forms = ('/orgs/{slug}/tasks/{task}/cancel',
              '/api/v1/orgs/{slug}/tasks/{task}/cancel',
@@ -369,7 +422,7 @@ async def handoff_paths_case(root: Path) -> None:
         for label, slug, task, status in (
             ('plain-live', 'alpha', 'TASK-200', 409),
             ('encoded-live', '%61lpha', 'TASK-200', 409),
-            ('encoded-missing', '%61lpha', 'TASK-1', 503),
+            ('encoded-missing', '%61lpha', 'TASK-1', 200),
             ('malformed-percent', '%6glpha', 'TASK-1', 503),
             ('trailing-percent', 'alpha%', 'TASK-1', 503),
             ('invalid-utf8', '%ff', 'TASK-1', 503),

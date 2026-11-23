@@ -26,6 +26,9 @@ _LIVE = {'pending', 'in_progress', 'escalated'}
 _STATUSES = _LIVE | {'completed', 'failed', 'cancelled', 'superseded'}
 _MAX_ROWS = 100_000
 _MAX_BYTES = 32 * 1024 * 1024
+# Live tasks/direct children are depth0. Two handoff hops keep the measured
+# live projection near half the byte cap without traversing the task history.
+_MAX_HANDOFF_DEPTH = 2
 
 
 class ReferenceUnavailable(ValueError):
@@ -41,6 +44,7 @@ class ReferenceProof:
         self.deadline, self.origin = deadline, origin
         self.references: dict[tuple[str, int | None], set[str]] = defaultdict(set)
         self.uncertain_sources: set[str] = set()
+        self._ambiguous_handoffs: set[str] = set()
         self.rows = self.bytes = 0
         self.revision = (conn.total_changes, conn.execute('PRAGMA data_version').fetchone()[0])
         self._scan()
@@ -116,8 +120,10 @@ class ReferenceProof:
                         decoded_org = decoded
             if decoded_org is not None and decoded_org != self.slug:
                 # Exclude this path segment only; a bare occurrence of the same
-                # task ID elsewhere in the text remains a required handoff.
+                # task ID elsewhere in the text is considered separately.
                 foreign_handoffs.add(match.start() + token.index(parsed.path) + qualified.start('task'))
+            elif qualified and decoded_org is None:
+                self._ambiguous_handoffs.add(qualified['task'])
             prefix = f'/api/v1/orgs/{self.slug}/artifacts/'
             if parsed.path.startswith(prefix):
                 if parsed.netloc and (not self.origin or
@@ -174,38 +180,50 @@ class ReferenceProof:
                 raise ReferenceUnavailable('malformed_task_identity')
             children[t['parent_task_id']].append(t['id'])
         live = [t['id'] for t in tasks.values() if t['status'] in _LIVE]
-        todo = set(live) | {child for t in live for child in children[t]}
+        todo = {task_id: 0 for task_id in set(live) | {child for t in live for child in children[t]}}
         visited = set()
         while todo:
+            # A valid mention absent from this org snapshot has no dependency.
+            # An undecodable org identity still requires the existing proof.
+            todo = {task_id: depth for task_id, depth in todo.items()
+                    if task_id in tasks or task_id in self._ambiguous_handoffs}
+            if not todo:
+                break
             # Historical text is irrelevant unless a live task/direct child or
-            # an explicit handoff needs it. Discover that closure incrementally
-            # within this same writer fence; cycles never reload text/results.
-            batch = tuple(sorted(todo)[:250])
+            # a bounded handoff needs it. Read breadth-first so each task gets
+            # its shortest depth; cycles never reload text/results.
+            depth = min(todo.values())
+            batch = tuple(sorted(task_id for task_id in todo if todo[task_id] == depth)[:250])
             if any(task_id not in tasks for task_id in batch):
                 raise ReferenceUnavailable('required_handoff_missing')
             visited.update(batch)
-            todo.difference_update(batch)
+            for task_id in batch:
+                del todo[task_id]
+            handoffs = set()
             placeholders = ','.join('?' for _ in batch)
             selected = self._read(
                 f'SELECT id,brief,final_output_summary FROM tasks WHERE id IN ({placeholders})', batch)
             if len(selected) != len(batch):
                 raise ReferenceUnavailable('required_handoff_missing')
             for task in selected:
-                todo.update(self._text(task['brief'], task['id']) - visited)
-                todo.update(self._text(task['final_output_summary'], task['id']) - visited)
+                handoffs.update(self._text(task['brief'], task['id']) - visited)
+                handoffs.update(self._text(task['final_output_summary'], task['id']) - visited)
             for r in self._read(
                 'SELECT task_id,output_summary,decision_json,risks_flagged FROM task_results '
                 f'WHERE task_id IN ({placeholders})', batch
             ):
                 task_id = r['task_id']
-                todo.update(self._text(r['output_summary'], task_id) - visited)
+                handoffs.update(self._text(r['output_summary'], task_id) - visited)
                 for key in ('decision_json', 'risks_flagged'):
                     if r[key]:
                         decoded = json.loads(r[key])
                         if not isinstance(decoded, dict if key == 'decision_json' else list):
                             raise ReferenceUnavailable('malformed_result_payload')
                         for value in self._strings(decoded):
-                            todo.update(self._text(value, task_id) - visited)
+                            handoffs.update(self._text(value, task_id) - visited)
+            if depth < _MAX_HANDOFF_DEPTH:
+                for task_id in handoffs - visited:
+                    todo.setdefault(task_id, depth + 1)
         threads = self._read('SELECT id,status FROM threads')
         if any(t['status'] not in ('open', 'archived') for t in threads):
             raise ReferenceUnavailable('unknown_thread_status')
