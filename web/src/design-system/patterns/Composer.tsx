@@ -391,9 +391,11 @@ export function Composer({
 
       {/* Send error surfaces below the box; the broadcast copy is the placeholder.
           Rendered whenever an error is SET (non-null), not by text truthiness,
-          so a raw diagnostic that is the empty string still owns its slot. */}
+          so a raw diagnostic that is the empty string still owns its slot.
+          `wrap-anywhere` lets long unbroken tokens (e.g. a raw quota JSON body)
+          wrap inside the composer width instead of widening the thread pane. */}
       {errorMessage != null && (
-        <span className="text-caption text-feedback-danger">{errorMessage}</span>
+        <span className="text-caption text-feedback-danger wrap-anywhere">{errorMessage}</span>
       )}
       {/* THR-376 .composer-hint (11.5px ink-2 → text-caption text-secondary);
           the mockup hides it on narrow layouts. */}
