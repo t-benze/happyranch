@@ -256,7 +256,17 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
         hashlib.md5(path.read_bytes()).hexdigest() + '  ' + str(path.relative_to(stage)) + '\n'
         for path in files))
     (control / 'md5sums').chmod(0o644)
-    # No maintainer scripts: desktop-file-utils/hicolor-icon-theme own triggers.
+    # Incoming retirement runs before dpkg replaces the installed old tools.
+    # Generate only from trusted repository sources, never supplied payload code.
+    generator = runpy.run_path(str(packaging / 'retirement-preinst.py'))
+    for name in generator['MODULES']:
+        shipped = prefix / 'python/lib/python3.12/site-packages/runtime/remote_access' / (name + '.py')
+        source = packaging.parents[1] / 'runtime/remote_access' / (name + '.py')
+        if not shipped.is_file() or shipped.is_symlink() or shipped.read_bytes() != source.read_bytes():
+            parser.error('retirement source differs from incoming control bundle: ' + name)
+    (control / 'preinst').write_text(generator['render_preinst'](packaging.parents[1]))
+    (control / 'preinst').chmod(0o755)
+    # Desktop-file-utils/hicolor-icon-theme still own desktop triggers.
     built = work / filename
     subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(stage), str(built)], check=True)
     with built.open('rb') as source, (dist / filename).open('xb') as target:

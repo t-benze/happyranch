@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import gzip
 import hashlib
 import io
@@ -14,16 +15,165 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 import runpy
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 BUILDER = Path(__file__).with_name('build-deb.sh')
 UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
+
+
+class RetirementPreinstTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='retirement-preinst-')
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
+        self.generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+        self.script = self.work / 'preinst'
+        self.script.write_text(self.generator['render_preinst'](BUILDER.parents[2]))
+        self.entry = runpy.run_path(str(self.script))
+
+    def test_inline_bundle_parity_and_closed_imports(self) -> None:
+        sources = json.loads(zlib.decompress(base64.b64decode(self.entry['SOURCES'])))
+        self.assertEqual(set(sources), {'runtime.remote_access.' + name for name in self.generator['MODULES']})
+        for name, data in sources.items():
+            self.assertEqual(data.encode(), (BUILDER.parents[2] / (name.replace('.', '/') + '.py')).read_bytes())
+        for name in ('installer', 'home_activation', 'home_admission', 'home_admin', 'home_minter', 'home_headscale'):
+            with self.subTest(owner=name), self.assertRaises(ModuleNotFoundError):
+                self.entry['InlineSources']().find_spec('runtime.remote_access.' + name)
+        # Execute actual incoming module bytes under isolated system Python.
+        # This fresh read-only closure must not need Pydantic or old runtime.
+        program = '''import runpy, sys
+entry = runpy.run_path(sys.argv[1])
+sys.meta_path.insert(0, entry['InlineSources']())
+from runtime.remote_access.home_retirement import HomeRetirement
+from runtime.remote_access.retirement_io import RetirementIO
+assert HomeRetirement.__module__ == 'runtime.remote_access.home_retirement'
+assert sys.modules[HomeRetirement.__module__].__file__.startswith('<incoming-preinst:')
+assert not any(name in sys.modules for name in ('pydantic', 'runtime.remote_access.installer'))
+'''
+        result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script)], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fresh_install_uses_canonical_detector_without_old_interpreter(self) -> None:
+        for case in ('fresh', 'legacy', 'malformed'):
+            with self.subTest(case=case):
+                root = self.work / case
+                root.mkdir(mode=0o755)
+                if case != 'fresh':
+                    target = root / ('etc/happyranch/invite-issuer.json' if case == 'legacy' else
+                                     'var/lib/happyranch-remote-access/home-retirement.json')
+                    target.parent.mkdir(parents=True)
+                    for directory in root.rglob('*'):
+                        if directory.is_dir():
+                            directory.chmod(0o755)
+                    target.write_text('synthetic-private-evidence')
+                    target.chmod(0o600)
+                    if case == 'malformed':
+                        target.parent.chmod(0o700)
+                program = '''import os, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+entry = runpy.run_path(sys.argv[1])
+sys.meta_path.insert(0, entry['InlineSources']())
+from runtime.remote_access import retirement_io
+from runtime.remote_access.home_retirement import _ABSENT_UNIT
+root = Path(sys.argv[2])
+def absent(name):
+    raise KeyError(name)
+calls = []
+def native(command, **kwargs):
+    calls.append(command)
+    assert command[:3] == ['systemctl', 'show', 'happyranch-headscale.service']
+    return 0, '\\n'.join(key + '=' + value for key, value in _ABSENT_UNIT.items())
+io = retirement_io.RetirementIO(root=root, root_owner=(os.getuid(), os.getgid()),
+    run=native, lookup_user=absent, lookup_group=absent)
+before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+def no_old_python():
+    raise AssertionError('fresh detection must not require old capability')
+entry['main'].__globals__['trusted_python'] = no_old_python
+with patch.object(retirement_io, 'RetirementIO', return_value=io), patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'install']):
+    result = entry['main']()
+assert result == (0 if sys.argv[3] == 'fresh' else 1)
+assert {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+'''
+                result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script), str(root), case],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('"state": "fresh"' if case == 'fresh' else '"state": "migration pending"', result.stdout)
+                self.assertNotIn('synthetic-private', result.stdout + result.stderr)
+
+    def test_installed_python_custody_refusals(self) -> None:
+        tree = self.work / 'python'
+        (tree / 'bin').mkdir(parents=True)
+        tree.chmod(0o755)
+        (tree / 'bin').chmod(0o755)
+        executable = tree / 'bin/python3.12'
+        executable.write_text('synthetic interpreter; never executed')
+        executable.chmod(0o755)
+        python = tree / 'bin/python3'
+        python.symlink_to('python3.12')
+        self.entry['trusted_python'].__globals__['PYTHON'] = python
+        actual_lstat = Path.lstat
+        foreign = set()
+        def owned(path: Path, *args: Any, **kwargs: Any) -> SimpleNamespace:
+            info = actual_lstat(path, *args, **kwargs)
+            return SimpleNamespace(st_uid=1000 if path in foreign else 0, st_gid=0, st_nlink=info.st_nlink,
+                st_mode=info.st_mode if path.is_relative_to(tree) else stat.S_IFDIR | 0o755)
+        with patch.object(Path, 'lstat', owned):
+            self.entry['trusted_python']()
+            for path in (tree.parent, executable):
+                foreign.add(path)
+                with self.subTest(foreign=path.name), self.assertRaises(ValueError):
+                    self.entry['trusted_python']()
+                foreign.clear()
+            executable.chmod(0o777)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            executable.chmod(0o755)
+            extra = tree / 'extra'
+            os.link(executable, extra)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            extra.unlink()
+            extra.symlink_to(self.script)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            extra.unlink()
+            python.unlink()
+            python.symlink_to('missing')
+            with self.assertRaises((ValueError, OSError)):
+                self.entry['trusted_python']()
+
+    def test_upgrade_gate_propagates_child_failure_and_pins_capability(self) -> None:
+        main = self.entry['main']
+        seen = []
+        def child(command: list[str], **kwargs: Any) -> SimpleNamespace:
+            seen.append((command, kwargs))
+            return SimpleNamespace(returncode=37)
+        with patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'upgrade', 'old']), \
+                patch.dict(main.__globals__, trusted_python=lambda: None), patch('subprocess.run', side_effect=child):
+            self.assertEqual(main(), 37)
+        self.assertEqual(len(seen), 1)
+        command, options = seen[0]
+        self.assertEqual(command, ['/opt/happyranch-desktop/python/bin/python3', '-I', '-'])
+        self.assertEqual(options['env'], {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'})
+        # The real capability program must refuse the system interpreter (not
+        # bundled CPython 3.12); no canonical destructive owner is reached.
+        failed = subprocess.run(['/usr/bin/python3', '-I', '-'], input=options['input'], text=True, capture_output=True)
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertIn('migration pending', failed.stdout)
+        with patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'upgrade']), \
+                patch.dict(main.__globals__, trusted_python=lambda: (_ for _ in ()).throw(ValueError())), \
+                patch('subprocess.run') as execute:
+            self.assertEqual(main(), 1)
+            execute.assert_not_called()
 
 
 class OwnerBootstrapTests(unittest.TestCase):
@@ -458,6 +608,10 @@ class DebPackageTests(unittest.TestCase):
                      'status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle', 'helper_invite'):
             files['libexec/remote-access/' + name + '.py'] = (
                 BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
+        generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+        for name in generator['MODULES']:
+            files['python/lib/python3.12/site-packages/runtime/remote_access/' + name + '.py'] = (
+                BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
             files['bin/' + launcher] = '#!/bin/sh\nexit 0\n'
         for size in (16, 32, 64, 128, 256, 512, 1024):
@@ -752,7 +906,10 @@ class DebPackageTests(unittest.TestCase):
                 subprocess.run(['dpkg-deb', '-x', deb, installed], check=True)
                 control = self.work / ('control-' + debarch)
                 subprocess.run(['dpkg-deb', '-e', deb, control], check=True)
-                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums'})
+                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums', 'preinst'})
+                generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+                self.assertEqual((control / 'preinst').read_text(), generator['render_preinst'](BUILDER.parents[2]))
+                self.assertEqual((control / 'preinst').stat().st_mode & 0o777, 0o755)
                 subprocess.run(['md5sum', '--quiet', '-c', control / 'md5sums'], cwd=installed, check=True)
                 self.assertFalse((installed / 'opt/happyranch').exists())
                 self.assertFalse((installed / 'etc').exists())
@@ -888,6 +1045,23 @@ class DebPackageTests(unittest.TestCase):
                 result = self.build(archive)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('incomplete desktop payload: ' + missing, result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
+    def test_retirement_payload_source_drift_is_refused(self) -> None:
+        for index, case in enumerate(('missing', 'changed')):
+            with self.subTest(case=case):
+                archive = self.payload(version=f'0.6.{index}')
+                root = self.work / f'happyranch-0.6.{index}-linux-x86_64'
+                source = root / 'python/lib/python3.12/site-packages/runtime/remote_access/home_retirement.py'
+                if case == 'missing':
+                    source.unlink()
+                else:
+                    source.write_text('# synthetic mismatched installed recovery entry')
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('retirement source differs from incoming control bundle', result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
     def test_tampered_main_manifest_is_refused(self) -> None:

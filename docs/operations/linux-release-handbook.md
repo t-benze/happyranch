@@ -1628,8 +1628,14 @@ uses those packaged executables and retains separate config/state ownership. See
 | `/usr/share/icons/hicolor/{16x16,…,1024x1024,scalable}/apps/happyranch.*` | Existing brand icons |
 | `/usr/share/doc/happyranch/` | Debian copyright/changelog, unchanged PR1 licenses/notices/inventories and build-info |
 
-No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
-`hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
+The incoming `preinst` performs the P24 home-retirement gate before unpack. A
+fresh install uses read-only detection without an old interpreter; a legacy
+upgrade requires the protected installed bundled CPython3.12 and confirmed
+canonical retirement before replacement. Missing capability or proof refuses
+unpack as migration pending, preserving the old tools and evidence. No service
+is started. See the [retirement entry contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#canonical-explicit-retirement-entry).
+Ubuntu/Debian's `desktop-file-utils` and `hicolor-icon-theme` dpkg triggers
+refresh their caches when installed. Package
 removal deletes only package-owned files; it does not signal a running app or
 daemon. Quit the desktop app before upgrading/removing it. The release data in
 `~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` is preserved, including
@@ -1706,7 +1712,7 @@ sudo apt install ./happyranch_0.1.0-1_amd64.deb
 
 For arm64 use `happyranch_<debversion>_arm64.deb`. Local .deb installation needs
 no HappyRanch apt source or archive key. The package deliberately ships neither
-a sources entry nor an archive keyring, and has no maintainer scripts to manage
+a sources entry nor an archive keyring; its retirement preinst does not manage
 them. Source enrollment is an explicit user action below; removal/purge leaves
 that separately managed enrollment alone.
 

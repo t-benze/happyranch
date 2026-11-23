@@ -4853,8 +4853,8 @@ bounded owners; no in-flight cutoff deadline is reset or extended. Completed
 prefixes allow recovery at native-artifact, operation-domain, trust, account or
 receipt publication boundaries without replaying earlier destructive effects.
 Only final publication plus independent retired readback returns success for a
-legacy layout. The generated incoming Debian preinst bundle, its packaging
-dependency closure and installed upgrade acceptance remain unfinished.
+legacy layout. The incoming Debian preinst carries this canonical implementation
+before unpack; installed upgrade acceptance remains separate.
 
 The fixed entry constructs `RetirementIO`, which uses the same no-follow
 filesystem, directory custody, parent pinning, atomic rename and configuration
@@ -4864,7 +4864,36 @@ controller/activation/issuer owner. The helper-unit policy is shared directly
 with package validation. The old installer keeps its existing layout and error
 aliases while its remaining local-owner removal is unfinished. Canonical entry
 cases construct this actual retained adapter and forbid borrowing retired
-modules; this dependency cut is not evidence of generated preinst or dpkg timing.
+modules; this dependency cut alone is not evidence of dpkg timing.
+
+`packaging/linux/retirement-preinst.py` generates the executable control entry
+from a fixed closure of retained source modules. The builder compares every
+included module byte with its new-payload counterpart before emitting a package.
+It never executes supplied payload code. The private inline loader uses namespace
+parents and exact source bytes, refuses unbundled `runtime`/`cli` modules, and
+does not execute the package's eager convenience-export initializer. A child
+that already imported installed runtime/CLI modules refuses rather than mixing
+old and incoming implementations.
+
+The existing system Python runs only the stdlib bootstrap. `install` uses the
+canonical read-only detector and succeeds only for a genuinely fresh layout,
+without requiring an old interpreter. Legacy/conflicting/unsafe evidence refuses
+this shortcut. `upgrade` requires the fixed installed
+`/opt/happyranch-desktop/python/bin/python3` alias to its CPython3.12 executable,
+protected root-owned ancestors and a bounded, root-owned, non-writable Python
+tree with contained links. It then sends the incoming code via stdin to that
+interpreter in isolated mode with a fixed minimal environment. Unsupported or
+unavailable capability/dependencies return bounded pending; there is no download
+or alternate-interpreter fallback. The child's canonical retirement result is
+the pre-unpack return gate. No old tool is removed by the bootstrap itself.
+`abort-upgrade` performs no effect and never reverses committed denial.
+
+Focused packaging checks:
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py RetirementPreinstTests DebPackageTests.test_installed_contract_and_architecture DebPackageTests.test_retirement_payload_source_drift_is_refused -v`.
+These cover source identity, actual control extraction on both architectures,
+fresh/ambiguous detection and bootstrap refusal/return propagation. Generated
+entry active retirement/replacement compositions and installed dpkg/systemd
+ordering remain distinct evidence obligations.
 
 Focused entry venue:
 `uv run --frozen pytest scripts/test_home_retirement_entry.py -v --tb=short`.

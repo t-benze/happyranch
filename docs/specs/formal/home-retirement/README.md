@@ -18,7 +18,7 @@ manifest or deletion authority.
 | Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the full coordinator still needs to consume all pinned evidence before effects. |
 | Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. Final cleanup evidence disposition/completion remains unfinished. |
 | WriteReceipt / SyncReceipt / ReadFinal | Publication in `home_retirement_publication` requires the absent or proven original retained-disabled account disposition, complete caller proof, canonical-prefix stage completion, staged file/parent sync, atomic no-replace rename and fresh readback; never seeded success. |
-| GateUnpack / ReplacePayload / RestoreEntry | Accepted incoming canonical preinst before old-payload replacement, trusted recovery capability and partial replacement. Package entry remains to be implemented. |
+| GateUnpack / ReplacePayload / RestoreEntry | Incoming preinst sends exact retained canonical sources to the protected installed isolated CPython3.12 before old-payload replacement; only the canonical result permits unpack. Missing capability refuses. Partial replacement/recovery and installed acceptance remain separate. |
 | Crash / InterruptWrite / Detect / SelectExplicit | Durable denies/effects survive; detection has no destructive action; only explicit recovery can progress. |
 | ReplaceForeign / RollbackArtifact | Sampled ownership may change before the next effect; foreign/reappearing artifacts stay pending without stop/disable/removal or restored authority. |
 | OldAdmission / LaterAccountAuthority / AccountListen | Fence rejects old admission. A hypothetical later listener needs separate account authority plus confirmed retirement; this represents S02's future gate, not a positive account path on main. |
@@ -342,4 +342,12 @@ The fixed entry now constructs the retained `RetirementIO` adapter, sharing
 existing filesystem/config custody checks while historical issuer/invite
 readback avoids provisioning owners. This is a dependency boundary for the
 incoming pre-unpack bundle, with no new modeled action or proof authority.
-Generated preinst, replacement scenarios and installed ordering remain separate.
+The generated incoming Debian preinst now carries a fixed retained-module closure
+with byte parity against the new payload. Its closed inline loader cannot borrow
+old runtime modules; the existing system interpreter supplies only the stdlib
+bootstrap and canonical read-only fresh detection. Legacy upgrade requires the
+protected fixed installed CPython3.12 capability and propagates its canonical
+result. This maps to existing `available`/`Run` and `GateUnpack`, with no new
+model action or proof authority. Source/control extraction and bootstrap refusal
+checks do not establish active generated-entry compositions, payload-replacement
+interruption, installed ordering or TLC execution.
