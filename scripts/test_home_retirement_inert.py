@@ -28,6 +28,83 @@ def fresh(fixture):
 
 
 @pytest.mark.parametrize('active', ['inert'], indirect=True)
+@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'native-after-rmdir',
+    'authority-after-rmdir', 'foreign-directory'])
+def test_inert_connector_directory_cleanup_recovers_without_authority_or_replay(active, monkeypatch, boundary):
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, TRANSACTION, writer_lock
+    auxiliary_journal_setup(active.controller)
+    (active.root / TRANSACTION).unlink()
+    owner = InertRetirement.capture(active.io, active.fence)
+    owner.stop_and_disable()
+    owner.remove_leaves()
+    # Compose the existing native and runtime cleanup entries. Their saved
+    # originals survive; no test supplies a completed phase or final record.
+    InertRetirement.remove_unit_fragments(fresh(active), active.fence)
+    InertRetirement.remove_managed_directories(fresh(active), active.fence)
+    path = active.root / 'var/lib/happyranch-connector'
+    retained = {name: ((active.root / name).stat().st_ino, (active.root / name).read_bytes())
+        for name in (INVENTORY, NATIVE, 'retained-native/saved-home')}
+    effects = active.effects()
+    if boundary == 'foreign-directory':
+        path.rename(active.root.parent / 'preserved-original-connector')
+        path.mkdir(mode=0o700)
+    before = active.snapshot()
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    assert active.snapshot() == before and active.effects() == effects
+    real_rmdir, real_sync = os.rmdir, os.fsync
+    removed, synced = [], []
+    def rmdir(name, *, dir_fd=None):
+        target = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name
+        if target == path:
+            assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+        real_rmdir(name, dir_fd=dir_fd)
+        if target == path:
+            removed.append(name)
+            if boundary == 'native-after-rmdir':
+                active.native[TARGET].update(ActiveState='active', SubState='active')
+            elif boundary == 'authority-after-rmdir':
+                path.mkdir(mode=0o700)
+                active.file(TRUST, b'synthetic-reappearing-authority', 0o600)
+    def sync(fd):
+        if Path(os.readlink(f'/proc/self/fd/{fd}')) == path.parent:
+            synced.append(True)
+            if boundary == 'lost-sync' and len(synced) == 1:
+                raise OSError('synthetic lost inert connector parent sync')
+        real_sync(fd)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'rmdir', rmdir)
+        scoped.setattr(os, 'fsync', sync)
+        if boundary == 'complete':
+            InertRetirement.remove_connector_directory(fresh(active), active.fence)
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                InertRetirement.remove_connector_directory(fresh(active), active.fence)
+        assert removed == ([] if boundary == 'foreign-directory' else ['happyranch-connector'])
+        if boundary in ('complete', 'lost-sync'):
+            count = len(synced)
+            for _ in range(2):
+                InertRetirement.remove_connector_directory(fresh(active), active.fence)
+            assert len(synced) == count + 2 and not path.exists()
+            assert removed == ['happyranch-connector']
+            # The next real cleanup phase must still accept independently
+            # proved absence without recreating the retired trust directory.
+            InertRetirement.remove_operation_domains(fresh(active), active.fence)
+            assert all(not (active.root / lock).exists() for lock in OPERATION_LOCKS)
+        else:
+            after = active.snapshot()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                InertRetirement.remove_connector_directory(fresh(active), active.fence)
+            assert active.snapshot() == after
+            if boundary == 'foreign-directory':
+                assert after == before
+    assert active.effects() == effects
+    assert {name: ((active.root / name).stat().st_ino, (active.root / name).read_bytes())
+        for name in retained} == retained
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('active', ['inert'], indirect=True)
 @pytest.mark.parametrize('boundary', ['complete', 'authority-between-units'])
 def test_inert_unit_cleanup_requires_current_empty_authority(active, monkeypatch, boundary):
     from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, TRANSACTION, writer_lock

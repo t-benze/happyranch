@@ -4645,6 +4645,20 @@ roots under still-original immediate parents; missing ancestors refuse. No
 directory absence substitutes for native or cutoff proof. Binaries, accounts,
 trust, operation domains and original journals remain separate final-cleanup
 obligations, and no final retired receipt is published.
+The inert-only `InertRetirement.remove_connector_directory(io, fence)` finishes
+the original empty `/var/lib/happyranch-connector` root after non-trust leaf
+cleanup. Saved never-activated lineage and historical absence of the trust
+state, anchor and lock are mandatory; later absence in an active layout grants
+no authority. Fresh current empty-authority and complete native quiescence,
+held surviving original issuer/minter domains, original directory/parent
+identity, parent sync and absent-name readback guard this rmdir and explicit
+lost-sync recovery. This entry also works after original unit/runtime removal.
+The inert native-cleanup reader admits that original root's absence only under
+its still-original immediate parent, so subsequent operation-domain cleanup
+can finish without recreating state. Ordinary pre-cleanup readers remain
+strict. Unknown contents, replacement, reappearing authority or native activity
+refuse; no rmdir/native replay, trust initialization or final receipt follows.
+Active denied trust is unaffected and remains a separate final obligation.
 Explicit `StoppedRetirement.remove_unit_fragments(io, fence)` and the inert
 owner's same entry remove only the six fixed original systemd fragments through
 `home_retirement_cleanup.UnitCleanup`. Both load the original journals rather

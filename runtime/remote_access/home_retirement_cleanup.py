@@ -266,6 +266,24 @@ class ManagedCleanup(PrivateCleanup):
         return walker
 
 
+class InertConnectorCleanup(ManagedCleanup):
+    """Only the original empty connector root of a never-activated layout.
+
+    Active trust must survive for real denial readback. Historical absence of
+    all three trust members is mandatory here, independently of current absence.
+    The caller still supplies fresh inert/native proof before every effect.
+    """
+
+    _removable_directories = frozenset(('var/lib/happyranch-connector',))
+
+    def _inventory(self) -> LegacyManagedMembers:
+        managed = super()._inventory()
+        if (self.original.ownership.activation is not None or managed.live_sidecar
+                or any(managed.members[path] is not None for path in self._retained)):
+            raise RetirementUncertain()
+        return managed
+
+
 class ExecutableCleanup(PrivateCleanup):
     """Only the saved dedicated controller binary, under original ancestry.
 

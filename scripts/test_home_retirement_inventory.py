@@ -2342,20 +2342,49 @@ def test_controller_executable_cleanup_requires_saved_original_ancestry(
         assert fixture.effects() == [] and not (fixture.root / STATE / 'home-retirement.json').exists()
 
 
-@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'nonempty', 'replaced',
-    'missing-parent', 'originally-absent', 'proof-loss', 'reappearance', 'leaf-present'])
-@pytest.mark.parametrize('family', ['private', 'managed'])
-def test_private_directory_cleanup_recovers_only_original_empty_roots(
-        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str, family: str) -> None:
-    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
+def test_inert_connector_directory_cannot_adopt_absent_active_trust(fixture: InventoryFixture) -> None:
+    from runtime.remote_access.home_retirement_cleanup import InertConnectorCleanup, ManagedCleanup
     from runtime.remote_access.home_retirement_journal import RetirementJournal
     managed_setup(fixture)
-    cleanup_type = PrivateCleanup if family == 'private' else ManagedCleanup
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        ManagedCleanup(journal, original, before_effect=lambda: None).remove()
+        # Later absence never erases the original active lineage. Only the
+        # test supplies this interrupted layout; no production revoke is faked.
+        for path in MANAGED_OPAQUE[:3]:
+            (fixture.root / path).unlink()
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            reopened = RetirementJournal(fixture.io, fence)
+            InertConnectorCleanup(reopened, reopened.load(), before_effect=lambda: None).remove_directories()
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'nonempty', 'replaced',
+    'missing-parent', 'originally-absent', 'proof-loss', 'reappearance', 'leaf-present'])
+@pytest.mark.parametrize('family', ['private', 'managed', 'inert-connector'])
+def test_private_directory_cleanup_recovers_only_original_empty_roots(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str, family: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import InertConnectorCleanup, ManagedCleanup, PrivateCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture, live=family != 'inert-connector')
+    if family == 'inert-connector':
+        fixture.set_unit(home=False)
+        fixture.stopped()
+        fixture.properties['UnitFileState'] = 'disabled'
+        for path in (ACTIVATION, LINK, 'etc/happyranch/invite-issuer.json',
+                'etc/happyranch/headscale/policy.hujson', *MANAGED_OPAQUE[:3]):
+            (fixture.root / path).unlink()
+    cleanup_type = {'private': PrivateCleanup, 'managed': ManagedCleanup,
+        'inert-connector': InertConnectorCleanup}[family]
     roots = (('etc/happyranch/headscale', 'run/happyranch-headscale',
         'var/lib/happyranch-headscale', PRIVATE) if family == 'private' else
+        ('var/lib/happyranch-connector',) if family == 'inert-connector' else
         ('var/lib/happyranch-tsnet-sidecar', 'run/happyranch-connector', 'run/happyranch-tsnet-sidecar'))
     optional_root = PRIVATE if family == 'private' else roots[0]
-    leaf = PRIVATE_KEY if family == 'private' else MANAGED_OPAQUE[3]
+    leaf = (PRIVATE_KEY if family == 'private' else MANAGED_OPAQUE[0]
+        if family == 'inert-connector' else MANAGED_OPAQUE[3])
     fixture.file('retained-work/task.db', b'synthetic-retained-local-work')
     sentinel = fixture.root / 'retained-work/task.db'
     kept = sentinel.stat().st_ino, sentinel.read_bytes()
@@ -2366,16 +2395,20 @@ def test_private_directory_cleanup_recovers_only_original_empty_roots(
     with retirement_fence(fixture.io) as fence:
         journal = RetirementJournal(fixture.io, fence)
         original = journal.capture(fixture.inventory.observe(fence=fence))
-        cleanup_type(journal, original, before_effect=lambda: None).remove()
+        # Non-trust leaves precede this final inert root, as in production.
+        leaf_cleanup = ManagedCleanup if family == 'inert-connector' else cleanup_type
+        leaf_cleanup(journal, original, before_effect=lambda: None).remove()
         records = {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
-                   for path in (ACCOUNT_RECORD, PUBLICATION, STATE + '/home-retirement-inventory.json', *MANAGED_OPAQUE[:3])}
+                   for path in (ACCOUNT_RECORD, PUBLICATION, STATE + '/home-retirement-inventory.json',
+                       *(MANAGED_OPAQUE[:3] if family != 'inert-connector' else ()))}
         if boundary == 'nonempty':
             fixture.file(roots[0] + '/foreign', b'synthetic-foreign')
         elif boundary == 'replaced':
             (fixture.root / roots[0]).rename(fixture.root.parent / 'preserved-original-directory')
             fixture.directory(roots[0]).chmod(0o700)
         elif boundary == 'missing-parent':
-            (fixture.root / 'run').rename(fixture.root.parent / 'preserved-original-run')
+            parent = 'var/lib' if family == 'inert-connector' else 'run'
+            (fixture.root / parent).rename(fixture.root.parent / 'preserved-original-parent')
         elif boundary == 'originally-absent':
             fixture.directory(optional_root).chmod(0o700)
         elif boundary == 'leaf-present':
@@ -2430,6 +2463,10 @@ def test_private_directory_cleanup_recovers_only_original_empty_roots(
             assert len(removed) == 1 and fixture.snapshot() == after[-1]
         else:
             assert removed == [] and fixture.snapshot() == before
+        if family == 'inert-connector' and boundary == 'missing-parent':
+            # Restore the original ancestor before leaving its lifetime fence;
+            # the production refusal/snapshot above observed it missing.
+            (fixture.root.parent / 'preserved-original-parent').rename(fixture.root / 'var/lib')
         assert {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
                 for path in records} == records
         assert (sentinel.stat().st_ino, sentinel.read_bytes()) == kept

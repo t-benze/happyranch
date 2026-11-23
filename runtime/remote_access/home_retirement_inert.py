@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup, ManagedCleanup, PrivateCleanup, UnitCleanup
+from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup, InertConnectorCleanup, ManagedCleanup, PrivateCleanup, UnitCleanup
 from runtime.remote_access.home_retirement_cutoff import _PEER_RECORD
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, LegacyManagedMembers, LegacyOwnership
@@ -146,7 +146,8 @@ class InertRetirement:
                         managed._parents(walker)
                         if parent is None:
                             if (relative in self.original.managed.directories
-                                    and not (cleanup and relative in managed._removable_directories
+                                    and not (cleanup and (relative in managed._removable_directories
+                                        or native_cleanup and relative in InertConnectorCleanup._removable_directories)
                                         and str(PurePosixPath(relative).parent) in walker.directory_identities)):
                                 raise RetirementUncertain()
                             continue
@@ -204,6 +205,31 @@ class InertRetirement:
                     require()
                     exclusion.require()
                 ManagedCleanup(journal, original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_connector_directory(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish the original empty inert connector root, including lost sync.
+
+        Saved empty authority is mandatory; active layouts cannot use this
+        entry. Surviving original operation domains remain held throughout.
+        No trust pair is initialized, removed or replaced, and no final receipt
+        is published. Native cleanup proof rechecks current empty authority.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def require() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True)
+            require()
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                InertConnectorCleanup(journal, original, before_effect=guard).remove_directories()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

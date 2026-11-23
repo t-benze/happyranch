@@ -101,6 +101,16 @@ roots supply no death proof, and missing/replaced parents, new authority or
 nonempty/replaced roots refuse. This uses the existing Remove abstraction;
 trust/domain/account/native-final cleanup and publication remain unfinished.
 
+The inert-only `remove_connector_directory` additionally maps Remove to the
+original empty connector state root. Both saved never-activated/empty-trust
+lineage and current empty authority remain mandatory; active trust becoming
+absent supplies no inert transition. The real owner composes original-parent
+identity, surviving held operation domains, current native quiescence, parent
+sync and absent-name readback, including explicit lost-sync recovery and later
+operation-domain cleanup without recreation or replay. Reappearing authority,
+unknown/replaced roots and native activity refuse. This uses the same Remove
+abstraction and changes no action, denial or final-completion predicate.
+
 Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
 fixed original systemd fragments, including fresh partial-removal/lost-parent-
 sync recovery without native or unlink replay. Cleanup-aware native observations
