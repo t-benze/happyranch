@@ -318,7 +318,8 @@ class OwnedService:
 
     @staticmethod
     def _same_members(first: ServiceObservation, current: ServiceObservation) -> None:
-        if (first.fragment, first.executable) != (current.fragment, current.executable):
+        if ((first.fragment, first.executable) != (current.fragment, current.executable)
+                or current.link is not None and current.link != first.link):
             raise RetirementUncertain()
 
     def stop_and_disable(self, *, expected: ServiceObservation | None = None,

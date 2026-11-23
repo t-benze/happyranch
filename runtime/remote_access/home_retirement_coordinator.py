@@ -177,6 +177,24 @@ class StoppedRetirement:
     def __repr__(self) -> str:
         return 'StoppedRetirement(<redacted>)'
 
+    @staticmethod
+    def _saved_owner(io: ManagedInstaller, fence: RetirementFence) -> ActiveRetirement:
+        fence.require(io)
+        journal = RetirementJournal(io, fence)
+        original = journal.load()
+        managed = original.managed
+        if original.ownership.activation is None or not managed.live_sidecar:
+            raise RetirementUncertain()
+        transport = ManagedTransport(io, fence, managed)
+        native_journal = ManagedTransportJournal(transport)
+        native = native_journal.load()
+        cutoff = RetirementCutoff.from_saved_peer(io, fence,
+            ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
+                connector_id=managed.identity[2]), managed.release_uid)
+        owner = ActiveRetirement(journal, original, native_journal, native, cutoff)
+        owner._require_records()
+        return owner
+
     @classmethod
     def from_saved(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
         """Explicit read-only recovery of the fully stopped/disabled phase.
@@ -188,21 +206,9 @@ class StoppedRetirement:
         No native effect or registry replacement is attempted here.
         """
         try:
-            fence.require(io)
-            journal = RetirementJournal(io, fence)
-            original = journal.load()
-            managed = original.managed
-            if original.ownership.activation is None or not managed.live_sidecar:
-                raise RetirementUncertain()
-            transport = ManagedTransport(io, fence, managed)
-            native_journal = ManagedTransportJournal(transport)
-            native = native_journal.load()
-            cutoff = RetirementCutoff.from_saved_peer(io, fence,
-                ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
-                    connector_id=managed.identity[2]), managed.release_uid)
-            owner = ActiveRetirement(journal, original, native_journal, native, cutoff)
-            owner._require_records()
-            denied = OriginalDeathRecovery(cutoff, native_journal).recover()
+            owner = cls._saved_owner(io, fence)
+            original, native, transport = owner.original, owner.native, owner.native_journal.transport
+            denied = OriginalDeathRecovery(owner.cutoff, owner.native_journal).recover()
             controller = OwnedService(io, original.ownership.service)
             current_controller = controller.observe(stopped=True, disabled=True)
             controller._same_members(original.ownership.native, current_controller)
@@ -211,6 +217,49 @@ class StoppedRetirement:
                 raise RetirementUncertain()
             result = cls(owner, OwnedStopReceipt(controller.identity.unit, current_controller),
                 ManagedStopReceipt(current_managed), denied)
+            result.require()
+            return result
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def resume_native(cls, io: ManagedInstaller, fence: RetirementFence) -> StoppedRetirement:
+        """Explicitly finish native effects after proven managed quiescence.
+
+        Every effect needs original evidence, independent original death and
+        anchored denial. Native readback skips completed effects. A live or
+        partially stopped managed owner supplies no recovery authority here.
+        """
+        try:
+            owner = cls._saved_owner(io, fence)
+            transport = owner.native_journal.transport
+            denied = OriginalDeathRecovery(owner.cutoff, owner.native_journal).recover()
+            current_managed = transport.stopped_original(owner.native)
+            boot = current_managed.boot_id
+            controller = OwnedService(io, owner.original.ownership.service)
+            current_controller = controller.observe()
+            original_controller = owner.original.ownership.native
+            controller._same_members(original_controller, current_controller)
+            if current_controller.process is not None and (
+                    current_controller.process != original_controller.process or boot != owner.native.boot_id):
+                raise RetirementUncertain()
+
+            def guard() -> None:
+                owner._require_records()
+                denied.require()
+                if owner.cutoff._boot_id() != boot:
+                    raise RetirementUncertain()
+
+            controller_receipt = controller.stop_and_disable(expected=current_controller, before_effect=guard)
+
+            def managed_guard() -> None:
+                guard()
+                controller.confirm(controller_receipt)
+
+            managed_guard()
+            current_managed = transport.stopped_original(owner.native)
+            managed_receipt = transport.stop_and_disable(current_managed, before_effect=managed_guard)
+            result = cls(owner, controller_receipt, managed_receipt, denied)
             result.require()
             return result
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):

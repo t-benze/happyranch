@@ -4531,6 +4531,19 @@ An independently proven later boot can satisfy original death; missing/torn
 records, replaced artifacts, a still-live original, active/merely stopped-enabled
 units, or live/missing trust remain pending. Other interrupted phases, selective
 cleanup and final publication still require their separate recovery owners.
+`StoppedRetirement.resume_native` supplies the separate explicit native-resume
+entry when all managed units/processes are already positively quiescent. Saved
+original records and independent original-death/anchored-denial proof guard
+each remaining dedicated stop/disable and managed disable. Original controller
+fragment/executable, still-present link inode and any live process stay pinned;
+a later boot cannot adopt a live dedicated process. The independently observed
+current boot remains fixed across effects. Native readback skips completed
+effects, including a disable that completed before its reply was lost. A failed
+reply never itself becomes success. Replaced ownership, active managed units,
+lost denial or a new boot during resumption refuses the next effect. The owned
+controller primitive also keeps the original still-present activation-link
+inode across its stop→disable boundary. Neither entry performs selective
+cleanup or publishes final retirement.
 Standalone composition checks run through real inventory/journals/anchored
 store/private IPC with synthetic native facts:
 `uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.

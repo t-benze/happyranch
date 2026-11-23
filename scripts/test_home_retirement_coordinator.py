@@ -458,3 +458,89 @@ def test_stopped_explicit_recovery_uses_saved_original_and_never_replays(active,
             StoppedRetirement.from_saved(active.io, active.fence)
     assert active.snapshot() == before and active.effects() == effects and active.frames == frames
     assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('case', ['target', 'socket', 'lost-target-reply', 'later-boot',
+    'denial', 'managed-active', 'controller-fragment', 'managed-link', 'controller-process',
+    'controller-live-after-boot', 'denial-during-disable'])
+def test_native_recovery_finishes_only_remaining_owned_effects(active, monkeypatch, case):
+    from scripts.test_home_retirement_service import MANAGED_LINKS
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    target, verifier = 'happyranch-managed.target', 'happyranch-release-verifier.socket'
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        native_target_stop(active)
+        if case == 'lost-target-reply':
+            run = active.io._run
+            def lose_reply(argv, **kwargs):
+                result = run(argv, **kwargs)
+                return (1, 'synthetic lost native reply') if argv == ['systemctl', 'disable', target] else result
+            active.io._run = active.io.manager._run = lose_reply
+        else:
+            active.fail = ('disable', verifier if case == 'socket' else target)
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_services()
+    active.fail = None
+    # Remove only the test-side lost-reply adapter, never production guards.
+    if case == 'lost-target-reply':
+        active.io._run = active.io.manager._run = run
+    if case == 'denial':
+        active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+    elif case == 'managed-active':
+        active.native[target].update(ActiveState='active', SubState='active')
+    elif case == 'controller-fragment':
+        path = active.root / 'etc/systemd/system/happyranch-headscale.service'
+        saved = active.root.parent / 'original-controller-fragment'
+        path.rename(saved)
+        shutil.copy2(saved, path)
+    elif case == 'managed-link':
+        path = active.root / MANAGED_LINKS[target]
+        path.rename(active.root.parent / 'original-managed-link')
+        path.symlink_to('/etc/systemd/system/' + target)
+    elif case in ('later-boot', 'controller-live-after-boot'):
+        path = active.root / 'proc/sys/kernel/random/boot_id'
+        path.chmod(0o644)
+        path.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+        path.chmod(0o444)
+    if case in ('controller-process', 'controller-live-after-boot'):
+        active.controller.properties.update(ActiveState='active', SubState='running', MainPID='123',
+            ControlGroup='/system.slice/happyranch-headscale.service')
+        if case == 'controller-process':
+            active.controller.process_start(999)
+    changed = []
+    if case == 'denial-during-disable':
+        run = active.io._run
+        def drift_after_disable(argv, **kwargs):
+            result = run(argv, **kwargs)
+            if argv == ['systemctl', 'disable', target] and result[0] == 0:
+                active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+                changed.append(active.snapshot())
+            return result
+        active.io._run = active.io.manager._run = drift_after_disable
+    before, effects, frames = active.snapshot(), active.effects(), list(active.frames)
+    records = {path: (active.root / path).read_bytes() for path in (PIN, INVENTORY, NATIVE)}
+    if case in ('target', 'socket', 'lost-target-reply', 'later-boot'):
+        recovered = StoppedRetirement.resume_native(active.io, active.fence)
+        recovered.require()
+        remaining = [verifier] if case in ('socket', 'lost-target-reply') else [target, verifier]
+        assert active.effects()[len(effects):] == [['systemctl', 'disable', name] for name in remaining]
+        assert all(not (active.root / path).exists() for path in MANAGED_LINKS.values())
+        count = len(active.effects())
+        again = StoppedRetirement.resume_native(active.io, active.fence)
+        again.require()
+        assert len(active.effects()) == count
+        assert recovered._owner.original == owner.original and recovered._owner.native == owner.native
+    else:
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            StoppedRetirement.resume_native(active.io, active.fence)
+        if case == 'denial-during-disable':
+            assert changed
+            assert active.effects()[len(effects):] == [['systemctl', 'disable', target]]
+            assert active.snapshot() == changed[0]
+        else:
+            assert active.snapshot() == before and active.effects() == effects
+    assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+    assert active.frames == frames
+    assert {path: (active.root / path).read_bytes() for path in records} == records
+    assert not (active.root / FINAL).exists()

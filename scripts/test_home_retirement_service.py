@@ -255,6 +255,21 @@ def test_owned_errors_or_misleading_zero_exit_never_produce_receipt(
     assert service.snapshot() == before
 
 
+def test_original_controller_link_replaced_during_stop_never_receives_disable(service: ServiceFixture) -> None:
+    snapshots = []
+    def replace_during_stop(argv: list[str]) -> None:
+        if argv == ['systemctl', 'stop', SERVICE]:
+            target = service.root / LINK
+            target.rename(service.root.parent / 'original-controller-link')
+            target.symlink_to('/' + FRAGMENT)
+            snapshots.append(service.snapshot())
+    service.effect = replace_during_stop
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        service.owner.stop_and_disable(expected=service.owner.observe())
+    assert snapshots and service.snapshot() == snapshots[0]
+    assert service.effects() == [['systemctl', 'stop', SERVICE]]
+
+
 @pytest.mark.parametrize("change", ["fragment", "alias", "process", "native"])
 def test_stop_receipt_is_not_reusable_after_drift(service: ServiceFixture, change: str) -> None:
     receipt = service.owner.stop_and_disable()

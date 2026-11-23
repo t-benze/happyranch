@@ -40,6 +40,13 @@ already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They
 perform no IPC or native replay and produce no final retirement record. This
 covers one post-native recovery boundary, not every modeled Crash phase.
+`resume_native` additionally finishes remaining owned native effects after
+independent original death, anchored denial and complete managed quiescence.
+Every effect keeps original identity and the observed current boot pinned;
+actual native readback skips completed effects. This covers interrupted
+disable/lost-reply progress, while selective cleanup and publication recovery
+remain unfinished. The dedicated owner also pins its original still-present
+activation link across stop and disable.
 
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof
