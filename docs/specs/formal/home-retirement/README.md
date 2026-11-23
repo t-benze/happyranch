@@ -103,7 +103,7 @@ trust/domain/account/native-final cleanup and publication remain unfinished.
 Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
 fixed original systemd fragments, including fresh partial-removal/lost-parent-
 sync recovery without native or unlink replay. Cleanup-aware native observations
-permit only original-fragment absence, with exact original cached inactive
+permit original-fragment absence, with exact original cached inactive
 definitions or not-found/empty definitions; remaining artifacts/parents,
 accounts and complete current native quiescence stay required. Active cleanup
 continues to require independent original-peer death and anchored denial;
@@ -112,6 +112,19 @@ domains guard each effect. Ordinary stop/disable stays strict. Binaries, trust,
 accounts, lock domains and final publication remain separate obligations;
 there is no new model action or final-completion claim. Installed native
 behavior and TLC remain NOT RUN.
+
+Explicit stopped/inert `remove_controller_executable` additionally maps Remove
+to the one dedicated Headscale binary. The original private inventory captures
+its fixed protected ancestors before effects; missing saved ancestry refuses
+without recapture. The same current native quiescence, active independent
+death/denial or inert empty authority and held operation domains guard removal.
+Only cleanup observations admit the absent original binary; ordinary native
+observations and stop/disable stay strict. Full remaining binary identity,
+saved ancestry, parent sync and absent-name readback are real-code obligations;
+fresh recovery reconciles a lost sync without unlink/native replay. Shared
+interpreter/sidecar, registry, payload parents, trust, accounts and domains stay
+retained. This uses the existing Remove abstraction and supplies no final
+receipt or new completion claim; final cleanup and publication remain unfinished.
 
 The model's additional inert initial branch abstracts these independently
 proven empty authority facts as already satisfied Denied/Closed predicates.

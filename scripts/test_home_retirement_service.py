@@ -119,7 +119,7 @@ def test_owned_stop_receipt_requires_native_and_process_readback(service: Servic
     assert service.effects() == [], "fresh explicit recovery must not replay proven stopped/disabled effects"
 
 
-@pytest.mark.parametrize('case', ['present', 'cached', 'unloaded', 'replaced', 'binary', 'active', 'alias',
+@pytest.mark.parametrize('case', ['present', 'cached', 'unloaded', 'missing-binary', 'replaced', 'binary', 'active', 'alias',
     'foreign-cached', 'reload-present', 'process', 'enabled', 'job', 'dropin'])
 def test_controller_cleanup_observation_retains_original_ownership(service: ServiceFixture, case: str) -> None:
     original = service.owner.observe()
@@ -129,6 +129,8 @@ def test_controller_cleanup_observation_retains_original_ownership(service: Serv
         service.properties.update(NeedDaemonReload='yes', UnitFileState='')
     if case == 'unloaded':
         service.properties.update(LoadState='not-found', FragmentPath='', NeedDaemonReload='no', User='', Group='')
+    elif case == 'missing-binary':
+        (service.root / BINARY).unlink()
     elif case in ('replaced', 'binary'):
         path = service.root / (BINARY if case == 'binary' else FRAGMENT)
         path.rename(service.root.parent / 'original-kept')
@@ -152,10 +154,14 @@ def test_controller_cleanup_observation_retains_original_ownership(service: Serv
     elif case == 'dropin':
         service.properties['DropInPaths'] = '/etc/foreign.conf'
     before, effects = service.snapshot(), service.effects()
-    if case in ('present', 'cached', 'unloaded'):
+    if case in ('present', 'cached', 'unloaded', 'missing-binary'):
         observed = OwnedService(service.io, service.identity).observe_cleanup(original)
         assert (observed.fragment is None) == (case != 'present')
-        assert observed.executable == original.executable and observed.process is None and observed.link is None
+        assert observed.executable == (None if case == 'missing-binary' else original.executable)
+        assert observed.process is None and observed.link is None
+        if case == 'missing-binary':
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                service.owner.observe(stopped=True, disabled=True)
     else:
         with pytest.raises(RetirementUncertain, match='^migration pending$'):
             service.owner.observe_cleanup(original)

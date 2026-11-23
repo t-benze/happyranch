@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup, UnitCleanup
+from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup, ManagedCleanup, PrivateCleanup, UnitCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
@@ -484,6 +484,32 @@ class StoppedRetirement:
                     require()
                     exclusion.require()
                 ManagedCleanup(owner.journal, owner.original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_controller_executable(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Remove only the original dedicated binary, with partial-sync recovery.
+
+        Original journals, account, trust and operation domains remain required.
+        Cleanup-aware quiescence and independent death/denial guard each effect;
+        neither missing binary nor held domains supply writer-death authority.
+        """
+        try:
+            owner = cls._saved_owner(io, fence)
+            controller = OwnedService(io, owner.original.ownership.service)
+            recovery = OriginalDeathRecovery(owner.cutoff, owner.native_journal, native_cleanup=True)
+            def require() -> None:
+                owner._require_records()
+                controller.observe_cleanup(owner.original.ownership.native)
+                recovery.recover().require()
+                controller.observe_cleanup(owner.original.ownership.native)
+            require()
+            with held_auxiliary_operations(owner.journal, owner.original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                ExecutableCleanup(owner.journal, owner.original, before_effect=guard).remove()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

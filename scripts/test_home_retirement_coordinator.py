@@ -970,6 +970,91 @@ def test_managed_directory_cleanup_keeps_fresh_active_or_inert_proof(active, mon
     assert not (active.root / FINAL).exists()
 
 
+@pytest.mark.parametrize('active', ['active', 'inert'], indirect=True)
+@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'native-after-unlink'])
+def test_controller_executable_cleanup_recovers_with_fresh_active_or_inert_proof(
+        active, monkeypatch, request, boundary):
+    from runtime.remote_access.home_retirement_inert import InertRetirement
+    from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, TRANSACTION, writer_lock
+    inert = request.node.callspec.params['active'] == 'inert'
+    auxiliary_journal_setup(active.controller)
+    if inert:
+        (active.root / TRANSACTION).unlink()
+        owner = InertRetirement.capture(active.io, active.fence)
+        owner.stop_and_disable()
+        owner.remove_leaves()
+    else:
+        device, _ = active.grant('device')
+        stream = active.stream(device, 'device')
+        with active.serving(monkeypatch):
+            owner = ActiveRetirement.capture(active.io, active.fence)
+            native_target_stop(active)
+            owner.revoke_and_stop_services()
+    cleanup = InertRetirement if inert else StoppedRetirement
+    if boundary == 'complete':
+        cleanup.remove_unit_fragments(active.io, active.fence)
+    retained_paths = [INVENTORY, NATIVE, ACCOUNT_RECORD, PUBLICATION,
+        'opt/happyranch-desktop/python/bin/python3.12',
+        'opt/happyranch-desktop/bin/happyranch-tsnet-sidecar',
+        'var/lib/dpkg/info/happyranch.md5sums', 'retained-native/saved-home']
+    if not inert:
+        retained_paths.extend([PIN, *('var/lib/happyranch-connector/trust-state.json' + suffix
+            for suffix in ('', '.anchor', '.lock'))])
+    retained = {path: ((active.root / path).stat().st_ino, (active.root / path).read_bytes()) for path in retained_paths}
+    effects, frames = active.effects(), list(getattr(active, 'frames', []))
+    target = active.root / BINARY
+    real_unlink, real_sync = os.unlink, os.fsync
+    removed, synced = [], []
+    def unlink(name, *, dir_fd=None):
+        path = Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name
+        if path == target:
+            assert all(writer_lock(active.root, lock) == 73 for lock in OPERATION_LOCKS)
+        real_unlink(name, dir_fd=dir_fd)
+        if path == target:
+            removed.append(name)
+            if boundary == 'native-after-unlink':
+                active.native['happyranch-managed.target'].update(ActiveState='active', SubState='active')
+    def sync(fd):
+        if Path(os.readlink(f'/proc/self/fd/{fd}')) == target.parent:
+            synced.append(True)
+            if boundary == 'lost-sync' and len(synced) == 1:
+                raise OSError('synthetic dedicated executable parent sync interruption')
+        real_sync(fd)
+    def fresh():
+        io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+            run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
+        cleanup.remove_controller_executable(io, active.fence)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, 'unlink', unlink)
+        scoped.setattr(os, 'fsync', sync)
+        if boundary == 'complete':
+            fresh()
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+        assert removed == ['headscale'] and not target.exists()
+        if boundary == 'native-after-unlink':
+            after = active.snapshot()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                fresh()
+            assert active.snapshot() == after
+        else:
+            fresh()
+            count = len(synced)
+            fresh()
+            assert len(synced) == count + 1
+        assert removed == ['headscale']
+    assert active.effects() == effects and list(getattr(active, 'frames', [])) == frames
+    assert {path: ((active.root / path).stat().st_ino, (active.root / path).read_bytes()) for path in retained} == retained
+    assert all((active.root / path).exists() for path in OPERATION_LOCKS)
+    assert active.io.home_retirement_status()['state'] == 'migration pending'
+    if not inert:
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        with pytest.raises(StreamClosed):
+            stream.receive()
+    assert not (active.root / FINAL).exists()
+
+
 @pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
 def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay(active, monkeypatch, boundary):
     from scripts.test_home_retirement_inventory import auxiliary_journal_setup, OPERATION_LOCKS, writer_lock

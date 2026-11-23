@@ -445,6 +445,11 @@ class _PrivateMembers:
 
     def observe(self) -> LegacyPrivateMembers:
         self.directory_identities = {}
+        # The native observer owns the binary bytes; this inventory pins its
+        # original parents before effects for removal and lost-sync recovery.
+        with self._directory(str(Path(self.ownership.service.executable).parent)) as parent:
+            if parent is None:
+                raise RetirementUncertain()
         publication = self.inventory.io._json(self.inventory._receipt(_PUBLICATION, None)[0])
         members = {path.lstrip("/"): ("file", self.account, 0o600, digest)
                    for path, digest in publication["files"].items()}

@@ -4662,9 +4662,25 @@ a not-found definition with empty fragment/user/group fields. Aliases, drop-ins,
 jobs, activation links, foreign cached paths, active processes and changed
 original parents/files refuse. Ordinary native observations and stop/disable
 remain strict about present fragments. No daemon reload is performed here.
-Executables, the package registry, accounts, trust, original journals and lock
-domains remain required and retained. This is partial native cleanup, not
-final retirement or authorization to replace the package.
+That fragment entry retains executables, the package registry, accounts,
+trust, original journals and lock domains. This is partial native cleanup,
+not final retirement or authorization to replace the package.
+Explicit `remove_controller_executable(io, fence)` on the stopped or inert
+owner separately removes only the saved dedicated Headscale binary at
+`/opt/happyranch-desktop/libexec/headscale/headscale`. Its full original
+signature and ancestors saved in the private inventory must still agree;
+an older inventory without those ancestor pins refuses without recapture.
+The same native quiescence, active independent death/anchored denial or inert
+empty-authority proof, and held original issuer/minter domains guard each
+effect. Cleanup-aware dedicated native observations allow the original binary
+to be absent while keeping account, aliases, links, jobs and process checks;
+ordinary observations and stop/disable continue to require it. Recovery
+synchronizes the still-original immediate parent and reads back absence
+without unlink replay, including after a lost parent sync. Changed files or
+ancestors and native reactivation refuse. The shared interpreter, sidecar,
+package registry, binary parent directories, trust, accounts, journals and
+operation domains remain retained. No account disposition, final receipt or
+package-replacement permission is supplied by this entry.
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held

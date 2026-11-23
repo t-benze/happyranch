@@ -83,7 +83,7 @@ class ServiceIdentity:
 @dataclass(frozen=True)
 class ServiceObservation:
     fragment: tuple[int, ...] | None
-    executable: tuple[int, ...]
+    executable: tuple[int, ...] | None
     link: tuple[int, ...] | None
     properties: tuple[tuple[str, str], ...]
     process: tuple[int, int] | None
@@ -286,7 +286,11 @@ class OwnedService:
         path = "etc/systemd/system/" + identity.unit
         missing = cleanup is not None and not self.reader._present(path)
         fragment = None if missing else self._regular(path, identity.fragment_sha256)
-        executable = self._regular(identity.executable, identity.executable_sha256, executable=True)
+        def executable_observation() -> tuple[int, ...] | None:
+            if cleanup is not None and not self.reader._present(identity.executable):
+                return None
+            return self._regular(identity.executable, identity.executable_sha256, executable=True)
+        executable = executable_observation()
         link = self._links(disabled=disabled)
         props = self.io.manager.show_properties(identity.unit, _PROPERTIES)
         fixed = dict(Id=identity.unit, Names=identity.unit,
@@ -320,20 +324,22 @@ class OwnedService:
         if (self.io.manager.show_properties(identity.unit, _PROPERTIES) != props
                 or self._process(pid) != process
                 or self._links(disabled=disabled) != link
-                or self._regular(identity.executable, identity.executable_sha256, executable=True) != executable
+                or executable_observation() != executable
                 or (None if missing and not self.reader._present(path)
                     else self._regular(path, identity.fragment_sha256)) != fragment):
             raise RetirementUncertain()
         if cleanup is not None and (cleanup.fragment is None or fragment is not None and fragment != cleanup.fragment
-                or executable != cleanup.executable or process is not None or link is not None):
+                or cleanup.executable is None or executable is not None and executable != cleanup.executable
+                or process is not None or link is not None):
             raise RetirementUncertain()
         return ServiceObservation(fragment, executable, link, tuple(sorted(props.items())), process)
 
     def observe_cleanup(self, original: ServiceObservation) -> ServiceObservation:
-        """Read stopped/disabled original ownership after explicit fragment removal.
+        """Read stopped/disabled ownership after explicit native artifact removal.
 
-        Only the fixed saved fragment may be absent. Executable and account
-        remain original; aliases, activation, jobs and processes still refuse.
+        Only the fixed saved fragment/executable may be absent. Remaining
+        artifacts and account stay original; aliases, jobs and processes refuse.
+        The remover separately pins saved original ancestors before effects.
         This performs no stop, disable, reload or removal.
         """
         try:

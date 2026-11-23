@@ -1,6 +1,6 @@
-"""Selective original private/managed leaves and unit fragments under fresh proofs.
+"""Selective original leaves, fragments and dedicated binary under fresh proofs.
 
-Native executables, trust state, operation locks and saved evidence are retained.
+Shared executables, trust state, operation locks and saved evidence are retained.
 An absent original is current absence, never an acknowledgement of who removed
 it. This explicit owner does not publish a final retired receipt.
 """
@@ -264,6 +264,22 @@ class ManagedCleanup(PrivateCleanup):
         if walker.account != self.original.managed.account:
             raise RetirementUncertain()
         return walker
+
+
+class ExecutableCleanup(PrivateCleanup):
+    """Only the saved dedicated controller binary, under original ancestry.
+
+    Shared interpreter, sidecar, package registry and payload parents survive.
+    The required caller guard supplies fresh native/cutoff/held-domain proof.
+    """
+
+    _mutable = frozenset()
+    _closed = frozenset()
+
+    def _inventory(self) -> LegacyPrivateMembers:
+        ownership = self.original.ownership
+        return LegacyPrivateMembers({ownership.service.executable: ownership.native.executable},
+            self.original.private.directories)
 
 
 class UnitCleanup(PrivateCleanup):

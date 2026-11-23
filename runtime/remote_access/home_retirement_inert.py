@@ -2,7 +2,7 @@
 
 Absence alone supplies no cutoff proof for an active installation. This owner
 requires historical inert provenance, original and current absent authority,
-and fresh complete native quiescence. Selective leaf/fragment cleanup retains
+and fresh complete native quiescence. Selective cleanup retains shared
 executables, accounts, operation locks and original journals. It neither
 initializes trust nor emits a final receipt or package replacement gate.
 """
@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
-from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup, UnitCleanup
+from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup, ManagedCleanup, PrivateCleanup, UnitCleanup
 from runtime.remote_access.home_retirement_cutoff import _PEER_RECORD
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, LegacyManagedMembers, LegacyOwnership
@@ -204,6 +204,29 @@ class InertRetirement:
                     require()
                     exclusion.require()
                 ManagedCleanup(journal, original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_controller_executable(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Remove the dedicated original binary under fresh inert quiescence.
+
+        Original/current empty authority and held original operation domains
+        remain mandatory after unit removal or interrupted binary parent sync.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def require() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True)
+            require()
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                def guard() -> None:
+                    require()
+                    exclusion.require()
+                ExecutableCleanup(journal, original, before_effect=guard).remove()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

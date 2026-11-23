@@ -2082,27 +2082,28 @@ def test_private_cleanup_interruption_keeps_original_evidence_and_checks_next_ef
         assert fixture.effects() == []
 
 
-@pytest.mark.parametrize('family', ['private', 'auxiliary', 'managed'])
+@pytest.mark.parametrize('family', ['private', 'auxiliary', 'managed', 'executable'])
 @pytest.mark.parametrize('boundary', ['complete', 'sync-failure', 'reappearance'])
 def test_cleanup_recovery_synchronizes_previously_removed_originals(
         fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, family: str, boundary: str) -> None:
-    from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
+    from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup, ManagedCleanup, PrivateCleanup
     from runtime.remote_access.home_retirement_journal import RetirementJournal
     from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
     auxiliary_setup(fixture)
     with retirement_fence(fixture.io) as fence:
         journal = RetirementJournal(fixture.io, fence)
         original = journal.capture(fixture.inventory.observe(fence=fence))
-        members = getattr(original, family).members
+        members = ({BINARY: original.ownership.native.executable} if family == 'executable'
+                   else getattr(original, family).members)
         leaves = {path: signature for path, signature in members.items()
-                  if signature is not None and (family == 'private'
+                  if signature is not None and (family in ('private', 'executable')
                       or stat.S_ISREG(signature[4]) and path not in (*OPERATION_LOCKS, *MANAGED_OPAQUE[:3]))}
         # Model the persisted unlink with its parent sync interrupted, without
         # claiming the cleanup owner caused or acknowledged these absences.
         for path, signature in leaves.items():
             target = fixture.root / path
             target.rmdir() if stat.S_ISDIR(signature[4]) else target.unlink()
-        target = fixture.root / (PRIVATE_KEY if family == 'private' else
+        target = fixture.root / (BINARY if family == 'executable' else PRIVATE_KEY if family == 'private' else
             MANAGED_OPAQUE[3] if family == 'managed' else OPERATION)
         required = {str((fixture.root / path).parent) for path in leaves}
         synced, injected, removals = [], [], []
@@ -2122,8 +2123,8 @@ def test_cleanup_recovery_synchronizes_previously_removed_originals(
         def recover():
             fresh = RetirementJournal(fixture.io, fence)
             saved = fresh.load()
-            if family in ('private', 'managed'):
-                cleanup = PrivateCleanup if family == 'private' else ManagedCleanup
+            if family in ('private', 'managed', 'executable'):
+                cleanup = {'private': PrivateCleanup, 'managed': ManagedCleanup, 'executable': ExecutableCleanup}[family]
                 cleanup(fresh, saved, before_effect=lambda: None).remove()
             else:
                 with held_auxiliary_operations(fresh, saved, cleanup=True) as exclusion:
@@ -2142,6 +2143,82 @@ def test_cleanup_recovery_synchronizes_previously_removed_originals(
         assert fixture.snapshot() == (injected[0] if injected else before)
         assert RetirementJournal(fixture.io, fence).load() == original
         assert not (fixture.root / STATE / 'home-retirement.json').exists()
+
+
+@pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'replacement', 'parent', 'missing-parent',
+    'missing-pins', 'proof-loss'])
+def test_controller_executable_cleanup_requires_saved_original_ancestry(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    from runtime.remote_access.home_retirement_cleanup import ExecutableCleanup
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        if boundary == 'missing-pins':
+            # A valid older saved inventory has no executable ancestry. It
+            # must not authorize recapturing current parents for this effect.
+            record_path = fixture.root / STATE / 'home-retirement-inventory.json'
+            record = json.loads(record_path.read_bytes())
+            directories = record['original']['private']['directories']
+            record['original']['private']['directories'] = {
+                path: value for path, value in directories.items() if not path.startswith('opt')}
+            record_path.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+            journal = RetirementJournal(fixture.io, fence)
+            original = journal.load()
+        target = fixture.root / BINARY
+        parent = target.parent
+        retained = {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
+                    for path in (ACCOUNT_RECORD, PUBLICATION, STATE + '/home-retirement-inventory.json', *MANAGED_OPAQUE[:3])}
+        if boundary == 'replacement':
+            target.rename(fixture.root.parent / 'original-binary')
+            fixture.file(BINARY, BINARY_BYTES, 0o755)
+        elif boundary == 'parent':
+            # Replace an ancestor while leaving the binary inode/metadata
+            # intact. Moving the binary itself would trip a different guard.
+            ancestor = parent.parent
+            ancestor.rename(fixture.root.parent / 'original-libexec')
+            ancestor.mkdir(mode=0o755)
+            (fixture.root.parent / 'original-libexec/headscale').rename(parent)
+        elif boundary == 'missing-parent':
+            parent.rename(fixture.root.parent / 'original-binary-parent')
+        removed, synced = [], []
+        real_unlink, real_sync = os.unlink, os.fsync
+        def guard():
+            if boundary == 'proof-loss':
+                raise RetirementUncertain()
+        def unlink(name, *, dir_fd=None):
+            real_unlink(name, dir_fd=dir_fd)
+            removed.append(name)
+        def sync(fd):
+            if Path(os.readlink(f'/proc/self/fd/{fd}')) == parent:
+                synced.append(True)
+                if boundary == 'lost-sync':
+                    raise OSError('synthetic executable parent sync interruption')
+            real_sync(fd)
+        before = fixture.snapshot()
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            scoped.setattr(os, 'fsync', sync)
+            owner = ExecutableCleanup(journal, original, before_effect=guard)
+            if boundary == 'complete':
+                owner.remove()
+            else:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    owner.remove()
+        if boundary in ('complete', 'lost-sync'):
+            assert removed == ['headscale'] and synced == [True] and not target.exists()
+            # A fresh production object reconciles absence, never unlinks again.
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'unlink', unlink)
+                fresh = RetirementJournal(fixture.io, fence)
+                ExecutableCleanup(fresh, fresh.load(), before_effect=lambda: None).remove()
+            assert removed == ['headscale']
+        else:
+            assert removed == [] and fixture.snapshot() == before
+        assert {path: ((fixture.root / path).stat().st_ino, (fixture.root / path).read_bytes())
+                for path in retained} == retained
+        assert fixture.effects() == [] and not (fixture.root / STATE / 'home-retirement.json').exists()
 
 
 @pytest.mark.parametrize('boundary', ['complete', 'lost-sync', 'nonempty', 'replaced',

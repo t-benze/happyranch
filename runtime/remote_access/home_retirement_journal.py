@@ -161,6 +161,7 @@ class OriginalInventory:
                                                      for item in (private, managed, auxiliary))
         allowed_dirs = {"."} | {str(parent) for path in allowed_private | _MANAGED | _AUXILIARY
             for parent in PurePosixPath(path).parents if str(parent) != "."}
+        allowed_dirs.update(str(parent) for parent in PurePosixPath(service.executable).parents)
         allowed_dirs.update(STATE_DIRECTORY + "/home-minter/" + user for user in ("happyranch-invite", "happyranch-node"))
         if any(path not in allowed_dirs or not stat.S_ISDIR(signature[4])
                for values in (private_dirs, managed_dirs, auxiliary_dirs) for path, signature in values.items()):
