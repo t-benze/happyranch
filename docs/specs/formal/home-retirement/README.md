@@ -16,7 +16,7 @@ manifest or deletion authority.
 | OriginalDies | Independent original-process death and transport quiescence proof, **not** a successful response from a replacement process. `home_retirement_recovery` supplies this read-only proof only with original peer/native binding, anchored denial and all managed units/processes independently quiescent; full cleanup/final-receipt composition remains unfinished. |
 | ObserveCutoff | Original-owner physical acknowledgement or independent original-death/managed-quiescence proof, plus anchored burn/deny readback. No Boolean or phase intent substitutes for these. |
 | Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the full coordinator still needs to consume all pinned evidence before effects. |
-| Remove / AccountDisposition / ObserveCleanup | Accepted selective no-follow cleanup and exclusive-account deletion or proven owned-disabled retention. Full coordinator/cleanup remains to be implemented. |
+| Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. Final cleanup evidence disposition/completion remains unfinished. |
 | WriteReceipt / SyncReceipt / ReadFinal | Accepted minimized completion publication, file/parent sync and fresh readback; never seeded success. Full writer remains to be implemented. |
 | GateUnpack / ReplacePayload / RestoreEntry | Accepted incoming canonical preinst before old-payload replacement, trusted recovery capability and partial replacement. Package entry remains to be implemented. |
 | Crash / InterruptWrite / Detect / SelectExplicit | Durable denies/effects survive; detection has no destructive action; only explicit recovery can progress. |
@@ -124,6 +124,23 @@ trust lock, parent sync, fresh absence and no removal replay remain real-code
 obligations. Missing/unknown evidence, remaining-file replacement, reappearance
 and native activity refuse. Original journals and account/final publication
 remain separate obligations. No model action or completion predicate changes.
+
+Explicit active/inert `retire_account` now maps AccountDisposition to the
+protected original dedicated account after current complete cleanup absence.
+Name and numeric NSS mappings, locked system shape, unshared UID/GID, bounded
+UID process and static load-root consumer checks are real-code obligations.
+Exclusive userdel precedes receipted unshared groupdel; failed/uncertain effects
+remain pending and fresh explicit recovery skips only positively absent effects.
+An exact locked owned account with static consumers is retained with a bounded
+reason, without touching those consumers. Original journals/receipt survive.
+Active independent death/native proof and the actual denied-state bridge, or
+inert historical/current empty authority, remain required after user removal.
+Ordinary observations stay strict; the explicit account-stage readback continues
+to reject numeric reuse and native activity. This uses the existing exclusive/
+owned-disabled branches. The same action now exposes user-absent before group
+removal; crashes/detection preserve that pending state and fresh selected work
+still needs CleanupFacts before completing group removal. No model action or
+final-receipt predicate is added. TLC remains NOT RUN.
 
 Explicit stopped/inert `remove_unit_fragments` now composes Remove for the six
 fixed original systemd fragments, including fresh partial-removal/lost-parent-

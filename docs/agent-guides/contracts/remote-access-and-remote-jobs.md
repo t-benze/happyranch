@@ -4734,6 +4734,35 @@ native proof or replaced ancestors refuse. Ordinary cutoff/recovery readers
 remain strict and cannot use this record as an anchored trust snapshot. Original
 journals, dedicated-account disposition and final publication remain separate
 obligations; no startup, package or admission entry invokes this cleanup.
+The active and inert `retire_account(io, fence)` entries now supply dedicated
+account disposition after every original obsolete leaf, fixed private/managed
+root, native fragment, dedicated executable and issuer/minter domain is proven
+absent against saved ancestry. Active disposition additionally requires the real
+synchronized denied-state bridge and absent original trust/root, plus fresh
+original-peer death and all native quiescence. Inert disposition requires
+historical/current empty authority and absent original connector root. Neither
+path treats an absent account, domain or file as writer-death proof.
+
+`home_retirement_account.AccountDisposition` preserves the exact protected
+account receipt and original journals throughout user/group effects. Fresh
+locked system-account shape, name and numeric NSS lookups, unshared UID/GID,
+bounded UID process inventory and systemd/D-Bus consumer scans precede effects.
+An exact owned locked account with a remaining static consumer is retained as
+`retained-disabled: static consumer`, with no consumer or account modification.
+Foreign/reused/shared identities, live processes or unsafe evidence stay pending.
+Exclusive disposition calls only `userdel happyranch-headscale`, then the
+receipted unshared `groupdel`; no home-data removal flag or account creation.
+Nonzero native results preserve uncertainty. Explicit recovery re-observes
+remaining identities and skips positively absent effects, including user-only
+or both-name absence after an uncertain command. Receipt retirement is separate.
+
+Only explicit account-stage native observation admits these proven original
+name absences and static consumers; ordinary native/stop/cleanup observations
+remain strict. Every account-stage readback still checks numeric reuse, native
+artifacts/aliases/jobs and current complete process quiescence. The final writer,
+receipt evidence disposition, shipping sequence and installed acceptance remain
+unfinished; this result cannot authorize package replacement.
+
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held

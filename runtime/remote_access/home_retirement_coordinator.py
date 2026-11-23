@@ -520,6 +520,29 @@ class StoppedRetirement:
         TrustCleanup(cls._saved_owner(io, fence)).remove()
 
     @classmethod
+    def retire_account(cls, io: ManagedInstaller, fence: RetirementFence) -> str:
+        """Dispose of the original dedicated account after all owned cleanup.
+
+        Original journals and denied-state bridge survive user/group effects.
+        Fresh explicit recovery skips only positively absent original names;
+        remaining artifacts, native activity and numeric reuse stay pending.
+        This is not final receipt publication or package replacement permission.
+        """
+        from runtime.remote_access.home_retirement_account import AccountDisposition
+        from runtime.remote_access.home_retirement_cleanup import require_cleanup_absent
+        from runtime.remote_access.home_retirement_trust import TrustCleanup
+        try:
+            owner = cls._saved_owner(io, fence)
+            trust = TrustCleanup(owner)
+            def native() -> None:
+                trust.require_removed(account_cleanup=True)
+            def require() -> None:
+                require_cleanup_absent(owner.journal, owner.original, owner.native, before_effect=native)
+            return AccountDisposition(owner.journal, owner.original, before_effect=require).retire()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, StateStoreError):
+            raise RetirementUncertain() from None
+
+    @classmethod
     def remove_controller_executable(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
         """Remove only the original dedicated binary, with partial-sync recovery.
 

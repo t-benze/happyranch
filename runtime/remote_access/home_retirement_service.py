@@ -130,7 +130,7 @@ class OwnedService:
                 os.close(descriptor)
             return _signature(info)
 
-    def _links(self, *, disabled: bool) -> tuple[int, ...] | None:
+    def _links(self, *, disabled: bool, account_consumers: set[str] | None = None) -> tuple[int, ...] | None:
         identity, count, found = self.identity, 0, None
         fragment = "etc/systemd/system/" + identity.unit
 
@@ -179,7 +179,9 @@ class OwnedService:
                             if identity.unit.encode() in data or identity.account.encode() in data:
                                 from runtime.remote_access.installer import _owned_helper_unit
                                 if not _owned_helper_unit(path, info, data, self.io.root_owner):
-                                    raise RetirementUncertain()
+                                    if account_consumers is None or identity.unit.encode() in data:
+                                        raise RetirementUncertain()
+                                    account_consumers.add(path)
                     else:
                         raise RetirementUncertain()
                     if _signature(os.stat(entry.name, dir_fd=parent, follow_symlinks=False)) != _signature(info):
@@ -275,14 +277,20 @@ class OwnedService:
             raise RetirementUncertain() from None
 
     def _observe(self, *, stopped: bool, disabled: bool,
-                 cleanup: ServiceObservation | None = None) -> ServiceObservation:
+                 cleanup: ServiceObservation | None = None, account_cleanup: bool = False) -> ServiceObservation:
         identity = self.identity
         # NSS receipts/lineage are the coordinator's separate prerequisite;
         # re-observe numeric/name bindings here so account replacement is closed.
-        user, group = self.io._lookup_user(identity.account), self.io._lookup_group(identity.account)
-        if ((user.pw_name, user.pw_uid, user.pw_gid) != (identity.account, identity.uid, identity.gid)
-                or (group.gr_name, group.gr_gid) != (identity.account, identity.gid)):
-            raise RetirementUncertain()
+        def account() -> None:
+            if account_cleanup:
+                from runtime.remote_access.home_retirement_account import account_status
+                account_status(self.io, identity)
+            else:
+                user, group = self.io._lookup_user(identity.account), self.io._lookup_group(identity.account)
+                if ((user.pw_name, user.pw_uid, user.pw_gid) != (identity.account, identity.uid, identity.gid)
+                        or (group.gr_name, group.gr_gid) != (identity.account, identity.gid)):
+                    raise RetirementUncertain()
+        account()
         path = "etc/systemd/system/" + identity.unit
         missing = cleanup is not None and not self.reader._present(path)
         fragment = None if missing else self._regular(path, identity.fragment_sha256)
@@ -291,7 +299,8 @@ class OwnedService:
                 return None
             return self._regular(identity.executable, identity.executable_sha256, executable=True)
         executable = executable_observation()
-        link = self._links(disabled=disabled)
+        consumers: set[str] | None = set() if account_cleanup else None
+        link = self._links(disabled=disabled, account_consumers=consumers)
         props = self.io.manager.show_properties(identity.unit, _PROPERTIES)
         fixed = dict(Id=identity.unit, Names=identity.unit,
             FragmentPath=str(self.io.root / "etc/systemd/system" / identity.unit), DropInPaths="",
@@ -323,7 +332,7 @@ class OwnedService:
         # required again after them, before this observation can admit effects.
         if (self.io.manager.show_properties(identity.unit, _PROPERTIES) != props
                 or self._process(pid) != process
-                or self._links(disabled=disabled) != link
+                or self._links(disabled=disabled, account_consumers=consumers) != link
                 or executable_observation() != executable
                 or (None if missing and not self.reader._present(path)
                     else self._regular(path, identity.fragment_sha256)) != fragment):
@@ -332,20 +341,23 @@ class OwnedService:
                 or cleanup.executable is None or executable is not None and executable != cleanup.executable
                 or process is not None or link is not None):
             raise RetirementUncertain()
+        account()
         return ServiceObservation(fragment, executable, link, tuple(sorted(props.items())), process)
 
-    def observe_cleanup(self, original: ServiceObservation) -> ServiceObservation:
+    def observe_cleanup(self, original: ServiceObservation, *, account_cleanup: bool = False) -> ServiceObservation:
         """Read stopped/disabled ownership after explicit native artifact removal.
 
         Only the fixed saved fragment/executable may be absent. Remaining
         artifacts and account stay original; aliases, jobs and processes refuse.
+        Explicit account-stage observation additionally admits proven original
+        name absence and static consumers, with full numeric-reuse checks.
         The remover separately pins saved original ancestors before effects.
         This performs no stop, disable, reload or removal.
         """
         try:
             if type(original) is not ServiceObservation:
                 raise RetirementUncertain()
-            return self._observe(stopped=True, disabled=True, cleanup=original)
+            return self._observe(stopped=True, disabled=True, cleanup=original, account_cleanup=account_cleanup)
         except (OSError, ValueError, RuntimeError, KeyError, ServiceManagerError):
             raise RetirementUncertain() from None
 

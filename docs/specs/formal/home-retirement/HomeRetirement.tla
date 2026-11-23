@@ -114,8 +114,10 @@ Remove(m) ==
              !.foreignEffects = @ + (IF s.owner = "exact" THEN 0 ELSE 1)]
 
 AccountDisposition ==
-  /\ Run /\ CleanupFacts /\ s.removed = Members /\ s.account = "present"
-  /\ s' = [s EXCEPT !.account = IF s.exclusive THEN "absent" ELSE "owned-disabled"]
+  /\ Run /\ CleanupFacts /\ s.removed = Members /\ s.account \in {"present", "user-absent"}
+  /\ s' = [s EXCEPT !.account = IF s.exclusive
+               THEN (IF s.account = "present" THEN "user-absent" ELSE "absent")
+               ELSE "owned-disabled"]
 
 ObserveCleanup ==
   /\ Run /\ FinalFacts /\ "cleanup" \notin s.observed
@@ -203,7 +205,7 @@ TypeOK ==
   /\ s.close \in [Owners -> CloseStates] /\ s.original \in {"live", "dead"}
   /\ s.owner \in {"exact", "foreign"} /\ s.exclusive \in BOOLEAN
   /\ s.stopped \in BOOLEAN /\ s.disabled \in BOOLEAN /\ s.removed \subseteq Members
-  /\ s.account \in {"present", "absent", "owned-disabled"}
+  /\ s.account \in {"present", "user-absent", "absent", "owned-disabled"}
   /\ s.receipt \in {"absent", "torn", "written", "durable"}
   /\ s.observed \subseteq Observations /\ s.explicit \in BOOLEAN
   /\ s.available \in BOOLEAN /\ s.source \in {"old", "partial", "new", "rollback"}
@@ -217,7 +219,7 @@ NoStopBeforeCutoff == s.stopped => CutoffFacts
 NoDisableBeforeStop == s.disabled => s.stopped /\ CutoffFacts
 NoCleanupBeforeQuiescence == s.removed # {} => CutoffFacts
 RetiredTruthful == s.reported = "retired" => FinalFacts /\ s.receipt = "durable"
-NoAccountGuess == s.account = "absent" => s.exclusive
+NoAccountGuess == s.account \in {"user-absent", "absent"} => s.exclusive
 GateAfterReadback == s.permit => FinalFacts /\ s.receipt = "durable"
 NewListenerGated == s.accountListener => s.accountAuthority /\ FinalFacts /\ s.receipt = "durable"
 DenialMonotone == [][s.denied \subseteq s'.denied /\ (s.burned => s'.burned)]_vars

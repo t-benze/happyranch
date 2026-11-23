@@ -52,23 +52,38 @@ class TrustCleanup:
         self.reader = HomeRetirement(self.io)
         self._saved: tuple[bytes, tuple[int, ...]] | None = None
 
-    def _native(self) -> None:
+    def _native(self, *, account_cleanup: bool = False) -> None:
         owner = self.owner
         owner.cutoff.remaining()
         owner.cutoff.require_fence()
         owner.cutoff._require_original_peer()
         owner._require_records()
         controller = OwnedService(self.io, owner.original.ownership.service)
-        controller.observe_cleanup(owner.original.ownership.native)
+        controller.observe_cleanup(owner.original.ownership.native, account_cleanup=account_cleanup)
         recovery = OriginalDeathRecovery(owner.cutoff, owner.native_journal, native_cleanup=True)
         current = recovery.transport.observe_cleanup(owner.native)
         recovery._original_gone(current.boot_id)
         owner.cutoff._require_original_peer()
         if recovery.transport.observe_cleanup(owner.native) != current:
             raise RetirementUncertain()
-        controller.observe_cleanup(owner.original.ownership.native)
+        controller.observe_cleanup(owner.original.ownership.native, account_cleanup=account_cleanup)
         recovery._original_gone(current.boot_id)
         owner.cutoff.remaining()
+
+    def require_removed(self, *, account_cleanup: bool = False) -> None:
+        """Read back actual denied-trust removal, never infer it from intent.
+
+        Used by final account disposition after the original trust lock/root
+        are gone. The identity bridge still requires independent current native
+        quiescence and original-peer death, including after user removal.
+        """
+        self._native(account_cleanup=account_cleanup)
+        members = self._load()
+        cleanup = _DeniedMembers(self.owner, members,
+            lambda: self._native(account_cleanup=account_cleanup))
+        if any(value is not None for value in cleanup._empty_directories().values()):
+            raise RetirementUncertain()
+        self._native(account_cleanup=account_cleanup)
 
     def _binding(self) -> dict:
         owner = self.owner

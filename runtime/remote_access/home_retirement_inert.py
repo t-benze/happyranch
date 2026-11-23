@@ -119,7 +119,8 @@ class InertRetirement:
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 
-    def require(self, *, disabled: bool = False, cleanup: bool = False, native_cleanup: bool = False) -> None:
+    def require(self, *, disabled: bool = False, cleanup: bool = False, native_cleanup: bool = False,
+                account_cleanup: bool = False) -> None:
         """Read back original inert lineage and current quiescence every time."""
         try:
             io, fence = self.journal.io, self.journal.fence
@@ -133,6 +134,7 @@ class InertRetirement:
                            for props in self.native.properties.values())
                     or cleanup and not disabled
                     or native_cleanup and not cleanup
+                    or account_cleanup and not native_cleanup
                     or any(HomeRetirement(io)._present(STATE_DIRECTORY + '/' + name) for name in _ACTIVE_RECORDS)):
                 raise RetirementUncertain()
             managed = ManagedCleanup(self.journal, self.original, before_effect=lambda: None)
@@ -171,7 +173,7 @@ class InertRetirement:
             members()
             controller = OwnedService(io, self.original.ownership.service)
             if native_cleanup:
-                controller.observe_cleanup(self.original.ownership.native)
+                controller.observe_cleanup(self.original.ownership.native, account_cleanup=account_cleanup)
             else:
                 controller._same_members(self.original.ownership.native, controller.observe(stopped=True, disabled=True))
             transport = self.native_journal.transport
@@ -181,6 +183,32 @@ class InertRetirement:
             empty_authority()
             members()
             fence.require(io)
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def retire_account(cls, io: ManagedInstaller, fence: RetirementFence) -> str:
+        """Finish dedicated-account disposition after proven inert cleanup.
+
+        Historical and current empty authority/native quiescence remain required
+        after each account effect. Original records survive for partial recovery.
+        """
+        from runtime.remote_access.home_retirement_account import AccountDisposition
+        from runtime.remote_access.home_retirement_cleanup import require_cleanup_absent
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def native() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True, account_cleanup=True)
+            def require() -> None:
+                require_cleanup_absent(journal, original, owner.native, before_effect=native)
+                if any(value is not None for value in InertConnectorCleanup(journal, original,
+                        before_effect=native)._empty_directories().values()):
+                    raise RetirementUncertain()
+                native()
+            return AccountDisposition(journal, original, before_effect=require).retire()
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

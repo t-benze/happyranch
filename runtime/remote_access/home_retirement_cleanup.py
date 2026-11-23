@@ -323,3 +323,26 @@ class UnitCleanup(PrivateCleanup):
 
     def _inventory(self) -> LegacyPrivateMembers:
         return self._units
+
+
+def require_cleanup_absent(journal: RetirementJournal, original: OriginalInventory,
+                           native: ManagedObservation, *, before_effect: Callable[[], None]) -> None:
+    """Read saved-original absence before account disposition; remove nothing.
+
+    Independent current native/cutoff proof remains mandatory. This does not
+    adopt missing domains as exclusion or permit a remaining obsolete artifact.
+    """
+    from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion
+    before_effect()
+    for owner in (PrivateCleanup, ManagedCleanup):
+        cleanup = owner(journal, original, before_effect=before_effect)
+        if any(value is not None for value in cleanup._empty_directories().values()):
+            raise RetirementUncertain()
+    for cleanup in (ExecutableCleanup(journal, original, before_effect=before_effect),
+            UnitCleanup(journal, original, native, before_effect=before_effect)):
+        if any(value is not None for value in cleanup._observe().values()):
+            raise RetirementUncertain()
+    auxiliary = AuxiliaryExclusion(journal, original, cleanup=True, retirement_proof=before_effect)
+    if any(value is not None for value in auxiliary._original_members().values()):
+        raise RetirementUncertain()
+    before_effect()
