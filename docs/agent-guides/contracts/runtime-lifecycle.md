@@ -832,14 +832,28 @@ include both inventories. Dynamic add refuses a retained held slug and never
 constructs a replacement to clear it. An idle local DB close does not settle an
 external ordinary writer or its durable UNKNOWN evidence.
 Startup holds an org when its native writer history has any non-`settled` record
-or an ordinary publication journal is active. The single exception is the
-THR320seq477 historical sweep record (`historical_disk_sweep`): `unknown`,
-publisher `disk_sweep`, empty agents AND teams, and absent from the mounted
-native owner's live writers. The nightly sweep only changes workspace scratch and
-worktrees, never startup's publication inputs. The org load check and the
-profile coordinator's `reconcile_startup` classification apply the same
-predicate. An unavailable native owner keeps every record blocking; the record
-stays UNKNOWN; it is never cleared by this startup exception.
+or an ordinary publication journal is active, subject to two bounded exceptions.
+The THR320seq477 historical sweep record (`historical_disk_sweep`) is exempt when
+`unknown`, publisher `disk_sweep`, empty agents AND teams, and absent from the
+mounted native owner's live writers. The nightly sweep only changes workspace
+scratch and worktrees, never startup's publication inputs. The org load check and
+the profile coordinator's `reconcile_startup` classification apply the same
+historical-sweep predicate.
+The profile-remove exception accepts only an `unknown` record from the exact
+production publisher `profile:remove_runtime_executor_profile` or
+`profile:remove_adapter_entry`, with empty agents AND teams and absent from the
+mounted native owner's live writers. The local active journal must be the same
+`forward_recovery_required` remove invocation's prepared profile-coordinator
+journal with a valid original publication binding. Coordinator reconciliation
+additionally validates the complete original same-profile group, every captured
+mirror in `forward_recovery_required`, and every original publication binding.
+Startup defers synchronization of that component to explicit rebind; its fence
+remains until the existing finalizer can publish the coherent closure. This
+exception does not apply on a later boot without that exact active forward
+remove/journal binding. Other unsettled writers, ordinary or mismatched journals,
+mixed-profile invocations and partially forward groups retain their holds.
+An unavailable native owner keeps every record blocking. Both exceptions preserve
+the UNKNOWN history; neither settles or clears the native record.
 A held org can be released only by explicit Founder-authorized settlement with
 `scripts/settle_native_writer.py --runtime-root R --org ORG --writer-id ID
 --justification TEXT [--apply]` after verifying the failed writer left no
