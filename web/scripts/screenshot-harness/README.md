@@ -115,7 +115,11 @@ await modeCProp({
 
 - Viewport defaults to **1440×900** for app modes — the shell is desktop-only
   (MEM-004). Standalone modes default to a small strip.
-- `happyranch artifacts put` defaults to the wrong org in the FE workspace —
-  always pass `--org happyranch` when publishing evidence (MEM-010).
+- Save routine/automatic screenshots, logs and QA/review evidence in
+  `output/<task_id>/`, report `output_dir`, and retrieve via `happyranch recall`.
+  For binary handoff, upload a fresh task attachment with
+  `happyranch attach-upload --org happyranch --as-agent <your_agent_id> --file /absolute/source`
+  and use decision attachments. Shared Artifacts are reserved for persistent
+  downloadable deliverables under the [Shared Artifacts contract](../../../docs/agent-guides/contracts/shared-artifacts.md).
 - This is dev/test **tooling**, not shipped app code. It touches nothing under
   `protocol/`, the permission model, auth, or the DB schema.

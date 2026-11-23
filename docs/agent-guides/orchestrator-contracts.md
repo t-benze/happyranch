@@ -4640,13 +4640,19 @@ are preserved. Old schema readers do not enforce this new budget policy.
 Stop tails use the captured winning owner and recheck before initiation. Existing
 external cross-process/cross-await job, cleanup and notification limits remain;
 source inspection supplies no behavioral or automatic-startup coverage.
-Keep task-only evidence in output/<actual-task-id>, report output_dir and use
-supported recall. Do not reattach an already-claimed maker key to a reviewer.
-For a distinct attachment handoff upload a fresh authorized copy with
+Keep task-only evidence, including routine/automatic screenshots, logs, QA
+evidence and review packets, in `output/<actual-task-id>/`, report `output_dir`
+and use `happyranch recall`.
+Do not reattach an already-claimed maker key to a reviewer.
+For a distinct binary handoff upload a fresh authorized copy with
 `happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source`
-within the actual authorized environment (upload has no --session-id flag).
+within the actual authorized environment (upload has no --session-id flag), then
+use the returned `storage_key` in decision attachments.
 Inherited access grants reading, not another claim. Never upload task-only
 logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
+Persistent downloadable deliverables instead follow the metadata and bounded
+retention rules in the [Shared Artifacts contract](contracts/shared-artifacts.md);
+daily expiry/notices enforcement remains pending B/D rollout.
 
 
 `try_delegate` and `try_delegate_many` take the original owned report claim.

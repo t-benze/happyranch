@@ -143,18 +143,32 @@ scripts/happyranch kb reindex
 
 ## Shared Artifacts
 
-Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Supports nested keys with '/' path separators for logical folders. Persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
+Org-wide files at `<runtime>/orgs/<slug>/artifacts/` follow the
+[Shared Artifacts contract](../../docs/agent-guides/contracts/shared-artifacts.md).
+Use only for deliverables someone will fetch after the task closes AND that must
+travel as downloadable files (final PDFs, reusable exports or reference sources).
+Routine/automatic screenshots, logs, QA evidence and review packets go to
+`output/<task_id>/`, reported as `output_dir` and retrieved via `happyranch recall`.
+Binary handoff uses a fresh `happyranch attach-upload --org <slug> --as-agent <your_agent_id> --file /absolute/source`
+and decision attachments, never Shared Artifacts as an ownership workaround.
 
 ```bash
-scripts/happyranch artifacts put <local-path> --agent <you> [--name <name>] [--org <slug>]
-scripts/happyranch artifacts list [--org <slug>]
-scripts/happyranch artifacts get <name> --output <local-path> [--org <slug>]
+scripts/happyranch artifacts put FILE --agent ID --task TASK-ID --purpose "Final reusable report" --retention default --org <slug>
+scripts/happyranch artifacts put FILE --agent ID --thread THR-ID --purpose "Design source" --retention reference --reason "Source for planned revisions" --org <slug>
+scripts/happyranch artifacts list --available-only --org <slug>
+scripts/happyranch artifacts get NAME --output PATH --generation N --org <slug>
+scripts/happyranch artifacts renew NAME --agent ID --continuing-use TEXT --expires-at UTC --org <slug>
+scripts/happyranch artifacts restore NAME --agent ID --continuing-use TEXT --expires-at UTC --org <slug>
 ```
 
+- Put requires permanent owning agent ID, exactly one task/thread origin, purpose and retention. Optional `--expires-at UTC` shortens a grant; use the same `--operation-id UUID` for an exact retry.
+- Default / design-reference grants: 90 / 180 days; reference needs a named owner and reason. Renew/restore requires stated continuing use and a new expiry within the same maximum; get/download never renews. No permanent exemption.
+- Explicit `threads ... --shared` derives owner=composer permanent agent ID, origin=real thread ID, purpose `thread attachment`, default retention and upload/bind +90 days. Do not use it for routine evidence.
+- Org quota: 5,000,000,000 bytes, 80% alert. Uploads exceeding quota receive a clear error; downloads keep working. Expired/recoverable/deleted names explain date, owner and reason rather than a silent 404.
+- Daily expiry/notices and 7-day notice/recovery enforcement remain pending B/D rollout.
 - Names may use '/' as a path separator for logical folders. Each segment must match `[A-Za-z0-9._-]+`; max 200 chars total.
 - Size cap: 10 MB per file. Larger uploads return HTTP 413.
-- `put` is idempotent (overwrites by default). No version history.
-- `put` is audited (`action="artifact_put"`); `list` and `get` are not.
+- `put` journals/audits generations; exact retry reuses its operation ID. Replacement requires an active name and verified absence of live dependencies; B reference proof is pending. Retained unavailable names cannot be reused; generations retain metadata, not a promise of prior bytes.
 - All access goes through `happyranch` — direct filesystem writes don't work uniformly across Claude/Codex/Opencode executors (sandboxes block writes outside the agent workspace).
 - Not the KB. KB is for typed knowledge (slug + frontmatter); artifacts are opaque blobs.
 

@@ -9,6 +9,20 @@ is normative. This guide explains its task output hygiene block and gives
 examples. Quoted rules below come from that block; examples do not change
 retention classes, windows or citation safeguards.
 
+Routine/automatic screenshots, logs, QA evidence and review packets belong in
+`output/<task_id>/`. Report that relative path as `output_dir`; subsequent readers
+use `happyranch recall --org <slug> <task_id>` (with `--fetch-output` for record
+bodies). For binary handoff to another agent, upload a fresh authorized copy with
+`happyranch attach-upload --org <slug> --as-agent <your_agent_id> --file /absolute/source`
+and put the returned `storage_key` in decision attachments. Never reuse an
+already-claimed key or use Shared Artifacts as an ownership workaround.
+
+Reserve Shared Artifacts for deliverables someone will fetch after the task
+closes AND that must travel as downloadable files, with complete metadata and
+bounded retention. The [Shared Artifacts contract](contracts/shared-artifacts.md)
+owns that policy; its daily expiry/notices enforcement remains pending B/D rollout.
+This does not change task-output hygiene or require uploading evidence.
+
 ## Keep the work outside output/
 
 Output should let the next reader understand what happened without recreating

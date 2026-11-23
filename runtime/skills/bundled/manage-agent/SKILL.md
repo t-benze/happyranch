@@ -151,6 +151,12 @@ clears the old executor-specific model and effort when omitted; explicit
 `model` / `reasoning_effort` values (or null) select (or clear) overrides.
 An unchanged executor preserves omitted model/effort, as do unrelated writes.
 
+Supported enrollment/update/release bootstrap paths regenerate the Shared Artifacts
+instructions from `workspace_adapters.py::_shared_artifacts_section`; the
+[Shared Artifacts contract](../../../../docs/agent-guides/contracts/shared-artifacts.md)
+owns the persistent-file/task-output policy. Do not hand-edit generated workspace
+instructions or materialized skills, or regenerate live workspaces merely for doc parity.
+
 `executor` is a registered profile: built-ins `claude`, `codex`, `opencode`, `pi`,
 or custom profiles whose explicit `command_adapter_id: custom-adapter:<id>`
 resolves to a registered, conformance-passed, founder-approved adapter.

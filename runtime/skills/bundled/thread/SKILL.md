@@ -198,23 +198,48 @@ Or inline:
 The founder (web UI / bearer token) may also list/download without these
 proofs. Agent callers must provide both `agent` and `invocation_token`.
 
-**Explicit shared-artifact escape hatch (for cross-task handoffs):**
+**Persistent downloadable shared deliverables:**
 
-When you need a file to be visible across tasks or threads, use the pre-upload
-pattern with `--shared`:
+Use Shared Artifacts only when someone will fetch the file after the originating
+task closes AND it must travel as a downloadable file. The
+[Shared Artifacts contract](../../../../docs/agent-guides/contracts/shared-artifacts.md)
+owns metadata, retention and rollout policy. Routine/automatic screenshots, logs,
+QA evidence and review packets go to `output/<task_id>/`, reported as `output_dir`
+and retrieved via `happyranch recall`. For binary handoff to another task, use a
+fresh `happyranch attach-upload --org <slug> --as-agent <your permanent agent ID> --file /absolute/source`
+and decision attachments; never use Shared Artifacts as an ownership workaround.
 
-    happyranch artifacts put /tmp/file.ext --agent <your permanent agent ID> --name <artifact-name> --org <slug>
+For a persistent deliverable, pre-upload with complete metadata (exactly one of
+`--task TASK-ID` or `--thread THR-ID`):
+
+    happyranch artifacts put /tmp/report.pdf --agent <your permanent agent ID> --thread THR-ID --purpose "Final reusable report" --retention default --name <artifact-name> --org <slug>
+    happyranch artifacts put /tmp/design.zip --agent <your permanent agent ID> --task TASK-ID --purpose "Design source" --retention reference --reason "Source for planned revisions" --name <artifact-name> --org <slug>
 
 Then include the artifact reference in your reply payload:
 
-    "attachments": [{"artifact_name": "<artifact-name>", "display_name": "file.ext"}]
+    "attachments": [{"artifact_name": "<artifact-name>", "generation": 1, "display_name": "report.pdf"}]
+
+Use the actual generation returned by put. Explicit `threads ... --shared`
+uploads instead derive owner from the composer's permanent agent ID, origin from
+the real thread ID, purpose `thread attachment`, default retention and expiry at
+upload/bind +90 days. Compose allocates the real thread ID and binds in the same
+transaction; do not invent an origin before compose. Do not use `--shared` for
+routine evidence. Reference-class sharing uses the metadata-complete put above.
 
 Recipients download shared-artifact attachments with:
 
-    happyranch artifacts get <artifact-name> --output /tmp/file.ext --org <slug>
+    happyranch artifacts get <artifact-name> --generation 1 --output /tmp/report.pdf --org <slug>
+
+Default / design-reference grants are 90 / 180 days; reference needs a named
+owner and reason. Renew/restore requires stated continuing use and a new expiry
+within the same maximum. Downloads never renew; there is no permanent exemption.
+The org quota is 5,000,000,000 bytes with an 80% alert; quota refusal gives a clear
+error and downloads keep working. Expired/recoverable/deleted names explain the
+date, owner and reason rather than silently returning 404. Daily expiry/notices
+and 7-day notice/recovery enforcement remain pending B/D rollout.
 
 Legacy shared artifact refs (using `artifact_name`) continue to work for
-existing payloads.
+existing payloads, subject to availability and explainable lifecycle responses.
 
 ### Decline
 

@@ -74,6 +74,13 @@ description: Use this skill at the start of every task. Parses task_id, session_
    - Cite exact small record files (handoff, summary, verdict, receipt),
      not bare TASK folders or raw large dumps.
    - Examples: task output practice guide (`docs/agent-guides/task-output-practice.md` in the happyranch repository).
+   - Routine/automatic screenshots, logs, QA evidence and review packets stay
+     here, reported as `output_dir` and retrieved via `happyranch recall`.
+     Binary handoff uses a fresh task attachment (see the ownership boundary
+     below). Reserve Shared Artifacts for deliverables needed after task closure
+     that must travel as downloadable files, with complete metadata and bounded
+     retention per the [Shared Artifacts contract](../../../../docs/agent-guides/contracts/shared-artifacts.md).
+     Daily expiry/notices remain pending B/D rollout; this is no upload requirement.
    - For your **own terminal tasks only**, after 14 days remove regenerable
      leftovers. Delete log, JSON and stdout/stderr files over 1 MB (including
      `.gz` variants) once the whole task tree that wrote them has been terminal
