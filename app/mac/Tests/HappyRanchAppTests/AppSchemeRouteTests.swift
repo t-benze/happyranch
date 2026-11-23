@@ -2,6 +2,33 @@ import XCTest
 @testable import HappyRanchApp
 
 final class AppSchemeRouteTests: XCTestCase {
+    func testAdmissionDiagnosticRetainsOnlyClosedResultTypesAndPageFacts() {
+        let token = String(repeating: "22", count: 16)
+        let cases: [(String, Any?)] = [
+            ("nil", nil), ("null", NSNull()), ("string", token),
+            ("dictionary", ["context": token]), ("dictionary", NSDictionary()),
+            ("bool", true), ("bool", false), ("bool", NSNumber(value: true)),
+            ("number", NSNumber(value: 0)), ("number", NSNumber(value: 1)),
+            ("number", 42), ("other", [token]), ("other", ())
+        ]
+        for (expected, raw) in cases {
+            var diagnostic = AppSchemeAdmissionDiagnostic()
+            diagnostic.contextResult = AppSchemeAdmissionDiagnostic.resultType(raw)
+            diagnostic.bindResult = AppSchemeAdmissionDiagnostic.resultType(raw)
+            diagnostic.diagnosticsResult = AppSchemeAdmissionDiagnostic.resultType(raw)
+            diagnostic.recordPageFacts(raw)
+            XCTAssertEqual(diagnostic.contextResult, expected)
+            XCTAssertTrue(diagnostic.description.contains("nativeResults={context=\(expected), bind=\(expected), diagnostics=\(expected)}"))
+            XCTAssertFalse(diagnostic.description.contains(token))
+        }
+        var diagnostic = AppSchemeAdmissionDiagnostic()
+        diagnostic.recordPageFacts(["bootstrap": token, "readyState": "complete", "unknown": token])
+        XCTAssertEqual(diagnostic.pageFacts.components(separatedBy: ", ").count, 15)
+        XCTAssertTrue(diagnostic.pageFacts.contains("bootstrap=invalid"))
+        XCTAssertTrue(diagnostic.pageFacts.contains("readyState=complete"))
+        XCTAssertFalse(diagnostic.description.contains(token))
+    }
+
     func testOwnerReceiptStoresProtectionAndDocumentLossRetainsUncertainty() throws {
         var owners = AppSchemeOwnerSummary()
         XCTAssertFalse(owners.allowsNavigation, "Missing receipt is not clean clearance")

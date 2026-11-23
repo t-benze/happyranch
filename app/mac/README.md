@@ -82,10 +82,20 @@ the exact app protocol/host matches, top-frame and secure-context flags,
 WebKit/handler/postMessage and crypto/randomness types, and document readiness.
 Throwing lookups are explicit. Native retains only closed keys/values, with no
 context token, arbitrary page strings, URL paths/queries or JavaScript error
-messages; it checks document/view identity across this diagnostic read. A missing
-marker distinguishes unobserved injection from an observed guard refusal or
-interrupted script stage. Build 59 did not capture these facts, so its missing
-context cause remains unproven; the next authorized Mac build must attribute it.
+messages; it checks document/view identity across this diagnostic read. Each
+native context, bind and diagnostic evaluation also records only its result
+class: nil, null, string, dictionary, number, bool, other or threw (with
+not-attempted/in-flight lifecycle markers). A missing bootstrap marker can then
+be distinguished from an unusable native result.
+
+Admission and its native tests use WebKit's value-returning async
+`callAsyncJavaScript(_:arguments:in:contentWorld:)`, targeting the main frame
+(`in: nil`) in `.page`. The callback API's second `in:` label instead returns
+Swift `Void` when its default nil handler is used; `try await` does not select
+the async overload. That mismatch explains build 60's missing context and all
+15 invalid page facts. Actual Mac evaluation/admission remains unproven until
+the next reviewed-head build. Status emission intentionally keeps the explicit
+nil callback because it consumes no result.
 
 `AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
 32 requests (two with bodies), 64 MiB bodies and the native target generation.

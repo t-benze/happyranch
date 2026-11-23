@@ -4195,8 +4195,14 @@ registry/save-receipt gate under Node 24: pending summary delivery, waiting for
 native receipt and refusal of an invalid receipt. The same probe exercises
 bootstrap diagnostics for missing injection, origin/top-frame refusal, throwing
 handler lookup, missing randomness and context-definition failure without
-recording the context token. It does not establish native
-owner retention. No retired Python units run. No shared web source changed in MAC-1;
+recording the context token. It cannot exercise Swift overload selection or
+native result bridging. The focused native route suite separately checks closed
+result classes/redaction (including Boolean versus numeric NSNumber and Void),
+and the loader table requires string context and Boolean bind results from the
+value-returning `contentWorld:` async API. Failure traces retain the result
+class for context, bind and diagnostics alongside the 15 closed page facts.
+Portable execution does not establish native owner retention or admission.
+No retired Python units run. No shared web source changed in MAC-1;
 Web static analysis remains part of `scripts/local_ci.sh all`.
 
 `python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`

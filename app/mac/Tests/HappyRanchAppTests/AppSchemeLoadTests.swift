@@ -104,6 +104,8 @@ final class AppSchemeLoadTests: XCTestCase {
                 XCTAssertEqual(loaded, ready ? [selected] : [], detail(health))
                 XCTAssertEqual(failed, ready ? [] : [selected], detail(health))
                 XCTAssertGreaterThanOrEqual(transport.healthInvocations, 1, detail("Every row must reach health admission"))
+                XCTAssertEqual(scheme.documentAdmission.contextResult, "string", detail())
+                XCTAssertEqual(scheme.documentAdmission.bindResult, "bool", detail())
                 if !ready {
                     XCTAssertEqual(failures.count, 1, detail("Exactly one health admission refusal"))
                     XCTAssertEqual(failures.first?.stage, .readiness, detail("Navigation failure cannot satisfy a health refusal"))
@@ -124,7 +126,7 @@ final class AppSchemeLoadTests: XCTestCase {
                           });
                           return response.status;
                         } catch { return 'failed'; }
-                        """, arguments: ["generation": scheme.generation], in: nil, in: .page)
+                        """, arguments: ["generation": scheme.generation], in: nil, contentWorld: .page)
                     XCTAssertEqual(transport.mutations, 1, detail("Must reach the post-forward failure input"))
                     XCTAssertEqual(outcome as? String, "failed", detail("No headers is not proof of no send"))
 
@@ -132,7 +134,7 @@ final class AppSchemeLoadTests: XCTestCase {
                     // WebView.updateNSView after HomeInviteModel's periodic check.
                     phase = "ready: draft and pending mutation"
                     let context = try await view.callAsyncJavaScript("window.unsentDraft = 'unsent task brief'; window.pendingResult = fetch('/api/v1/mac-qualification/pending', {method:'POST', headers:{'X-HappyRanch-Target':generation}, body:'{}'}).then(r => r.text(), () => 'failed'); return window.__hrAppContext;",
-                        arguments: ["generation": scheme.generation], in: nil, in: .page) as? String
+                        arguments: ["generation": scheme.generation], in: nil, contentWorld: .page) as? String
                     let pendingDeadline = Date().addingTimeInterval(5)
                     while transport.pending == nil && Date() < pendingDeadline { try await Task.sleep(for: .milliseconds(10)) }
                     let pending = try XCTUnwrap(transport.pending, detail())
@@ -141,9 +143,9 @@ final class AppSchemeLoadTests: XCTestCase {
                         phase = "ready: publish busy=\(busy) and retain draft/transfer"
                         let health = try AppAPIHealth(status: 200, data: Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy),\"unknown\":\(busy)}}".utf8))
                         scheme.updateReadiness(health)
-                        let status = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, in: .page)
+                        let status = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, contentWorld: .page)
                         XCTAssertEqual(status as? String, busy ? "busy" : "ready", detail())
-                        let retained = try await view.callAsyncJavaScript("return [window.__hrAppContext, window.unsentDraft];", arguments: [:], in: nil, in: .page) as? [String]
+                        let retained = try await view.callAsyncJavaScript("return [window.__hrAppContext, window.unsentDraft];", arguments: [:], in: nil, contentWorld: .page) as? [String]
                         XCTAssertEqual(retained, [try XCTUnwrap(context, detail()), "unsent task brief"], detail())
                         XCTAssertEqual(view.url, documentURL, detail())
                         XCTAssertFalse(pending.isCancelled, detail("Busy/ready must not stop an in-flight mutation"))
@@ -162,13 +164,13 @@ final class AppSchemeLoadTests: XCTestCase {
                     }
                     if case .success = await olderAdmission.result { XCTFail(detail("Superseded admission cannot succeed")) }
                     XCTAssertTrue(olderHealth.isCancelled, detail())
-                    let recoveredStatus = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, in: .page)
+                    let recoveredStatus = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, contentWorld: .page)
                     XCTAssertEqual(recoveredStatus as? String, "ready", detail("Old admission cancellation cannot replace newer readiness"))
                     XCTAssertFalse(pending.isCancelled, detail())
                     phase = "ready: original pending result"
                     pending.emit(.response(200, ["content-type": "text/plain"]))
                     pending.emit(.bytes(Data("original result".utf8))); pending.finish()
-                    let result = try await view.callAsyncJavaScript("return await window.pendingResult;", arguments: [:], in: nil, in: .page)
+                    let result = try await view.callAsyncJavaScript("return await window.pendingResult;", arguments: [:], in: nil, contentWorld: .page)
                     XCTAssertEqual(result as? String, "original result", detail())
 
                     // Real handler messages carry the sending relay's context;
@@ -178,7 +180,7 @@ final class AppSchemeLoadTests: XCTestCase {
                     let held = #"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#
                     func push(_ summary: String, context: String) async throws -> String? {
                         try await view.callAsyncJavaScript("try { await window.webkit.messageHandlers.appTransport.postMessage({context, command:'app.ownersChanged', data}); return 'accepted'; } catch { return 'rejected'; }",
-                            arguments: ["context": context, "data": summary], in: nil, in: .page) as? String
+                            arguments: ["context": context, "data": summary], in: nil, contentWorld: .page) as? String
                     }
                     func replace(_ path: String) async throws -> String {
                         phase = "ready: replacement \(path) load"
@@ -191,7 +193,7 @@ final class AppSchemeLoadTests: XCTestCase {
                         XCTAssertEqual(view.url?.path, path, detail())
                         phase = "ready: replacement \(path) admission"
                         try await scheme.admitDocument()
-                        let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
+                        let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, contentWorld: .page)
                         return try XCTUnwrap(raw as? String, detail())
                     }
                     let old = try XCTUnwrap(context, detail())

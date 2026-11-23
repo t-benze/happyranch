@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import WebKit
 import HappyRanchSupervisor
 
@@ -8,7 +9,20 @@ struct AppSchemeAdmissionDiagnostic: Sendable, CustomStringConvertible {
     var bind = "not-attempted"
     var readiness = "not-attempted"
     var pageFacts = "not-attempted"
-    mutating func recordPageFacts(_ raw: Any) {
+    var contextResult = "not-attempted"
+    var bindResult = "not-attempted"
+    var diagnosticsResult = "not-attempted"
+    static func resultType(_ raw: Any?) -> String {
+        guard let raw else { return "nil" }
+        if raw is NSNull { return "null" }
+        if raw is String { return "string" }
+        if raw is NSDictionary { return "dictionary" }
+        if let number = raw as? NSNumber {
+            return CFGetTypeID(number) == CFBooleanGetTypeID() ? "bool" : "number"
+        }
+        return "other"
+    }
+    mutating func recordPageFacts(_ raw: Any?) {
         let facts = raw as? [String: String] ?? [:]
         let types = ["undefined", "object", "function", "boolean", "number", "string", "symbol", "bigint", "threw"]
         let fields: [(String, [String])] = [
@@ -28,7 +42,9 @@ struct AppSchemeAdmissionDiagnostic: Sendable, CustomStringConvertible {
             return "\(key)=\(allowed.contains(value) ? value : "invalid")"
         }.joined(separator: ", ")
     }
-    var description: String { "context=\(contextRead), bind=\(bind), readiness=\(readiness), page={\(pageFacts)}" }
+    var description: String {
+        "context=\(contextRead), bind=\(bind), readiness=\(readiness), nativeResults={context=\(contextResult), bind=\(bindResult), diagnostics=\(diagnosticsResult)}, page={\(pageFacts)}"
+    }
 }
 
 struct AppSchemeLoadFailure: Error, Sendable, CustomStringConvertible {
@@ -227,8 +243,12 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         do {
             guard let view else { throw AppAPIError.cancelled }
             stage = .relayContextRead; diagnostic.contextRead = "in-flight"
+            diagnostic.contextResult = "in-flight"
             documentAdmission = diagnostic
-            let raw = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, in: .page)
+            // contentWorld selects the value-returning async overload. The
+            // callback overload's second `in` label returns Void without a handler.
+            let raw: Any? = try await view.callAsyncJavaScript("return window.__hrAppContext;", arguments: [:], in: nil, contentWorld: .page)
+            diagnostic.contextResult = AppSchemeAdmissionDiagnostic.resultType(raw)
             diagnostic.contextRead = raw is String ? "string-unchecked" : "missing-or-non-string"
             stage = .documentIdentityCheck
             guard document == expected, self.view === view else { throw AppAPIError.cancelled }
@@ -238,9 +258,11 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             diagnostic.contextRead = "valid"
             documentContext = context
             stage = .bind; diagnostic.bind = "in-flight"
+            diagnostic.bindResult = "in-flight"
             documentAdmission = diagnostic
-            let bound = try await view.callAsyncJavaScript("return window.__hrAppAdmit?.(context);",
-                arguments: ["context": context], in: nil, in: .page)
+            let bound: Any? = try await view.callAsyncJavaScript("return window.__hrAppAdmit?.(context);",
+                arguments: ["context": context], in: nil, contentWorld: .page)
+            diagnostic.bindResult = AppSchemeAdmissionDiagnostic.resultType(bound)
             diagnostic.bind = (bound as? Bool).map { $0 ? "true" : "false" } ?? "missing-or-non-boolean"
             stage = .documentIdentityCheck
             guard document == expected, self.view === view else { throw AppAPIError.cancelled }
@@ -253,16 +275,19 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             stage = .documentIdentityCheck
             guard document == expected, self.view === view else { throw AppAPIError.cancelled }
         } catch {
-            if diagnostic.contextRead == "in-flight" { diagnostic.contextRead = "threw" }
-            if diagnostic.bind == "in-flight" { diagnostic.bind = "threw" }
+            if diagnostic.contextRead == "in-flight" { diagnostic.contextRead = "threw"; diagnostic.contextResult = "threw" }
+            if diagnostic.bind == "in-flight" { diagnostic.bind = "threw"; diagnostic.bindResult = "threw" }
             if stage == .relayContextRead, let view, document == expected {
                 diagnostic.pageFacts = "in-flight"
+                diagnostic.diagnosticsResult = "in-flight"
                 do {
-                    let facts = try await view.callAsyncJavaScript(AppSchemeScripts.diagnostics, arguments: [:], in: nil, in: .page)
+                    let facts: Any? = try await view.callAsyncJavaScript(AppSchemeScripts.diagnostics, arguments: [:], in: nil, contentWorld: .page)
+                    diagnostic.diagnosticsResult = AppSchemeAdmissionDiagnostic.resultType(facts)
                     if document == expected, self.view === view { diagnostic.recordPageFacts(facts) }
                     else { diagnostic.pageFacts = "document-changed"; stage = .documentIdentityCheck }
                 } catch {
                     diagnostic.pageFacts = "read-threw"
+                    diagnostic.diagnosticsResult = "threw"
                     if document != expected || self.view !== view { stage = .documentIdentityCheck }
                 }
             }
