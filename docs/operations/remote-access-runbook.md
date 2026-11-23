@@ -220,8 +220,14 @@ Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, provisioning record, staged token, package, logs and account are retained.
 The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
-The separately callable `disable-headscale --layout deb` root operator entry
-and legacy uninstall remove the proven inert Headscale unit/policy/custody and
+P24 retires the ordinary installer commands `prepare-headscale` and
+`disable-headscale` for both layouts. They return non-success before installer
+construction or native effects, with “Home mode has been retired. Sign in to use
+your account's private network. Your local work is kept.” Use the canonical
+explicit retirement entry in the P24 upgrade/recovery section below; use
+`home-retirement-status --layout deb` for read-only detection.
+The programmatic preparation owner still awaits its P24 source disposition.
+Legacy uninstall's underlying cleanup removes the proven inert Headscale unit/policy/custody and
 config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
 root-only publication receipt,
 keeping package payload/notices. The staged-profile uninstall refusal remains;

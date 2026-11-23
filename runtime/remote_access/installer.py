@@ -4608,18 +4608,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("provision requires --connector-config, --sidecar-config, --policy-file and --release-user")
     if args.command != "provision" and any(inputs.values()):
         parser.error("provisioning inputs are only valid with provision")
+    if args.command in ("prepare-headscale", "disable-headscale"):
+        from runtime.remote_access.home_retirement import MESSAGE
+        print(MESSAGE, file=sys.stderr)
+        return 1
     try:
         installer = ManagedInstaller(layout=args.layout)
         if args.command == "home-retirement-status":
             result = installer.home_retirement_status()
             print(json.dumps(result, sort_keys=True))
             return 1 if result["state"] == "migration pending" else 0
-        elif args.command == "prepare-headscale":
-            if args.layout != "deb":
-                raise headscale.HeadscaleServiceError("deb-layout-required")
-            print(json.dumps(installer.prepare_headscale(), sort_keys=True))
-        elif args.command == "disable-headscale":
-            print(json.dumps(installer.cleanup_headscale(), sort_keys=True))
         elif args.command == "provision":
             installer.provision(**inputs)
         elif args.command == "install":

@@ -93,16 +93,18 @@ StandardError=null
 
 class Fixture(LegacyNativeFixture):
     def prepare(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> tuple[int, str]:
-        with monkeypatch.context() as patch:
-            patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
-            try:
-                code = module.main(["prepare-headscale", "--layout", "deb"])
-            except SystemExit as error:
-                code = error.code
-        output = capsys.readouterr()
-        return code, output.out + output.err
+        return self.cleanup(monkeypatch, capsys, "prepare-headscale")
 
     def cleanup(self, monkeypatch, capsys, command="disable-headscale"):
+        # Ordinary home CLI entries are retired. Keep these existing owner-level
+        # custody assertions until those owners receive their P24 disposition.
+        if command in ("prepare-headscale", "disable-headscale"):
+            try:
+                result = (self.installer.prepare_headscale() if command == "prepare-headscale"
+                          else self.installer.cleanup_headscale())
+            except (module.InstallerError, home.HeadscaleServiceError) as error:
+                return 1, f"error: {error}\n"
+            return 0, json.dumps(result, sort_keys=True) + "\n"
         with monkeypatch.context() as patch:
             patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
             try:

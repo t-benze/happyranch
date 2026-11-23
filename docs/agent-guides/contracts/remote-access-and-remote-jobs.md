@@ -1466,16 +1466,22 @@ separate, unexecuted obligations of the wiring/native tracks.
 
 ### Inert Linux Headscale custody prefix (THR-327 slice 3b-2f-1)
 
-The root operator entry `python -m runtime.remote_access.installer
-prepare-headscale --layout deb` calls `ManagedInstaller.prepare_headscale`.
-It only prepares fixed local custody and an inert unit. It never runs Headscale,
+P24 retires the ordinary `prepare-headscale` and `disable-headscale` installer
+commands for both layouts. They return non-success and the exact home-retirement
+message before constructing an installer or observing/changing native state.
+Use the canonical explicit retirement entry below for upgrade/recovery; status
+remains read-only. The programmatic preparation/cleanup owners described in this
+historical section remain pending their separate P24 source disposition.
+
+Historically, `ManagedInstaller.prepare_headscale` prepared fixed local custody
+and an inert unit. It never runs Headscale,
 creates database users, enables/starts/reloads a unit, or changes the staged
 connector bundle. Both exact `home control binding not provisioned; requires
 slice 3b-2` refusals remain for inert staging; E2a below admits only the validated
 already-ready ordinary profile and fixed-account foreground serving. E2b below
 supplies uncalled first unit publication/selection; the ordinary installer default home_transport stays false.
-The separate root operator `disable-headscale --layout deb` entry and legacy
-`uninstall --layout deb` call `ManagedInstaller.cleanup_headscale`. They stop and
+Legacy `uninstall --layout deb` still calls `ManagedInstaller.cleanup_headscale`.
+The underlying cleanup owner stops and
 disable only the exact owned Headscale unit, then remove the inert custody and
 receipted identity as below. The existing staged-profile uninstall refusal is
 unchanged; the explicit Headscale cleanup entry does not activate that profile.

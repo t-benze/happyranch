@@ -317,3 +317,28 @@ def test_installer_status_cli_is_read_only(fixture: Fixture, monkeypatch: pytest
     assert json.loads(captured.out) == dict(state="migration pending" if pending else "fresh",
         detail="legacy evidence retained" if pending else "no legacy evidence", message=COPY)
     assert fixture.snapshot() == before
+
+
+@pytest.mark.parametrize("command", ["prepare-headscale", "disable-headscale"])
+@pytest.mark.parametrize("layout", ["source", "deb"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_retired_operator_commands_have_no_effect(fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str], command: str,
+                                                 layout: str, legacy: bool) -> None:
+    fixture.file("home/operator/work.txt")
+    if legacy:
+        fixture.file(STATE + "/home-activation.json")
+        fixture.file("etc/happyranch/headscale/config.yaml")
+    constructors = []
+
+    def construct(**kwargs: object) -> installer.ManagedInstaller:
+        constructors.append(kwargs)
+        return fixture.io
+
+    monkeypatch.setattr(installer, "ManagedInstaller", construct)
+    before = fixture.snapshot()
+    assert installer.main([command, "--layout", layout]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == COPY + "\n"
+    assert constructors == [] and fixture.calls == []
+    assert fixture.snapshot() == before
