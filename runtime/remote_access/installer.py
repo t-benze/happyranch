@@ -339,7 +339,9 @@ class ManagedInstaller:
     def _inventory_units(
         self, connector: dict, *, removing_units: set[str] | None = None,
         observed_units: dict[str, str] | None = None,
+        reload_transaction: bytes | None = None,
     ) -> tuple[set[str], dict[str, dict[str, str]]]:
+        reload_removed = self._reload_removed_units(reload_transaction) if reload_transaction is not None else ()
         if connector and not isinstance(connector.get("managed"), dict):
             raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
         expected = observed_units or managed_units(self.layout, connector_config=connector)
@@ -394,6 +396,13 @@ class ManagedInstaller:
             # exact current/completed unit intent permits a cached OWN fragment.
             cached = (not loaded and name in (removing_units or set())
                       and props.get("LoadState") == "loaded" and props.get("FragmentPath") == path)
+            # Only the persisted reload intent admits an absent retained failure.
+            # Ordinary inventory and retirement keep the exact inactive gate below.
+            if (name in reload_removed and not loaded and props.get("ActiveState") == "failed"
+                    and props.get("NeedDaemonReload") == "no"):
+                self._reload_unit_state(name)
+                properties[name] = props
+                continue
             if (props.get("FragmentPath") != (path if loaded or cached else "")
                     or props.get("DropInPaths") != ""
                     or props.get("NeedDaemonReload") not in ({"no", "yes"} if cached else {"no"})
@@ -420,6 +429,33 @@ class ManagedInstaller:
                     raise
                 raise InstallerError(path) from None
         return present, properties
+
+    def _reload_removed_units(self, transaction: bytes) -> tuple[str, ...]:
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
+        record = self._json(transaction)
+        if record["phase"] != "replacement-reload":
+            raise InstallerError("reset-failed requires the replacement reload intent")
+        # This phase follows every fixed removal intent in both v1 and v2.
+        # Neither journal payloads nor callers supply service-manager arguments.
+        return tuple(name for name in UNITS if any(
+            kind == "unit" and relative == f"{_UNIT_DIR}/{name}"
+            for _, relative, kind in _UNIT_REMOVALS))
+
+    def _reload_unit_state(self, name: str) -> str:
+        if name not in UNITS:
+            raise InstallerError("reset-failed requires a fixed managed unit")
+        try:
+            props = self.manager.show_properties(name, (
+                "LoadState", "FragmentPath", "DropInPaths", "MainPID", "ControlPID", "Job", "ActiveState",
+            ))
+        except (ServiceManagerError, OSError):
+            raise InstallerError(str(self.root / _UNIT_DIR / name)) from None
+        if (props.get("LoadState") != "not-found" or props.get("FragmentPath") != ""
+                or props.get("DropInPaths") != "" or props.get("MainPID") != "0"
+                or props.get("ControlPID") != "0" or props.get("Job") != ""
+                or props.get("ActiveState") not in {"failed", "inactive"}):
+            raise InstallerError(str(self.root / _UNIT_DIR / name))
+        return props["ActiveState"]
 
     def inventory(self) -> InstallInventory:
         """Classify only fixed managed destinations without executing old inputs.
@@ -1167,7 +1203,8 @@ class ManagedInstaller:
         if self._check_enrollment():
             raise InstallerError("replacement enrollment reappeared")
         units, _ = self._inventory_units({"managed": {"profile": "linux-managed-identity-v1"}},
-                                         removing_units=set() if record["phase"] == "replacement-retire-journal" else set(UNITS))
+                                         removing_units=set() if record["phase"] == "replacement-retire-journal" else set(UNITS),
+                                         reload_transaction=transaction if record["phase"] == "replacement-reload" else None)
         if units:
             raise InstallerError("replacement units reappeared")
         for relative, entries in (
@@ -1275,6 +1312,22 @@ class ManagedInstaller:
                         raise InstallerError("replacement closure inventory changed: " + ", ".join(inventory.paths))
                     revalidate()
                     self.manager.daemon_reload()
+                    for name in self._reload_removed_units(transaction):
+                        # Inactive units need no effect. Retained failures get a
+                        # fresh full no-fragment/no-process/no-job admission.
+                        if self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") == "inactive":
+                            continue
+                        self._check_replacement_transaction(parent, transaction)
+                        self._replacement_custody(transaction)
+                        if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
+                            raise InstallerError("replacement reload inventory changed before reset")
+                        revalidate()
+                        if self._reload_unit_state(name) == "failed":
+                            self.manager.reset_failed(name)
+                    # Never publish retirement while any absent unit is failed.
+                    # Use the unchanged ordinary inactive check, without the
+                    # reload-only continuation admission or cached fragments.
+                    self._inventory_units({"managed": {"profile": "linux-managed-identity-v1"}})
             record["phase"] = _CLOSURE_PHASES[0] if record["phase"] == "replacement-staged" else _CLOSURE_PHASES[1]
             updated = json.dumps(record, sort_keys=True).encode()
             self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,

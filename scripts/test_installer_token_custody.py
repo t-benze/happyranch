@@ -819,6 +819,10 @@ class LifecycleManager(FakeManager):
         if not self.sticky:
             self.states[unit] = "inactive"
 
+    def reset_failed(self, unit: str) -> None:
+        self.calls.append(("reset-failed", unit))
+        self.states[unit] = "inactive"
+
 
 def lifecycle_fixture(fixture: Fixture) -> LifecycleManager:
     manager = LifecycleManager(fixture.root)
@@ -3729,6 +3733,113 @@ def staged_for_closure(fixture: Fixture) -> tuple[LifecycleManager, Path]:
     assert record["version"] == 1 and record["phase"] == "replacement-staged"
     manager.calls.clear()
     return manager, parent
+
+
+@pytest.mark.parametrize("already_reloaded", [False, True])
+@pytest.mark.parametrize("version", [1, 2])
+def test_thr327_closure_with_retained_failed_unit(
+        fixture: Fixture, monkeypatch: pytest.MonkeyPatch, already_reloaded: bool, version: int) -> None:
+    """Removed failed units remain failed after daemon-reload on the founder host."""
+    if version == 1:
+        manager, parent = staged_for_closure(fixture)
+    else:
+        manager, parent, _ = prepared_replacement(fixture)
+        (parent / "install-transaction.json").unlink()
+        candidate = fixture.installer.replacement_inventory()
+        with pytest.raises(module.InstallerError, match="replacement paused after stop intent"):
+            fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
+                expected_generation=candidate.inventory_generation)
+        for _ in range(5):
+            with pytest.raises(module.InstallerError, match="replacement paused after"):
+                fixture.installer.replace_failed()
+        record = json.loads((parent / "install-transaction.json").read_bytes())
+        assert record["version"] == 2 and record["phase"] == "replacement-staged"
+        manager.calls.clear()
+    journal = parent / "install-transaction.json"
+    reload_units = manager.daemon_reload
+
+    def reload_with_failed_residue() -> None:
+        reload_units()
+        manager.states[module.UNITS[0]] = "failed"
+
+    monkeypatch.setattr(manager, "daemon_reload", reload_with_failed_residue)
+    if already_reloaded:
+        previous = journal.read_bytes()
+        record = json.loads(previous)
+        record["phase"] = "replacement-reload"
+        fixture.installer._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
+                                               fixture.installer.root_owner, 0o600, expected_transaction=previous)
+        manager.daemon_reload()
+        fresh_staging_instance(fixture)
+    before = staged_inventory(fixture)
+    try:
+        fixture.installer.replace_failed()
+    finally:
+        print(json.dumps(dict(version=version, already_reloaded=already_reloaded,
+            phase=json.loads(journal.read_bytes())["phase"] if journal.exists() else "ABSENT",
+            connector=manager.show_properties(module.UNITS[0],
+                ("LoadState", "ActiveState", "SubState", "MainPID", "ControlPID", "ControlGroup", "Job")),
+            reload_count=manager.calls.count(("reload",))), sort_keys=True))
+    assert_closed_replacement(fixture, before)
+
+
+@pytest.mark.parametrize("attack", ["MainPID", "ControlPID", "Job", "FragmentPath",
+                                   "DropInPaths", "LoadState", "ActiveState", "non-managed-name"])
+def test_thr327_reload_refuses_unexpected_unit_shape(
+        fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str) -> None:
+    manager, parent = staged_for_closure(fixture)
+    journal = parent / "install-transaction.json"
+    record = json.loads(journal.read_bytes())
+    record["phase"] = "replacement-reload"
+    if attack == "non-managed-name":
+        record["digests"]["foreign.service"] = "0" * 64
+    fixture.write(journal, json.dumps(record, sort_keys=True).encode())
+    before = journal.read_bytes()
+    manager.states[module.UNITS[0]] = "failed"
+    original = manager.show_properties
+    reached = []
+
+    def show(unit: str, properties: tuple[str, ...]) -> dict[str, str]:
+        result = original(unit, properties)
+        # Inject at the fresh reset-admission read, after all earlier custody
+        # checks, so a different earlier guard cannot own this negative case.
+        if "LoadState" in properties and "MainPID" in properties and ("reload",) in manager.calls:
+            reached.append(unit)
+            result[attack] = {"MainPID": "42", "ControlPID": "42", "Job": "42 start",
+                             "FragmentPath": "/foreign/unit", "DropInPaths": "/foreign/dropin",
+                             "LoadState": "loaded", "ActiveState": "active"}.get(attack, "")
+        return result
+
+    monkeypatch.setattr(manager, "show_properties", show)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert journal.read_bytes() == before
+    assert not any(call[0] == "reset-failed" for call in manager.calls)
+    assert bool(reached) == (attack != "non-managed-name")
+
+
+@pytest.mark.parametrize("reset", ["no-op", "still-failed"])
+def test_thr327_reset_requires_inactive_before_retirement(
+        fixture: Fixture, monkeypatch: pytest.MonkeyPatch, reset: str) -> None:
+    manager, parent = staged_for_closure(fixture)
+    journal = parent / "install-transaction.json"
+    if reset == "still-failed":
+        reload_units = manager.daemon_reload
+
+        def reload() -> None:
+            reload_units()
+            manager.states[module.UNITS[0]] = "failed"
+
+        monkeypatch.setattr(manager, "daemon_reload", reload)
+        monkeypatch.setattr(manager, "reset_failed", lambda unit: manager.calls.append(("reset-failed", unit)))
+        with pytest.raises(module.InstallerError):
+            fixture.installer.replace_failed()
+        assert json.loads(journal.read_bytes())["phase"] == "replacement-reload"
+        assert manager.calls.count(("reset-failed", module.UNITS[0])) == 1
+    else:
+        fixture.installer.replace_failed()
+        assert not journal.exists()
+        assert not any(call[0] == "reset-failed" for call in manager.calls)
 
 
 def assert_closed_replacement(fixture: Fixture, before: dict[str, tuple]) -> None:

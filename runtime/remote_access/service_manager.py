@@ -144,6 +144,9 @@ class SystemdServiceManager:
     def daemon_reload(self) -> None:
         self._systemctl("daemon-reload")
 
+    def reset_failed(self, unit_name: str) -> None:
+        self._systemctl("reset-failed", unit_name)
+
     def _unit_path(self, unit_name: str) -> Path:
         return self.unit_dir / unit_name
 
