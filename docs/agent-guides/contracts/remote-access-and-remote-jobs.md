@@ -4492,6 +4492,21 @@ context cannot reconcile intentional removals or authorize selective cleanup.
 native stopped/disabled and independent cutoff readback before and after caller
 work. This supplies no final receipt, key-cleanup proof or package gate.
 
+`home_retirement_inert.InertRetirement` is the separate explicit prepared-inert
+native path. It requires validated historical inert lineage, no activation or
+live sidecar binding, original and current absence of the trust pair/lock and
+connector sockets, no saved serving peer, and fresh stopped/process-empty
+readback for the dedicated controller and every fixed managed owner. It never
+initializes a trust store or manufactures an active cutoff acknowledgement.
+Original inventory/native journals must agree; saved recovery never recaptures
+an existing record. If preparation stopped before the first native publication,
+complete original-member and native readback can finish that publication.
+Missing/torn original inventory or torn/foreign native evidence stays pending.
+Before each remaining native disable, original members, custody, native
+ownership and complete quiescence are checked again. Current native readback
+skips completed effects after a lost reply. This entry supplies no cleanup,
+account disposition, final retirement receipt or package replacement gate.
+
 `home_retirement_coordinator.ActiveRetirement` composes active pre-effect
 preparation under the same actual installer I/O and live fence. Independent
 historical lineage and native observations select the connector process; real

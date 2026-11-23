@@ -27,7 +27,7 @@ from runtime.remote_access.streams import StreamClosed
 from runtime.remote_access.pairing import PairingError
 from scripts.test_home_retirement_cutoff import RecoveryFixture, PIN
 from scripts.test_home_retirement_inventory import InventoryFixture, managed_setup, ACCOUNT_RECORD, PUBLICATION
-from scripts.test_home_retirement_service import MANAGED_UNITS, LINK, BINARY
+from scripts.test_home_retirement_service import MANAGED_UNITS, LINK, BINARY, ManagedFixture
 
 INVENTORY = STATE_DIRECTORY + '/home-retirement-inventory.json'
 NATIVE = STATE_DIRECTORY + '/home-retirement-transport.json'
@@ -35,12 +35,25 @@ FINAL = STATE_DIRECTORY + '/home-retirement.json'
 
 
 @pytest.fixture
-def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    native = RecoveryFixture(tmp_path / 'root')
+def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
+    inert = getattr(request, 'param', 'active') == 'inert'
+    native = ManagedFixture(tmp_path / 'root', home=False) if inert else RecoveryFixture(tmp_path / 'root')
     legacy = InventoryFixture(tmp_path / 'legacy-input', monkeypatch)
-    managed_setup(legacy)
-    # Overlay independent historical inputs, retaining the real trust pair,
-    # socket owner and native package fixture already present in the root.
+    managed_setup(legacy, live=not inert)
+    if inert:
+        legacy.set_unit(home=False)
+        legacy.stopped()
+        legacy.properties['UnitFileState'] = 'disabled'
+        for path in (STATE_DIRECTORY + '/home-activation.json', LINK, 'etc/happyranch/invite-issuer.json',
+                'etc/happyranch/headscale/policy.hujson',
+                *('var/lib/happyranch-connector/trust-state.json' + suffix for suffix in ('', '.anchor', '.lock'))):
+            (legacy.root / path).unlink()
+        for props in native.native.values():
+            props.update(ActiveState='inactive', SubState='dead')
+            if 'MainPID' in props:
+                props.update(MainPID='0', ControlGroup='')
+    # Overlay independent historical inputs and the native package fixture;
+    # the active variant also retains its real trust pair and serving owner.
     for source in legacy.root.rglob('*'):
         target = native.root / source.relative_to(legacy.root)
         if target.exists() or target.is_symlink():

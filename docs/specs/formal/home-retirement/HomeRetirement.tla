@@ -10,9 +10,11 @@ Observations == {"cutoff", "stop", "disable", "cleanup", "final"}
 VARIABLE s
 vars == <<s>>
 
-Init == \E owned \in {"exact", "foreign"}, exclusive \in BOOLEAN :
-  s = [fence |-> FALSE, burned |-> FALSE, denied |-> {},
-       close |-> [d \in Owners |-> "open"], original |-> "live",
+\* The inert branch abstracts separately proven empty credential/transport
+\* authority. It grants no active-to-inert transition or missing-proof fallback.
+Init == \E owned \in {"exact", "foreign"}, exclusive \in BOOLEAN, inert \in BOOLEAN :
+  s = [fence |-> FALSE, burned |-> inert, denied |-> IF inert THEN Devices ELSE {},
+       close |-> [d \in Owners |-> "open"], original |-> IF inert THEN "dead" ELSE "live",
        owner |-> owned, exclusive |-> exclusive, stopped |-> FALSE,
        disabled |-> FALSE, removed |-> {}, account |-> "present",
        receipt |-> "absent", observed |-> {}, explicit |-> FALSE,

@@ -62,6 +62,25 @@ remain real-code obligations. The trust pair/lock, native artifacts and all
 serialization domains stay retained for independent recovery. Full removal,
 account disposition and final publication still require their own owners.
 
+`home_retirement_inert.InertRetirement` separately covers authenticated
+prepared-inert native disable. Original and current activation, live binding,
+trust pair/lock, connector sockets and saved serving peer must be absent;
+the dedicated controller and every fixed managed native owner must be freshly
+stopped/process-empty. Complete original journals are reused, and an absent
+native journal can receive its first publication before effects. Native
+readback skips completed disables after interruption; original members and
+quiescence are checked again before each remaining effect. Active/unknown
+evidence cannot enter this path. Cleanup, account disposition, final receipt
+and pre-unpack integration remain unfinished.
+
+The model's additional inert initial branch abstracts these independently
+proven empty authority facts as already satisfied Denied/Closed predicates.
+Stop still requires fencing, explicit selection, ownership and fresh cutoff
+observation; no active-to-inert action exists. This is a vacuous empty-set
+mapping, not a claim that inert code performs revocation or proves death of an
+active owner. Custody, inert provenance and native absence remain real-code
+obligations. These initial-state changes have not been executed with TLC.
+
 Explicit `ActiveRetirement.from_saved` covers the pre-Burn preparation
 interruption with a complete original inventory and saved peer. It rechecks
 original members/native ownership and the same live peer before finishing an
