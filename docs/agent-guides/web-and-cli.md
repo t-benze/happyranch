@@ -6203,3 +6203,48 @@ settings. Foreign/ended/recovery SIDs, workers and retired selectors refuse.
 retain only a partial thread tail with no redelivery guarantee. No thread, wake
 or dream prompt offers the decision. See [R1b2 contracts](contracts/reusable-workflows.md#r1b2-read-only-start-composition-and-manager-guidance)
 for the input example and exact boundaries.
+
+
+## Shared Artifacts CLI/API (Slice A)
+
+The [Shared Artifacts contract](contracts/shared-artifacts.md) owns the complete
+metadata, provisional browser and transition rules. Agent/CLI upload:
+
+```text
+happyranch artifacts put FILE --agent ID (--task TASK-ID | --thread THR-ID) --purpose TEXT --retention default
+happyranch artifacts put FILE --agent ID --task TASK-ID --purpose TEXT --retention reference --reason TEXT [--expires-at UTC]
+happyranch artifacts renew NAME --agent ID --continuing-use TEXT --expires-at UTC
+happyranch artifacts restore NAME --agent ID --continuing-use TEXT --expires-at UTC
+happyranch artifacts get NAME --output PATH [--generation N]
+```
+
+POST `/artifacts` retains multipart file plus query metadata (`agent`, `task_id`
+XOR `thread_id`, `purpose`, `retention`, optional `reason`, `expires_at`, UUID
+`operation_id`). Missing metadata is422 `artifact_metadata_required` with
+`missing_fields`; invalid origin/class/reason/expiry is422
+`artifact_metadata_invalid` with field reasons. Default/reference maxima are90/180
+UTC days. Partial Founder metadata is not a provisional fallback. CLI put always
+requires metadata; retained Founder browser file/name-only requests are the sole
+provisional exception. Shared CLI compose sends multipart files to its existing
+compose endpoint with `shared_uploads=true`; real THR allocation precedes server
+metadata derivation in the same transaction.
+
+POST `/artifacts/{name}/renew` and `/restore` are bearer-protected CLI/operator
+JSON grant verbs with `agent`, `continuing_use`, `expires_at`, optional
+`retention`/`reason`. No browser client is added for these CLI-only actions.
+Nested names remain supported. Unknown names return404; expired/recoverable/deleted
+references return410 `artifact_unavailable` with owner/date/reason/recovery and
+actual deletion date. CLI get prints that explanation, exits1 and leaves the
+destination unchanged. Thread CLI labels unavailable shared attachments from the
+same projection. Downloads never renew. API list includes tombstones and supports
+`available_only=true`.
+
+Full quota returns413 `artifact_quota_exceeded` with physical/reserved/requested
+and quota bytes. Incomplete reconciliation returns503
+`artifact_usage_unavailable`; unfinished publication returns503
+`artifact_operation_pending`; missing or indeterminate B reference proof holds
+replacement with503 `artifact_reference_check_unavailable`. Live references
+return409 `artifact_live_dependency`; retained names409 `artifact_name_retained`.
+Renew/restore and downloads still work at quota. DELETE remains preview-only in A;
+there is no CLI delete. The service/model/private exercise entry points are
+linked from the contract; required hosted checks stay lint/static only.

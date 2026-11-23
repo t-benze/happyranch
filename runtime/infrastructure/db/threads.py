@@ -5,6 +5,7 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 import base64
 import binascii
 import json
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -243,7 +244,7 @@ class ThreadsMixin:
         return f"THR-{n:03d}"
 
     @_synchronized
-    def insert_thread(self, t: ThreadRecord) -> None:
+    def insert_thread(self, t: ThreadRecord, *, uncommitted: bool = False) -> None:
         # Spec §3.1: composed_from_task_id is the sole composer attribution.
         self._conn.execute(
             """INSERT INTO threads (
@@ -272,7 +273,101 @@ class ThreadsMixin:
                 t.pinned_at.isoformat() if t.pinned_at else None,
             ),
         )
-        self._conn.commit()
+        if not uncommitted:
+            self._conn.commit()
+
+    def compose_shared_thread(
+        self, *, thread: ThreadRecord, speaker: str, participants: list[str],
+        recipients: list[str], initial_recipients: list[str], body_markdown: str | None,
+        attachments: list[ThreadAttachment], service: object,
+        uploads: list[tuple[str, bytes, str | None]] | None = None,
+        private_store: object | None = None,
+        private_uploads: list[tuple[str, bytes, str | None]] | None = None,
+    ) -> tuple[str, int, list]:
+        """New shared compose: allocation, blob admission, attribution and message.
+
+        Unlike the ordinary compose route this owns all SQL under one writer
+        transaction. New threads have no prior exchange/closure to settle.
+        Request-owned blobs stay compensated through the actual COMMIT.
+        """
+        from runtime.infrastructure.thread_mentions import resolve_wake_set
+        from runtime.infrastructure.db.shared_artifacts import SharedThreadAttachment
+        addresses = self.prepare_thread_message(body_markdown)
+        written = []
+        private_written = []
+        try:
+            with self.shared_artifact_transaction() as conn:
+                self.validate_thread_message(addresses)
+                thread.id = self.next_thread_id()
+                self.insert_thread(thread,uncommitted=True)
+                stamp = _now().isoformat()
+                for name in dict.fromkeys(participants):
+                    if name not in ('founder','@founder'):
+                        conn.execute('INSERT INTO thread_participants(thread_id,agent_name,added_at,added_by) VALUES(?,?,?,?)',
+                                     (thread.id,name,stamp,speaker))
+                for filename,content,content_type in uploads or []:
+                    # ID allocated in this transaction, never a provisional draft ID.
+                    basename = re.sub(r'[^A-Za-z0-9._-]+','-',filename).strip('.-') or 'attachment.bin'
+                    prefix = f'{thread.id}-{uuid4()}-'
+                    key = prefix+basename[:200-len(prefix)]
+                    metadata = service.metadata(agent=speaker,thread_id=thread.id,
+                        purpose='thread attachment',retention='default')
+                    operation_id = str(uuid4())
+                    row = service._prepare_row(conn,key,content,metadata,operation_id)
+                    service.store.put(key,content)
+                    written.append((key,service.identity(service.store.path_for(key))))
+                    operation = conn.execute('SELECT * FROM shared_artifact_operations WHERE operation_id=?',(operation_id,)).fetchone()
+                    service._finalize_put(conn,operation,row)
+                    attachments.append(SharedThreadAttachment(artifact_name=key,display_name=filename,
+                        size_bytes=len(content),content_type=content_type,uploaded_by=speaker,generation=row['generation']))
+                for filename,content,content_type in private_uploads or []:
+                    attachment_id = self.next_thread_attachment_id()
+                    path = private_store.path_for(thread.id,attachment_id)
+                    if path.exists() or path.is_symlink():
+                        raise ValueError('thread_attachment_storage_occupied')
+                    size = private_store.put(thread.id,attachment_id,content)
+                    info = path.lstat()
+                    identity = (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
+                    private_written.append((thread.id,attachment_id,path,identity))
+                    conn.execute('INSERT INTO thread_scoped_attachments(attachment_id,thread_id,display_name,size_bytes,content_type,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)',
+                        (attachment_id,thread.id,filename,size,content_type,speaker,stamp))
+                    attachments.append(ThreadAttachment(artifact_name='',display_name=filename,size_bytes=size,
+                        content_type=content_type,uploaded_by=speaker,thread_attachment_id=attachment_id))
+                mentions = self._derive_conversational_mentions(thread.id,speaker,ThreadMessageKind.MESSAGE,
+                                                                 body_markdown,addresses=addresses)
+                seq = self._append_thread_message_uncommitted(thread_id=thread.id,speaker=speaker,
+                    kind=ThreadMessageKind.MESSAGE,body_markdown=body_markdown,attachments=attachments,
+                    mentions=mentions,addresses_founder=addresses.founder_addressed)
+                wake_set = resolve_wake_set(mentions or [],recipients,speaker,founder_only=addresses.founder_only)
+                arrivals = [self._apply_arrival_uncommitted(thread.id,name,seq) for name in wake_set]
+                for name in recipients:
+                    if name not in wake_set:
+                        self._raise_required_uncommitted(thread.id,name,seq)
+                if speaker == 'founder' and mentions and any(name not in mentions for name in recipients):
+                    self._open_reply_exchange_uncommitted(thread_id=thread.id,open_seq=seq,speaker=speaker,
+                        mentions=mentions,recipients=recipients)
+                conn.execute('UPDATE threads SET turns_used=turns_used+1 WHERE id=?',(thread.id,))
+                self.insert_audit_log_uncommitted(task_id=thread.id,agent=speaker,action='thread_started',
+                    payload={'subject':thread.subject,'initial_recipients':initial_recipients,
+                             'forwarded_from_id':thread.forwarded_from_id,'composed_by':speaker,
+                             'composed_from_task_id':thread.composed_from_task_id,
+                             'composed_from_dream_id':thread.composed_from_dream_id})
+                self.insert_audit_log_uncommitted(task_id=thread.id,agent=speaker,action='thread_message_sent',
+                    payload={'seq':seq,'kind':'message','attachment_count':len(attachments),
+                             'attachment_names':[a.artifact_name for a in attachments]})
+            return thread.id,seq,arrivals
+        except BaseException:
+            # Identity-matched compensation only. The SQL owner has rolled back.
+            for name,identity in written:
+                path = service.store.path_for(name)
+                if path.exists() and service.identity(path) == identity:
+                    service.store.delete(name)
+            for thread_id,attachment_id,path,identity in private_written:
+                if path.exists() and not path.is_symlink():
+                    info = path.lstat()
+                    if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns) == identity:
+                        private_store.delete(thread_id,attachment_id)
+            raise
 
     def _row_to_thread(self, row) -> ThreadRecord:
         keys = row.keys()

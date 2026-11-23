@@ -91,6 +91,16 @@ def _remove_artifact(org, key: str) -> None:
     from runtime.orchestrator._paths import OrgPaths
     _remove_artifact_from_store(ArtifactStore(OrgPaths(org.root).artifacts_dir), key)
 
+def _rollback_compensating_artifact(conn, org, error: Exception, *, actor: str) -> None:
+    """Caller rollback first; quota refusal audit must survive that rollback."""
+    conn.rollback()
+    detail = error.detail if isinstance(error, HTTPException) else None
+    if isinstance(detail, dict) and detail.get("code") == "artifact_quota_exceeded":
+        from runtime.infrastructure.audit_logger import AuditLogger
+        AuditLogger(org.db).log_artifact_quota(
+            action="artifact_quota_refused", agent=actor, payload=detail, uncommitted=False,
+        )
+
 def _artifact_key(slug: str, content: str) -> str:
     """Deterministic content-addressed artifact key for a SKILL.md body."""
     digest = hashlib.sha256(content.encode()).hexdigest()
@@ -215,6 +225,16 @@ def _persist_validated_version(
                             ),
                         },
                     )
+        from runtime.daemon.routes.artifacts import artifact_service, artifact_http_error
+        from runtime.infrastructure.shared_artifact_service import SharedArtifactError
+        from runtime.infrastructure.artifact_store import InvalidArtifactName
+        try:
+            artifact_service(org).admit_in_caller_transaction(
+                conn, name=key, content=skill_md.encode(), actor_kind=actor_kind,
+                actor=actor, skill_slug=slug, version_id=version, task_id=task_id,
+            )
+        except (SharedArtifactError, InvalidArtifactName) as exc:
+            raise artifact_http_error(exc) from exc
         _write_artifact(org, key, skill_md)
         artifact_written = True
         current_row = conn.execute(
@@ -364,7 +384,9 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                         requested_description=requested_description,
                     )
                 _commit_compensating_artifact(conn, org, key)
-            except Exception: conn.rollback(); raise
+            except Exception as exc:
+                _rollback_compensating_artifact(conn, org, exc, actor=agent)
+                raise
         version_row = conn.execute("SELECT * FROM custom_skill_versions WHERE id=?", (version,)).fetchone()
         skill_row = service.current(conn, skill_id)
         return {
@@ -443,7 +465,9 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
                 requested_description=requested_description,
             )
             _commit_compensating_artifact(conn, org, key)
-        except Exception: conn.rollback(); raise
+        except Exception as exc:
+            _rollback_compensating_artifact(conn, org, exc, actor="founder")
+            raise
         return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy","current_version_id":current}
 
 @router.get("/{skill_id}")
@@ -536,7 +560,9 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
                 requested_description=requested_description,
             )
             _commit_compensating_artifact(conn, org, key)
-        except Exception: conn.rollback(); raise
+        except Exception as exc:
+            _rollback_compensating_artifact(conn, org, exc, actor="founder")
+            raise
         return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"current_version_id":current}
 
 @router.get("/{skill_id}/versions")

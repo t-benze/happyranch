@@ -1183,6 +1183,10 @@
             "header"
           ],
           [
+            "available_only",
+            "query"
+          ],
+          [
             "prefix",
             "query"
           ],
@@ -1207,12 +1211,40 @@
             "header"
           ],
           [
+            "expires_at",
+            "query"
+          ],
+          [
             "name",
+            "query"
+          ],
+          [
+            "operation_id",
+            "query"
+          ],
+          [
+            "purpose",
+            "query"
+          ],
+          [
+            "reason",
+            "query"
+          ],
+          [
+            "retention",
             "query"
           ],
           [
             "slug",
             "path"
+          ],
+          [
+            "task_id",
+            "query"
+          ],
+          [
+            "thread_id",
+            "query"
           ]
         ],
         "responses": [
@@ -1247,6 +1279,54 @@
         ]
       },
       "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "generation",
+            "query"
+          ],
+          [
+            "name",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/artifacts/{name}/renew": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "name",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/artifacts/{name}/restore": {
+      "POST": {
         "params": [
           [
             "authorization",

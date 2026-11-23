@@ -561,6 +561,22 @@ class AuditLogger:
             },
         )
 
+    def log_artifact_transition(
+        self, *, name: str, action: str, agent: str, payload: dict,
+        uncommitted: bool = True,
+    ) -> None:
+        """Preserve artifact: scope; provenance belongs only in payload."""
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(task_id=f"artifact:{name}", agent=agent, action=action,
+               payload={"name": name, **payload})
+
+    def log_artifact_quota(
+        self, *, action: str, agent: str, payload: dict,
+        uncommitted: bool = True,
+    ) -> None:
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(task_id="config:shared_artifacts", agent=agent, action=action, payload=payload)
+
     def log_artifact_put(self, name: str, size_bytes: int, agent: str) -> None:
         self._db.insert_audit_log(
             task_id=f"artifact:{name}",  # namespaced to avoid collision with TASK-/JOB- ids in get_audit_logs(task_id)

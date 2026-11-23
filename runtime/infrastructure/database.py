@@ -10,6 +10,7 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 # - db/audit.py: generic audit-log writes and reads
 # - db/sessions.py: token usage, aggregation, and thread session state
 # - db/workspace_cleanup.py: cleanup selection and stale-pending observation
+# - db/shared_artifacts.py: artifact rows, notice transactions and attachment binding seam
 # - db/threads.py: thread core, participants, messages, and invocations
 # - db/reply_delivery.py: reply delivery, recovery, breaker, and settlement
 # - db/reply_exchange.py: strict reply exchange lifecycle and projections
@@ -102,6 +103,7 @@ from runtime.infrastructure.db.tasks import (
     AttachmentCorrectionStopped,
     _RetryEvidenceRefusal,
 )
+from runtime.infrastructure.db.shared_artifacts import SharedArtifactsMixin
 from runtime.infrastructure.db.threads import ThreadsMixin
 from runtime.infrastructure.db.reply_delivery import ReplyDeliveryMixin
 from runtime.infrastructure.db.reply_exchange import (
@@ -460,6 +462,7 @@ _CLEANUP_READ_SHAPES = {
 
 
 class Database(
+    SharedArtifactsMixin,
     TasksMixin,
     DreamsMixin,
     KnowledgeMixin,
@@ -2419,7 +2422,7 @@ class Database(
             raise
         return seq
 
-    def _append_thread_message_uncommitted(
+    def _append_thread_message_storage_uncommitted(
         self,
         *,
         thread_id: str,

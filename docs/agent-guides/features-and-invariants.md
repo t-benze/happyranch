@@ -2152,7 +2152,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst **current** status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). Ordinary loading is one 50-root traversal per lifecycle status (all seven unfiltered, only the selected status otherwise), each with its own cursor, errors and Retry, so older active roots are not hidden behind newer completed history (THR-319 seq9; see the Web guide Tasks list). A historical FAILED descendant whose forward same-parent `revisit_of_task_id` lineage leaves no unresolved FAILED leaf (a COMPLETED/SUPERSEDED/active/cancelled successor, or a malformed cycle handled conservatively) does not dominate; only a FAILED descendant contribution is curated, while every other status, the root's own severity and all escalations are preserved, and root-level revisit links are never followed. See [Bounded failure-recovery](#bounded-failure-recovery). `Waiting on you` is a separate exact-`status=escalated` roots traversal, not an inferred ordinary-page/severity-rollup count or ordinary filter projection; it task-id-deduplicates and becomes exact only after cursor exhaustion. When non-empty it renders as the FIRST ordinary-styled group inside the shared list shell (same `tasks-group` wrapper, group heading and raised rows-card as every status group) directly after the task column header and above the status groups — never a separate outer card — and it is absent (no group, heading or empty card) when empty and attention is not loading/errored. A failed attention refresh or continuation retains known rows/count with a visible error state, and continuation retry uses that stream's cursor. Its page-local Waiting controls wrap within the group at narrow widths without changing the shared Button primitive, and a non-empty escalated group may coexist with ordinary loading/error/empty states without hiding the shell or contradicting visible rows. Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Historical design, removed; see Git history (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `docs/agent-guides/features-and-invariants.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
-- **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.
+- **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get,renew,restore}`; metadata/admission owner `runtime/infrastructure/shared_artifact_service.py`. See [Shared Artifacts](#shared-artifacts) below for traps.
 
 ### Org & runtime
 
@@ -2892,11 +2892,26 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
 Per-org artifacts live at `<runtime>/orgs/<slug>/artifacts/`. They are opaque files produced by any agent and visible to every other agent in the same org.
 
-Implementation: `runtime/infrastructure/artifact_store.py` and `runtime/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
+Implementation: `runtime/infrastructure/shared_artifact_service.py`, additive
+`db/shared_artifacts.py`, policy-free `artifact_store.py` and artifact routes.
+CLI: `happyranch artifacts {put,list,get,renew,restore}`. The
+[Shared Artifacts contract](contracts/shared-artifacts.md) owns metadata,
+provisional Founder attribution, generation history, admission, journal and B/D
+transition interfaces. Agent/CLI puts require owner, task XOR thread, purpose and
+bounded expiry; default90 days / reference180 with reason. Renew/restore require
+continuing use; downloads never renew. No permanent exemption. Quota counts all
+physical states and reservations once: 5,000,000,000 bytes, warning4,000,000,000.
 
-Route surface: `POST /artifacts` (upload), `GET /artifacts` (list), `GET /artifacts/{name}` (download), `DELETE /artifacts/{name}` (delete). There is no update route — `POST` creates or overwrites the exact stored spelling. On a case-insensitive filesystem, a different-case name that aliases an existing file or folder component is refused before replacement (`400 invalid_artifact_name`, message starts `case_collision:`); existing bytes and spelling survive. Case-sensitive filesystems can still store distinct `Report.txt` and `report.txt` keys. The store checks before directory/temp creation and again before replacement; it does not lock the namespace against concurrent external changes. Custom-skill artifact writes project the same validation error without compensating by deleting the pre-existing alias. Delete is exposed in the founder web artifacts UI only; there is **no** `happyranch artifacts delete` CLI verb.
-
-Web UI (design-overhaul): **Flat 3-column card grid** (`web/src/features/artifacts/ArtifactsPage.tsx`). Each card shows only stored fields (`name`, `size_bytes` as a formatted size, `modified_at` as a formatted timestamp) plus Download and Delete actions. The artifact record carries **no** agent, task_id, thread, kind/type, dream_id, or PR/CI fields — so the surface renders **no** provenance badges, kind pills, status tags, PR/CI panels, or dream markers. Upload is available via a collapsible form in the page header. States: loading skeleton, calm empty ("No artifacts yet"), error with retry (`invalidateQueries` on `['artifacts', slug]`).
+POST creates an exact active generation; replacement needs B's complete
+same-transaction reference proof. Legacy/unavailable names cannot be overwritten.
+GET/list preserve explanatory tombstones; GET of unavailable content returns410
+with date/owner/reason. Lifecycle POST renew/restore paths precede catch-all GET.
+DELETE is preview-only until B's rollout/reference gates are verified; there is
+no agent delete CLI. Current browser file/name/Founder-only uploads remain bounded
+provisional uploads until atomic binding at attachment. The legacy Shared
+Artifacts page is separately owned by the removal slice; A changes no web UI.
+Scheduling, notice delivery, seven-day preview/recovery activation and reviewed
+legacy classification remain B/D release gates, not claims of deployed policy.
 
 Traps:
 
@@ -3339,6 +3354,13 @@ The web thread composer (`web/src/design-system/patterns/Composer.tsx`), the thr
 `POST /api/v1/orgs/{slug}/artifacts` (multipart) **before** sending/composing, then pass the returned
 `artifact_name` refs on `POST /threads/{id}/send` (JSON) or `POST /threads`. The CLI/agent thread-scoped
 `/threads/{id}/attachments` store is unchanged; the browser keeps using shared artifacts.
+These Founder-only metadata-free uploads are provisional human-owned generations,
+with accountable manager, quota and journal immediately applied. Attachment and
+real-thread allocation bind attribution atomically; retries never renew it.
+CLI `compose --shared` uses server multipart composition rather than pre-uploading
+a draft-thread artifact. New shared links pin a generation; historical projections
+retain unavailable state/date/owner/reason and the generation URL. See the
+[Shared Artifacts contract](contracts/shared-artifacts.md).
 
 Traps:
 

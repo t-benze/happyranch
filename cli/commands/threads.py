@@ -75,9 +75,10 @@ def _merge_uploaded_attachments(
                 slug=slug,
                 local_path=path,
                 name=artifact_name,
-                agent=agent,
+                agent=agent, thread_id=thread_id, purpose="thread attachment", retention="default",
             )
             refs.append({
+                "generation": info["generation"],
                 "artifact_name": info["name"],
                 "display_name": path.name,
                 "content_type": mimetypes.guess_type(path.name)[0],
@@ -138,7 +139,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
             return
         payload["recipients"] = identities.preflight_body(
             client, slug, payload.get("body_markdown"), recipients=payload["recipients"], agent=payload.get("composer"))
-        if attach_paths and not use_shared:
+        if attach_paths:
             # Thread-scoped multipart upload (TASK-1616).
             import mimetypes as _mime
             files = []
@@ -148,17 +149,9 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
             data = {"body": _json.dumps(payload)}
             r = client.post(
                 f"/api/v1/orgs/{slug}/threads/compose-as-agent",
-                files=files, data=data,
+                files=files, data=data, params={"shared_uploads":"true"} if use_shared else {},
             )
         else:
-            if attach_paths:
-                payload = _merge_uploaded_attachments(
-                    client=client, slug=slug, payload=payload,
-                    attach_paths=attach_paths,
-                    agent=payload.get("composer", ""),
-                    thread_id=None,
-                    use_shared_artifacts=True, preflight_done=True,
-                )
             r = client.post(
                 f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
             )
@@ -182,7 +175,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
 
     payload["recipients"] = identities.preflight_body(
         client, slug, payload.get("body_markdown"), recipients=payload["recipients"])
-    if attach_paths and not use_shared:
+    if attach_paths:
         # Thread-scoped multipart upload (TASK-1616).
         import mimetypes as _mime
         files = []
@@ -192,16 +185,9 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         data = {"body": _json.dumps(payload)}
         r = client.post(
             f"/api/v1/orgs/{slug}/threads",
-            files=files, data=data,
+            files=files, data=data, params={"shared_uploads":"true"} if use_shared else {},
         )
     else:
-        if attach_paths:
-            payload = _merge_uploaded_attachments(
-                client=client, slug=slug, payload=payload,
-                attach_paths=attach_paths, agent="founder",
-                thread_id=None,
-                use_shared_artifacts=True, preflight_done=True,
-            )
         r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
         return
@@ -388,6 +374,13 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
         for attachment in m.get("attachments", []):
             size = attachment.get("size_bytes")
             size_text = f" ({size}B)" if size is not None else ""
+            lifecycle = attachment.get("lifecycle") or {}
+            if lifecycle.get("state") in ("recoverable","deleted","storage_missing","reconciliation_pending"):
+                print(f"  unavailable: {attachment['display_name']}; {lifecycle.get('state')}; "
+                      f"expired on {lifecycle.get('expired_on') or lifecycle.get('expires_at')}; "
+                      f"owner {lifecycle.get('owner')}; reason {lifecycle.get('reason')}; "
+                      f"recoverable until {lifecycle.get('recoverable_until')}")
+                continue
             print(
                 f"  attachment: {attachment['display_name']} "
                 f"[artifact:{attachment['artifact_name']}]{size_text}"
