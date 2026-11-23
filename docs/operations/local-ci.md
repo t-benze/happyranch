@@ -4065,6 +4065,18 @@ ordinary subtasks, mismatched legs, launch provenance and the 64-row bound.
 This uses the existing standalone unittest venue outside the retired Python
 suite, general integration and Product E2E, and adds no required CI check.
 
+## Explicit profile-remove rebind recovery
+
+`uv run --frozen pytest scripts/test_profile_rebind.py -q --tb=short` uses the
+retained standalone synthetic-org venue and real SQLite, adapter/profile binding,
+canonical consumer writer and publication. No daemon lifespan, provider, listener
+or live state runs. It covers ordinary and claimed reconnect, consumer moves and
+partial closure, owner/refusal boundaries, invalid rebinds, terminal projection
+losers, warning diagnostics and retained independent native startup holds.
+This is outside retired Python units, skipped general integration, Product E2E
+and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
+is review evidence only.
+
 ## History
 
 Citations removed from the body, with the section they supported:

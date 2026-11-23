@@ -493,8 +493,20 @@ Publication compares the dependency projection with the canonical active roster;
 an absent row cannot silently authorize a ready empty closure. Profile contenders
 refuse an unfinished ordinary canonical batch before their global operation claim;
 a later healthy publication/recovery permits the next action. A removed profile leaves its
-remaining consumers unbound and their org fenced until an explicit valid rebind
-or removal. Live contention returns `profile_coordinator_busy`; process death
+remaining consumers unbound and their org fenced. An explicit valid same-profile
+register/reconnect (including direct-connect projection), or an explicit consumer
+move to another executor, may adopt a complete same-profile remove operation in
+`forward_recovery_required`. Adoption preserves its operation ID, kind, captured
+members, target generation and coordinator invocation and resumes that invocation's
+existing prepared publication bindings. Invalid requests retain the old operation
+and fence; other operation states/kinds, unrelated consumers and invocations spanning
+other profiles remain refused. A valid individual move may succeed while remaining
+consumers are unbound: the whole captured closure stays fenced until coherent,
+then `_finalize` publishes the current canonical roster and terminalizes the old
+operation. Same-profile reconnect finalizes immediately when it restores coherence.
+An incoherent closure logs a warning with org, profile, operation and dependency
+identities/states/generations. Independent startup/native ownership holds still apply.
+Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly
 once. Existing admitted work is not killed, and U2B adds no workflow admission
 or activation surface.
