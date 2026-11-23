@@ -78,7 +78,6 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
         return previous_run(argv, **kwargs)
     active.io._run = active.io.manager._run = native
     monkeypatch.setattr(installer, 'ManagedInstaller', lambda **kwargs: active.io)
-    monkeypatch.setattr(os, 'geteuid', lambda: 0)
     real_unlink, real_write = os.unlink, os.write
     interrupted, emitted = [], []
     def unlink(name, *args, **kwargs):
@@ -99,6 +98,8 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
     # test-side context so the shipping entry acquires the real directory flock.
     serving = nullcontext() if inert else active.serving(monkeypatch)
     with serving:
+        # Bind under the real test-user custody before simulating root entry.
+        monkeypatch.setattr(os, 'geteuid', lambda: 0)
         active.fence_context.__exit__(None, None, None)
         with monkeypatch.context() as patch:
             patch.setattr(os, 'unlink', unlink)
