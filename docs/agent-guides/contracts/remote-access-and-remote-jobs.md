@@ -3061,7 +3061,10 @@ readers, transaction observation/lock, token-source comparison and pure historic
 config rendering live in `legacy_home_readback.py`. Inventory and the unit gate
 import this retained boundary without importing activation/admin/minter owners;
 the remaining retiring writers temporarily inherit or re-export the same code.
-This movement changes no custody, generation, pending, token or lock predicate.
+This movement changes no custody, generation, pending, token or lock predicate. B6 cleanup,
+retained staged-inventory checks and the borrowed publication lock also use those
+readers directly. The retained admission fixture supplies historical input files
+without constructing activation or provisioning owners.
 
 Inventory's protected current receipt supplies phase/G for observation of inert
 prepared configs; installation IDs and release UID are independently bound through

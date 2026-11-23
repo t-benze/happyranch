@@ -1,6 +1,7 @@
 """E2a composed admission in the existing E1b temp-root/fake-systemd venue."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -9,38 +10,25 @@ from pathlib import Path
 import pytest
 
 from runtime.remote_access import home_admission as h, installer, supervisor
-from runtime.remote_access.home_activation import ACTIVATION_PATH, OWNED_LINK, OWNED_LINK_TARGET
-from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, EFFECTS, TRANSACTION_PATH, Effect
+from runtime.remote_access.legacy_home_receipt import ACTIVATION_PATH, OWNED_LINK, OWNED_LINK_TARGET, CONFIG_MEMBERS, EFFECTS, Effect
+from runtime.remote_access.legacy_home_readback import TRANSACTION_PATH
 from runtime.remote_access.installer import InstallerError, UNITS
 from runtime.remote_access.home_retirement import MESSAGE
-from scripts.test_home_activation_owner import venue as owner_venue
-from scripts.test_home_live_config import finish_config, venue as live_venue
-from scripts.test_home_activation_txn import put
+from scripts.home_legacy_fixture import legacy_admission_fixture, put_legacy as put
 
 
 @pytest.fixture
-def venue(live_venue, monkeypatch):
-    v = live_venue
+def live_venue(tmp_path, monkeypatch):
+    value = legacy_admission_fixture(tmp_path, monkeypatch, ready=False)
     monkeypatch.setattr(h.os, "geteuid", lambda: 0)
-    receipt = finish_config(v)
-    txn = v.transactions.read_optional()
-    done = next(e for e in txn.effects if e.name == "home_config")
-    v.txn = replace(txn, phase="joined", effects=tuple(done if name == "home_config" else
-        Effect(name, "done", {}) for name in EFFECTS))
-    v.ready = replace(receipt, phase="ready", local_node_stable_id="stable-node", home_endpoint="100.64.0.10:443")
-    put(v.path(ACTIVATION_PATH), v.ready.to_bytes())
-    put(v.path(TRANSACTION_PATH), v.txn.to_bytes())
-    link = v.path(OWNED_LINK)
-    link.parent.mkdir(mode=0o755, exist_ok=True)
-    link.symlink_to(OWNED_LINK_TARGET)
-    # Existing E1a fixture models certificate/account readers; fill their fixed
-    # directory inventory here, without any host account or service operation.
-    put(v.path("/etc/happyranch/headscale/server.crt"), b"synthetic public certificate")
-    put(v.path("/etc/happyranch/headscale/server.key"), b"synthetic private fixture")
-    v.path("/etc/happyranch/headscale").chmod(0o700)
-    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
-    v.native.calls.clear()
-    return v
+    return value
+
+
+@pytest.fixture
+def venue(tmp_path, monkeypatch):
+    value = legacy_admission_fixture(tmp_path, monkeypatch, ready=True)
+    monkeypatch.setattr(h.os, "geteuid", lambda: 0)
+    return value
 
 
 def mutating(v):
@@ -113,8 +101,7 @@ def test_ordinary_refusals_have_no_effect(venue, monkeypatch, case):
         raw["digests"]["sidecar.json"] = "a" * 64; path.write_bytes(json.dumps(raw).encode())
     if case == "render-bytes":
         path = v.path(CONFIG_MEMBERS[1]); path.write_bytes(path.read_bytes() + b" ")
-        from scripts.test_home_live_config import digest
-        effects = tuple(Effect("home_config", "done", {p: digest(v.path(p).read_bytes()) for p in CONFIG_MEMBERS})
+        effects = tuple(Effect("home_config", "done", {p: hashlib.sha256(v.path(p).read_bytes()).hexdigest() for p in CONFIG_MEMBERS})
                         if e.name == "home_config" else e for e in v.txn.effects)
         put(v.path(TRANSACTION_PATH), replace(v.txn, effects=effects).to_bytes())
     if case == "link-absent": v.path(OWNED_LINK).unlink()
@@ -169,7 +156,6 @@ def test_prepared_inventory_and_unreceipted_crash(live_venue, monkeypatch):
     v, io = live_venue, live_venue.receipts._io
     monkeypatch.setattr(h.os, "geteuid", lambda: 0)
     v.path("/etc/happyranch/headscale").chmod(0o700)
-    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
     assert (io.inventory().state, io.inventory().detail) == ("owned", "prepared")
     v.path(ACTIVATION_PATH).unlink()
     assert io.inventory().state == "manual-install-conflict"

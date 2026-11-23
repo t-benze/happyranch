@@ -2311,10 +2311,9 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         and literal parents are freshly checked before every destructive effect.
         No authentication, stop, admission revocation or public lifecycle is added.
         """
-        # Callable-local imports avoid the existing activation -> installer edge.
-        from runtime.remote_access import home_activation as activation
+        from runtime.remote_access.legacy_home_receipt import ACTIVATION_PATH, LIVE_MEMBERS, OWNED_LINK_TARGET
+        from runtime.remote_access.legacy_home_readback import LegacyHomeReadback, LegacyHomeTransactions, _signature
         from runtime.remote_access import home_audit
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
         from runtime.remote_access.home_unit_gate import HomeUnitGate
 
         partial = False
@@ -2326,8 +2325,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                 expected_control_plane_id=control_plane_id,
                                 expected_connector_id=connector_id, expected_generation=generation,
                                 root=self.root, root_owner=self.root_owner)
-            store = activation.HomeActivationStore(root=self.root, root_owner=self.root_owner)
-            transactions = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
+            store = LegacyHomeReadback(root=self.root, root_owner=self.root_owner)
+            transactions = LegacyHomeTransactions(root=self.root, root_owner=self.root_owner)
             with transactions.locked() as activation_directory:
                 audit = home_audit.HomeAudit(self.root / headscale.INSTALLER_STATE / "home-audit.jsonl",
                     uid=self.root_owner[0], gid=self.root_owner[1], directory_fd=activation_directory)
@@ -2362,7 +2361,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
 
                 # kind, owner (directory GID may be unspecified by B6), mode, digest.
                 members: dict[str, tuple[str, tuple[int, int | None], int, str | None]] = {}
-                for path in activation.LIVE_MEMBERS:
+                for path in LIVE_MEMBERS:
                     kind = ("directory" if path.endswith("/acme-unused") else
                             "socket" if path.endswith(".sock") else "file")
                     owner = (self._service_owner if path.endswith("/observe.sock") else
@@ -2371,7 +2370,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 custody = self._headscale_members()
                 for path, digest in current.member_digests.items():
                     owner, mode = custody.get(path, (self.root_owner, 0o600))
-                    if path == activation.OWNED_LINK_TARGET:
+                    if path == OWNED_LINK_TARGET:
                         mode = 0o644
                     elif path.endswith("/policy.hujson"):
                         owner = self._headscale_owner
@@ -2417,7 +2416,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                 try:
                                     with os.scandir(child) as entries:
                                         nonempty = next(entries, None) is not None
-                                    if (activation._signature(os.fstat(child)) != activation._signature(info)
+                                    if (_signature(os.fstat(child)) != _signature(info)
                                             or nonempty):
                                         raise InstallerError("live directory not empty")
                                 finally:
@@ -2427,8 +2426,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                 if hashlib.sha256(data).hexdigest() != digest:
                                     raise InstallerError("live member digest")
                             check()
-                            if activation._signature(os.stat(relative.name, dir_fd=parent,
-                                                              follow_symlinks=False)) != activation._signature(info):
+                            if _signature(os.stat(relative.name, dir_fd=parent,
+                                                              follow_symlinks=False)) != _signature(info):
                                 raise InstallerError("live member changed")
                             if remove:
                                 require()
@@ -2436,8 +2435,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                 if path == "/run/happyranch-tsnet-sidecar/observe.sock":
                                     runtime_diagnostics(parent, allow_observer=True)
                                 check()
-                                if activation._signature(os.stat(relative.name, dir_fd=parent,
-                                                                  follow_symlinks=False)) != activation._signature(info):
+                                if _signature(os.stat(relative.name, dir_fd=parent,
+                                                                  follow_symlinks=False)) != _signature(info):
                                     raise InstallerError("live member changed before removal")
                                 partial = True  # An attempted unlink/fsync can have an uncertain outcome.
                                 (os.rmdir if kind == "directory" else os.unlink)(relative.name, dir_fd=parent)
@@ -2458,7 +2457,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                             if (len(diagnostics) >= _RUNTIME_DIAGNOSTIC_LIMIT
                                     or not _runtime_diagnostic(item.name, info, self._service_owner)):
                                 raise InstallerError("custody not empty")
-                            diagnostics.append((item.name, activation._signature(info)))
+                            diagnostics.append((item.name, _signature(info)))
                     return diagnostics
 
                 def inventory() -> None:
@@ -2503,7 +2502,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 # C4/M1 proof is derived here, never accepted from the caller.
                 # Existing absence supports a receipt-admitted partial retry.
                 def db_proof() -> None:
-                    if any(entry(path) for path in activation.LIVE_MEMBERS[:5]):
+                    if any(entry(path) for path in LIVE_MEMBERS[:5]):
                         raise InstallerError("Headscale DB retirement unproven")
 
                 def removing() -> None:
@@ -2587,7 +2586,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                         for index, item in enumerate(entries):
                             if index >= 64:
                                 raise InstallerError("cleanup evidence inventory")
-                            if item.name not in {Path(activation.ACTIVATION_PATH).name,
+                            if item.name not in {Path(ACTIVATION_PATH).name,
                                                  headscale.RECEIPT, headscale.PUBLICATION, "home-ca",
                                                  "home-issuer", _ISSUER_RECEIPT,
                                                  "home-audit.jsonl", "home-audit.jsonl.1"}:
@@ -2643,7 +2642,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                 for name, signature in diagnostics:
                                     require()
                                     check()
-                                    if activation._signature(os.stat(name, dir_fd=opened,
+                                    if _signature(os.stat(name, dir_fd=opened,
                                                                       follow_symlinks=False)) != signature:
                                         raise InstallerError("custody not empty")
                                     partial = True
@@ -2655,7 +2654,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                     raise InstallerError("custody not empty")
                             with self._publication_parent(str(relative.parent)) as (parent, parent_check):
                                 named = os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
-                                if activation._signature(named) != activation._signature(os.fstat(opened)):
+                                if _signature(named) != _signature(os.fstat(opened)):
                                     raise InstallerError("custody changed")
                                 check()
                                 parent_check()
@@ -2673,7 +2672,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 # Publication and activation evidence survive every earlier failure;
                 # the account receipt is last, exactly as in the inert owner.
                 retire = ([headscale.PUBLICATION] if publication else [])
-                retire += [Path(activation.ACTIVATION_PATH).name]
+                retire += [Path(ACTIVATION_PATH).name]
                 retire += [headscale.RECEIPT] if receipt else []
                 for name in retire:
                     self._headscale_stopped()
@@ -2685,7 +2684,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                         if name == headscale.PUBLICATION:
                             if self._headscale_publication(missing_ok=True) != publication:
                                 raise InstallerError("publication changed")
-                        elif name == Path(activation.ACTIVATION_PATH).name:
+                        elif name == Path(ACTIVATION_PATH).name:
                             require()
                         elif self._headscale_receipt() != receipt:
                             raise InstallerError("account receipt changed")
@@ -3894,9 +3893,9 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
     @contextmanager
     def _home_activation_lock(self, directory_fd: int | None) -> Iterator[int]:
         """Use the existing flock, borrowing its open description in Enable."""
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore, TRANSACTION_PATH
+        from runtime.remote_access.legacy_home_readback import LegacyHomeTransactions, TRANSACTION_PATH
 
-        store = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
+        store = LegacyHomeTransactions(root=self.root, root_owner=self.root_owner)
         if directory_fd is None:
             with store.locked() as parent:
                 yield parent
@@ -4094,7 +4093,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             files[name] = self._read_file(parent, name, owner=owner, mode=mode)
         sidecar = self._json(files["sidecar.json"])
         if reuse and "home_binding" in sidecar:
-            from runtime.remote_access.home_activation import CONTROL_URL
+            from runtime.remote_access.legacy_home_receipt import CONTROL_URL
             from runtime.remote_access.invite_v2 import _canonical_dial_ip
             connector = self._json(files["connector.json"])
             binding = sidecar["home_binding"]
@@ -4129,12 +4128,11 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
     def _home_staging_residue(self, *, clean: bool = False) -> None:
         """Existing fixed inventories must prove no live or pending authority."""
         with self._home_preparation_custody():
-            from runtime.remote_access.home_activation import HomeActivationStore
-            from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+            from runtime.remote_access.legacy_home_readback import LegacyHomeReadback, LegacyHomeTransactions
             from runtime.remote_access.home_audit import AuditRefused, HomeAudit
 
-            store = HomeActivationStore(root=self.root, root_owner=self.root_owner)
-            if (store.current() is not None or HomeActivationTransactionStore(
+            store = LegacyHomeReadback(root=self.root, root_owner=self.root_owner)
+            if (store.current() is not None or LegacyHomeTransactions(
                     root=self.root, root_owner=self.root_owner).read_optional() is not None):
                 raise InstallerError("retained activation evidence")
             try:

@@ -281,3 +281,133 @@ class KernelDump:
         frames += message(3, struct.pack("=i", 0), 0x10 if case == "interrupted" else 2)
         if case == "error": frames = message(2, struct.pack("=i", -1))
         return frames, [], socket.MSG_TRUNC if case == "truncated" else 0, (0, 0)
+
+
+def put_legacy(path: Path, data: bytes, mode: int = 0o600) -> None:
+    """Synthetic historical input only; no production publication transition."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(mode)
+
+
+class LegacyAdmissionNative:
+    """Native observations for retained inventory; no activation simulation."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls = []
+        self.override = {}
+
+    def run(self, args: list[str], **kwargs: object) -> tuple[int, str]:
+        self.calls.append(args)
+        assert args[:2] == ["systemctl", "show"], "inventory attempted a native effect"
+        name = args[2]
+        values = dict(Id=name, Names=name, FragmentPath=str(self.root / "etc/systemd/system" / name),
+            DropInPaths="", NeedDaemonReload="no", LoadState="loaded", ActiveState="active",
+            SubState="running", User="happyranch-headscale" if name == UNIT else "happyranch",
+            Group="happyranch-headscale" if name == UNIT else "happyranch", DynamicUser="no", MainPID="321")
+        values.update(self.override)
+        return 0, "\n".join(f"{key}={values[key]}" for key in
+            (arg.split("=", 1)[1] for arg in args if arg.startswith("--property=")))
+
+
+def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> object:
+    """Seed legacy data for real readback without activation/provisioning owners."""
+    from runtime.remote_access.legacy_home_receipt import HomeActivationReceipt, HomeActivationTransaction
+    from runtime.remote_access.legacy_home_readback import LegacyHomeReadback, LegacyHomeTransactions
+    from runtime.remote_access.service_manager import SystemdServiceManager
+    from scripts.test_installer_token_custody import Fixture
+
+    fixture = Fixture(tmp, monkeypatch)
+    native = LegacyAdmissionNative(fixture.root)
+    head = LegacyNativeFixture(fixture.root)
+    head.seed_prepared_history()
+    # This historical reader fixture predates the later installer publication
+    # records; leave only the activation pair used by these existing cases.
+    for name in ("headscale-account.json", "headscale-publication.json", "home-issuer-publication.json"):
+        (fixture.root / STATE / name).unlink()
+    for name in ("ca.pem", "ca.key", "leaf.pem", "leaf.key"):
+        (fixture.root / STATE / "home-ca" / name).unlink()
+    for name in ("home-ca", "home-issuer"):
+        (fixture.root / STATE / name).rmdir()
+    io = fixture.installer
+    io.layout = "source"
+    lookup = io._lookup_user
+    io._lookup_user = lambda name: head.lookup_user(name) if name == ACCOUNT else lookup(name)
+    io._lookup_group = head.lookup_group
+    io._service_owner = io.root_owner
+    io._run = head.run
+    io.manager = SystemdServiceManager(system=True, run=native.run)
+    fixtures = Path(__file__).parent / "fixtures/home-retirement"
+    path = lambda name: fixture.root / name.lstrip("/")
+    for directory in ("etc/credstore", "var/lib/happyranch-tsnet-sidecar", "var/lib/happyranch-connector"):
+        path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
+    connector = json.loads((fixture.inputs / "connector.json").read_bytes())
+    connector.update(home_id="home", connector_id="connector", excluded_daemon_ports=[8765])
+    connector.pop("daemon_port", None)
+    connector["managed"].update(profile="linux-managed-identity-v1", control_plane_id="control", bind_port=8443)
+    sidecar = dict(Profile="linux-managed-identity-v1", StateDir="/var/lib/happyranch-tsnet-sidecar",
+        RoleIdentity="home-sidecar-home", DERPPolicy="private-only", ListenAddr=":443", ExcludedDaemonPorts=[8765])
+    # Noncanonical whitespace is independently stored historical input.
+    prepared = {"connector.json": json.dumps(connector, sort_keys=True).encode(),
+        "sidecar.json": (json.dumps(sidecar, indent=2) + "\n \t").encode(),
+        "policy.json": (fixture.inputs / "policy.json").read_bytes()}
+    for name, data in prepared.items():
+        put_legacy(path("etc/happyranch/" + name), data, 0o640)
+    put_legacy(path("etc/happyranch/daemon.token"), fixture.token.read_bytes())
+    release = dict(user=fixture.user, uid=os.getuid(), data_home=str(fixture.home),
+        unit="happyranch-daemon.service", fragment_path="/usr/lib/systemd/user/happyranch-daemon.service")
+    put_legacy(path("etc/happyranch/release-daemon.json"), json.dumps(release).encode(), 0o644)
+    names = (*prepared, "release-daemon.json", "daemon.token")
+    provision = dict(version=1, phase="provisioned", layout="source",
+        digests={name: hashlib.sha256(path("etc/happyranch/" + name).read_bytes()).hexdigest() for name in names})
+    put_legacy(path("etc/happyranch/provision.json"), json.dumps(provision).encode())
+    invite = dict(format="home-invite-config@2", release_uid=os.getuid(), home_id="home",
+        control_plane_id="control", connector_id="connector", ca_der_sha256=hashlib.sha256(b"synthetic public CA").hexdigest(),
+        dial_ip="192.168.1.40", control_url="https://control.happyranch.invalid:8443")
+    put_legacy(path("etc/happyranch/invite-issuer.json"), json.dumps(invite).encode())
+    for name in module.UNITS:
+        source = "managed-home-sidecar.service" if ready and name == module.UNITS[1] else "managed-" + name
+        put_legacy(path("etc/systemd/system/" + name), (fixtures / source).read_bytes().replace(b"/opt/happyranch-desktop/", b"/opt/happyranch/").replace(
+            b"/opt/happyranch/python/bin/python3 -I", b"/opt/happyranch/venv/bin/python"), 0o644)
+    put_legacy(path("etc/systemd/system/" + UNIT), (fixtures / "headscale-home.service").read_bytes(), 0o644)
+    record = legacy_activation_record("ready" if ready else "prepared")
+    record.update(release_uid=os.getuid(), ca_der_sha256=invite["ca_der_sha256"],
+        local_node_stable_id="stable-node" if ready else None)
+    record["member_digests"] = {name: hashlib.sha256(path(name).read_bytes()).hexdigest() for name in record["member_digests"]}
+    put_legacy(path(STATE + "/home-activation.json"), json.dumps(record).encode())
+    receipt = HomeActivationReceipt.parse(json.dumps(record).encode())
+    if not ready:
+        for name in ("server.crt", "server.key"):
+            path("etc/happyranch/headscale/" + name).unlink()
+    transaction = None
+    if ready:
+        addition = (',"ControlURL":"https://control.happyranch.invalid:8443",'
+            '"control_tls":{"dial_ip":"192.168.1.40","ca_sha256":"' + invite["ca_der_sha256"] + '"},'
+            '"home_binding":{"home_id":"home","control_plane_id":"control",'
+            '"connector_id":"connector","activation_generation":7}').encode()
+        data = prepared["sidecar.json"]
+        end = data.rindex(b"}")
+        put_legacy(path("etc/happyranch/sidecar.json"), data[:end] + addition + data[end:], 0o640)
+        effects = [dict(name=name, state="done", member_digests=(
+            {"/etc/happyranch/" + item: hashlib.sha256(path("etc/happyranch/" + item).read_bytes()).hexdigest()
+                for item in ("connector.json", "sidecar.json")} if name == "home_config" else {}))
+            for name in ("preflight", "headscale_start_verify", "db_users", "local_node_mint", "credential_staging", "home_config", "managed_services", "joined")]
+        transaction = dict(format="home-activation-txn@1", release_uid=os.getuid(), home_id="home",
+            control_plane_id="control", connector_id="connector", activation_generation=7,
+            operation_id="b" * 32, ca_der_sha256=invite["ca_der_sha256"], dial_ip="192.168.1.40",
+            phase="joined", effects=effects)
+        put_legacy(path(STATE + "/home-activation-txn.json"), json.dumps(transaction).encode())
+        transaction = HomeActivationTransaction.parse(json.dumps(transaction).encode())
+        link = path("etc/systemd/system/happyranch-managed.target.wants/" + UNIT)
+        link.parent.mkdir(mode=0o755)
+        link.symlink_to("/etc/systemd/system/" + UNIT)
+    receipts = LegacyHomeReadback(root=fixture.root, root_owner=io.root_owner)
+    receipts._io = io
+    transactions = LegacyHomeTransactions(root=fixture.root, root_owner=io.root_owner)
+    transactions._io = io
+    native.calls.clear()
+    return SimpleNamespace(root=fixture.root, receipts=receipts, transactions=transactions,
+        source=fixture.token, path=path, native=native, prepared=receipt, ready=receipt,
+        txn=transaction, mints=[], records=lambda: (path(STATE + "/home-activation.json").read_bytes(),
+            path(STATE + "/home-activation-txn.json").read_bytes() if path(STATE + "/home-activation-txn.json").exists() else None))

@@ -403,3 +403,10 @@ original transaction directory lock, token check and pure historical config
 rendering without importing activation/admin/minter owners. Existing writers
 temporarily inherit/re-export those unchanged implementations. This dependency
 separation adds no model action, proof predicate or account admission.
+
+The retained legacy admission/inventory cases now seed independent historical
+config, receipt/transaction and frozen native inputs through the neutral fixture.
+They construct only retained readers and native observation adapters, rather
+than activation/admin/minter owners or a live-config publication transition.
+Their production inventory and refusal assertions remain unchanged; this test
+setup separation changes no model transition or execution-evidence claim.
