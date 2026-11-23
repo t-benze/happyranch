@@ -4910,8 +4910,23 @@ managed quiescence and committed denial permit the separate recovery path.
 Further legitimate ceremony burns on a failed retry do not undo earlier denies.
 Every successful row must produce its final record through the real writer,
 then reuse that record for repeat-without-effects and reappearance refusal.
-This table does not establish package replacement (R02.h/P02), every publication
-syscall boundary, installed acceptance or model-checking results.
+The `active-preinst-fragment`, `active-preinst-first-device` and
+`inert-preinst-publication` rows additionally
+extract the actual package control entry and execute its transmitted child
+program and inline sources in the same temporary-root composition. Only the
+process/native/filesystem boundaries are adapted; canonical retirement supplies
+the real commits, cutoff, cleanup, final receipt and return gate. Fresh incoming
+module namespaces and IO objects are created for each attempt. Completed
+readback precedes a synthetic retained-source replacement: missing old interpreter
+capability refuses, restored capability with the extracted retained sources
+reads the produced receipt without replay, and rollback reappearance refuses.
+`abort-upgrade` preserves the completed state without invoking the child.
+
+The process adapter simulates CPython3.12/isolated capability in-process; it
+does not establish actual installed interpreter custody or execution. Partial
+retained-source layouts are not a completed package installation. These rows
+do not establish exhaustive replacement boundaries, every publication syscall,
+installed dpkg/systemd acceptance or model-checking results.
 
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation

@@ -351,3 +351,16 @@ result. This maps to existing `available`/`Run` and `GateUnpack`, with no new
 model action or proof authority. Source/control extraction and bootstrap refusal
 checks do not establish active generated-entry compositions, payload-replacement
 interruption, installed ordering or TLC execution.
+
+The entry test table now joins actual package-extracted control/child bytes to
+the existing active-fragment, active-partial-denial and inert-publication
+interruption compositions.
+Canonical owners, persistent revocation, original stream registry, cleanup and
+produced receipt remain real; only the process/native/filesystem boundary is
+adapted. Simulated isolated CPython3.12 capability is not installed execution.
+The same rows map preinst success/readback to GateUnpack, partial retained-source
+replacement with missing capability to ReplacePayload/Crash, restored capability
+to RestoreEntry/Detect, and artifact rollback to RollbackArtifact. Abort and
+completed readback have no replay. This adds no model action or proof predicate;
+executed results belong to the task evidence, while full installed replacement,
+exhaustive publication boundaries and TLC remain separate obligations.
