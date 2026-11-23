@@ -153,7 +153,7 @@ export function BuiltinConnect({
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [kind, setKind] = useState<Kind | ''>('');
   const apiBase = usePromptBaseUrl();
 
@@ -169,7 +169,7 @@ export function BuiltinConnect({
     return (
       <WaitingBody
         name={flow.name}
-        prompt={buildConnectPrompt(flow.name, flow.token, apiBase, 'binary')}
+        prompt={buildConnectPrompt(flow.name, flow.token, apiBase, 'binary', locale)}
         expired={flow.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}
@@ -238,8 +238,8 @@ export function BuiltinConnect({
 }
 
 /* ------------------------------------------------------------------ */
-/*  ADAPTER-BACKED — name → mint adapter token → create/submit wrapper   */
-/*  → poll adapter status → auto-bind when APPROVED                       */
+/*  DIRECT CONNECT — name → mint token → create wrapper → POST receipt  */
+/*  → poll direct-connect status → daemon probe/commit → connected      */
 /* ------------------------------------------------------------------ */
 
 export function AdapterConnect({

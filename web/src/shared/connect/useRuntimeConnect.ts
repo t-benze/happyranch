@@ -62,7 +62,7 @@ export const FIELD_CLASS =
 /** Build the copy-paste prompt (no `/connect` link). `target` picks the
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
- *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
+ *  'adapter' → unused legacy conformance-only branch; custom CLIs use buildDirectConnectPrompt. */
 export type ConnectTarget = 'binary' | 'adapter';
 
 /** Escape a string for safe single-quoted shell use (single quotes -> '\''). */
@@ -75,6 +75,7 @@ export function buildConnectPrompt(
   token: string,
   apiBase: string,
   target: ConnectTarget,
+  locale: Locale = 'en',
 ): string {
   // `apiBase` is the verified daemon API base (`…/api/v1`): the page origin in
   // browser mode, or native's app.status local.prompt_base_url on desktop.
@@ -88,7 +89,7 @@ export function buildConnectPrompt(
     const BIN_NAME = shQuote(name);
     return [
       `# Connect the built-in ${BIN_NAME} CLI to HappyRanch.`,
-      `# Copy this whole block and run it — each command runs sequentially.`,
+      `# ${translate(locale, 'onboarding.connect.builtin.prompt.run')}`,
       `# The script stops immediately if any curl returns an HTTP error.`,
       ``,
       `set -e`,
@@ -108,7 +109,8 @@ export function buildConnectPrompt(
       `fi`,
       `echo "Found binary: $BIN"`,
       ``,
-      `# 2. Conformance check-ins — POST each step id in order`,
+      `# 2. ${translate(locale, 'onboarding.connect.builtin.prompt.checkins')}`,
+      `# ${translate(locale, 'onboarding.connect.builtin.prompt.rerun')}`,
       `echo "--- workspace_access ---"`,
       `curl --fail-with-body -sS -X POST "$BASE/executors/runtime/conformance-checkin" \\`,
       `  -H "Authorization: Bearer $TOKEN" \\`,
@@ -143,8 +145,8 @@ export function buildConnectPrompt(
       `# 3. Gate: the fourth response MUST report all_complete:true`,
       `if ! echo "$RESP" | grep -q '"all_complete":true'; then`,
       `  echo "ERROR: conformance is not complete — see the emit_envelope response above" >&2`,
-      `  echo "Each step must be completed sequentially. Check that every curl returned" >&2`,
-      `  echo "a 200 response with arrived:true before retrying." >&2`,
+      `  echo "${translate(locale, 'onboarding.connect.builtin.prompt.incomplete')}" >&2`,
+      `  echo "${translate(locale, 'onboarding.connect.builtin.prompt.rerun')}" >&2`,
       `  exit 1`,
       `fi`,
       ``,
@@ -294,8 +296,9 @@ export function buildDirectConnectPrompt(
   const TOKEN = shQuote(token);
   const BASE = shQuote(base);
   const WRAPPER = shQuote(wrapperDestination);
+  const adapterId = wrapperDestination.slice(wrapperDestination.lastIndexOf('/') + 1);
   const guidance = (key: MessageKey): string =>
-    translate(locale, key, { id: '{id}' }).split('\n').map((line) => `# ${line}`).join('\n');
+    translate(locale, key, { id: '{id}', adapterId }).split('\n').map((line) => `# ${line}`).join('\n');
   return [
     `# Connect "${name}" to HappyRanch directly — no approval step.`,
     `# Do all of this in one run, then stop.`,
@@ -320,9 +323,8 @@ export function buildDirectConnectPrompt(
     `#    - Write exactly one v1 AdapterOutput JSON object to stdout,`,
     `#      nothing else on stdout — diagnostics go to stderr`,
     `#    - The wrapper, not the provider, constructs the AdapterOutput.`,
-    `#      Propagate the provider's terminal error, return code, and agent`,
-    `#      session id faithfully; never fabricate AdapterOutput or static`,
-    `#      success, and never emit success without a real provider terminal response`,
+    guidance('onboarding.connect.adapter.prompt.providerResult'),
+    guidance('onboarding.connect.adapter.prompt.outputIdentity'),
     `#    - Exit after writing the output (single-invocation wrapper)`,
     `#    - Before /connect, locally send your wrapper a fresh opaque canary in`,
     `#      AdapterInput.prompt and prove the real terminal provider response`,
@@ -331,13 +333,9 @@ export function buildDirectConnectPrompt(
     `#      probe; normal task behavior is unchanged.`,
     `chmod +x "$WRAPPER"`,
     ``,
-    `# 2. Declare EVERY child executable your wrapper invokes as an`,
-    `#    immutable dependency: absolute path (never a bare command name)`,
-    `#    plus its SHA-256. HappyRanch never selects an agentic CLI via`,
-    `#    ambient PATH — replace CHILD below with your CLI's absolute path.`,
+    guidance('onboarding.connect.adapter.prompt.children'),
     `CHILD=/absolute/path/to/your-cli`,
     `WRAPPER_SHA=$(shasum -a 256 "$WRAPPER" | cut -d' ' -f1)`,
-    `CHILD_SHA=$(shasum -a 256 "$CHILD" | cut -d' ' -f1)`,
     ``,
     `# 3. Pick the workspace-bootstrap convention agents on this CLI should`,
     `#    use. This is about YOUR CLI's expectations, not HappyRanch's —`,
