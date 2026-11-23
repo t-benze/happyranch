@@ -184,8 +184,11 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     else:
         for method in ('remove_auxiliary', 'remove_private', 'remove_managed', 'remove_private_directories'):
             getattr(StoppedRetirement.from_saved(io(), active.fence), method)()
-    for method in ('remove_unit_fragments', 'remove_controller_executable', 'remove_managed_directories',
-                   'remove_connector_directory' if inert else 'remove_trust', 'remove_operation_domains'):
+    # Inert connector removal holds the domains; active domain removal reads
+    # the denied trust pair. Preserve both existing dependency orders.
+    last = (('remove_connector_directory', 'remove_operation_domains') if inert
+        else ('remove_operation_domains', 'remove_trust'))
+    for method in ('remove_unit_fragments', 'remove_controller_executable', 'remove_managed_directories', *last):
         getattr(cleanup, method)(io(), active.fence)
     state = account_adapter(active.io, active.calls, fault=boundary)
     if boundary == 'native-after-userdel':
