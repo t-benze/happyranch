@@ -15,6 +15,7 @@ import struct
 import threading
 import time
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from runtime.remote_access.state_store import AtomicFileTrustStateStore, StateSt
 from runtime.remote_access.streams import StreamClosed, StreamRegistry
 from scripts.test_home_retirement import Fixture, STATE
 from scripts.test_invite_control import Peer
+from scripts.test_home_retirement_service import ManagedFixture, MANAGED_UNITS, PYTHON
 
 SECRET = "synthetic-retirement-invite"
 DIGEST = hashlib.sha256(SECRET.encode()).hexdigest()
@@ -142,6 +144,170 @@ class CutoffFixture(Fixture):
 @pytest.fixture
 def fixture(tmp_path):
     return CutoffFixture(tmp_path / "root")
+
+
+class RecoveryFixture(ManagedFixture):
+    """Real retained trust/IPC owner plus synthetic native kernel observations."""
+    grant = CutoffFixture.grant
+    stream = CutoffFixture.stream
+    reopened = CutoffFixture.reopened
+    operations = CutoffFixture.operations
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.pid = os.getpid()
+        (self.root / 'proc/111').rename(self.root / f'proc/{self.pid}')
+        target = self.root / f'proc/{self.pid}/stat'
+        target.write_bytes(target.read_bytes().replace(b'111 (', str(self.pid).encode() + b' (', 1))
+        self.native[MANAGED_UNITS[0]]['MainPID'] = str(self.pid)
+        self.managed = replace(self.managed, release_uid=os.getuid())
+        self.directory(cutoff._CONTROL).chmod(0o700)
+        self.path = self.directory(cutoff._STORE) / 'trust-state.json'
+        self.path.parent.chmod(0o700)
+        self.identity = ConnectorIdentity(tenant_id='tenant', home_id='home', connector_id='connector')
+        self.store = AtomicFileTrustStateStore(self.path, TrustState(self.identity, 0, 0))
+        self.store.save(self.store.load())
+        self.registry = StreamRegistry()
+        self.manager = PinnedPairingManager(state_store=self.store, identity=self.identity, registry=self.registry)
+        self.adapter = InviteControl(self.manager)
+        self.closed, self.frames = [], []
+        self.status_hook = lambda: None
+
+    @contextmanager
+    def serving(self, monkeypatch):
+        monkeypatch.setattr(control, 'CONTROL_SOCKET', str(self.root / cutoff._CONTROL / 'control.sock'))
+        listener = control.ControlListener(self.operations())
+        handle = listener.handler.handle
+        monkeypatch.setattr(listener.handler, 'handle', lambda connection: handle(Peer(connection, self.frames)))
+        boot = (self.root / 'proc/sys/kernel/random/boot_id').read_text().strip()
+        try:
+            yield cutoff.RetirementCutoff(self.io, self.fence, self.identity, os.getuid(),
+                original_peer=cutoff.OriginalPeer(self.pid, 456, boot))
+        finally:
+            listener.close()
+
+    def interrupted(self, monkeypatch, *, deny=True):
+        from runtime.remote_access.home_retirement_transport import ManagedTransport
+        from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+        device, _ = self.grant('device')
+        def failed_close():
+            raise OSError('synthetic unacknowledged original transport close')
+        self.stream(device, 'device', close=failed_close)
+        with self.serving(monkeypatch) as owner:
+            owner.capture_original()
+            ManagedTransportJournal(ManagedTransport(self.io, self.fence, self.managed)).capture()
+            if deny:
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    owner.revoke()
+                assert self.reopened()[0].devices[device].revoked and owner._acknowledged is None
+        return device
+
+    def native_gone(self, how):
+        for props in self.native.values():
+            props.update(ActiveState='inactive', SubState='dead')
+            if 'MainPID' in props: props.update(MainPID='0', ControlGroup='')
+        for pid in (self.pid, 222, 333):
+            if pid != self.pid or how in ('absent', 'new-boot'):
+                (self.root / f'proc/{pid}').rename(self.root.parent / f'retained-proc-{pid}')
+        if how == 'reused':
+            target = self.root / f'proc/{self.pid}/stat'
+            target.write_bytes(target.read_bytes().replace(b'456', b'987'))
+        elif how == 'new-boot':
+            target = self.root / 'proc/sys/kernel/random/boot_id'
+            target.chmod(0o644)
+            target.write_bytes(b'22222222-2222-4222-8222-222222222222\n')
+            target.chmod(0o444)
+
+    def recovery(self):
+        from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery
+        from runtime.remote_access.home_retirement_transport import ManagedTransport
+        from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+        owner = cutoff.RetirementCutoff.from_saved_peer(self.io, self.fence, self.identity, os.getuid())
+        return OriginalDeathRecovery(owner, ManagedTransportJournal(ManagedTransport(self.io, self.fence, self.managed)))
+
+
+@pytest.fixture
+def recovery_fixture(tmp_path):
+    value = RecoveryFixture(tmp_path / 'root')
+    try:
+        yield value
+    finally:
+        value.close()
+
+
+@pytest.mark.parametrize('death', ['absent', 'reused', 'new-boot'])
+def test_independent_original_death_recovers_denial_after_failed_ack_without_replacement_registry(
+        recovery_fixture, monkeypatch, death):
+    v = recovery_fixture
+    device = v.interrupted(monkeypatch)
+    original_registry = v.registry
+    v.native_gone(death)
+    before, frames = v.snapshot(), list(v.frames)
+    recovery = v.recovery()
+    receipt = recovery.recover()
+    receipt.require()
+    assert recovery.cutoff._acknowledged is None
+    assert v.reopened()[0].devices[device].revoked
+    assert v.registry is original_registry and v.frames == frames and v.effects() == []
+    assert v.snapshot() == before, 'read-only recovery changed original evidence or trust state'
+
+
+@pytest.mark.parametrize('missing', ['live-original', 'active-unit', 'shared-process', 'unit-replacement',
+    'missing-native-record', 'missing-peer-record', 'peer-mismatch', 'denial', 'anchor', 'malformed-proc', 'expired'])
+def test_original_death_recovery_requires_all_independent_proofs_without_effects(
+        recovery_fixture, monkeypatch, missing):
+    v = recovery_fixture
+    v.interrupted(monkeypatch, deny=missing != 'denial')
+    v.native_gone('live' if missing == 'live-original' else 'reused'
+        if missing in ('malformed-proc', 'active-unit') else 'absent')
+    if missing == 'active-unit':
+        v.native[MANAGED_UNITS[0]].update(ActiveState='active', SubState='running', MainPID=str(v.pid),
+            ControlGroup='/system.slice/' + MANAGED_UNITS[0])
+    elif missing == 'shared-process':
+        v.ps_extra = '444 ' + ' '.join([str(os.getuid())] * 4) + '\n'
+    elif missing == 'unit-replacement':
+        target = v.root / 'etc/systemd/system' / MANAGED_UNITS[0]
+        retained = v.root.parent / 'retained-unit'
+        target.rename(retained)
+        target.write_bytes(retained.read_bytes())
+        target.chmod(0o644)
+    elif missing == 'missing-native-record':
+        (v.root / STATE / 'home-retirement-transport.json').unlink()
+    elif missing == 'missing-peer-record': (v.root / PIN).unlink()
+    elif missing == 'peer-mismatch':
+        target = v.root / PIN
+        record = json.loads(target.read_bytes())
+        record['peer']['started'] += 1
+        target.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+    elif missing == 'anchor': Path(str(v.path) + '.anchor').write_bytes(b'{}')
+    elif missing == 'malformed-proc': (v.root / f'proc/{v.pid}/stat').write_bytes(b'malformed')
+    before, frames = v.snapshot(), list(v.frames)
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        recovery = v.recovery()
+        if missing == 'expired': recovery.cutoff.deadline = time.monotonic() - 1
+        recovery.recover()
+    assert v.snapshot() == before and v.frames == frames and v.effects() == []
+
+
+@pytest.mark.parametrize('drift', ['generation', 'process', 'executable'])
+def test_recovered_cutoff_receipt_rechecks_denial_and_original_native_quiescence(
+        recovery_fixture, monkeypatch, drift):
+    v = recovery_fixture
+    v.interrupted(monkeypatch)
+    v.native_gone('absent')
+    receipt = v.recovery().recover()
+    if drift == 'generation': v.store.save(v.store.load())
+    elif drift == 'process': v.ps_extra = '444 ' + ' '.join([str(os.getuid())] * 4) + '\n'
+    else:
+        target = v.root / PYTHON
+        retained = v.root.parent / 'retained-python'
+        target.rename(retained)
+        target.write_bytes(retained.read_bytes())
+        target.chmod(0o755)
+    before, frames = v.snapshot(), list(v.frames)
+    with pytest.raises(RetirementUncertain, match='^migration pending$'):
+        receipt.require()
+    assert v.snapshot() == before and v.frames == frames and v.effects() == []
 
 
 def test_original_owner_cutoff_refuses_another_state_roots_live_fence(fixture, monkeypatch):

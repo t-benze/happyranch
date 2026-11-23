@@ -374,11 +374,32 @@ class ManagedTransport:
                 or any(value is not None and value != original.processes[name]
                        for name, value in current.processes.items())):
             raise RetirementUncertain()
+        ManagedTransport._same_artifacts(original, current, removed)
+
+    @staticmethod
+    def _same_artifacts(original: ManagedObservation, current: ManagedObservation,
+                        removed: set[str]) -> None:
         def stable(key: str, value: tuple[int, ...] | None) -> tuple[int, ...] | None:
             return value[:5] if key.startswith('directory:') and value is not None else value
         if {key: stable(key, None if key in removed else value) for key, value in original.artifacts.items()} != {
                 key: stable(key, value) for key, value in current.artifacts.items()}:
             raise RetirementUncertain()
+
+    def stopped_original(self, original: ManagedObservation) -> ManagedObservation:
+        """Fresh stopped/process-empty readback for independent death recovery.
+
+        This performs no stop or disable. Original fixed artifacts must still
+        agree; missing original activation links need actual disabled readback.
+        A different boot is evidence for the separate original-death owner,
+        never admission for active same-boot stop/replay.
+        """
+        if type(original) is not ManagedObservation:
+            raise RetirementUncertain()
+        current = self.observe(stopped=True)
+        removed = {path for path in _LINKS if current.artifacts[path] is None
+                   and original.artifacts[path] is not None}
+        self._same_artifacts(original, current, removed)
+        return current
 
     def stop_and_disable(self, expected: ManagedObservation) -> ManagedStopReceipt:
         try:

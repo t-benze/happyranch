@@ -4515,12 +4515,28 @@ artifacts; a live loader also keeps its original record inode pinned. A complete
 interrupted write can be explicitly synchronized, while partial bytes refuse.
 The record is neither an effect acknowledgement nor a death/cutoff proof; the
 full coordinator must compose it with original inventory and serving-peer pins
-before effects. That composition and original-death recovery remain unfinished.
+before effects. That full coordinator composition remains unfinished.
 
-These records are evidence prerequisites, not removal capabilities or successful
-recovery results. They do not parse or revoke trust authority or publish
-retirement. The
-original connector pin must precede remaining inventory capture. The explicit
+`home_retirement_recovery.OriginalDeathRecovery` supplies separate read-only
+explicit recovery after independent original death. It binds the original
+serving-peer pin to the saved connector PID/start/boot and protected managed
+identity/account/release. Anchored trust readback must already show every
+ceremony burned and every device denied. Exact original native artifacts and
+fresh inactive/process-empty state for the entire managed unit family, including
+shared-account process inventory, remain mandatory. Only alongside those facts
+can a positively observed new kernel boot, original PID absence, or different
+positive PID start prove original death. Same-start live original, unsafe or
+changing proc facts, active units/processes, missing evidence, changed artifacts,
+corrupt/live trust or generation drift remains pending. No IPC request, new
+registry, native effect or trust write occurs. A returned live receipt freshly
+rechecks denial, original evidence, death and quiescence; it is not a durable
+acknowledgement or a final retirement record. Selective cleanup, exclusive
+account disposition and final receipt still require the full coordinator.
+
+The original journals preserve evidence without revoking authority. Active
+cutoff and original-death recovery independently read the real anchored trust
+state; neither publishes final retirement. The original connector pin must
+precede remaining inventory capture. The explicit
 coordinator must establish the separate proofs, complete the remaining cleanup
 inventory, preserve it before effects, hold actual operation exclusion and account
 for intentional revocation writes without adopting replacements. A matching
