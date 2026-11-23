@@ -103,7 +103,18 @@ class ReferenceProof:
             token = match[0]
             parsed = urlsplit(token)
             qualified = _ORG_TASK.match(parsed.path)
-            if qualified and qualified[1] != self.slug:
+            decoded_org = None
+            if qualified and not re.search(r'%(?![0-9A-Fa-f]{2})', qualified[1]):
+                try:
+                    # ASGI paths are percent-decoded once before org lookup.
+                    # Invalid or still-encoded identities retain the handoff.
+                    decoded = unquote(qualified[1], errors='strict')
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    if re.fullmatch(r'[a-z0-9-]{1,40}', decoded):
+                        decoded_org = decoded
+            if decoded_org is not None and decoded_org != self.slug:
                 # Exclude this path segment only; a bare occurrence of the same
                 # task ID elsewhere in the text remains a required handoff.
                 foreign_handoffs.add(match.start() + token.index(parsed.path) + qualified.start('task'))

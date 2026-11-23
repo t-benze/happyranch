@@ -349,19 +349,42 @@ async def handoff_paths_case(root: Path) -> None:
     from runtime.daemon.shared_artifacts_scheduler import sweep
     root.mkdir(parents=True)
     cases = (
-        ('foreign-relative', '/orgs/demo/tasks/TASK-1/cancel', True),
-        ('foreign-api', '/api/v1/orgs/demo/tasks/TASK-1/cancel', True),
-        ('foreign-absolute', 'https://synthetic.test/orgs/demo/tasks/TASK-1/cancel', True),
-        ('foreign-absolute-api', 'https://synthetic.test/api/v1/orgs/demo/tasks/TASK-1/cancel', True),
-        ('same-relative', '/orgs/alpha/tasks/TASK-1/cancel', False),
-        ('same-api', '/api/v1/orgs/alpha/tasks/TASK-1/cancel', False),
-        ('same-absolute', 'https://synthetic.test/orgs/alpha/tasks/TASK-1/cancel', False),
-        ('same-absolute-api', 'https://synthetic.test/api/v1/orgs/alpha/tasks/TASK-1/cancel', False),
-        ('bare', 'TASK-1', False),
-        ('foreign-and-bare', '/orgs/demo/tasks/TASK-1/cancel then TASK-1', False),
+        ('foreign-relative', '/orgs/demo/tasks/TASK-1/cancel', 200),
+        ('foreign-api', '/api/v1/orgs/demo/tasks/TASK-1/cancel', 200),
+        ('foreign-absolute', 'https://synthetic.test/orgs/demo/tasks/TASK-1/cancel', 200),
+        ('foreign-absolute-api', 'https://synthetic.test/api/v1/orgs/demo/tasks/TASK-1/cancel', 200),
+        ('same-relative', '/orgs/alpha/tasks/TASK-1/cancel', 503),
+        ('same-api', '/api/v1/orgs/alpha/tasks/TASK-1/cancel', 503),
+        ('same-absolute', 'https://synthetic.test/orgs/alpha/tasks/TASK-1/cancel', 503),
+        ('same-absolute-api', 'https://synthetic.test/api/v1/orgs/alpha/tasks/TASK-1/cancel', 503),
+        ('bare', 'TASK-1', 503),
+        ('foreign-and-bare', '/orgs/demo/tasks/TASK-1/cancel then TASK-1', 503),
+    )
+    forms = ('/orgs/{slug}/tasks/{task}/cancel',
+             '/api/v1/orgs/{slug}/tasks/{task}/cancel',
+             'https://synthetic.test/orgs/{slug}/tasks/{task}/cancel',
+             'https://synthetic.test/api/v1/orgs/{slug}/tasks/{task}/cancel')
+    cases += tuple(
+        (f'{label}-{index}', form.format(slug=slug, task=task), status)
+        for label, slug, task, status in (
+            ('plain-live', 'alpha', 'TASK-200', 409),
+            ('encoded-live', '%61lpha', 'TASK-200', 409),
+            ('encoded-missing', '%61lpha', 'TASK-1', 503),
+            ('malformed-percent', '%6glpha', 'TASK-1', 503),
+            ('trailing-percent', 'alpha%', 'TASK-1', 503),
+            ('invalid-utf8', '%ff', 'TASK-1', 503),
+            ('encoded-slash', 'alpha%2fdemo', 'TASK-1', 503),
+            ('invalid-slug', 'demo%5Forg', 'TASK-1', 503),
+            ('overlong-slug', 'd'*41, 'TASK-1', 503),
+            ('double-encoded-same', '%2561lpha', 'TASK-200', 409),
+            ('double-encoded-foreign', '%2564emo', 'TASK-1', 503),
+            ('encoded-foreign', '%64emo', 'TASK-1', 200),
+        )
+        for index, form in enumerate(forms)
     )
     with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
-        for label, text, complete in cases:
+        for label, text, expected_status in cases:
+            complete = expected_status != 503
             async with fixture(root/label) as (org, client):
                 db = org.db
                 install_reference_seams(org)
@@ -375,6 +398,17 @@ async def handoff_paths_case(root: Path) -> None:
                 db.insert_task(TaskRecord(id='TASK-100', brief='Live parent', assigned_agent='worker'))
                 db.insert_task(TaskRecord(id='TASK-101', status=TaskStatus.COMPLETED,
                     parent_task_id='TASK-100', brief='Direct child', assigned_agent='worker'))
+                db.insert_task(TaskRecord(id='TASK-200', status=TaskStatus.COMPLETED,
+                    brief='Keep [artifact:path.bin]', assigned_agent='worker'))
+                # The real route consumes a single-decoded ASGI path. In
+                # particular, a second decode must not resolve TASK-200.
+                if text.startswith('/api/v1/') and label.startswith((
+                    'plain-live-', 'encoded-live-', 'encoded-missing-', 'double-encoded-')):
+                    detail = await client.get(text.removesuffix('/cancel'))
+                    resolves = expected_status == 409 and not label.startswith('double-encoded-')
+                    assert detail.status_code == (200 if resolves else 404), (label, detail.text)
+                    if resolves:
+                        assert detail.json()['task']['task_id'] == 'TASK-200', (label, detail.text)
                 with db.shared_artifact_transaction() as conn:
                     conn.execute(
                         'INSERT INTO task_results(task_id,agent,session_id,output_summary,created_at) '
@@ -383,24 +417,26 @@ async def handoff_paths_case(root: Path) -> None:
                 before = snapshot(org)
                 response = await client.post(PREFIX+'/artifacts', params=params,
                     files={'file': ('path.bin', b'replacement path bytes')})
-                assert response.status_code == (200 if complete else 503), (label, response.text)
+                assert response.status_code == expected_status, (label, expected_status, response.status_code, response.text)
                 if not complete:
                     assert response.json()['detail']['code'] == 'artifact_reference_check_unavailable', response.text
                 with db.shared_artifact_transaction() as conn:
                     row = db.get_shared_artifact('path.bin')
                     outcome = reference_outcomes(org, conn, [row], deadline=time.monotonic()+60)
+                    if expected_status == 409:
+                        assert outcome['path.bin', row['generation']][1] == ['TASK-200'], (label, outcome)
                     assert outcome['path.bin', row['generation']][0] == (
-                        'absent' if complete else 'indeterminate'), (label, outcome)
+                        'absent' if expected_status == 200 else 'live' if expected_status == 409 else 'indeterminate'), (label, outcome)
                 result = sweep(org, 'handoff-path-'+label)
                 assert result['complete'] is complete, (label, result)
                 assert bool(result.get('reference_incomplete', False)) is (not complete), (label, result)
                 assert result['effective_mode'] == 'preview', result
                 started = db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0]
                 assert started == (NOW.isoformat() if complete else None), (label, started)
-                if not complete:
+                if expected_status != 200:
                     assert snapshot(org) == before, label
                     assert result['protected'] == 1, result
-                expected = b'replacement path bytes' if complete else b'original path bytes'
+                expected = b'replacement path bytes' if expected_status == 200 else b'original path bytes'
                 assert (org.root/'artifacts'/'path.bin').read_bytes() == expected, label
                 print(f'PASS handoff-paths:{label}:replacement{response.status_code}:preview_complete={complete}')
 

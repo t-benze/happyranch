@@ -176,7 +176,11 @@ text bound; required live-closure text exceeding that bound still makes the
 proof indeterminate. The100,000-row and shared deadline bounds also cover the
 task metadata scan; unknown statuses and missing/malformed required handoffs
 remain indeterminate. Open-thread and skill-source projection is unchanged.
-Foreign-org qualified task paths are not same-org handoffs.
+Relative and absolute org-qualified task paths compare org identity after the
+single percent-decode used by the ASGI path: only a valid decoded slug different
+from this org is foreign and excluded. Malformed escapes, invalid UTF-8,
+invalid slugs (including decoded slashes or a still-encoded percent after one
+decode) retain the handoff, so missing required tasks remain indeterminate.
 Outcomes are collected
 before own audit writes; no snapshot survives COMMIT or lock release. The final
 lifecycle/unlink caller must retain that fence through its decision. Structured
