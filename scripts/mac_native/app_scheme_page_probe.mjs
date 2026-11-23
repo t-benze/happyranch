@@ -16,6 +16,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const source = readFileSync(resolve(root, 'app/mac/Sources/HappyRanchApp/AppSchemeScripts.swift'), 'utf8');
 const page = source.split('static let page = #"""\n')[1].split('\n"""#')[0];
+const diagnostics = source.split('static let diagnostics = #"""\n')[1]?.split('\n"""#')[0];
 const posts = [];
 let receipt;
 const window = {
@@ -26,9 +27,51 @@ const window = {
   } } } },
 };
 const context = '11'.repeat(16);
-vm.runInNewContext(page, { window, top: window, location: { origin: 'happyranch-app://app' },
-  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, Map, Object, Uint8Array });
+const sandbox = { window, top: window, location: { origin: 'happyranch-app://app', protocol:'happyranch-app:', host:'app' },
+  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, document: { readyState:'complete' }, Map, Object, Uint8Array };
+vm.runInNewContext(page, sandbox);
 assert.equal(window.__hrAppContext, context, 'shipping relay must create a document context');
+assert.equal(window.__hrAppBootstrap?.stage, 'complete', 'shipping relay must mark successful bootstrap');
+const readFacts = environment => vm.runInNewContext(`(() => {${diagnostics}})()`, environment);
+assert.equal(readFacts(sandbox).bootstrap, 'complete');
+assert.equal(readFacts(sandbox).origin, 'app');
+assert.ok(!JSON.stringify(readFacts(sandbox)).includes(context), 'diagnostics must never contain the context token');
+for (const [label, expectedStage, throws] of [
+  ['not-injected', 'missing', false],
+  ['opaque-origin', 'refused-origin', false],
+  ['foreign-origin', 'refused-origin', false],
+  ['subframe', 'refused-top-frame', false],
+  ['missing-webkit', 'native-handler', true],
+  ['throwing-handler', 'native-handler', true],
+  ['missing-crypto', 'context-random', true],
+  ['context-collision', 'context-define', true],
+]) {
+  const probe = { fetch() {}, webkit: { messageHandlers: { appTransport: { postMessage() {} } } }, isSecureContext:false };
+  const environment = { window:probe, top:probe,
+    location:{ origin:'happyranch-app://app', protocol:'happyranch-app:', host:'app' },
+    crypto:{ getRandomValues:bytes => bytes.fill(0x11) }, document:{ readyState:'complete' } };
+  if (label === 'opaque-origin') environment.location.origin = 'null';
+  if (label === 'foreign-origin') environment.location = { origin:'https://foreign.invalid', protocol:'https:', host:'foreign.invalid' };
+  if (label === 'subframe') environment.top = {};
+  if (label === 'missing-webkit') delete probe.webkit;
+  if (label === 'throwing-handler') Object.defineProperty(probe.webkit.messageHandlers, 'appTransport', {
+    get() { throw new TypeError('synthetic handler failure'); },
+  });
+  if (label === 'missing-crypto') delete environment.crypto;
+  if (label === 'context-collision') Object.defineProperty(probe, '__hrAppContext', { value:false });
+  if (label !== 'not-injected') {
+    if (throws) assert.throws(() => vm.runInNewContext(page, environment), undefined, label);
+    else vm.runInNewContext(page, environment);
+  }
+  const facts = readFacts(environment);
+  assert.equal(facts.bootstrap, expectedStage, label);
+  assert.equal(facts.origin, label === 'opaque-origin' ? 'null' : label === 'foreign-origin' ? 'other' : 'app', label);
+  assert.equal(facts.top, label === 'subframe' ? 'false' : 'true', label);
+  assert.equal(facts.secure, 'false', label);
+  assert.equal(facts.appTransport, label === 'missing-webkit' ? 'undefined' : label === 'throwing-handler' ? 'threw' : 'object', label);
+  assert.notEqual(typeof probe.__hrAppContext, 'string', `${label}: failure must not gain a valid context`);
+  assert.ok(!JSON.stringify(facts).includes(context), `${label}: diagnostic token exclusion`);
+}
 assert.deepEqual(Object.keys(window.happyranchConnection).sort(), ['call', 'on'], 'public API stays unchanged');
 const target = await import(pathToFileURL(resolve(root, 'web/src/lib/native/target.ts')));
 target.__setNativeBridgeForTests(window.happyranchConnection);
@@ -70,4 +113,4 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(posts.at(-1).context, context, 'outgoing relay cannot acquire a replacement context');
 receipt('{}');
 await late;
-console.log('PASS: document-bound shipped owner push, admission, delayed acknowledgement and refused receipt');
+console.log('PASS: shipped bootstrap diagnostics distinguish missing/refused/throwing stages without tokens; document-bound owner push, admission and receipt gates');

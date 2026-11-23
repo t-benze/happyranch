@@ -7,7 +7,28 @@ struct AppSchemeAdmissionDiagnostic: Sendable, CustomStringConvertible {
     var contextRead = "not-attempted"
     var bind = "not-attempted"
     var readiness = "not-attempted"
-    var description: String { "context=\(contextRead), bind=\(bind), readiness=\(readiness)" }
+    var pageFacts = "not-attempted"
+    mutating func recordPageFacts(_ raw: Any) {
+        let facts = raw as? [String: String] ?? [:]
+        let types = ["undefined", "object", "function", "boolean", "number", "string", "symbol", "bigint", "threw"]
+        let fields: [(String, [String])] = [
+            ("bootstrap", ["missing", "entered", "top-frame-check", "refused-top-frame", "origin-check", "refused-origin",
+                           "native-handler", "context-random", "context-define", "facade-define", "fetch-install", "complete", "threw"]),
+            ("initialOrigin", ["missing", "not-read", "app", "null", "other", "threw"]),
+            ("initialTop", ["missing", "not-read", "true", "false", "threw"]),
+            ("origin", ["app", "null", "other", "threw"]),
+            ("protocol", ["app", "other", "threw"]), ("host", ["app", "other", "threw"]),
+            ("top", ["true", "false", "threw"]), ("secure", ["true", "false", "undefined", "threw"]),
+            ("webkit", types), ("handlers", types), ("appTransport", types), ("postMessage", types),
+            ("crypto", types), ("random", types), ("readyState", ["loading", "interactive", "complete", "threw"])
+        ]
+        // Do not retain arbitrary page strings (including a forged marker/token).
+        pageFacts = fields.map { key, allowed in
+            let value = facts[key] ?? "invalid"
+            return "\(key)=\(allowed.contains(value) ? value : "invalid")"
+        }.joined(separator: ", ")
+    }
+    var description: String { "context=\(contextRead), bind=\(bind), readiness=\(readiness), page={\(pageFacts)}" }
 }
 
 struct AppSchemeLoadFailure: Error, Sendable, CustomStringConvertible {
@@ -234,6 +255,17 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         } catch {
             if diagnostic.contextRead == "in-flight" { diagnostic.contextRead = "threw" }
             if diagnostic.bind == "in-flight" { diagnostic.bind = "threw" }
+            if stage == .relayContextRead, let view, document == expected {
+                diagnostic.pageFacts = "in-flight"
+                do {
+                    let facts = try await view.callAsyncJavaScript(AppSchemeScripts.diagnostics, arguments: [:], in: nil, in: .page)
+                    if document == expected, self.view === view { diagnostic.recordPageFacts(facts) }
+                    else { diagnostic.pageFacts = "document-changed"; stage = .documentIdentityCheck }
+                } catch {
+                    diagnostic.pageFacts = "read-threw"
+                    if document != expected || self.view !== view { stage = .documentIdentityCheck }
+                }
+            }
             if stage == .readiness {
                 diagnostic.readiness = state
                 if error is CancellationError || (error as? AppAPIError) == .cancelled { stage = .cancellationFence }

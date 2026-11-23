@@ -4192,7 +4192,10 @@ compiler-error/context retention outside head/tail with a 64 KiB JSON bound
 and explicit truncation. This standalone
 venue also executes the shipped page facade with the existing shared owner
 registry/save-receipt gate under Node 24: pending summary delivery, waiting for
-native receipt and refusal of an invalid receipt. It does not establish native
+native receipt and refusal of an invalid receipt. The same probe exercises
+bootstrap diagnostics for missing injection, origin/top-frame refusal, throwing
+handler lookup, missing randomness and context-definition failure without
+recording the context token. It does not establish native
 owner retention. No retired Python units run. No shared web source changed in MAC-1;
 Web static analysis remains part of `scripts/local_ci.sh all`.
 
@@ -4204,6 +4207,7 @@ and the production navigation delegate's packaged-page load/admission cases,
 then qualifies the production loader, body adapter and SPA against a private
 synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Only the QA leg may execute it after exact-head independent review APPROVE,
-within the PR's combined six-run unsigned build ledger. Native execution,
+within the PR's founder-approved combined unsigned build allowance (current
+ledger in the PR body). Native execution,
 Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
 the Linux maker. This adds no required check, job definition edit or E2E run.

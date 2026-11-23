@@ -74,6 +74,19 @@ native source status alongside the sanitized callback URL. Health refusal tests
 must reach readiness with at least one health invocation and successful relay
 context/bind; a navigation failure cannot satisfy a negative health row.
 
+A relay-context refusal also captures a pre-guard bootstrap marker and the last
+script stage (top/origin guard, native handler lookup, randomness, context
+definition, facade definition, fetch installation or completion). Failure-only
+page facts classify initial/current origin as app, null or other, and report
+the exact app protocol/host matches, top-frame and secure-context flags,
+WebKit/handler/postMessage and crypto/randomness types, and document readiness.
+Throwing lookups are explicit. Native retains only closed keys/values, with no
+context token, arbitrary page strings, URL paths/queries or JavaScript error
+messages; it checks document/view identity across this diagnostic read. A missing
+marker distinguishes unobserved injection from an observed guard refusal or
+interrupted script stage. Build 59 did not capture these facts, so its missing
+context cause remains unproven; the next authorized Mac build must attribute it.
+
 `AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
 32 requests (two with bodies), 64 MiB bodies and the native target generation.
 The document-start adapter serializes request bodies, assigns cancellation IDs
@@ -173,7 +186,8 @@ periodic connected → busy/unknown → ready monitor, unchanged lifetime/webURL
 no session reopen/replay and genuine revocation teardown in the existing
 HomeInviteModelTests venue.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
-PR's combined six-run unsigned allowance across Jenkins and GitHub Actions.
+PR's combined ten-run unsigned allowance across Jenkins and GitHub Actions
+(Founder THR-387 seq134; builds 54–59 used, four remain, next build 60).
 The PR body records the current build ledger. No diagnostic-only run,
 extra retry, new Jenkins job or required check is added.
 

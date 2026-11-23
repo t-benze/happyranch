@@ -1148,6 +1148,7 @@ all per-event latency measurements; Jenkins process completion alone is not
 native acceptance. See [thresholds and limits](../../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 
 For this PR, each Jenkins run and GitHub Actions unsigned build consumes the
-same six-run allowance. Prior exact-head code_reviewer APPROVE, an intent before
+same ten-run allowance (Founder THR-387 seq134; current ledger in the PR body).
+Prior exact-head code_reviewer APPROVE, an intent before
 one POST, queue-to-executable build selection and the PR ledger remain required.
 The maker performs no Mac build. No S0 allowance is renewed.

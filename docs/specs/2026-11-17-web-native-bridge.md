@@ -1707,7 +1707,7 @@ that condition. The suite separately requires rendered SPA `/settings` after a
 real reload. JSON methods, serialized 10 MiB upload/digest and blob-download
 file bytes are additional assertions, not substitutes for per-event timing.
 
-Builds are gated on independent reviewer APPROVE and capped at six combined
-unsigned Jenkins/GitHub Actions runs for this PR. The ledger starts at 0/6 in
-the PR body. No S0 diagnostic allowance, daily E2E trigger, required test/build
+Builds are gated on independent reviewer APPROVE and capped at ten combined
+unsigned Jenkins/GitHub Actions runs for this PR (Founder THR-387 seq134).
+The PR body records the current ledger. No S0 diagnostic allowance, daily E2E trigger, required test/build
 check, dialog/toolbar/menu/local-control/language or launch-policy work is added.

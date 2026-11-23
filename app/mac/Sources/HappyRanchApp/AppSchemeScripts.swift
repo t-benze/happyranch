@@ -4,14 +4,26 @@ import Foundation
 enum AppSchemeScripts {
     static let page = #"""
 (() => {
-  if (window !== top || location.origin !== 'happyranch-app://app') return;
+  // Diagnostic facts only: never put the document context in this marker.
+  const bootstrap = {stage:'entered', origin:'not-read', topFrame:'not-read'};
+  Object.defineProperty(window, '__hrAppBootstrap', {value:bootstrap});
+  bootstrap.stage = 'top-frame-check';
+  bootstrap.topFrame = window === top ? 'true' : 'false';
+  if (window !== top) { bootstrap.stage = 'refused-top-frame'; return; }
+  bootstrap.stage = 'origin-check';
+  bootstrap.origin = location.origin === 'happyranch-app://app' ? 'app' : location.origin === 'null' ? 'null' : 'other';
+  if (location.origin !== 'happyranch-app://app') { bootstrap.stage = 'refused-origin'; return; }
+  bootstrap.stage = 'native-handler';
   const native = window.webkit.messageHandlers.appTransport;
   // Each injected relay belongs to one document. Native releases its calls
   // only after checking this loaded Main context; retirement revokes it there.
+  bootstrap.stage = 'context-random';
   const context = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
   let admit;
   const admitted = new Promise(resolve => { admit = resolve; });
+  bootstrap.stage = 'context-define';
   Object.defineProperty(window, '__hrAppContext', {value: context});
+  bootstrap.stage = 'facade-define';
   Object.defineProperty(window, '__hrAppAdmit', {value: token => {
     if (token !== context) return false;
     admit(); return true;
@@ -35,6 +47,7 @@ enum AppSchemeScripts {
       return () => listeners.get(event)?.delete(handler);
     }
   })});
+  bootstrap.stage = 'fetch-install';
   const original = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     const request = new Request(input, init), url = new URL(request.url);
@@ -93,6 +106,29 @@ enum AppSchemeScripts {
     } catch (error) { abort(); cleanup(); throw error; }
     finally { clearTimeout(timer); }
   };
+  bootstrap.stage = 'complete';
 })();
+"""#
+
+    /// Failure-only observation. Native retains only its closed key/value set.
+    static let diagnostics = #"""
+const read = action => { try { return action(); } catch { return 'threw'; } };
+return {
+  bootstrap:read(() => window.__hrAppBootstrap?.stage ?? 'missing'),
+  initialOrigin:read(() => window.__hrAppBootstrap?.origin ?? 'missing'),
+  initialTop:read(() => window.__hrAppBootstrap?.topFrame ?? 'missing'),
+  origin:read(() => location.origin === 'happyranch-app://app' ? 'app' : location.origin === 'null' ? 'null' : 'other'),
+  protocol:read(() => location.protocol === 'happyranch-app:' ? 'app' : 'other'),
+  host:read(() => location.host === 'app' ? 'app' : 'other'),
+  top:read(() => window === top ? 'true' : 'false'),
+  secure:read(() => String(window.isSecureContext)),
+  webkit:read(() => typeof window.webkit),
+  handlers:read(() => typeof window.webkit?.messageHandlers),
+  appTransport:read(() => typeof window.webkit?.messageHandlers?.appTransport),
+  postMessage:read(() => typeof window.webkit?.messageHandlers?.appTransport?.postMessage),
+  crypto:read(() => typeof crypto),
+  random:read(() => typeof crypto?.getRandomValues),
+  readyState:read(() => document.readyState)
+};
 """#
 }
