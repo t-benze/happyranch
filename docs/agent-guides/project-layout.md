@@ -398,8 +398,12 @@ Runtime container shape:
     |-- kb/                            # per-org KB
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}
-    `-- artifacts/                     # org-shared blob store
+    `-- artifacts/                     # shared file bytes; ownership/expiry/generations in org SQLite
 ```
+
+`SharedArtifactService` owns shared-file metadata, admission, quota and grants;
+`ArtifactStore` owns bytes without policy. See the [Shared Artifacts contract](contracts/shared-artifacts.md)
+for persistent-file eligibility, task-output routing and pending B/D daily expiry/notices rollout.
 
 HTTP routes are per org under `/api/v1/orgs/<slug>/...`; container routes are under `/api/v1/runtime` and `/api/v1/orgs`. Only `schema_version: 2` runtimes are supported.
 

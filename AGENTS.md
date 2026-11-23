@@ -52,13 +52,13 @@ Coding v3 has additive Founder Workflows → Setup Save and separate Allow/Disab
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).
 - Manager supersession creates a successor only for an eligible, still-current root. A still-current non-root manager task that returns `supersede` fails with a `manager supersede refused: non-root task ...` note and wakes its parent; it creates no successor or `manager_supersessions` row.
 - Autonomous thread escalation continuation is retired. Genuine human blockers, including exhausted revise-round or retry budgets, stay escalated. Before a manager-owned root escalates, the THR-181 authority hook may continue the same root; see [authority policy contracts](docs/agent-guides/contracts/authority-policy.md).
-- Each attachment `storage_key` can be claimed by one task only (at most five refs per list, unique across the whole decision). For a new attachment handoff, upload a fresh copy with `happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source`. Never use Shared Artifacts to work around ownership. See [task orchestration contracts](docs/agent-guides/contracts/task-orchestration.md).
+- Each attachment `storage_key` can be claimed by one task only (at most five refs per list, unique across the whole decision). For a new binary handoff, upload a fresh copy with `happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source` and use decision attachments. Never use Shared Artifacts to work around ownership; persistent downloadable deliverables follow the [Shared Artifacts contract](docs/agent-guides/contracts/shared-artifacts.md). See [task orchestration contracts](docs/agent-guides/contracts/task-orchestration.md).
 
 ## Agent-side rules
 
 - Perform side effects through the `happyranch` CLI. The baseline allow rule for every agent is `happyranch`.
 - Completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching. **The `--from-file` path MUST be absolute** (e.g. `/tmp/completion.json`), never relative — a relative path resolves against the agent's cwd and can litter stray files under the runtime orgs root.
-- Keep task-only evidence in `output/<actual-task-id>` and report that `output_dir`.
+- Keep task-only evidence, including routine/automatic screenshots, logs, QA evidence and review packets, in `output/<actual-task-id>/`, report that `output_dir`, and retrieve via `happyranch recall`; binary handoff uses a fresh task attachment.
 - Agents must not self-authorize with ambient credentials. Source delivery never authorizes live migration, deployment, restart, role assignment, activation or cleanup; those need separate explicit authority.
 
 ## Fresh work after failure (Founder THR-291 seq557)
@@ -285,6 +285,7 @@ One line per area; read the linked contract before changing it.
 - **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 - **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
+- **Shared files** (persistent downloadable deliverables, metadata, bounded retention, quota and pending daily expiry/notices rollout): [shared-artifacts.md](docs/agent-guides/contracts/shared-artifacts.md)
 - **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, proven-lock thread release and prepared-only repository settlement, ordinary Pause-unknown crash recovery, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
 - **Teams and org admin**: [teams-and-org-admin.md](docs/agent-guides/contracts/teams-and-org-admin.md)
 - **Threads, routing and naming** (mention routing is unconditional; no switch exists): [threads-and-naming.md](docs/agent-guides/contracts/threads-and-naming.md)
