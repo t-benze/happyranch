@@ -18,7 +18,7 @@ from runtime.remote_access.home_retirement_cutoff import _PEER_RECORD
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory, LegacyManagedMembers, LegacyOwnership
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
-from runtime.remote_access.home_retirement_operations import held_auxiliary_operations
+from runtime.remote_access.home_retirement_operations import held_auxiliary_operations, retire_auxiliary_domains
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal, _NAME as _NATIVE_RECORD
@@ -204,6 +204,25 @@ class InertRetirement:
                     require()
                     exclusion.require()
                 ManagedCleanup(journal, original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_operation_domains(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish original issuer/minter domains under fresh inert proof.
+
+        Original/current empty authority and complete native quiescence remain
+        mandatory even after interrupted domain removal. Trust and original
+        journals remain; this operation supplies no final retirement receipt.
+        """
+        try:
+            journal = RetirementJournal(io, fence)
+            original = journal.load()
+            native_journal = ManagedTransportJournal(ManagedTransport(io, fence, original.managed))
+            owner = cls(journal, original, native_journal, native_journal.load())
+            def require() -> None:
+                owner.require(disabled=True, cleanup=True, native_cleanup=True)
+            retire_auxiliary_domains(journal, original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

@@ -4681,6 +4681,24 @@ ancestors and native reactivation refuse. The shared interpreter, sidecar,
 package registry, binary parent directories, trust, accounts, journals and
 operation domains remain retained. No account disposition, final receipt or
 package-replacement permission is supplied by this entry.
+The separate stopped/inert `remove_operation_domains(io, fence)` entry finishes
+the original issuer lock file, two minter user directories and empty issuer/
+minter roots, after their non-lock leaves/publication are absent. Each effect
+requires fresh complete native quiescence and active original-peer death with
+anchored denial, or original/current inert empty authority. Every surviving
+original domain is acquired without creation and held through removal and
+readback; contention, replacement, unknown contents or proof loss refuses.
+The same open descriptions remain held even after unlink/rmdir. Ordinary
+exclusion and leaf cleanup still refuse missing original domains. Only this
+explicit proof-bearing recovery path admits their absence without recapture;
+absence itself never proves writer death. Original ancestry and remaining
+member identity stay pinned, with parent fsync and fresh absent-name readback.
+When an already removed child has no immediate parent, the later original
+parent entry synchronizes its surviving parent instead. Repeated recovery
+performs no unlink/rmdir/native/IPC replay. Other cleanup that needs the original
+domains must precede this final auxiliary step. Trust, accounts and original
+journals remain; account disposition, final publication and the shipping
+retirement sequence are still unfinished.
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held
@@ -4692,8 +4710,8 @@ inode/custody/mode. Closed issuer/minter names and full signatures on remaining
 regular leaves reject unknown or replaced artifacts before effects. Directory
 contents metadata alone may change during this selective cleanup. No leaf
 contents are opened. Fresh saved objects can repeat auxiliary cleanup without
-unlink replay, but removing the lock domains themselves remains a later
-obligation. Private cleanup uses the same explicit cleanup-mode exclusion to
+unlink replay; the separate domain entry above handles their later removal.
+Private cleanup uses the same explicit cleanup-mode exclusion to
 reconcile original auxiliary non-lock leaf absence, so fresh saved recovery can
 repeat both phases in either order. The strict held-operation context remains
 unchanged. Both cleanup families synchronize and independently read back prior

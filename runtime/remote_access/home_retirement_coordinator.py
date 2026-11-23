@@ -20,7 +20,7 @@ from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, Original
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal, _NAME as _INVENTORY_RECORD
-from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion, held_auxiliary_operations
+from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion, held_auxiliary_operations, retire_auxiliary_domains
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery, RecoveredCutoffReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedStopReceipt, ManagedTransport
@@ -484,6 +484,27 @@ class StoppedRetirement:
                     require()
                     exclusion.require()
                 ManagedCleanup(owner.journal, owner.original, before_effect=guard).remove_directories()
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+            raise RetirementUncertain() from None
+
+    @classmethod
+    def remove_operation_domains(cls, io: ManagedInstaller, fence: RetirementFence) -> None:
+        """Finish original issuer/minter domains after their leaves are gone.
+
+        Missing domains are admitted only under independent original-peer
+        death, anchored denial and current complete native quiescence. Original
+        journals and managed trust remain available; no final receipt is made.
+        """
+        try:
+            owner = cls._saved_owner(io, fence)
+            controller = OwnedService(io, owner.original.ownership.service)
+            recovery = OriginalDeathRecovery(owner.cutoff, owner.native_journal, native_cleanup=True)
+            def require() -> None:
+                owner._require_records()
+                controller.observe_cleanup(owner.original.ownership.native)
+                recovery.recover().require()
+                controller.observe_cleanup(owner.original.ownership.native)
+            retire_auxiliary_domains(owner.journal, owner.original, before_effect=require)
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
             raise RetirementUncertain() from None
 

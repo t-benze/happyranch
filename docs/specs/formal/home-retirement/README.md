@@ -47,8 +47,9 @@ stopped/cutoff proof and held original serialization domains before every
 unlink. Original lock files/directories remain pinned and retained; fresh
 cleanup contexts reconcile absent original non-lock leaves without recapture.
 Closed directory names, full remaining-leaf identity, parent sync and absence
-readback are real-code obligations abstracted by Remove. Lock-domain removal,
-managed/native cleanup and final completion remain unfinished. Private cleanup
+readback are real-code obligations abstracted by Remove. The separate final
+domain entry is mapped below; remaining managed/native cleanup and final
+completion remain unfinished. Private cleanup
 now uses explicit cleanup-mode exclusion so fresh saved recovery can repeat both
 phases in either order, retaining original lock domains. Already absent original
 leaves still require synchronization of their original parents and absent-name
@@ -75,7 +76,7 @@ also map to Remove: current stopped/disabled proof, original empty authority,
 remaining-leaf custody and held original operation locks guard each selective
 private/auxiliary/managed removal. Lost parent sync is reconciled without
 unlink replay using the same originals. These entries retain native artifacts,
-accounts, journals and lock domains; removal of those final obligations,
+accounts, journals and lock domains. Separate removal entries are mapped below;
 account disposition, final receipt and pre-unpack integration remain unfinished.
 The stopped and inert `remove_private_directories` entries also map to Remove:
 after all private leaves are absent, only the four fixed original empty private
@@ -125,6 +126,21 @@ fresh recovery reconciles a lost sync without unlink/native replay. Shared
 interpreter/sidecar, registry, payload parents, trust, accounts and domains stay
 retained. This uses the existing Remove abstraction and supplies no final
 receipt or new completion claim; final cleanup and publication remain unfinished.
+
+Stopped/inert `remove_operation_domains` also maps to the existing Remove
+action. The original issuer file lock, two minter directory locks and empty
+issuer/minter roots can be removed only after their non-lock leaves are gone.
+Independent current native quiescence and active original-death/anchored-denial
+or historical/current inert empty authority guard acquisition, every effect
+and final readback. Surviving original descriptions remain held after unlink/
+rmdir until scope exit. Only this explicit proof-bearing path admits prior
+domain absence; ordinary exclusion stays strict and absence supplies no death
+proof. Original ancestry, remaining-member custody, empty-root rmdir, parent
+sync and fresh absence are real-code obligations. A removed parent's surviving
+parent is synchronized during recovery without replaying child removal. Other
+cleanup requiring those domains precedes this step. The trust pair, accounts
+and original journals remain; final receipt/publication and pre-unpack sequence
+remain unfinished. No new model action or completion claim is introduced.
 
 The model's additional inert initial branch abstracts these independently
 proven empty authority facts as already satisfied Denied/Closed predicates.

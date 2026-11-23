@@ -1942,6 +1942,127 @@ def test_auxiliary_cleanup_checks_each_next_effect(
         assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS)
 
 
+@pytest.mark.parametrize('boundary', ['complete', 'lock-sync', 'root-sync', 'proof-loss'])
+def test_auxiliary_domain_cleanup_recovers_without_replaying_original_removals(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    import sys
+    from runtime.remote_access import home_retirement_operations as operations
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations, retire_auxiliary_domains
+    auxiliary_setup(fixture)
+    fixture.file('local-work/keep', b'synthetic-local-work')
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+            exclusion.remove_leaves(before_effect=lambda: None)
+        domains = {*OPERATION_LOCKS, ISSUER, MINTER}
+        before = fixture.snapshot()
+        real_unlink, real_rmdir, real_sync = os.unlink, os.rmdir, os.fsync
+        removed, synced = [], []
+        interrupted = False
+        def guard():
+            for path in OPERATION_LOCKS:
+                if (fixture.root / path).exists():
+                    assert writer_lock(fixture.root, path) == 73
+        def remove(operation, name, dir_fd):
+            path = str((Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name).relative_to(fixture.root))
+            assert path in domains
+            guard()
+            operation(name, dir_fd=dir_fd)
+            removed.append(path)
+        def unlink(name, *, dir_fd=None):
+            remove(real_unlink, name, dir_fd)
+        def rmdir(name, *, dir_fd=None):
+            remove(real_rmdir, name, dir_fd)
+        def sync(fd):
+            nonlocal interrupted
+            # Journal readback also synchronizes its evidence. Observe the
+            # domain owner's own syscall separately, without mocking readback.
+            if sys._getframe(1).f_code.co_filename != operations.__file__:
+                return real_sync(fd)
+            relative = str(Path(os.readlink(f'/proc/self/fd/{fd}')).relative_to(fixture.root))
+            synced.append(relative)
+            if not interrupted and removed and (
+                    boundary == 'lock-sync' and removed[-1] == OPERATION_LOCKS[0]
+                    or boundary == 'root-sync' and removed[-1] == MINTER):
+                interrupted = True
+                raise OSError('synthetic original domain parent sync interruption')
+            real_sync(fd)
+        # Admission proves independently before locks; contention assertions
+        # belong at actual removals, after surviving originals are acquired.
+        def proof():
+            if boundary == 'proof-loss' and removed and not interrupted:
+                raise RetirementUncertain()
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            scoped.setattr(os, 'rmdir', rmdir)
+            scoped.setattr(os, 'fsync', sync)
+            def fresh():
+                reopened = RetirementJournal(fixture.io, fence)
+                retire_auxiliary_domains(reopened, reopened.load(), before_effect=proof)
+            if boundary != 'complete':
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    fresh()
+                assert removed
+                interrupted = True
+            fresh()
+            assert set(removed) == domains and len(removed) == len(domains)
+            count = len(synced)
+            fresh()
+            assert len(removed) == len(domains) and len(synced) == count + 2
+        assert all(not (fixture.root / path).exists() for path in domains)
+        after = fixture.snapshot()
+        assert set(before) - set(after) == domains
+        assert all(after[path] == value for path, value in before.items()
+                   if path in after and not stat.S_ISDIR(value[4]))
+        assert journal.load() == original and fixture.effects() == []
+        assert not (fixture.root / STATE / 'home-retirement.json').exists()
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            with held_auxiliary_operations(journal, original, cleanup=True):
+                pytest.fail('ordinary cleanup must not adopt missing original domains')
+
+
+@pytest.mark.parametrize('damage', ['remaining-leaf', 'domain', 'parent', 'unknown', 'proof', 'contention'])
+def test_auxiliary_domain_cleanup_refuses_before_any_effect(
+        fixture: InventoryFixture, damage: str) -> None:
+    import fcntl
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    from runtime.remote_access.home_retirement_operations import held_auxiliary_operations, retire_auxiliary_domains
+    auxiliary_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+        if damage != 'remaining-leaf':
+            with held_auxiliary_operations(journal, original, cleanup=True) as exclusion:
+                exclusion.remove_leaves(before_effect=lambda: None)
+        if damage == 'domain':
+            target = fixture.root / OPERATION_LOCKS[0]
+            target.rename(fixture.root.parent / 'retained-original-lock')
+            fixture.file(OPERATION_LOCKS[0], b'')
+        elif damage == 'parent':
+            (fixture.root / MINTER).rename(fixture.root.parent / 'retained-original-minter')
+            fixture.directory(MINTER).chmod(0o700)
+        elif damage == 'unknown':
+            fixture.file(ISSUER + '/unknown', b'synthetic-foreign')
+        def proof():
+            if damage == 'proof':
+                raise RetirementUncertain()
+        descriptor = os.open(fixture.root / OPERATION_LOCKS[0], os.O_RDONLY) if damage == 'contention' else None
+        try:
+            if descriptor is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = fixture.snapshot()
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                retire_auxiliary_domains(journal, original, before_effect=proof)
+            assert fixture.snapshot() == before and fixture.effects() == []
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        assert all(writer_lock(fixture.root, path) == 0 for path in OPERATION_LOCKS
+                   if (fixture.root / path).exists())
+
+
 @pytest.mark.parametrize('state', ['unchanged', 'runtime-flush', 'missing-original'])
 def test_private_cleanup_removes_only_original_leaves_and_reuses_absence(
         fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
