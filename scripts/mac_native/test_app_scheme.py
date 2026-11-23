@@ -15,7 +15,7 @@ from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, rea
 
 def evidence() -> tuple[list[dict], list[dict]]:
     events = [dict(event='root', path='/onboarding', root=1),
-              dict(event='deep_reload', path='/settings', origin='happyranch-app://app', root=1)]
+              dict(event='deep_reload', path='/onboarding', origin='happyranch-app://app', root=1)]
     for method in ('POST', 'PUT'):
         events.append(dict(event='json', method=method, bytes=20, intact=True,
                            sha256=hashlib.sha256(b'{"synthetic":"mac1"}').hexdigest()))
@@ -33,6 +33,54 @@ def evidence() -> tuple[list[dict], list[dict]]:
 
 
 class QualificationVerdictTests(unittest.TestCase):
+    def test_command_retains_xctest_outcomes_and_closed_loader_diagnostics(self) -> None:
+        outcomes = [f"Test Case '-[HappyRanchAppTests.AppSchemeLoadTests testCase{index}]' passed (0.001 seconds)"
+                    for index in range(12)]
+        page_facts = dict(bootstrap='complete', initialOrigin='app', initialTop='true', origin='app', protocol='app',
+                          host='app', top='true', secure='false', readyState='complete', webkit='object',
+                          handlers='object', appTransport='object', postMessage='function', crypto='object', random='function')
+        diagnostic = dict(label='ready', checkpoint='initial', contextRead='valid', bind='true', readiness='ready',
+                          contextResult='string', bindResult='bool', diagnosticsResult='dictionary',
+                          pageFacts=', '.join(f'{key}={value}' for key, value in page_facts.items()), healthInvocations=1,
+                          loaded=1, failed=0, callbacks=3)
+        forged = {**diagnostic, 'label': 'synthetic-private-value', 'contextRead': 'synthetic-private-value',
+                  'pageFacts': 'origin=synthetic-private-value, secret=synthetic-private-value',
+                  'context': 'synthetic-private-value', 'callbacks': 'synthetic-private-value'}
+        middle = '\n'.join(outcomes + ['MAC1_LOADER ' + json.dumps(row) for row in (diagnostic, forged)])
+        raw = (b'warning\n' * 2000 + middle.encode() + b'\n' + b'warning\n' * 2000)
+        for code in (0, 1):
+            with self.subTest(code=code), tempfile.TemporaryDirectory(dir=ROOT) as folder:
+                report = {}
+                with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                    'scripts.mac_native.suite_app_scheme._command', side_effect=[(code, raw), (1, b'')],
+                ):
+                    with self.assertRaisesRegex(RuntimeError, ('macos' if code == 0 else 'swift_version') + ' failed'):
+                        run(report)
+                row = json.loads(json.dumps(report))['app_scheme']['commands'][0]
+                self.assertNotIn('Test Case', row['head'] + row['tail'])
+                self.assertEqual(row.get('test_results', {}).get('lines'), outcomes)
+                self.assertFalse(row['test_results']['truncated'])
+                retained = row.get('loader_diagnostics', {})
+                self.assertEqual(retained.get('matching_lines'), 2)
+                self.assertFalse(retained['truncated'])
+                self.assertEqual(retained['rows'][0], {**diagnostic, 'pageFacts': page_facts})
+                self.assertNotIn('synthetic-private-value', json.dumps(retained))
+
+    def test_loader_diagnostics_report_explicit_bounded_truncation(self) -> None:
+        raw = (b'MAC1_LOADER {"label":"ready","checkpoint":"initial"}\n' * 2000)
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            report = {}
+            with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                'scripts.mac_native.suite_app_scheme._command', return_value=(1, raw),
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'swift_version failed'):
+                    run(report)
+            retained = report['app_scheme']['commands'][0].get('loader_diagnostics', {})
+            self.assertEqual(retained.get('matching_lines'), 2000)
+            self.assertTrue(retained['truncated'])
+            self.assertGreater(len(retained['rows']), 0)
+            self.assertLessEqual(len(json.dumps(retained).encode()), 65536)
+
     def test_failed_command_retains_bounded_error_context_in_report(self) -> None:
         # Drive the suite's actual failure/report boundary without running Mac tools.
         middle = (b'preceding context\nExample.swift:42:7: error: missing argument\n'
@@ -141,6 +189,11 @@ class QualificationVerdictTests(unittest.TestCase):
         self.assertEqual(len(result['measurements']), 7)
         self.assertTrue(result['partial'])
         self.assertEqual(assess(events, sends, 0, b'wrong')['status'], 'FAIL')
+        for path in ('/', '/settings'):
+            with self.subTest(path=path):
+                events, sends = evidence()
+                next(row for row in events if row['event'] == 'deep_reload')['path'] = path
+                self.assertFalse(assess(events, sends, 0, b'mac1 download\n')['deep_reload_pass'])
 
     def test_partial_event_file_keeps_prior_receipts(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -4189,7 +4189,10 @@ native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
 abort and post-stop writes, partial JSONL retention, root/body/download evidence
 requirements, private fixture authentication/JSON bytes, and failed-command
 compiler-error/context retention outside head/tail with a 64 KiB JSON bound
-and explicit truncation. This standalone
+and explicit truncation. It also checks command-report retention of all 12
+individual XCTest outcomes outside head/tail, closed loader fact projection
+(including all 15 page facts and exclusion of context/arbitrary values), and
+explicit truncation at the 64 KiB loader diagnostic bound. This standalone
 venue also executes the shipped page facade with the existing shared owner
 registry/save-receipt gate under Node 24: pending summary delivery, waiting for
 native receipt and refusal of an invalid receipt. The same probe exercises
@@ -4201,6 +4204,8 @@ result classes/redaction (including Boolean versus numeric NSNumber and Void),
 and the loader table requires string context and Boolean bind results from the
 value-returning `contentWorld:` async API. Failure traces retain the result
 class for context, bind and diagnostics alongside the 15 closed page facts.
+Successful loader rows and ready checkpoints now emit those same closed facts
+and callback/health counts, collected separately from compiler output.
 Portable execution does not establish native owner retention or admission.
 No retired Python units run. No shared web source changed in MAC-1;
 Web static analysis remains part of `scripts/local_ci.sh all`.
@@ -4212,6 +4217,13 @@ on Linux. On Mac it compiles the product plus focused Swift parser/route tests
 and the production navigation delegate's packaged-page load/admission cases,
 then qualifies the production loader, body adapter and SPA against a private
 synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+The deep reload targets stable `/onboarding` for the empty-org fixture:
+desktop `/settings` intentionally opens a dialog then returns Main to `/`.
+Native qualification additionally requires the reload navigation and scheme
+handler to use the deep path, preventing a reload of `/` plus redirect from
+passing. Failure-only closed diagnostics retain requested/served paths,
+navigation decision/path and final pathname, including navigation/admission
+failure and reload timeout.
 Only the QA leg may execute it after exact-head independent review APPROVE,
 within the PR's founder-approved combined unsigned build allowance (current
 ledger in the PR body). Native execution,

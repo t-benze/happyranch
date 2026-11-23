@@ -95,12 +95,34 @@ final class AppSchemeLoadTests: XCTestCase {
                 scheme.configure(config)
                 let view = WKWebView(frame: .zero, configuration: config)
                 view.navigationDelegate = coordinator
+                func retainDiagnostics(_ checkpoint: String) async {
+                    var diagnostic = scheme.documentAdmission
+                    do {
+                        let facts: Any? = try await view.callAsyncJavaScript(AppSchemeScripts.diagnostics,
+                            arguments: [:], in: nil, contentWorld: .page)
+                        diagnostic.diagnosticsResult = AppSchemeAdmissionDiagnostic.resultType(facts)
+                        diagnostic.recordPageFacts(facts)
+                    } catch {
+                        diagnostic.diagnosticsResult = "threw"; diagnostic.pageFacts = "read-threw"
+                    }
+                    // Never print phase/detail, URLs, health bytes, drafts or
+                    // context values. Only closed admission facts and counts.
+                    let row: [String: Any] = ["label": label, "checkpoint": checkpoint,
+                        "contextRead": diagnostic.contextRead, "bind": diagnostic.bind, "readiness": diagnostic.readiness,
+                        "contextResult": diagnostic.contextResult, "bindResult": diagnostic.bindResult,
+                        "diagnosticsResult": diagnostic.diagnosticsResult, "pageFacts": diagnostic.pageFacts,
+                        "healthInvocations": transport.healthInvocations,
+                        "loaded": loaded.count, "failed": failed.count, "callbacks": coordinator.callbackURLs.count]
+                    if let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
+                       let text = String(data: data, encoding: .utf8) { print("MAC1_LOADER " + text) }
+                }
                 phase = "attach / Coordinator selected-owner load admission"
                 scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
                 let deadline = Date().addingTimeInterval(5)
                 while loaded.isEmpty && failed.isEmpty && Date() < deadline {
                     try await Task.sleep(for: .milliseconds(10))
                 }
+                await retainDiagnostics("initial")
                 XCTAssertEqual(loaded, ready ? [selected] : [], detail(health))
                 XCTAssertEqual(failed, ready ? [] : [selected], detail(health))
                 XCTAssertGreaterThanOrEqual(transport.healthInvocations, 1, detail("Every row must reach health admission"))
@@ -129,6 +151,7 @@ final class AppSchemeLoadTests: XCTestCase {
                         """, arguments: ["generation": scheme.generation], in: nil, contentWorld: .page)
                     XCTAssertEqual(transport.mutations, 1, detail("Must reach the post-forward failure input"))
                     XCTAssertEqual(outcome as? String, "failed", detail("No headers is not proof of no send"))
+                    await retainDiagnostics("lost-reply")
 
                     // Readiness publication is the same production seam used by
                     // WebView.updateNSView after HomeInviteModel's periodic check.
@@ -150,6 +173,7 @@ final class AppSchemeLoadTests: XCTestCase {
                         XCTAssertEqual(view.url, documentURL, detail())
                         XCTAssertFalse(pending.isCancelled, detail("Busy/ready must not stop an in-flight mutation"))
                         XCTAssertEqual(transport.mutations, 2, detail("Readiness recovery must never replay"))
+                        await retainDiagnostics(busy ? "busy" : "ready")
                     }
                     // A previously started health read cannot overwrite a newer
                     // busy → ready publication when its cancellation returns late.
@@ -167,11 +191,13 @@ final class AppSchemeLoadTests: XCTestCase {
                     let recoveredStatus = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, contentWorld: .page)
                     XCTAssertEqual(recoveredStatus as? String, "ready", detail("Old admission cancellation cannot replace newer readiness"))
                     XCTAssertFalse(pending.isCancelled, detail())
+                    await retainDiagnostics("recovered")
                     phase = "ready: original pending result"
                     pending.emit(.response(200, ["content-type": "text/plain"]))
                     pending.emit(.bytes(Data("original result".utf8))); pending.finish()
                     let result = try await view.callAsyncJavaScript("return await window.pendingResult;", arguments: [:], in: nil, contentWorld: .page)
                     XCTAssertEqual(result as? String, "original result", detail())
+                    await retainDiagnostics("pending-result")
 
                     // Real handler messages carry the sending relay's context;
                     // a retired clean summary cannot replace new unknown evidence.
@@ -221,6 +247,7 @@ final class AppSchemeLoadTests: XCTestCase {
                     let replacementClean = try await push(clean, context: replacement)
                     XCTAssertEqual(replacementClean, "accepted", detail())
                     XCTAssertFalse(scheme.allowsNavigation, detail("Retired pending uncertainty survives late pushes and replacement clean evidence"))
+                    await retainDiagnostics("retired-document")
                 }
                 phase = "closed scheme: late completion"
                 scheme.close()
@@ -229,6 +256,7 @@ final class AppSchemeLoadTests: XCTestCase {
                 coordinator.scheme = nil
                 coordinator.webView(view, didFinish: nil)
                 XCTAssertEqual(loaded.count, ready ? 1 : 0, detail())
+                await retainDiagnostics("closed")
             } catch {
                 XCTFail(detail("threw \(String(reflecting: error))"))
             }

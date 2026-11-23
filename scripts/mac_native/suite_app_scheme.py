@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
-from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command
+from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _test_results
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
@@ -151,6 +151,66 @@ def _error_context(raw: bytes) -> dict[str, Any]:
     return {'text': text, 'matching_lines': len(matches), 'truncated': truncated}
 
 
+def _loader_diagnostics(raw: bytes) -> dict[str, Any]:
+    """Retain only closed loader facts, independently of warning volume/tail."""
+    result_types = {'not-attempted', 'in-flight', 'nil', 'null', 'string', 'dictionary', 'number', 'bool', 'other', 'threw'}
+    types = {'undefined', 'object', 'function', 'boolean', 'number', 'string', 'symbol', 'bigint', 'threw'}
+    allowed = {
+        'label': {'missing-contract', 'host-too-old', 'app-too-old', 'busy', 'busy-unknown', 'ready'},
+        'checkpoint': {'initial', 'lost-reply', 'busy', 'ready', 'recovered', 'pending-result', 'retired-document', 'closed'},
+        'contextRead': {'not-attempted', 'in-flight', 'string-unchecked', 'missing-or-non-string', 'valid', 'threw'},
+        'bind': {'not-attempted', 'in-flight', 'true', 'false', 'missing-or-non-boolean', 'threw'},
+        'readiness': {'not-attempted', 'in-flight', 'target_starting', 'ready', 'busy', 'incompatible', 'unreachable'},
+        **dict.fromkeys(('contextResult', 'bindResult', 'diagnosticsResult'), result_types),
+    }
+    page_allowed = {
+        'bootstrap': {'missing', 'entered', 'top-frame-check', 'refused-top-frame', 'origin-check', 'refused-origin',
+                      'native-handler', 'context-random', 'context-define', 'facade-define', 'fetch-install', 'complete', 'threw'},
+        'initialOrigin': {'missing', 'not-read', 'app', 'null', 'other', 'threw'},
+        'initialTop': {'missing', 'not-read', 'true', 'false', 'threw'},
+        'origin': {'app', 'null', 'other', 'threw'}, 'protocol': {'app', 'other', 'threw'},
+        'host': {'app', 'other', 'threw'}, 'top': {'true', 'false', 'threw'},
+        'secure': {'true', 'false', 'undefined', 'threw'}, 'readyState': {'loading', 'interactive', 'complete', 'threw'},
+        **dict.fromkeys(('webkit', 'handlers', 'appTransport', 'postMessage', 'crypto', 'random'), types),
+    }
+    rows = []
+    matching = used = 0
+    truncated = False
+    for line in raw.decode(errors='replace').splitlines():
+        if not line.startswith('MAC1_LOADER '):
+            continue
+        matching += 1
+        try:
+            source = json.loads(line.removeprefix('MAC1_LOADER '))
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(source, dict):
+            continue
+        row: dict[str, Any] = {key: value if isinstance(value, str) and value in values else 'invalid'
+                               for key, values in allowed.items() if (value := source.get(key)) is not None}
+        for key in ('healthInvocations', 'loaded', 'failed', 'callbacks'):
+            value = source.get(key)
+            if type(value) is int and 0 <= value <= 10000:
+                row[key] = value
+        facts = source.get('pageFacts')
+        if isinstance(facts, str) and facts in {'not-attempted', 'in-flight', 'document-changed', 'read-threw'}:
+            row['pageFacts'] = facts
+        elif isinstance(facts, str):
+            page = {}
+            for part in facts.split(', '):
+                key, _, value = part.partition('=')
+                if key in page_allowed:
+                    page[key] = value if value in page_allowed[key] else 'invalid'
+            row['pageFacts'] = page
+        size = len(json.dumps(row).encode()) + 2
+        if used + size > 65536 - 256:
+            truncated = True
+            continue
+        rows.append(row)
+        used += size
+    return {'rows': rows, 'matching_lines': matching, 'truncated': truncated}
+
+
 def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code: int | None,
            download: bytes | None) -> dict[str, Any]:
     """Only measured per-event receipts can qualify streaming; EOF is insufficient."""
@@ -185,7 +245,7 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
                                    and row['nativeWallMs'] > stop['nativeWallMs'] for row in events)
     abort_ok = delay is not None and 0 <= delay < ABORT_MS and post_stop_writes == 0
     root_ok = any(row.get('event') == 'root' and row.get('path') == '/onboarding' and row.get('root', 0) > 0 for row in events)
-    deep_ok = any(row.get('event') == 'deep_reload' and row.get('path') == '/settings'
+    deep_ok = any(row.get('event') == 'deep_reload' and row.get('path') == '/onboarding'
                   and row.get('origin') == 'happyranch-app://app' and row.get('root', 0) > 0 for row in events)
     json_ok = all(any(row.get('event') == 'json' and row.get('method') == method and row.get('bytes') == 20
                       and row.get('sha256') == hashlib.sha256(b'{"synthetic":"mac1"}').hexdigest()
@@ -221,7 +281,8 @@ def run(report: dict[str, Any]) -> None:
             code, raw = _command(argv, env, cwd, min(deadline, time.monotonic() + seconds), output_cap=1024 * 1024)
             row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
                        head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
-                       error_context=_error_context(raw))
+                       error_context=_error_context(raw), test_results=_test_results(raw.decode(errors='replace')),
+                       loader_diagnostics=_loader_diagnostics(raw))
             if code:
                 raise RuntimeError(name + ' failed')
             return raw

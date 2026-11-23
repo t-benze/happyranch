@@ -167,8 +167,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private let promptURL: String?
     private let accessUnsaved: Bool
     private let configPolicy: [(String, [String])]
-    /// Optional diagnostic observer receives only closed lifecycle facts, no URL,
-    /// headers or bytes. The commissioned real-app qualification uses this seam.
+    /// Optional diagnostic observer receives lifecycle IDs and closed document
+    /// path classes, never raw URLs, headers or bytes. Used by qualification.
     var observe: ((String, String) -> Void)?
 
     init(root: URL, transport: any AppAPITransport, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
@@ -324,6 +324,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                 let mime = Self.mime(selected)
                 respond(urlSchemeTask, status: 200, headers: ["content-type": mime])
                 if method != "HEAD" { urlSchemeTask.didReceive(data) }
+                if selected == "index.html" {
+                    observe?("native_document_served", ["/", "/onboarding", "/settings"].contains(route.path) ? route.path : "other")
+                }
                 urlSchemeTask.didFinish(); return
             }
             guard route.path.hasPrefix("/api/v1/"),

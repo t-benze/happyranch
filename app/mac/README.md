@@ -93,8 +93,10 @@ Admission and its native tests use WebKit's value-returning async
 (`in: nil`) in `.page`. The callback API's second `in:` label instead returns
 Swift `Void` when its default nil handler is used; `try await` does not select
 the async overload. That mismatch explains build 60's missing context and all
-15 invalid page facts. Actual Mac evaluation/admission remains unproven until
-the next reviewed-head build. Status emission intentionally keeps the explicit
+15 invalid page facts. Build 61 reports aggregate 12 tests / 0 failures, but
+individual loader outcomes/diagnostics were not retained and SPA qualification
+failed at deep reload; final-head qualification remains pending.
+Status emission intentionally keeps the explicit
 nil callback because it consumes no result.
 
 `AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
@@ -164,6 +166,13 @@ lines of surrounding context and original line numbers. Its serialized JSON is
 bounded to 64 KiB, with the total matching-line count and an explicit truncation
 flag. This evidence survives command failure and scratch removal; it does not
 change the build or qualification verdict.
+`test_results` also retains individual XCTest outcome lines (16 KiB, explicit
+truncation), independently of head/tail. The loader table prints `MAC1_LOADER`
+JSON at every initial row and ready checkpoint: closed result classes,
+context/bind/readiness, all 15 filtered page facts and callback/health counts.
+The collector projects only those closed fields into `loader_diagnostics`
+(64 KiB, matching-line count and explicit truncation); no context values,
+URLs, drafts or arbitrary page text are retained in these records.
 
 Each page receipt is sent immediately to native and fsynced to JSONL; timeout
 retains earlier events. Every one of five events at 1s intervals must arrive in
@@ -173,8 +182,17 @@ completion-only receipt array can pass. The suite also checks JSON POST/PUT,
 10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
 honestly expects `/onboarding`: the fixture returns a successful empty `orgs`
 list, exactly the `RootRedirect` branch in `web/src/routes.tsx`; it never converts
-an error or missing response into onboarding. `/settings` is reloaded and its
-SPA root must render. A timeout/failure is FAIL with partial evidence, not proof
+an error or missing response into onboarding. Reload retains `/onboarding`,
+the fixture's stable global deep route. `DesktopSettingsRoute` intentionally
+opens a dialog and replaces a cold org-less `/settings` link with `/`, so that
+dialog route is unsuitable for a pathname-persistence assertion. Qualification
+requires the reload's native navigation to allow `/onboarding`, the scheme
+handler to serve that exact requested path, and the rendered SPA pathname and
+app origin to survive. A reload of `/` followed by another onboarding redirect
+cannot pass. Failure-only `deep_reload_failure` records requested/served paths,
+navigation path/decision and final pathname as closed classes (`/`,
+`/onboarding`, `/settings`, `other` or missing/not-observed/not-served).
+A timeout/failure is FAIL with partial evidence, not proof
 of WebKit buffering. If actual timing establishes buffering, the manager must
 commission native-message streaming fallback and renewed review/build.
 
@@ -198,6 +216,8 @@ HomeInviteModelTests venue.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
 PR's combined ten-run unsigned allowance across Jenkins and GitHub Actions
 (Founder THR-387 seq134).
+Ledger after build 61: **8 of 10 used**, builds **54–61 all FAILURE**;
+**2 remain**, next **62**, only after renewed exact-head review APPROVE.
 The PR body records the current build ledger. No diagnostic-only run,
 extra retry, new Jenkins job or required check is added.
 

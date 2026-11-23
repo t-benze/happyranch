@@ -44,14 +44,28 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var activeDownloads: [WKDownload] = []
     private var pageFinished = false
     private var downloadFinished = false
+    private var reloadServedPath = "not-served"
+    private var reloadNavigationPath = "not-observed"
+    private var reloadNavigationDecision = "not-observed"
+    private var awaitingReload = false
+    private static let reloadPath = "/onboarding"
+
+    private static func closedPath(_ path: String?) -> String {
+        guard let path else { return "missing" }
+        return ["/", "/onboarding", "/settings"].contains(path) ? path : "other"
+    }
 
     init(root: URL, policy: URL, port: UInt16, events: String, downloads: URL) throws {
         log = try AppSchemeEventLog(events); self.downloads = downloads
         scheme = try AppScheme(root: root, transport: LocalAppAPITransport(port: port, credential: AppSchemeSyntheticCredential()),
             remote: false, policyURL: policy)
         super.init()
-        let log = log
-        scheme.observe = { event, id in log.write(event, ["requestID": id]) }
+        scheme.observe = { [weak self] event, value in
+            guard let self else { return }
+            if event == "native_document_served" {
+                if self.awaitingReload { self.reloadServedPath = value }
+            } else { self.log.write(event, ["requestID": value]) }
+        }
     }
     func start() {
         log.write("startup")
@@ -64,6 +78,11 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         configuration.userContentController.addUserScript(WKUserScript(source: Self.page, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
         self.view = view; view.navigationDelegate = self
+        DispatchQueue.main.asyncAfter(deadline: .now() + 34) { [weak self, weak view] in
+            guard let self, self.awaitingReload else { return }
+            self.logReloadFailure(finalPath: view?.url?.path)
+            self.log.write("failure", ["reason": "deep reload timeout"]); self.scheme.close(); exit(124)
+        }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view; self.window = window
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
@@ -74,13 +93,48 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
               let item = message.body as? [String: Any], let event = item["event"] as? String,
               ["root", "deep_reload", "receipt", "abort", "stream_end", "json", "upload", "blob", "done", "failure"].contains(event) else { return }
         log.write(event, item)
+        if event == "root" {
+            awaitingReload = true
+            reloadServedPath = "not-served"
+            reloadNavigationPath = "not-observed"; reloadNavigationDecision = "not-observed"
+        }
+        if event == "deep_reload" {
+            // Final pathname alone could hide a reload of `/` followed by the
+            // empty-org redirect. Require the actual deep document request too.
+            guard item["path"] as? String == Self.reloadPath,
+                  item["origin"] as? String == AppSchemeRoute.origin,
+                  (item["root"] as? Int ?? 0) > 0,
+                  reloadServedPath == Self.reloadPath,
+                  reloadNavigationPath == Self.reloadPath, reloadNavigationDecision == "allow" else {
+                logReloadFailure(finalPath: item["path"] as? String)
+                log.write("failure", ["reason": "deep reload"]); scheme.close(); exit(1)
+            }
+            awaitingReload = false
+        }
         if event == "done" { pageFinished = true; finishIfReady() }
-        if event == "failure" { scheme.close(); exit(1) }
+        if event == "failure" {
+            if awaitingReload { logReloadFailure(finalPath: view?.url?.path) }
+            scheme.close(); exit(1)
+        }
+    }
+    private func logReloadFailure(finalPath: String?) {
+        log.write("deep_reload_failure", ["requestedPath": Self.reloadPath, "servedPath": reloadServedPath,
+            "navigationPath": reloadNavigationPath, "navigationDecision": reloadNavigationDecision,
+            "finalPath": Self.closedPath(finalPath)])
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         if action.request.url?.scheme == "blob", action.shouldPerformDownload { decisionHandler(.download); return }
-        decisionHandler(action.request.url.flatMap { try? AppSchemeRoute($0) } == nil ? .cancel : .allow)
+        let allowed = action.request.url.flatMap { try? AppSchemeRoute($0) } != nil
+        if awaitingReload, action.targetFrame?.isMainFrame == true {
+            reloadNavigationPath = Self.closedPath(action.request.url?.path)
+            reloadNavigationDecision = allowed ? "allow" : "cancel"
+        }
+        decisionHandler(allowed ? .allow : .cancel)
+        if awaitingReload, !allowed {
+            logReloadFailure(finalPath: webView.url?.path)
+            log.write("failure", ["reason": "deep reload navigation"]); scheme.close(); exit(1)
+        }
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         self.navigation = navigation; scheme.documentDidStart()
@@ -91,9 +145,20 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             do { try await scheme.admitDocument() }
             catch {
                 guard self.navigation === navigation else { return }
+                if awaitingReload { logReloadFailure(finalPath: webView.url?.path) }
                 log.write("admission_failure"); scheme.close(); exit(1)
             }
         }
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(webView)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(webView)
+    }
+    private func navigationFailed(_ webView: WKWebView) {
+        if awaitingReload { logReloadFailure(finalPath: webView.url?.path) }
+        log.write("failure", ["reason": "navigation"]); scheme.close(); exit(1)
     }
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         activeDownloads.append(download); download.delegate = self
@@ -121,12 +186,14 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
       for (let i = 0; i < 100 && location.pathname !== '/onboarding'; i++) await pause(50);
       emit('root', {path:location.pathname, root:document.getElementById('root')?.childElementCount || 0});
       if (location.pathname !== '/onboarding') throw new Error('empty-org redirect');
-      history.pushState({}, '', '/settings');
+      // DesktopSettingsRoute opens a dialog and replaces `/settings` with `/`.
+      // `/onboarding` is the stable global deep route for this empty-org fixture.
+      // RootRedirect already replaced history with it; reload that history URL.
       sessionStorage.setItem('mac1.reload', '1'); location.reload(); return;
     }
     for (let i = 0; i < 100 && !document.getElementById('root')?.childElementCount; i++) await pause(50);
     emit('deep_reload', {path:location.pathname, origin:location.origin, root:document.getElementById('root')?.childElementCount || 0});
-    if (location.pathname !== '/settings') throw new Error('deep reload');
+    if (location.pathname !== '/onboarding' || location.origin !== 'happyranch-app://app') throw new Error('deep reload');
     const status = JSON.parse(await window.happyranchConnection.call('app.status', '{}'));
     const headers = {'X-HappyRanch-Target':status.generation};
     for (const method of ['POST','PUT']) {

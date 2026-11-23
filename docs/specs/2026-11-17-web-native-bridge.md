@@ -1703,8 +1703,12 @@ No fallback is implemented or presumed necessary before those measurements.
 
 M1's root expectation is `/onboarding` because the synthetic daemon returns a
 successful empty org list, matching `RootRedirect`; an API error never supplies
-that condition. The suite separately requires rendered SPA `/settings` after a
-real reload. JSON methods, serialized 10 MiB upload/digest and blob-download
+that condition. The suite separately reloads stable global `/onboarding`:
+desktop `/settings` opens a dialog then replaces a cold org-less link with `/`.
+Pass requires the deep path in native navigation, the scheme-handler request
+and the rendered SPA at the app origin; `/` plus a new redirect cannot pass.
+Failure-only closed diagnostics retain requested/served paths, navigation
+decision/path and final pathname. JSON methods, serialized 10 MiB upload/digest and blob-download
 file bytes are additional assertions, not substitutes for per-event timing.
 
 Builds are gated on independent reviewer APPROVE and capped at ten combined
