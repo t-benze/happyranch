@@ -506,6 +506,17 @@ then `_finalize` publishes the current canonical roster and terminalizes the old
 operation. Same-profile reconnect finalizes immediately when it restores coherence.
 An incoherent closure logs a warning with org, profile, operation and dependency
 identities/states/generations. Independent startup/native ownership holds still apply.
+At cold startup, an unknown native writer from `profile:remove_runtime_executor_profile`
+or `profile:remove_adapter_entry`, with empty agents/teams and absent from the
+mounted owner's live reservations, does not itself latch a hold when the local
+active journal is that same forward remove invocation's prepared profile-coordinator
+journal. Coordinator reconciliation additionally requires the complete same-profile
+group, every captured mirror in `forward_recovery_required`, and valid original
+publication bindings. Recovery may retain its fence for unbound consumers; startup
+defers synchronization of that component to the explicit rebind. The native record
+stays unknown: no settlement is inferred. Other unsettled writers, unavailable
+native ownership, ordinary or mismatched journals, mixed-profile invocations and
+partially forward groups retain their startup holds.
 Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly
 once. Existing admitted work is not killed, and U2B adds no workflow admission

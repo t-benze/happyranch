@@ -5,6 +5,10 @@ start unbound after a remove, with their original prepared publication bindings.
 A valid explicit rebind resumes this ownership. Moves discharge one requirement;
 reconnect discharges the remaining requirements; publication waits for the whole
 captured closure. Crash drops process-local ownership, retaining durable identity.
+TASK-18868 extends this companion with cold-start classification: matching forward
+remove evidence permits explicit adoption while unrelated, ordinary-journal,
+mixed-profile, partially-forward, active, live and scoped evidence holds it.
+Classification and adoption preserve the native record's unknown state.
 
 | Action / invariant | Production boundary |
 | --- | --- |
@@ -12,15 +16,19 @@ captured closure. Crash drops process-local ownership, retaining durable identit
 | Move / Reconnect | Consumer canonical segment plus `rebind_consumer`; ordinary/claimed profile writer with the existing validated adapter binder. |
 | Publish / ClosureFence | `_finalize` and `_republish` retain every prepared journal while any captured org has incoherent dependencies. |
 | CurrentRoster | Consumer completion captures the changed canonical roster outside leases, validates its bookends, and passes it to bound publication; startup recovery also uses its captured roster. |
-| Crash | Only process-local interval ownership is lost. The existing startup/native-writer eligibility gates remain prerequisites outside this model. |
+| Classify / StartupIsolation / EligibleStartup | `startup_forward_remove_profile` checks local unknown remove evidence and the original prepared journal; coordinator startup checks complete-group `_rebind_adoption` and defers synchronization while the eligible remove remains fenced. Other native ownership still holds. |
+| UnknownPreserved | Neither startup exception writes or settles the historical native record. |
+| Crash | Process-local interval ownership and startup classification are lost. Durable operation, binding and native evidence remain. |
 
 The fixed operation ID/kind/generation/member set are abstracted into the
 constant original-remove binding. This checks finite safety, not Python
 refinement, actual flock exclusion, native-writer settlement, invalid-request
 validation, filesystem/SQLite crash atomicity or unconditional liveness. Partial
 file-phase publication and its original recovery owner remain the existing
-publication protocol's responsibility. A native startup uncertainty hold is not
-an enabled adoption. No runtime dependency, CI gate or scheduled run is added.
+publication protocol's responsibility. The finite evidence classes abstract the
+Python predicates and cross-org checks; the standalone restart regressions exercise
+those actual boundaries. A retained startup hold is not an enabled adoption. No
+runtime dependency, CI gate or scheduled run is added.
 
 Use the official v1.7.4 jar pinned in
 [task lifecycle](../task-lifecycle/README.md#run-tlc), SHA256
@@ -35,13 +43,16 @@ Run `negative-owner.cfg` and `negative-closure.cfg` with distinct state folders
 to demonstrate sensitivity to replacing ownership and publishing only a locally
 coherent subset. Those intentionally broken modes must violate OriginalOwner
 and ClosureFence respectively; they are never passing production modes.
+`negative-startup.cfg` deliberately exempts every native evidence class and must
+violate StartupIsolation at Classify.
 
 Actual TLC2.19 / OpenJDK21 results, 2026-11-23, workers1/fp0/seed1:
 
 | Config | Exit | Result |
 | --- | --- | --- |
-| current.cfg | 0 | No error; 85 generated / 38 distinct, queue0, depth7. TypeOK, OriginalOwner, ClosureFence, CurrentRoster. |
-| negative-owner.cfg | 12 expected | OriginalOwner counterexample at Adopt, depth2; 2 generated/distinct. |
-| negative-closure.cfg | 12 expected | ClosureFence counterexample after Adopt, one consumer Move and Publish of that consumer's org, depth4; 16 generated / 12 distinct. |
+| current.cfg | 0 | No error; 156 generated / 83 distinct, queue0, depth9. TypeOK, OriginalOwner, ClosureFence, CurrentRoster, StartupIsolation, EligibleStartup, UnknownPreserved. |
+| negative-owner.cfg | 12 expected | OriginalOwner counterexample at Adopt, depth3; 17 generated/distinct. |
+| negative-closure.cfg | 12 expected | ClosureFence counterexample after Classify, Adopt, one consumer Move and Publish of that consumer's org, depth5; 39 generated / 29 distinct. |
+| negative-startup.cfg | 12 expected | StartupIsolation counterexample at Classify, depth2; 10 generated/distinct. |
 
 These are bounded review evidence, outside required CI.

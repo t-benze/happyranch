@@ -17,7 +17,9 @@ from scripts.test_agent_retirement import fixture
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.direct_connect_binding import bind_direct_connect_adapter
+from runtime.infrastructure.producer_admission import NativeWriterStore
 from runtime.orchestrator import executor_registry, prompt_loader
+from runtime.orchestrator.producer_move import native_writer
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.adapter_store import AdapterEntry
 from runtime.orchestrator.agent_def import render_agent_text
@@ -55,7 +57,8 @@ def ready(org: OrgState, executors: dict[str, str]) -> None:
 
 
 @asynccontextmanager
-async def removed(tmp_path: Path, *, consumers: tuple[str, ...] = ('worker',), paired: bool = False) -> AsyncIterator[SimpleNamespace]:
+async def removed(tmp_path: Path, *, consumers: tuple[str, ...] = ('worker',), paired: bool = False,
+                  publisher: str = 'standalone-remove') -> AsyncIterator[SimpleNamespace]:
     with patch.object(executor_registry, '_registry', executor_registry.ExecutorRegistry()):
         async with fixture(tmp_path / 'org', workers=consumers) as (org, _):
             coordinator = org._profile_coordinator
@@ -81,7 +84,7 @@ async def removed(tmp_path: Path, *, consumers: tuple[str, ...] = ('worker',), p
             for member in (org,) if peer is None else (org, peer):
                 for consumer in consumers:
                     await move(member, consumer, 'dsh')
-            with coordinator.operation(['dsh'], operation_kind='remove', publisher='standalone-remove'):
+            with coordinator.operation(['dsh'], operation_kind='remove', publisher=publisher):
                 remove_runtime_profile('dsh')
                 executor_registry.get_registry().unregister_custom_profile('dsh')
             assert operation(org)['state'] == 'forward_recovery_required'
@@ -92,6 +95,111 @@ async def removed(tmp_path: Path, *, consumers: tuple[str, ...] = ('worker',), p
             finally:
                 if peer is not None:
                     peer.close()
+
+
+@asynccontextmanager
+async def restarted(f: SimpleNamespace) -> AsyncIterator[SimpleNamespace]:
+    members = [org for org in (f.org, f.peer) if org is not None]
+    for org in members:
+        org.close()
+    loaded = {}
+    try:
+        for org in members:
+            loaded[org.slug] = OrgState.load(slug=org.slug, root=org.root, settings=org.settings)
+        coordinator = ProfileCoordinator(daemon_home=f.coordinator._daemon_home, orgs=loaded)
+        for org in loaded.values():
+            org._profile_coordinator = org.workflow_authority._profile_coordinator = coordinator
+        coordinator.reconcile_startup()
+        yield SimpleNamespace(org=loaded[f.org.slug], orgs=loaded, coordinator=coordinator, entry=f.entry)
+    finally:
+        for org in loaded.values():
+            org.close()
+
+
+@pytest.mark.parametrize('action', ['register', 'claimed', 'consumer', 'paired-adapter-remove'])
+async def test_restart_forward_remove_allows_explicit_rebind(tmp_path: Path, action: str) -> None:
+    publisher = 'remove_adapter_entry' if action == 'paired-adapter-remove' else 'remove_runtime_executor_profile'
+    async with removed(tmp_path, paired=action == 'paired-adapter-remove', publisher=publisher) as f:
+        before = operation(f.org)
+        unknown = {key: row for key, row in NativeWriterStore(f.org.db, f.org.slug).history_uncommitted().items()
+                   if row.state == 'unknown'}
+        assert len(unknown) == 1
+        assert next(iter(unknown.values())).publisher == f'profile:{publisher}'
+        async with restarted(f) as fresh:
+            assert not fresh.org._startup_publication_held, 'the remove must not latch an org startup hold'
+            assert not fresh.coordinator._startup_holds and not fresh.coordinator._startup_hold_profiles
+            assert operation(fresh.org) == before
+            with pytest.raises(WorkflowAuthorityError, match='authority_pointer_not_ready'):
+                fresh.org.workflow_authority.verify_admission_ready()
+            if action == 'consumer':
+                await move(fresh.org, 'worker', 'codex')
+            else:
+                span = (fresh.coordinator.claimed_operation(['dsh'], operation_kind='register',
+                            publisher='direct_connect_projection', terminal_check=lambda: False) if action == 'claimed' else
+                        fresh.coordinator.operation(['dsh'], operation_kind='register', publisher='ordinary-reconnect'))
+                with span:
+                    bind_direct_connect_adapter(fresh.entry, operation_id='synthetic-restart', via='direct_connect')
+            after = operation(fresh.org)
+            assert after['state'] == 'published'
+            assert {k: v for k, v in after.items() if k not in ('state', 'profile_digest')} == {
+                k: v for k, v in before.items() if k not in ('state', 'profile_digest')}
+            ready(fresh.org, {'worker': 'codex' if action == 'consumer' else 'dsh'})
+            for org in fresh.orgs.values():
+                assert operation(org)['state'] == 'published'
+                ready(org, {'worker': 'codex' if action == 'consumer' else 'dsh'})
+            history = NativeWriterStore(fresh.org.db, fresh.org.slug).history_uncommitted()
+            assert {key: history[key] for key in unknown} == unknown, 'no native settlement may be inferred'
+
+
+@pytest.mark.parametrize('case', ['unrelated', 'active', 'scoped-agent', 'scoped-team', 'ordinary-journal',
+                                  'other-invocation', 'mixed-profile', 'not-forward'])
+async def test_restart_ineligible_native_owner_stays_held(tmp_path: Path, case: str) -> None:
+    async with removed(tmp_path, publisher='remove_runtime_executor_profile') as f:
+        if case == 'active':
+            from runtime.infrastructure.producer_admission import NativeWriterLifecycle, native_owner_uncommitted
+            native_owner_uncommitted(f.org.db).write_writer(NativeWriterLifecycle(
+                org_slug=f.org.slug, writer_id='synthetic-active', publisher='profile:remove_runtime_executor_profile'))
+        elif case in ('unrelated', 'scoped-agent', 'scoped-team'):
+            with native_writer(f.org.db, publisher='unrelated' if case == 'unrelated' else 'profile:remove_runtime_executor_profile',
+                               agents=('worker',) if case == 'scoped-agent' else (),
+                               teams=('retiring',) if case == 'scoped-team' else ()) as disposition:
+                disposition.uncertain = True
+        elif case in ('ordinary-journal', 'other-invocation'):
+            invocation = 'workflow-writer:ordinary' if case == 'ordinary-journal' else 'profile-coordinator:other'
+            f.org.db._conn.execute("UPDATE workflow_publication_journals SET publisher_invocation=? WHERE state='prepared'",
+                                   (invocation,))
+        elif case == 'mixed-profile':
+            row = operation(f.org)
+            row.update(id='WPO-synthetic-other', profile_name='other')
+            f.org.db._conn.execute('INSERT INTO workflow_profile_operations VALUES (' + ','.join('?' for _ in row) + ')',
+                                  tuple(row.values()))
+        else:
+            f.org.db._conn.execute("UPDATE workflow_profile_operations SET state='store_committed'")
+        f.org.db._conn.commit()
+        before, old_fence = operation(f.org), fence(f.org)
+        async with restarted(f) as fresh:
+            assert fresh.org._startup_publication_held
+            assert fresh.coordinator._startup_holds and 'dsh' in fresh.coordinator._startup_hold_profiles
+            assert operation(fresh.org) == before and fence(fresh.org) == old_fence
+            with pytest.raises(ProfileCoordinatorError, match='profile_consumer_changed'):
+                with fresh.coordinator.claimed_operation(['dsh'], operation_kind='register',
+                        publisher='direct_connect_projection', terminal_check=lambda: False):
+                    pytest.fail('ineligible startup entered rebind mutation')
+            assert operation(fresh.org) == before and fence(fresh.org) == old_fence
+
+
+@pytest.mark.parametrize('peer_state', ['store_committed', 'published', 'aborted'])
+async def test_restart_partially_forward_group_stays_held(tmp_path: Path, peer_state: str) -> None:
+    async with removed(tmp_path, paired=True, publisher='remove_runtime_executor_profile') as f:
+        f.peer.db._conn.execute('UPDATE workflow_profile_operations SET state=?', (peer_state,))
+        f.peer.db._conn.commit()
+        before = {org.slug: (operation(org), fence(org)) for org in (f.org, f.peer)}
+        async with restarted(f) as fresh:
+            assert set(fresh.coordinator._startup_holds) == set(fresh.orgs)
+            assert 'dsh' in fresh.coordinator._startup_hold_profiles
+            assert {slug: (operation(org), fence(org)) for slug, org in fresh.orgs.items()} == before
+            with pytest.raises(ProfileCoordinatorError, match='profile_consumer_changed'):
+                await move(fresh.org, 'worker', 'codex')
 
 
 @pytest.mark.parametrize('claimed', [False, True], ids=['ordinary-register', 'claimed-direct-connect'])

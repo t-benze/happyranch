@@ -68,6 +68,38 @@ class ProfileCoordinatorError(RuntimeError):
         super().__init__(code)
 
 
+def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
+                                   live_writers: dict) -> str | None:
+    """Read local evidence only; keep the historical native record UNKNOWN.
+
+    Complete cross-org eligibility is checked by _rebind_adoption before the
+    coordinator exempts this row. No other publisher or live owner is borrowed.
+    The caller holds the org DB lock.
+    """
+    if (row.state != 'unknown' or row.publisher not in {
+            'profile:remove_runtime_executor_profile', 'profile:remove_adapter_entry'}
+            or row.agents or row.teams or row.writer_id in live_writers):
+        return None
+    authority = org.workflow_authority
+    journal = authority._active_journal(org.db._conn, authority.namespace)
+    if journal is None or not journal['publisher_invocation'].startswith('profile-coordinator:'):
+        return None
+    invocation = journal['publisher_invocation'].removeprefix('profile-coordinator:')
+    operations = org.db._conn.execute(
+        'SELECT profile_name,operation_kind,state FROM workflow_profile_operations WHERE coordinator_invocation=?',
+        (invocation,),
+    ).fetchall()
+    if (len(operations) != 1 or operations[0]['operation_kind'] != 'remove'
+            or operations[0]['state'] != 'forward_recovery_required'):
+        return None
+    try:
+        authority._validate_profile_binding(ProfileFenceBinding(
+            str(journal['id']), str(journal['publisher_invocation']), int(journal['profile_fence'])))
+    except WorkflowAuthorityError:
+        return None
+    return str(operations[0]['profile_name'])
+
+
 @dataclass(frozen=True)
 class _EffectiveProfile:
     digest: str
@@ -1891,6 +1923,7 @@ class ProfileCoordinator:
         """
         with self._capture_orgs() as orgs:
             captures = {}
+            deferred_removes: set[str] = set()
             edges: dict[str, set[str]] = {slug: set() for slug in orgs}
             reasons = dict(self._startup_holds)
             unknown = self._startup_unknown
@@ -1935,10 +1968,20 @@ class ProfileCoordinator:
                     live = json.loads(capture.revision[8][1]) if capture.revision[8] else None
                     history = [NativeWriterLifecycle.model_validate_json(raw, strict=True)
                                for _, raw in capture.revision[7]]
-                    if (any(row.state != "settled"
-                            and (live is None or not historical_disk_sweep(row.writer_id, row, live))
-                            for row in history)
-                            or live):
+                    unsettled = False
+                    for row in history:
+                        if row.state == 'settled':
+                            continue
+                        if live is not None:
+                            if historical_disk_sweep(row.writer_id, row, live):
+                                continue
+                            with org.db._lock:
+                                name = startup_forward_remove_profile(org, row, live)
+                            if name is not None and self._rebind_adoption((name,)) is not None:
+                                deferred_removes.add(name)
+                                continue
+                        unsettled = True
+                    if unsettled or live:
                         reasons.setdefault(slug, "profile_consumer_changed")
                     try:
                         self._validate_capture(org, capture.revision)
@@ -2043,6 +2086,12 @@ class ProfileCoordinator:
                         break
                     component = expanded
                 remaining.difference_update(component)
+                # Recovery may correctly retain the remove's fence while its
+                # consumers stay unbound. Synchronization cannot claim over it;
+                # leave this eligible original owner for an explicit rebind.
+                if any(self._rebind_adoption((name,)) is not None
+                       for name in deferred_removes & names):
+                    continue
                 try:
                     self._synchronize_captured([(slug, orgs[slug], captures[slug]) for slug in sorted(component)], publish=True)
                 except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,
