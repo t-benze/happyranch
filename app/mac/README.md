@@ -197,7 +197,7 @@ no session reopen/replay and genuine revocation teardown in the existing
 HomeInviteModelTests venue.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
 PR's combined ten-run unsigned allowance across Jenkins and GitHub Actions
-(Founder THR-387 seq134; builds 54–59 used, four remain, next build 60).
+(Founder THR-387 seq134).
 The PR body records the current build ledger. No diagnostic-only run,
 extra retry, new Jenkins job or required check is added.
 
