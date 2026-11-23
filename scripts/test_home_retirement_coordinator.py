@@ -68,7 +68,8 @@ def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (native.root / relative).chmod(0o700)
     original_run = native.run
     def run(argv, **kwargs):
-        if argv[:3] == ['systemctl', 'show', 'happyranch-headscale.service']:
+        if argv[:1] == ['systemctl'] and argv[2] == 'happyranch-headscale.service':
+            native.calls.append(argv)
             return legacy.run(argv, **kwargs)
         if argv[:1] == ['getent']:
             native.calls.append(argv)
@@ -79,7 +80,7 @@ def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             return 0, 'happyranch-headscale L 2026-01-01 0 99999 7 -1\n'
         if argv[:1] == ['ps']:
             code, output = original_run(argv, **kwargs)
-            return code, output + f'123 {uid} {uid} {uid} {uid}\n'
+            return code, output + (f'123 {uid} {uid} {uid} {uid}\n' if legacy.properties['MainPID'] != '0' else '')
         return original_run(argv, **kwargs)
     def user(name):
         if name == 'happyranch-headscale':
@@ -107,6 +108,7 @@ def active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(os, 'stat', observed_stat)
     monkeypatch.setattr(os, 'fstat', lambda fd: owner(real_fstat(fd), Path(os.readlink(f'/proc/self/fd/{fd}'))))
     native.inventory = LegacyInventory(native.io)
+    native.controller = legacy
     try:
         yield native
     finally:
@@ -242,3 +244,76 @@ def test_active_failed_close_preserves_real_denial_and_all_original_evidence(act
             stream.receive()
         assert {path: (active.root / path).read_bytes() for path in before} == before
         assert active.effects() == [] and not (active.root / FINAL).exists()
+
+
+
+def test_active_controller_stop_requires_real_cutoff_and_retains_original_artifacts(active, monkeypatch):
+    from runtime.remote_access.home_retirement_service import OwnedService
+    device, _ = active.grant('device')
+    stream = active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        def before_native(argv):
+            assert active.reopened()[0].devices[device].revoked
+            assert active.closed == ['device']
+            with pytest.raises(StreamClosed):
+                stream.receive()
+            assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        active.controller.effect = before_native
+        receipt = owner.revoke_and_stop_controller()
+        OwnedService(active.io, owner.original.ownership.service).confirm(receipt)
+        assert active.effects() == [['systemctl', 'stop', 'happyranch-headscale.service'],
+            ['systemctl', 'disable', 'happyranch-headscale.service']]
+        assert active.native[MANAGED_UNITS[0]]['ActiveState'] == 'active'
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('drift', ['process-after-revoke', 'process-during-guard', 'denial-before-stop', 'denial-before-disable'])
+def test_active_controller_stop_rechecks_original_process_and_cutoff_before_each_effect(active, monkeypatch, drift):
+    device, _ = active.grant('device')
+    changed, armed = [], []
+    def process_change():
+        path = active.root / 'proc/123/stat'
+        path.write_bytes(path.read_bytes().replace(b'321', b'987'))
+        changed.append(True)
+    def deny_change():
+        active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+        changed.append(True)
+    active.stream(device, 'device', close=process_change if drift == 'process-after-revoke' else None)
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        def show(count):
+            if owner.cutoff._acknowledged is not None and not armed:
+                armed.append(True)
+                if drift == 'denial-before-stop':
+                    deny_change()
+        active.controller.on_show = show
+        if drift == 'process-during-guard':
+            active.status_hook = lambda: process_change() if armed and not changed else None
+        if drift == 'denial-before-disable':
+            active.controller.effect = lambda argv: deny_change() if argv[1] == 'stop' else None
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_controller()
+        assert changed == [True]
+        expected = [['systemctl', 'stop', 'happyranch-headscale.service']] if drift == 'denial-before-disable' else []
+        assert active.effects() == expected
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('failure', ['stop', 'disable'])
+def test_active_controller_native_failure_retains_denial_and_recovery_evidence(active, monkeypatch, failure):
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        active.controller.fail = failure
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            owner.revoke_and_stop_controller()
+        assert active.effects() == [['systemctl', 'stop', 'happyranch-headscale.service']] + (
+            [['systemctl', 'disable', 'happyranch-headscale.service']] if failure == 'disable' else [])
+        assert active.reopened()[0].devices[device].revoked and active.closed == ['device']
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert not (active.root / FINAL).exists()

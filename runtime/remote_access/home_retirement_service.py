@@ -15,7 +15,7 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from runtime.remote_access.home_retirement import (
     HomeRetirement, RetirementUncertain, _DBUS_ROOTS, _DIRECTORY_FLAGS,
@@ -321,26 +321,37 @@ class OwnedService:
         if (first.fragment, first.executable) != (current.fragment, current.executable):
             raise RetirementUncertain()
 
-    def stop_and_disable(self) -> OwnedStopReceipt:
+    def stop_and_disable(self, *, expected: ServiceObservation | None = None,
+                         before_effect: Callable[[], None] | None = None) -> OwnedStopReceipt:
         """Explicit caller only; every uncertain native result stops this chain.
 
         Re-observation after an interruption can skip a positively stopped or
         disabled effect. It never treats a recorded intention as that proof.
         No successful exit code substitutes for native/process/link readback.
+        A coordinator can bind the preserved original observation and supply its
+        real cutoff guard; native identity is checked again after that blocking
+        guard and before each effect. The guard grants no standalone authority.
         """
         try:
-            return self._stop_and_disable()
+            return self._stop_and_disable(expected=expected, before_effect=before_effect)
         except (OSError, ValueError, RuntimeError, KeyError, ServiceManagerError):
             raise RetirementUncertain() from None
 
-    def _stop_and_disable(self) -> OwnedStopReceipt:
+    def _stop_and_disable(self, *, expected: ServiceObservation | None,
+                          before_effect: Callable[[], None] | None) -> OwnedStopReceipt:
         before = self.observe()
+        if expected is not None and (type(expected) is not ServiceObservation or before != expected):
+            raise RetirementUncertain()
+        if before_effect is not None:
+            before_effect()
         if self.observe() != before:
             raise RetirementUncertain()
         if before.process is not None:
             self.io.manager.stop(self.identity.unit, timeout=50.0)
         current = self.observe(stopped=True)
         self._same_members(before, current)
+        if before_effect is not None:
+            before_effect()
         if self.observe(stopped=True) != current:
             raise RetirementUncertain()
         if dict(current.properties)["UnitFileState"] == "enabled":

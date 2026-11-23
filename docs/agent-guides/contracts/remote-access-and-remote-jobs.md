@@ -4486,8 +4486,14 @@ original member/controller/native/peer comparisons precede real revoke-all,
 which returns only the original serving registry's acknowledgement plus anchored
 denial readback. Unknown, interrupted or replaced evidence refuses; no failed
 close can become a receipt or restore committed authority. This active-only
-composition supplies neither an inert fallback nor native stop/cleanup/final
-publication or package replacement. Those later stages remain unfinished.
+composition supplies no inert fallback. Its explicit `revoke_and_stop_controller`
+passes the saved original controller observation and actual live cutoff receipt
+to `OwnedService`: both stop and disable freshly require that receipt, then
+re-observe controller identity after the potentially blocking guard. Changed
+original process/native identity or lost denial refuses the next effect; a
+failed native command preserves committed denial and original recovery evidence.
+The managed connector remains live for these checks. Managed shutdown,
+selective cleanup, final publication and package replacement remain unfinished.
 Standalone composition checks run through real inventory/journals/anchored
 store/private IPC with synthetic native facts:
 `uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.

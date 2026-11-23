@@ -23,6 +23,12 @@ manifest or deletion authority.
 | ReplaceForeign / RollbackArtifact | Sampled ownership may change before the next effect; foreign/reappearing artifacts stay pending without stop/disable/removal or restored authority. |
 | OldAdmission / LaterAccountAuthority / AccountListen | Fence rejects old admission. A hypothetical later listener needs separate account authority plus confirmed retirement; this represents S02's future gate, not a positive account path on main. |
 
+The active coordinator now passes its real live cutoff receipt and saved
+controller observation into controller stop/disable. Each native effect follows
+a fresh receipt check and controller re-observation after that blocking check.
+This joins the model boundaries for that controller only; managed shutdown and
+selective cleanup/final publication remain unfinished.
+
 The model is an accepted-contract abstraction. It is **not a refinement proof**
 for the unfinished coordinator, a claim that all 23 parent cases pass, or proof
 of installed dpkg/systemd/network behavior. No secret or user data is modeled.

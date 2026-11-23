@@ -1,8 +1,10 @@
 """Active retirement preparation and real original-owner cutoff composition.
 
 The explicit caller must hold the original retirement fence. This owner joins
-original evidence before revocation; it does not stop units, remove artifacts,
-change accounts, admit package replacement or publish a retired receipt.
+original evidence before revocation and can guard dedicated controller native
+effects with the actual live cutoff receipt. It does not stop the managed
+connector, remove artifacts, change accounts, admit package replacement or
+publish a retired receipt.
 Inert/pre-activation retirement and post-effect recovery have separate proofs.
 """
 from __future__ import annotations
@@ -14,7 +16,7 @@ from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, Original
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
-from runtime.remote_access.home_retirement_service import OwnedService
+from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_transport import ManagedObservation, ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
 from runtime.remote_access.identity import ConnectorIdentity
@@ -108,3 +110,17 @@ class ActiveRetirement:
         receipt = self.cutoff.revoke()
         receipt.require()
         return receipt
+
+
+    def revoke_and_stop_controller(self) -> OwnedStopReceipt:
+        """Join actual cutoff to each owned controller native effect.
+
+        The original managed connector must remain alive to recheck its receipt
+        before both controller stop and disable. This does not stop that
+        connector, authorize cleanup, or turn native partial progress into final
+        retirement. Explicit recovery must use the durable original evidence.
+        """
+        receipt = self.revoke()
+        controller = OwnedService(self.journal.io, self.original.ownership.service)
+        return controller.stop_and_disable(expected=self.original.ownership.native,
+            before_effect=receipt.require)
