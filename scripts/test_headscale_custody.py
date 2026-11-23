@@ -20,7 +20,6 @@ from runtime.remote_access import headscale_service as home
 from runtime.remote_access import installer as module
 from runtime.remote_access import systemd_unit
 from scripts.home_legacy_fixture import KernelDump, LegacyNativeFixture
-from scripts.test_home_activation_backend import composition
 
 PUBLICATION = "headscale-publication.json"
 CONFIG_FILES = ("config.yaml", "derp.yaml")
@@ -1335,8 +1334,8 @@ _B6_LIVE = (
 
 def b6_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *,
              phase: str = "ready", live: bool = True, staging: bool = False) -> tuple[Path, Path]:
-    from scripts.test_home_activation import receipt_record
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    from scripts.home_legacy_fixture import legacy_activation_record
+    fixture.seed_prepared_history()
     fixture.service_directories()
     root = fixture.root
     if not staging:
@@ -1355,7 +1354,7 @@ def b6_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.C
     invite = root / "etc/happyranch/invite-issuer.json"
     invite.write_bytes(b"synthetic protected invite configuration")
     invite.chmod(0o600)
-    record = receipt_record(phase)
+    record = legacy_activation_record(phase)
     record["ca_der_sha256"] = hashlib.sha256(b"synthetic public CA").hexdigest()
     record["member_digests"] = {path: hashlib.sha256((root / path.lstrip("/")).read_bytes()).hexdigest()
                                 for path in record["member_digests"]}
@@ -1407,44 +1406,6 @@ def b6_snapshot(root: Path) -> dict[str, tuple[int, ...]]:
     return {str(path.relative_to(root)): (path.lstat().st_ino, path.lstat().st_mode,
             path.lstat().st_uid, path.lstat().st_gid, path.lstat().st_nlink, path.lstat().st_size)
             for path in root.rglob("*")}
-
-
-@pytest.mark.parametrize("mode", [0o600, 0o644])
-@pytest.mark.parametrize("count", [2, 8])
-def test_pre_stop_diagnostics_disable_off_reenable(
-    composition: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, mode: int, count: int,
-) -> None:
-    v = composition
-    expected = v.lifecycle.capture("Enable", os.getuid())
-    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
-                                deadline=time.monotonic() + 480) == {"outcome": "ready", "residue": []}
-    v.observers.close()
-    runtime = v.path("/run/happyranch-tsnet-sidecar")
-    names = ["health.json", *(f".health-{index}" for index in range(count - 1))]
-    for name in names:
-        path = runtime / name
-        path.write_bytes(b"\xff" * 65536)  # Diagnostics are opaque, including at the size ceiling.
-        path.chmod(0o644 if name == "health.json" else mode)
-    original = os.open
-    def no_diagnostic_read(name: str, flags: int, *args: object, **kwargs: object) -> int:
-        assert Path(name).name not in names
-        return original(name, flags, *args, **kwargs)
-    assert v.io.inventory().state == "owned-activated"
-    with monkeypatch.context() as patch:
-        patch.setattr(os, "open", no_diagnostic_read)
-        assert v.io.inventory().state == "owned-activated"
-        expected = v.lifecycle.capture("Disable", os.getuid())
-        assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected) == {
-            "outcome": "in_progress", "residue": []}
-        assert v.lifecycle.dispatch("Disable", os.getuid(), "cleanup", expected,
-                                    revoke_succeeded=True) == {"outcome": "off", "residue": []}
-    assert not runtime.exists()  # The real B6 pass retired the admitted residue.
-    assert v.receipts.current() is None and v.transactions.read_optional() is None
-    v.admin.users, v.admin.nodes = (), ()
-    expected = v.lifecycle.capture("Enable", os.getuid())
-    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
-                                deadline=time.monotonic() + 480) == {"outcome": "ready", "residue": []}
-    assert v.receipts.current().phase == "ready" and len(v.mints) == 2
 
 
 @pytest.mark.parametrize("phase", ["prepared", "activating", "joined", "ready", "failed_uncertain"])

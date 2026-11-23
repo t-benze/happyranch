@@ -1,0 +1,15 @@
+regions:
+  999:
+    nodes:
+    - canport80: false
+      derpport: 8443
+      hostname: control.happyranch.invalid
+      ipv4: 192.168.1.40
+      ipv6: none
+      name: 999a
+      regionid: 999
+      stunonly: false
+      stunport: 3478
+    regioncode: happyranch-home
+    regionid: 999
+    regionname: HappyRanch Home

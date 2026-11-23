@@ -1415,3 +1415,41 @@ def test_b7_backend_pair_refuses_without_forward_effects(
         assert v.records() == before and writes == []
     assert unit_config_bytes(v) == units and calls == []
     assert v.native.calls == native and v.admin.calls == admin
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+@pytest.mark.parametrize("count", [2, 8])
+def test_pre_stop_diagnostics_disable_off_reenable(
+    composition: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, mode: int, count: int,
+) -> None:
+    v = composition
+    expected = v.lifecycle.capture("Enable", os.getuid())
+    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
+                                deadline=time.monotonic() + 480) == {"outcome": "ready", "residue": []}
+    v.observers.close()
+    runtime = v.path("/run/happyranch-tsnet-sidecar")
+    names = ["health.json", *(f".health-{index}" for index in range(count - 1))]
+    for name in names:
+        path = runtime / name
+        path.write_bytes(b"\xff" * 65536)  # Diagnostics are opaque, including at the size ceiling.
+        path.chmod(0o644 if name == "health.json" else mode)
+    original = os.open
+    def no_diagnostic_read(name: str, flags: int, *args: object, **kwargs: object) -> int:
+        assert Path(name).name not in names
+        return original(name, flags, *args, **kwargs)
+    assert v.io.inventory().state == "owned-activated"
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", no_diagnostic_read)
+        assert v.io.inventory().state == "owned-activated"
+        expected = v.lifecycle.capture("Disable", os.getuid())
+        assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected) == {
+            "outcome": "in_progress", "residue": []}
+        assert v.lifecycle.dispatch("Disable", os.getuid(), "cleanup", expected,
+                                    revoke_succeeded=True) == {"outcome": "off", "residue": []}
+    assert not runtime.exists()  # The real B6 pass retired the admitted residue.
+    assert v.receipts.current() is None and v.transactions.read_optional() is None
+    v.admin.users, v.admin.nodes = (), ()
+    expected = v.lifecycle.capture("Enable", os.getuid())
+    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
+                                deadline=time.monotonic() + 480) == {"outcome": "ready", "residue": []}
+    assert v.receipts.current().phase == "ready" and len(v.mints) == 2

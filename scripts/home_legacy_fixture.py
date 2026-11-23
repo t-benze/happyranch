@@ -65,6 +65,59 @@ class LegacyNativeFixture:
         binary.write_bytes(b"synthetic inert materializer")
         binary.chmod(0o755)
 
+    def seed_prepared_history(self) -> None:
+        """Write synthetic historical inputs, never invoke a provisioning owner.
+
+        These frozen bytes are legacy input only. Actual cleanup, custody,
+        revocation and retirement decisions always remain production behavior.
+        """
+        self.present = self.group_present = True
+        fixtures = Path(__file__).parent / "fixtures/home-retirement"
+
+        def directory(relative: str, mode: int) -> Path:
+            path = self.root / relative
+            path.mkdir(parents=True, exist_ok=True)
+            for parent in path.parents:
+                if parent == self.root:
+                    break
+                parent.chmod(0o755)
+            path.chmod(mode)
+            return path
+
+        def put(relative: str, data: bytes, mode: int = 0o600) -> None:
+            path = self.root / relative
+            path.write_bytes(data)
+            path.chmod(mode)
+
+        directory("etc/happyranch/headscale", 0o700)
+        directory("etc/happyranch/empty-ca-directory", 0o755)
+        directory("etc/systemd/system", 0o755)
+        directory(STATE + "/home-ca", 0o700)
+        issuer = directory(STATE + "/home-issuer", 0o700)
+        (self.root / STATE).chmod(0o700)
+        files = {"etc/happyranch/headscale/" + name:
+            (fixtures / ("legacy-" + name)).read_bytes()
+            for name in ("config.yaml", "derp.yaml")}
+        files.update({"etc/happyranch/headscale/server.crt": self.leaf_pem,
+            "etc/happyranch/headscale/server.key": self.leaf_key,
+            "etc/happyranch/control-ca.pem": self.ca_pem})
+        for name, data in files.items():
+            put(name, data, 0o640 if name.endswith("control-ca.pem") else 0o600)
+        put("etc/happyranch/headscale/policy.hujson", (fixtures / "legacy-policy.hujson").read_bytes())
+        put("etc/systemd/system/" + UNIT, (fixtures / "headscale-inert.service").read_bytes(), 0o644)
+        for name, data in (("ca.pem", self.ca_pem), ("ca.key", b"synthetic CA private key"),
+                           ("leaf.pem", self.leaf_pem), ("leaf.key", self.leaf_key)):
+            put(STATE + "/home-ca/" + name, data)
+        records = {"headscale-account.json": dict(version=1, account=ACCOUNT,
+                uid=self.uid, gid=self.gid, group_created_with_user=True),
+            "headscale-publication.json": dict(version=1, uid=self.uid, gid=self.gid,
+                dial_ip="192.168.1.40", files={"/" + name: hashlib.sha256(data).hexdigest()
+                    for name, data in files.items()}, directories=["/etc/happyranch/empty-ca-directory"]),
+            "home-issuer-publication.json": dict(version=1, directory="/" + STATE + "/home-issuer",
+                uid=self.uid, gid=self.gid, device=issuer.stat().st_dev, inode=issuer.stat().st_ino)}
+        for name, record in records.items():
+            put(STATE + "/" + name, json.dumps(record, sort_keys=True).encode())
+
     def lookup_user(self, name: str) -> SimpleNamespace:
         if name == ACCOUNT and self.present:
             return self.user
@@ -155,6 +208,26 @@ class LegacyNativeFixture:
 
     def receipt(self) -> Path:
         return self.root / "var/lib/happyranch-remote-access/headscale-account.json"
+
+
+def legacy_activation_record(phase: str) -> dict:
+    """Historical activation input for retained cleanup, not an activation result."""
+    members = ("/etc/systemd/system/happyranch-headscale.service",
+        "/etc/happyranch/headscale/config.yaml", "/etc/happyranch/headscale/derp.yaml",
+        "/etc/happyranch/headscale/policy.hujson", "/etc/happyranch/control-ca.pem",
+        "/etc/happyranch/invite-issuer.json")
+    return dict(format="home-activation@1", release_uid=1000, home_id="home",
+        control_plane_id="control", connector_id="connector", ca_der_sha256="a" * 64,
+        dial_ip="192.168.1.40", activation_generation=7, operation_id="b" * 32,
+        member_digests={path: "c" * 64 for path in members}, phase=phase,
+        local_node_stable_id="synthetic-local-node" if phase in ("joined", "ready") else None,
+        home_endpoint="100.64.0.10:443" if phase in ("joined", "ready") else None,
+        ownership=dict(members=["/var/lib/happyranch-headscale/" + name for name in
+            ("db.sqlite", "db.sqlite-wal", "db.sqlite-shm", "noise.key", "derp.key")]
+            + ["/run/happyranch-headscale/headscale.sock", "/run/happyranch-tsnet-sidecar/observe.sock",
+               "/var/lib/happyranch-headscale/acme-unused"],
+            links={"/etc/systemd/system/happyranch-managed.target.wants/" + UNIT:
+                   "/etc/systemd/system/" + UNIT}))
 
 
 def nla(kind: int, data: bytes) -> bytes:

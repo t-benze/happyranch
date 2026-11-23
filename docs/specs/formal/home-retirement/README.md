@@ -383,3 +383,10 @@ Read-only detection performs no sync. The lower keeper observes sync refusal and
 replacement/reappearance during confirmation; the composed rows retain their
 actual produced-receipt R03/R04 checks. No model state/action/configuration or
 TLC result is added by this concrete boundary mapping.
+
+The retained B6 custody venue now seeds synthetic historical native, account,
+publication and activation inputs from `scripts/home_legacy_fixture.py` and
+frozen legacy config/DERP/policy bytes. It no longer prepares a new home
+installation or imports the activation composition to exercise real cleanup.
+The activation-only disable/re-enable scenario stays in its activation venue
+pending owner disposition; this fixture separation adds no model transition.
