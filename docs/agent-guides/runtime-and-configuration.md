@@ -2725,8 +2725,8 @@ Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name`
 
 ## Org Settings Storage (THR-095)
 
-The 5 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
-`working_hours`, `reviewer_agents` — are stored in the **`org_settings`** SQLite table (same per-org DB
+The 5 settings-API-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
+`working_hours`, `reviewer_agents` (no web control since THR-336; API only) — are stored in the **`org_settings`** SQLite table (same per-org DB
 as `tasks` / `audit_log`). `org/config.yaml` is a **git-tracked seed file only**;
 the daemon **never** reads or writes these keys from the file once the one-shot
 seed migration has run (first daemon startup after upgrade).  The seed also

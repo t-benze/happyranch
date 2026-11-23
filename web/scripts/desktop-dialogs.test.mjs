@@ -16,14 +16,14 @@ const {
 } = model;
 
 test('Main Settings routes select exactly the requested page', () => {
-  for (const page of ['preferences', 'daemon-capacity', 'executors', 'organization', 'coding']) {
+  for (const page of ['preferences', 'daemon-capacity', 'executors', 'organization']) {
     assert.deepEqual(settingsRequestFromPath(`/orgs/acme/settings/${page}`), { dialog: 'settings', section: page });
   }
   assert.deepEqual(settingsRequestFromPath('/orgs/acme/settings/organization/extra'), { dialog: 'settings', section: 'organization' });
 });
 
-test('bare, legacy and unknown org pages select Capacity, as the page route redirects', () => {
-  for (const path of ['/orgs/acme/settings', '/orgs/acme/settings/', '/orgs/acme/settings/system', '/orgs/acme/settings/assistant', '/orgs/acme/settings/agents', '/orgs/acme/settings/nope']) {
+test('bare, legacy (incl. removed coding) and unknown org pages select Capacity', () => {
+  for (const path of ['/orgs/acme/settings', '/orgs/acme/settings/', '/orgs/acme/settings/system', '/orgs/acme/settings/assistant', '/orgs/acme/settings/agents', '/orgs/acme/settings/coding', '/orgs/acme/settings/nope']) {
     assert.deepEqual(settingsRequestFromPath(path), { dialog: 'settings', section: 'daemon-capacity' }, path);
   }
 });
@@ -42,8 +42,8 @@ test('non-Settings paths are not Settings requests', () => {
 });
 
 test('one dialog at a time: opening the other replaces it', () => {
-  const settings = applyOpenRequest(CLOSED, { dialog: 'settings', section: 'coding' });
-  assert.deepEqual(settings, { dialog: 'settings', section: 'coding' });
+  const settings = applyOpenRequest(CLOSED, { dialog: 'settings', section: 'organization' });
+  assert.deepEqual(settings, { dialog: 'settings', section: 'organization' });
   const connection = applyOpenRequest(settings, { dialog: 'connection' });
   assert.deepEqual(connection, { dialog: 'connection' });
   assert.deepEqual(applyOpenRequest(connection, { dialog: 'settings' }), { dialog: 'settings', section: 'daemon-capacity' });
@@ -87,7 +87,7 @@ test('native Settings entry keeps the shown page, else defaults by Main context'
   const orgLess = nativeDialogRequest('settings', '/');
   assert.deepEqual(applyOpenRequest(CLOSED, inOrg), { dialog: 'settings', section: 'daemon-capacity' });
   assert.deepEqual(applyOpenRequest(CLOSED, orgLess), { dialog: 'settings', section: 'preferences' });
-  const shown = { dialog: 'settings', section: 'coding' };
+  const shown = { dialog: 'settings', section: 'organization' };
   assert.equal(applyOpenRequest(shown, orgLess), shown);
   assert.deepEqual(applyOpenRequest(shown, nativeDialogRequest('connection', '/')), { dialog: 'connection' });
 });

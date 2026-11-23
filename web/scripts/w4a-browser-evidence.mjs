@@ -32,9 +32,6 @@
  * the three profiles and requires the dist's own build log:
  *   node scripts/w4a-browser-evidence.mjs --slice feature-flags --dist <dist> \
  *     --expect-profile production|local|local-wh-off --build-log <build.log> --out <dir>
- * B3 reviewer choice (Settings ▸ Organization) runs against any ordinary dist:
- *   node scripts/w4a-browser-evidence.mjs --slice reviewer-settings --dist <dist> \
- *     --out <dir> [--reviewer-case R1-none,R5-unrelated-save,...]
  * Coding setup cases reuse this runner with --slice workflow-setup
  * --workflow-fixture <schema-load first_save export> [--workflow-case W01,...].
  */
@@ -42,7 +39,6 @@ import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
 import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
 import { createFeatureFlagsFixture, runFeatureFlagsCases } from './feature-flags-browser-cases.mjs';
-import { createReviewerSettingsFixture, runReviewerSettingsCases } from './reviewer-settings-browser-cases.mjs';
 import { createWorkflowSetupFixture, runWorkflowSetupCases } from './workflow-setup-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -522,11 +518,6 @@ function startServer(root) {
           }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
           if (selectedSlice === 'feature-flags' && ffFixture.handle(request, response, p, ref, row)) return;
-          if (selectedSlice === 'reviewer-settings') {
-            const handled = rvFixture.handle(request, response, p, row);
-            if (handled === 'hang') { HUNG.push(response); return; }
-            if (handled) return;
-          }
           if (selectedSlice === 'workflow-setup') {
             const handled = wfFixture.handle(request, response, p, row);
             if (handled === 'hang') { HUNG.push(response); return; }
@@ -1065,7 +1056,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice)) throw new Error('unknown --slice');
 const expectProfile = arg('expect-profile');
 const buildLog = arg('build-log') && resolve(arg('build-log'));
 if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off'].includes(expectProfile) || !buildLog || !existsSync(buildLog))) {
@@ -1073,7 +1064,6 @@ if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off
   process.exit(2);
 }
 const ffFixture = createFeatureFlagsFixture(WH_SETTINGS, ORG);
-const rvFixture = createReviewerSettingsFixture(WH_SETTINGS, W4C_LEAD, ORG);
 const wfFixture = selectedSlice === 'workflow-setup'
   ? createWorkflowSetupFixture(JSON.parse(readFileSync(arg('workflow-fixture'), 'utf8')), W4C_LEAD, ORG) : null;
 // F1 repair: reuse the real populated and switch cases with only malformed
@@ -1092,8 +1082,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'reviewer-settings', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => selectedSlice === 'usage' && row.id.startsWith('usage-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => selectedSlice === 'usage' && row.id.startsWith('usage-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1531,8 +1521,6 @@ async function main() {
       await runHeaderLanguageCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, selectedCase: arg('header-case', 'all') });
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
-    } else if (selectedSlice === 'reviewer-settings') {
-      await runReviewerSettingsCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, fixture: rvFixture, selected: arg('reviewer-case', 'all') });
     } else if (selectedSlice === 'workflow-setup') {
       await runWorkflowSetupCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale }, { org: ORG, fixture: wfFixture, selected: arg('workflow-case', 'all') });
     } else if (selectedSlice === 'feature-flags') {
