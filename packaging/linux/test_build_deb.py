@@ -471,6 +471,12 @@ class DebPackageTests(unittest.TestCase):
                 'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
         for name in ('python/bin/python3.12', 'python/lib/libpython3.12.so.1.0'):
             (payload / name).write_bytes(self.elf(arch))
+        # Retained Go executables have no GNU_STACK; Python-only checking must
+        # preserve their bytes on both payload architectures.
+        for name in ('happyranch-tsnet-sidecar', 'happyranch-home-bridge'):
+            binary = payload / 'bin' / name
+            binary.write_bytes(self.elf(arch, 'missing'))
+            binary.chmod(0o755)
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -816,6 +822,11 @@ class DebPackageTests(unittest.TestCase):
                 for retired in ('headscale', 'happyranch-home-ca', 'happyranch-home-admin'):
                     self.assertFalse(list(prefix.rglob(retired)), retired)
                     self.assertFalse((installed / 'usr/bin' / retired).exists())
+                for name in ('happyranch-tsnet-sidecar', 'happyranch-home-bridge'):
+                    binary = prefix / 'bin' / name
+                    self.assertEqual(binary.read_bytes(), self.elf(payload_arch, 'missing'))
+                    self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                    self.assertFalse(binary.is_symlink())
                 self.assertTrue((prefix / 'bin/happyranch-remote-access-policy-renew').is_file())
                 self.assertFalse(list(prefix.rglob('__pycache__')))
                 self.assertTrue((prefix / 'python/lib/module.py').is_file())
