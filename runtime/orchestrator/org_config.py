@@ -187,6 +187,7 @@ class OrgConfig:
     # — resolved via ``resolve_org_timezone``. An explicit value must be a valid
     # IANA name (validated at load).
     timezone: str | None = None
+    shared_artifacts_cleanup_mode: str = "preview"
     dreaming: DreamingConfig = field(default_factory=DreamingConfig)
     working_hours: WorkingHoursConfig = field(default_factory=WorkingHoursConfig)
     threads_enabled: bool = True
@@ -781,6 +782,12 @@ def _parse_workspace_cleanup(block: dict, path: str) -> dict:
 
 def _build_org_config(data: dict, path: str) -> OrgConfig:
     """Build OrgConfig from a parsed YAML dict."""
+    artifacts = data.get("shared_artifacts", {})
+    if not isinstance(artifacts, dict):
+        raise OrgConfigError(f"{path}: shared_artifacts must be a mapping")
+    artifact_mode = artifacts.get("cleanup_mode", "preview")
+    if artifact_mode not in ("preview", "enforce", "off"):
+        raise OrgConfigError(f"{path}: shared_artifacts.cleanup_mode must be preview, enforce or off")
     timeout = data.get("session_timeout_seconds")
     if timeout is not None:
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
@@ -918,6 +925,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     # here); the one-shot startup migration lifts and loudly deprecates it.
 
     return OrgConfig(
+        shared_artifacts_cleanup_mode=artifact_mode,
         session_timeout_seconds=timeout,
         timezone=org_timezone,
         dreaming=dreaming_cfg,

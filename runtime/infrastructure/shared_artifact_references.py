@@ -1,0 +1,253 @@
+"""Same-writer-fence reference proof for shared artifact generations.
+
+No persistent reference cache: each proof reads the complete org corpus. A pass
+may reuse a projection only while holding its original BEGIN IMMEDIATE fence.
+Missing/capped reader evidence is uncertainty, never an empty dependency set.
+"""
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import load_org_config
+
+_TASK = re.compile(r"(?<![A-Za-z0-9_-])TASK-[0-9]+(?![A-Za-z0-9_-])")
+_EXPLICIT = re.compile(r"\[artifact:([^\]]*)\]")
+_TOKEN = re.compile(r"[^\s`\"'<>\[\]{}(),;!*]+")
+_LIVE = {'pending', 'in_progress', 'escalated'}
+_STATUSES = _LIVE | {'completed', 'failed', 'cancelled', 'superseded'}
+_MAX_ROWS = 100_000
+_MAX_BYTES = 32 * 1024 * 1024
+
+
+class ReferenceUnavailable(ValueError):
+    """The complete proof could not be established within its bound."""
+
+
+class ReferenceProof:
+    def __init__(self, conn: sqlite3.Connection, *, slug: str,
+                 store: ArtifactStore, deadline: float, origin: str | None = None) -> None:
+        if not conn.in_transaction:
+            raise ReferenceUnavailable('writer_fence_required')
+        self.conn, self.slug, self.store = conn, slug, store
+        self.deadline, self.origin = deadline, origin
+        self.references: dict[tuple[str, int | None], set[str]] = defaultdict(set)
+        self.uncertain_sources: set[str] = set()
+        self.rows = self.bytes = 0
+        self.revision = (conn.total_changes, conn.execute('PRAGMA data_version').fetchone()[0])
+        self._scan()
+        self._fresh()
+
+    def _check(self) -> None:
+        if time.monotonic() >= self.deadline or self.rows > _MAX_ROWS or self.bytes > _MAX_BYTES:
+            raise ReferenceUnavailable('reference_scan_incomplete')
+
+    def _read(self, sql: str, values: tuple = ()) -> list[dict]:
+        result = []
+        for row in self.conn.execute(sql, values):
+            self.rows += 1
+            self.bytes += sum(len(v.encode('utf-8')) for v in row if isinstance(v, str))
+            self._check()
+            result.append(dict(row))
+        return result
+
+    def _fresh(self) -> None:
+        self._check()
+        if not self.conn.in_transaction or self.revision != (
+            self.conn.total_changes, self.conn.execute('PRAGMA data_version').fetchone()[0]
+        ):
+            raise ReferenceUnavailable('reference_snapshot_changed')
+
+    def _add(self, name: str, source: str, generation: int | None = None) -> None:
+        try:
+            self.store.validate_name(name)
+        except InvalidArtifactName as exc:
+            raise ReferenceUnavailable('malformed_reference') from exc
+        if generation is not None and (type(generation) is not int or generation < 1):
+            raise ReferenceUnavailable('malformed_generation')
+        self.references[name, generation].add(source)
+
+    @staticmethod
+    def _strings(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [s for v in value.values() for s in ReferenceProof._strings(v)]
+        if isinstance(value, list):
+            return [s for v in value for s in ReferenceProof._strings(v)]
+        return []
+
+    def _text(self, text: str | None, source: str) -> set[str]:
+        if text is None:
+            return set()
+        if not isinstance(text, str):
+            raise ReferenceUnavailable('malformed_text')
+        self._check()
+        for match in _EXPLICIT.finditer(text):
+            self._add(match[1], source)
+        if text.count('[artifact:') != len(_EXPLICIT.findall(text)):
+            raise ReferenceUnavailable('malformed_reference')
+        for match in _TOKEN.finditer(text):
+            token = match[0]
+            parsed = urlsplit(token)
+            prefix = f'/api/v1/orgs/{self.slug}/artifacts/'
+            if parsed.path.startswith(prefix):
+                if parsed.netloc and (not self.origin or
+                                      (parsed.scheme, parsed.netloc) != (urlsplit(self.origin).scheme, urlsplit(self.origin).netloc)):
+                    continue
+                encoded = parsed.path[len(prefix):]
+                if re.search(r'%(?![0-9A-Fa-f]{2})', encoded):
+                    raise ReferenceUnavailable('malformed_url')
+                name = unquote(encoded, errors='strict')
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                generation = query.get('generation')
+                if generation and (len(generation) != 1 or not generation[0].isdigit()):
+                    raise ReferenceUnavailable('malformed_generation')
+                self._add(name, source, int(generation[0]) if generation else None)
+            elif not parsed.scheme and not parsed.query and not parsed.fragment:
+                # An entire validated token only. No suffix, case folding or
+                # guessed extension/path match; exact lookup is below.
+                try:
+                    self.store.validate_name(token)
+                except InvalidArtifactName:
+                    continue
+                self.references[token, None].add(source)
+        return set(_TASK.findall(text))
+
+    def _scan(self) -> None:
+        tasks = {r['id']: r for r in self._read(
+            'SELECT id,status,parent_task_id,brief,final_output_summary FROM tasks')}
+        if any(t['status'] not in _STATUSES for t in tasks.values()):
+            raise ReferenceUnavailable('unknown_task_status')
+        children: dict[str, list[str]] = defaultdict(list)
+        results: dict[str, list[dict]] = defaultdict(list)
+        for t in tasks.values():
+            children[t['parent_task_id']].append(t['id'])
+        for r in self._read('SELECT task_id,output_summary,decision_json,risks_flagged FROM task_results'):
+            results[r['task_id']].append(r)
+        live = [t['id'] for t in tasks.values() if t['status'] in _LIVE]
+        todo = live + [child for t in live for child in children[t]]
+        visited = set()
+        while todo:
+            task_id = todo.pop()
+            if task_id in visited:
+                continue
+            visited.add(task_id)
+            task = tasks.get(task_id)
+            if task is None:
+                raise ReferenceUnavailable('required_handoff_missing')
+            todo.extend(self._text(task['brief'], task_id))
+            todo.extend(self._text(task['final_output_summary'], task_id))
+            for r in results[task_id]:
+                todo.extend(self._text(r['output_summary'], task_id))
+                for key in ('decision_json', 'risks_flagged'):
+                    if r[key]:
+                        for value in self._strings(json.loads(r[key])):
+                            todo.extend(self._text(value, task_id))
+        threads = self._read('SELECT id,status FROM threads')
+        if any(t['status'] not in ('open', 'archived') for t in threads):
+            raise ReferenceUnavailable('unknown_thread_status')
+        for r in self._read("SELECT m.* FROM thread_messages m JOIN threads t ON t.id=m.thread_id WHERE t.status='open'"):
+            self._text(r['body_markdown'], r['thread_id'])
+            if r['system_payload_json']:
+                payload = json.loads(r['system_payload_json'])
+                if not isinstance(payload, dict):
+                    raise ReferenceUnavailable('malformed_system_payload')
+                for key in ('attachments', 'attachment_names', 'shared_artifacts'):
+                    if key in payload:
+                        for value in self._strings(payload[key]):
+                            self._text(value, r['thread_id'])
+        links = self._read("SELECT l.name,l.generation,l.thread_id,l.message_seq,l.ordinal FROM shared_artifact_thread_links l JOIN threads t ON t.id=l.thread_id WHERE t.status='open'")
+        pinned = {(r['thread_id'], r['message_seq'], r['ordinal']) for r in links}
+        for r in links:
+            self._add(r['name'], r['thread_id'], r['generation'])
+        for r in self._read("SELECT a.* FROM thread_message_attachments a JOIN threads t ON t.id=a.thread_id WHERE t.status='open'"):
+            if r['artifact_name'] and (r['thread_id'], r['message_seq'], r['ordinal']) not in pinned:
+                self._add(r['artifact_name'], r['thread_id'])
+        versions = {r['id']: r for r in self._read(
+            'SELECT v.id,v.skill_id,v.content_artifact_key,v.content_hash,s.org_slug,s.retired_at,s.purged_at '
+            'FROM custom_skill_versions v LEFT JOIN custom_skills s ON s.id=v.skill_id')}
+        for v in versions.values():
+            if v['org_slug'] != self.slug:
+                raise ReferenceUnavailable('skill_source_provenance_unavailable')
+            name = v['content_artifact_key']
+            self.store.validate_name(name)
+            if not v['retired_at'] and not v['purged_at']:
+                self._add(name, f"B2:{v['id']}")
+            else:
+                # No authoritative retirement-of-in-flight-reader receipt exists.
+                # Retirement is insufficient to authorize source destruction.
+                self.uncertain_sources.add(name)
+        for r in self._read('SELECT version_id,skill_id,content_hash,id FROM custom_skill_materializations'):
+            v = versions.get(r['version_id'])
+            if not v or (v['skill_id'], v['content_hash']) != (r['skill_id'], r['content_hash']):
+                raise ReferenceUnavailable('materialization_source_unavailable')
+            self._add(v['content_artifact_key'], f"materialization:{r['id']}")
+
+    def outcome(self, row: dict) -> tuple[str, list[str]]:
+        self._fresh()
+        refs = self.references.get((row['name'], None), set()) | self.references.get((row['name'], row['generation']), set())
+        if refs:
+            return 'live', sorted(refs)
+        if row['name'] in self.uncertain_sources or row.get('protected_source'):
+            return 'indeterminate', ['Q3:reader_exclusion_unavailable']
+        return 'absent', []
+
+
+def effective_mode(org: object, conn: sqlite3.Connection, *, now: datetime | None = None) -> tuple[str, str | None]:
+    try:
+        mode = load_org_config(OrgPaths(org.root)).shared_artifacts_cleanup_mode
+    except (OSError, ValueError):
+        return 'preview', 'configuration_unavailable'
+    if mode != 'enforce':
+        return mode, None
+    state = conn.execute('SELECT * FROM shared_artifact_org_state WHERE id=1').fetchone()
+    now = now or datetime.now(timezone.utc)
+    try:
+        started = datetime.fromisoformat(state['rollout_started_at'])
+        elapsed = now >= started + timedelta(days=7)
+    except (TypeError, ValueError):
+        elapsed = False
+    for ok, reason in ((elapsed, 'preview_seven_days_required'),
+                       (state['preview_acceptance'], 'preview_acceptance_required'),
+                       (state['inventory_review_id'], 'inventory_review_required'),
+                       (state['source_protection_verified'], 'source_protection_unverified')):
+        if not ok:
+            return 'preview', reason
+    return 'enforce', None
+
+
+def install_reference_seams(org: object, *, origin: str | None = None) -> None:
+    """Bind A's fail-closed adapters; never sets any operator rollout gate."""
+    db = org.db
+
+    def checker(conn: sqlite3.Connection, row: dict) -> str:
+        service = db._shared_artifact_service
+        try:
+            proof = ReferenceProof(conn, slug=org.slug, store=service.store,
+                                   deadline=time.monotonic()+30, origin=origin)
+            outcome, refs = proof.outcome(row)
+        except (sqlite3.Error, OSError, ValueError, TypeError, RecursionError):
+            outcome, refs = 'indeterminate', ['reference_scan_unavailable']
+        if outcome != 'absent':
+            service._event(row, 'artifact_protected', 'daemon', source='system',
+                           reason='dependency_check_unavailable' if outcome == 'indeterminate' else 'live_dependency',
+                           references=refs, outcome=outcome)
+        return outcome
+
+    def mode(conn: sqlite3.Connection) -> str:
+        chosen, reason = effective_mode(org, conn)
+        if reason:
+            db.insert_audit_log_uncommitted(task_id='config:shared_artifacts', agent='daemon',
+                action='artifact_mode_refused', payload={'effective_mode': chosen, 'reason': reason})
+        return chosen
+
+    db._shared_artifact_reference_checker = checker
+    db._shared_artifact_effective_mode = mode
