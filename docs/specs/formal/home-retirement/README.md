@@ -315,3 +315,13 @@ numeric identity, locked system-account shape, safe static consumers and no UID
 processes. The model abstracts these readbacks as FinalFacts; it does not prove
 their implementation. Existing R02.a-h obligations are not all established by
 this slice, and the shipping preinst remains unfinished.
+
+The canonical `home_retirement.main` entry now invokes
+`home_retirement_upgrade.retire` under the original directory flock/fence.
+Its ordering maps to the existing capture, revoke, native, removal, account and
+publication actions. Read-only completed-prefix observations select the next
+existing owner after interruption; they are not additional modeled authority
+or a durable phase flag. Each owner rechecks its complete facts, and any failed
+effect ends the invocation. The actual native/receipt interruption entry cases
+remain separate from exhaustive R02 coverage and installed preinst acceptance.
+No model action, state bound, configuration or TLC result changes here.

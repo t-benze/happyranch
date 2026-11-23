@@ -1,4 +1,4 @@
-"""Read-only retirement observations for the former Host-local controller.
+"""Retirement observations and fixed explicit Host-local recovery entry.
 
 Detection never adopts a legacy artifact, resumes an intent or performs cleanup.
 Only the explicit retirement owner may produce the final receipt; a filename,
@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -361,3 +362,23 @@ class HomeRetirement:
                     RetirementStatus("retired", "retirement confirmed"))
         except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, ServiceManagerError):
             return RetirementStatus("migration pending", "unsafe or changing evidence")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fixed Linux recovery entry; no caller-selected root or interpreter."""
+    args = sys.argv[1:] if argv is None else argv
+    print(MESSAGE, flush=True)
+    try:
+        if args or sys.platform != 'linux' or os.geteuid() != 0:
+            raise RetirementUncertain()
+        from runtime.remote_access.installer import ManagedInstaller
+        from runtime.remote_access.home_retirement_upgrade import retire
+        result = retire(ManagedInstaller(layout='deb'))
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
+        result = RetirementStatus('migration pending', 'retirement unconfirmed')
+    print(json.dumps(result.public(), sort_keys=True))
+    return 1 if result.state == 'migration pending' else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

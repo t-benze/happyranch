@@ -4827,6 +4827,39 @@ Detection performs no fsync, reload, cleanup or automatic publication. Shipping
 preinst and the remaining R02/P02 chains are separate unfinished work; this
 source slice is not an installed upgrade claim.
 
+#### Canonical explicit retirement entry
+
+The fixed Linux recovery command is
+`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.home_retirement`.
+It accepts no arguments, requires root, emits the retirement copy before any
+effect, and reports only bounded status. Fresh or independently confirmed retired
+layouts return without acquiring a fence or replaying effects. Existing final
+evidence with drift refuses before any new retirement attempt.
+
+`home_retirement_upgrade.retire` holds the existing installer directory flock
+and permanent refusal fence across the canonical sequence. First preparation
+selects active or inert ownership from historical evidence. Saved preparation
+and native records are loaded without recapture. Read-only existing cleanup
+observers select a remaining entry after interruption; current absence is only
+a dispatch choice. Every existing effect owner still requires its complete
+current original/cutoff-or-inert/native/custody/exclusion proof. Partial native
+recovery selects the same live original connector or the independent original
+death/quiescence path; a missing process never supplies cutoff authority.
+
+The sequence stops on the first failed effect, retaining committed denial and
+all remaining evidence. It never tries an alternative mutator after failure.
+Distinct explicit cleanup operations reopen saved originals with their existing
+bounded owners; no in-flight cutoff deadline is reset or extended. Completed
+prefixes allow recovery at native-artifact, operation-domain, trust, account or
+receipt publication boundaries without replaying earlier destructive effects.
+Only final publication plus independent retired readback returns success for a
+legacy layout. The generated incoming Debian preinst bundle, its packaging
+dependency closure and installed upgrade acceptance remain unfinished.
+
+Focused entry venue:
+`uv run --frozen pytest scripts/test_home_retirement_entry.py -v --tb=short`.
+Its native and filesystem adapters cannot establish installed dpkg ordering.
+
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held
