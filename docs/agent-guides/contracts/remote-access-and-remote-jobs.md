@@ -4439,14 +4439,30 @@ provenance identities are immutable and redacted in repr. `require_managed`
 compares the original observation; validation/native-read replacements cannot be
 silently recaptured as original evidence.
 
-These are in-memory prerequisites, not durable intents, removal capabilities or
-successful recovery results. They do not prove managed unit/process ownership,
-parse or revoke trust authority, inventory issuer/minter journals or preserve
-all original cleanup identities across a crash; nor do they stop, delete or
-publish retirement. The explicit coordinator must establish those separate
-proofs, persist original inventory before effects and account for its own
-intentional revocation writes without adopting replacements. A matching current
-hash or same-named candidate is never lineage by itself.
+`home_retirement_journal.RetirementJournal` can preserve these original service,
+private-member and managed-member observations in fixed root-private
+`home-retirement-inventory.json` before effects. The bounded canonical journal
+contains only nonsecret identity, custody signatures and protected provenance
+digests. Closed paths/schemas, exclusive creation, file/parent synchronization
+and pinned readback apply; unknown or interrupted bytes are never overwritten.
+Explicit loading resynchronizes complete valid evidence and keeps the original
+observations even if current members are absent or replaced. It does not discover
+or adopt those current candidates. The serialization directory inode/custody
+binds the journal to its original domain. Live reuse pins the journal inode
+across syncs. Capture compares all saved member and ancestor identities again
+after publication; only the journal directory's intentional metadata change is
+permitted, while its inode/custody/mode remain pinned. That comparison is for
+the pre-mutation boundary: real revocation owns and must authenticate its later
+trust-pair writes separately.
+
+These records are evidence prerequisites, not removal capabilities or successful
+recovery results. They do not prove managed unit/process ownership, parse or
+revoke trust authority, or inventory issuer/minter journals; nor do they stop,
+delete or publish retirement. The original connector pin must precede remaining
+inventory capture. The explicit coordinator must establish the separate proofs,
+complete the remaining cleanup inventory, preserve it before effects and account
+for intentional revocation writes without adopting replacements. A matching
+current hash or same-named candidate is never lineage by itself.
 
 These prerequisites remain unmounted until the explicit retirement coordinator
 composes persistent denial, real revoke/store readback, original-owner physical

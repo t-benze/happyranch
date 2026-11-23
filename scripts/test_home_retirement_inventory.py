@@ -1075,3 +1075,222 @@ def test_managed_original_snapshot_is_rechecked_after_blocking_native_observatio
         with pytest.raises(RetirementUncertain, match="^migration pending$"):
             fixture.inventory.managed_members(ownership, fence=fence)
         assert validated and replaced == [True] and fixture.effects() == []
+
+
+JOURNAL = STATE + "/home-retirement-inventory.json"
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_original_inventory_is_durable_closed_and_reopens_without_adopting_current_members(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, live: bool) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture, live=live)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot()
+        syncs, real_sync = [], os.fsync
+        def sync(fd):
+            syncs.append(os.readlink(f"/proc/self/fd/{fd}"))
+            real_sync(fd)
+        monkeypatch.setattr(os, "fsync", sync)
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(ownership)
+        target = fixture.root / JOURNAL
+        assert str(target) in syncs and str(target.parent) in syncs
+        assert syncs.index(str(target)) < syncs.index(str(target.parent))
+        record = json.loads(target.read_bytes())
+        assert record.keys() == {"format", "directory", "original"}
+        assert record["format"] == "home-retirement-inventory@1"
+        assert record["directory"] == [getattr(os.stat(target.parent), key)
+            for key in ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode")]
+        assert record["original"]["service"]["unit"] == "happyranch-headscale.service"
+        assert record["original"]["managed"]["identity"] == ["tenant", "home", "connector"]
+        assert record["original"]["managed"]["live_sidecar"] is live
+        assert set(record["original"]["managed"]["members"]) >= set(MANAGED_OPAQUE)
+        assert set(record["original"]["private"]["members"]) >= {CONFIG, OPAQUE, PRIVATE_KEY}
+        assert (target.stat().st_uid, target.stat().st_gid, stat.S_IMODE(target.stat().st_mode), target.stat().st_nlink
+            ) == (os.getuid(), os.getgid(), 0o600, 1)
+        assert all(secret not in target.read_bytes() for secret in (b"synthetic-copied-daemon-token",
+            b"synthetic-opaque-state", b"synthetic-release-home-token", b"synthetic-P25-saved-home"))
+        after = fixture.snapshot()
+        assert {path for path in after if before.get(path) != after[path]} == {JOURNAL, STATE}
+        assert fixture.effects() == [] and repr(original) == "OriginalInventory(<redacted>)"
+        journal.require_original_members(original)
+        # Recovery reads the saved original even after interrupted cleanup or a
+        # same-byte replacement. It never recaptures these current candidates.
+        member = fixture.root / OPAQUE
+        signature = original.private.members[OPAQUE]
+        member.rename(fixture.root / "preserved-original-db")
+        member.write_bytes(b"foreign-replacement")
+        member.chmod(0o600)
+        (fixture.root / PRIVATE_KEY).unlink()
+        for name in ("observe", "private_members", "managed_members"):
+            monkeypatch.setattr(inventory.LegacyInventory, name, lambda *args, **kwargs: pytest.fail("load recaptured current state"))
+        before = fixture.snapshot()
+        reopened = RetirementJournal(fixture.io, fence).load()
+        assert reopened.private.members[OPAQUE] == signature
+        assert reopened.private.members[PRIVATE_KEY] is not None
+        assert reopened == original and fixture.snapshot() == before and fixture.effects() == []
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            journal.require_original_members(reopened)
+        with pytest.raises(TypeError):
+            reopened.managed.members[MANAGED_OPAQUE[0]] = None
+
+
+@pytest.mark.parametrize("damage", ["mode", "hardlink", "symlink", "fifo", "empty", "oversized", "torn",
+    "duplicate", "format", "directory", "extra", "path", "parent", "missing-managed", "missing-private",
+    "digest", "signature", "signature-bool", "account", "release", "identity", "activation", "native", "receipts"])
+def test_unknown_original_inventory_is_preserved_without_effects_or_recapture(
+        fixture: InventoryFixture, damage: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        RetirementJournal(fixture.io, fence).capture(fixture.inventory.observe(fence=fence))
+        target = fixture.root / JOURNAL
+        record = json.loads(target.read_bytes())
+        original = record["original"]
+        if damage == "mode":
+            target.chmod(0o644)
+        elif damage == "hardlink":
+            os.link(target, fixture.root / "external-journal")
+        elif damage in ("symlink", "fifo"):
+            target.rename(fixture.root / "external-journal")
+            if damage == "symlink":
+                target.symlink_to(fixture.root / "external-journal")
+            else:
+                os.mkfifo(target, 0o600)
+        elif damage in ("empty", "oversized", "torn", "duplicate"):
+            target.write_bytes({"empty": b"", "oversized": b"x" * 32769, "torn": b'{"format":',
+                "duplicate": target.read_bytes().replace(b'"format":', b'"format":"home-retirement-inventory@1","format":', 1)}[damage])
+        else:
+            if damage == "format": record["format"] = "home-retirement-inventory@2"
+            elif damage == "directory": record["directory"][1] += 1
+            elif damage == "extra": record["completion"] = True
+            elif damage == "path": original["private"]["members"]["home/release/task.db"] = original["private"]["members"][OPAQUE]
+            elif damage == "parent": original["managed"]["directories"]["home/release"] = original["managed"]["directories"]["etc"]
+            elif damage == "missing-managed": del original["managed"]["members"][MANAGED_OPAQUE[0]]
+            elif damage == "missing-private": del original["private"]["members"][PRIVATE_KEY]
+            elif damage == "digest": original["managed"]["digests"]["etc/happyranch/connector.json"] = "unknown"
+            elif damage == "signature": original["private"]["members"][OPAQUE] = [1, 2]
+            elif damage == "signature-bool": original["private"]["members"][OPAQUE][1] = True
+            elif damage == "account": original["managed"]["account"][0] = False
+            elif damage == "release": original["managed"]["release_uid"] += 1
+            elif damage == "identity": original["managed"]["identity"][2] = "foreign"
+            elif damage == "activation": original["activation"]["operation_id"] = "unknown"
+            elif damage == "native": original["native"]["properties"].append(["alias", "foreign"])
+            elif damage == "receipts": del original["receipt_identities"]["headscale-account.json"]
+            target.write_bytes(json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        before = fixture.snapshot()
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            RetirementJournal(fixture.io, fence).load()
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            RetirementJournal(fixture.io, fence).capture(fixture.inventory.observe(fence=fence))
+        assert fixture.snapshot() == before and fixture.effects() == []
+
+
+@pytest.mark.parametrize("failure", ["write", "file-sync", "parent-sync"])
+def test_interrupted_original_inventory_publication_retains_evidence_and_requires_explicit_sync(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot()
+        write, sync = os.write, os.fsync
+        def interrupted_write(fd, data):
+            if os.readlink(f"/proc/self/fd/{fd}") == str(fixture.root / JOURNAL) and failure == "write":
+                return write(fd, data[:17])
+            return write(fd, data)
+        def interrupted_sync(fd):
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            if ((failure == "file-sync" and target == str(fixture.root / JOURNAL))
+                    or failure == "parent-sync" and target == str(fixture.root / STATE)):
+                raise OSError("synthetic fault containing private input")
+            sync(fd)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "write", interrupted_write)
+            scoped.setattr(os, "fsync", interrupted_sync)
+            with pytest.raises(RetirementUncertain, match="^migration pending$"):
+                RetirementJournal(fixture.io, fence).capture(ownership)
+        after = fixture.snapshot()
+        assert {path for path in after if before.get(path) != after[path]} == {JOURNAL, STATE}
+        assert fixture.effects() == [] and not (fixture.root / STATE / "home-retirement.json").exists()
+        if failure == "write":
+            with pytest.raises(RetirementUncertain, match="^migration pending$"):
+                RetirementJournal(fixture.io, fence).load()
+        else:
+            syncs = []
+            def resync(fd):
+                syncs.append(os.readlink(f"/proc/self/fd/{fd}"))
+                sync(fd)
+            monkeypatch.setattr(os, "fsync", resync)
+            restored = RetirementJournal(fixture.io, fence).load()
+            assert syncs == [str(fixture.root / JOURNAL), str(fixture.root / STATE)]
+            assert restored.managed.identity == ("tenant", "home", "connector")
+        assert fixture.snapshot() == after and fixture.effects() == []
+
+
+@pytest.mark.parametrize("when", ["publish-file", "publish-parent", "reuse-file", "reuse-parent"])
+def test_original_journal_inode_stays_pinned_across_sync_and_reuse(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, when: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        journal = RetirementJournal(fixture.io, fence)
+        if when.startswith("reuse"):
+            journal.capture(ownership)
+        replaced, sync = [], os.fsync
+        def swap(fd):
+            sync(fd)
+            path = os.readlink(f"/proc/self/fd/{fd}")
+            selected = JOURNAL if when.endswith("file") else STATE
+            if path == str(fixture.root / selected) and not replaced:
+                target = fixture.root / JOURNAL
+                target.rename(fixture.root / "preserved-original-journal")
+                target.write_bytes((fixture.root / "preserved-original-journal").read_bytes())
+                target.chmod(0o600)
+                replaced.append(True)
+        monkeypatch.setattr(os, "fsync", swap)
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            (journal.load if when.startswith("reuse") else lambda: journal.capture(ownership))()
+        assert replaced == [True] and fixture.effects() == []
+
+
+@pytest.mark.parametrize("path", [OPAQUE, PRIVATE_KEY, "etc/happyranch/connector.json", MANAGED_OPAQUE[0], ACCOUNT_RECORD])
+def test_original_journal_publication_never_relabels_drift_as_its_own_directory_write(
+        fixture: InventoryFixture, monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        ownership = fixture.inventory.observe(fence=fence)
+        changed, sync = [], os.fsync
+        def drift(fd):
+            sync(fd)
+            if os.readlink(f"/proc/self/fd/{fd}") == str(fixture.root / STATE) and not changed:
+                target = fixture.root / path
+                target.write_bytes(target.read_bytes() + b"foreign-drift")
+                changed.append(True)
+        monkeypatch.setattr(os, "fsync", drift)
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            RetirementJournal(fixture.io, fence).capture(ownership)
+        assert changed == [True] and fixture.effects() == []
+
+
+def test_original_journal_requires_same_live_serialization_domain(fixture: InventoryFixture) -> None:
+    from runtime.remote_access.home_retirement_journal import RetirementJournal
+    managed_setup(fixture)
+    other = Fixture(fixture.root.parent / "foreign-root")
+    other.directory(STATE)
+    with retirement_fence(fixture.io) as fence, retirement_fence(other.io) as foreign:
+        ownership = fixture.inventory.observe(fence=fence)
+        before = fixture.snapshot(), other.snapshot()
+        with pytest.raises(RetirementUncertain, match="^migration pending$"):
+            RetirementJournal(fixture.io, foreign).capture(ownership)
+        assert (fixture.snapshot(), other.snapshot()) == before
+        journal = RetirementJournal(fixture.io, fence)
+        journal.capture(ownership)
+    before = fixture.snapshot()
+    with pytest.raises(RetirementUncertain, match="^migration pending$"):
+        journal.load()
+    assert fixture.snapshot() == before and fixture.effects() == []
