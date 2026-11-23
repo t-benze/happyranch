@@ -4187,7 +4187,9 @@ jobs for long commands. No new CI/E2E trigger or gate is added.
 `python3 -B -m unittest scripts.mac_native.test_app_scheme -v` exercises the
 native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
 abort and post-stop writes, partial JSONL retention, root/body/download evidence
-requirements, and private fixture authentication/JSON bytes. This standalone
+requirements, private fixture authentication/JSON bytes, and failed-command
+compiler-error/context retention outside head/tail with a 64 KiB JSON bound
+and explicit truncation. This standalone
 venue also executes the shipped page facade with the existing shared owner
 registry/save-receipt gate under Node 24: pending summary delivery, waiting for
 native receipt and refusal of an invalid receipt. It does not establish native

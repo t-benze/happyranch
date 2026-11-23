@@ -124,6 +124,14 @@ SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
 The internal qualification entry is explicitly commissioned by MAC-1 and is the
 only test-only app entry added; ordinary app startup never selects it.
 
+SwiftPM compiles every file in both test targets even when execution is filtered.
+Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
+`error_context`: lines containing `: error:` or beginning `error:`, with two
+lines of surrounding context and original line numbers. Its serialized JSON is
+bounded to 64 KiB, with the total matching-line count and an explicit truncation
+flag. This evidence survives command failure and scratch removal; it does not
+change the build or qualification verdict.
+
 Each page receipt is sent immediately to native and fsynced to JSONL; timeout
 retains earlier events. Every one of five events at 1s intervals must arrive in
 under **500 ms** (less than half the interval); the two-event abort must stop its
@@ -156,7 +164,7 @@ no session reopen/replay and genuine revocation teardown in the existing
 HomeInviteModelTests venue.
 All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
 PR's combined six-run unsigned allowance across Jenkins and GitHub Actions.
-The PR body is the build ledger; 0/6 at maker handoff. No diagnostic-only run,
+The PR body records the current build ledger. No diagnostic-only run,
 extra retry, new Jenkins job or required check is added.
 
 

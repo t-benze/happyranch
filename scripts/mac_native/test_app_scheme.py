@@ -8,8 +8,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.mac_native.suite_app_scheme import UPLOAD_DIGEST, assess, read_events, synthetic_daemon
+from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, read_events, run, synthetic_daemon
 
 
 def evidence() -> tuple[list[dict], list[dict]]:
@@ -32,6 +33,52 @@ def evidence() -> tuple[list[dict], list[dict]]:
 
 
 class QualificationVerdictTests(unittest.TestCase):
+    def test_failed_command_retains_bounded_error_context_in_report(self) -> None:
+        # Drive the suite's actual failure/report boundary without running Mac tools.
+        middle = (b'preceding context\nExample.swift:42:7: error: missing argument\n'
+                  b' 42 | changedCall()\n    | ^ missing owner\n'
+                  b'error: second diagnostic\nfollowing context\n')
+        for label, raw, truncated in (
+            ('middle', b'build head\n' + b'unrelated warning\n' * 4000 + middle
+             + b'unrelated warning\n' * 4000 + b'error: fatalError\n', False),
+            ('overflow', (b'error: ' + b'x' * 1000 + b'\n') * 100, True),
+            ('unicode', ('error: ' + '\u5931\u8d25' * 40000).encode(), True),
+            ('no_errors', b'warning: ordinary warning\n', False),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory(dir=ROOT) as folder:
+                report = {}
+                with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                    'scripts.mac_native.suite_app_scheme._command', return_value=(1, raw),
+                ) as command:
+                    with self.assertRaisesRegex(RuntimeError, 'swift_version failed'):
+                        run(report)
+                command.assert_called_once()
+                # Round-trip exactly the JSON record probe.py retains after failure.
+                row = json.loads(json.dumps(report))['app_scheme']['commands'][0]
+                self.assertEqual(row['exit_code'], 1)
+                self.assertEqual(row['bytes'], len(raw))
+                self.assertEqual(row['sha256'], hashlib.sha256(raw).hexdigest())
+                self.assertEqual(row['head'], raw[:2048].decode(errors='replace'))
+                self.assertEqual(row['tail'], raw[-2048:].decode(errors='replace'))
+                errors = row.get('error_context')
+                self.assertIsInstance(errors, dict, 'command report must retain compiler diagnostics')
+                self.assertEqual(errors['truncated'], truncated)
+                self.assertLessEqual(len(json.dumps(errors).encode()), 65536)
+                if label == 'middle':
+                    self.assertNotIn('missing argument', row['head'] + row['tail'])
+                    for line in middle.decode().splitlines():
+                        self.assertIn(line, errors['text'])
+                    self.assertIn('error: fatalError', errors['text'])
+                    self.assertEqual(errors['matching_lines'], 3)
+                    self.assertLess(errors['text'].count('unrelated warning'), 10)
+                elif label in ('overflow', 'unicode'):
+                    self.assertIn('error: ', errors['text'])
+                    self.assertEqual(errors['matching_lines'], 100 if label == 'overflow' else 1)
+                else:
+                    self.assertEqual(errors['text'], '')
+                    self.assertEqual(errors['matching_lines'], 0)
+                self.assertEqual(report['app_scheme']['qualification']['status'], 'NOT RUN')
+
     def test_shipping_owner_receipt_save_admission(self) -> None:
         result = subprocess.run(
             ['node', '--experimental-transform-types', 'scripts/mac_native/app_scheme_page_probe.mjs'],

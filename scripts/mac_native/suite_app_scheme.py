@@ -126,6 +126,31 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in lines if line.endswith(b'\n')]
 
 
+def _error_context(raw: bytes) -> dict[str, Any]:
+    """Keep compiler errors outside head/tail, with two surrounding lines.
+
+    Bound the serialized excerpt, including JSON escaping; report omitted text
+    explicitly rather than mistaking SwiftPM's final fatalError for the cause.
+    """
+    lines = raw.decode(errors='replace').splitlines()
+    matches = [index for index, line in enumerate(lines) if ': error:' in line or line.startswith('error:')]
+    selected = sorted({near for index in matches for near in range(max(0, index - 2), min(len(lines), index + 3))})
+    text = '\n'.join(f'{index + 1}: {lines[index]}' for index in selected)
+    # Reserve space for the fixed metadata around the JSON string.
+    budget = 65536 - 256
+    truncated = len(json.dumps(text).encode()) > budget
+    if truncated:
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if len(json.dumps(text[:middle]).encode()) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        text = text[:low]
+    return {'text': text, 'matching_lines': len(matches), 'truncated': truncated}
+
+
 def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code: int | None,
            download: bytes | None) -> dict[str, Any]:
     """Only measured per-event receipts can qualify streaming; EOF is insufficient."""
@@ -195,7 +220,8 @@ def run(report: dict[str, Any]) -> None:
             section['commands'].append(row)
             code, raw = _command(argv, env, cwd, min(deadline, time.monotonic() + seconds), output_cap=1024 * 1024)
             row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
-                       head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'))
+                       head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
+                       error_context=_error_context(raw))
             if code:
                 raise RuntimeError(name + ' failed')
             return raw
