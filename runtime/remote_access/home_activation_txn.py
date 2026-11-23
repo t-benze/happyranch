@@ -1,7 +1,6 @@
 """Closed B4 journal and A5 store. No entry point or recovery authority."""
 from __future__ import annotations
 
-import fcntl
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from runtime.remote_access.home_activation import (
 )
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 from runtime.remote_access.installer import InstallerError
+from runtime.remote_access.installer_lock import installer_state_lock
 
 TRANSACTION_PATH = "/var/lib/happyranch-remote-access/home-activation-txn.json"
 EFFECTS = ("preflight", "headscale_start_verify", "db_users", "local_node_mint",
@@ -159,11 +159,8 @@ class HomeActivationTransactionStore(HomeActivationStore):
     def locked(self) -> Iterator[int]:
         """One nonblocking directory lock spans both records and every effect."""
         try:
-            with self._parent(TRANSACTION_PATH) as (parent, revalidate):
-                fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                revalidate()
+            with installer_state_lock(self._io) as parent:
                 yield parent
-                revalidate()
         except (OSError, InstallerError, HeadscaleServiceError):
             raise HomeActivationError("state") from None
 

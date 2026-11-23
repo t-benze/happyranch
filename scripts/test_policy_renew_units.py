@@ -8,6 +8,7 @@ import copy
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -257,3 +258,48 @@ def test_packaged_renewal_units_are_exact_renderer_bytes() -> None:
     folder = Path(__file__).resolve().parents[1] / 'packaging/linux/systemd'
     assert (folder / renew.SERVICE_NAME).read_bytes() == SERVICE_GOLDEN == renew.render_service().encode()
     assert (folder / renew.TIMER_NAME).read_bytes() == TIMER_GOLDEN == renew.render_timer().encode()
+
+
+def test_policy_helper_uses_fixed_retained_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+    from types import SimpleNamespace
+    from runtime.remote_access import helper_generation, helper_invite
+
+    command = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
+               'runtime.remote_access.policy_renew_backend')
+    calls = []
+    observations = []
+
+    def child(argv: tuple[str, ...], *, input: bytes, **kwargs: object) -> object:
+        request = json.loads(input)
+        observations.append((argv, kwargs, request, time.monotonic()))
+        calls.append(request['step'])
+        result = {'snapshot': 'protected-non-home-capture'} if request['step'] == 'capture' else {'policy': 'current'}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(result).encode())
+
+    def effect(argv: tuple[str, ...], request: dict, before_commit: Callable[[], None]) -> dict:
+        observations.append((argv, None, request, time.monotonic()))
+        calls.append('renew')
+        before_commit()
+        return {'outcome': 'complete'}
+
+    monkeypatch.setattr(helper_generation.subprocess, 'run', child)
+    monkeypatch.setattr(helper_invite, 'effect', effect)
+    client = helper_generation.HomeLifecycleClient('RetryPolicyRenewal', 1000)
+    capture = client.current_generation(30)
+    assert capture == 'protected-non-home-capture'
+    assert client.policy_status(30) == {'policy': 'current'}
+    deadline = time.monotonic() + 30
+    assert client.retry_policy(capture, deadline, lambda: calls.append('live-auth')) == {'outcome': 'complete'}
+    assert calls == ['capture', 'status', 'renew', 'live-auth']
+    # Assert independently consumed command/request bytes outside the client's
+    # exception projection, so a wrong child cannot hide the intended failure.
+    for argv, options, request, observed_at in observations:
+        assert argv == command
+        assert request['method'] == 'RetryPolicyRenewal' and request['uid'] == 1000
+        if options is not None:
+            assert options['env'] == {} and options['cwd'] == '/'
+            assert request['expected'] is None and request['deadline'] > observed_at
+        else:
+            assert request == dict(method='RetryPolicyRenewal', uid=1000, step='renew',
+                                   expected='protected-non-home-capture', deadline=deadline)

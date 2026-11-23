@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from runtime.remote_access import home_activation_backend as backend
+from runtime.remote_access import policy_renew_backend as renewal_backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
 from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 from scripts.test_installer_token_custody import fixture as renewal_fixture, renewal_intent, renewal_setup  # noqa: F401
@@ -773,32 +774,47 @@ def test_retry_policy_child_uses_real_fresh_renewal(renewal_fixture: Any, monkey
     provision = json.loads((folder / 'provision.json').read_bytes())
     provision['digests']['policy.json'] = hashlib.sha256(raw).hexdigest()
     (folder / 'provision.json').write_bytes(json.dumps(provision, sort_keys=True).encode())
-    put_pair(v.root)
-    lifecycle = backend.HelperLifecycleBackend(v.installer)
-    expected = lifecycle.capture('RetryPolicyRenewal', 1000)
-    before = (folder / 'policy.json').read_bytes(), (folder / 'provision.json').read_bytes()
+    lifecycle = renewal_backend.PolicyRenewalBackend(v.installer)
+    expected = lifecycle.capture(1000)
     if case == 'changed_under_lock':
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
-        original = HomeActivationTransactionStore.locked
+        from runtime.remote_access import installer_lock
+        original = installer_lock.installer_state_lock
+        injected = []
         @contextmanager
-        def changed(store: Any) -> Any:
-            with original(store) as directory:
-                updated = receipt_record('ready')
-                updated['operation_id'] = 'e' * 32
-                put(v.root, RECEIPT, encoded(updated))
+        def changed(installer: Any) -> Any:
+            with original(installer) as directory:
+                # Valid non-home input changes after capture, before the live
+                # callback under the SAME real directory lock. Keep provenance
+                # valid so only capture freshness owns the intended refusal.
+                sidecar = folder / 'sidecar.json'
+                sidecar.write_bytes(sidecar.read_bytes() + b'\n')
+                record = json.loads((folder / 'provision.json').read_bytes())
+                record['digests']['sidecar.json'] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+                (folder / 'provision.json').write_bytes(json.dumps(record, sort_keys=True).encode())
+                injected.append(v.inventory())
                 yield directory
-        monkeypatch.setattr(HomeActivationTransactionStore, 'locked', changed)
-        with pytest.raises(backend.ActivationRefused):
+        monkeypatch.setattr(installer_lock, 'installer_state_lock', changed)
+        with pytest.raises(renewal_backend.PolicyRenewalRefused):
             lifecycle.dispatch('RetryPolicyRenewal', 1000, 'renew', expected,
                 deadline=time.monotonic() + 100, before_commit=lambda: None)
-        assert ((folder / 'policy.json').read_bytes(), (folder / 'provision.json').read_bytes()) == before
+        assert injected and v.inventory() == injected[0]
+        assert not v.manager.calls and not (folder / 'install-transaction.json').exists()
         return
+    before = v.inventory()
     live = []
     result = lifecycle.dispatch('RetryPolicyRenewal', 1000, 'renew', expected,
         deadline=time.monotonic() + 100, before_commit=lambda: live.append(True))
     assert result == {'outcome': 'complete'} and live
     renewed = json.loads((folder / 'policy.json').read_bytes())
     assert renewed['issued_at'] == now.isoformat() and renewed['revision'] == policy['revision'] + 1
+    assert json.loads((folder / 'provision.json').read_bytes())['digests']['policy.json'] == hashlib.sha256(
+        (folder / 'policy.json').read_bytes()).hexdigest()
+    after = v.inventory()
+    assert {name: value for name, value in after.items()
+            if name not in ('etc/happyranch/policy.json', 'etc/happyranch/provision.json')} == {
+        name: value for name, value in before.items()
+        if name not in ('etc/happyranch/policy.json', 'etc/happyranch/provision.json')}
+    assert all(after[name][1] == before[name][1] for name in before)
     assert not v.manager.calls and not (folder / 'install-transaction.json').exists()
 
 
@@ -828,7 +844,7 @@ def test_policy_status_existing_dimension(renewal_fixture: Any, monkeypatch: pyt
         return dict(ActiveState='activating' if case == 'renewing' else 'inactive',
                     SubState='dead', Result='exit-code' if case == 'service_failed' else 'success')
     v.installer.manager = SimpleNamespace(show_properties=properties)
-    assert backend.HelperLifecycleBackend(v.installer).policy_status(1000) == {'policy': state}
+    assert renewal_backend.PolicyRenewalBackend(v.installer).policy_status(1000) == {'policy': state}
 
 
 @pytest.mark.parametrize('residue', ['/etc/happyranch/install-transaction.json',

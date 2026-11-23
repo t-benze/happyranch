@@ -222,51 +222,13 @@ class HelperLifecycleBackend:
         return residue + self._policy_quiescence()
 
     def policy_status(self, uid: int) -> dict:
-        """Read-only aggregate for the existing B15 policy dimension."""
-        from datetime import datetime, timezone
-        from runtime.remote_access import installer
-        from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
-        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, fresh_auth_renewal_candidate
-        self.capture('RetryPolicyRenewal', uid)
-        self.io._service_owner = self.io._account(create=False)
-        if self.io._service_owner is None:
-            raise ActivationRefused()
-        with self.io._publication_parent() as (parent, check):
-            self.io._headscale_no_pending(parent, 'install-transaction.json')
-            try:
-                os.stat('install-transaction.json', dir_fd=parent, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                check()
-                return {'policy': 'uncertain'}
-            self.io._policy_renewal_pending(parent)
-            raw = self.io._read_file(parent, 'policy.json', owner=(self.io.root_owner[0], self.io._service_owner[1]), mode=0o640)
-            provision = self.io._read_file(parent, 'provision.json', owner=self.io.root_owner, mode=0o600)
-            self.io._validate_install_record('provision.json', provision)
-            if self.io._json(provision).get('digests', {}).get('policy.json') != hashlib.sha256(raw).hexdigest():
-                raise ActivationRefused()
-            check()
-        envelope = PolicyEnvelope.model_validate(self.io._json(raw))
-        consumer = RoutePolicyConsumer.from_envelope(envelope)
-        source = Path(installer.__file__).with_name('route_policy.json')
-        with self.io._input_parent(source) as parent:
-            shipped = self.io._json(self.io._read_file(parent, source.name, owner=self.io.root_owner))
-        now = datetime.now(timezone.utc)
-        if fresh_auth_renewal_candidate(envelope, shipped, now=now) is None:
-            return {'policy': 'renewal_failed'}
-        try:
-            consumer.require_current(now)
-        except PolicyError:
-            return {'policy': 'expired'}
-        service = self.io.manager.show_properties(SERVICE_NAME, ('ActiveState', 'SubState', 'Result'))
-        timer = self.io.manager.show_properties(TIMER_NAME, ('ActiveState', 'SubState', 'UnitFileState'))
-        state = ('renewing' if service.get('ActiveState') in ('active', 'activating') else
-                 'current' if service.get('Result') == 'success' and timer == dict(
-                     ActiveState='active', SubState='waiting', UnitFileState='enabled') else 'renewal_failed')
-        return {'policy': state}
+        from runtime.remote_access.policy_renew_backend import PolicyRenewalBackend
+        return PolicyRenewalBackend(self.io).policy_status(uid)
 
     def capture(self, method: str, uid: int) -> str:
+        if method == 'RetryPolicyRenewal':
+            from runtime.remote_access.policy_renew_backend import PolicyRenewalBackend
+            return PolicyRenewalBackend(self.io).capture(uid)
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             return HelperInviteBackend(self.io).capture(uid)
@@ -387,24 +349,12 @@ class HelperLifecycleBackend:
             if expected is not None:
                 raise ActivationRefused()
             return {'snapshot': self.capture(method, uid)}
-        if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
-            return self.policy_status(uid)
+        if method == 'RetryPolicyRenewal':
+            from runtime.remote_access.policy_renew_backend import PolicyRenewalBackend
+            return PolicyRenewalBackend(self.io).dispatch(method, uid, step, expected,
+                deadline=deadline, before_commit=before_commit)
         if type(expected) is not str or self.capture(method, uid) != expected:
             raise ActivationRefused()
-        if method == 'RetryPolicyRenewal' and step == 'renew':
-            if deadline is None or before_commit is None or time.monotonic() >= deadline:
-                raise ActivationRefused()
-            before_commit()
-            # Public entry holds the existing flock across P1 recovery/publication.
-            def before_renew() -> None:
-                if self.capture(method, uid) != expected:
-                    raise ActivationRefused()
-                before_commit()
-            self.io.renew_policy(fresh_auth=True, _before_renew=before_renew)
-            if self.capture(method, uid) != expected:
-                raise ActivationRefused()
-            before_commit()
-            return {'outcome': 'complete'}
         snapshot = json.loads(expected)
         if method == 'Disable' and step == 'cleanup':
             residue = self._policy_quiescence()

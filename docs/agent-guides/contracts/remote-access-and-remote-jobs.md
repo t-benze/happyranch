@@ -3945,6 +3945,30 @@ the timer has an Install section, for that target.
 
 **Delivered in I4b-1:** `ManagedInstaller.renew_policy` holds the existing
 activation-directory lock across protected reads, the decision and publication.
+The lock's retained owner is `runtime.remote_access.installer_lock`: renewal
+and the remaining activation callers lock the same protected
+`/var/lib/happyranch-remote-access` directory inode with nonblocking exclusive
+`flock`. Moving its owner does not create a lock file, change the serialization
+domain, create missing directories or relax the no-follow/root-private custody
+checks. This keeps ordinary renewal independent of activation implementation.
+The retained lock projects filesystem and legacy custody-observation errors
+to the closed `InstallerError` refusal; ordinary renewal callers no longer
+need the activation error type.
+
+The fixed helper's `RetryPolicyRenewal` capture, status and fresh-auth retry use
+`runtime.remote_access.policy_renew_backend` through the protected bundled
+Python with `-I`, an empty environment and no caller-selected command or path.
+This retained owner has no activation-family imports. It accepts protected
+non-home configuration only: old activation/transaction or invite-issuer
+evidence, pending entries and a `home_binding` refuse. Capture binds the UID
+and the protected release/connector/sidecar bytes; policy and provision are
+revalidated by the installer and advance together during renewal. The original
+live ready/commit exchange remains before publication, including a fresh
+capture check under the same installer-state directory flock and checks before
+reporting completion. Refusal emits no private input or filesystem diagnostics.
+The existing policy status dimension and public helper fresh-auth, caller,
+deadline, audit and mutation-slot checks still apply.
+
 Automatic mode uses `renewal_candidate` unchanged: identical shipped artifact,
 active valid structure, current 3600-second envelope and no backwards time.
 Fresh-auth mode is used by private Retry and forward Enable; it applies those
@@ -4275,6 +4299,160 @@ never repairs; after upgrade classify only a listed known prior profile version
 as repair_required for one Enable with devices retained. Unknown/torn versions
 remain closed with a fixed category, never automatic migration or trust reset.
 Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
+
+### Home retirement observations (THR-378 P24)
+
+`python -m runtime.remote_access.installer home-retirement-status --layout deb`
+is a read-only Linux observation. Its JSON always carries the exact message:
+“Home mode has been retired. Sign in to use your account's private network.
+Your local work is kept.” `migration pending` returns exit 1; `fresh` and a
+confirmed `retired` observation return exit 0. A status result grants no cleanup,
+service or account operation, package replacement, or account-network admission.
+
+The detector uses literal no-follow parent walks, including nearest-existing-
+ancestor revalidation for an absent path, and bounded shallow private-state
+inventory. It observes legacy receipts/keys/databases by metadata without
+opening their contents. Shared sidecar config and systemd/D-Bus policy scans
+are bounded and keep their retained non-home consumers; the exact packaged
+helper unit remains permitted. Unsafe, unknown, changing or interrupted
+evidence stays `migration pending`. Detection never creates directories,
+resumes an intent, stops/disables a unit, modifies accounts or deletes data.
+
+A final `home-retirement.json` lives in the protected root-owned 0700 installer
+state directory, is a single-link root-owned regular 0600 file bounded to
+1024 bytes, and contains only the closed nonsecret completion fields. A final
+record alone cannot override reappearing legacy artifacts, a loaded/active or
+uncertain controller, or a remaining account/group. Repeated detection has no
+destructive effects. These are sampled filesystem/native observations under
+the installer's existing cooperative-root-writer limitation; explicit retirement
+must independently prove its effects and revalidate ownership at each effect.
+
+The explicit retirement prerequisites are separate from that read-only detector.
+`home_retirement_fence.retirement_fence` holds the original protected installer
+directory flock through its caller's operation. It exclusively publishes and
+fsyncs the fixed root-owned 0600 `.home-activation.json.pending` fence; this is
+the pending name that the historical activation reader already refuses. A
+complete existing fence requires exact custody/content and fresh file/parent
+sync; an unknown or torn pending file is retained and refused. The context
+never initializes a missing state directory, resets the fence or supplies
+revocation/stop/completion authority. Its live check also refuses replacement
+of the fence or serialization-directory inode, and expires on context exit.
+
+`home_retirement_service.OwnedService` supplies only the subsequent local
+controller ownership and stopped/disabled readback primitive. Its fixed member
+digests must come from the coordinator's validated legacy/package evidence;
+hashing a candidate does not establish ownership. It checks exact fragment and
+executable custody, all systemd/D-Bus load roots and aliases, loaded identity,
+NSS bindings, process UID/GID/start identity/executable/cgroup and dedicated-UID
+process inventory. Fresh observations precede stop and disable independently;
+native success still requires stopped/process/link readback. A receipt expires
+on observed drift and must be rechecked before later cleanup. There is no
+account mutation, artifact deletion, service start or standalone lifecycle CLI.
+
+`home_retirement_cutoff.RetirementCutoff` supplies the active original-owner
+cutoff prerequisite. The coordinator must first validate legacy lineage and
+preserve the original connector PID/start/boot identity in its protected inventory;
+recovery must not adopt a replacement process or an empty replacement registry.
+Under the live directory fence it validates the fixed service-owned private
+control socket, kernel peer UID/GID, original process start/executable/cgroup
+and the fixed kernel boot ID and current account binding. Before its first
+protocol request, it exclusively writes, file/parent-fsyncs and reads back
+`home-retirement-peer.json` in the root-private installer directory. The closed
+0600 single-link record contains only the original PID/start/boot identity,
+connector identity, numeric service account and release UID. It contains no
+credentials, trust state, config contents, private keys or caller-selected paths.
+Unknown, torn, unsafe or replaced evidence remains pending and is never repaired
+or overwritten. A complete existing pin is revalidated and synchronized again
+before use by a fresh explicit action. The live owner pins its exact inode
+through subsequent requests, including the commit boundary and receipt checks.
+`from_saved_peer` loads that protected original identity without connecting to
+or discovering the current socket; missing evidence has no discovery fallback.
+It grants no acknowledgement and still requires independent managed lineage
+for connector identity and release UID. The loaded inode remains pinned across
+later native observations; only the first actual request synchronizes it.
+`capture_original` performs only original-owner status and anchored-generation
+readback, allowing the coordinator to capture remaining inventory after the pin
+publication and before any revoke mutation. Existing credentials and streams
+are unchanged by that capture; it supplies no cutoff receipt.
+Actual cutoff uses the existing `revoke-all@1` request.
+Its read-only adapter acquires the existing trust lock without creating or
+repairing anything and uses the production snapshot/anchor parser on pinned
+bytes. The successful original-owner reply attests the existing registry's
+terminal physical cleanup, including removed-device owners; independent pair
+readback must also prove the committed ceremony burn and device denies.
+Neither proof substitutes for the other. Partial commits, failed/in-flight
+closes, late replies, unknown legacy pairing authority or changed store/peer
+remain pending, retaining all committed denial and private evidence. A live
+cutoff receipt must freshly recheck the same peer, generation, denied state,
+deadline and fence before any later effect. A new object cannot infer that
+receipt from a denied store; explicit recovery can query the same original
+owner again without constructing a new registry or resetting failed cleanup.
+The supported packaged interpreter identity here is the pinned Python 3.12
+ELF target, not the `python3` launcher symlink. This is an active-owner
+prerequisite, not proof of original-process death after restart or of inactive
+legacy retirement. Focused standalone command:
+`uv run --frozen pytest scripts/test_home_retirement_cutoff.py -v --tb=short`.
+
+`home_retirement_inventory.LegacyInventory` supplies a separate read-only
+historical service-lineage observation. It requires protected root-owned final
+account/publication receipts, an exclusive locked system account, fixed released
+Headscale binary and historical unit digests, the closed activation receipt when
+the home unit/link is active, and agreeing fresh native service/process facts.
+It rejects missing, pending, malformed, aliased, replaced or untrusted receipts;
+only a live exact retirement fence may explain its own activation-pending file.
+Receipt inode/metadata identities remain bound across native observations and
+fresh `require` calls. Both lineage and cutoff require the live fence to belong
+to their actual root/owner serialization domain; another root's valid fence
+cannot explain a pending file or permit IPC in this one. The historical data-only parser is retained in
+`legacy_home_receipt`; parsing neither creates nor restores home authority.
+Frozen historical unit fixtures and the existing synthetic native-command venue
+exercise this composition without invoking provisioning or obsolete renderers:
+`uv run --frozen pytest scripts/test_home_retirement_inventory.py -v --tb=short`.
+Under the actual live fence, `private_members` additionally validates the fixed
+historical controller config/publication members, opaque controller DB/key/socket
+custody, empty `acme-unused`/`empty-ca-directory` and paired root-only CA staging. Published and
+activation digests supply the immutable comparisons; candidate self-hashes never
+become lineage. The CA private key, staged leaf key and opaque mutable bytes are
+metadata-only and never opened. Unknown shallow members, pending publication,
+unsafe parents/types/links/owners/modes, missing required immutable members and
+changes across blocking observations refuse without effects. Optional mutable
+or staging absence is recorded without claiming an owned deletion. The captured
+member/directory identities are immutable, redacted in repr, and freshly compared
+by `require_private`; a later same-byte replacement or disappearance cannot be
+silently adopted as the original snapshot.
+
+`managed_members` separately validates the fixed managed connector/sidecar
+configuration and shared runtime custody under the same live fence. Protected
+version-1 Debian provenance authenticates the original connector, inert sidecar,
+policy, release record and copied daemon token. A retained live sidecar requires
+the historical exact insertion and agreeing activation generation, home/control/
+connector identity, CA/dial binding and invite configuration. The release UID
+must also agree with current NSS identity. Expired policy is historical evidence
+only; it does not admit a transport. No release-home token or saved native state
+is opened. Mutable trust/sidecar files, runtime diagnostics and control/ingress/
+observer sockets are metadata-only; the reader never connects, initializes,
+repairs or parses authority from them. A trust triple must be complete or absent;
+absence supplies no rollback or cleanup proof. Fixed private runtime directories
+reject unknown entries, unsafe metadata and pending publications; sidecar health
+diagnostics retain the existing eight-file/64-KiB bound. Saved member, parent and
+provenance identities are immutable and redacted in repr. `require_managed`
+compares the original observation; validation/native-read replacements cannot be
+silently recaptured as original evidence.
+
+These are in-memory prerequisites, not durable intents, removal capabilities or
+successful recovery results. They do not prove managed unit/process ownership,
+parse or revoke trust authority, inventory issuer/minter journals or preserve
+all original cleanup identities across a crash; nor do they stop, delete or
+publish retirement. The explicit coordinator must establish those separate
+proofs, persist original inventory before effects and account for its own
+intentional revocation writes without adopting replacements. A matching current
+hash or same-named candidate is never lineage by itself.
+
+These prerequisites remain unmounted until the explicit retirement coordinator
+composes persistent denial, real revoke/store readback, original-owner physical
+acknowledgements and recovery. They cannot by themselves satisfy retirement or
+authorize package replacement. Sampled ownership checks retain the cooperative
+root/systemd-writer limit; they are not an adversarial-root race fence.
 
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
 

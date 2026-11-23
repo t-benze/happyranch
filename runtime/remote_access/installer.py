@@ -430,6 +430,12 @@ class ManagedInstaller:
         """
         return self._inventory()
 
+    def home_retirement_status(self) -> dict[str, str]:
+        """Read-only home retirement detection, never removal/replay authority."""
+        from runtime.remote_access.home_retirement import HomeRetirement
+
+        return HomeRetirement(self).detect().public()
+
     def _inventory(self, *, prepared_transaction: bytes | None = None,
                    pending: tuple[str, bytes] | None = None) -> InstallInventory:
         preparing = self._headscale_preparing
@@ -3721,11 +3727,11 @@ class ManagedInstaller:
     def renew_policy(self, *, fresh_auth: bool = False,
                      _before_renew: Callable[[], None] | None = None) -> None:
         """Fixed artifact only. Fresh-auth callers supply authorization separately."""
-        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+        from runtime.remote_access.installer_lock import installer_state_lock
 
         if os.geteuid() != 0 or type(fresh_auth) is not bool:
             raise InstallerError("policy renewal unavailable")
-        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked():
+        with installer_state_lock(self):
             if _before_renew is not None:
                 _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
             self._renew_policy_locked(fresh_auth=fresh_auth)
@@ -4986,7 +4992,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return darwin_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift", "prepare-headscale", "disable-headscale"))
+    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift", "prepare-headscale", "disable-headscale", "home-retirement-status"))
     parser.add_argument("--layout", choices=("source", "deb"), default="source")
     for option in ("connector-config", "sidecar-config", "policy-file", "daemon-token-source"):
         parser.add_argument(f"--{option}", type=Path, help="absolute input path (provision only)")
@@ -5007,7 +5013,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("provisioning inputs are only valid with provision")
     try:
         installer = ManagedInstaller(layout=args.layout)
-        if args.command == "prepare-headscale":
+        if args.command == "home-retirement-status":
+            result = installer.home_retirement_status()
+            print(json.dumps(result, sort_keys=True))
+            return 1 if result["state"] == "migration pending" else 0
+        elif args.command == "prepare-headscale":
             if args.layout != "deb":
                 raise headscale.HeadscaleServiceError("deb-layout-required")
             print(json.dumps(installer.prepare_headscale(), sort_keys=True))
