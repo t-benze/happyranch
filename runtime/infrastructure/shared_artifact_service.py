@@ -425,6 +425,78 @@ class SharedArtifactService:
         if row['state'] == 'pending-attribution':
             self._event(row,'artifact_attribution_pending',row['owner'],operation['operation_id'])
 
+    def reserve_compose_uploads(self, uploads: list[dict]) -> None:
+        """Persist custody before the caller BEGIN can publish any bytes.
+
+        Caller holds Database._lock through these receipts, the composite
+        transaction and compensation. A rollback restores the durable intents.
+        """
+        if not uploads:
+            return
+        for owned in uploads:
+            try:
+                owned['path'].lstat()
+            except FileNotFoundError:
+                continue
+            raise SharedArtifactError(503,'artifact_operation_pending',reason='compose_target_occupied')
+        with self.db.shared_artifact_transaction() as conn:
+            for owned in uploads:
+                if conn.execute("SELECT 1 FROM shared_artifact_operations WHERE name=? AND phase NOT IN ('committed','aborted')",(owned['name'],)).fetchone():
+                    raise SharedArtifactError(503,'artifact_operation_pending',name=owned['name'])
+                metadata = dict(owner=owned['owner'],size_bytes=len(owned['content']),
+                    sha256=hashlib.sha256(owned['content']).hexdigest(),
+                    thread_id=owned.get('thread_id'),attachment_id=owned.get('attachment_id'))
+                self._insert(conn,'shared_artifact_operations',dict(operation_id=owned['operation_id'],
+                    name=owned['name'],generation=1,operation='compose_private' if owned['private'] else 'compose',
+                    phase='reserved',reserved_bytes=0,created_at=_iso(self.clock()),updated_at=_iso(self.clock()),
+                    metadata_json=json.dumps(metadata)))
+
+    @staticmethod
+    def private_compose_identity(path: Path) -> tuple:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError('private compose identity unavailable')
+        return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
+
+    def compensate_compose_uploads(self, uploads: list[dict], *, private_store: object) -> None:
+        if not uploads:
+            return
+        with self.db.shared_artifact_transaction() as conn:
+            for owned in uploads:
+                operation = conn.execute('SELECT phase FROM shared_artifact_operations WHERE operation_id=?',
+                    (owned['operation_id'],)).fetchone()
+                # A COMMIT that took effect before raising is not permission to
+                # compensate committed bytes (private success removes its intent).
+                if operation is None or operation['phase'] == 'committed':
+                    continue
+                path = owned['path']
+                try:
+                    try:
+                        path.lstat()
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if owned['identity'] is None:
+                            raise OSError('compose identity was not captured')
+                        observed = self.private_compose_identity(path) if owned['private'] else self.identity(path)
+                        if observed != owned['identity']:
+                            raise OSError('compose identity changed')
+                        if owned['private']:
+                            private_store.delete(owned['thread_id'],owned['attachment_id'])
+                        else:
+                            self.store.delete(owned['name'])
+                        try:
+                            path.lstat()
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise OSError('compose cleanup did not remove bytes')
+                except (OSError,SharedArtifactError):
+                    conn.execute("UPDATE shared_artifact_operations SET phase='uncertain',failure='compose_compensation_unproven',updated_at=? WHERE operation_id=?",
+                        (_iso(self.clock()),owned['operation_id']))
+                else:
+                    conn.execute('DELETE FROM shared_artifact_operations WHERE operation_id=?',(owned['operation_id'],))
+
     def admit_in_caller_transaction(
         self, conn: object, *, name: str, content: bytes, actor_kind: str, actor: str,
         skill_slug: str, version_id: int, task_id: str | None,
@@ -456,6 +528,8 @@ class SharedArtifactService:
             operation = conn.execute('SELECT * FROM shared_artifact_operations WHERE operation_id=?',(operation_id,)).fetchone()
             if not operation:
                 raise SharedArtifactError(404,'artifact_operation_not_found')
+            if operation['operation'] in ('compose','compose_private'):
+                raise SharedArtifactError(503,'artifact_operation_pending',operation_id=operation_id,reason='exclusive_owned_recovery_required')
             row = json.loads(operation['metadata_json'])
             if operation['phase'] == 'committed':
                 return self.projection(row)
@@ -508,6 +582,9 @@ class SharedArtifactService:
             return result
         row = self._row(conn,name,generation)
         if not row:
+            pending = conn.execute("SELECT operation_id FROM shared_artifact_operations WHERE name=? AND phase NOT IN ('committed','aborted')",(name,)).fetchone()
+            if pending:
+                raise SharedArtifactError(503,'artifact_operation_pending',name=name,operation_id=pending['operation_id'],reason='compose_compensation_unproven')
             if generation is not None:
                 raise SharedArtifactError(404,'artifact_not_found',name=name,generation=generation)
             path = self.store.path_for(name)

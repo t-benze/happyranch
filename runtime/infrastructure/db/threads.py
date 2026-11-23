@@ -276,6 +276,7 @@ class ThreadsMixin:
         if not uncommitted:
             self._conn.commit()
 
+    @_synchronized
     def compose_shared_thread(
         self, *, thread: ThreadRecord, speaker: str, participants: list[str],
         recipients: list[str], initial_recipients: list[str], body_markdown: str | None,
@@ -293,46 +294,59 @@ class ThreadsMixin:
         from runtime.infrastructure.thread_mentions import resolve_wake_set
         from runtime.infrastructure.db.shared_artifacts import SharedThreadAttachment
         addresses = self.prepare_thread_message(body_markdown)
+        # Keep the connection fence through intent COMMIT, caller COMMIT and
+        # compensation. Readers cannot observe the uncommitted publication.
+        thread.id = self.next_thread_id()
         written = []
-        private_written = []
+        for filename,content,content_type in uploads or []:
+            basename = re.sub(r'[^A-Za-z0-9._-]+','-',filename).strip('.-') or 'attachment.bin'
+            prefix = f'{thread.id}-{uuid4()}-'
+            key = prefix+basename[:200-len(prefix)]
+            written.append(dict(operation_id=str(uuid4()),name=key,path=service.store.path_for(key),
+                identity=None,private=False,thread_id=thread.id,owner=speaker,filename=filename,content=content,content_type=content_type))
+        first_private = int(self.next_thread_attachment_id().removeprefix('att-')) if private_uploads else 0
+        for index,(filename,content,content_type) in enumerate(private_uploads or []):
+            attachment_id = f'att-{first_private+index:03d}'
+            written.append(dict(operation_id=str(uuid4()),name=f'thread-private:{thread.id}/{attachment_id}',
+                path=private_store.path_for(thread.id,attachment_id),identity=None,private=True,
+                thread_id=thread.id,attachment_id=attachment_id,owner=speaker,filename=filename,
+                content=content,content_type=content_type))
+        # A rollback must restore an already durable custody receipt. No nested
+        # transaction or intermediate thread COMMIT is used.
+        service.reserve_compose_uploads(written)
         try:
             with self.shared_artifact_transaction() as conn:
                 self.validate_thread_message(addresses)
-                thread.id = self.next_thread_id()
                 self.insert_thread(thread,uncommitted=True)
                 stamp = _now().isoformat()
                 for name in dict.fromkeys(participants):
                     if name not in ('founder','@founder'):
                         conn.execute('INSERT INTO thread_participants(thread_id,agent_name,added_at,added_by) VALUES(?,?,?,?)',
                                      (thread.id,name,stamp,speaker))
-                for filename,content,content_type in uploads or []:
-                    # ID allocated in this transaction, never a provisional draft ID.
-                    basename = re.sub(r'[^A-Za-z0-9._-]+','-',filename).strip('.-') or 'attachment.bin'
-                    prefix = f'{thread.id}-{uuid4()}-'
-                    key = prefix+basename[:200-len(prefix)]
-                    metadata = service.metadata(agent=speaker,thread_id=thread.id,
-                        purpose='thread attachment',retention='default')
-                    operation_id = str(uuid4())
-                    row = service._prepare_row(conn,key,content,metadata,operation_id)
-                    service.store.put(key,content)
-                    written.append((key,service.identity(service.store.path_for(key))))
-                    operation = conn.execute('SELECT * FROM shared_artifact_operations WHERE operation_id=?',(operation_id,)).fetchone()
-                    service._finalize_put(conn,operation,row)
-                    attachments.append(SharedThreadAttachment(artifact_name=key,display_name=filename,
-                        size_bytes=len(content),content_type=content_type,uploaded_by=speaker,generation=row['generation']))
-                for filename,content,content_type in private_uploads or []:
-                    attachment_id = self.next_thread_attachment_id()
-                    path = private_store.path_for(thread.id,attachment_id)
-                    if path.exists() or path.is_symlink():
-                        raise ValueError('thread_attachment_storage_occupied')
-                    size = private_store.put(thread.id,attachment_id,content)
-                    info = path.lstat()
-                    identity = (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
-                    private_written.append((thread.id,attachment_id,path,identity))
-                    conn.execute('INSERT INTO thread_scoped_attachments(attachment_id,thread_id,display_name,size_bytes,content_type,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)',
-                        (attachment_id,thread.id,filename,size,content_type,speaker,stamp))
-                    attachments.append(ThreadAttachment(artifact_name='',display_name=filename,size_bytes=size,
-                        content_type=content_type,uploaded_by=speaker,thread_attachment_id=attachment_id))
+                for owned in written:
+                    filename,content,content_type = owned['filename'],owned['content'],owned['content_type']
+                    # The caller replaces its own durable intent transactionally;
+                    # rollback restores it, including on final COMMIT failure.
+                    conn.execute('DELETE FROM shared_artifact_operations WHERE operation_id=?',(owned['operation_id'],))
+                    if not owned['private']:
+                        key = owned['name']
+                        metadata = service.metadata(agent=speaker,thread_id=thread.id,
+                            purpose='thread attachment',retention='default')
+                        row = service._prepare_row(conn,key,content,metadata,owned['operation_id'])
+                        service.store.put(key,content)
+                        owned['identity'] = service.identity(owned['path'])
+                        operation = conn.execute('SELECT * FROM shared_artifact_operations WHERE operation_id=?',(owned['operation_id'],)).fetchone()
+                        service._finalize_put(conn,operation,row)
+                        attachments.append(SharedThreadAttachment(artifact_name=key,display_name=filename,
+                            size_bytes=len(content),content_type=content_type,uploaded_by=speaker,generation=row['generation']))
+                    else:
+                        attachment_id,path = owned['attachment_id'],owned['path']
+                        size = private_store.put(thread.id,attachment_id,content)
+                        owned['identity'] = service.private_compose_identity(path)
+                        conn.execute('INSERT INTO thread_scoped_attachments(attachment_id,thread_id,display_name,size_bytes,content_type,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)',
+                            (attachment_id,thread.id,filename,size,content_type,speaker,stamp))
+                        attachments.append(ThreadAttachment(artifact_name='',display_name=filename,size_bytes=size,
+                            content_type=content_type,uploaded_by=speaker,thread_attachment_id=attachment_id))
                 mentions = self._derive_conversational_mentions(thread.id,speaker,ThreadMessageKind.MESSAGE,
                                                                  body_markdown,addresses=addresses)
                 seq = self._append_thread_message_uncommitted(thread_id=thread.id,speaker=speaker,
@@ -356,17 +370,13 @@ class ThreadsMixin:
                     payload={'seq':seq,'kind':'message','attachment_count':len(attachments),
                              'attachment_names':[a.artifact_name for a in attachments]})
             return thread.id,seq,arrivals
-        except BaseException:
-            # Identity-matched compensation only. The SQL owner has rolled back.
-            for name,identity in written:
-                path = service.store.path_for(name)
-                if path.exists() and service.identity(path) == identity:
-                    service.store.delete(name)
-            for thread_id,attachment_id,path,identity in private_written:
-                if path.exists() and not path.is_symlink():
-                    info = path.lstat()
-                    if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns) == identity:
-                        private_store.delete(thread_id,attachment_id)
+        except BaseException as error:
+            # SQL rollback restores each custody receipt. Unknown or replaced
+            # bytes stay held; only captured, still-matching identities unlink.
+            try:
+                service.compensate_compose_uploads(written,private_store=private_store)
+            except BaseException as cleanup_error:
+                error.add_note(f'compose custody remains pending: {type(cleanup_error).__name__}')
             raise
 
     def _row_to_thread(self, row) -> ThreadRecord:

@@ -2901,6 +2901,10 @@ transition interfaces. Agent/CLI puts require owner, task XOR thread, purpose an
 bounded expiry; default90 days / reference180 with reason. Renew/restore require
 continuing use; downloads never renew. No permanent exemption. Quota counts all
 physical states and reservations once: 5,000,000,000 bytes, warning4,000,000,000.
+Custom-skill caller transactions and artifact readers share the Database RLock
+through COMMIT/rollback. Composite shared/private uploads persist custody before
+publication; uncertain compensation keeps a durable journal. Shared GET refuses
+unfinished custody with503 before legacy adoption, even without a generation row.
 
 POST creates an exact active generation; replacement needs B's complete
 same-transaction reference proof. Legacy/unavailable names cannot be overwritten.

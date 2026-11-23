@@ -34,6 +34,19 @@ public empty thread is used. Private thread-scoped attachment storage remains
 separate. New shared links pin generation; historical links without pins resolve
 the current name. History keeps unavailable attachments and explanatory metadata.
 
+Composite shared and private uploads persist a custody intent before the thread
+transaction can publish bytes. The same Database RLock spans that intent COMMIT,
+the thread transaction and compensation. A rollback restores the prior durable
+intent; compensation deletes only a captured, still-matching request identity.
+Post-publication stat/identity failure, replacement bytes or failed cleanup retain
+an unfinished intent, even when no generation/thread row committed. Shared GET
+returns `503 artifact_operation_pending` before any legacy discovery; quota scans
+count the held physical bytes without adopting them. Private receipts retain the
+thread/attachment IDs in this journal and never enter shared quota as private
+bytes. These intents require exclusive recovery; the ordinary put reconciler
+cannot finalize a rolled-back compose. A successful thread COMMIT commits the
+shared generation/operation and removes private custody receipts.
+
 ## Storage and quota
 
 `ArtifactStore` stays policy-free. `SharedArtifactService` owns org metadata,
@@ -80,7 +93,13 @@ The existing canonical writer preserves **version INSERT in caller BEGIN
 IMMEDIATE → admission rows → blob write → caller COMMIT**, with caller-owned
 compensation armed through COMMIT. `admit_in_caller_transaction` takes that same
 Database connection and never opens/commits a transaction. Quota refusal precedes
-blob write and rolls back with the version. Generic store operations never
+blob write and rolls back with the version. Custom-skill caller transactions
+hold the same Database RLock from BEGIN through their COMMIT/rollback, so artifact
+readers/writers wait instead of joining or rejecting another caller's transaction.
+Lock order is existing session lease (agent only), completed native writer
+admission, existing canonical publication barrier where applicable, then Database
+RLock. The short native move gate is released before that RLock interval; no move
+gate or await is acquired within it. Generic store operations never
 locate an ambient org/DB.
 
 Metadata is server-derived: human actor → human Founder and accountable

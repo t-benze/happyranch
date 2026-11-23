@@ -7,13 +7,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import ExitStack, redirect_stdout, redirect_stderr
 from io import StringIO
 from types import SimpleNamespace
 import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -74,9 +75,13 @@ async def metadata_case(root: Path) -> None:
 
 
 async def provisional_case(root: Path) -> None:
+    root.mkdir()
+    for boundary in ('stat','identity','peer','cleanup'):
+        await compose_custody_case(root/('shared-'+boundary),fault=boundary)
+    await compose_custody_case(root/'private-stat',private=True)
     clock = [NOW]
     with patch('runtime.infrastructure.shared_artifact_service._utc',side_effect=lambda:clock[0]):
-        async with fixture(root) as (org,client):
+        async with fixture(root/'normal') as (org,client):
             put = await client.post(PREFIX+'/artifacts',params={'agent':'founder','name':'browser.bin'},files={'file':('browser.bin',b'founder')})
             assert put.status_code == 200,put.text
             pending = put.json()
@@ -143,7 +148,7 @@ async def provisional_case(root: Path) -> None:
             assert thread_rows() == counts
             assert org.db.get_shared_artifact('rollback.bin')['state'] == 'pending-attribution'
             before = snapshot(org)
-            org.db._conn = CommitFailure(raw,1)
+            org.db._conn = CommitFailure(raw,2)
             try:
                 await client.post(PREFIX+'/threads',params={'shared_uploads':'true'},data={'body':json.dumps({'subject':'Compensate','recipients':['worker'],'body_markdown':'hello'})},files=[('files',('new shared.bin',b'compensate'))])
                 assert False
@@ -323,9 +328,117 @@ def service_case(root: Path) -> None:
     print('PASS journal: exact overwrite/history/replay; forced final COMMIT recovery once; rename compensation/retry; legacy null TTL')
 
 
+async def concurrent_custom_download(org: object, client: object) -> None:
+    """The real caller transaction must fence a GET of committed bytes."""
+    from runtime.daemon.routes import custom_skills
+    org.db.insert_thread(ThreadRecord(id='THR-concurrent',subject='Synthetic'))
+    put = await client.post(PREFIX+'/artifacts',params=dict(agent='worker',thread_id='THR-concurrent',
+        purpose='Persistent',retention='default',name='existing.bin'),files={'file':('existing.bin',b'existing')})
+    assert put.status_code == 200,put.text
+    entered,release = threading.Event(),threading.Event()
+    original = custom_skills._write_artifact
+    def paused_write(*args: object, **kwargs: object) -> None:
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError('synthetic writer barrier timed out')
+        original(*args,**kwargs)
+    payload = dict(slug='concurrent-source',name='Concurrent',skill_md='---\nname: concurrent-source\ndescription: Synthetic source.\n---\n\nSynthetic.')
+    with patch.object(custom_skills,'_write_artifact',paused_write):
+        creation = asyncio.create_task(client.post(PREFIX+'/custom-skills',json=payload))
+        download = None
+        try:
+            assert await asyncio.to_thread(entered.wait,3)
+            assert org.db._conn.in_transaction
+            download = asyncio.create_task(client.get(PREFIX+'/artifacts/existing.bin'))
+            done,_ = await asyncio.wait({download},timeout=0.1)
+        finally:
+            release.set()
+            outcomes = await asyncio.gather(creation,*([download] if download else []),return_exceptions=True)
+        assert not done,('committed artifact GET must wait for caller ownership',outcomes)
+        assert outcomes[0].status_code == 201,outcomes
+        assert outcomes[1].status_code == 200 and outcomes[1].content == b'existing',outcomes
+    print('PASS concurrent custom GET: waited for caller COMMIT; writer201/download200 original bytes')
+
+
+async def compose_custody_case(root: Path, *, private: bool = False, fault: str = 'stat') -> None:
+    """Native post-publication faults must compensate or retain durable custody."""
+    async with fixture(root) as (org,client):
+        from runtime.daemon.routes.artifacts import artifact_service
+        svc = artifact_service(org)
+        if private:
+            seed = await client.post(PREFIX+'/artifacts',params={'agent':'founder','name':'seed.bin'},files={'file':('seed.bin',b'seed')})
+            assert seed.status_code == 200,seed.text
+        before_threads = org.db._conn.execute('SELECT COUNT(*) FROM threads').fetchone()[0]
+        original_stat,original_identity = Path.stat,SharedArtifactService.identity
+        injected = []
+        published = []
+        def selected(path: Path) -> bool:
+            return (path.parent.name == 'attachments' if private else path.parent == org.root/'artifacts' and path.name.endswith('-shared.bin'))
+        def fail_stat(path: Path, *args: object, **kwargs: object) -> object:
+            result = original_stat(path,*args,**kwargs)
+            if selected(path) and not injected:
+                injected.append(path)
+                raise OSError('synthetic native post-rename stat failure')
+            return result
+        def fail_identity(owner: object, path: Path, **kwargs: object) -> dict:
+            if selected(path) and not injected:
+                injected.append(path)
+                raise OSError('synthetic post-publication identity failure')
+            return original_identity(owner,path,**kwargs)
+        def fail_after_identity(owner: object, conn: object, operation: object, row: dict) -> None:
+            path = svc.store.path_for(row['name'])
+            published.append(path)
+            if fault == 'peer':
+                replacement = path.with_suffix('.peer')
+                replacement.write_bytes(b'peer-owned')
+                replacement.replace(path)
+            raise OSError('synthetic later compose failure')
+        body = {'subject':'Failed compose','recipients':['worker'],'body_markdown':'hello'}
+        if private:
+            body['attachments'] = [{'artifact_name':'seed.bin'}]
+        context = (patch.object(Path,'stat',fail_stat) if fault == 'stat' else
+                   patch.object(SharedArtifactService,'identity',fail_identity) if fault == 'identity' else
+                   patch.object(SharedArtifactService,'_finalize_put',fail_after_identity))
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(context)
+                if fault == 'cleanup':
+                    stack.enter_context(patch.object(ArtifactStore,'delete',side_effect=OSError('synthetic cleanup failure')))
+                await client.post(PREFIX+'/threads',params={} if private else {'shared_uploads':'true'},
+                    data={'body':json.dumps(body)},files=[('files',('shared.bin',b'compose-orphan'))])
+            assert False,'expected synthetic publication fault'
+        except OSError:
+            pass
+        assert injected or published,'fault must execute at the native publication boundary'
+        assert org.db._conn.execute('SELECT COUNT(*) FROM threads').fetchone()[0] == before_threads
+        assert org.db._conn.execute('SELECT COUNT(*) FROM thread_scoped_attachments').fetchone()[0] == 0
+        paths = injected or published
+        remaining = paths[0].exists()
+        if remaining:
+            operation = org.db._conn.execute("SELECT * FROM shared_artifact_operations WHERE phase NOT IN ('committed','aborted')").fetchone()
+            assert operation is not None,('uncompensated compose bytes need durable custody',private,fault)
+            database_path = org.db._conn.execute('PRAGMA database_list').fetchone()[2]
+            with sqlite3.connect(database_path) as independent:
+                assert independent.execute('SELECT phase FROM shared_artifact_operations WHERE operation_id=?',(operation['operation_id'],)).fetchone() is not None,'custody must survive the caller rollback on disk'
+            if not private:
+                name = paths[0].relative_to(org.root/'artifacts').as_posix()
+                for _ in range(2):
+                    response = await client.get(PREFIX+'/artifacts/'+name)
+                    assert response.status_code == 503,('failed compose must never become legacy/download200',fault,response.text)
+                assert org.db.get_shared_artifact(name) is None,'uncertain bytes must not be legacy-adopted'
+            if fault == 'peer':
+                assert paths[0].read_bytes() == b'peer-owned','never compensate a replacement inode'
+        else:
+            assert not org.db._conn.execute("SELECT 1 FROM shared_artifact_operations WHERE phase NOT IN ('committed','aborted')").fetchone()
+        print(f'PASS compose custody: private={private} fault={fault}; rollback plus '+('durable hold' if remaining else 'positive compensation'))
+
+
 async def custom_case(root: Path) -> None:
     from runtime.daemon.routes import custom_skills
-    async with fixture(root) as (org,client):
+    root.mkdir()
+    async with fixture(root/'concurrent') as (org,client):
+        await concurrent_custom_download(org,client)
+    async with fixture(root/'sources') as (org,client):
         def payload(slug: str) -> dict:
             return {'slug':slug,'name':slug,'skill_md':f'---\nname: {slug}\ndescription: Synthetic artifact admission case.\n---\n\nSynthetic bounded instruction.\n'}
         response = await client.post(PREFIX+'/custom-skills',json=payload('artifact-positive'))
@@ -513,10 +626,14 @@ def shape_case(root: Path) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument('--boundary',choices=('shared-stat','shared-identity','private-stat','peer','cleanup'))
     parser.add_argument('--case',choices=('all','metadata','provisional','journal','custom','quota','shape'),default='all')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='shared-artifact-A-') as directory, patch('runtime.infrastructure.shared_artifact_service._utc',return_value=NOW):
         root = Path(directory)
+        if args.boundary:
+            await compose_custody_case(root/'boundary',private=args.boundary == 'private-stat',fault=args.boundary.removeprefix('shared-').removeprefix('private-'))
+            return
         cases = {'metadata':metadata_case,'provisional':provisional_case,'journal':service_case,'custom':custom_case,'quota':quota_and_history_case,'shape':shape_case}
         for name,case in cases.items():
             if args.case in ('all',name):
