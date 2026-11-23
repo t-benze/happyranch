@@ -24,6 +24,8 @@ MESSAGE = "Home mode has been retired. Sign in to use your account's private net
 STATE_DIRECTORY = "var/lib/happyranch-remote-access"
 RECEIPT = "home-retirement.json"
 _FINAL_BYTES = b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
+_RETAINED = "retained-disabled: static consumer"
+_RETAINED_BYTES = b'{"account":"retained-disabled: static consumer","format":"home-retirement@1","state":"retired"}\n'
 _FINAL_PENDING = ".home-retirement.json.pending"
 _RECOVERY_RECORDS = frozenset(("home-retirement-inventory.json", "home-retirement-transport.json",
     "home-retirement-peer.json", "home-retirement-denied.json"))
@@ -196,7 +198,8 @@ class HomeRetirement:
             return value
 
         record = json.loads(data, object_pairs_hook=unique)
-        if record != {"format": "home-retirement@1", "state": "retired", "account": "absent"}:
+        if record not in ({"format": "home-retirement@1", "state": "retired", "account": account}
+                          for account in ("absent", _RETAINED)):
             raise RetirementUncertain()
         return data
 
@@ -235,7 +238,8 @@ class HomeRetirement:
                         continue
                     if publishing and item.name == _FINAL_PENDING:
                         info = os.stat(item.name, dir_fd=parent, follow_symlinks=False)
-                        if not _FINAL_BYTES.startswith(self._read(parent, item.name, info, private=True)):
+                        data = self._read(parent, item.name, info, private=True)
+                        if not any(value.startswith(data) for value in (_FINAL_BYTES, _RETAINED_BYTES)):
                             raise RetirementUncertain()
                         continue
                     if item.name.startswith(("home-", ".home-", "headscale-", ".headscale-")):
@@ -252,7 +256,7 @@ class HomeRetirement:
                 raise RetirementUncertain()
             return "home_binding" in value
 
-    def _unit_evidence(self) -> bool:
+    def _unit_evidence(self, account_consumers: frozenset[str] = frozenset()) -> bool:
         count = 0
         found = False
 
@@ -288,7 +292,9 @@ class HomeRetirement:
                         data = self._read(parent, item.name, info)
                         if b"happyranch-headscale" in data:
                             from runtime.remote_access.installer import _owned_helper_unit
-                            if not _owned_helper_unit(relative + "/" + item.name, info, data, self.io.root_owner):
+                            path = relative + "/" + item.name
+                            retained = path in account_consumers and UNIT.encode() not in data
+                            if not retained and not _owned_helper_unit(path, info, data, self.io.root_owner):
                                 found = True
                     elif not stat.S_ISREG(info.st_mode):
                         raise RetirementUncertain()
@@ -314,31 +320,44 @@ class HomeRetirement:
                     scan(parent, relative, 0, relative in _DBUS_ROOTS)
         return found
 
+    def _retained_consumers(self) -> frozenset[str]:
+        from runtime.remote_access.home_retirement_account import require_retained
+        from runtime.remote_access.home_retirement_journal import observe_original
+        return require_retained(self.io, observe_original(self.io).ownership.service)
+
     def detect(self) -> RetirementStatus:
         """No mutation, even with an interrupted intent or a valid final record."""
         try:
             receipt = self._receipt()
+            retained = receipt is not None and json.loads(receipt)["account"] == _RETAINED
+            consumers = self._retained_consumers() if retained else frozenset()
             legacy = any(self._present(relative) for relative in _LEGACY_PATHS)
             # Do not short-circuit the shared config/state/unit inspections:
             # private unsafe evidence must never be treated as owned by name.
             legacy |= self._state_evidence(completed=receipt is not None)
             legacy |= self._config_evidence()
-            legacy |= self._unit_evidence()
+            legacy |= self._unit_evidence(consumers)
             if legacy:
                 return RetirementStatus("migration pending", "legacy evidence retained")
             properties = self.io.manager.show_properties(UNIT, tuple(_ABSENT_UNIT))
             if properties != _ABSENT_UNIT:
                 return RetirementStatus("migration pending", "service retirement unconfirmed")
-            for lookup in (self.io._lookup_user, self.io._lookup_group):
-                try:
-                    lookup(ACCOUNT)
-                except KeyError:
-                    pass
-                else:
-                    return RetirementStatus("migration pending", "account retirement unconfirmed")
+            if retained:
+                if self._retained_consumers() != consumers:
+                    raise RetirementUncertain()
+            else:
+                for lookup in (self.io._lookup_user, self.io._lookup_group):
+                    try:
+                        lookup(ACCOUNT)
+                    except KeyError:
+                        pass
+                    else:
+                        return RetirementStatus("migration pending", "account retirement unconfirmed")
             if self._receipt() != receipt:
                 raise RetirementUncertain()
+            if retained:
+                return RetirementStatus("retired", "retirement confirmed; account retained disabled: static consumer")
             return (RetirementStatus("fresh", "no legacy evidence") if receipt is None else
                     RetirementStatus("retired", "retirement confirmed"))
-        except (OSError, ValueError, RuntimeError, ServiceManagerError):
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, ServiceManagerError):
             return RetirementStatus("migration pending", "unsafe or changing evidence")

@@ -225,7 +225,7 @@ class InertRetirement:
 
     @classmethod
     def publish_final(cls, io: ManagedInstaller, fence: RetirementFence) -> bytes:
-        """Read all completed facts and publish the account-absent result.
+        """Read all completed facts and publish the proven account disposition.
 
         Historical receipts must already be absent. No revoke, native-stop,
         cleanup or account effect is replayed by this publication entry.

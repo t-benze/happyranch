@@ -4778,23 +4778,23 @@ obligations, and this entry grants no package-replacement permission.
 Only explicit account-stage native observation admits these proven original
 name absences and static consumers; ordinary native/stop/cleanup observations
 remain strict. Every account-stage readback still checks numeric reuse, native
-artifacts/aliases/jobs and current complete process quiescence. Retained-account
-completion, the shipping sequence and installed acceptance remain unfinished;
-this account-stage result cannot authorize package replacement.
+artifacts/aliases/jobs and current complete process quiescence. The account-stage
+result alone cannot authorize package replacement; final publication, the
+shipping sequence and installed acceptance are separate obligations.
 
-#### Final publication: exclusive-account-absent path
+#### Final publication: proven account disposition
 
 After `remove_original_receipts`, active `StoppedRetirement.publish_final` and
 inert `InertRetirement.publish_final` reuse their complete current account,
 native, original-death/denial or inert-empty-authority and cleanup proof. They
-require every historical receipt absent and the dedicated account absent.
-Retained-disabled account completion is not yet implemented by this writer.
+require every historical receipt absent and either the dedicated account absent
+or the exact original account retained disabled for a proven static consumer.
 
 `home_retirement_publication.publish_final` preserves the original installer
 directory flock and permanent old-activation refusal fence. Only after full
 proof may it ask the existing service manager to reload removed fragments;
 a zero reload exit cannot replace fresh absent-service readback. It writes only
-the fixed nonsecret `home-retirement@1` account-absent record, synchronizes its
+one fixed nonsecret `home-retirement@1` account-disposition record, synchronizes its
 private staged inode and parent, uses the installer's atomic no-replace rename,
 synchronizes the parent and checks the original open inode and fresh detector.
 A complete staged/final record can be resynchronized after interruption without
@@ -4813,9 +4813,19 @@ record, detection tolerates their protected single-link 0600 custody only while
 the exact permanent refusal fence survives. They do not establish completion or
 restore old authority. Unknown state, changed fence/custody, old authority or
 service/account reappearance still reports migration pending without effects.
+For the retained account, the minimized final account field is the fixed reason
+`retained-disabled: static consumer`. The protected original inventory remains
+mandatory: the detector reads its canonical original identity and directory
+lineage without locking, syncing or granting effect authority. Fresh readback
+requires exact name/numeric NSS mappings, the locked system-account shape,
+safe static consumers and no UID processes. Only independently validated
+account-only static unit references are allowed; unit/alias activation, missing
+or unsafe provenance, account drift or loss/change of the consumer proof stays
+pending. The status gives the same bounded retention reason. Effect-bearing
+journal loads still require the live original fence and synchronization.
 Detection performs no fsync, reload, cleanup or automatic publication. Shipping
-preinst, retained-account completion and the remaining R02/P02 chains are still
-separate unfinished work; this source slice is not an installed upgrade claim.
+preinst and the remaining R02/P02 chains are separate unfinished work; this
+source slice is not an installed upgrade claim.
 
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation

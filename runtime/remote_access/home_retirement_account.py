@@ -65,6 +65,21 @@ def account_status(io: ManagedInstaller, identity: ServiceIdentity) -> tuple[boo
     return user is not None, group is not None
 
 
+def require_retained(io: ManagedInstaller, identity: ServiceIdentity) -> frozenset[str]:
+    """Read-only final retention proof against the saved original identity."""
+    from runtime.remote_access.home_retirement_service import OwnedService
+    if account_status(io, identity) != (True, True):
+        raise RetirementUncertain()
+    consumers: set[str] = set()
+    controller = OwnedService(io, identity)
+    if controller._links(disabled=True, account_consumers=consumers) is not None or not consumers:
+        raise RetirementUncertain()
+    controller._process(0)
+    if account_status(io, identity) != (True, True):
+        raise RetirementUncertain()
+    return frozenset(consumers)
+
+
 class AccountDisposition:
     def __init__(self, journal: RetirementJournal, original: OriginalInventory, *,
                  before_effect: Callable[[], None]) -> None:

@@ -17,7 +17,7 @@ manifest or deletion authority.
 | ObserveCutoff | Original-owner physical acknowledgement or independent original-death/managed-quiescence proof, plus anchored burn/deny readback. No Boolean or phase intent substitutes for these. |
 | Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the full coordinator still needs to consume all pinned evidence before effects. |
 | Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. Final cleanup evidence disposition/completion remains unfinished. |
-| WriteReceipt / SyncReceipt / ReadFinal | Account-absent publication in `home_retirement_publication` uses complete caller proof, canonical-prefix stage completion, staged file/parent sync, atomic no-replace rename and fresh readback; never seeded success. Retained-account completion remains unfinished. |
+| WriteReceipt / SyncReceipt / ReadFinal | Publication in `home_retirement_publication` requires the absent or proven original retained-disabled account disposition, complete caller proof, canonical-prefix stage completion, staged file/parent sync, atomic no-replace rename and fresh readback; never seeded success. |
 | GateUnpack / ReplacePayload / RestoreEntry | Accepted incoming canonical preinst before old-payload replacement, trusted recovery capability and partial replacement. Package entry remains to be implemented. |
 | Crash / InterruptWrite / Detect / SelectExplicit | Durable denies/effects survive; detection has no destructive action; only explicit recovery can progress. |
 | ReplaceForeign / RollbackArtifact | Sampled ownership may change before the next effect; foreign/reappearing artifacts stay pending without stop/disable/removal or restored authority. |
@@ -308,6 +308,10 @@ Only a protected canonical-prefix staging inode can satisfy the modeled `torn`
 state: explicit recovery rechecks full proof and named/open identity before
 writing its missing suffix, and another short write stays pending. Unknown
 bytes or unsafe/replaced stages have no recovery action. Detection performs no
-repair, and published final inodes are never rewritten. Retained-account
-completion still has a source implementation gap. Existing R02.a-h obligations
-are not all established by this slice.
+repair, and published final inodes are never rewritten. The `owned-disabled`
+account branch maps to the exact fixed retained-static-consumer disposition.
+Its final detector requires read-only canonical original provenance, the saved
+numeric identity, locked system-account shape, safe static consumers and no UID
+processes. The model abstracts these readbacks as FinalFacts; it does not prove
+their implementation. Existing R02.a-h obligations are not all established by
+this slice, and the shipping preinst remains unfinished.

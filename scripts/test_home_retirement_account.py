@@ -143,7 +143,7 @@ def test_dedicated_account_disposition_rechecks_original_identity_and_recovers_w
 
 
 @pytest.mark.parametrize('active', ['active', 'inert'], indirect=True)
-@pytest.mark.parametrize('boundary', ['group-failure', 'native-after-userdel'])
+@pytest.mark.parametrize('boundary', ['group-failure', 'native-after-userdel', 'retained-consumer'])
 def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_user_effect(active, monkeypatch, request, boundary):
     from runtime.remote_access.home_retirement_coordinator import ActiveRetirement, StoppedRetirement
     from runtime.remote_access.home_retirement_inert import InertRetirement
@@ -192,6 +192,10 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     for method in ('remove_unit_fragments', 'remove_controller_executable', 'remove_managed_directories', *last):
         getattr(cleanup, method)(io(), active.fence)
     state = account_adapter(active.io, active.calls, fault=boundary)
+    retained = boundary == 'retained-consumer'
+    if retained:
+        active.controller.file('etc/systemd/system/operator.service',
+            b'[Service]\nUser=happyranch-headscale\n', 0o644)
     if boundary == 'native-after-userdel':
         state['after_user'] = lambda: active.native['happyranch-managed.target'].update(
             ActiveState='active', SubState='active')
@@ -199,10 +203,17 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
         for path in (INVENTORY, NATIVE, ACCOUNT_RECORD, 'retained-native/saved-home',
             *(() if inert else ('var/lib/happyranch-remote-access/home-retirement-denied.json',)))}
     before, effects, frames = active.snapshot(), active.effects(), list(getattr(active, 'frames', []))
-    with pytest.raises(RetirementUncertain, match='^migration pending$'):
-        cleanup.retire_account(io(), active.fence)
-    assert not state['user'] and state['group']
-    assert deletions(active.calls) == (['userdel', 'groupdel'] if boundary == 'group-failure' else ['userdel'])
+    disposition = 'retained-disabled: static consumer' if retained else 'absent'
+    expected_deletions = [] if retained else (['userdel', 'groupdel', 'groupdel']
+        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    if retained:
+        assert cleanup.retire_account(io(), active.fence) == disposition
+        assert state['user'] and state['group'] and not deletions(active.calls)
+    else:
+        with pytest.raises(RetirementUncertain, match='^migration pending$'):
+            cleanup.retire_account(io(), active.fence)
+        assert not state['user'] and state['group']
+        assert deletions(active.calls) == (['userdel', 'groupdel'] if boundary == 'group-failure' else ['userdel'])
     count = len(deletions(active.calls))
     if boundary == 'native-after-userdel':
         with pytest.raises(RetirementUncertain, match='^migration pending$'):
@@ -210,15 +221,14 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
         assert len(deletions(active.calls)) == count
         active.native['happyranch-managed.target'].update(ActiveState='inactive', SubState='dead')
     state['fault'] = ''
-    assert cleanup.retire_account(io(), active.fence) == 'absent'
-    assert cleanup.retire_account(io(), active.fence) == 'absent'
-    assert deletions(active.calls) == (['userdel', 'groupdel', 'groupdel']
-        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    assert cleanup.retire_account(io(), active.fence) == disposition
+    assert cleanup.retire_account(io(), active.fence) == disposition
+    assert deletions(active.calls) == expected_deletions
     assert active.snapshot() == before and active.effects() == effects
     assert list(getattr(active, 'frames', [])) == frames
     assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
         for path in records} == records
-    assert not state['user'] and not state['group'] and not (active.root / FINAL).exists()
+    assert (state['user'], state['group']) == (retained, retained) and not (active.root / FINAL).exists()
     assert active.io.home_retirement_status()['state'] == 'migration pending'
     if not inert:
         bridge = json.loads((active.root / 'var/lib/happyranch-remote-access/home-retirement-denied.json').read_bytes())
@@ -249,8 +259,7 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     after = active.snapshot()
     cleanup.remove_original_receipts(io(), active.fence)
     assert active.snapshot() == after and active.effects() == effects
-    assert deletions(active.calls) == (['userdel', 'groupdel', 'groupdel']
-        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    assert deletions(active.calls) == expected_deletions
     assert list(getattr(active, 'frames', [])) == frames
     assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
         for path in records if path not in originals} == {
@@ -306,20 +315,23 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
             cleanup.publish_final(io(), active.fence)
     assert publication_interrupted and reloads == [True]
     produced = cleanup.publish_final(io(), active.fence)
-    assert produced == b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n'
+    assert produced == (b'{"account":"retained-disabled: static consumer","format":"home-retirement@1","state":"retired"}\n'
+        if retained else b'{"account":"absent","format":"home-retirement@1","state":"retired"}\n')
     assert (active.root / FINAL).read_bytes() == produced
     assert (active.root / FINAL).stat().st_ino == staged_inode
     complete = active.snapshot()
     identity = (active.root / FINAL).stat().st_ino
     # R03 consumes the record generated after the actual earlier interruption.
-    assert io().home_retirement_status()['state'] == 'retired'
+    status = io().home_retirement_status()
+    assert status['state'] == 'retired'
+    if retained:
+        assert status['detail'] == 'retirement confirmed; account retained disabled: static consumer'
     assert io().home_retirement_status()['state'] == 'retired'
     assert cleanup.publish_final(io(), active.fence) == produced
     assert (active.root / FINAL).stat().st_ino == identity
     assert active.snapshot() == complete and active.effects() == effects
     assert list(getattr(active, 'frames', [])) == frames and reloads == [True]
-    assert deletions(active.calls) == (['userdel', 'groupdel', 'groupdel']
-        if boundary == 'group-failure' else ['userdel', 'groupdel'])
+    assert deletions(active.calls) == expected_deletions
     assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
         for path in records if path not in originals} == {
         path: value for path, value in records.items() if path not in originals}
@@ -330,6 +342,58 @@ def test_account_disposition_composes_real_cleanup_and_rechecks_native_after_use
     with pytest.raises(RetirementUncertain):
         cleanup.publish_final(io(), active.fence)
     assert active.snapshot() == drift and (active.root / FINAL).read_bytes() == produced
+
+
+@pytest.mark.parametrize('case', ['complete', 'no-consumer', 'unlocked', 'process',
+    'uid-reused', 'numeric-only-reuse', 'account-missing', 'group-member',
+    'unit-consumer', 'alias', 'journal-mode', 'journal-corrupt', 'directory-mode'])
+def test_retained_account_readback_requires_original_provenance_and_current_disabled_facts(tmp_path, monkeypatch, case):
+    from runtime.remote_access.home_retirement_account import require_retained
+    from runtime.remote_access.home_retirement_journal import observe_original
+    fixture = InventoryFixture(tmp_path / 'root', monkeypatch)
+    managed_setup(fixture)
+    with retirement_fence(fixture.io) as fence:
+        journal = RetirementJournal(fixture.io, fence)
+        original = journal.capture(fixture.inventory.observe(fence=fence))
+    fixture.stopped()
+    (fixture.root / LINK).unlink()
+    fixture.properties['UnitFileState'] = 'disabled'
+    state = account_adapter(fixture.io, fixture.calls, fault=case)
+    consumer = 'etc/systemd/system/operator.service'
+    if case != 'no-consumer':
+        fixture.file(consumer, b'[Service]\nUser=happyranch-headscale\n', 0o644)
+    if case == 'unlocked':
+        fixture.lock_status = 'P'
+    elif case == 'process':
+        fixture.ps_output = f'999 {os.getuid()} {os.getuid()} {os.getuid()} {os.getuid()}\n'
+    elif case in ('account-missing', 'numeric-only-reuse'):
+        state['user'] = False
+    elif case == 'unit-consumer':
+        fixture.file(consumer, b'[Unit]\nRequires=happyranch-headscale.service\n', 0o644)
+    elif case == 'alias':
+        (fixture.root / 'etc/systemd/system/foreign.service').symlink_to('/etc/systemd/system/happyranch-headscale.service')
+    elif case == 'journal-mode':
+        (fixture.root / INVENTORY).chmod(0o644)
+    elif case == 'journal-corrupt':
+        (fixture.root / INVENTORY).write_bytes(b'{"synthetic":"unknown original"}')
+    elif case == 'directory-mode':
+        (fixture.root / STATE).chmod(0o755)
+    before = fixture.snapshot()
+    def no_sync(fd):
+        pytest.fail('read-only retained-account observation must not fsync')
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', no_sync)
+        def observe():
+            saved = observe_original(fixture.io)
+            assert saved == original
+            return require_retained(fixture.io, saved.ownership.service)
+        if case == 'complete':
+            assert observe() == observe() == frozenset({consumer})
+        else:
+            with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                observe()
+    assert fixture.snapshot() == before and fixture.effects() == []
+    assert not deletions(fixture.calls) and not (fixture.root / FINAL).exists()
 
 
 @pytest.mark.parametrize('case', ['absent', 'retained-consumer', 'account-present', 'group-present',

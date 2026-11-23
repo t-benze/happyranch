@@ -175,6 +175,60 @@ class OriginalInventory:
                 managed_members, managed_dirs, managed_digests), LegacyAuxiliaryMembers(auxiliary_members, auxiliary_dirs))
 
 
+def _read_original(io: ManagedInstaller) -> tuple[bytes, tuple[int, ...]]:
+    with HomeRetirement(io)._entry(STATE_DIRECTORY + "/" + _NAME) as (parent, name, info):
+        if (info is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_uid, info.st_gid) != io.root_owner
+                or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= _LIMIT):
+            raise RetirementUncertain()
+        descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
+        try:
+            if _signature(os.fstat(descriptor)) != _signature(info):
+                raise RetirementUncertain()
+            chunks, size = [], 0
+            while True:
+                chunk = os.read(descriptor, _LIMIT + 1 - size)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > _LIMIT:
+                    raise RetirementUncertain()
+            if (size != info.st_size or _signature(os.fstat(descriptor)) != _signature(info)
+                    or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != _signature(info)):
+                raise RetirementUncertain()
+            return b"".join(chunks), _signature(info)
+        finally:
+            os.close(descriptor)
+
+
+def _decode_original(io: ManagedInstaller, data: bytes, directory: list[int]) -> OriginalInventory:
+    record = io._json(data)
+    if (record.keys() != {"format", "directory", "original"}
+            or record["format"] != "home-retirement-inventory@1" or record["directory"] != directory):
+        raise RetirementUncertain()
+    original = OriginalInventory._parse(record["original"])
+    if _encode(dict(format=record["format"], directory=directory, original=original._record())) != data:
+        raise RetirementUncertain()
+    return original
+
+
+def observe_original(io: ManagedInstaller) -> OriginalInventory:
+    """Read saved provenance without locks, sync, adoption or effect authority.
+
+    Final retained-account detection needs the original numeric identity. All
+    mutation paths still use the fenced, synchronizing RetirementJournal.load.
+    """
+    data, identity = _read_original(io)
+    with HomeRetirement(io)._entry(STATE_DIRECTORY + "/" + _NAME) as (parent, name, info):
+        if name != _NAME or info is None or _signature(info) != identity:
+            raise RetirementUncertain()
+        original = _decode_original(io, data, list(_signature(os.fstat(parent))[:5]))
+        if _read_original(io) != (data, identity):
+            raise RetirementUncertain()
+        return original
+
+
 class RetirementJournal:
     def __init__(self, io: ManagedInstaller, fence: RetirementFence) -> None:
         self.io, self.fence = io, fence
@@ -192,30 +246,7 @@ class RetirementJournal:
 
     def _read(self) -> tuple[bytes, tuple[int, ...]]:
         self.fence.require(self.io)
-        with self.reader._entry(STATE_DIRECTORY + "/" + _NAME) as (parent, name, info):
-            if (info is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or (info.st_uid, info.st_gid) != self.io.root_owner
-                    or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= _LIMIT):
-                raise RetirementUncertain()
-            descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
-            try:
-                if _signature(os.fstat(descriptor)) != _signature(info):
-                    raise RetirementUncertain()
-                chunks, size = [], 0
-                while True:
-                    chunk = os.read(descriptor, _LIMIT + 1 - size)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size > _LIMIT:
-                        raise RetirementUncertain()
-                if (size != info.st_size or _signature(os.fstat(descriptor)) != _signature(info)
-                        or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != _signature(info)):
-                    raise RetirementUncertain()
-                return b"".join(chunks), _signature(info)
-            finally:
-                os.close(descriptor)
+        return _read_original(self.io)
 
     def load(self) -> OriginalInventory:
         """Load only the saved original; no discovery, repair or acknowledgement."""
@@ -223,13 +254,7 @@ class RetirementJournal:
             data, identity = self._read()
             if self._identity is not None and (identity, data) != (self._identity, self._data):
                 raise RetirementUncertain()
-            record = self.io._json(data)
-            if (record.keys() != {"format", "directory", "original"}
-                    or record["format"] != "home-retirement-inventory@1" or record["directory"] != self._root()):
-                raise RetirementUncertain()
-            original = OriginalInventory._parse(record["original"])
-            if _encode(dict(format=record["format"], directory=self._root(), original=original._record())) != data:
-                raise RetirementUncertain()
+            original = _decode_original(self.io, data, self._root())
             # A complete earlier write may have been interrupted before either
             # sync. Explicit reuse resynchronizes the same pinned inode.
             with self.io._publication_parent(STATE_DIRECTORY) as (parent, check):
