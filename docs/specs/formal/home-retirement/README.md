@@ -34,7 +34,11 @@ The stopped coordinator can additionally hold the exact original issuer and
 minter writer lock descriptions through `held_operations`, with original-member
 and native/cutoff readback. Absent domains are not created or declared locked.
 This supplies operation exclusion only; the model's Remove action still needs
-the unfinished selective cleanup/recovery owner.
+the full selective cleanup/recovery owner. Private-leaf removal is now joined
+to the stopped/cutoff and held-operation guards through `remove_private`. It
+checks saved original leaves/ancestors before each effect, synchronizes and
+reads back absence, and explicit reuse skips absent originals. Managed/native
+cleanup, account disposition and final publication remain unfinished.
 Fresh explicit `StoppedRetirement.from_saved` objects can now reopen the
 already stopped/disabled phase using all three saved original records, exact
 original native artifacts and independent death/denial/quiescence proof. They

@@ -388,7 +388,7 @@ class _PrivateMembers:
         self.directory_identities[path] = signature
 
     @contextmanager
-    def _directory(self, relative: str) -> Iterator[int | None]:
+    def _directory(self, relative: str, *, contents_may_change: bool = False) -> Iterator[int | None]:
         descriptor = os.open("/", _DIRECTORY_FLAGS)
         opened, parents = [descriptor], []
         current = Path("/")
@@ -412,8 +412,9 @@ class _PrivateMembers:
                 # Outer ancestors select the root by identity/custody. Their
                 # sibling contents are not part of the managed inventory.
                 inside = current.is_relative_to(self.io.root)
-                signature = _signature(info) if inside else _signature(info)[:5]
-                expected = _signature(before) if inside else _signature(before)[:5]
+                fields = 9 if inside and not contents_may_change else 5
+                signature = _signature(info)[:fields]
+                expected = _signature(before)[:fields]
                 if not stat.S_ISDIR(info.st_mode) or signature != expected:
                     raise RetirementUncertain()
                 if inside:

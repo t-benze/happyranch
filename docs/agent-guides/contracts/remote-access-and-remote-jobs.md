@@ -4519,6 +4519,22 @@ boot or processes cannot become its new owner. The returned `StoppedRetirement`
 readback freshly requires saved records, both native stop receipts and independent
 cutoff proof. It is never a final retired record. Selective cleanup, account
 disposition, final publication and package replacement remain unfinished.
+`StoppedRetirement.remove_private` now joins that actual stopped/cutoff proof
+and held issuer/minter exclusion to selective original private-leaf cleanup.
+`home_retirement_cleanup.PrivateCleanup` loads the saved original inventory;
+every remaining unlink/rmdir follows a fresh required proof guard, a no-follow
+original-ancestor check and a current target comparison. Immutable leaves keep
+their full original signature. Controller runtime leaves may have been flushed
+during stop, but device/inode/custody/type/link count remain original. Only
+empty leaf directories use rmdir; there is no recursive deletion. Dedicated
+private directories reject unknown members. Every removal synchronizes its
+parent and reads back absence. Explicit reuse accepts positively observed
+absence, never claims who removed it, never recaptures replacements and never
+replays absent removals. Ancestor inode/custody/mode remain pinned across
+intentional contents changes; ordinary inventory observations keep their
+existing full metadata checks. Native artifacts, saved records, managed trust,
+operation locks and local work remain retained. This is partial cleanup only,
+not completed account disposition, full cleanup or final publication.
 `StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
 phase through fresh objects. It loads all three original records without
 rediscovery/capture, cross-checks their identity/account/release/boot/PID binding,

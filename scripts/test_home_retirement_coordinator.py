@@ -544,3 +544,43 @@ def test_native_recovery_finishes_only_remaining_owned_effects(active, monkeypat
     assert active.frames == frames
     assert {path: (active.root / path).read_bytes() for path in records} == records
     assert not (active.root / FINAL).exists()
+
+
+@pytest.mark.parametrize('boundary', ['complete', 'denial-between-leaves'])
+def test_stopped_private_cleanup_uses_real_proofs_and_preserves_explicit_recovery(active, monkeypatch, boundary):
+    device, _ = active.grant('device')
+    active.stream(device, 'device')
+    with active.serving(monkeypatch):
+        owner = ActiveRetirement.capture(active.io, active.fence)
+        native_target_stop(active)
+        stopped = owner.revoke_and_stop_services()
+        effects = active.effects()
+        real_unlink, removed = os.unlink, []
+        private = {str(active.root / path) for path in owner.original.private.members}
+        def unlink(name, *, dir_fd=None):
+            real_unlink(name, dir_fd=dir_fd)
+            path = str(Path(os.readlink(f'/proc/self/fd/{dir_fd}')) / name)
+            if path in private:
+                removed.append(path)
+                if boundary == 'denial-between-leaves' and len(removed) == 1:
+                    active.manager.issue_invite_record('f' * 64, datetime.now(timezone.utc) + timedelta(minutes=2))
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, 'unlink', unlink)
+            if boundary == 'denial-between-leaves':
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    stopped.remove_private()
+                assert len(removed) == 1
+            else:
+                stopped.remove_private()
+                assert len(removed) > 10
+                count = len(removed)
+                # Saved objects can reopen the partially cleaned layout because
+                # denial, native artifacts and immutable originals survive.
+                recovered = StoppedRetirement.from_saved(active.io, active.fence)
+                recovered.remove_private()
+                assert len(removed) == count
+                assert all(not (active.root / path).exists() for path in owner.original.private.members)
+        assert active.effects() == effects
+        assert all((active.root / path).is_file() for path in (PIN, INVENTORY, NATIVE, BINARY))
+        assert RetirementJournal(active.io, active.fence).load() == owner.original
+        assert not (active.root / FINAL).exists()

@@ -4,8 +4,9 @@ The explicit caller must hold the original retirement fence. This owner joins
 original evidence before revocation and can guard dedicated controller native
 effects with the actual live cutoff receipt. Managed native effects additionally
 require that live receipt or the existing independent original-death/quiescence
-proof. No artifact cleanup, account change, package replacement or final retired
-receipt is supplied.
+proof. Stopped retirement can selectively remove original private leaves under
+fresh proofs and held operation exclusion. Account changes, package replacement
+and final retired publication remain separate obligations.
 Inert/pre-activation retirement and post-effect recovery have separate proofs.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
 from runtime.remote_access.home_retirement import RetirementUncertain
+from runtime.remote_access.home_retirement_cleanup import PrivateCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
@@ -271,6 +273,18 @@ class StoppedRetirement:
         OwnedService(owner.journal.io, owner.original.ownership.service).confirm(self.controller)
         owner.native_journal.transport.confirm(self.managed)
         self.cutoff.require()
+
+    def remove_private(self) -> None:
+        """Explicit selective private-leaf cleanup, including interrupted reuse.
+
+        Native artifacts, original records, managed trust and operation locks
+        remain available for independent recovery. No final receipt is emitted.
+        """
+        with self.held_operations() as exclusion:
+            def guard() -> None:
+                self.require()
+                exclusion.require()
+            PrivateCleanup(self._owner.journal, self._owner.original, before_effect=guard).remove()
 
     @contextmanager
     def held_operations(self) -> Iterator[AuxiliaryExclusion]:
