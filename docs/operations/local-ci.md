@@ -3958,6 +3958,12 @@ without activating or provisioning a home. It observes the stale writable-path
 projection refusing before capture/auth/revoke, then runs actual B6 cleanup in a
 fresh projection. Separate native-stop cases retain owned-stop ordering.
 
+`scripts/test_home_activation_backend.py` now checks the minimal closed
+Enable/ReplaceFailed adapters and actual root-child no-effect dispatch. Obsolete
+activation/rollover success algorithms retired with their backend owner. Public
+helper tests keep native authorization and revalidation, exact retirement copy,
+namespace/slot settlement, real Disable cleanup and non-home renewal.
+
 I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
 I3b's retained focused selection is

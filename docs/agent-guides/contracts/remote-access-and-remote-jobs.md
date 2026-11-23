@@ -3101,7 +3101,7 @@ Failure leaves final/pending bytes in place and the coordinator records
 failed_uncertain under Ruling 7. E2a's existing phase-aware inventory owns the
 receipt-bound home sidecar with phase; no duplicate inventory gate is added.
 
-`HomeActivationBackend.enable` composes Prepare → unchanged coordinator.run →
+Historically, the now-removed `HomeActivationBackend.enable` composed Prepare → unchanged coordinator.run →
 publish_ready with E1a/E1b owners and B2 observer. One thread-owned adapter borrows
 the same held activation-directory flock for the coordinator's nested lock
 contexts; other threads and independent descriptors/processes still refuse
@@ -4328,6 +4328,18 @@ remain closed with a fixed category, never automatic migration or trust reset.
 Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
 
 ### Home retirement observations (THR-378 P24)
+
+The public helper retains Enable/ReplaceFailed method spellings and their
+original sender/owner capture, native authorization, original budget and fresh
+revalidation. A granted call then returns the fixed `home_mode_retired` D-Bus
+error with the exact retirement message below, before an accepted reply, worker,
+audit intent or effect. The root child captures only an inert UID-bound token
+for those methods and returns a closed refusal; historical state cannot resume
+activation. `HomeActivationBackend`, its preparation composition and replacement
+execution are removed. Disable retains its original protected readers, same
+installer directory flock, revoke binding, owned stops and selective cleanup.
+The invite and lower programmatic writer owners still await separate source
+retirement; this boundary grants no account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and
 `happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives

@@ -12,8 +12,6 @@ import threading
 import time
 import ssl
 import hashlib
-import io
-import subprocess
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,102 +26,9 @@ from runtime.remote_access import policy_renew_backend as renewal_backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
 from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 from scripts.test_installer_token_custody import fixture as renewal_fixture, renewal_intent, renewal_setup  # noqa: F401
-from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
 from scripts.test_installer_token_custody import staged_inventory
 
 REAL_THREAD = threading.Thread
-
-
-def test_clean_enable_empty_environment_account_tools(
-        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    from runtime.remote_access import service_manager
-
-    v, m = composition, mount
-    native = v.io._run
-    entered, proceed = threading.Event(), threading.Event()
-    probes, child_exits, workers = [], [], []
-    m.message.get_member = lambda: 'Enable'
-    m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
-    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
-    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', os.getuid())
-
-    def run(argv: list[str], **kwargs: Any) -> tuple[int, str]:
-        name = Path(argv[0]).name
-        if name in ('useradd', 'userdel', 'groupdel'):
-            entered.set()
-            assert proceed.wait(2), 'local account-tool probe was not released'
-            try:
-                # Exercise the shipped executable selection without modifying
-                # host accounts; only the existing synthetic NSS is mutated.
-                result = subprocess.run([argv[0], '--help'], env={}, cwd='/',
-                    capture_output=True, timeout=2, check=False)
-                code = result.returncode
-            except FileNotFoundError:
-                code = 127
-            probes.append((argv[0], code))
-            if code or argv[1:] == ['--help']:
-                return code, ''
-        return native([name, *argv[1:]] if name in ('useradd', 'userdel', 'groupdel') else argv, **kwargs)
-
-    def installer(*, layout: str, manager: Any, run: Any) -> Any:
-        assert layout == 'deb'
-        v.io._run, v.io.manager = run, manager
-        return v.io
-
-    monkeypatch.setattr(service_manager, '_default_run', run)
-    monkeypatch.setattr(backend, 'ManagedInstaller', installer)
-
-    def effect(step: str, expected: str, remaining: float, **kwargs: Any) -> dict:
-        request = dict(method='Enable', uid=os.getuid(), step=step,
-            expected=expected, deadline=time.monotonic() + remaining)
-        output = io.StringIO()
-        with monkeypatch.context() as patch:
-            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
-            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
-            patch.setattr(sys, 'stdout', output)
-            code = backend.helper_main()
-        child_exits.append(code)
-        if code:
-            raise m.h._helper_generation.GenerationUnavailable()
-        return json.loads(output.getvalue())
-
-    m.reader.effect.side_effect = effect
-
-    def worker(*, target: Any, args: tuple, **kwargs: Any) -> Any:
-        thread = REAL_THREAD(target=target, args=args, **kwargs)
-        workers.append(thread)
-        return thread
-
-    monkeypatch.setattr(m.h.threading, 'Thread', worker)
-    # The composition's observation servers already use their captured real
-    # thread factory; only the public helper's lifecycle worker is collected.
-    m.admit()
-    try:
-        assert entered.wait(2), 'accepted worker never reached account preparation'
-        capture = m.helper.lifecycle_operation.capture
-        assert m.helper.inflight is capture and child_exits == []
-        loop = SimpleNamespace(quit=Mock())
-        m.helper.last_activity = -100  # Idle time alone cannot retire an effect.
-        assert m.helper._idle(loop) is True
-        loop.quit.assert_not_called()
-        assert m.helper.inflight is capture and m.helper.name_owned
-    finally:
-        proceed.set()
-        for thread in workers:
-            thread.join(timeout=4)
-    assert all(not thread.is_alive() for thread in workers)
-    rows = [json.loads(line) for line in m.helper.audit.path.read_text().splitlines()]
-    print(json.dumps(dict(probes=probes, child_exits=child_exits,
-        outcome=m.helper.lifecycle_result, receipt_present=v.receipts.current() is not None,
-        audit_stages=[row['stage'] for row in rows], slot_released=m.helper.inflight is None), sort_keys=True))
-    assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}, 'clean Enable child did not publish READY'
-    assert child_exits == [0] and len(probes) == 2 and all(code == 0 for _, code in probes)
-    assert v.receipts.current().phase == 'ready'
-    assert [row['stage'] for row in rows] == ['intent', 'outcome']
-    assert m.helper.inflight is None
-    for tool in ('userdel', 'groupdel'):
-        assert v.io._run([tool, '--help'], timeout=2) == (0, ''), tool
-    print(json.dumps(dict(cleanup_tool_probes=probes[2:]), sort_keys=True))
 
 
 class Variant:
@@ -155,56 +60,6 @@ def test_enable_admission_diagnostic_preserves_refusal(
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-enable-refusal origin=helper stage=dispatch.admission.capture exception=RuntimeError')
     assert capsys.readouterr() == ('', '')
-
-
-@pytest.mark.parametrize('journal_fails', [False, True])
-def test_enable_child_diagnostic_preserves_closed_exit(
-        monkeypatch: pytest.MonkeyPatch, capsys: Any, journal_fails: bool) -> None:
-    import syslog
-
-    sent = Mock(side_effect=OSError('synthetic-journal-secret') if journal_fails else None)
-    monkeypatch.setattr(syslog, 'syslog', sent)
-    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
-    request = dict(method='Enable', uid=1000, step='capture', expected=None,
-                   deadline=time.monotonic() + 30)
-    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
-    monkeypatch.setattr(os, 'geteuid', lambda: 0)
-    monkeypatch.setattr(backend.HomeActivationStore, 'current',
-                        Mock(side_effect=OSError('synthetic-secret /private/path :12345')))
-    assert backend.helper_main() == 1
-    sent.assert_called_once_with(syslog.LOG_WARNING,
-        'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
-    assert capsys.readouterr() == ('', '')
-
-
-@pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
-def test_public_enable_composes_or_refuses_before_auth(
-    composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, case: str,
-) -> None:
-    v, m = composition, mount
-    if case != 'clean': corrupt_composition(v, case)
-    uid = os.getuid() + (case == 'uid')
-    m.message.get_member = lambda: 'Enable'
-    m.helper.connection.call_sync.return_value = Variant('', (uid,))
-    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
-    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
-    def effect(step: str, expected: str, remaining: float, **kw: Any) -> dict:
-        assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
-        return v.lifecycle.dispatch('Enable', uid, step, expected, deadline=time.monotonic() + remaining)
-    m.reader.effect.side_effect = effect
-    before, calls = staged_inventory(v.fixture), list(v.calls)
-    if case == 'clean': m.admit()
-    else: m.helper._dispatch(m.message)
-    if case == 'clean':
-        assert m.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
-        assert m.helper.authority.call.call_args.args[1].unpack()[1] == 'ai.happyranch.remote-access.enable'
-        rows = [json.loads(line) for line in m.helper.audit.path.read_text().splitlines()]
-        assert [row['stage'] for row in rows] == ['intent', 'outcome']
-        assert m.helper.inflight is None and len(v.mints) == 1
-    else:
-        assert not m.helper.authority.call.called and not m.reader.effect.called
-        assert not m.helper.audit.path.exists() and not m.helper._reply.called
-        assert staged_inventory(v.fixture) == before and v.calls == calls and not v.mints
 
 
 @pytest.mark.parametrize('method,action', PUBLIC_LIFECYCLE.items())
@@ -367,15 +222,15 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize('schedule', ['immediate', 'after_authorization'])
-def test_worker_settles_after_accepted_enable(
+def test_worker_settles_after_accepted_disable(
         mount: Any, monkeypatch: pytest.MonkeyPatch, schedule: str) -> None:
     v = mount
     queued, completed = [], []
-    v.message.get_member = lambda: 'Enable'
+    v.message.get_member = lambda: 'Disable'
 
     def effect(*args: Any, **kwargs: Any) -> dict:
         assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
-        return {'outcome': 'ready', 'residue': []}
+        return {'outcome': 'in_progress' if args[0] == 'stop' else 'off', 'residue': []}
 
     v.reader.effect.side_effect = effect
 
@@ -408,10 +263,10 @@ def test_worker_settles_after_accepted_enable(
         effect_calls=v.reader.effect.call_count, outcome=v.helper.lifecycle_result['outcome']), sort_keys=True))
     assert completed == [True]
     assert v.helper.inflight is None, 'accepted worker returned but its global slot stayed sealed'
-    assert v.helper.lifecycle_result == {'outcome': 'ready', 'residue': []}
-    assert v.reader.effect.call_count == 1
+    assert v.helper.lifecycle_result == {'outcome': 'off', 'residue': []}
+    assert v.reader.effect.call_count == 2
     rows = [json.loads(line) for line in v.helper.audit.path.read_text().splitlines()]
-    assert [row['stage'] for row in rows] == ['intent', 'outcome']
+    assert [row['stage'] for row in rows] == ['intent', 'outcome'] * 3
     v.helper._error.assert_not_called()
 
 
@@ -445,7 +300,7 @@ def test_lifecycle_settlement_renews_namespace(mount: Any, method: str, granted:
     assert not events  # Authentication has not settled.
     v.helper._authorized(v.helper.authority, Variant('', ((granted, False, {}),)), capture)
     assert v.helper.inflight is None
-    assert bool(audit_reads) is granted
+    assert bool(audit_reads) is (granted and method not in ('Enable', 'ReplaceFailed'))
     # Every worker (including refused/uncertain effects), or terminal denial,
     # seals admission. A status worker must still finish before name release.
     v.helper.status_worker = object()
@@ -624,38 +479,6 @@ def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: py
     assert not v.effects and not v.reader.effect.called
     assert not v.helper.audit.path.exists() and v.helper.inflight is None
     assert v.helper._error.called and not v.helper._reply.called
-
-
-@pytest.mark.parametrize('method,step,outcome,setup', [('Enable', 'enable', 'ready', 'ready'),
-    ('Enable', 'enable', 'prepared', 'in_progress'), ('ReplaceFailed', 'replace', 'off', 'off'),
-    ('Enable', 'enable', 'ready', 'uncertain')])
-def test_lifecycle_public_mount_fresh_auth_and_audit(
-        mount: Any, method: str, step: str, outcome: str, setup: str) -> None:
-    v = mount
-    v.message.get_member = lambda: method
-    def effect(actual: str, expected: str, remaining: float) -> dict:
-        assert actual == step and 0 < remaining <= 480 and v.helper.inflight
-        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['event'] == 'activation'
-        return {'outcome': outcome, 'residue': []}
-    v.reader.effect.side_effect = effect
-    if setup == 'uncertain':
-        original = v.helper.audit.outcome
-        def late_audit(*args: Any) -> None:
-            original(*args)
-            deadline = v.helper.lifecycle_operation.budget.deadline
-            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline
-        v.helper.audit.outcome = late_audit
-    for _ in range(2):
-        v.admit()
-        assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
-        assert v.helper.inflight is None
-        v.renew()
-    assert [row['outcome'] for row in map(json.loads, v.helper.audit.path.read_text().splitlines())
-            if row['stage'] == 'outcome'] == ['succeeded', 'succeeded']
-    assert v.helper.authority.call.call_count == 2
-    assert v.helper.authority.call.call_args.args[1].unpack()[1] == (
-        'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method])
-    assert not v.helper._error.called
 
 
 def test_auth_loss_retains_slot_until_terminal_ack(mount: Any) -> None:
@@ -927,23 +750,6 @@ def test_mounted_disable_real_b6_result(mount: Any, custody: Any, monkeypatch: p
             assert all((custody.root / p.lstrip('/')).exists() for p in _HOME_STATE_MEMBERS)
 
 
-def test_replacement_binds_inventory_before_auth_and_uses_captured_uid(store: Any) -> None:
-    io = store._io
-    io.replacement_inventory = Mock(return_value=SimpleNamespace(
-        journal_generation=None, inventory_generation='a' * 64,
-        installation=SimpleNamespace(state='known-failed-or-partial')))
-    io.begin_replacement = Mock()
-    lifecycle = backend.HelperLifecycleBackend(io)
-    expected = lifecycle.capture('ReplaceFailed', 1000)
-    lifecycle.dispatch('ReplaceFailed', 1000, 'replace', expected)
-    io.begin_replacement.assert_called_once_with(expected_release_uid=1000, expected_generation='a' * 64)
-    io.begin_replacement.reset_mock()
-    io.replacement_inventory.return_value.inventory_generation = 'b' * 64
-    with pytest.raises(backend.ActivationRefused):
-        lifecycle.dispatch('ReplaceFailed', 1000, 'replace', expected)
-    assert not io.begin_replacement.called
-
-
 @pytest.mark.parametrize('revoked', [True, False])
 @pytest.mark.parametrize('case', ['link', 'journal', 'service'])
 def test_disable_real_backend_residue_still_attempts_owned_stops(
@@ -1017,6 +823,12 @@ def test_stop_includes_headscale_and_disables_only_owned_units(store: Any, monke
         directory.chmod(0o755)
     link.symlink_to('/usr/lib/systemd/system/happyranch-remote-access-policy-renew.timer')
     def properties(name: str, keys: tuple) -> dict:
+        directory = os.open(io.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(directory)
         renewal = name.startswith('happyranch-remote-access-policy-renew.')
         return dict(LoadState='loaded', DropInPaths='',
             FragmentPath=str(io.root / ('usr/lib/systemd/system' if renewal else 'etc/systemd/system') / name),
@@ -1727,7 +1539,7 @@ def test_invite_default_frame_cap_unchanged(method: str) -> None:
                 os.close(read)
 
 
-@pytest.mark.parametrize('method', ['Enable', 'ReplaceFailed', 'Disable', 'CancelInvite', 'RecoverInvite'])
+@pytest.mark.parametrize('method', ['Disable', 'CancelInvite', 'RecoverInvite'])
 def test_other_lifecycle_methods_keep_accepted_first(mount: Any, method: str) -> None:
     v = mount
     v.message.get_member = lambda: method
@@ -1752,3 +1564,35 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
     v.h.RemoteAccessHelper._error(v.helper, v.message, 'hrinvite2:SYNTHETIC_PRIVATE_VALUE')
     v.message.new_method_error_literal.assert_called_with(v.h.INTERFACE + '.Error.unavailable', 'unavailable')
     assert 'hrinvite2:' not in caplog.text
+
+
+@pytest.mark.parametrize('method', ['Enable', 'ReplaceFailed'])
+@pytest.mark.parametrize('token', ['clean', 'prepared', 'ready', 'migration pending', 'retired'])
+def test_public_retired_activation_has_no_effect(mount: Any, tmp_path: Path, method: str, token: str) -> None:
+    v = mount
+    sentinel = tmp_path / 'local-work'
+    sentinel.write_bytes(b'synthetic local work')
+    v.message.get_member = lambda: method
+    v.reader.current_generation.side_effect = lambda _: token
+    v.reader.effect.return_value = {'outcome': 'ready', 'residue': []}
+    v.reader.effect.side_effect = None
+    v.admit()
+    assert v.helper.authority.call.call_args.args[1].unpack()[1] == (
+        'ai.happyranch.remote-access.' + v.h.LIFECYCLE_ACTIONS[method])
+    v.helper._error.assert_called_once_with(v.message, 'home-mode-retired')
+    assert not v.helper._reply.called and not v.reader.effect.called
+    assert not v.helper.audit.path.exists() and v.helper.inflight is None
+    assert sentinel.read_bytes() == b'synthetic local work'
+
+
+@pytest.mark.parametrize('method', ['Enable', 'ReplaceFailed'])
+def test_retired_activation_error_has_exact_copy(mount: Any, method: str) -> None:
+    from runtime.remote_access.home_retirement import MESSAGE
+    v = mount
+    v.message.get_member = lambda: method
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    v.message.new_method_error_literal = Mock(return_value=object())
+    v.helper.connection.send_message = Mock()
+    v.h.RemoteAccessHelper._error(v.helper, v.message, 'home-mode-retired')
+    v.message.new_method_error_literal.assert_called_once_with(
+        v.h.INTERFACE + '.Error.home_mode_retired', MESSAGE)

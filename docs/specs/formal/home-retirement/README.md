@@ -397,8 +397,9 @@ The retained B6 custody venue now seeds synthetic historical native, account,
 publication and activation inputs from `scripts/home_legacy_fixture.py` and
 frozen legacy config/DERP/policy bytes. It no longer prepares a new home
 installation or imports the activation composition to exercise real cleanup.
-The activation-only disable/re-enable scenario stays in its activation venue
-pending owner disposition; this fixture separation adds no model transition.
+The activation-only disable/re-enable scenario retired with its backend owner;
+retained diagnostic/no-follow cleanup and namespace cases keep the actual B6
+boundary. This fixture separation adds no model transition.
 
 Ordinary home install and supervisor start/restart/enable/foreground now refuse
 valid legacy state with the accepted retirement message before native effects.
@@ -424,3 +425,11 @@ The helper's fixed generation child now selects the retained legacy readback
 module. Its root-only zero-option entry emits the same closed metadata snapshot
 without a writer import. This command movement adds no authority or model action;
 helper authentication and original transport budgets remain separate obligations.
+
+Public helper Enable/ReplaceFailed now refuse after the original sender/owner,
+native authorization, budget and revalidation checks and before any worker or
+effect. The root child retains only inert capture/refusal adapters; the positive
+activation backend/composition is removed. This strengthens OldAdmission refusal
+without adding a model transition. Disable still uses the same protected
+installer directory flock. Invite/lower writer removal remains separate; TLC
+and installed native acceptance are NOT RUN.

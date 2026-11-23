@@ -215,6 +215,11 @@ class RemoteAccessHelper:
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
     def _error(self, message: Gio.DBusMessage, category: str) -> None:
+        if category == 'home-mode-retired' and message.get_member() in _helper_lifecycle.RETIRED_ACTIVATION_METHODS:
+            reply = message.new_method_error_literal(INTERFACE + '.Error.home_mode_retired',
+                                                     _helper_lifecycle.RETIREMENT_MESSAGE)
+            self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
+            return
         category = (category if category in _owner.FAILURES or
                     (category == 'uncertain' and message.get_member() == 'IssueInvite')
                     else Refused(category).category)
@@ -520,6 +525,10 @@ class RemoteAccessHelper:
                 operation._revalidate(operation.budget.bounded(_helper_lifecycle.CALL_SECONDS))
                 if self.clock() >= capture.deadline:
                     raise Refused('expired')
+                if capture.method in _helper_lifecycle.RETIRED_ACTIVATION_METHODS:
+                    self._error(capture.message, 'home-mode-retired')
+                    self._clear()
+                    return
                 operation.accepted = True
                 if self.timer:
                     GLib.source_remove(self.timer)
@@ -564,11 +573,8 @@ class RemoteAccessHelper:
             def execute(_: object, remaining: float) -> None:
                 nonlocal result
                 label = '-'.join(str(byte) for byte in os.urandom(12))
-                kwargs = ({'component': component} if capture.method == 'Disable' else
-                          {'phase': _home_audit.Phase.ACTIVATING})
-                intent = self.audit.intent(_home_audit.Event.TURN_OFF if capture.method == 'Disable'
-                    else _home_audit.Event.ACTIVATION, intent_id='intent-' + label,
-                    operation_id='op-' + label, **kwargs)
+                intent = self.audit.intent(_home_audit.Event.TURN_OFF, intent_id='intent-' + label,
+                    operation_id='op-' + label, component=component)
                 dispatched = False
                 def before_commit() -> None:
                     nonlocal dispatched
@@ -607,50 +613,43 @@ class RemoteAccessHelper:
 
         try:
             if capture.method != 'Disable':
-                step = 'enable' if capture.method == 'Enable' else 'replace'
-                result = child(step, None)
-                # B7 rollover publishes prepared, which B15 projects as in_progress.
-                outcome = (lifecycle.SetupPhase.IN_PROGRESS
-                           if capture.method == 'Enable' and result['outcome'] == 'prepared'
-                           else lifecycle.SetupPhase(result['outcome']))
-                residue = result['residue']
+                raise Refused('unknown-method')
+            revoked = False
+            def revoke(remaining: float, commit: Callable[[], None]) -> dict:
+                snapshot = self._snapshot(capture.uid)
+                deadline = min(operation.budget.deadline, self.clock() + min(remaining, 120.0))
+                # R4: one changed-generation reread/retry only, same deadline.
+                for attempt in range(2):
+                    try:
+                        self.control.revoke_all(snapshot.generation, deadline, commit)
+                        return {}
+                    except Refused as error:
+                        if error.category != 'changed' or attempt:
+                            raise
+                        snapshot = self._snapshot(capture.uid)
+                raise Refused('changed')
+            try:
+                audited('revoke', _home_audit.Component.CREDENTIALS, revoke)
+                revoked = True
+            except Exception:
+                residue.append('un-revoked connector trust state and persisted sidecar state')
+            try:
+                stopped = child('stop', _home_audit.Component.UNITS)
+            except Exception:
+                residue.append('owned units: quiescence unconfirmed')
             else:
-                revoked = False
-                def revoke(remaining: float, commit: Callable[[], None]) -> dict:
-                    snapshot = self._snapshot(capture.uid)
-                    deadline = min(operation.budget.deadline, self.clock() + min(remaining, 120.0))
-                    # R4: one changed-generation reread/retry only, same deadline.
-                    for attempt in range(2):
-                        try:
-                            self.control.revoke_all(snapshot.generation, deadline, commit)
-                            return {}
-                        except Refused as error:
-                            if error.category != 'changed' or attempt:
-                                raise
-                            snapshot = self._snapshot(capture.uid)
-                    raise Refused('changed')
-                try:
-                    audited('revoke', _home_audit.Component.CREDENTIALS, revoke)
-                    revoked = True
-                except Exception:
-                    residue.append('un-revoked connector trust state and persisted sidecar state')
-                try:
-                    stopped = child('stop', _home_audit.Component.UNITS)
-                except Exception:
-                    residue.append('owned units: quiescence unconfirmed')
+                if stopped.get('outcome') != 'in_progress' or stopped.get('residue'):
+                    residue.extend(stopped.get('residue') or ['owned units: quiescence unconfirmed'])
                 else:
-                    if stopped.get('outcome') != 'in_progress' or stopped.get('residue'):
-                        residue.extend(stopped.get('residue') or ['owned units: quiescence unconfirmed'])
-                    else:
-                        try:
-                            result = child('cleanup', _home_audit.Component.LIVE_STATE, revoke_succeeded=revoked)
-                            residue.extend(result['residue'])
-                            if result['outcome'] != 'off':
-                                residue.append('B6 cleanup incomplete')
-                        except Exception:
-                            residue.append('B6 custody or retained CA staging and B7/B11 evidence')
-                outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
-                           lifecycle.SetupPhase.PARTIAL_CLEANUP)
+                    try:
+                        result = child('cleanup', _home_audit.Component.LIVE_STATE, revoke_succeeded=revoked)
+                        residue.extend(result['residue'])
+                        if result['outcome'] != 'off':
+                            residue.append('B6 cleanup incomplete')
+                    except Exception:
+                        residue.append('B6 custody or retained CA staging and B7/B11 evidence')
+            outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
+                       lifecycle.SetupPhase.PARTIAL_CLEANUP)
         except Exception:
             outcome = lifecycle.SetupPhase.UNCERTAIN if operation.dispatched else lifecycle.SetupPhase.FAILED
         finally:
