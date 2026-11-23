@@ -3987,6 +3987,12 @@ I5b/I5c; RefreshHomeAddress has no helper method and is deferred to B13.
 
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
+THR-327 closure/returned-worker regressions use the same retained venue:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_installer_token_custody.py scripts/test_helper_mount.py -k thr327 -q --tb=short`.
+The full owner selection also includes `scripts/test_home_activation_backend.py`;
+the private-Gio selection below includes `scripts/test_helper_lifecycle.py`.
+Run full modules through durable jobs. These temporary-root/private-bus tests
+do not exercise installed system units or establish the host's actual busy cause.
 It drives real temp-root provisioning, install admission and drift with a fake
 service manager, real FDs, source swaps and metadata changes. Foreign ownership
 is simulated at the OS stat boundary without chown or sudo. Refusal must leave
