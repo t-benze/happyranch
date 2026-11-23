@@ -344,6 +344,132 @@ async def references_case(root: Path) -> None:
             assert db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_protected'").fetchone()[0] >= 1
 
 
+async def history_case(root: Path) -> None:
+    """Closed production-sized history must not consume the live text budget."""
+    from runtime.daemon.shared_artifacts_scheduler import sweep
+    with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+        async with fixture(root) as (org, client):
+            db = org.db
+            install_reference_seams(org)
+            db.insert_thread(ThreadRecord(id='THR-history', subject='Synthetic history'))
+            params = dict(agent='worker', thread_id='THR-history',
+                          purpose='Persistent history acceptance', retention='default')
+            names = ('free.bin', 'other-free.bin', 'live.bin', 'child.bin', 'handoff.bin')
+            for name in names:
+                response = await client.post(PREFIX+'/artifacts', params=params,
+                    files={'file': (name, b'original history acceptance bytes')})
+                assert response.status_code == 200, response.text
+            db._shared_artifact_service.clock = lambda: NOW
+            # Actual TEXT storage, not sparse files or an increased scanner cap.
+            brief = 'Closed [artifact:free.bin] '.ljust(4096, 'x')
+            summary = 'Closed [artifact:other-free.bin] '.ljust(6400, 'x')
+            with db.shared_artifact_transaction() as conn:
+                conn.executemany(
+                    'INSERT INTO tasks(id,status,brief,created_at,updated_at) VALUES(?,?,?,?,?)',
+                    ((f'TASK-{i}', 'completed', brief, NOW.isoformat(), NOW.isoformat())
+                     for i in range(1, 19001)))
+                conn.executemany(
+                    'INSERT INTO task_results(task_id,agent,session_id,output_summary,created_at) '
+                    'VALUES(?,?,?,?,?)',
+                    ((f'TASK-{i % 19000 + 1}', 'worker', f'history-{i}', summary, NOW.isoformat())
+                     for i in range(34000)))
+                sizes = conn.execute(
+                    'SELECT (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM task_results), '
+                    '(SELECT SUM(length(CAST(brief AS BLOB))) FROM tasks) + '
+                    '(SELECT SUM(length(CAST(output_summary AS BLOB))) FROM task_results)').fetchone()
+                assert tuple(sizes) == (19000, 34000, 295424000), tuple(sizes)
+            for task_id, status, parent, text in (
+                ('TASK-900000', TaskStatus.PENDING, None, '[artifact:live.bin]'),
+                ('TASK-900001', TaskStatus.IN_PROGRESS, None, 'Running synthetic work'),
+                ('TASK-900002', TaskStatus.ESCALATED, None, 'Escalated synthetic work'),
+                ('TASK-900003', TaskStatus.COMPLETED, 'TASK-900000', 'Read TASK-900004'),
+                ('TASK-900004', TaskStatus.COMPLETED, None, 'Read TASK-900005'),
+                ('TASK-900005', TaskStatus.COMPLETED, None, 'Cycle TASK-900004'),
+            ):
+                db.insert_task(TaskRecord(id=task_id, status=status, parent_task_id=parent,
+                                          brief=text, assigned_agent='worker'))
+            with db.shared_artifact_transaction() as conn:
+                conn.executemany(
+                    'INSERT INTO task_results(task_id,agent,session_id,output_summary,created_at) '
+                    'VALUES(?,?,?,?,?)',
+                    ((task_id, 'worker', 'live-'+task_id, text, NOW.isoformat())
+                     for task_id, text in (('TASK-900003', '[artifact:child.bin]'),
+                                           ('TASK-900005', '[artifact:handoff.bin]'))))
+            started = time.monotonic()
+            for name in names:
+                response = await client.post(PREFIX+'/artifacts', params=params,
+                    files={'file': (name, b'replacement history acceptance bytes')})
+                expected = 200 if name in ('free.bin', 'other-free.bin') else 409
+                assert response.status_code == expected, (name, response.status_code, response.text)
+                if expected == 409:
+                    assert response.json()['detail']['code'] == 'artifact_live_dependency', response.text
+                    assert (org.root/'artifacts'/name).read_bytes() == b'original history acceptance bytes'
+                else:
+                    assert (org.root/'artifacts'/name).read_bytes() == b'replacement history acceptance bytes'
+            result = sweep(org, 'production-history', deadline=started+60)
+            assert result['complete'] and not result.get('reference_incomplete', False), result
+            assert result['effective_mode'] == 'preview' and result['protected'] == 3, result
+            assert db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0] == NOW.isoformat()
+            elapsed = time.monotonic()-started
+            assert elapsed < 60 and not result['deadline_exhausted'], result
+            with db.shared_artifact_transaction() as conn:
+                proof = ReferenceProof(conn, slug=org.slug, store=db._shared_artifact_service.store,
+                                       deadline=started+60)
+                assert proof.outcome(db.get_shared_artifact('free.bin'))[0] == 'absent'
+                for name, source in (('live.bin', 'TASK-900000'), ('child.bin', 'TASK-900003'),
+                                     ('handoff.bin', 'TASK-900005')):
+                    assert proof.outcome(db.get_shared_artifact(name)) == ('live', [source])
+                metrics = dict(rows_scanned=proof.rows, bytes_scanned=proof.bytes)
+            print(json.dumps(dict(case='history', closed_tasks=sizes[0], historical_results=sizes[1],
+                historical_text_bytes=sizes[2], elapsed_seconds=time.monotonic()-started,
+                sweep=result, **metrics)), flush=True)
+            print('PASS history:19000 closed tasks;34000 results;295424000 historical text bytes;'
+                  'unreferenced replacement200;live/child/handoff409;complete preview;rollout started;shared60s')
+
+
+async def live_cap_case(root: Path) -> None:
+    """A genuinely oversized live closure still protects bytes and blocks rollout."""
+    from runtime.daemon.shared_artifacts_scheduler import sweep
+    with patch('runtime.infrastructure.shared_artifact_service._utc', return_value=NOW):
+        async with fixture(root) as (org, client):
+            db = org.db
+            install_reference_seams(org)
+            db.insert_thread(ThreadRecord(id='THR-live-cap', subject='Synthetic live cap'))
+            params = dict(agent='worker', thread_id='THR-live-cap',
+                          purpose='Persistent live cap acceptance', retention='default')
+            response = await client.post(PREFIX+'/artifacts', params=params,
+                files={'file': ('capped.bin', b'held live cap bytes')})
+            assert response.status_code == 200, response.text
+            db._shared_artifact_service.clock = lambda: NOW
+            # Same recognized handoff closure as ordinary scanning, over32MiB of
+            # valid live result text. No patched production bound or parser fault.
+            db.insert_task(TaskRecord(id='TASK-800000', brief='Read TASK-800001', assigned_agent='worker'))
+            db.insert_task(TaskRecord(id='TASK-800001', status=TaskStatus.COMPLETED,
+                                      brief='Required synthetic handoff', assigned_agent='worker'))
+            with db.shared_artifact_transaction() as conn:
+                conn.executemany(
+                    'INSERT INTO task_results(task_id,agent,session_id,output_summary,created_at) '
+                    'VALUES(?,?,?,?,?)',
+                    (('TASK-800001', 'worker', f'live-cap-{i}', 'x'*(1024*1024), NOW.isoformat())
+                     for i in range(33)))
+            before = snapshot(org)
+            response = await client.post(PREFIX+'/artifacts', params=params,
+                files={'file': ('capped.bin', b'must not replace')})
+            assert response.status_code == 503, response.text
+            assert response.json()['detail']['code'] == 'artifact_reference_check_unavailable', response.text
+            result = sweep(org, 'live-closure-over-cap')
+            assert not result['complete'] and result['reference_incomplete'], result
+            assert result['protected'] == 1 and result['used_bytes'] == len(b'held live cap bytes'), result
+            assert db._conn.execute('SELECT rollout_started_at FROM shared_artifact_org_state').fetchone()[0] is None
+            assert snapshot(org) == before, 'cap refusal changed lifecycle or bytes'
+            assert (org.root/'artifacts'/'capped.bin').read_bytes() == b'held live cap bytes'
+            audits = db._conn.execute(
+                "SELECT payload FROM audit_log WHERE task_id='artifact:capped.bin' AND action='artifact_protected'").fetchall()
+            assert audits and all(json.loads(r[0])['reason'] == 'dependency_check_unavailable' for r in audits)
+            print('PASS live-cap:34603008 live handoff/result bytes;replacement503;'
+                  'incomplete sweep;protected/counting/audit;rollout unset;bytes unchanged')
+
+
 async def notices_case(root: Path) -> None:
     from runtime.daemon.shared_artifacts_notices import SharedArtifactNotices, NoticeUnavailable
     from cli.commands.threads import cmd_threads_show
@@ -649,7 +775,7 @@ async def sweep_shape_case(root: Path) -> None:
 
 async def main(case: str) -> None:
     if case == 'all':
-        for selected in ('manual-delete','quota-chunks','references','notices','sweep','sweep-shape'):
+        for selected in ('manual-delete','quota-chunks','references','history','live-cap','notices','sweep','sweep-shape'):
             await main(selected)
         print('All selected Slice B private acceptance cases passed.')
         return
@@ -669,6 +795,10 @@ async def main(case: str) -> None:
             await notices_case(root/'notices')
         if case == 'references':
             await references_case(root/'references')
+        if case == 'history':
+            await history_case(root/'history')
+        if case == 'live-cap':
+            await live_cap_case(root/'live-cap')
         if case == 'quota-chunks':
             await quota_chunks_case(root/'quota')
 
@@ -677,6 +807,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=(
         'all', 'manual-delete', 'manual-delete-default', 'manual-delete-enforce',
-        'quota-chunks', 'references', 'notices', 'sweep', 'sweep-shape',
+        'quota-chunks', 'references', 'history', 'live-cap', 'notices', 'sweep', 'sweep-shape',
     ), default='all')
     asyncio.run(main(parser.parse_args().case))

@@ -1,6 +1,6 @@
 """Same-writer-fence reference proof for shared artifact generations.
 
-No persistent reference cache: each proof reads the complete org corpus. A pass
+No persistent reference cache: each proof reads the complete live projection. A pass
 may reuse a projection only while holding its original BEGIN IMMEDIATE fence.
 Missing/capped reader evidence is uncertainty, never an empty dependency set.
 """
@@ -49,11 +49,12 @@ class ReferenceProof:
         if time.monotonic() >= self.deadline or self.rows > _MAX_ROWS or self.bytes > _MAX_BYTES:
             raise ReferenceUnavailable('reference_scan_incomplete')
 
-    def _read(self, sql: str, values: tuple = ()) -> list[dict]:
+    def _read(self, sql: str, values: tuple = (), *, count_bytes: bool = True) -> list[dict]:
         result = []
         for row in self.conn.execute(sql, values):
             self.rows += 1
-            self.bytes += sum(len(v.encode('utf-8')) for v in row if isinstance(v, str))
+            if count_bytes:
+                self.bytes += sum(len(v.encode('utf-8')) for v in row if isinstance(v, str))
             self._check()
             result.append(dict(row))
         return result
@@ -144,37 +145,49 @@ class ReferenceProof:
 
     def _scan(self) -> None:
         tasks = {r['id']: r for r in self._read(
-            'SELECT id,status,parent_task_id,brief,final_output_summary FROM tasks')}
+            'SELECT id,status,parent_task_id FROM tasks', count_bytes=False)}
         if any(t['status'] not in _STATUSES for t in tasks.values()):
             raise ReferenceUnavailable('unknown_task_status')
         children: dict[str, list[str]] = defaultdict(list)
-        results: dict[str, list[dict]] = defaultdict(list)
         for t in tasks.values():
+            if not isinstance(t['id'], str) or not t['id'] or (
+                t['parent_task_id'] is not None and not isinstance(t['parent_task_id'], str)
+            ):
+                raise ReferenceUnavailable('malformed_task_identity')
             children[t['parent_task_id']].append(t['id'])
-        for r in self._read('SELECT task_id,output_summary,decision_json,risks_flagged FROM task_results'):
-            results[r['task_id']].append(r)
         live = [t['id'] for t in tasks.values() if t['status'] in _LIVE]
-        todo = live + [child for t in live for child in children[t]]
+        todo = set(live) | {child for t in live for child in children[t]}
         visited = set()
         while todo:
-            task_id = todo.pop()
-            if task_id in visited:
-                continue
-            visited.add(task_id)
-            task = tasks.get(task_id)
-            if task is None:
+            # Historical text is irrelevant unless a live task/direct child or
+            # an explicit handoff needs it. Discover that closure incrementally
+            # within this same writer fence; cycles never reload text/results.
+            batch = tuple(sorted(todo)[:250])
+            if any(task_id not in tasks for task_id in batch):
                 raise ReferenceUnavailable('required_handoff_missing')
-            todo.extend(self._text(task['brief'], task_id))
-            todo.extend(self._text(task['final_output_summary'], task_id))
-            for r in results[task_id]:
-                todo.extend(self._text(r['output_summary'], task_id))
+            visited.update(batch)
+            todo.difference_update(batch)
+            placeholders = ','.join('?' for _ in batch)
+            selected = self._read(
+                f'SELECT id,brief,final_output_summary FROM tasks WHERE id IN ({placeholders})', batch)
+            if len(selected) != len(batch):
+                raise ReferenceUnavailable('required_handoff_missing')
+            for task in selected:
+                todo.update(self._text(task['brief'], task['id']) - visited)
+                todo.update(self._text(task['final_output_summary'], task['id']) - visited)
+            for r in self._read(
+                'SELECT task_id,output_summary,decision_json,risks_flagged FROM task_results '
+                f'WHERE task_id IN ({placeholders})', batch
+            ):
+                task_id = r['task_id']
+                todo.update(self._text(r['output_summary'], task_id) - visited)
                 for key in ('decision_json', 'risks_flagged'):
                     if r[key]:
                         decoded = json.loads(r[key])
                         if not isinstance(decoded, dict if key == 'decision_json' else list):
                             raise ReferenceUnavailable('malformed_result_payload')
                         for value in self._strings(decoded):
-                            todo.extend(self._text(value, task_id))
+                            todo.update(self._text(value, task_id) - visited)
         threads = self._read('SELECT id,status FROM threads')
         if any(t['status'] not in ('open', 'archived') for t in threads):
             raise ReferenceUnavailable('unknown_thread_status')

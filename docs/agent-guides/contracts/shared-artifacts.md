@@ -158,7 +158,7 @@ retain their existing meanings; task/thread provenance lives only in payload.
 ASGI/SQLite/filesystem cases without a daemon lifespan, listener, provider or live
 org. `--case metadata|provisional|journal|custom|quota|shape` selects a group.
 B uses `uv run --frozen python scripts/test_shared_artifacts_b.py --case` with
-`all|manual-delete|quota-chunks|references|notices|sweep|sweep-shape` (default all). This is a
+`all|manual-delete|quota-chunks|references|history|live-cap|notices|sweep|sweep-shape` (default all). This is a
 standalone slice-owned script (including a7500-file /1.7GB sparse legacy hash/SQL shape case) outside the retired Python suite. It adds no CI
 gate or E2E trigger. Exact results, limitations and sensitivity evidence belong
 to the task/PR. The [TLA+ model](../../specs/formal/shared-artifacts/README.md) is
@@ -166,8 +166,17 @@ bounded review evidence, not proof of Python execution or activation.
 
 ## Slice B reference projection (source only)
 
-`shared_artifact_references.reference_outcomes` reads the complete bounded org
-corpus under the caller's retained writer transaction. Outcomes are collected
+`shared_artifact_references.reference_outcomes` reads the complete bounded live
+projection under the caller's retained writer transaction. It first reads only
+task IDs, statuses and parent IDs to select `pending`, `in_progress` and
+`escalated` tasks plus their direct children. It then loads only those tasks'
+briefs, final summaries and results, following explicit TASK handoffs to closure
+with a visited set. Unrelated closed task/result text never consumes the32MiB
+text bound; required live-closure text exceeding that bound still makes the
+proof indeterminate. The100,000-row and shared deadline bounds also cover the
+task metadata scan; unknown statuses and missing/malformed required handoffs
+remain indeterminate. Open-thread and skill-source projection is unchanged.
+Outcomes are collected
 before own audit writes; no snapshot survives COMMIT or lock release. The final
 lifecycle/unlink caller must retain that fence through its decision. Structured
 shared attachments preserve generation pins. Non-retired B2 versions and every
