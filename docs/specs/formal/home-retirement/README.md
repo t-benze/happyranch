@@ -89,9 +89,13 @@ obligations. These initial-state changes have not been executed with TLC.
 Explicit `ActiveRetirement.from_saved` covers the pre-Burn preparation
 interruption with a complete original inventory and saved peer. It rechecks
 original members/native ownership and the same live peer before finishing an
-absent native journal or synchronizing a complete existing one. Missing/torn
-inventory/peer or post-revoke drift stays pending without recapture; the model
-abstracts this original-evidence durability and does not prove the I/O path.
+absent native journal or synchronizing a complete existing one. Before the
+first inventory publication, it additionally requires both journals absent,
+intact historical lineage and current native PID/start/boot matching the saved
+live peer. Any orphan native record, missing/torn peer, existing torn inventory
+or post-preparation revoke drift stays pending without recapture. This is still
+pre-Burn preparation, not a new model transition; the model abstracts original
+evidence durability and does not prove the I/O path.
 
 `ActiveRetirement.resume_revoke` additionally covers partial Burn/Deny while
 the saved original serving owner is still live. Current anchored trust is parsed

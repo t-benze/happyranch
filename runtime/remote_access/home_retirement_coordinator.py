@@ -14,12 +14,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
-from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY
+from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
 from runtime.remote_access.home_retirement_cleanup import ManagedCleanup, PrivateCleanup
 from runtime.remote_access.home_retirement_cutoff import CutoffReceipt, OriginalPeer, RetirementCutoff
 from runtime.remote_access.home_retirement_fence import RetirementFence
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
-from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal
+from runtime.remote_access.home_retirement_journal import OriginalInventory, RetirementJournal, _NAME as _INVENTORY_RECORD
 from runtime.remote_access.home_retirement_operations import AuxiliaryExclusion, held_auxiliary_operations
 from runtime.remote_access.home_retirement_service import OwnedService, OwnedStopReceipt
 from runtime.remote_access.home_retirement_recovery import OriginalDeathRecovery, RecoveredCutoffReceipt
@@ -83,21 +83,46 @@ class ActiveRetirement:
     def from_saved(cls, io: ManagedInstaller, fence: RetirementFence) -> ActiveRetirement:
         """Explicit pre-revoke recovery without replacing saved original facts.
 
-        A complete inventory and original serving-peer pin are required. If
-        preparation stopped before publishing the native journal, finish that
-        first publication only after original-member/native/peer readback.
-        Existing complete records are resynchronized, never overwritten. Any
-        committed trust change requires the separate post-revoke recovery path.
+        Existing inventory is loaded, never recaptured. Before its first
+        publication, both journals must be absent and intact historical lineage
+        must still select the saved live peer. An orphan native record refuses.
+        Finish an absent native journal only after original-member/native/peer
+        readback. Committed trust changes after preparation use resume_revoke.
         """
         try:
             journal = RetirementJournal(io, fence)
+            reader = HomeRetirement(io)
+            cutoff = None
+            if not reader._present(STATE_DIRECTORY + '/' + _INVENTORY_RECORD):
+                if reader._present(STATE_DIRECTORY + '/' + _NATIVE_RECORD):
+                    raise RetirementUncertain()
+                inventory = LegacyInventory(io)
+                ownership = inventory.observe(fence=fence)
+                managed = inventory.managed_members(ownership, fence=fence)
+                if ownership.activation is None or not managed.live_sidecar:
+                    raise RetirementUncertain()
+                current = ManagedTransport(io, fence, managed).observe()
+                process = current.processes['happyranch-connector.service']
+                if process is None:
+                    raise RetirementUncertain()
+                cutoff = RetirementCutoff.from_saved_peer(io, fence,
+                    ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
+                        connector_id=managed.identity[2]), managed.release_uid)
+                if cutoff.peer != OriginalPeer(*process, current.boot_id):
+                    raise RetirementUncertain()
+                cutoff.capture_original()
+                # Exclusive first publication only. No missing-record fallback
+                # replaces a saved inventory or adopts a different live peer.
+                if journal.capture(ownership).managed != managed:
+                    raise RetirementUncertain()
             original = journal.load()
             managed = original.managed
             if original.ownership.activation is None or not managed.live_sidecar:
                 raise RetirementUncertain()
-            cutoff = RetirementCutoff.from_saved_peer(io, fence,
-                ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
-                    connector_id=managed.identity[2]), managed.release_uid)
+            if cutoff is None:
+                cutoff = RetirementCutoff.from_saved_peer(io, fence,
+                    ConnectorIdentity(tenant_id=managed.identity[0], home_id=managed.identity[1],
+                        connector_id=managed.identity[2]), managed.release_uid)
             journal.require_original_members(original)
             if OwnedService(io, original.ownership.service).observe() != original.ownership.native:
                 raise RetirementUncertain()

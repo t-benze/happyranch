@@ -4531,10 +4531,15 @@ interrupted parent synchronization. Original members and the dedicated native
 owner must still match before status is requested from that same saved serving
 process. If the managed-native record was never created, this entry completes
 its first publication; complete existing records are resynchronized, never
-replaced. Torn/unknown evidence, missing inventory/peer, changed original native
-owners or committed trust changes remain pending. It neither recaptures the
-inventory nor substitutes status for revoke/physical acknowledgement. Preparation
-interrupted before a complete original inventory remains pending. Its explicit
+replaced. When interruption precedes inventory creation, both inventory and
+native journals must be absent; intact historical lineage must still identify
+the already-saved live connector PID/start/boot before exclusive first inventory
+publication. A missing inventory alongside any native record refuses. Missing,
+torn or unsafe peer evidence, torn inventory/native evidence and changed native
+owners remain pending. Existing inventory is never recaptured; post-preparation
+committed trust changes use the separate revoke-recovery entry. Status never
+substitutes for revoke/physical acknowledgement. The original cutoff deadline
+is retained throughout this preparation entry. Its explicit
 `revoke_and_stop_controller`
 passes the saved original controller observation and actual live cutoff receipt
 to `OwnedService`: both stop and disable freshly require that receipt, then

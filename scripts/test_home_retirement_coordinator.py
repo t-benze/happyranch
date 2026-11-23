@@ -17,12 +17,13 @@ from types import SimpleNamespace
 import pytest
 
 from runtime.remote_access import home_retirement_cutoff as cutoff
-from runtime.remote_access.home_retirement import RetirementUncertain, STATE_DIRECTORY
+from runtime.remote_access.home_retirement import HomeRetirement, RetirementUncertain, STATE_DIRECTORY
 from runtime.remote_access.home_retirement_coordinator import ActiveRetirement, StoppedRetirement
 from runtime.remote_access.home_retirement_inventory import LegacyInventory
 from runtime.remote_access.home_retirement_journal import RetirementJournal
 from runtime.remote_access.home_retirement_transport import ManagedTransport
 from runtime.remote_access.home_retirement_transport_journal import ManagedTransportJournal
+from runtime.remote_access.installer import ManagedInstaller
 from runtime.remote_access.streams import StreamClosed
 from runtime.remote_access.pairing import PairingError
 from scripts.test_home_retirement_cutoff import RecoveryFixture, PIN
@@ -820,7 +821,8 @@ def test_stopped_auxiliary_cleanup_joins_real_cutoff_and_recovers_without_replay
         assert not (active.root / FINAL).exists()
 
 
-@pytest.mark.parametrize('boundary', ['prepared', 'inventory-parent-sync', 'native-parent-sync'])
+@pytest.mark.parametrize('boundary', ['prepared', 'peer-file-sync', 'peer-parent-sync',
+    'inventory-create', 'inventory-parent-sync', 'native-parent-sync'])
 def test_saved_active_preparation_finishes_publication_before_real_revoke(active, monkeypatch, boundary):
     device, _ = active.grant('device')
     stream = active.stream(device, 'device')
@@ -828,24 +830,39 @@ def test_saved_active_preparation_finishes_publication_before_real_revoke(active
         if boundary == 'prepared':
             ActiveRetirement.capture(active.io, active.fence)
         else:
-            target = INVENTORY if boundary == 'inventory-parent-sync' else NATIVE
-            real_sync = os.fsync
+            target = PIN if boundary.startswith('peer-') else (
+                INVENTORY if boundary.startswith('inventory-') else NATIVE)
+            real_sync, real_open = os.fsync, os.open
             interrupted = []
             def sync(fd):
-                if (Path(os.readlink(f'/proc/self/fd/{fd}')) == active.root / STATE_DIRECTORY
+                current = Path(os.readlink(f'/proc/self/fd/{fd}'))
+                if (current == active.root / (PIN if boundary == 'peer-file-sync' else STATE_DIRECTORY)
                         and (active.root / target).exists()):
                     interrupted.append(True)
                     raise OSError('synthetic interrupted preparation parent sync')
                 real_sync(fd)
+            def open_file(name, flags, *args, **kwargs):
+                if name == INVENTORY.rsplit('/', 1)[1] and flags & os.O_CREAT:
+                    interrupted.append(True)
+                    raise OSError('synthetic interruption before first inventory publication')
+                return real_open(name, flags, *args, **kwargs)
             with monkeypatch.context() as scoped:
-                scoped.setattr(os, 'fsync', sync)
+                if boundary == 'inventory-create':
+                    scoped.setattr(os, 'open', open_file)
+                else:
+                    scoped.setattr(os, 'fsync', sync)
                 with pytest.raises(RetirementUncertain, match='^migration pending$'):
                     ActiveRetirement.capture(active.io, active.fence)
             assert interrupted
         saved = {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
                  for path in (PIN, INVENTORY, NATIVE) if (active.root / path).exists()}
         effects = active.effects()
-        recovered = ActiveRetirement.from_saved(active.io, active.fence)
+        io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+            run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
+        detected = active.snapshot()
+        assert HomeRetirement(io).detect().state == 'migration pending'
+        assert active.snapshot() == detected and active.effects() == effects
+        recovered = ActiveRetirement.from_saved(io, active.fence)
         assert {path: ((active.root / path).read_bytes(), (active.root / path).stat().st_ino)
                 for path in saved} == saved
         assert (active.root / NATIVE).is_file()
@@ -859,19 +876,45 @@ def test_saved_active_preparation_finishes_publication_before_real_revoke(active
 
 
 @pytest.mark.parametrize('drift', ['missing-peer', 'missing-inventory', 'torn-native',
-    'private-key', 'managed-process', 'denial'])
+    'private-key', 'managed-process', 'denial', 'preinventory-missing-peer', 'preinventory-torn-peer',
+    'preinventory-orphan-native', 'preinventory-managed-process', 'preinventory-peer-mode',
+    'preinventory-managed-config'])
 def test_saved_active_preparation_refuses_uncertain_originals_without_recapture(active, monkeypatch, drift):
     from scripts.test_home_retirement_inventory import PRIVATE_KEY
     device, _ = active.grant('device')
     active.stream(device, 'device')
     with active.serving(monkeypatch):
-        ActiveRetirement.capture(active.io, active.fence)
+        preinventory = drift.startswith('preinventory-')
+        if preinventory:
+            real_open = os.open
+            def open_file(name, flags, *args, **kwargs):
+                if name == INVENTORY.rsplit('/', 1)[1] and flags & os.O_CREAT:
+                    raise OSError('synthetic interruption before first inventory publication')
+                return real_open(name, flags, *args, **kwargs)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(os, 'open', open_file)
+                with pytest.raises(RetirementUncertain, match='^migration pending$'):
+                    ActiveRetirement.capture(active.io, active.fence)
+            assert (active.root / PIN).exists()
+            assert not (active.root / INVENTORY).exists() and not (active.root / NATIVE).exists()
+            drift = drift.removeprefix('preinventory-')
+        else:
+            ActiveRetirement.capture(active.io, active.fence)
         if drift == 'missing-peer':
             (active.root / PIN).unlink()
         elif drift == 'missing-inventory':
             (active.root / INVENTORY).unlink()
         elif drift == 'torn-native':
             (active.root / NATIVE).write_bytes(b'{synthetic-interrupted')
+        elif drift == 'torn-peer':
+            (active.root / PIN).write_bytes(b'{synthetic-interrupted')
+        elif drift == 'orphan-native':
+            (active.root / NATIVE).write_bytes(b'{}')
+            (active.root / NATIVE).chmod(0o600)
+        elif drift == 'peer-mode':
+            (active.root / PIN).chmod(0o644)
+        elif drift == 'managed-config':
+            (active.root / 'etc/happyranch/connector.json').write_bytes(b'{}')
         elif drift == 'private-key':
             (active.root / PRIVATE_KEY).write_bytes(b'synthetic-changed-private-key')
         elif drift == 'managed-process':
@@ -881,8 +924,10 @@ def test_saved_active_preparation_refuses_uncertain_originals_without_recapture(
             active.manager.revoke_all(expected_generation=active.reopened()[1])
         before, effects = active.snapshot(), active.effects()
         frames = list(active.frames)
+        io = ManagedInstaller(root=active.root, root_owner=active.io.root_owner, layout='deb',
+            run=active.io._run, lookup_user=active.io._lookup_user, lookup_group=active.io._lookup_group)
         with pytest.raises(RetirementUncertain, match='^migration pending$'):
-            ActiveRetirement.from_saved(active.io, active.fence)
+            ActiveRetirement.from_saved(io, active.fence)
         assert active.snapshot() == before and active.effects() == effects
         assert all(json.loads(frame).get('method', 'status') == 'status' for frame in active.frames[len(frames):] if frame)
         assert not (active.root / FINAL).exists()
