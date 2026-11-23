@@ -35,7 +35,7 @@ import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge, STATUS_TONE, type TaskStatus } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
-import { artifacts as artifactsApi } from '@/lib/api';
+import { ApiError, artifacts as artifactsApi } from '@/lib/api';
 import type {
   ReplyDeliveryEntry,
   ThreadAttachment,
@@ -74,12 +74,24 @@ import { formatElapsed } from '@/lib/elapsed';
 import {
   classifyThreadError,
   renderThreadError,
+  type ThreadErrorDetail,
   type ThreadErrorView,
 } from '@/lib/threadErrors';
 import { reorderOpenThreads } from '@/design-system/providers/_real-threads';
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Shared Artifacts upload refusals (422 `artifact_metadata_*`, quota
+ * `artifact_quota_exceeded`) carry an explanatory body; show it verbatim
+ * instead of the bare `HTTP <status>` fallback. Other errors return null.
+ */
+function artifactRefusalDetail(err: unknown): ThreadErrorDetail | null {
+  if (!(err instanceof ApiError) || !err.code) return null;
+  if (!err.code.startsWith('artifact_metadata_') && err.code !== 'artifact_quota_exceeded') return null;
+  return { kind: 'raw', text: `HTTP ${err.status}: ${JSON.stringify(err.detail)}` };
+}
 
 function useNowMs(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -809,6 +821,11 @@ export function ThreadsPage(): JSX.Element {
             file: pending.file,
             name: artifactName,
             agent: 'founder',
+            // Existing thread: attribute the shared upload explicitly. Default
+            // retention; no reason / expires_at.
+            threadId: capturedThreadId,
+            purpose: 'thread attachment',
+            retention: 'default',
           });
           ref = {
             artifact_name: uploaded.name,
@@ -843,7 +860,10 @@ export function ThreadsPage(): JSX.Element {
                 },
               }
             : {}),
-          detail: namingAddressError(err) ?? classifyThreadError(err),
+          detail:
+            (failedUpload ? artifactRefusalDetail(err) : null) ??
+            namingAddressError(err) ??
+            classifyThreadError(err),
         });
       }
       throw err;

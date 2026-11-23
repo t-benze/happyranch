@@ -25,7 +25,9 @@ service fixes expiry to upload +90 days and records a pending manager-routing
 receipt, even after downtime. First available attachment binds the real THR ID,
 `thread attachment` purpose, responsible manager and bind +90-day grant in the
 message transaction. Repeated links do not grant another clock. An expired
-provisional cannot silently bind/restore.
+provisional cannot silently bind/restore. When the browser attaches to an
+existing thread it instead sends explicit `thread_id`, purpose `thread attachment`
+and `retention=default`; only pre-ID compose stays provisional.
 
 CLI shared compose sends files with its existing multipart compose endpoint plus
 `shared_uploads=true`. The server allocates the real thread ID and derives full
