@@ -325,3 +325,15 @@ or a durable phase flag. Each owner rechecks its complete facts, and any failed
 effect ends the invocation. The actual native/receipt interruption entry cases
 remain separate from exhaustive R02 coverage and installed preinst acceptance.
 No model action, state bound, configuration or TLC result changes here.
+
+The expanded canonical-entry table observes original preparation beneath the
+model's abstract Fence; it maps R02.b ceremony/partial-device commits to Burn
+and Deny, R02.c failed closure to FailClose and OriginalDies, R02.d stop/disable
+to Stop/Disable and their observations, R02.e fragment removal to Remove,
+partial account removal to AccountDisposition, and R02.f/g to final
+publication/readback. Unsafe original custody supplies an incomplete-proof
+variant before explicit recovery; a live failed close is never reset by a fresh
+registry. Fresh installer objects reuse real surviving files, and each completed
+row must feed its produced receipt into R03/R04. These are concrete entry checks,
+not additional modeled authority or a TLC result. R02.h/package replacement and
+installed preinst acceptance remain separate unfinished work.

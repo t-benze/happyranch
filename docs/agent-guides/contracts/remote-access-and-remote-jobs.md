@@ -4860,6 +4860,20 @@ Focused entry venue:
 `uv run --frozen pytest scripts/test_home_retirement_entry.py -v --tb=short`.
 Its native and filesystem adapters cannot establish installed dpkg ordering.
 
+The same entry table includes interrupted original preparation, ceremony burn,
+first-device denial, failed physical closure, controller stop/disable, partial
+account removal and the boundary before final publication. Each call constructs
+a fresh installer over the surviving real files and anchored store. Read-only
+detection and explicit recovery with unsafe original-record custody must stay
+pending without unproven effects. Failed closure additionally remains pending
+on the same live original owner; only independently observed original death,
+managed quiescence and committed denial permit the separate recovery path.
+Further legitimate ceremony burns on a failed retry do not undo earlier denies.
+Every successful row must produce its final record through the real writer,
+then reuse that record for repeat-without-effects and reappearance refusal.
+This table does not establish package replacement (R02.h/P02), every publication
+syscall boundary, installed acceptance or model-checking results.
+
 `StoppedRetirement.remove_auxiliary` separately removes only the saved original
 issuer journal, issuer publication, activation transaction and minter operation
 leaves. Every unlink requires fresh stopped/native/cutoff proof and the held
