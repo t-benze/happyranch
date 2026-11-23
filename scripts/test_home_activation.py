@@ -15,6 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from runtime.remote_access.installer import ManagedInstaller
+
 from runtime.remote_access import home_activation as activation
 from runtime.remote_access.home_activation import HomeActivationError, HomeActivationReceipt, HomeActivationStore
 from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, IssuerError, read_home_invite_config
@@ -230,7 +232,7 @@ def test_publication_fsync_atomic_replace_and_stale_cas(store: HomeActivationSto
                                                        monkeypatch: pytest.MonkeyPatch) -> None:
     synced: set[tuple[int, int]] = set()
     sync = os.fsync
-    rename = activation.ManagedInstaller._rename_provision_entry
+    rename = ManagedInstaller._rename_provision_entry
     observed: list[str] = []
     def fsync(fd: int) -> None:
         info = os.fstat(fd)
@@ -248,7 +250,7 @@ def test_publication_fsync_atomic_replace_and_stale_cas(store: HomeActivationSto
         rename(parent, source, target, updating=updating)
         observed.append("replace" if updating else "create")
     monkeypatch.setattr(activation.os, "fsync", fsync)
-    monkeypatch.setattr(activation.ManagedInstaller, "_rename_provision_entry", staticmethod(publish))
+    monkeypatch.setattr(ManagedInstaller, "_rename_provision_entry", staticmethod(publish))
     prepared = receipt()
     store.publish(prepared)
     first = (tmp_path / RECEIPT).stat().st_ino
@@ -354,7 +356,7 @@ def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: 
     put_pair(tmp_path)
     assert load_config(tmp_path).home_id == "home"
     final = tmp_path / path
-    original_read = activation.ManagedInstaller._read_file
+    original_read = ManagedInstaller._read_file
     swapped = False
     def read(parent: int, name: str, **kwargs: object) -> bytes:
         nonlocal swapped
@@ -369,7 +371,7 @@ def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: 
                 directory.rename(directory.with_name("retained-parent"))
                 directory.mkdir(mode=0o700 if path == RECEIPT and swap == "parent" else 0o755)
         return data
-    monkeypatch.setattr(activation.ManagedInstaller, "_read_file", staticmethod(read))
+    monkeypatch.setattr(ManagedInstaller, "_read_file", staticmethod(read))
     call = (lambda: store.read(expected_generation=7)) if path == RECEIPT else (lambda: load_config(tmp_path))
     with pytest.raises((HomeActivationError, IssuerError)):
         call()
@@ -467,7 +469,7 @@ def test_config_read_is_frozen_effect_free_and_redacted(store: HomeActivationSto
         pytest.fail("reader attempted a write, fsync, directory creation or service command")
     for name in ("write", "fsync", "mkdir", "rename", "unlink", "fchown", "fchmod"):
         monkeypatch.setattr(activation.os, name, no_effect)
-    monkeypatch.setattr(activation.ManagedInstaller, "_rename_provision_entry", no_effect)
+    monkeypatch.setattr(ManagedInstaller, "_rename_provision_entry", no_effect)
     result = load_config(tmp_path)
     assert result.control_url == "https://control.happyranch.invalid:8443"
     assert not hasattr(result, "activation_generation") and not hasattr(result, "home_endpoint")

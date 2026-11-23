@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 import os
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
 
+from runtime.remote_access.legacy_home_readback import LegacyHomeReadback, _signature
 from runtime.remote_access.headscale_service import HeadscaleServiceError
-from runtime.remote_access.installer import InstallerError, ManagedInstaller
+from runtime.remote_access.installer import InstallerError
 # Preserve the historical type identities while retirement replaces all writers.
 from runtime.remote_access.legacy_home_receipt import (
     ACTIVATION_PATH, BINDING_KEYS, CONTROL_URL, IDENTITY_KEYS, INVITE_CONFIG_PATH,
@@ -63,94 +63,11 @@ def validate_recovery_transition(previous: HomeActivationReceipt, updated: HomeA
         raise HomeActivationError("transition")
 
 
-def _signature(info: os.stat_result) -> tuple[int, ...]:
-    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
-            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
-class HomeActivationStore:
-    """One literal receipt writer and two read destinations; no mkdir or repair.
-
-    root/root_owner are the existing ManagedInstaller temp-root venue. Live "/"
-    always requires root:root. No command, service, account or installer flow runs.
-    """
-
-    def __init__(self, *, root: Path = Path("/"), root_owner: tuple[int, int] = (0, 0)) -> None:
-        try:
-            self._io = ManagedInstaller(root=root, root_owner=root_owner)
-        except InstallerError:
-            raise HomeActivationError("state") from None
+class HomeActivationStore(LegacyHomeReadback):
+    """Retiring receipt writer over the retained historical readback contract."""
 
     def __repr__(self) -> str:
         return "HomeActivationStore(<redacted>)"
-
-    @contextmanager
-    def _parent(self, path: str) -> Iterator[tuple[int, Callable[[], None]]]:
-        if path not in (ACTIVATION_PATH, INVITE_CONFIG_PATH):
-            raise HomeActivationError("state")
-        relative = str(Path(path).parent).lstrip("/")
-        with self._io._publication_parent(relative) as (parent, revalidate):
-            if path == ACTIVATION_PATH:
-                self._io._check_directory(parent, relative, (0o700, self._io.root_owner))
-            yield parent, revalidate
-
-    def _read_at(self, parent: int, name: str) -> bytes:
-        if os.stat(name, dir_fd=parent, follow_symlinks=False).st_size > MAX_RECORD_BYTES:
-            raise HomeActivationError("state")
-        data = self._io._read_file(parent, name, owner=self._io.root_owner, mode=0o600)
-        if len(data) > MAX_RECORD_BYTES:
-            raise HomeActivationError("state")
-        return data
-
-    @contextmanager
-    def _record(self, path: str, *, allow_absent: bool = False) -> Iterator[bytes | None]:
-        """Pin both parent and leaf until a composed reader has finished."""
-        try:
-            with self._parent(path) as (parent, revalidate):
-                name = Path(path).name
-                self._io._headscale_no_pending(parent, name)
-                try:
-                    before = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
-                except FileNotFoundError:
-                    if not allow_absent:
-                        raise
-                    yield None
-                    self._io._headscale_no_pending(parent, name)
-                    try:
-                        os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        revalidate()
-                        return
-                    raise HomeActivationError("state")
-                data = self._read_at(parent, name)
-                if _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != before:
-                    raise HomeActivationError("state")
-                yield data
-                self._io._headscale_no_pending(parent, name)
-                if (self._read_at(parent, name) != data
-                        or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != before):
-                    raise HomeActivationError("state")
-                revalidate()
-        except (OSError, InstallerError, HeadscaleServiceError):
-            raise HomeActivationError("state") from None
-
-    def current(self) -> HomeActivationReceipt | None:
-        """Read a pinned current receipt; only a safely absent leaf is absence.
-
-        Pending evidence, missing/unsafe parents and changed reads still refuse.
-        No publication, recovery, directory creation or installer effect runs.
-        """
-        with self._record(ACTIVATION_PATH, allow_absent=True) as data:
-            receipt = None if data is None else HomeActivationReceipt.parse(data)
-        return receipt
-
-    def read(self, *, expected_generation: int) -> HomeActivationReceipt:
-        _generation(expected_generation)
-        with self._record(ACTIVATION_PATH) as data:
-            receipt = HomeActivationReceipt.parse(data)
-            if receipt.activation_generation != expected_generation:
-                raise HomeActivationError("binding")
-        return receipt
 
     def publish(self, receipt: HomeActivationReceipt, *,
                 expected: HomeActivationReceipt | None = None) -> None:

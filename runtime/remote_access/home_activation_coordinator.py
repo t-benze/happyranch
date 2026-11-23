@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
+from runtime.remote_access.legacy_home_receipt import ActivationRefused
 from runtime.remote_access import headscale_service, home_admin
 from runtime.remote_access.home_activation import (
     BINDING_KEYS, HomeActivationReceipt, HomeActivationStore,
@@ -21,12 +22,6 @@ from runtime.remote_access.home_activation_txn import (
 )
 from runtime.remote_access.invite_issuer import MintedKey
 from runtime.remote_access.home_observer import HomeObserver
-
-
-class ActivationRefused(ValueError):
-    def __init__(self, reason: str = "activation_refused") -> None:
-        super().__init__(reason if reason in ("activation_refused", "token_source_invalid",
-                                             "failed_uncertain", "pending_residue") else "activation_refused")
 
 
 class ActivationOwner(Protocol):

@@ -12,6 +12,7 @@ import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 
+from runtime.remote_access.legacy_home_readback import HomeTokenSourceVerifier
 from runtime.remote_access import headscale_service, home_admin, installer
 from runtime.remote_access.home_activation import (
     IDENTITY_KEYS, INVITE_CONFIG_PATH, MEMBER_PATHS, HomeActivationReceipt, HomeActivationStore,
@@ -32,31 +33,6 @@ _HEADSCALE = "happyranch-headscale.service"
 _TARGET = "happyranch-managed.target"
 _PROPERTIES = ("Id", "Names", "FragmentPath", "DropInPaths", "NeedDaemonReload",
                "LoadState", "ActiveState", "SubState", "User", "Group", "DynamicUser", "MainPID")
-
-
-class HomeTokenSourceVerifier:
-    """Compose the installer's same-FD/UID source rules; retain no token/digest."""
-
-    def __init__(self, io: installer.ManagedInstaller) -> None:
-        self._io = io
-
-    def require(self, receipt: HomeActivationReceipt) -> None:
-        try:
-            release = self._io._check_release_record()
-            if release["uid"] != receipt.release_uid:
-                raise ValueError
-            source = self._io._input(Path(release["data_home"]) / "daemon.token",
-                                     token=True, source_uid=receipt.release_uid)
-            service = self._io._account(create=False)
-            if service is None:
-                raise ValueError
-            with self._io._publication_parent() as (parent, check):
-                staged = self._io._read_file(parent, "daemon.token", owner=service, mode=0o600)
-                if staged != source:
-                    raise ValueError
-                check()
-        except Exception:
-            raise ActivationRefused("token_source_invalid") from None
 
 
 class HomeSystemdProcessOwner:

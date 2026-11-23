@@ -10,15 +10,16 @@ from dataclasses import dataclass
 
 from runtime.remote_access.home_retirement import MESSAGE
 from runtime.remote_access import invite_v2
-from runtime.remote_access.home_activation import (
+from runtime.remote_access.legacy_home_receipt import (
     ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH, MEMBER_PATHS,
-    HomeActivationReceipt, HomeActivationStore,
+    HomeActivationReceipt, HomeInviteConfigRecord,
 )
-from runtime.remote_access.home_activation_owner import HomeTokenSourceVerifier
-from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, HomeActivationTransactionStore
-from runtime.remote_access.home_live_config import _addition, render_home_live_configs
+from runtime.remote_access.legacy_home_readback import (
+    HomeTokenSourceVerifier, LegacyHomeReadback as HomeActivationStore,
+    LegacyHomeTransactions as HomeActivationTransactionStore, CONFIG_MEMBERS,
+    _addition, render_home_live_configs,
+)
 from runtime.remote_access.home_unit_gate import HomeUnitGate
-from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
 from runtime.remote_access.installer import InstallerError, ManagedInstaller, UNITS, managed_units
 from runtime.remote_access.systemd_unit import (
     SidecarUnitSpec, render_headscale_unit, render_sidecar_unit,

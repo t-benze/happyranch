@@ -397,3 +397,9 @@ The retained HomeProfileAdmission adapter permits only explicit read-only
 legacy inventory. This implements OldAdmission refusal without a new model
 action, account-positive path or destructive startup transition. Other Python
 activation/provisioning owners remain pending their separate source retirement.
+
+Legacy inventory/unit readback now uses the fixed `legacy_home_readback` reader,
+original transaction directory lock, token check and pure historical config
+rendering without importing activation/admin/minter owners. Existing writers
+temporarily inherit/re-export those unchanged implementations. This dependency
+separation adds no model action, proof predicate or account admission.

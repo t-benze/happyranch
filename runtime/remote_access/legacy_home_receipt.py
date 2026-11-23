@@ -54,6 +54,12 @@ _RECEIPT_KEYS = frozenset((
 _PHASES = ("prepared", "activating", "joined", "ready", "failed_uncertain")
 
 
+class ActivationRefused(ValueError):
+    def __init__(self, reason: str = "activation_refused") -> None:
+        super().__init__(reason if reason in ("activation_refused", "token_source_invalid",
+                                             "failed_uncertain", "pending_residue") else "activation_refused")
+
+
 class HomeActivationError(ValueError):
     """Closed, input-free diagnostics, including underlying filesystem errors."""
 

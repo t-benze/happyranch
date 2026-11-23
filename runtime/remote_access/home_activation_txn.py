@@ -1,22 +1,13 @@
 """Closed B4 journal and A5 store. No entry point or recovery authority."""
 from __future__ import annotations
 
-import os
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Callable, Iterator
-
 from runtime.remote_access.home_activation import (
     ACTIVATION_PATH, HomeActivationError, HomeActivationStore,
 )
-from runtime.remote_access.headscale_service import HeadscaleServiceError
-from runtime.remote_access.installer import InstallerError
-from runtime.remote_access.installer_lock import installer_state_lock
+from runtime.remote_access.legacy_home_readback import LegacyHomeTransactions, TRANSACTION_PATH
 from runtime.remote_access.legacy_home_receipt import (
     CONFIG_MEMBERS, EFFECTS, Effect, HomeActivationTransaction,
 )
-
-TRANSACTION_PATH = "/var/lib/happyranch-remote-access/home-activation-txn.json"
 
 
 def validate_transaction_transition(previous: HomeActivationTransaction,
@@ -40,37 +31,7 @@ def validate_transaction_transition(previous: HomeActivationTransaction,
         raise HomeActivationError("transition")
 
 
-class HomeActivationTransactionStore(HomeActivationStore):
-    @contextmanager
-    def _parent(self, path: str) -> Iterator[tuple[int, Callable[[], None]]]:
-        if path != TRANSACTION_PATH:
-            raise HomeActivationError("state")
-        with super()._parent(ACTIVATION_PATH) as parent:
-            yield parent
-
-    @contextmanager
-    def locked(self) -> Iterator[int]:
-        """One nonblocking directory lock spans both records and every effect."""
-        try:
-            with installer_state_lock(self._io) as parent:
-                yield parent
-        except (OSError, InstallerError, HeadscaleServiceError):
-            raise HomeActivationError("state") from None
-
-    def read_optional(self) -> HomeActivationTransaction | None:
-        try:
-            with self._parent(TRANSACTION_PATH) as (parent, revalidate):
-                self._io._headscale_no_pending(parent, Path(TRANSACTION_PATH).name)
-                try:
-                    os.stat(Path(TRANSACTION_PATH).name, dir_fd=parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    revalidate()
-                    return None
-            with self._record(TRANSACTION_PATH) as data:
-                return HomeActivationTransaction.parse(data)
-        except (OSError, InstallerError, HeadscaleServiceError):
-            raise HomeActivationError("state") from None
-
+class HomeActivationTransactionStore(LegacyHomeTransactions, HomeActivationStore):
     def publish(self, transaction: HomeActivationTransaction, *,
                 expected: HomeActivationTransaction | None = None) -> None:
         if type(transaction) is not HomeActivationTransaction:

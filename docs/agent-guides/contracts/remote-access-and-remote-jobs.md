@@ -3056,7 +3056,12 @@ serving, including a valid saved ready receipt. These entries refuse before nati
 effects with: “Home mode has been retired. Sign in to use your account's private
 network. Your local work is kept.” No account admission or home fallback is added.
 Read-only legacy inventory remains available for ownership-sensitive cleanup;
-non-home managed lifecycle and renewal retain their existing checks.
+non-home managed lifecycle and renewal retain their existing checks. The fixed
+readers, transaction observation/lock, token-source comparison and pure historical
+config rendering live in `legacy_home_readback.py`. Inventory and the unit gate
+import this retained boundary without importing activation/admin/minter owners;
+the remaining retiring writers temporarily inherit or re-export the same code.
+This movement changes no custody, generation, pending, token or lock predicate.
 
 Inventory's protected current receipt supplies phase/G for observation of inert
 prepared configs; installation IDs and release UID are independently bound through

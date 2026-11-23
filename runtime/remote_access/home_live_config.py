@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 from dataclasses import dataclass, replace
 
 from runtime.remote_access.home_activation import (
-    CONTROL_URL, HomeActivationReceipt, HomeActivationStore, _signature,
+    HomeActivationReceipt, HomeActivationStore, _signature,
 )
 from runtime.remote_access.home_activation_coordinator import ActivationRefused
-from runtime.remote_access.home_activation_owner import HomeTokenSourceVerifier
+from runtime.remote_access.legacy_home_readback import HomeTokenSourceVerifier, _addition, render_home_live_configs
 from runtime.remote_access.home_activation_txn import (
     CONFIG_MEMBERS, HomeActivationTransaction, HomeActivationTransactionStore,
 )
@@ -20,51 +19,10 @@ from runtime.remote_access.invite_issuer import MintedKey
 from runtime.remote_access.release_verifier import validate_record
 
 _CONNECTOR, _SIDECAR = CONFIG_MEMBERS
-_BINDING = ("home_id", "control_plane_id", "connector_id", "activation_generation")
 
 
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _addition(receipt: HomeActivationReceipt) -> bytes:
-    return b"," + json.dumps(dict(
-        ControlURL=CONTROL_URL,
-        control_tls=dict(dial_ip=receipt.dial_ip, ca_sha256=receipt.ca_der_sha256),
-        home_binding={key: getattr(receipt, key) for key in _BINDING},
-    ), separators=(",", ":"), ensure_ascii=True).encode("ascii")[1:-1]
-
-
-def render_home_live_configs(connector: bytes, sidecar: bytes,
-                             receipt: HomeActivationReceipt) -> dict[str, bytes]:
-    """Pure E2-shared renderer: preserve every prepared byte, add fixed fields only.
-
-    The caller must establish protected provenance/receipt custody. No caller
-    fields, paths or defaults select live identity, trust or control endpoints.
-    Connector's existing identity profile needs no new loader field.
-    """
-    try:
-        if (type(receipt) is not HomeActivationReceipt or type(connector) is not bytes
-                or type(sidecar) is not bytes or not 0 < len(connector) <= 65536
-                or not 0 < len(sidecar) <= 65536):
-            raise ActivationRefused()
-        sidecar.decode("utf-8")  # The existing Go JSON parser consumes UTF8.
-        io = ManagedInstaller()
-        io._validate_configs({"connector.json": connector, "sidecar.json": sidecar},
-                             staged=True, partial=True)
-        raw = io._json(connector)
-        if (raw["managed"]["profile"] != "linux-managed-identity-v1"
-                or raw["home_id"] != receipt.home_id or raw["connector_id"] != receipt.connector_id
-                or raw["managed"]["control_plane_id"] != receipt.control_plane_id
-                or io._json(sidecar)["RoleIdentity"] != "home-sidecar-" + receipt.home_id):
-            raise ActivationRefused()
-        end = sidecar.rindex(b"}")
-        live = sidecar[:end] + _addition(receipt) + sidecar[end:]
-        if len(live) > 65536:
-            raise ActivationRefused()
-        return {_CONNECTOR: connector, _SIDECAR: live}
-    except Exception:
-        raise ActivationRefused() from None
 
 
 @dataclass(frozen=True, repr=False)
