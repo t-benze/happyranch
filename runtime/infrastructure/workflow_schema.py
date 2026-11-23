@@ -1518,7 +1518,10 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
 
     An absent DB observed by startup is never creation authority. O_EXCL proves
     this invocation created the file; native J initialization independently
-    refuses any work. Historical initializers and their defaults stay unchanged.
+    refuses any work. Fresh J additionally recognizes the constructor's pristine
+    shared_artifact_org_state singleton (id=1, all default metadata); nondefault
+    state, alternate IDs and extra rows still refuse with transaction rollback.
+    Historical initializer defaults and the constructor seed stay unchanged.
     The caller owns the returned Database and its original close.
     """
     from runtime.infrastructure.database import Database

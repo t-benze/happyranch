@@ -3180,13 +3180,14 @@ completion and outstanding broader targets are separate explicit fields.
 It includes populated literal @1 template/native task/result history and natural
 shared-budget aggregate attempts. Traversal and intermediate-copy byte cases
 compose actual queued/release readers with their original allowances; every
-component has an immediate independently admitted positive sibling. Candidate
-attempts combine two400-row ordinary native-history components, each first
-admitted independently, through the actual queued owner. They retain the actual
+component has an immediate independently admitted positive sibling. Historical candidate
+attempts combined two400-row ordinary native-history components, each first
+admitted independently, through the actual queued owner. They retained the actual
 earlier stopping bound if traversal/bytes prevent8193 candidates. The native
-18-column reader spends at least19 visits per candidate, so its original16384
+18-column reader spends at least19 visits per candidate, so its current32768
 visit bound is stricter than8193 candidates in this named fixture family. The
-component input arithmetic is C413/T9601; the combination observes C771/T16385.
+historical component input arithmetic at the former16384-visit bound was
+C413/T9601; the combination observed C771/T16385.
 The native-only18-column candidate8193 overflow lower bound is155649 visits
 (8192*19+1), with no global infeasibility claim. Assigned cumulative accounting
 and traversal dominance may complete; `outstanding_broader_targets.candidate8193`

@@ -247,7 +247,7 @@ admission or receipt. Package capture precedes locks. Native reservation,
 publisher/DB ownership, full source/target closure and positive COMMIT
 remain mandatory. Complete native history/suffixes/state/live/fixed safety work
 share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
-release/source/target allowance remains 8192/16MiB/16384 without phase resets.
+release/source/target allowance remains 8192/16MiB/32768 without phase resets.
 Only registrar-owned pure refusals can defer optional registration. Registration
 no longer checks a team-move hold. Native identity, complete history, scan bounds,
 SQL failures and cleanup uncertainty retain their existing handling. Deferral requires successful cursor
@@ -3717,7 +3717,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/

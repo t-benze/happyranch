@@ -37,7 +37,7 @@ Registration runs once after the legitimate recovery/authority safety tail,
 never early serving, constructors or reads. Genuine native writer ownership,
 complete source/target validation and positive COMMIT apply. ONE local
 native census (all suffixes/state/live/fixed probes) shares 8192 rows/16MiB/2097152
-visits, separate from original source/release/target 8192/16MiB/16384; cells stay 16384.
+visits, separate from original source/release/target 8192/16MiB/32768; cells stay 16384.
 Only registrar-owned pure refusals can defer optional registration. Registration
 no longer checks a team-move hold. Native identity, complete history, scan bounds,
 SQL failures and cleanup uncertainty retain their existing handling. Optional refusal requires explicit
@@ -4051,7 +4051,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/

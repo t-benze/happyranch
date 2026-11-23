@@ -26,7 +26,7 @@ native ownership. Existing human/system releases remain write-free no-ops.
 ONE attempt-local native census allowance 8192 rows/16MiB/2097152 visits covers
 complete ordered history, every suffix and historical/live/fixed safety work;
 per-native-cell/payload cap remains 16384. ONE separate ORIGINAL release/source/
-expansion/target allowance remains 8192 rows/16MiB/16384 visits. No per-pass reset,
+expansion/target allowance remains 8192 rows/16MiB/32768 visits. No per-pass reset,
 latest-only history, trusted cache or census watermark is permitted. Original
 strict types/UTF8/duplicates/bindings/lifecycle/transitions/exclusions remain.
 Native reservation/settlement replay is separate; no SQL/RSS/time guarantee follows.
@@ -1446,7 +1446,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
@@ -2151,7 +2151,7 @@ changed snapshot keys. Independent SELECT-only readers validate native storage
 classes, all original admission/journal/capture evidence, audit envelope/order,
 contiguous native-prefix/human-suffix generations, snapshot digest chain,
 original versus retained publication authority, orphans and current pointer.
-They use one cumulative existing allowance (8192 fetched candidates, 16384
+They use one cumulative existing allowance (8192 fetched candidates, 32768
 traversal steps, 16 MiB raw/decoded/canonical work, stricter per-value/table caps),
 without nested reset, schema recursion, global cache or trusted after-image.
 Cold/schema(data=False)/recovery/drain and mapping inventory inherit this closure.

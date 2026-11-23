@@ -997,8 +997,12 @@ definition-only registration of the literal reviewed Coding v2 catalog. The
 fresh owner exclusively creates the DB file, initializes J + Coding + sequential
 and ownership-2, and validates the independent combined reference. The current
 Default team remains human-managed with zero agents and reviewer configuration
-`none`. Historical initializers/defaults stay byte-unchanged; absent DBs on
-startup remain historical. Registration inserts an absent exact definition,
+`none`. Historical initializer defaults and the constructor seed stay unchanged.
+Fresh-J's emptiness guard now additionally recognizes the constructor-created
+pristine `shared_artifact_org_state` singleton (`id=1`, all default metadata);
+nondefault state, alternate IDs, extra rows and other native work still refuse
+and roll back. Absent DBs on startup remain historical.
+Registration inserts an absent exact definition,
 does zero writes for an exact existing row and refuses mismatch. It creates no
 settings, admission, roles, runs or tasks; missing defaults remain Disabled and
 roles unset. Existing saved settings/admission/history stay exact. Native and

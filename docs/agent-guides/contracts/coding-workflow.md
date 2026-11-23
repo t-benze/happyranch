@@ -176,7 +176,7 @@ complete source/target validation and two separate attempt-local allowances.
 The complete ordered native census, every suffix, historical/live-state visits
 and fixed safety probes share 8192 acquired rows/16MiB/2097152 visits; native
 payload/cell caps remain 16384 bytes. Release/source/expansion/target retain ONE
-original 8192-row/16MiB/16384-visit budget. Neither allowance resets per phase.
+original 8192-row/16MiB/32768-visit budget. Neither allowance resets per phase.
 Strict storage/UTF8/duplicate/org/task/agent/first-active/immutable/transition
 checks and live/durable exclusions remain. Native reservation/settlement replay
 is separate work; these caps guarantee no SQL-engine, RSS or wall-time bound.
@@ -1406,7 +1406,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
