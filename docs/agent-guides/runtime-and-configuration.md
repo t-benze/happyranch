@@ -2135,11 +2135,21 @@ Keyset batches contain250 current generations; one60-second monotonic budget
 covers inventory, reference projection, notices, identity hashing and deletion.
 A capped/unavailable proof holds affected work; unseen rows wait for another
 window. Only previously issued delete intents are restart-reconciled.
+Preview collects all inventory outcomes once before its own notice/audit writes
+and retains that same writer transaction and Database RLock through all250-row
+batches. It does not COMMIT or release the fence between projection and preview work.
+Enforce/off retain per-batch proofs; enforce unlink still requires another fresh
+negative under the final writer fence after the delete intent COMMIT. The60s
+pass budget and reference caps are unchanged.
 
 Preview preserves existing artifact state/expiry/bytes and consumes no recovery
 interval. Inventory registration, notices, quota latch and audits still persist;
 legacy files receive null expiry. Off suspends cleanup while notice/quota paths
-continue. A first complete preview stores its completion time. Enforce remains
+continue. A first complete preview stores its completion time. An exact
+`['Q3:reader_exclusion_unavailable']` hold from a completed projection is protected,
+counted, audited/rechecked and reported as `q3_deferred`; it does not make the
+sweep incomplete. Every other indeterminate reason list still prevents complete
+preview and clock start. Enforce remains
 effective preview until seven elapsed preview days, recorded preview acceptance,
 inventory review and verified Q3 source protection all exist. This code supplies
 no automatic approval or activation setter; the scheduler never sets those three gates.

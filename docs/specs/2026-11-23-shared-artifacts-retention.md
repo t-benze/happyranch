@@ -44,6 +44,10 @@ values below remain explicit proposals. No new Founder decision is requested.
    version **or any materialization/recovery reader** references it. This is a
    verified live dependency: counted toward quota, audited as a deferral and
    rechecked every sweep, not a permanent retention class or prefix exemption.
+   A completed projection's exact `Q3:reader_exclusion_unavailable` deferral
+   is accounted protection, not incomplete sweep scope. It does not prevent a
+   complete preview from starting `rollout_started_at`; source protection and
+   destructive activation gates remain unchanged.
    Slice B implements/verifies that reference check. **STOP destructive
    activation until it is implemented and verified.** This disposition lifts
    the prior STOP for design and implementation dispatch only. Follow-up:
@@ -388,7 +392,14 @@ reference defers expiry and deletion, keeps the source retrievable, counts its
 bytes and audits/rechecks the deferral every sweep. Do not infer liveness from
 a filename prefix, assume retirement removes every reader, or treat missing/
 incomplete reader evidence as a negative. The same fresh-negative fence applies
-before unlink. Until that exact source check is implemented and verified,
+before unlink. When a completed projection returns exactly
+`['Q3:reader_exclusion_unavailable']`, retain protection and quota accounting,
+audit/recheck it, and count it separately as `q3_deferred` in
+`artifact_sweep_finished`. This decided reader-exclusion hold does not mark the
+sweep incomplete. Any other indeterminate reason or reason list, including a
+Q3 reason combined with another failure, still marks reference scope incomplete
+and prevents the preview clock from starting. Until that exact source check is
+implemented and verified,
 destructive activation stays STOPped. Unreferenced sources are eligible only
 through normal reviewed classification/retention; this adds no permanent source
 class. Dedicated-store relocation remains the separate engineering-owned
@@ -517,6 +528,19 @@ implementation evidence must include the roughly 7,500-file existing shape;
 if a complete reference check cannot finish, optimize/index the actual
 recognized reference projection under writer transactions rather than treating
 cap exhaustion as no dependency.
+
+Preview collects all current-inventory outcomes once, before its own notice
+and protection audit writes, under one retained `BEGIN IMMEDIATE`/Database
+RLock. It keeps that same fence through the 250-row keyset batches, without
+COMMIT, await or lock release between projection and batch processing. The
+bounded inventory and reference caps/deadline are unchanged. This avoids
+reparsing the full live task/thread/skill projection for each batch: measured
+7,523-file live data required about 2.85–3.29 seconds per proof, mostly text
+parsing, so 31 separate proofs alone exceeded the 60-second pass budget.
+Preview outcomes describe the inventory before the sweep's own notices; they
+authorize no expiry or unlink. Enforce and off retain per-batch proofs, and
+enforce deletion always obtains another fresh negative inside `finish_delete`'s
+final writer fence after the intent COMMIT. No proof crosses that COMMIT.
 
 Org configuration proposal:
 
@@ -655,6 +679,8 @@ enforcement. No unaudited backfill from artifact_put audit attribution, no
 automatic 90-day assignment and no bulk age-based retirement. Canonical skill
 sources follow decided Q3: verified version/reader dependencies defer expiry
 and deletion, count toward quota, and are audited/rechecked each sweep. Their
+exact reader-exclusion deferrals from a completed projection count as protected
+`q3_deferred` rows without making the preview incomplete. Their
 reference check must be implemented and verified before destructive activation;
 this is not approval for indefinite exempt storage.
 
