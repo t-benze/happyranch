@@ -79,8 +79,9 @@ class SharedArtifactNotices:
         return dict(file_name=row['name'], expiry_date=row.get('expires_at'),
                     owner_kind=row.get('owner_kind'),owner=row.get('owner'),purpose=row.get('purpose'),
                     recovery_deadline=row.get('recoverable_until'),
-                    renew_command='happyranch artifacts renew '+base,
-                    restore_command='happyranch artifacts restore '+base)
+                    renew_command=None if row.get('state') == 'legacy_unclassified' else 'happyranch artifacts renew '+base,
+                    restore_command=None if row.get('state') == 'legacy_unclassified' else 'happyranch artifacts restore '+base,
+                    action_required='reviewed_inventory_classification' if row.get('state') == 'legacy_unclassified' else None)
 
     def deliver_file(self, conn: sqlite3.Connection, row: dict, *, now: datetime,
                      mode: str, deadline: float) -> int:

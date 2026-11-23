@@ -639,6 +639,7 @@ async def sweep_shape_case(root: Path) -> None:
         messages=org.db._conn.execute("SELECT system_payload_json FROM thread_messages WHERE kind='system'").fetchall()
         payloads=[json.loads(m[0]) for m in messages]
         assert sum(len(p['files']) for p in payloads)==7500
+        assert all(f['action_required']=='reviewed_inventory_classification' and f['renew_command'] is None and f['restore_command'] is None for p in payloads for f in p['files'])
         assert all(len(m[0].encode())<=32*1024 for m in messages)
         assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='artifact_quota_alert'").fetchone()[0]==1
         assert elapsed<60

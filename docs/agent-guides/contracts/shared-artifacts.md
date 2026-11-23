@@ -190,7 +190,9 @@ engineering_manager; an unavailable route remains pending without false delivery
 Timeout notices use upload +24h and upload +90d expiry even during preview,
 without changing lifecycle metadata. A queued timeout receipt survives later binding;
 its historical upload-based expiry and the current expiry are both visible. Quota crossings include every file entry
-in bounded full-JSON chunks, with all managers participating in one storage
+in bounded full-JSON chunks; legacy entries direct managers to reviewed inventory
+classification, with renewal/restore commands unavailable until classified. All
+managers participate in one storage
 thread; chunk messages/receipt/audit and latch commit together. Required fields
 are in tagless system_payload, which the existing inbox and CLI show in full.
 `uv run --frozen python scripts/test_shared_artifacts_b.py --case notices`
