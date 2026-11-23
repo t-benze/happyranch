@@ -3968,13 +3968,13 @@ I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
 I3b's retained focused selection is
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py scripts/test_invite_recovery.py scripts/test_invite_control.py scripts/test_home_audit.py -q --tb=short`.
-Run the full selection through a durable job. Its mounted cases use real
-temporary issuer/trust/audit files, the existing B11 backend, InviteControl and
-HeadscaleRecoveryMinter, with only native transport/admin seams simulated. They
-cover both invite actions, absent state, capture/admission and live-caller
-drift, busy/contended locks, exact cleanup-proof result axes, IPC loss and late
-replies, public helper admission, existing StatusV2 fields/staleness and the
-fixed child ready/commit callback. This is separate from installed polkit/live
+Run the full selection through a durable job. Current helper cases use neutral
+native/capture inputs for the unchanged sender/auth/budget guards and retained
+StatusV2 projection, and execute minimal root-child retirement refusal adapters.
+They no longer compose local issuance/admin/minter owners. Shared ready/commit
+pipe bounds and real non-home renewal remain exercised. The separate invite-core
+scripts retain their existing real trust/control coverage pending source-owner
+disposition; they do not establish a public home issuance path. This is separate from installed polkit/live
 acceptance and does not restore the retired Python or skipped integration suites.
 Test-side Gio/child transport seams run the shipping public mount, native-auth
 callback, B9 capture/slot/deadlines and real B16 file writer when no compatible

@@ -51,7 +51,7 @@ def test_retired_activation_adapter_keeps_closed_input(tmp_path, method, step, c
             'stale' if case == 'stale' else expected, revoke_succeeded=case == 'effect-flag')
 
 
-@pytest.mark.parametrize('method,step', [('Enable', 'enable'), ('ReplaceFailed', 'replace')])
+@pytest.mark.parametrize('method,step', [('Enable', 'enable'), ('ReplaceFailed', 'replace'), ('IssueInvite', 'issue'), ('CancelInvite', 'recover'), ('RecoverInvite', 'recover')])
 def test_retired_activation_root_child_never_selects_account_tools(tmp_path, monkeypatch, capsys, method, step):
     native = Mock(side_effect=AssertionError('account or native command selected'))
     owner = ManagedInstaller(root=tmp_path, root_owner=(os.getuid(), os.getgid()), run=native)
@@ -70,5 +70,41 @@ def test_retired_activation_root_child_never_selects_account_tools(tmp_path, mon
             native.assert_not_called()
         output = capsys.readouterr()
         assert not output.err
-        assert json.loads(output.out) == ({'snapshot': child.capture(method, 1000)} if action == 'capture'
-                                         else {'outcome': 'refused', 'message': MESSAGE})
+        refusal = ({'result': 'refused', 'message': MESSAGE} if method == 'IssueInvite' else
+            dict(outcome='refused', invite='unknown', cleanup='unknown', message=MESSAGE)
+            if method in ('CancelInvite', 'RecoverInvite') else {'outcome': 'refused', 'message': MESSAGE})
+        assert json.loads(output.out) == ({'snapshot': child.capture(method, 1000)} if action == 'capture' else refusal)
+
+
+@pytest.mark.parametrize('method', ['IssueInvite', 'CancelInvite', 'RecoverInvite'])
+@pytest.mark.parametrize('state', ['clean', 'prepared', 'ready', 'pending', 'retired'])
+def test_retired_invite_adapter_preserves_historical_state(tmp_path, method, state):
+    from runtime.remote_access.helper_invite_backend import HelperInviteBackend
+    native = Mock(side_effect=AssertionError('unexpected native effect'))
+    owner = ManagedInstaller(root=tmp_path, root_owner=(os.getuid(), os.getgid()), run=native)
+    historical = tmp_path / 'old-invite'
+    historical.write_text(state)
+    child = HelperInviteBackend(owner)
+    expected = child.capture(1000)
+    assert json.loads(expected) == dict(uid=1000, retirement='home-mode-retired')
+    commit = Mock(side_effect=AssertionError('retired invite requested effect authority'))
+    result = child.dispatch(method, 1000, 'issue' if method == 'IssueInvite' else 'recover', expected,
+        deadline=time.monotonic() + 30, before_commit=commit)
+    assert result == ({'result': 'refused', 'message': MESSAGE} if method == 'IssueInvite' else
+                      dict(outcome='refused', invite='unknown', cleanup='unknown', message=MESSAGE))
+    assert historical.read_text() == state and not commit.called and not native.called
+
+
+@pytest.mark.parametrize('method', ['IssueInvite', 'CancelInvite', 'RecoverInvite'])
+@pytest.mark.parametrize('case', ['uid', 'stale', 'step', 'late', 'nonfinite'])
+def test_retired_invite_adapter_keeps_closed_input(tmp_path, method, case):
+    from runtime.remote_access.helper_invite_backend import HelperInviteBackend
+    child = HelperInviteBackend(ManagedInstaller(root=tmp_path,
+        root_owner=(os.getuid(), os.getgid()), run=Mock(side_effect=AssertionError('unexpected native effect'))))
+    expected = child.capture(1000)
+    with pytest.raises(ValueError, match='refused'):
+        child.dispatch(method, 1001 if case == 'uid' else 1000,
+            'stop' if case == 'step' else 'issue' if method == 'IssueInvite' else 'recover',
+            'stale' if case == 'stale' else expected,
+            deadline=float('nan') if case == 'nonfinite' else time.monotonic() + (-1 if case == 'late' else 30),
+            before_commit=Mock(side_effect=AssertionError('unexpected effect authority')))

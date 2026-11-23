@@ -4329,7 +4329,8 @@ Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
 
 ### Home retirement observations (THR-378 P24)
 
-The public helper retains Enable/ReplaceFailed method spellings and their
+The public helper retains Enable/ReplaceFailed/IssueInvite/CancelInvite/RecoverInvite
+method spellings and their
 original sender/owner capture, native authorization, original budget and fresh
 revalidation. A granted call then returns the fixed `home_mode_retired` D-Bus
 error with the exact retirement message below, before an accepted reply, worker,
@@ -4338,7 +4339,12 @@ for those methods and returns a closed refusal; historical state cannot resume
 activation. `HomeActivationBackend`, its preparation composition and replacement
 execution are removed. Disable retains its original protected readers, same
 installer directory flock, revoke binding, owned stops and selective cleanup.
-The invite and lower programmatic writer owners still await separate source
+The invite helper backend is also a minimal inert capture/refusal adapter. It
+imports no local admin/minter/issuer owner, calls no commit callback or connector,
+and preserves the existing closed refusal vocabulary plus the retirement message.
+The old issuance/recovery workers and their secret-bearing success parser are
+removed; bounded shared pipe transport and status projection remain for retained
+consumers. Lower programmatic writer owners still await separate source
 retirement; this boundary grants no account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and

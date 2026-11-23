@@ -433,3 +433,11 @@ activation backend/composition is removed. This strengthens OldAdmission refusal
 without adding a model transition. Disable still uses the same protected
 installer directory flock. Invite/lower writer removal remains separate; TLC
 and installed native acceptance are NOT RUN.
+
+The same helper refusal boundary now includes IssueInvite, CancelInvite and
+RecoverInvite after unchanged sender/native-auth/revalidation. Their root helper
+backend contains only inert capture/closed refusal, with no local admin/minter
+composition or commit callback. Public issuance/recovery workers are removed;
+shared bounded pipe transport, status projection, Disable and non-home renewal
+remain. This further strengthens OldAdmission refusal without a new model action
+or claim of installed/TLC execution.

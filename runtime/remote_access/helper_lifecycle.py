@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Callable, ContextManager, Protocol, TypeVar
 
 AUTH_DEADLINE = 120.0
-RETIRED_ACTIVATION_METHODS = frozenset({'Enable', 'ReplaceFailed'})
+RETIRED_HOME_METHODS = frozenset({'Enable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite'})
 RETIREMENT_MESSAGE = "Home mode has been retired. Sign in to use your account's private network. Your local work is kept."
 if __package__:
     from .status_v2 import SetupPhase
