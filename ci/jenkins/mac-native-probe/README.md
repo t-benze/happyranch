@@ -1135,3 +1135,20 @@ Portable focused checks in the existing standalone venue:
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_managed scripts.mac_native.test_connector_installer -v
 ```
+
+## MAC-1 product app-scheme suite
+
+The existing `SUITE` string accepts dispatcher-registered **`app-scheme`** at
+the reviewed source head; no Jenkins definition change is needed. It compiles
+the real SwiftPM product/focused parser, route and document-load tests once, builds the one
+main SPA, and launches the product's explicit synthetic qualification entry.
+It preserves fsynced individual page receipts and cancellation evidence even
+on timeout. The report's `app_scheme.qualification` must be assessed, including
+all per-event latency measurements; Jenkins process completion alone is not
+native acceptance. See [thresholds and limits](../../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+
+For this PR, each Jenkins run and GitHub Actions unsigned build consumes the
+same fourteen-run allowance (Founder THR-387 seq136; current ledger in the PR body).
+Prior exact-head code_reviewer APPROVE, an intent before
+one POST, queue-to-executable build selection and the PR ledger remain required.
+The maker performs no Mac build. No S0 allowance is renewed.

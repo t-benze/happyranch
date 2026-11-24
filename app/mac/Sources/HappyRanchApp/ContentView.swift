@@ -1,74 +1,197 @@
 import SwiftUI
 import WebKit
+import HappyRanchSupervisor
+import os
 
-/// NSViewRepresentable wrapping WKWebView.
+/// Main uses the one packaged app origin. `url` identifies the selected native
+/// owner for existing release-load callbacks; it is never loaded by WebKit.
 struct WebView: NSViewRepresentable {
     let url: URL
-    var verifiedHome = false
+    let transport: any AppAPITransport
+    let remote: Bool
+    var accessUnsaved = false
+    var readiness: AppAPIHealth?
     var onLoaded: (@MainActor (URL) -> Void)?
-    var onFailed: (@MainActor (URL) -> Void)?
+    var onFailed: (@MainActor (URL, AppSchemeLoadFailure) -> Void)?
+    private static let logger = Logger(subsystem: "com.happyranch.app", category: "AppSchemeLoad")
+
+    private static func logFailure(_ failure: AppSchemeLoadFailure, callbacks: [String] = []) {
+        logger.error("App load failed: \(failure.stage.rawValue, privacy: .public); \(failure.description, privacy: .private); callbacks=\(callbacks.joined(separator: "; "), privacy: .private)")
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         var owner: WebView
-        private var authorizedRoot = false
+        var scheme: AppScheme?
+        private var navigation: WKNavigation?
+        private var requestedDocumentURL: URL?
+        private var loadID = UUID()
+        private var downloads: [WKDownload] = []
+        private(set) var callbackURLs: [String] = []
         init(_ owner: WebView) { self.owner = owner }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+        private func recordCallback(_ event: String, url: URL?) {
+            // Keep app path/trailing-slash evidence, never credentials/query or
+            // a data/blob/foreign URL that could contain a body or a secret.
+            var parts = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+            parts?.user = nil; parts?.password = nil; parts?.query = nil; parts?.fragment = nil
+            let appURL = parts?.scheme == "happyranch-app" && parts?.host == "app"
+            let value = DiagnosticsRedactor.redact(appURL ? (parts?.string ?? "nil") : (url == nil ? "nil" : "non-app-url"))
+            recordDiagnostic(event, value)
+        }
+        private func recordDiagnostic(_ event: String, _ value: String) {
+            if callbackURLs.count == 16 { callbackURLs.removeFirst() }
+            callbackURLs.append("\(event)=\(String(DiagnosticsRedactor.redact(value).prefix(1024)))")
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
-            guard owner.verifiedHome else { decisionHandler(.allow); return }
-            guard let target = navigationAction.request.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host,
-                  target.port == owner.url.port else { decisionHandler(.cancel); owner.onFailed?(owner.url); return }
-            decisionHandler(.allow)
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
-                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
-            guard owner.verifiedHome, navigationResponse.isForMainFrame else { decisionHandler(.allow); return }
-            guard let response = navigationResponse.response as? HTTPURLResponse,
-                  (200...299).contains(response.statusCode), let target = response.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port,
-                  authorizedRoot || target == owner.url else {
-                decisionHandler(.cancel); owner.onFailed?(owner.url); return
+            recordCallback("action", url: action.request.url)
+            func decide(_ policy: WKNavigationActionPolicy, _ reason: String) {
+                let name = policy == .allow ? "allow" : policy == .download ? "download" : "cancel"
+                recordDiagnostic("action-policy", "\(name); guard=\(reason)")
+                decisionHandler(policy)
             }
-            authorizedRoot = true
-            decisionHandler(.allow)
+            guard let target = action.request.url else { decide(.cancel, "missing-url"); return }
+            if target.scheme == "blob", action.shouldPerformDownload {
+                decide(.download, "blob-download"); return
+            }
+            let route = try? AppSchemeRoute(target)
+            let refusal: String?
+            if action.targetFrame?.isMainFrame != true { refusal = "not-main-frame" }
+            else if route == nil { refusal = "invalid-app-route" }
+            else if route?.path.hasPrefix("/api/") == true { refusal = "api-navigation" }
+            else { refusal = nil }
+            if let refusal {
+                decide(.cancel, refusal)
+                if ["https", "http"].contains(target.scheme ?? ""), action.navigationType == .linkActivated {
+                    NSWorkspace.shared.open(target)
+                }
+                return
+            }
+            guard scheme?.allowsNavigation == true else { decide(.cancel, "owner-protection"); return }
+            requestedDocumentURL = target
+            decide(.allow, "passed")
         }
-
+        func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+            recordCallback("response", url: response.response.url)
+            let received = response.response
+            let emitted = scheme?.documentResponse
+            let http = received as? HTTPURLResponse
+            recordCallback("response-source", url: emitted?.url)
+            // MIME metadata is untrusted text; keep no embedded URL or secret.
+            let mime = DiagnosticsRedactor.redact(received.mimeType ?? "nil").replacingOccurrences(
+                of: #"[A-Za-z][A-Za-z0-9+.-]*://[^\s"<>]+"#, with: "[URL]", options: .regularExpression)
+            recordDiagnostic("response-metadata", "class=\(String(reflecting: type(of: received))); mimeType=\(String(mime.prefix(128))); status=\(http.map { String($0.statusCode) } ?? "unavailable"); sourceStatus=\(emitted.map { String($0.statusCode) } ?? "unavailable"); mainFrame=\(response.isForMainFrame); canShowMIMEType=\(response.canShowMIMEType)")
+            func decide(_ policy: WKNavigationResponsePolicy, _ reason: String) {
+                recordDiagnostic("response-policy", "\(policy == .allow ? "allow" : "cancel"); guard=\(reason)")
+                decisionHandler(policy)
+            }
+            guard response.isForMainFrame else { decide(.cancel, "not-main-frame"); return }
+            guard let url = received.url else { decide(.cancel, "missing-url"); return }
+            guard (try? AppSchemeRoute(url)) != nil else { decide(.cancel, "invalid-app-route"); return }
+            // WebKit reconstructs non-HTTP schemes as URLResponse, dropping
+            // the HTTP subclass/status. Validate the exact native response
+            // emitted for this document instead of depending on that cast.
+            guard let emitted else { decide(.cancel, "missing-document-response"); return }
+            guard emitted.url == url else { decide(.cancel, "document-response-url-mismatch"); return }
+            guard (200...299).contains(emitted.statusCode) else { decide(.cancel, "source-status-not-2xx"); return }
+            if let http, !(200...299).contains(http.statusCode) { decide(.cancel, "response-status-not-2xx"); return }
+            guard received.mimeType == emitted.mimeType else { decide(.cancel, "mime-type-mismatch"); return }
+            guard response.canShowMIMEType else { decide(.cancel, "mime-type-not-displayable"); return }
+            decide(.allow, "passed")
+        }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            recordCallback("provisional", url: webView.url)
+            self.navigation = navigation; loadID = UUID()
+            scheme?.documentDidStart(url: requestedDocumentURL)
+            requestedDocumentURL = nil
+        }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            recordCallback("commit", url: webView.url)
+        }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard owner.verifiedHome, authorizedRoot, let target = webView.url,
-                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port else { return }
-            owner.onLoaded?(owner.url)
+            recordCallback("finish", url: webView.url)
+            guard let navigation, self.navigation === navigation, let scheme,
+                  let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
+            let expected = loadID, selected = owner.url
+            let onLoaded = owner.onLoaded, onFailed = owner.onFailed
+            Task {
+                do {
+                    try await scheme.admitDocument()
+                    guard loadID == expected, self.navigation === navigation, self.scheme === scheme,
+                          webView.url == url, owner.url == selected else { return }
+                    WebView.logger.debug("App load admitted: \(scheme.documentAdmission.description, privacy: .public)")
+                    onLoaded?(selected)
+                } catch {
+                    guard loadID == expected, self.scheme === scheme, owner.url == selected else { return }
+                    let failure = (error as? AppSchemeLoadFailure) ?? AppSchemeLoadFailure(stage: .readiness, error: error)
+                    WebView.logFailure(failure, callbacks: callbackURLs)
+                    onFailed?(selected, failure)
+                }
+            }
         }
-
+        private func failed(_ navigation: WKNavigation?, failure: AppSchemeLoadFailure) {
+            guard let navigation, self.navigation === navigation else { return }
+            loadID = UUID(); self.navigation = nil; scheme?.documentDidStart()
+            WebView.logFailure(failure, callbacks: callbackURLs)
+            owner.onFailed?(owner.url, failure)
+        }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            authorizedRoot = false; owner.onFailed?(owner.url)
+            recordCallback("navigation-commit-failed", url: webView.url)
+            recordCallback("failing-url", url: (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            failed(navigation, failure: AppSchemeLoadFailure(stage: .navigationCommit, error: error))
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            authorizedRoot = false; owner.onFailed?(owner.url)
+            recordCallback("navigation-provisional-failed", url: webView.url)
+            recordCallback("failing-url", url: (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            failed(navigation, failure: AppSchemeLoadFailure(stage: .navigationProvisional, error: error))
+        }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            recordCallback("content-process-terminated", url: webView.url)
+            loadID = UUID(); navigation = nil; scheme?.close()
+            let failure = AppSchemeLoadFailure(stage: .contentProcessTermination)
+            WebView.logFailure(failure, callbacks: callbackURLs)
+            owner.onFailed?(owner.url, failure)
+        }
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { downloads.append(download); download.delegate = self }
+        func downloadDidFinish(_ download: WKDownload) { downloads.removeAll { $0 === download } }
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) { downloads.removeAll { $0 === download } }
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
+                      completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = (suggestedFilename as NSString).lastPathComponent
+            panel.begin { result in completionHandler(result == .OK ? panel.url : nil) }
         }
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = prefs
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.load(URLRequest(url: url))
-        return webView
+        do {
+            guard let root = Bundle.main.resourceURL?.appendingPathComponent("web/dist", isDirectory: true) else { throw AppAPIError.unavailable }
+            let scheme = try AppScheme(root: root, transport: transport, remote: remote,
+                promptURL: remote ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
+            scheme.configure(config); context.coordinator.scheme = scheme
+            let view = WKWebView(frame: .zero, configuration: config)
+            view.navigationDelegate = context.coordinator
+            scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
+            return view
+        } catch {
+            let view = WKWebView(frame: .zero, configuration: config)
+            let failure = AppSchemeLoadFailure(stage: .initialization, error: error)
+            Self.logFailure(failure)
+            Task { onFailed?(url, failure) }
+            return view
+        }
     }
-
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.owner = self
-        if nsView.url != url {
-            nsView.load(URLRequest(url: url))
-        }
+        if let readiness { context.coordinator.scheme?.updateReadiness(readiness) }
+    }
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.scheme?.close(); coordinator.scheme = nil
     }
 }
 
@@ -79,13 +202,16 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
+            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString),
+               let transport = appDelegate.appAPITransport {
                 ZStack(alignment: .top) {
                     let lifetime = appDelegate.homeInvite.lifetime
-                    WebView(url: url, verifiedHome: appDelegate.clientLane == .managed && appDelegate.connectionRole == .client,
+                    WebView(url: url, transport: transport, remote: appDelegate.connectionRole == .client,
+                        accessUnsaved: appDelegate.homeInvite.bridgeHasUnsavedAccess,
+                        readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
                         onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
-                        onFailed: { appDelegate.homeInvite.webFailed(url: $0, lifetime: lifetime) })
-                        .id(lifetime)
+                        onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
+                        .id(urlString + lifetime.attempt.uuidString + lifetime.document.uuidString + appDelegate.appTargetGeneration.uuidString)
                     if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
                         HomeSessionStatus(model: appDelegate.homeInvite)
                             .environmentObject(appDelegate)

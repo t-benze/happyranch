@@ -32,7 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Internal to allow tests to inject a handle for termination-path coverage.
     var currentHandle: (any ProcessHandle)?
 
+    /// Selected native endpoint/owner identity, never the WebKit page URL.
     @Published var webViewURL: String?
+    var appAPITransport: (any AppAPITransport)? {
+        if connectionRole == .client {
+            return homeInvite.appTransport ?? clientBridge
+        }
+        guard let value = webViewURL, let url = URL(string: value), url.host == "127.0.0.1",
+              let port = url.port, let checked = UInt16(exactly: port) else { return nil }
+        return LocalAppAPITransport(port: checked, credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
+    }
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
     @Published var showRemoteAccess = false
@@ -80,8 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The home connector (only active in HOME role).
     var homeConnector: HomeConnector?
 
-    /// The client loopback bridge (only active in CLIENT role).
-    var clientBridge: ClientBridge?
+    /// GUI transport identity; replacing a selected client retires its document.
+    @Published private(set) var appTargetGeneration = UUID()
+    var clientBridge: ClientBridge? {
+        didSet { if oldValue !== clientBridge { appTargetGeneration = UUID() } }
+    }
     let managedJoin = ManagedJoinModel()
     let homeInvite = HomeInviteModel()
     @Published var clientLane: ClientBridge.Lane = .managed {
@@ -1184,43 +1196,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         let homeHost = clientHomeHost
         if managed { clientPairingCode = "" }
 
-        do {
-            try bridge.start()
-        } catch {
-            isConnecting = false
-            clientConnectError = managed ? "Failed to start local bridge" : "Failed to start bridge: \(error.localizedDescription)"
-            if managed { managedJoin.disconnect() }
-            connectionStateManager.onHeartbeatFailed()
-            connectionState = connectionStateManager.state
-            return
-        }
-
         self.clientBridge = bridge
 
-        // Wait for bridge to be ready, then redeem
+        // GUI traffic uses the selected native owner; no page listener starts.
         Task {
-            // Brief wait for listener to come up
-            var waitCount = 0
-            while case .stopped = bridge.state, waitCount < 50 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                waitCount += 1
-            }
-
             guard self.clientBridge === bridge else { return }
-            guard case .running = bridge.state,
-                  let bridgePort = bridge.bridgePort else {
-                await MainActor.run {
-                    isConnecting = false
-                    clientConnectError = "Bridge failed to start"
-                    bridge.stop()
-                    self.clientBridge = nil
-                    if managed { managedJoin.disconnect() }
-                    connectionStateManager.onHeartbeatFailed()
-                    connectionState = connectionStateManager.state
-                }
-                return
-            }
-
             do {
                 try await bridge.redeemPairing(
                     code: pairingCode,
@@ -1233,15 +1213,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                 // carries the device credential. Pairing alone is never online.
                 guard self.clientBridge === bridge else { return }
                 if managed { managedJoin.paired() }
-                let health = await bridge.runtimeHealth()
+                let health = await bridge.appRuntimeHealth()
                 let healthy = health == .healthy
                 await MainActor.run {
                     guard self.clientBridge === bridge else { return }
                     isConnecting = false
-                    webViewURL = (!managed || healthy) ? "http://127.0.0.1:\(bridgePort)/" : nil
+                    webViewURL = (!managed || healthy) ? "happyranch-app://app/" : nil
                     if managed {
                         applyManagedHealth(health)
-                        monitorManagedHealth(bridge, port: bridgePort)
+                        monitorManagedHealth(bridge)
                     } else {
                         if healthy { connectionStateManager.onHeartbeatSucceeded() }
                         connectionState = connectionStateManager.state
@@ -1331,16 +1311,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         if health != .healthy { webViewURL = nil }
     }
 
-    private func monitorManagedHealth(_ bridge: ClientBridge, port: UInt16) {
+    private func monitorManagedHealth(_ bridge: ClientBridge) {
         remoteHealthTask?.cancel()
         remoteHealthTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
                 guard let self, self.clientBridge === bridge else { return }
-                let health = await bridge.runtimeHealth()
+                let health = await bridge.appRuntimeHealth()
                 guard !Task.isCancelled, self.clientBridge === bridge else { return }
                 self.applyManagedHealth(health)
-                if health == .healthy { self.webViewURL = "http://127.0.0.1:\(port)/" }
+                if health == .healthy { self.webViewURL = "happyranch-app://app/" }
             }
         }
     }

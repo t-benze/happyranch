@@ -739,8 +739,7 @@ main baseline. The historical S6-L/S6-W3-L and temporary Connection-routing sour
 merged main `7535eaad416d1b0311f99796b49822bfe6220527` (#1776/#1782/#1781).
 This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
-`packaging/linux/desktop/app_scheme_webkit.py`. For **every row**, Mac is
-**pending (no Mac work this wave)**. Web status is summarized after the table
+`packaging/linux/desktop/app_scheme_webkit.py`. For the dialog, lifecycle, locale, local-control and Connection-command rows, Mac remains **pending**. MAC-1 transport status is recorded below; it does not qualify those later rows. Web status is summarized after the table
 (S5-W1); Main Connection and locale updates are reconciled to main `59e29630` (#1811/#1812/#1813). S7-L2/DOC-5, S8-2b and S7-L3 status rows are reconciled to main `26585a430e8d0885b2984c45590284ed647555c4` (#1815/#1816/#1817/#1819); current linked citations resolve at that base, with AppScheme/window symbols replacing moved line numbers. Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
@@ -1648,3 +1647,92 @@ layout and remains outside required CI wiring. It checks shape/drift only;
 S8-2b PR #1817 (merge 01b37dc4, reviewed/QA head 041cc479f) records native
 pre-forward 403 and web read-only behavior evidence; real remote, installed
 package and Mac **NOT RUN**.
+
+### MAC-1 transport implementation and qualification status
+
+MAC-1 moves Mac Main to the same `happyranch-app://app` origin and single main
+bundle as Linux. `AppScheme` uses the existing manifest/no-follow reader, SPA
+fallback, CSP, resource and navigation allowlists. API forwarding captures one
+native-selected transport and opaque generation for the view lifetime; view
+replacement cancels old transfers. Local credentials remain native, remote
+credentials remain in existing Keychain/session custody, and page bootstrap is
+only a placeholder. Alongside native transport status/read and explicit request
+cancel, this slice accepts the existing v2 `app.ownersChanged` summary. Native
+uses the bounded duplicate-free parser, stores protected owner evidence before
+the `"{}"` receipt, refuses voluntary document navigation while owner evidence or
+native non-GET transfers block it, and retains unresolved-save uncertainty on
+document loss. Owner relay envelopes capture the injected Main document context,
+bound by native after load and revoked at document retirement. Retired-context
+pushes are rejected before changing current evidence; late clean or pending
+messages cannot clear retirement uncertainty. The public call/on API and summary
+schema remain unchanged. Unsolicited lifecycle decisions are refused; dialog/menu/lifecycle
+commands remain later slices. Remote config-write refusal reads the
+same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
+GUI remote calls use the existing pinned direct dial, not a loopback listener;
+the separate foreground CLI retains its listener. Shared serialized multipart
+and blob download paths are reused. The Mac packager reconciles map removal
+with the main resource manifest and includes the native config policy.
+
+Native Connected/load completion requires both the expected current navigation
+and fresh compatible, non-busy selected-owner health admission. The periodic
+access monitor also evaluates readiness, so authorization cannot restore a false
+Connected state. Once admitted, busy (including bounded-unknown update readiness)
+publishes the existing Busy/忙碌 state while retaining Main's identity, drafts,
+owner evidence and in-flight transfers. Periodic rechecking can restore ready
+without replay; genuine authorization loss and incompatibility retain their
+existing failure handling, and initial busy admission still refuses Connected.
+Managed/DIY transports fence before the first request write;
+only proven no-send failures produce pre-forward recovery. Local URLSession
+failures after resume conservatively fail the scheme request. Missing response
+headers never prove no send: interrupted mutations retain Result unknown in the
+shared web client, with no automatic retry.
+
+**Streaming decision: incremental delivery measured in build 62; EOF failed.**
+All five normal receipts met the timing bound, but the page never reported
+stream completion after native finish. The cause remains unproven; no buffering
+fallback or speculative framing change is justified by that evidence. No native
+PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
+app-scheme` builds the actual product at the approved head and qualifies the
+shipping scheme/adapter against a synthetic local daemon using the built SPA.
+Every page event is emitted immediately to native and fsynced; final-only arrays
+are forbidden. Pass requires all five one-second-spaced events below 500 ms
+receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later
+writes for that owner. Timeouts retain partial JSONL in the report and fail.
+Stream, abort and download retain independent 9s/4s/5s deadlines and per-step
+PASS/FAIL receipts. Each runs in its own invocation of the product, so a stream
+process/main-queue stall cannot starve abort or download. Every process must
+exit zero and emit its own `done`; a failed or missing step still fails overall. Overall PASS additionally
+requires actual normal reader EOF with five receipts and no partial frame,
+all three step results and native saved-file completion. Failure-only closed
+diagnostics retain page bytes/frames/last stage and native delivered bytes,
+framing-header names/presence/expected length and finish actor/thread/stopped
+state; no header/body/context/credential values are retained. Bounds and the
+watchdog bounds are documented in `app/mac/README.md`. Native background
+liveness requests distinguish main-dispatch/reply delays and query closed
+page step/reader/count/timer facts without page messaging. Native process-loss,
+navigation-failure and scheme callback/owner lifecycle records are emitted
+independently of page receipts. The build-62/63 post-finish cause remains
+unproven; process isolation fixes the proven qualifier dependency only.
+This is a local transport fixture with development tsnet stubs, not live remote,
+Keychain, packaged release, minimum-macOS or native save-panel acceptance.
+If measured buffering appears, native-message delivery and a web SSE helper
+adaptation require the manager's follow-up and renewed exact-head review/build.
+No fallback is implemented or presumed necessary before those measurements.
+
+M1's root expectation is `/onboarding` because the synthetic daemon returns a
+successful empty org list, matching `RootRedirect`; an API error never supplies
+that condition. The suite separately reloads stable global `/onboarding`:
+desktop `/settings` opens a dialog then replaces a cold org-less link with `/`.
+Pass requires the deep path in native navigation, the scheme-handler request
+and the rendered SPA at the app origin; `/` plus a new redirect cannot pass.
+Failure-only closed diagnostics retain requested/served paths, navigation
+decision/path and final pathname. JSON methods, serialized 10 MiB upload/digest and blob-download
+file bytes are additional assertions, not substitutes for per-event timing.
+
+Founder THR-387 seq136 (2026-11-24T00:25:44Z) raised PR #1839's allowance
+to **14 total Mac builds**, combined across Jenkins and GitHub Actions unsigned
+builds. The seq89/95 default of **6 builds per Mac PR** still applies to other
+Mac PRs. Build only after independent review APPROVE at the exact head; never
+merge Mac code not built at its exact final head.
+The PR body records the current ledger. No S0 diagnostic allowance, daily E2E trigger, required test/build
+check, dialog/toolbar/menu/local-control/language or launch-policy work is added.

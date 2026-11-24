@@ -4233,3 +4233,75 @@ Retired Python units and Web Vitest NOT RUN; general integration SKIPPED under
 THR-243 seq42; Product E2E NOT RUN. Required local CI remains
 `bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable
 jobs for long commands. No new CI/E2E trigger or gate is added.
+
+## MAC-1 app-scheme focused checks
+
+`python3 -B -m unittest scripts.mac_native.test_app_scheme -v` exercises the
+native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
+abort and post-stop writes, partial JSONL retention, root/body/download evidence
+requirements, private fixture authentication/JSON bytes, and failed-command
+compiler-error/context retention outside head/tail with a 64 KiB JSON bound
+and explicit truncation. It also checks command-report retention of all 12
+individual XCTest outcomes outside head/tail, closed loader fact projection
+(including all 15 page facts and exclusion of context/arbitrary values), and
+explicit truncation at the 64 KiB loader diagnostic bound. This standalone
+venue also executes the shipped page facade with the existing shared owner
+registry/save-receipt gate under Node 24: pending summary delivery, waiting for
+native receipt and refusal of an invalid receipt. The same probe exercises
+bootstrap diagnostics for missing injection, origin/top-frame refusal, throwing
+handler lookup, missing randomness and context-definition failure without
+recording the context token. It cannot exercise Swift overload selection or
+native result bridging. The focused native route suite separately checks closed
+result classes/redaction (including Boolean versus numeric NSNumber and Void),
+and the loader table requires string context and Boolean bind results from the
+value-returning `contentWorld:` async API. Failure traces retain the result
+class for context, bind and diagnostics alongside the 15 closed page facts.
+Successful loader rows and ready checkpoints now emit those same closed facts
+and callback/health counts, collected separately from compiler output.
+The same portable page probe executes the commissioned qualifier with simulated
+missing EOF, malformed frame, failed completion emission, stalled abort and
+download fetch/save failures. It requires all later steps and closed failure
+facts; this checks qualifier control flow, not WebKit stream closure. The
+assessor additionally refuses missing/duplicate/failed step results or absent
+normal EOF. Native diagnostic tests check framing/lifecycle fields and value
+exclusion; their execution remains Mac-only.
+Portable execution does not establish native owner retention or admission.
+No retired Python units run. No shared web source changed in MAC-1;
+Web static analysis remains part of `scripts/local_ci.sh all`.
+
+`python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`
+is dispatcher-registered for the existing Jenkins `SUITE` string. It is skipped
+on Linux. On Mac it compiles the product plus focused Swift parser/route tests
+(including native owner retention, pre/post-send error outcomes and readiness)
+and the production navigation delegate's packaged-page load/admission cases,
+then qualifies the production loader, body adapter and SPA against a private
+synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+The deep reload targets stable `/onboarding` for the empty-org fixture:
+desktop `/settings` intentionally opens a dialog then returns Main to `/`.
+Native qualification additionally requires the reload navigation and scheme
+handler to use the deep path, preventing a reload of `/` plus redirect from
+passing. Failure-only closed diagnostics retain requested/served paths,
+navigation decision/path and final pathname, including navigation/admission
+failure and reload timeout.
+Normal stream, abort and download have independent 9s/4s/5s page deadlines and
+emit individual PASS/FAIL results. Each now owns a fresh product process and
+JSONL file, so a stream process watchdog or command/evidence failure cannot
+prevent later native invocations. All three zero exits and separate `done`
+receipts are required. The portable venue checks this collector boundary too. The download step
+awaits native saving. Overall PASS still requires every prior timing, abort,
+saved-byte and navigation assertion, all three step results and actual normal
+reader EOF. Failure-only diagnostics compare page/native byte and frame counts,
+last page stage, closed framing-header names/presence/expected length and
+didFinish main-thread/MainActor/cancellation/stopped facts. Build 62 established
+incremental receipts but failed EOF; the cause remains unproven. See the Mac
+contract above for diagnostic bounds and the watchdog limit. Native background
+liveness requests/pending records survive a stalled MainActor; the main-side
+evaluation returns only closed qualifier state/counts independently of page
+messages. Dedicated native termination/navigation and per-callback API lifecycle
+records provide attribution before failure. Builds 62/63 do not prove the EOF
+cause; no speculative framing fix or streaming fallback is introduced.
+Only the QA leg may execute it after exact-head independent review APPROVE,
+within the PR's founder-approved combined unsigned build allowance (current
+ledger in the PR body). Native execution,
+Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
+the Linux maker. This adds no required check, job definition edit or E2E run.

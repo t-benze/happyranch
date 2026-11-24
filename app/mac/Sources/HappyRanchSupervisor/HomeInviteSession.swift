@@ -114,8 +114,15 @@ public protocol HomeInviteSession: Sendable {
     func pair(_ invite: HomePairingInvitation) async throws -> PendingHomeApproval
     func complete(_ pending: PendingHomeApproval, trust: SavedHomeTrust, profileID: UUID) async throws -> SavedDeviceCredential?
     func open(_ credential: SavedDeviceCredential) async throws -> URL
+    func openApp(_ credential: SavedDeviceCredential) async throws -> URL
+    func appTransport() throws -> any AppAPITransport
     func checkAccess() async throws
     func stop() async throws
+}
+
+extension HomeInviteSession {
+    public func openApp(_ credential: SavedDeviceCredential) async throws -> URL { try await open(credential) }
+    public func appTransport() throws -> any AppAPITransport { throw AppAPIError.unavailable }
 }
 
 /// All remote bytes go through the per-home helper's managed, pinned peer dial.
@@ -242,6 +249,15 @@ public final class ManagedHomeInviteSession: HomeInviteSession, @unchecked Senda
         }
         return url
     }
+
+    /// GUI path: authorize the existing selected owner, with no loopback listener.
+    public func openApp(_ credential: SavedDeviceCredential) async throws -> URL {
+        try active().useHomeCredential(credential)
+        try await checkAccess()
+        return URL(string: "happyranch-app://app/")!
+    }
+
+    public func appTransport() throws -> any AppAPITransport { try active() }
 
     public func checkAccess() async throws { try await active().homeRequest(.health).requireAuthorized() }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import HappyRanchSupervisor
 @testable import HappyRanchApp
@@ -38,7 +39,12 @@ struct ConnectionContractTests {
     }
 
     private func fixture() throws -> URL {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        // Preserve /private: Foundation URL normalization can reintroduce an
+        // alias that the production no-follow reader correctly refuses.
+        let temporary = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(temporary) }
+        let root = URL(fileURLWithFileSystemRepresentation: temporary, isDirectory: true, relativeTo: nil)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         try Data("hello".utf8).write(to: root.appendingPathComponent("index.html"))
         let manifest = #"{"version":1,"entry":"index.html","resources":[{"path":"index.html","bytes":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}"#
@@ -166,8 +172,10 @@ struct ConnectionContractTests {
             if ordinaryCount == 64 {
                 #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
                 #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
-                #expect(ledger.reservePrompt(for: cancel.id))
-                #expect(!ledger.reservePrompt(for: cancel.id))
+                let cancelPromptReserved = ledger.reservePrompt(for: cancel.id)
+                #expect(cancelPromptReserved)
+                let duplicateCancelPromptReserved = ledger.reservePrompt(for: cancel.id)
+                #expect(!duplicateCancelPromptReserved)
                 ledger.markDispatched(cancel.id)
                 ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
                 let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
@@ -212,14 +220,16 @@ struct ConnectionContractTests {
         var ledger = ConnectionMutationLedger()
         let save = try ConnectionRequest(request("client.retrySave"))
         guard case .start = ledger.begin(save) else { Issue.record("save refused"); return }
-        #expect(ledger.reservePrompt(for: save.id))
+        let savePromptReserved = ledger.reservePrompt(for: save.id)
+        #expect(savePromptReserved)
         #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "r2"))))?["code"] == .string("busy"))
         ledger.markDispatched(save.id); ledger.timedOut(save.id)
         #expect(try error(ledger.begin(save))?["effect"] == .string("unknown"))
         #expect(ledger.mutationID == save.id && ledger.promptID == save.id)
         let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
         guard case .start = ledger.begin(cancel, cancelling: UUID()) else { Issue.record("Cancel busy"); return }
-        #expect(!ledger.reservePrompt(for: cancel.id))
+        let cancelPromptReserved = ledger.reservePrompt(for: cancel.id)
+        #expect(!cancelPromptReserved)
         #expect(ledger.originatingAction == "client.retrySave")
         ledger.finish(save.id, outcome: .failure(.init(.saveFailed, effect: .unknown)))
         #expect(ledger.mutationID == nil && ledger.promptID == nil)
@@ -231,14 +241,16 @@ struct ConnectionContractTests {
         var ledger = ConnectionMutationLedger()
         let connect = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
         guard case .start = ledger.begin(connect) else { Issue.record("connect refused"); return }
-        #expect(ledger.reservePrompt(for: connect.id))
+        let connectPromptReserved = ledger.reservePrompt(for: connect.id)
+        #expect(connectPromptReserved)
         ledger.releasePrompt(connect.id)
         ledger.markDispatched(connect.id)
         #expect(ledger.mutationID == connect.id && ledger.promptID == nil)
         let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
         let attempt = UUID()
         guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel unreachable"); return }
-        #expect(ledger.reservePrompt(for: cancel.id))
+        let cancelPromptReserved = ledger.reservePrompt(for: cancel.id)
+        #expect(cancelPromptReserved)
         let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "again"))
         #expect(try error(ledger.begin(repeated, cancelling: attempt))?["code"] == .string("busy"))
         // Keep and expiry both settle the sheet with effect:none. Neither
@@ -247,7 +259,8 @@ struct ConnectionContractTests {
         ledger.finish(cancel.id, outcome: kept)
         #expect(ledger.count == 1)
         guard case .start = ledger.begin(repeated, cancelling: attempt) else { Issue.record("Cancel after Keep refused"); return }
-        #expect(ledger.reservePrompt(for: repeated.id))
+        let repeatedPromptReserved = ledger.reservePrompt(for: repeated.id)
+        #expect(repeatedPromptReserved)
         #expect(ledger.count == 2)
         guard case .replay(let archived) = ledger.begin(cancel, cancelling: attempt) else { Issue.record("archived Cancel did not replay"); return }
         #expect(archived.reply(id: cancel.id) == kept.reply(id: cancel.id))
@@ -257,7 +270,8 @@ struct ConnectionContractTests {
         #expect(try error(ledger.begin(later, cancelling: attempt))?["code"] == .string("busy"))
         ledger.finish(repeated.id, outcome: kept)
         guard case .start = ledger.begin(later, cancelling: attempt) else { Issue.record("Cancel after expiry refused"); return }
-        #expect(ledger.reservePrompt(for: later.id))
+        let laterPromptReserved = ledger.reservePrompt(for: later.id)
+        #expect(laterPromptReserved)
         #expect(ledger.count == 3)
         #expect(ledger.recorded(repeated)?.reply(id: repeated.id) == kept.reply(id: repeated.id))
         #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))

@@ -54,6 +54,224 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-1: Main app scheme and native API transport
+
+Main loads the single packaged `Contents/Resources/web/dist` at
+`happyranch-app://app/`, with persistent per-origin WebKit storage. The upstream
+port in AppDelegate is native endpoint identity only; WebKit never loads it.
+The loader pins every static file to the existing resource manifest, uses its
+no-follow descriptor reader, serves the pinned index for SPA routes/deep reload,
+and enforces CSP plus an independent WebKit resource allowlist. Release map
+removal also removes those entries from the packaged manifest.
+
+Main-frame response policy requires the current document's exact native-loader
+response and its 2xx status, the app route, matching MIME type and WebKit display
+support. WebKit reconstructs custom-scheme responses as `URLResponse`, so the
+policy does not require its HTTP subclass to survive. Document retirement clears
+the native response receipt. Bounded redacted callback diagnostics record action
+and response decisions, the exact refusing guard, response class/MIME/status and
+native source status alongside the sanitized callback URL. Health refusal tests
+must reach readiness with at least one health invocation and successful relay
+context/bind; a navigation failure cannot satisfy a negative health row.
+
+A relay-context refusal also captures a pre-guard bootstrap marker and the last
+script stage (top/origin guard, native handler lookup, randomness, context
+definition, facade definition, fetch installation or completion). Failure-only
+page facts classify initial/current origin as app, null or other, and report
+the exact app protocol/host matches, top-frame and secure-context flags,
+WebKit/handler/postMessage and crypto/randomness types, and document readiness.
+Throwing lookups are explicit. Native retains only closed keys/values, with no
+context token, arbitrary page strings, URL paths/queries or JavaScript error
+messages; it checks document/view identity across this diagnostic read. Each
+native context, bind and diagnostic evaluation also records only its result
+class: nil, null, string, dictionary, number, bool, other or threw (with
+not-attempted/in-flight lifecycle markers). A missing bootstrap marker can then
+be distinguished from an unusable native result.
+
+Admission and its native tests use WebKit's value-returning async
+`callAsyncJavaScript(_:arguments:in:contentWorld:)`, targeting the main frame
+(`in: nil`) in `.page`. The callback API's second `in:` label instead returns
+Swift `Void` when its default nil handler is used; `try await` does not select
+the async overload. That mismatch explains build 60's missing context and all
+15 invalid page facts. Build 61 reports aggregate 12 tests / 0 failures, but
+individual loader outcomes/diagnostics were not retained and SPA qualification
+failed at deep reload; final-head qualification remains pending.
+Status emission intentionally keeps the explicit
+nil callback because it consumes no result.
+
+`AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
+32 requests (two with bodies), 64 MiB bodies and the native target generation.
+The document-start adapter serializes request bodies, assigns cancellation IDs
+and retains abort forwarding until EOF/cancel. Shared `multipart.ts` already
+encodes FormData; it avoids Mac's observed empty raw FormData body as well as
+Linux's crash. Shared artifact downloads already use fetch → blob → download;
+Main's WKDownloadDelegate asks for a save destination. Direct API navigation is
+blocked. HTTP(S) links use the system browser.
+
+The page bootstrap returns only `hr_native_session`. Local calls read the
+existing daemon credential natively at the already verified port. Remote calls
+reuse ClientBridge's selected managed peer or DIY dial and in-memory credential
+from existing native/Keychain custody. The GUI no longer starts a proxy listener;
+the foreground CLI's `open`/loopback behavior remains. Redirects, cookies,
+page authorization and identity headers are not forwarded. The packaged
+`remote-client-config-policy.v1.json` supplies the same native config-write
+refusals as Linux; the daemon/home connector remote allowlist is unchanged.
+Health contract admission uses `current >= 1` and `min_client <= 1`, including
+missing-contract and busy refusals, before API forwarding. The native document
+completion callback also awaits fresh admission of that selected owner and
+checks the current navigation/load identity. The Connected monitor rechecks
+the same readiness contract after its existing access check. After admission,
+ordinary or bounded-unknown `update_busy` publishes the existing Busy/忙碌 status
+and preserves Main, its document identity, drafts and in-flight transfers; the
+periodic check restores ready/Connected without replay. Initial busy admission
+still refuses Connected. Genuine access loss and incompatibility keep their
+existing failure handling. Owner relay envelopes capture the loaded Main
+context, revoked at document retirement; late pushes cannot alter current
+evidence or clear retired-save uncertainty. The public call/on API and owner
+summary schema are unchanged.
+
+Only a proven no-send transport outcome can return the pre-forward 503 recovery
+shape. The managed/DIY transports fence before their first write/send. Local
+URLSession failures after resume conservatively fail the scheme transfer,
+including a lost reply before response headers; mutations become Result unknown
+in the shared client and are never automatically retried.
+
+This slice exposes transport `app.status`, `app.stateChanged`, request cancel
+and the existing `app.ownersChanged` receipt required before registered saves.
+Native parses the bounded, duplicate-free closed summary and stores its owner
+protection before replying `"{}"`. Voluntary document navigation refuses missing,
+dirty/failed or unresolved owner evidence and native non-GET transfers. Document
+loss retains unresolved-save uncertainty; a replacement clean summary cannot
+clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
+a later slice. The locale field reports the native launch language; no locale setter,
+new Settings/Connection actions, toolbar/menu, local controls or launch policy is
+implemented here. The existing native Connection view remains for later slices.
+Those later Mac contracts are not qualified by this transport PR.
+
+Build 62 measured incremental delivery of all five normal SSE events, but the
+page never reported EOF after native `didFinish`; qualification remains **FAIL**.
+The EOF cause is **unproven**. Framing headers are stripped before delivery,
+and the handler is MainActor-owned, but build 62 did not retain expected length,
+page read/parse/emit state or finish/stop facts. No speculative framing or
+buffering change is made. After independent review
+APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
+It compiles the product and focused parser/route tests once, launches that same
+product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
+uses the production loader/adapter and built SPA. No real daemon, Keychain,
+helper, signing or production data is used. The synthetic local venue uses the
+SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
+The internal qualification entry is explicitly commissioned by MAC-1 and is the
+only test-only app entry added; ordinary app startup never selects it.
+
+SwiftPM compiles every file in both test targets even when execution is filtered.
+Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
+`error_context`: lines containing `: error:` or beginning `error:`, with two
+lines of surrounding context and original line numbers. Its serialized JSON is
+bounded to 64 KiB, with the total matching-line count and an explicit truncation
+flag. This evidence survives command failure and scratch removal; it does not
+change the build or qualification verdict.
+`test_results` also retains individual XCTest outcome lines (16 KiB, explicit
+truncation), independently of head/tail. The loader table prints `MAC1_LOADER`
+JSON at every initial row and ready checkpoint: closed result classes,
+context/bind/readiness, all 15 filtered page facts and callback/health counts.
+The collector projects only those closed fields into `loader_diagnostics`
+(64 KiB, matching-line count and explicit truncation); no context values,
+URLs, drafts or arbitrary page text are retained in these records.
+
+Each page receipt is sent immediately to native and fsynced to JSONL; timeout
+retains earlier events. Every one of five events at 1s intervals must arrive in
+under **500 ms** (less than half the interval); the two-event abort must stop its
+native owner within **500 ms**, with no writes from that owner afterward. No
+completion-only receipt array can pass. The normal stream must also reach actual
+reader EOF with all five data receipts and no partial trailing frame.
+Stream, abort and download each run in a fresh invocation of the built product,
+with separate native MainActor, WebKit view/content process and JSONL evidence.
+Their page deadlines remain 9s, 4s and 5s. Each emits one `step` PASS/FAIL. The
+collector launches abort and download even after a stream watchdog, native
+command timeout or unreadable stream evidence; every process exit and its own
+`done` receipt are required for overall PASS. Download awaits the native WKDownload result within its own deadline;
+fetch bytes alone cannot pass saving. The assessor reports each step separately
+and requires all three PASS plus every existing timing/body/navigation check.
+Any failure remains an overall FAIL, even if later steps pass.
+
+Failure-only `page_stream_failure` records retain the last read/decode/parse/emit
+or save stage, received byte/frame counts and pending framing byte count.
+`native_stream_failure` records correlate native owner IDs with delivered byte
+counts, closed response-header names (unexpected names become `other`), framing
+header presence, expected content length and didFinish main-thread/MainActor,
+cancellation and task-stopped facts. Page progress stays in bounded native memory
+until failure; native snapshots are capped at 32 streams. Neither diagnostic
+contains header values, body bytes, context/credential values, arbitrary errors
+or URLs. Ordinary app startup does not enable this qualification observer.
+The 34s main-thread failure dump precedes the 35s background hard watchdog in
+each process. Native background probes run every second: request and 750ms
+pending records distinguish missing main dispatch from a pending JavaScript
+reply. Main evaluates only current qualifier step/reader state, received byte/
+frame counts, pending framing bytes and qualifier timer count. Results are
+projected to closed native keys, enums and bounded integers; they do not use the
+page message handler. Native content-process termination and provisional/
+committed navigation failures have dedicated records. API scheme lifecycle
+records precede and follow response/data/finish callbacks and owner retirement,
+with delivered totals, cancellation/thread facts, stop and completion guards.
+Completion is claimed before WebKit is called, preventing a second completion;
+stop removes ownership before cancellation. These records are written as events
+occur, so a later stalled main queue cannot suppress already retained facts.
+At most 35 liveness requests and 32 retained completed-owner IDs per process are
+needed before its watchdog. Raw page results and error values are never logged.
+
+Builds 62 and 63 measured incremental SSE; the post-finish stall remains
+unproven. Build 63 also lacked the native main-queue timeout, so page timers
+alone cannot attribute it. Process isolation repairs the proven qualifier
+dependency; it does not claim WebKit EOF closure or change response framing.
+Round-15 authority: engineering_manager `output/TASK-18895/round15-decision.md`
+and `ledger.md`. Builds 54–64 were used through round 15. The PR body records
+the current build ledger. Only independent QA may build after independent review
+APPROVE at the exact head. The maker runs no Mac build.
+
+The suite also checks JSON POST/PUT,
+10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
+honestly expects `/onboarding`: the fixture returns a successful empty `orgs`
+list, exactly the `RootRedirect` branch in `web/src/routes.tsx`; it never converts
+an error or missing response into onboarding. Reload retains `/onboarding`,
+the fixture's stable global deep route. `DesktopSettingsRoute` intentionally
+opens a dialog and replaces a cold org-less `/settings` link with `/`, so that
+dialog route is unsuitable for a pathname-persistence assertion. Qualification
+requires the reload's native navigation to allow `/onboarding`, the scheme
+handler to serve that exact requested path, and the rendered SPA pathname and
+app origin to survive. A reload of `/` followed by another onboarding redirect
+cannot pass. Failure-only `deep_reload_failure` records requested/served paths,
+navigation path/decision and final pathname as closed classes (`/`,
+`/onboarding`, `/settings`, `other` or missing/not-observed/not-served).
+A timeout/failure is FAIL with partial evidence, not proof
+of WebKit buffering. If actual timing establishes buffering, the manager must
+commission native-message streaming fallback and renewed review/build.
+
+Linux maker commands (no Mac build):
+
+```sh
+python3 -B -m unittest scripts.mac_native.test_app_scheme -v
+python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json
+bash -n app/mac/scripts/build-app.sh
+```
+
+The dispatcher on Linux explicitly skips Darwin execution; this is not native
+PASS. Swift tests are `AppHTTPResponseParserTests`, `AppSchemeRouteTests` and
+`AppSchemeLoadTests` (production document admission, busy draft/transfer retention,
+retired-document messages and lost-reply delivery) in
+the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
+`HomeInviteModelTests.admittedBusyReadinessRetainsDocument` also checks the real
+periodic connected → busy/unknown → ready monitor, unchanged lifetime/webURL,
+no session reopen/replay and genuine revocation teardown in the existing
+HomeInviteModelTests venue.
+Founder THR-387 seq136 (2026-11-24T00:25:44Z) raised PR #1839's allowance
+to **14 total Mac builds**, combined across Jenkins and GitHub Actions unsigned
+builds. The seq89/95 default of **6 builds per Mac PR** still applies to other
+Mac PRs. Build only after independent review APPROVE at the exact head; never
+merge Mac code not built at its exact final head.
+The PR body records the current build ledger. No diagnostic-only run,
+extra retry, new Jenkins job or required check is added.
+
+
 ### THR-379 slice 5c: foreground Mac client CLI
 
 Use the CLI shipped inside the same app bundle (adjust the app location):
@@ -208,7 +426,9 @@ the control host and release runtime, joins through the isolated home helper,
 pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
 then **Opening runtime**. **Connected**
 is published only after the expected authorized main-frame web navigation
-finishes; network membership and health alone cannot publish it. Existing DIY
+finishes and the selected owner passes compatible, non-busy admission. The
+periodic access monitor repeats that readiness check. Network membership and
+authorization alone cannot publish it. Existing DIY
 Tailscale remains an explicit separate selection, never an error fallback. Custom-server
 URL/key intake does not exist and is not planned; outside-home access uses a fixed
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).

@@ -413,7 +413,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         switch request.command {
         case "client.cancelAttempt", "client.disconnect":
             let cancelling = request.command == "client.cancelAttempt"
-            guard cancelling ? model.bridgeCanCancel : model.phase == .connected else { return .failure(.init(.stateChanged)) }
+            guard cancelling ? model.bridgeCanCancel : [.connected, .runtimeBusy].contains(model.phase) else { return .failure(.init(.stateChanged)) }
             guard hold() else { return .failure(.init(.busy)) }
             let target = model.target
             let yes = await sheet(request, title: Self.copy("Stop this connection attempt?", "停止此次连接？"),
