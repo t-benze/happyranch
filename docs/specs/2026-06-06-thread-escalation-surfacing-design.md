@@ -74,6 +74,14 @@ if thread_id is None: return                     # not a thread-dispatched chain
 
 **Dispatcher identity** comes from the `thread_dispatch` audit row keyed by `original.id` — identical to the terminal helper. If absent → `thread_followup_skipped(reason="dispatcher_unresolved")` + return.
 
+Resolve-escalation supersede now atomically records that row for each new
+thread-linked successor, using the resolving agent or, for Founder break-glass,
+the predecessor's resolvable dispatcher. See the terminal-followup spec §5 for
+the row shape and unresolved-Founder behavior. No read-side supersession
+fallback or historical surfacing is added; already-created roots without a row
+remain unresolved even on future events. No migration, backfill or startup
+escalation scan is introduced.
+
 ## 6. Hook behavior
 
 ### 6.1 Shared tail extraction

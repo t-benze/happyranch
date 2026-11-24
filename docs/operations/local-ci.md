@@ -1,5 +1,28 @@
 # Local CI
 
+## Focused job receipt diagnostics
+
+```bash
+uv run --frozen python -B -m unittest scripts.test_job_receipts -v
+```
+
+These checks reuse the existing synthetic-org ASGI/SQLite fixture without
+lifespan, listeners, providers or job launches. They exercise completed-job
+receipt authentication, rejected bindings, both JSON CLI commands and retained
+human reads. They stay outside the retired Python unit suite and skipped
+general integration suite, and add no CI trigger or required check.
+
+## Focused supersede dispatcher provenance (GH-1852)
+
+`uv run --frozen pytest scripts/test_thread_supersede_dispatcher.py -v --tb=short`
+uses the existing synthetic-org ASGI/SQLite fixture without lifespan, listener,
+provider or live org. It checks resolve-escalation successor dispatcher rows,
+escalation/terminal SYSTEM messages and queued dispatcher invocations, chained
+supersession/replay, Founder inheritance/unresolved behavior, transaction
+rollback and historical-task silence during queue attachment/new events. It is
+outside retired Python units and skipped general integration, and adds no CI
+trigger or required check.
+
 ## Draft → Review released-bundle cases (THR-336 R2 unit c)
 
 Use the existing private schema-shell venue:
@@ -177,6 +200,20 @@ selections) retains mounted startup coverage. These are focused scripts, outside
 retired Python units, skipped general integration and scheduled Product E2E.
 
 ## Focused repository refresh (THR-381)
+
+THR-395 adds `RepoRefreshTests.test_refused_lease_tail_closes_every_repository_and_pauses`
+and `test_refused_tail_retains_unknown_without_positive_closure` in the same
+standalone venue. The real Git/preparation/refusal/terminal/Pause paths observe
+durable closure and a paused held root, with a test-side lease-release fault.
+Possible launch, observed launch, open/missing/unreadable evidence, cleanup with
+live processes and running jobs retain unknown. No retired suite or CI lane is added.
+The held-before-closure tests (`test_hold_before_closure_defers_lease_error_and_pauses`,
+`test_hold_before_closure_missing_proof_stays_unknown` and
+`test_hold_before_closure_unknown_cleanup_stays_unknown`) additionally observe
+original closure under hold, pending/no-refusal/unchanged-attempt settlement,
+fresh-preparation veto, Resume with ordinary refusal accounting, and fail-closed
+open-interval/independently-unknown-cleanup tails. Each runs in the venue's
+existing fresh-process isolation; product closure and OSError handling are real.
 
 `uv run --frozen pytest --import-mode=importlib scripts/test_repo_refresh.py scripts/test_preparation_startup.py -v --tb=short`
 uses standalone synthetic orgs, scratch local Git origins and the owned native
@@ -4018,6 +4055,21 @@ THR-327 returned-worker regressions use the retained Disable path:
 P24 retires replacement-reload/reset-specific cases with the removed replacement
 owner; ordinary inventory/transaction refusal and real non-home renewal remain
 in the full installer custody selection above.
+The focused post-closure read selection is
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -k thr327_closed_host_status -q --tb=short`.
+It uses the real temporary-root retired Enable capture with absent connector IPC
+and only child/Gio transport isolated. The retirement snapshot supplies no legacy
+inventory proof, so Status/StatusV2 refuse with host-state-unrecognized without
+native, authorization or audit effects. The former clean/staged Off and rejected
+inventory rows retired with their generated-home/Enable composition owner; their
+named dispositions are recorded in the P24 PR. No preparation/forward owner is
+restored to display Off.
+Private-bus owner/unknown-proof checks use
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -k 'retained_manual_record or status_v2_stopped_connector' -v --tb=short`.
+The native CLI, Main bridge/relay and Connection model selections documented
+above cover the closed-code projection and plain EN/zh-CN message selection.
+These fixtures do not establish installed status latency, systemd/polkit behavior,
+viewport layout or cross-device acceptance.
 The full owner selection also includes `scripts/test_home_activation_backend.py`;
 the private-Gio selection below includes `scripts/test_helper_lifecycle.py`.
 Run full modules through durable jobs. These temporary-root/private-bus tests
@@ -4111,6 +4163,15 @@ losers, warning diagnostics and retained independent native startup holds. Fresh
 org/coordinator startup cases cover the forward remove's unknown native writer,
 explicit rebind through publication, unchanged native uncertainty, and unrelated,
 scoped, mismatched-journal, mixed-profile and partially-forward refusal evidence.
+A second startup after finalization covers both remove publishers: the org loads,
+the coordinator synchronizes without adoption, the published operation and journal
+remain unchanged, and native history stays UNKNOWN. Finalized refusal cases cover
+invocation/state/kind mismatch, active ordinary or latest installed ordinary journal,
+multiple removes (same or different invocation), live/scoped and unrelated writers,
+a second UNKNOWN after failed operation insertion, another settled remove attempt,
+and tied, non-bracketing or timezone-naive writer timestamps. The insertion fault
+is test-side; the real coordinator reserves the second writer before the fault,
+and restart retains both UNKNOWN records and the startup hold.
 This is outside retired Python units, skipped general integration, Product E2E
 and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
 is review evidence only.
@@ -4243,3 +4304,92 @@ Retired Python units and Web Vitest NOT RUN; general integration SKIPPED under
 THR-243 seq42; Product E2E NOT RUN. Required local CI remains
 `bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable
 jobs for long commands. No new CI/E2E trigger or gate is added.
+
+## MAC-1 app-scheme focused checks
+
+`python3 -B -m unittest scripts.mac_native.test_app_scheme -v` exercises the
+native-suite evidence verdict, missing/buffered/duplicate receipts, bounded
+abort and post-stop writes, partial JSONL retention, root/body/download evidence
+requirements, private fixture authentication/JSON bytes, and failed-command
+compiler-error/context retention outside head/tail with a 64 KiB JSON bound
+and explicit truncation. It also checks command-report retention of all 12
+individual XCTest outcomes outside head/tail, closed loader fact projection
+(including all 15 page facts and exclusion of context/arbitrary values), and
+explicit truncation at the 64 KiB loader diagnostic bound. This standalone
+venue also executes the shipped page facade with the existing shared owner
+registry/save-receipt gate under Node 24: pending summary delivery, waiting for
+native receipt and refusal of an invalid receipt. The same probe exercises
+bootstrap diagnostics for missing injection, origin/top-frame refusal, throwing
+handler lookup, missing randomness and context-definition failure without
+recording the context token. It cannot exercise Swift overload selection or
+native result bridging. The focused native route suite separately checks closed
+result classes/redaction (including Boolean versus numeric NSNumber and Void),
+and the loader table requires string context and Boolean bind results from the
+value-returning `contentWorld:` async API. Failure traces retain the result
+class for context, bind and diagnostics alongside the 15 closed page facts.
+Successful loader rows and ready checkpoints now emit those same closed facts
+and callback/health counts, collected separately from compiler output.
+The same portable page probe executes the commissioned qualifier with simulated
+missing EOF, malformed frame, failed completion emission, stalled abort and
+download fetch/save failures. It requires all later steps and closed failure
+facts; this checks qualifier control flow, not WebKit stream closure. The
+assessor additionally refuses missing/duplicate/failed step results or absent
+normal EOF. Native diagnostic tests check framing/lifecycle fields and value
+exclusion; their execution remains Mac-only.
+Portable execution does not establish native owner retention or admission.
+No retired Python units run. No shared web source changed in MAC-1;
+Web static analysis remains part of `scripts/local_ci.sh all`.
+
+`python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`
+is dispatcher-registered for the existing Jenkins `SUITE` string. It is skipped
+on Linux. On Mac it compiles the product and runs the full unfiltered app/mac
+package: all XCTest classes and Swift Testing functions in both test targets,
+including the MAC-1 parser/route/load and MAC-2a ownership/HomeInviteModel cases.
+Release testable imports and both libraries are explicitly enabled. Every
+XCTest start/outcome and Swift Testing version-0 JSON invocation is retained,
+without the former 16 KiB named-result truncation. Ordinary functions use ordered
+function start/end events; parameterized functions additionally retain case
+ordinals. `native_tests.event_archive` in the collected JSON carries exact raw
+ABI bytes as gzip+base64 with raw/gzip sizes and hashes (16 MiB input, 4 MiB gzip).
+Missing/overflow archives refuse PASS and partial streams are preserved on
+failure/timeout before scratch cleanup. The source census must match;
+missing, skipped, failed or incomplete evidence fails closed. Hard output/event
+caps are 16 MiB each, and the compile/test step has 1,200s within the 2,100s suite
+deadline with elapsed times recorded. These bounds are not measured full-suite
+timing evidence on Linux. The portable command above also checks full-workload
+invocation, multiline source census, per-case negative evidence and retention
+beyond 16 KiB, plus scratch-Keychain cleanup/preference bookends. The full run
+reuses the supervisor fixture for existing enrollment tests; its 30s cleanup
+grace and preference checks are unchanged. Portable execution does not invoke
+Security.framework or establish native PASS. The suite
+then qualifies the production loader, body adapter and SPA against a private
+synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1--mac-2a-main-app-scheme-transport-and-ownership).
+The deep reload targets stable `/onboarding` for the empty-org fixture:
+desktop `/settings` intentionally opens a dialog then returns Main to `/`.
+Native qualification additionally requires the reload navigation and scheme
+handler to use the deep path, preventing a reload of `/` plus redirect from
+passing. Failure-only closed diagnostics retain requested/served paths,
+navigation decision/path and final pathname, including navigation/admission
+failure and reload timeout.
+Normal stream, abort and download have independent 9s/4s/5s page deadlines and
+emit individual PASS/FAIL results. Each now owns a fresh product process and
+JSONL file, so a stream process watchdog or command/evidence failure cannot
+prevent later native invocations. All three zero exits and separate `done`
+receipts are required. The portable venue checks this collector boundary too. The download step
+awaits native saving. Overall PASS still requires every prior timing, abort,
+saved-byte and navigation assertion, all three step results and actual normal
+reader EOF. Failure-only diagnostics compare page/native byte and frame counts,
+last page stage, closed framing-header names/presence/expected length and
+didFinish main-thread/MainActor/cancellation/stopped facts. Build 62 established
+incremental receipts but failed EOF; the cause remains unproven. See the Mac
+contract above for diagnostic bounds and the watchdog limit. Native background
+liveness requests/pending records survive a stalled MainActor; the main-side
+evaluation returns only closed qualifier state/counts independently of page
+messages. Dedicated native termination/navigation and per-callback API lifecycle
+records provide attribution before failure. Builds 62/63 do not prove the EOF
+cause; no speculative framing fix or streaming fallback is introduced.
+Only the QA leg may execute it after exact-head independent review APPROVE,
+within the PR's founder-approved combined unsigned build allowance (current
+ledger in the PR body). Native execution,
+Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
+the Linux maker. This adds no required check, job definition edit or E2E run.

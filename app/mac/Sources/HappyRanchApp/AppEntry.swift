@@ -10,6 +10,10 @@ enum AppEntry {
     @MainActor
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first?.hasPrefix("--qualify-app-scheme") == true {
+            guard arguments.first == "--qualify-app-scheme" else { exit(2) }
+            AppSchemeQualification.run(arguments)
+        }
         guard arguments.first?.hasPrefix("--connection-client") == true else {
             HappyRanchApp.main()
             return

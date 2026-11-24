@@ -1109,18 +1109,29 @@ historical-sweep predicate.
 The profile-remove exception accepts only an `unknown` record from the exact
 production publisher `profile:remove_runtime_executor_profile` or
 `profile:remove_adapter_entry`, with empty agents AND teams and absent from the
-mounted native owner's live writers. The local active journal must be the same
-`forward_recovery_required` remove invocation's prepared profile-coordinator
-journal with a valid original publication binding. Coordinator reconciliation
-additionally validates the complete original same-profile group, every captured
-mirror in `forward_recovery_required`, and every original publication binding.
-Startup defers synchronization of that component to explicit rebind; its fence
-remains until the existing finalizer can publish the coherent closure. This
-exception does not apply on a later boot without that exact active forward
-remove/journal binding. Other unsettled writers, ordinary or mismatched journals,
-mixed-profile invocations and partially forward groups retain their holds.
-An unavailable native owner keeps every record blocking. Both exceptions preserve
-the UNKNOWN history; neither settles or clears the native record.
+mounted native owner's live writers. While removal is in flight, the local active
+journal must be the same `forward_recovery_required` remove invocation's prepared
+profile-coordinator journal with a valid original publication binding. Coordinator
+reconciliation additionally validates the complete original same-profile group,
+every captured mirror in `forward_recovery_required`, and every original
+publication binding. Startup defers synchronization of that component to explicit
+rebind; its fence remains until the existing finalizer publishes the coherent
+closure.
+After finalization, both startup callers also exempt the record when no journal
+is active and the namespace's latest installed (`cache_installed`) journal has a
+`profile-coordinator:` invocation matching exactly one operation, a `published`
+remove. Since the native record has no operation ID, the org must have exactly
+one remove operation in total. Its creation timestamp must fall strictly between
+the specific writer's timezone-aware ACTIVE and UNKNOWN audit timestamps, in audit
+ID order. Those two validated records must be the entire history of both remove
+publishers. Another attempt (including a settled or operation-less writer),
+duplicate/missing evidence, tied/invalid timestamps or a non-bracketing interval
+fails closed. No nearest-time match or historical rewrite is used. The finalized
+case needs no rebind adoption or deferred synchronization:
+there is no prepared fence left to resume. Other unsettled writers, ordinary or
+mismatched journals, mixed-profile invocations and partially forward groups retain
+their holds. An unavailable native owner keeps every record blocking. Both
+exceptions preserve UNKNOWN history; neither settles or clears the native record.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement

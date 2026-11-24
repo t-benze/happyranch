@@ -47,8 +47,12 @@ describe host compatibility without changing the endpoint set or access policy.
 Existing fields and conditional `host_sessions` remain; see the
 [health response and contract-bump rule](../web-and-cli.md#host-compatibility-health-metadata).
 Native readiness/reconnect/Restart compatibility checks are implemented on Linux
-in PR #1767 (merged `921f126e`); Mac checks remain pending. See the
+in PR #1767 (merged `921f126e`). See the
 [Linux admission/reset boundaries](../../specs/2026-11-17-web-native-bridge.md#v2-compatibility-rule).
+Mac readiness/reconnect compatibility checks are implemented in source in
+PR #1839 (MAC-1). Native Mac qualification is recorded by the PR's
+exact-final-head Mac build/QA evidence; see the
+[MAC-1 section in `app/mac/README.md`](../../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 
 ## macOS connector lifecycle slice (THR-360, C1+C2)
 
@@ -4187,10 +4191,25 @@ calls refuse busy. An independent 1.9-second watchdog reserves response overhead
 the original 2-second status budget, suppresses late replies and keeps a stalled worker
 sealed until it settles. It never queues new workers or waits on a mutation-held lock.
 The receipt maps prepared/activating/joined to setup in_progress, ready to ready and
-failed_uncertain to uncertain. Missing/unreadable receipt means unknown, never Off;
+failed_uncertain to uncertain. Missing/unreadable receipt alone never proves Off;
 a receipt bound to a different UID refuses. A fresh successful connector snapshot
 supplies runtime available only when ready; otherwise unavailable. Unreachable connector
-supplies runtime unavailable independently of setup. I3b/I4a project invite/cleanup
+supplies runtime unavailable independently of a recognized setup receipt.
+THR-327 closed-host reads additionally reuse the unchanged read-only Enable
+capture when connector status is unavailable: only a clean, staged-inert or
+post-Disable capture with no activation/replacement/invite binding and a verified
+inventory proves Off. Owner, custody, digests, residue and quiescence checks
+remain mandatory. This display proof never feeds device/lifecycle mutations,
+claims a slot, repairs files or prompts authorization. Failed/unrecognized proof
+refuses `host-state-unrecognized`, including unavailable bounded proof; existing
+owner refusals retain their exact D-Bus categories. The Linux CLI/bridge projects
+these to `hostStateUnrecognized` with a plain installation-verification message
+(English and Simplified Chinese in the GUI). CLI stdout keeps its closed JSON
+envelope; the fixed English diagnostic goes to stderr. Main and CLI still call
+Status, projecting proven Off as known/offline with empty devices and the existing
+Turn on control. StatusV2 projects setup off/runtime unavailable. Its 1.9-second
+watchdog/2-second budget and the existing Status transport timeout stay unchanged.
+I3b/I4a project invite/cleanup
 observations, and I4b-2 reads policy/timer state through the same fixed bundled
 child into the existing policy dimension; address remains unknown. Observation ages measure time
 since the reads with a monotonic clock and pass through the existing stale normalization.

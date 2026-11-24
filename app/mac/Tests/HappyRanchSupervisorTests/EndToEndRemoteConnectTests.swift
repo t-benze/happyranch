@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Network
+import Darwin
 @testable import HappyRanchSupervisor
 
 // MARK: - Thread-safe result container
@@ -12,11 +13,17 @@ private final class HTTPResult: @unchecked Sendable {
     private var _body: String = ""
     private var _raw: String = ""
     private var _error: String? = nil
+    private var _waitingError: String? = nil
 
     var status: Int { lock.withLock { _status } }
     var body: String { lock.withLock { _body } }
     var raw: String { lock.withLock { _raw } }
     var error: String? { lock.withLock { _error } }
+    var waitingError: String? { lock.withLock { _waitingError } }
+
+    func setWaitingError(_ message: String) {
+        lock.withLock { _waitingError = message }
+    }
 
     func setResult(status: Int, body: String, raw: String) {
         lock.withLock {
@@ -31,6 +38,38 @@ private final class HTTPResult: @unchecked Sendable {
     }
 }
 
+/// Start once and wait for an affirmative listener readiness result.
+private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, port: UInt16) throws -> UInt16 {
+    let ready = DispatchSemaphore(value: 0)
+    let startup = HTTPResult()
+    listener.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            startup.setResult(status: 1, body: "", raw: "")
+            ready.signal()
+        case .failed(let error):
+            startup.setError(error.localizedDescription)
+            ready.signal()
+        case .cancelled:
+            ready.signal()
+        default:
+            break
+        }
+    }
+    listener.start(queue: queue)
+    guard ready.wait(timeout: .now() + 2) == .success, startup.status == 1 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Fake listener 127.0.0.1:\(port) did not become ready: \(startup.error ?? "timeout or cancelled")"])
+    }
+    guard let boundPort = listener.port?.rawValue, boundPort > 0 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Ready fake listener 127.0.0.1:\(port) did not report its bound port"])
+    }
+    return boundPort
+}
+
 // MARK: - StubDaemonServer
 
 /// A minimal HTTP listener on 127.0.0.1 that the HomeConnector reverse-proxies to.
@@ -43,7 +82,7 @@ private final class HTTPResult: @unchecked Sendable {
 ///   verify the connector tears down a live connection.
 private final class StubDaemonServer: @unchecked Sendable {
 
-    private let port: UInt16
+    private(set) var port: UInt16 = 0
     private let queue: DispatchQueue
     private var listener: NWListener?
     private let lock = NSLock()
@@ -60,8 +99,7 @@ private final class StubDaemonServer: @unchecked Sendable {
     /// The body to return for a 200 response (normal mode).
     var responseBody: String = "{\"surface\":\"tasks\",\"content\":\"SPA surface loaded via remote connect\"}"
 
-    init(port: UInt16) {
-        self.port = port
+    init() {
         self.queue = DispatchQueue(label: "com.happyranch.e2e-stub-daemon-\(UUID().uuidString)")
     }
 
@@ -69,14 +107,14 @@ private final class StubDaemonServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: "127.0.0.1",
-            port: NWEndpoint.Port(integerLiteral: port)
+            port: NWEndpoint.Port(integerLiteral: 0)
         )
         let listener = try NWListener(using: parameters)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
-        listener.start(queue: queue)
+        port = try startReadyListener(listener, queue: queue, port: 0)
         self.listener = listener
     }
 
@@ -149,21 +187,64 @@ private final class TestCredentialProvider: DaemonCredentialProvider, @unchecked
 
 // MARK: - Port allocator
 
-/// Thread-safe port allocator — avoids port conflicts between parallel tests.
-/// Uses a rolling range starting at a high base that varies per compilation
-/// to reduce TIME_WAIT conflicts from prior test runs.
+/// Disjoint test range below the default macOS ephemeral range (49152+).
 private let portAllocator = NSLock()
-nonisolated(unsafe) private var nextPort: UInt16 = UInt16((Date().timeIntervalSince1970).truncatingRemainder(dividingBy: 2000) + 52000)
+nonisolated(unsafe) private var nextPort: UInt16 = 30000
+// Protected by portAllocator; retained for exhaustion diagnostics across allocations.
+nonisolated(unsafe) private var skippedPorts: [String] = []
 
-/// Allocate a pair of ports (daemonPort, connectorBindPort) for one test.
-private func allocatePorts() -> (daemon: UInt16, connector: UInt16) {
+/// Probe a candidate before production code needs an explicit port.
+/// The real listener must still report readiness after this socket closes.
+private func requireAvailableLoopbackPort(_ port: UInt16) throws {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+        let code = errno
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) socket probe failed: errno=\(code)"])
+    }
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bound == 0 else {
+        let code = errno
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) unavailable: errno=\(code) \(error.localizedDescription)"])
+    }
+}
+
+private func allocatePorts() throws -> (daemon: UInt16, connector: UInt16) {
     portAllocator.lock()
     defer { portAllocator.unlock() }
-    let daemon = nextPort
-    let connector = nextPort + 1
-    nextPort += 2
-    if nextPort > 54900 { nextPort = 52000 }
-    return (daemon, connector)
+    // Keep disjoint two-port slots for explicitly configured production endpoints.
+    // Fake listeners use port 0 instead and publish their OS-assigned bound port.
+    while nextPort < 32000 {
+        let first = nextPort
+        let second = nextPort + 1
+        nextPort += 2
+        do {
+            try requireAvailableLoopbackPort(first)
+            try requireAvailableLoopbackPort(second)
+            return (first, second)
+        } catch let error as NSError {
+            guard error.domain == NSPOSIXErrorDomain, error.code == Int(EADDRINUSE) else {
+                throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                    "Loopback port probe failed: \(error.localizedDescription); skipped ports: \(skippedPorts)"])
+            }
+            skippedPorts.append(error.localizedDescription)
+            print("EndToEndRemoteConnectTests port allocation skipped occupied candidate: \(error.localizedDescription)")
+        }
+    }
+    throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+        "Loopback test port range exhausted (30000..<32000); skipped ports: \(skippedPorts)"])
 }
 
 // MARK: - HTTP helpers
@@ -222,6 +303,8 @@ private func sendHTTPRequest(
                     }
                 }
             )
+        case .waiting(let error):
+            result.setWaitingError(String(describing: error))
         case .failed(let error):
             result.setError(error.localizedDescription)
             semaphore.signal()
@@ -239,7 +322,7 @@ private func sendHTTPRequest(
 
     if let errMsg = result.error {
         throw NSError(domain: "e2e-test", code: -1,
-                      userInfo: [NSLocalizedDescriptionKey: errMsg])
+                      userInfo: [NSLocalizedDescriptionKey: "\(errMsg); clientWaiting=\(result.waitingError ?? "none")"])
     }
     return result
 }
@@ -381,13 +464,12 @@ struct EndToEndRemoteConnectTests {
     @Test("full pairing + SPA proxy + revoke + security invariants (THR-034 gate)")
     func fullEndToEndRemoteConnect() async throws {
         // ---- Allocate ports ----
-        let ports = allocatePorts()
-        let daemonPort = ports.daemon
-        let connectorPort = ports.connector
+        let connectorPort = try allocatePorts().connector
 
         // ---- Step 2: Start stub daemon ----
-        let stubDaemon = StubDaemonServer(port: daemonPort)
+        let stubDaemon = StubDaemonServer()
         try stubDaemon.start()
+        let daemonPort = stubDaemon.port
         defer { stubDaemon.stop() }
 
         // ---- Step 1: REAL HomeConnector bound loopback via nil seam ----

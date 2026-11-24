@@ -2393,7 +2393,11 @@ def _repo_check_closure_uncommitted(owner: Any, evidence: Any, body: dict) -> No
 def _repo_record_uncommitted(owner: Any, evidence: Any, body: dict) -> int:
     if hasattr(owner, "orch"):
         from runtime.orchestrator.launch_refusals import _current
-        owner.store.held_uncommitted(owner.task.id)
+        # The original returned worker may finish its own receipt stream under
+        # hold. All fresh preparation/command admission still checks the hold.
+        if not (body["phase"] in {"worker_returned", "outer_closed", "closed"}
+                and evidence.worker_returned and not owner._repository_worker_active):
+            owner.store.held_uncommitted(owner.task.id)
         owner.orch._team_moves.revalidate_uncommitted(owner.move_reservation)
         if (owner.store._live.get(owner.identity) is not owner or not _current(owner)
                 or owner.launch_observed or owner.attempt_committed):
@@ -3390,6 +3394,9 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
 def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict]) -> dict[str, bool]:
     """The original caller owns this tail AFTER actual worker return/join."""
     primary = None
+    if preparation is not None:
+        preparation._repository_lease_release_error = None
+        preparation._repository_lease_releases_attempted = False
     for record in work:
         evidence, outcome = record["evidence"], record["outcome"]
         try:
@@ -3427,8 +3434,24 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
                     safe_error.add_note("repository preparation cause attribution failed; original failure retained")
             if primary is None:
                 primary = safe_error
-        finally:
+    # Every original worker has returned. Close ALL preparation obligations
+    # while their original leases are still held; a descriptor-release error
+    # must not strand the next repository's worker/outer receipts.
+    for record in work:
+        try:
             record["lease"].__exit__(None, None, None)
+        except BaseException as exc:
+            # Retain unknown before another fallible release or attribution.
+            try:
+                preparation.failed_cleanup(repository_deadline=record["deadline"])
+            except BaseException:
+                exc.add_note("repository lease release attribution unavailable; ownership remains unknown")
+            if primary is None:
+                primary = _repo_pull_safe_error(exc)
+                if preparation is not None and isinstance(exc, OSError):
+                    preparation._repository_lease_release_error = primary
+    if preparation is not None:
+        preparation._repository_lease_releases_attempted = True
     if primary is not None:
         raise primary from None
     return results

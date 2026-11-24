@@ -54,6 +54,289 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-1 / MAC-2a: Main app scheme, transport and ownership
+
+Main loads the single packaged `Contents/Resources/web/dist` at
+`happyranch-app://app/`, with persistent per-origin WebKit storage. The upstream
+port in AppDelegate is native endpoint identity only; WebKit never loads it.
+The loader pins every static file to the existing resource manifest, uses its
+no-follow descriptor reader, serves the pinned index for SPA routes/deep reload,
+and enforces CSP plus an independent WebKit resource allowlist. Release map
+removal also removes those entries from the packaged manifest.
+
+Main-frame response policy requires the current document's exact native-loader
+response and its 2xx status, the app route, matching MIME type and WebKit display
+support. WebKit reconstructs custom-scheme responses as `URLResponse`, so the
+policy does not require its HTTP subclass to survive. Document retirement clears
+the native response receipt. Bounded redacted callback diagnostics record action
+and response decisions, the exact refusing guard, response class/MIME/status and
+native source status alongside the sanitized callback URL. Health refusal tests
+must reach readiness with at least one health invocation and successful relay
+context/bind; a navigation failure cannot satisfy a negative health row.
+
+A relay-context refusal also captures a pre-guard bootstrap marker and the last
+script stage (top/origin guard, native handler lookup, randomness, context
+definition, facade definition, fetch installation or completion). Failure-only
+page facts classify initial/current origin as app, null or other, and report
+the exact app protocol/host matches, top-frame and secure-context flags,
+WebKit/handler/postMessage and crypto/randomness types, and document readiness.
+Throwing lookups are explicit. Native retains only closed keys/values, with no
+context token, arbitrary page strings, URL paths/queries or JavaScript error
+messages; it checks document/view identity across this diagnostic read. Each
+native context, bind and diagnostic evaluation also records only its result
+class: nil, null, string, dictionary, number, bool, other or threw (with
+not-attempted/in-flight lifecycle markers). A missing bootstrap marker can then
+be distinguished from an unusable native result.
+
+Admission and its native tests use WebKit's value-returning async
+`callAsyncJavaScript(_:arguments:in:contentWorld:)`, targeting the main frame
+(`in: nil`) in `.page`. The callback API's second `in:` label instead returns
+Swift `Void` when its default nil handler is used; `try await` does not select
+the async overload. That mismatch explains build 60's missing context and all
+15 invalid page facts. Build 61 reports aggregate 12 tests / 0 failures, but
+individual loader outcomes/diagnostics were not retained and SPA qualification
+failed at deep reload; final-head qualification remains pending.
+Status emission intentionally keeps the explicit
+nil callback because it consumes no result.
+
+`AppScheme` admits only the selected view/origin, `/api/v1/`, fixed methods,
+32 requests (two with bodies), 64 MiB bodies and the native target generation.
+The document-start adapter serializes request bodies, assigns cancellation IDs
+and retains abort forwarding until EOF/cancel. Shared `multipart.ts` already
+encodes FormData; it avoids Mac's observed empty raw FormData body as well as
+Linux's crash. Shared artifact downloads already use fetch → blob → download;
+Main's WKDownloadDelegate asks for a save destination. Direct API navigation is
+blocked. HTTP(S) links use the system browser.
+
+The page bootstrap returns only `hr_native_session`. Local calls read the
+existing daemon credential natively at the already verified port. Remote calls
+reuse ClientBridge's selected managed peer or DIY dial and in-memory credential
+from existing native/Keychain custody. The GUI no longer starts a proxy listener;
+the foreground CLI's `open`/loopback behavior remains. Redirects, cookies,
+page authorization and identity headers are not forwarded. The packaged
+`remote-client-config-policy.v1.json` supplies the same native config-write
+refusals as Linux; the daemon/home connector remote allowlist is unchanged.
+Health contract admission uses `current >= 1` and `min_client <= 1`, including
+missing-contract and busy refusals, before API forwarding. The native document
+completion callback checks the current navigation/load identity and, when a
+target is selected, awaits its fresh admission. An initially unselected Main
+can admit the release document without selecting a candidate. The active monitor rechecks
+the same readiness contract after its existing access check. After admission,
+ordinary or bounded-unknown `update_busy` publishes the existing Busy/忙碌 status
+and preserves Main, its document identity, drafts and in-flight transfers; the
+periodic check restores ready/Connected without replay. Initial busy admission
+still refuses Connected. Genuine access loss and incompatibility keep their
+existing failure handling. Owner relay envelopes capture the loaded Main
+context, revoked at document retirement; late pushes cannot alter current
+evidence or clear retired-save uncertainty. The public call/on API and owner
+summary schema are unchanged.
+
+Only a proven no-send transport outcome can return the pre-forward 503 recovery
+shape. The managed/DIY transports fence before their first write/send. Local
+URLSession failures after resume conservatively fail the scheme transfer,
+including a lost reply before response headers; mutations become Result unknown
+in the shared client and are never automatically retried.
+
+The Main bridge exposes `app.status`, full `app.stateChanged`, request cancel,
+`client.commitSwitch`, `client.disconnect`, and the existing `app.ownersChanged`
+receipt required before registered saves. Commit/disconnect take exactly `{}`.
+Native parses the bounded, duplicate-free closed summary and stores its owner
+protection before replying `"{}"`. Voluntary document navigation refuses missing,
+dirty/failed or unresolved owner evidence and native non-GET transfers. Document
+loss retains unresolved-save uncertainty; a replacement clean summary cannot
+clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
+a later slice. The locale field reports the native launch language. Locale setters,
+Settings/Connection dialog hosting, toolbar/menu, local controls and launch policy
+remain later slices. The existing native Connection view remains for later slices.
+Those later Mac contracts are not qualified by this transport PR.
+
+CLIENT→HOME uses the same Main disconnect gate: absent Main or pending/unknown
+owner evidence preserves CLIENT and its bridge. Successful admission retires
+the bridge before clearing the presentation URL and persisting HOME. Native
+`client.disconnect` still retains Main at `no_target`. The Swift remote-surface
+mirror follows the existing route-classification contract, including browser
+adapter list/status and operator-only adapter bind/reject. Daemon policy and
+route-classification semantics are unchanged.
+
+Historical build 62 measured incremental delivery of all five normal SSE events,
+but the page never reported EOF after native `didFinish`; that build remains **FAIL**.
+The MAC-1 baseline subsequently passed build 65 and merged as `efeee6e9`
+(PR #1839). MAC-2a native compilation and XCTest execution remain NOT RUN on
+the Linux maker host. The PR body carries the current separate build ledger,
+including failed attempts; source delivery never renews that allowance.
+The build-62 EOF cause was **unproven** at that head. Framing headers are stripped before delivery,
+and the handler is MainActor-owned, but build 62 did not retain expected length,
+page read/parse/emit state or finish/stop facts. No speculative framing or
+buffering change is made. After independent review
+APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
+It compiles the product and runs **all tests in both app/mac test targets** in
+one unfiltered `swift test -c release` invocation, then launches that same
+product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
+uses the production loader/adapter and built SPA. The full tests reuse the
+supervisor suite's disposable, unlocked login Keychain inside scratch HOME for
+EnrollmentKeyStoreTests. Its generated password travels only over stdin;
+creation/unlock output is discarded. Exact scratch-Keychain deletion and
+read-only real-user search-list/default preference bookends run even on failure,
+and any fixture/cleanup discrepancy fails the suite. The real user's Keychain
+preferences are never set. No real daemon, helper, signing or production data
+is used. The synthetic local venue uses the
+SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
+The internal qualification entry is explicitly commissioned by MAC-1 and is the
+only test-only app entry added; ordinary app startup never selects it.
+
+The test invocation explicitly enables testable imports, XCTest and Swift
+Testing, and uses `--no-parallel` for per-invocation attribution. Release testing
+with `--enable-testable-imports` is supported by SwiftPM; this harness does not
+substitute a debug product. Native compatibility and elapsed time at the revised
+head are **NOT RUN on Linux**. Unsupported options or output fail closed.
+The full workload includes MAC-1's 14 XCTests, all MAC-2a ownership cases and
+Swift Testing cases such as HomeInviteModelTests. The source census at this
+revision is 54 XCTest methods plus 557 `@Test` functions across 47 files;
+parameterized functions can execute more than one case. The census is recomputed
+from both test directories at the checked-out source, not a fixed pass count.
+
+`app_scheme.native_tests` records each XCTest method and each Swift Testing
+invocation separately with PASS/FAIL (or INCOMPLETE), using function ID plus a
+case ordinal for parameters. Ordinary functions use `testStarted/testEnded`;
+parameterized functions additionally require their `testCaseStarted/testCaseEnded`
+rows. Structured verdict rows omit argument/issue values. XCTest
+start/terminal lines and Swift Testing version-0 JSON events must agree with
+the independent source census. Every function needs one ordered start/end pair and at least one
+completed invocation; missing/duplicate/failed/skipped/cancelled evidence, a missing
+run boundary, nonzero exit, malformed/unsupported capture, or exhaustion fails
+the suite. Swift Testing uses `--event-stream-output-path` and
+`--event-stream-version 0`, so display names and aggregate console counts cannot
+hide omitted functions. Named terminal lines and structured cases are never
+truncated to the former 16 KiB bound. The native command and JSON event stream
+each have a 16 MiB acceptance cap; exceeding either refuses PASS. Before scratch
+cleanup (also on command failure/timeout), `native_tests.event_archive` in the
+collected `probe.json` retains the exact raw JSONL as `gzip+base64`, with raw and
+gzip byte counts/SHA256. The gzip limit is 4 MiB; missing/oversized archives fail
+closed without truncation. Decode `data` as base64, verify `gzip_sha256`, gunzip,
+and verify `sha256` to reconstruct issues and lifecycle events. The existing
+JSON artifact collection needs no Jenkins configuration change. Raw events may
+contain synthetic test argument/issue details; verdict rows remain closed.
+
+The native compile/test step is bounded to 1,200 seconds within a shared
+2,100-second suite deadline. The old 600-second filtered-test budget has no
+full-suite timing evidence: this larger bound accommodates the 611 source
+functions and existing network tests with 30-second request bounds, but is not
+a measured sufficiency claim. Node transfer (90s), npm install (240s), SPA build
+(180s), and three qualification processes (40s each) retain their budgets,
+leaving 270s for fixture/metadata/overhead. Existing fixture cleanup retains its
+bounded 30-second grace after the command deadline. Each command records its limit and elapsed
+time. Timeout/output overflow records an incomplete capture and fails; it is
+never reported as test success. The existing Jenkins job envelope/configuration
+is unchanged; reviewed SOURCE_SHA dispatch selects this in-repo workload.
+
+Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
+`error_context`: lines containing `: error:` or beginning `error:`, with two
+lines of surrounding context and original line numbers. Its serialized JSON is
+bounded to 64 KiB, with the total matching-line count and an explicit truncation
+flag. This evidence survives command failure and scratch removal; it does not
+change the build or qualification verdict.
+`test_results` also retains all named terminal outcome lines without truncation,
+independently of head/tail. The loader table prints `MAC1_LOADER`
+JSON at every initial row and ready checkpoint: closed result classes,
+context/bind/readiness, all 15 filtered page facts and callback/health counts.
+The collector projects only those closed fields into `loader_diagnostics`
+(64 KiB, matching-line count and explicit truncation); no context values,
+URLs, drafts or arbitrary page text are retained in these records.
+
+Each page receipt is sent immediately to native and fsynced to JSONL; timeout
+retains earlier events. Every one of five events at 1s intervals must arrive in
+under **500 ms** (less than half the interval); the two-event abort must stop its
+native owner within **500 ms**, with no writes from that owner afterward. No
+completion-only receipt array can pass. The normal stream must also reach actual
+reader EOF with all five data receipts and no partial trailing frame.
+Stream, abort and download each run in a fresh invocation of the built product,
+with separate native MainActor, WebKit view/content process and JSONL evidence.
+Their page deadlines remain 9s, 4s and 5s. Each emits one `step` PASS/FAIL. The
+collector launches abort and download even after a stream watchdog, native
+command timeout or unreadable stream evidence; every process exit and its own
+`done` receipt are required for overall PASS. Download awaits the native WKDownload result within its own deadline;
+fetch bytes alone cannot pass saving. The assessor reports each step separately
+and requires all three PASS plus every existing timing/body/navigation check.
+Any failure remains an overall FAIL, even if later steps pass.
+
+Failure-only `page_stream_failure` records retain the last read/decode/parse/emit
+or save stage, received byte/frame counts and pending framing byte count.
+`native_stream_failure` records correlate native owner IDs with delivered byte
+counts, closed response-header names (unexpected names become `other`), framing
+header presence, expected content length and didFinish main-thread/MainActor,
+cancellation and task-stopped facts. Page progress stays in bounded native memory
+until failure; native snapshots are capped at 32 streams. Neither diagnostic
+contains header values, body bytes, context/credential values, arbitrary errors
+or URLs. Ordinary app startup does not enable this qualification observer.
+The 34s main-thread failure dump precedes the 35s background hard watchdog in
+each process. Native background probes run every second: request and 750ms
+pending records distinguish missing main dispatch from a pending JavaScript
+reply. Main evaluates only current qualifier step/reader state, received byte/
+frame counts, pending framing bytes and qualifier timer count. Results are
+projected to closed native keys, enums and bounded integers; they do not use the
+page message handler. Native content-process termination and provisional/
+committed navigation failures have dedicated records. API scheme lifecycle
+records precede and follow response/data/finish callbacks and owner retirement,
+with delivered totals, cancellation/thread facts, stop and completion guards.
+Completion is claimed before WebKit is called, preventing a second completion;
+stop removes ownership before cancellation. These records are written as events
+occur, so a later stalled main queue cannot suppress already retained facts.
+At most 35 liveness requests and 32 retained completed-owner IDs per process are
+needed before its watchdog. Raw page results and error values are never logged.
+
+Builds 62 and 63 measured incremental SSE; the post-finish stall remains
+unproven. Build 63 also lacked the native main-queue timeout, so page timers
+alone cannot attribute it. Process isolation repairs the proven qualifier
+dependency; it does not claim WebKit EOF closure or change response framing.
+Round-15 authority: engineering_manager `output/TASK-18895/round15-decision.md`
+and `ledger.md`. Builds 54–64 were used through round 15. The PR body records
+the current build ledger. Only independent QA may build after independent review
+APPROVE at the exact head. The maker runs no Mac build.
+
+The suite also checks JSON POST/PUT,
+10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
+honestly expects `/onboarding`: the fixture returns a successful empty `orgs`
+list, exactly the `RootRedirect` branch in `web/src/routes.tsx`; it never converts
+an error or missing response into onboarding. Reload retains `/onboarding`,
+the fixture's stable global deep route. `DesktopSettingsRoute` intentionally
+opens a dialog and replaces a cold org-less `/settings` link with `/`, so that
+dialog route is unsuitable for a pathname-persistence assertion. Qualification
+requires the reload's native navigation to allow `/onboarding`, the scheme
+handler to serve that exact requested path, and the rendered SPA pathname and
+app origin to survive. A reload of `/` followed by another onboarding redirect
+cannot pass. Failure-only `deep_reload_failure` records requested/served paths,
+navigation path/decision and final pathname as closed classes (`/`,
+`/onboarding`, `/settings`, `other` or missing/not-observed/not-served).
+A timeout/failure is FAIL with partial evidence, not proof
+of WebKit buffering. If actual timing establishes buffering, the manager must
+commission native-message streaming fallback and renewed review/build.
+
+Linux maker commands (no Mac build):
+
+```sh
+python3 -B -m unittest scripts.mac_native.test_app_scheme -v
+python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json
+bash -n app/mac/scripts/build-app.sh
+```
+
+The dispatcher on Linux explicitly skips Darwin execution; this is not native
+PASS. Swift tests are `AppHTTPResponseParserTests`, `AppSchemeRouteTests` and
+`AppSchemeLoadTests` (production document admission, busy draft/transfer retention,
+retired-document messages and lost-reply delivery) in
+the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
+`HomeInviteModelTests.admittedBusyReadinessRetainsDocument` also checks the real
+periodic connected → busy/unknown → ready monitor, unchanged lifetime/webURL,
+no session reopen/replay and genuine revocation teardown in the existing
+HomeInviteModelTests venue.
+Founder THR-387 seq136 (2026-11-24T00:25:44Z) raised PR #1839's allowance
+to **14 total Mac builds**, combined across Jenkins and GitHub Actions unsigned
+builds. The seq89/95 default of **6 builds per Mac PR** still applies to other
+Mac PRs. Build only after independent review APPROVE at the exact head; never
+merge Mac code not built at its exact final head.
+The PR body records the current build ledger. No diagnostic-only run,
+extra retry, new Jenkins job or required check is added.
+
+
 ### THR-379 slice 5c: foreground Mac client CLI
 
 Use the CLI shipped inside the same app bundle (adjust the app location):
@@ -190,13 +473,59 @@ effect none and releases only a still-current native loaded-UI gate.
 The persistent, accessible native-chrome save warning over the runtime explains
 that reopening may need a new invite. Its bilingual Retry save action opens the
 packaged Connection view even after that view was closed; runtime content gets
-no bridge and cannot mutate custody. The native RELEASE UI load gate remains
-the only route to Connected. Existing native screens remain until qualified
+no custody authority. Main uses its scoped app-scheme bridge. The first native
+RELEASE UI load is a prerequisite; explicit owner-gated commit alone selects
+the candidate and publishes Connected. Existing native screens remain until qualified
 cutover. This source delivery and unsigned app build do not establish native
 GUI/Keychain execution or cross-device acceptance. Focused Swift tests on an
 authorized Mac: `swift test --package-path app/mac --filter 'ConnectionContractTests|HomeInviteModelTests'`.
 They are NOT RUN on the Linux maker host and are not compiled by the unsigned
 workflow.
+
+### MAC-2a active/candidate selection
+
+`HomeInviteModel` retains a selected session independently of the candidate's
+attempt, transport, health, Keychain result and cancellation. Failure or Cancel
+of a different-home candidate preserves a still-valid selected session and its
+save warning. Selected/retiring home or profile identity cannot be started
+again; saved reconnect to that identity refuses before creating another helper.
+`ManagedJoinModel` stages candidate membership separately from its active
+membership; the legacy in-process engine still has a global singleton fence.
+Helper-backed `ClientBridge` ownership reserves both canonical profile path and
+helper identity, while `HomeBridgeProcess` profile locks and teardown fencing
+remain. A failed/unknown stop retains the reservation.
+
+Main's SwiftUI identity is independent of target and attempt. Switch/disconnect
+preserve the WKWebView, its loaded document and its owner registry. Native refuses
+with `non_get_pending`, `owner_save_pending`, `owner_save_unknown` or
+`owner_edits_pending` while those protections apply; missing owner evidence
+fails closed. Admitted commit swaps target and generation synchronously, fails
+old-generation transfers with an error (never clean EOF), and emits full status
+with the real candidate. Cleanup settles separately: action results report
+`unknown` until observed, or `incomplete` after failure; cleanup cannot roll
+back selection or authorize duplicate identity. Active revocation keeps its exact
+profile/Keychain erasure path without touching a concurrent candidate. Failed
+revocation cleanup retains that owner for explicit Retry. Disconnect uses the same gate.
+Removing selected saved access first uses that gate and waits for confirmed
+cleanup before deleting profile state. The retained native form's Disconnect and
+Remove controls use these same gates, display named refusals, and retain saved
+identity when teardown is incomplete. Cancel remains candidate-only; confirmed
+candidate cancellation reports confirmed local cleanup even with another owner
+still connected. The native warning/Retry and savedAccess projection read the
+selected owner's save result independently of candidate reset, success or Cancel.
+
+Direct DIY pairing completion explicitly rebinds the stable Main through the
+same owner/transfer admission; reconnect after disconnect installs the fresh
+transport and generation without reloading the document. Local endpoint changes
+also use this admission and update the local prompt URL. Ordinary health cadence
+for the same endpoint is a no-op and cannot reselect a disconnected target.
+No shared-web/protocol/schema, daemon credential, remote-allowlist, dependency
+or auth change is included.
+
+Dialog/toolbar/menu/screenshot work is MAC-2b. Quit/close/Relaunch gating and
+language remain MAC-4. Native tests use the existing SwiftPM targets; on an
+authorized Mac after review: `swift test --package-path app/mac --filter 'HomeCandidateOwnershipTests|AppSchemeSwitchTests|ManagedOwnerFenceTests|ConnectionOwnershipStateTests|ManagedCandidateMembershipTests|HomeInviteModelTests'`.
+No native execution or Mac/Jenkins build is authorized for the maker.
 
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
@@ -206,9 +535,12 @@ form defaults to **Home invite**. Paste one invite and choose Connect, without
 separate URL, key or pairing-code entry. The app validates it offline, displays
 the control host and release runtime, joins through the isolated home helper,
 pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
-then **Opening runtime**. **Connected**
-is published only after the expected authorized main-frame web navigation
-finishes; network membership and health alone cannot publish it. Existing DIY
+then **Opening runtime** and **Ready to switch**. Compatible, non-busy health
+and the first authorized release-document load permit readiness only.
+**Connected** is published by explicit `client.commitSwitch`, after Main owner
+and current-generation transfer admission. The
+periodic access monitor repeats that readiness check. Network membership and
+authorization alone cannot publish it. Existing DIY
 Tailscale remains an explicit separate selection, never an error fallback. Custom-server
 URL/key intake does not exist and is not planned; outside-home access uses a fixed
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
@@ -216,8 +548,9 @@ QR transfer remains deferred.
 
 `HomeInviteModel` owns attempt IDs, native document generations, the actual
 invite-expiry countdown and cancel fencing. Native load callbacks capture both
-identities, including on saved reconnect. A native confirmation hold defers
-Connected until dismissal and a still-current authorized load; direct Cancel in
+identities for the first document. Saved reconnect and later candidates reuse
+that admitted Main document. A native confirmation hold defers readiness until
+dismissal and a still-current authorized first load; direct Cancel in
 the native attempt form needs no second confirmation. The static contract layer
 above reuses these seams; 3b-2b supplies web-initiated confirmations. `ManagedHomeInviteSession`
 uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
@@ -229,7 +562,8 @@ shows Stopping until that storage step settles, retaining its observed saved
 access or save failure before local teardown; it cannot advance to Opening or
 Connected. Failed or unknown teardown remains visible.
 The native release-UI load observation is retained if it arrives during Retry
-saving; Connected still waits for saving and any native confirmation to settle.
+saving; readiness still waits for saving and any native confirmation to settle,
+and selection still requires explicit commit.
 The ten-second navigation deadline remains effective while Retry saving waits.
 A failed join, including a helper TLS-close failure, reaches a closed failure
 with Retry (#1563).

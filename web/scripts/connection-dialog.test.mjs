@@ -208,6 +208,7 @@ test('host view: approval, invite, unconfirmed and manage flags', () => {
   assert.equal(uncertain.lead, 'connection.host.hLeadUnconfirmed');
   assert.equal(uncertain.manage, false);
   assert.equal(model.hostView(host({ setup: 'off' }), false).enable, true);
+  assert.equal(model.errorKey('host.status', 'hostStateUnrecognized'), 'connection.host.hErrStateUnrecognized');
   assert.equal(model.displayLabel('Saved computer 12', '已保存的电脑', 'zh-CN'), '已保存的电脑 12');
   assert.equal(model.displayLabel('Studio Host', 'Saved computer', 'en'), 'Studio Host');
 });

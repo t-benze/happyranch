@@ -60,6 +60,7 @@ final class ManagedJoinModel: ObservableObject {
         var profiles: [ManagedJoinProfile] = []
         var selectedProfileID = ""
         private(set) var activeProfile: ManagedJoinProfile?
+        private(set) var candidateProfile: ManagedJoinProfile?
         private(set) var confirmationProfile: ManagedJoinProfile?
         private(set) var blockedResumeIDs: Set<String> = []
 
@@ -67,8 +68,10 @@ final class ManagedJoinModel: ObservableObject {
             activeProfile ?? profiles.first(where: { $0.uuid == selectedProfileID })
         }
 
-        mutating func connected(_ profile: ManagedJoinProfile) { activeProfile = profile }
-        mutating func disconnected() { activeProfile = nil }
+        mutating func preparing(_ profile: ManagedJoinProfile) { candidateProfile = profile }
+        mutating func discardCandidate() { candidateProfile = nil }
+        mutating func connected(_ profile: ManagedJoinProfile) { activeProfile = profile; candidateProfile = nil }
+        mutating func disconnected() { activeProfile = nil; candidateProfile = nil }
         mutating func requestRevocation() { confirmationProfile = revocationProfile }
         mutating func cancelRevocation() { confirmationProfile = nil }
 
@@ -200,7 +203,7 @@ final class ManagedJoinModel: ObservableObject {
     private func begin(profile: ManagedJoinProfile, homeHost: String, homePort: UInt16, key: Data?) {
         let token = UUID()
         generation = token
-        memberships.connected(profile)
+        memberships.preparing(profile)
         confirmedControlHost = URL(string: profile.controlURL)?.host
         networkSubmitted = false
         let candidate = ClientBridge(homeConnectorHost: homeHost, homeConnectorPort: homePort, lane: .managed)
@@ -235,12 +238,13 @@ final class ManagedJoinModel: ObservableObject {
                 }
                 try Task.checkCancellation()
                 guard generation == token else { throw CancellationError() }
+                memberships.connected(profile)
                 phase = .joined
             } catch {
                 await candidate.stopManagedNetwork()
                 guard generation == token else { return }
                 bridge = nil
-                memberships.disconnected()
+                memberships.discardCandidate()
                 phase = error is CancellationError ? .interrupted : .error(Self.safeMessage(error))
             }
         }

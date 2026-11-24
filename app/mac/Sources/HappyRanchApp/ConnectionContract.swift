@@ -427,25 +427,26 @@ enum ConnectionClientProjection {
         return formatter.string(from: date)
     }
     static func health(_ model: HomeInviteModel, now: Date) -> [String: Any] {
-        guard let sample = model.accessObservation, sample.lifetime == model.lifetime else {
+        guard let sample = model.bridgeAccessObservation else {
             return ["access": "unknown", "runtime": "unknown", "route": "unknown", "observedAt": NSNull(), "observation": "unavailable"]
         }
         let fresh = (0...10).contains(now.timeIntervalSince(sample.observedAt))
         return ["access": fresh ? sample.access.rawValue : "unknown",
-                "runtime": fresh && sample.access == .allowed && model.phase == .connected ? "available" : "unknown",
+                "runtime": fresh && sample.access == .allowed && model.bridgeRuntimeAvailable ? "available" : "unknown",
                 "route": "unknown", "observedAt": timestamp(sample.observedAt),
                 "observation": fresh ? (sample.access == .unknown ? "unavailable" : "known") : "stale"]
     }
     static func savedAccess(_ model: HomeInviteModel) -> String {
         if !model.removalFailures.isEmpty { return "removalIncomplete" }
-        if case .keychain(let failure) = model.phase {
-            if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
-            return "unknown"
-        }
         if let failure = model.saveFailure {
             if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
             if failure == .unavailable || failure == .deletionFailed { return "unknown" }
             return "notSaved"
+        }
+        if model.hasActiveSession { return model.activeHasUnsavedAccess ? "notSaved" : "saved" }
+        if case .keychain(let failure) = model.phase {
+            if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
+            return "unknown"
         }
         if model.bridgeHasUnsavedAccess { return "notSaved" }
         if !model.savedHomes.isEmpty { return "saved" }
@@ -466,8 +467,8 @@ enum ConnectionClientProjection {
         case .pairing: stage = "pairing"
         case .awaitingApproval: stage = "waitingApproval"
         case .saving: stage = "saving"
-        case .opening: stage = "opening"
-        case .connected: stage = "connected"
+        case .opening, .readyToSwitch: stage = "opening"
+        case .connected, .runtimeBusy: stage = "connected"
         case .stopping: stage = "stopping"
         case .failed, .keychain: stage = "failed"
         }

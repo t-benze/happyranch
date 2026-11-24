@@ -1140,3 +1140,43 @@ def test_retired_activation_error_has_exact_copy(mount: Any, method: str) -> Non
     v.h.RemoteAccessHelper._error(v.helper, v.message, 'home-mode-retired')
     v.message.new_method_error_literal.assert_called_once_with(
         v.h.INTERFACE + '.Error.home_mode_retired', MESSAGE)
+
+
+@pytest.mark.parametrize('method', ['Status', 'StatusV2'])
+def test_thr327_closed_host_status(
+        renewal_fixture: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    """Retired Enable capture cannot prove Off when connector IPC is absent.
+
+    The original inventory rows retired with the Enable composition owner;
+    this keeper exercises its shipping closed adapter through the public mount.
+    """
+    v, m = renewal_fixture, mount
+    child = backend.HelperLifecycleBackend(v.installer)
+    native = Mock(side_effect=AssertionError('status attempted a native effect'))
+    monkeypatch.setattr(v.installer, '_run', native)
+    uid = os.getuid()
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    m.helper.control = m.h.ControlClient(str(v.root / 'absent-connector.sock'))
+    m.helper.cursors = {}
+    m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    m.reader.current_generation.side_effect = lambda _: child.capture('Enable', uid)
+    m.message.get_member = lambda: method
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(m.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    m.message.new_method_reply = Mock()
+    m.message.new_method_error_literal = Mock(side_effect=lambda name, code: SimpleNamespace(name=name, code=code))
+    m.helper.connection.send_message = Mock()
+    m.helper._reply = m.h.RemoteAccessHelper._reply.__get__(m.helper)
+    m.helper._error = m.h.RemoteAccessHelper._error.__get__(m.helper)
+    before, calls = staged_inventory(v), list(v.manager.calls)
+    m.helper._dispatch(m.message)
+    m.helper.connection.send_message.assert_called_once()
+    m.message.new_method_error_literal.assert_called_once_with(
+        m.h.INTERFACE + '.Error.host_state_unrecognized', 'host-state-unrecognized')
+    m.message.new_method_reply.assert_not_called()
+    m.reader.current_generation.assert_called_once()
+    assert staged_inventory(v) == before and v.manager.calls == calls
+    assert not m.helper.authority.call.called and not m.reader.effect.called and not native.called
+    assert not m.helper.audit.path.exists()

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Network
+import Darwin
 @testable import HappyRanchSupervisor
 
 // MARK: - Thread-safe result container
@@ -12,11 +13,17 @@ private final class HTTPResult: @unchecked Sendable {
     private var _body: String = ""
     private var _raw: String = ""
     private var _error: String? = nil
+    private var _waitingError: String? = nil
 
     var status: Int { lock.withLock { _status } }
     var body: String { lock.withLock { _body } }
     var raw: String { lock.withLock { _raw } }
     var error: String? { lock.withLock { _error } }
+    var waitingError: String? { lock.withLock { _waitingError } }
+
+    func setWaitingError(_ message: String) {
+        lock.withLock { _waitingError = message }
+    }
 
     func setResult(status: Int, body: String, raw: String) {
         lock.withLock {
@@ -31,13 +38,45 @@ private final class HTTPResult: @unchecked Sendable {
     }
 }
 
+/// Start once and wait for an affirmative listener readiness result.
+private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, port: UInt16) throws -> UInt16 {
+    let ready = DispatchSemaphore(value: 0)
+    let startup = HTTPResult()
+    listener.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            startup.setResult(status: 1, body: "", raw: "")
+            ready.signal()
+        case .failed(let error):
+            startup.setError(error.localizedDescription)
+            ready.signal()
+        case .cancelled:
+            ready.signal()
+        default:
+            break
+        }
+    }
+    listener.start(queue: queue)
+    guard ready.wait(timeout: .now() + 2) == .success, startup.status == 1 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Fake listener 127.0.0.1:\(port) did not become ready: \(startup.error ?? "timeout or cancelled")"])
+    }
+    guard let boundPort = listener.port?.rawValue, boundPort > 0 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Ready fake listener 127.0.0.1:\(port) did not report its bound port"])
+    }
+    return boundPort
+}
+
 // MARK: - FakeDaemonServer
 
 /// A minimal HTTP server that runs on a loopback port, records received
 /// requests, and returns test responses.
 private final class FakeDaemonServer: @unchecked Sendable {
 
-    private let port: UInt16
+    private(set) var port: UInt16 = 0
     private let queue: DispatchQueue
     private var listener: NWListener?
     private let lock = NSLock()
@@ -63,8 +102,7 @@ private final class FakeDaemonServer: @unchecked Sendable {
     /// when the device is revoked.
     var stallMode: Bool = false
 
-    init(port: UInt16) {
-        self.port = port
+    init() {
         self.queue = DispatchQueue(label: "com.happyranch.fake-daemon-\(UUID().uuidString)")
     }
 
@@ -72,7 +110,7 @@ private final class FakeDaemonServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: "127.0.0.1",
-            port: NWEndpoint.Port(integerLiteral: port)
+            port: NWEndpoint.Port(integerLiteral: 0)
         )
 
         let listener = try NWListener(using: parameters)
@@ -80,7 +118,7 @@ private final class FakeDaemonServer: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
-        listener.start(queue: queue)
+        port = try startReadyListener(listener, queue: queue, port: 0)
         self.listener = listener
     }
 
@@ -175,24 +213,91 @@ private func makePermissiveStub() -> StubPairedDeviceStore {
 
 // MARK: - Helpers
 
-/// Thread-safe port allocator — avoids port conflicts between parallel tests.
-/// Start above common service ports and the xray proxy range (50000+).
+/// Disjoint test range below the default macOS ephemeral range (49152+).
 private let portAllocator = NSLock()
-nonisolated(unsafe) private var nextPort: UInt16 = 55000
+nonisolated(unsafe) private var nextPort: UInt16 = 20000
+// Protected by portAllocator; retained for exhaustion diagnostics across allocations.
+nonisolated(unsafe) private var skippedPorts: [String] = []
 
-/// Allocate a pair of ports (daemonPort, bindPort) for one test.
-private func allocatePortPair() -> (daemon: UInt16, bind: UInt16) {
+/// Probe a candidate before production code needs an explicit port.
+/// The real listener must still report readiness after this socket closes.
+private func requireAvailableLoopbackPort(_ port: UInt16) throws {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+        let code = errno
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) socket probe failed: errno=\(code)"])
+    }
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bound == 0 else {
+        let code = errno
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) unavailable: errno=\(code) \(error.localizedDescription)"])
+    }
+}
+
+private func allocatePortPair() throws -> (daemon: UInt16, bind: UInt16) {
     portAllocator.lock()
     defer { portAllocator.unlock() }
-    let daemon = nextPort
-    let bind = nextPort + 1
-    nextPort += 2
-    if nextPort > 60000 { nextPort = 55000 }
-    return (daemon, bind)
+    // Keep disjoint two-port slots for explicitly configured production endpoints.
+    // Fake listeners use port 0 instead and publish their OS-assigned bound port.
+    while nextPort < 24000 {
+        let first = nextPort
+        let second = nextPort + 1
+        nextPort += 2
+        do {
+            try requireAvailableLoopbackPort(first)
+            try requireAvailableLoopbackPort(second)
+            return (first, second)
+        } catch let error as NSError {
+            guard error.domain == NSPOSIXErrorDomain, error.code == Int(EADDRINUSE) else {
+                throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                    "Loopback port probe failed: \(error.localizedDescription); skipped ports: \(skippedPorts)"])
+            }
+            skippedPorts.append(error.localizedDescription)
+            print("HomeConnectorTests port allocation skipped occupied candidate: \(error.localizedDescription)")
+        }
+    }
+    throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+        "Loopback test port range exhausted (20000..<24000); skipped ports: \(skippedPorts)"])
+}
+
+/// Wait for running, never accepting a failed state as startup success.
+private func requireRunning(_ connector: HomeConnector, daemon: FakeDaemonServer? = nil) throws {
+    for _ in 0..<50 {
+        switch connector.state {
+        case .running:
+            return
+        case .failed:
+            let state = connector.state
+            connector.stop()
+            throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                "HomeConnector failed readiness: \(state); daemonConnections=\(daemon.map { String($0.receivedConnectionCount) } ?? "unavailable")"])
+        case .stopped:
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+    let state = connector.state
+    connector.stop()
+    throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+        "HomeConnector readiness timed out: \(state); daemonConnections=\(daemon.map { String($0.receivedConnectionCount) } ?? "unavailable")"])
 }
 
 /// Send an HTTP request to the given host:port and return the response.
 private func sendHTTPRequest(
+    connector: HomeConnector,
+    daemon: FakeDaemonServer,
     host: String,
     port: UInt16,
     path: String,
@@ -249,6 +354,8 @@ private func sendHTTPRequest(
                     }
                 }
             )
+        case .waiting(let error):
+            result.setWaitingError(String(describing: error))
         case .failed(let error):
             result.setError(error.localizedDescription)
             semaphore.signal()
@@ -266,7 +373,7 @@ private func sendHTTPRequest(
 
     if let errMsg = result.error {
         throw NSError(domain: "test", code: -1,
-                      userInfo: [NSLocalizedDescriptionKey: errMsg])
+                      userInfo: [NSLocalizedDescriptionKey: "\(errMsg); connector=\(connector.state); clientWaiting=\(result.waitingError ?? "none"); daemonConnections=\(daemon.receivedConnectionCount)"])
     }
     return result
 }
@@ -307,6 +414,8 @@ private final class PersistentConnection: @unchecked Sendable {
 /// and return the connection kept alive.  The caller is responsible for
 /// observing the connection state and eventually cancelling it.
 private func sendPersistentHTTPRequest(
+    connector: HomeConnector,
+    daemon: FakeDaemonServer,
     host: String,
     port: UInt16,
     path: String,
@@ -322,6 +431,7 @@ private func sendPersistentHTTPRequest(
     let connection = NWConnection(to: endpoint, using: .tcp)
     let persistent = PersistentConnection(connection: connection, queue: queue)
     let readySemaphore = DispatchSemaphore(value: 0)
+    let startup = HTTPResult()
 
     connection.stateUpdateHandler = { state in
         switch state {
@@ -349,7 +459,10 @@ private func sendPersistentHTTPRequest(
                     readySemaphore.signal()
                 }
             )
-        case .failed:
+        case .waiting(let error):
+            startup.setWaitingError(String(describing: error))
+        case .failed(let error):
+            startup.setError(error.localizedDescription)
             persistent.markFailed()
             readySemaphore.signal()
         case .cancelled:
@@ -364,7 +477,7 @@ private func sendPersistentHTTPRequest(
         connection.cancel()
         throw NSError(
             domain: "test", code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "Persistent connection timed out"]
+            userInfo: [NSLocalizedDescriptionKey: "Persistent connection timed out; connector=\(connector.state); clientWaiting=\(startup.waitingError ?? "none"); clientError=\(startup.error ?? "none"); daemonConnections=\(daemon.receivedConnectionCount)"]
         )
     }
 
@@ -372,7 +485,7 @@ private func sendPersistentHTTPRequest(
         connection.cancel()
         throw NSError(
             domain: "test", code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "Persistent connection failed"]
+            userInfo: [NSLocalizedDescriptionKey: "Persistent connection failed; connector=\(connector.state); clientWaiting=\(startup.waitingError ?? "none"); clientError=\(startup.error ?? "none"); daemonConnections=\(daemon.receivedConnectionCount)"]
         )
     }
 
@@ -407,10 +520,7 @@ struct HomeConnectorTests {
             pairedDeviceStore: store
         )
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector)
         defer {
             connector.stop()
             Thread.sleep(forTimeInterval: 0.1)  // port release delay
@@ -435,11 +545,11 @@ struct HomeConnectorTests {
 
     @Test("state transitions: stopped -> running -> stopped")
     func stateTransitions() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -454,11 +564,7 @@ struct HomeConnectorTests {
         #expect(connector.state == .stopped)
         try connector.start()
 
-        var stateCheckCount = 0
-        while case .stopped = connector.state, stateCheckCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05)
-            stateCheckCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
 
         guard case .running = connector.state else {
             #expect(Bool(false), "Expected .running but got \(connector.state)")
@@ -473,12 +579,12 @@ struct HomeConnectorTests {
 
     @Test("proxies request to daemon with credential injected")
     func proxiesRequestWithCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         fakeDaemon.responseBody = "{\"daemon\":\"response\"}"
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "hr_token_master_test")
@@ -491,11 +597,7 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05)
-            waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         guard case .running = connector.state else {
@@ -503,7 +605,7 @@ struct HomeConnectorTests {
             return
         }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
         )
 
@@ -527,12 +629,12 @@ struct HomeConnectorTests {
 
     @Test("injects credential ONLY on the loopback hop — not visible in client response")
     func credentialNotVisibleInResponse() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         fakeDaemon.responseBody = "{\"status\":\"ok\"}"
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "hr_token_secret_xyz")
@@ -543,13 +645,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/agents", timeout: 5
         )
 
@@ -619,11 +718,11 @@ struct HomeConnectorTests {
     // --- Helper for deny-gate tests ---
 
     private func assertDenied(path: String, method: String = "GET") throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer {
             fakeDaemon.stop()
             Thread.sleep(forTimeInterval: 0.05)  // let OS release port
@@ -637,13 +736,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: path, method: method, timeout: 5
         )
         #expect(response.status == 403, "Expected 403 for \(path), got \(response.status)")
@@ -657,11 +753,11 @@ struct HomeConnectorTests {
 
     @Test("allows request when device is paired (stub explicitly configured to allow)")
     func allowsWhenPaired() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -673,13 +769,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
         )
         #expect(response.status == 200)
@@ -687,11 +780,11 @@ struct HomeConnectorTests {
 
     @Test("denies request with 403 when device is not paired")
     func deniesWhenNotPaired() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -704,13 +797,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
         )
         #expect(response.status == 403)
@@ -734,11 +824,11 @@ struct HomeConnectorTests {
 
     @Test("throws alreadyRunning when started twice")
     func throwsAlreadyRunning() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -749,10 +839,7 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         do {
@@ -769,11 +856,11 @@ struct HomeConnectorTests {
 
     @Test("subsequent requests after initial connection are proxied")
     func subsequentRequestsProxied() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -784,15 +871,12 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        _ = try sendHTTPRequest(host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5)
+        _ = try sendHTTPRequest(connector: connector, daemon: fakeDaemon, host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5)
         Thread.sleep(forTimeInterval: 0.1)
-        _ = try sendHTTPRequest(host: "127.0.0.1", port: bindPort, path: "/agents", timeout: 5)
+        _ = try sendHTTPRequest(connector: connector, daemon: fakeDaemon, host: "127.0.0.1", port: bindPort, path: "/agents", timeout: 5)
         Thread.sleep(forTimeInterval: 0.1)
 
         let requests = fakeDaemon.receivedRequests
@@ -803,13 +887,13 @@ struct HomeConnectorTests {
 
     @Test("relays 404 from daemon to client")
     func relays404() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         fakeDaemon.responseStatus = 404
         fakeDaemon.responseBody = "Not Found"
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -820,13 +904,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/nonexistent", timeout: 5
         )
         #expect(response.status == 404)
@@ -838,11 +919,11 @@ struct HomeConnectorTests {
 
     @Test("rejects request WITHOUT device credential header (unpaired peer)")
     func rejectsUnpairedPeerNoCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -856,16 +937,13 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send request WITHOUT X-HappyRanch-Device-Credential header.
         // The connector MUST reject: tailnet presence is necessary but
         // NOT sufficient — a random tailnet peer gets NOTHING.
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
         )
         #expect(response.status == 403,
@@ -875,11 +953,11 @@ struct HomeConnectorTests {
 
     @Test("rejects request with INVALID device credential")
     func rejectsInvalidCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -892,14 +970,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send with a bogus credential
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": "hrpair_fakeinvalid12345678"],
             timeout: 5
@@ -911,12 +986,12 @@ struct HomeConnectorTests {
 
     @Test("allows request with VALID device credential after pairing")
     func allowsPairedPeerWithValidCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         fakeDaemon.responseBody = "{\"daemon\":\"response\"}"
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -936,14 +1011,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send with the valid credential
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": credential],
             timeout: 5
@@ -957,11 +1029,11 @@ struct HomeConnectorTests {
 
     @Test("POST /pair with valid code returns a credential")
     func pairingEndpointReturnsCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -975,14 +1047,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send POST /pair with the code as body
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort,
             path: "/pair", method: "POST",
             headers: ["Content-Type": "text/plain"],
@@ -999,11 +1068,11 @@ struct HomeConnectorTests {
 
     @Test("POST /pair with invalid code returns 403")
     func pairingEndpointRejectsInvalidCode() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -1017,13 +1086,10 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort,
             path: "/pair", method: "POST",
             body: "WRONG-CODE",
@@ -1036,11 +1102,11 @@ struct HomeConnectorTests {
 
     @Test("POST /pair is one-time-use — second attempt fails")
     func pairingCodeIsOneTimeUse() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -1054,14 +1120,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // First attempt: should succeed
-        let response1 = try sendHTTPRequest(
+        let response1 = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort,
             path: "/pair", method: "POST",
             body: code, timeout: 5
@@ -1069,7 +1132,7 @@ struct HomeConnectorTests {
         #expect(response1.status == 200)
 
         // Second attempt with same code: should fail
-        let response2 = try sendHTTPRequest(
+        let response2 = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort,
             path: "/pair", method: "POST",
             body: code, timeout: 5
@@ -1082,11 +1145,11 @@ struct HomeConnectorTests {
 
     @Test("rejects request with revoked credential")
     func rejectsRevokedCredential() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -1105,14 +1168,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Before revocation: request succeeds
-        let beforeResponse = try sendHTTPRequest(
+        let beforeResponse = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": credential],
             timeout: 5
@@ -1124,7 +1184,7 @@ struct HomeConnectorTests {
         #expect(revoked, "Revocation should succeed")
 
         // After revocation: request is rejected
-        let afterResponse = try sendHTTPRequest(
+        let afterResponse = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": credential],
             timeout: 5
@@ -1142,14 +1202,14 @@ struct HomeConnectorTests {
     /// refused — satisfying both halves of the A2.4 invariant.
     @Test("revocation tears down active proxy connection — live session dropped")
     func revocationTearsDownActiveSession() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
         // Use a stalling fake daemon so the proxied connection stays open
         // indefinitely — the revocation should tear it down.
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         fakeDaemon.stallMode = true
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer {
             fakeDaemon.stallMode = false
             fakeDaemon.stop()
@@ -1172,15 +1232,12 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Open a persistent connection with the paired credential.
         // This connection stays open (daemon is stalling).
-        let persistent = try sendPersistentHTTPRequest(
+        let persistent = try sendPersistentHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": credential],
             timeout: 5
@@ -1209,7 +1266,7 @@ struct HomeConnectorTests {
 
         // RECONNECT is refused — future requests with the revoked
         // credential get 403.
-        let reconnectResponse = try sendHTTPRequest(
+        let reconnectResponse = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": credential],
             timeout: 5
@@ -1223,11 +1280,11 @@ struct HomeConnectorTests {
 
     @Test("REJECTS request WITHOUT device credential header (deny-by-default store)")
     func rejectsMissingCredentialWithDenyingStore() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -1240,15 +1297,12 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send request WITHOUT any device credential header.
         // The denying store MUST reject — a random tailnet peer gets NOTHING.
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
         )
         #expect(response.status == 403,
@@ -1258,11 +1312,11 @@ struct HomeConnectorTests {
 
     @Test("REJECTS request with INVALID device credential (deny-by-default store)")
     func rejectsInvalidCredentialWithDenyingStore() throws {
-        let ports = allocatePortPair(); let daemonPort = ports.daemon
-        let bindPort = ports.bind
+        let bindPort = try allocatePortPair().bind
 
-        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        let fakeDaemon = FakeDaemonServer()
         try fakeDaemon.start()
+        let daemonPort = fakeDaemon.port
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
@@ -1274,14 +1328,11 @@ struct HomeConnectorTests {
         )
 
         try connector.start()
-        var waitCount = 0
-        while case .stopped = connector.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(connector, daemon: fakeDaemon)
         defer { connector.stop() }
 
         // Send with a bogus credential
-        let response = try sendHTTPRequest(
+        let response = try sendHTTPRequest(connector: connector, daemon: fakeDaemon,
             host: "127.0.0.1", port: bindPort, path: "/tasks",
             headers: ["X-HappyRanch-Device-Credential": "hrpair_fakeinvalid12345678"],
             timeout: 5

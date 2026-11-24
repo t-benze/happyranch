@@ -356,7 +356,7 @@ APP_RELAY = r"""(() => {
         'permissionDenied','unavailable','outcomeUnknown','notOwned','removalIncomplete','invalidRequest',
         'expired','identityChanged','unsupportedVersion','notLocalShell','invalidInvite','newInviteRequired',
         'networkUnavailable','trustMismatch','runtimeUnavailable','accessDenied','revokedConfirmed',
-        'keychainLocked','keychainDenied','saveFailed'];
+        'keychainLocked','keychainDenied','saveFailed','hostStateUnrecognized'];
       const result = {code:codes.includes(detail?.code) ? detail.code : 'invalidRequest',
         effect:['none','unknown','confirmed'].includes(detail?.effect) ? detail.effect : 'unknown',
         recovery:['none','refresh','explicitRetry','newInviteOnHost','nativeRecovery','nativePermission','operatorRecovery'].includes(detail?.recovery)

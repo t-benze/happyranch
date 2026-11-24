@@ -133,6 +133,29 @@ public final class ClientBridge: @unchecked Sendable {
     private static let tsnetLock = NSLock()
     private static let engineQueue = DispatchQueue(label: "com.happyranch.managed-engine")
     nonisolated(unsafe) private static var managedOwner: UUID?
+    // Helpers isolate Go-global roots by process. Reserve both profile and
+    // helper identity until confirmed teardown; the legacy engine stays global.
+    nonisolated(unsafe) private static var helperOwners: [String: UUID] = [:]
+    nonisolated(unsafe) private static var helperSessions: [ObjectIdentifier: UUID] = [:]
+    private var managedReservation: UUID?
+    private var managedProfile: String?
+    private var managedHelperID: ObjectIdentifier?
+
+    // Called only under tsnetLock, including after managedAttempt is invalidated.
+    private func ownsManagedReservation(_ attempt: UUID) -> Bool {
+        guard managedReservation == attempt else { return false }
+        if let profile = managedProfile, let helperID = managedHelperID {
+            return Self.helperOwners[profile] == attempt && Self.helperSessions[helperID] == attempt
+        }
+        return Self.managedOwner == attempt
+    }
+    private func releaseManagedReservation(_ attempt: UUID) {
+        guard ownsManagedReservation(attempt) else { return }
+        if let profile = managedProfile, let helperID = managedHelperID {
+            Self.helperOwners.removeValue(forKey: profile); Self.helperSessions.removeValue(forKey: helperID)
+        } else { Self.managedOwner = nil }
+        managedReservation = nil; managedProfile = nil; managedHelperID = nil
+    }
     private var managedAttempt: UUID?
     private var nativeConfigured = false
     private var homeProcess: HomeBridgeProcess?
@@ -153,10 +176,21 @@ public final class ClientBridge: @unchecked Sendable {
     ) async throws {
         defer { key.discard() }
         guard lane == .managed else { throw ManagedNetworkError.invalidConfiguration }
+        guard (homeTrust == nil) == (helper == nil) else { throw ManagedNetworkError.invalidConfiguration }
         let attempt = UUID()
         try Self.tsnetLock.withLock {
-            guard Self.managedOwner == nil else { throw ManagedNetworkError.busy }
-            Self.managedOwner = attempt
+            guard managedReservation == nil else { throw ManagedNetworkError.busy }
+            if let helper {
+                let profile = URL(fileURLWithPath: stateDirectory).standardizedFileURL.resolvingSymlinksInPath().path
+                let helperID = ObjectIdentifier(helper)
+                guard Self.helperOwners[profile] == nil, Self.helperSessions[helperID] == nil else { throw ManagedNetworkError.busy }
+                Self.helperOwners[profile] = attempt; Self.helperSessions[helperID] = attempt
+                managedProfile = profile; managedHelperID = helperID
+            } else {
+                guard Self.managedOwner == nil else { throw ManagedNetworkError.busy }
+                Self.managedOwner = attempt
+            }
+            managedReservation = attempt
             managedAttempt = attempt
             nativeConfigured = false
             managedReady = false
@@ -226,7 +260,7 @@ public final class ClientBridge: @unchecked Sendable {
                         self.queue.sync {} // settle queued local teardown before reuse
                         Self.tsnetLock.withLock {
                             self.nativeConfigured = false
-                            if Self.managedOwner == attempt { Self.managedOwner = nil }
+                            self.releaseManagedReservation(attempt)
                             if self.managedAttempt == attempt { self.managedAttempt = nil }
                         }
                         continuation.resume(throwing: result == 0 ? ManagedNetworkError.canceled : ManagedNetworkError.result(result))
@@ -266,7 +300,7 @@ public final class ClientBridge: @unchecked Sendable {
             deviceCredential = nil
             managedHandles.removeAll()
             // Owner stays reserved until the serial worker has settled Close.
-            if previous != nil && Self.managedOwner == previous {
+            if let previous, ownsManagedReservation(previous) {
                 homeProcess?.cancel()
                 if nativeConfigured { tsnet_cancel() }
             }
@@ -287,7 +321,7 @@ public final class ClientBridge: @unchecked Sendable {
         pairing?.finish(with: .failure(RedeemPairingError.managed(.canceled)))
         guard let previous else { return }
         Self.engineQueue.async {
-            guard Self.tsnetLock.withLock({ Self.managedOwner == previous }) else { return }
+            guard Self.tsnetLock.withLock({ self.ownsManagedReservation(previous) }) else { return }
             if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
             if let helper = Self.tsnetLock.withLock({ self.homeProcess }) {
                 do { try helper.stop() } catch { return } // preserve owner on uncertain exit
@@ -297,7 +331,7 @@ public final class ClientBridge: @unchecked Sendable {
             self.queue.sync {} // local listener/client teardown also belongs to this attempt
             Self.tsnetLock.withLock {
                 self.nativeConfigured = false
-                Self.managedOwner = nil
+                self.releaseManagedReservation(previous)
             }
         }
     }
@@ -312,7 +346,7 @@ public final class ClientBridge: @unchecked Sendable {
 
     private func managedDial(timeoutMs: Int32, expectedAttempt: UUID) -> Int32 {
         let attempt: UUID? = Self.tsnetLock.withLock {
-            guard managedReady, let attempt = managedAttempt, attempt == expectedAttempt, Self.managedOwner == attempt else { return nil }
+            guard managedReady, let attempt = managedAttempt, attempt == expectedAttempt, ownsManagedReservation(attempt) else { return nil }
             managedDials.enter()
             return attempt
         }
@@ -322,7 +356,7 @@ public final class ClientBridge: @unchecked Sendable {
         let handle = helper?.dial(timeoutMs: timeoutMs) ?? homeConnectorHost.withCString { tsnet_conn_dial_managed($0, Int32(homeConnectorPort), timeoutMs) }
         if handle >= 0 {
             let accepted = Self.tsnetLock.withLock {
-                guard managedReady && managedAttempt == attempt && Self.managedOwner == attempt else { return false }
+                guard managedReady && managedAttempt == attempt && ownsManagedReservation(attempt) else { return false }
                 managedHandles.insert(handle)
                 return true
             }
@@ -341,7 +375,7 @@ public final class ClientBridge: @unchecked Sendable {
                 let attempt: UUID? = Self.tsnetLock.withLock {
                     guard self.nativeConfigured, self.managedReady,
                           let attempt = self.managedAttempt,
-                          Self.managedOwner == attempt else { return nil }
+                          self.ownsManagedReservation(attempt) else { return nil }
                     self.managedDials.enter()
                     return attempt
                 }
@@ -354,7 +388,7 @@ public final class ClientBridge: @unchecked Sendable {
                 defer { tsnet_free_string(pointer) }
                 let record = TsnetHealthRecord.decode(String(cString: pointer))
                 let accepted = Self.tsnetLock.withLock {
-                    self.managedReady && self.managedAttempt == attempt && Self.managedOwner == attempt
+                    self.managedReady && self.managedAttempt == attempt && self.ownsManagedReservation(attempt)
                 }
                 if accepted, let record { DiagnosticsCollector.shared?.recordTsnetHealth(record) }
                 continuation.resume(returning: accepted ? record : nil)
@@ -498,7 +532,7 @@ public final class ClientBridge: @unchecked Sendable {
 
     /// Read only after stopManagedNetwork's serialized teardown barrier.
     public var managedStopConfirmed: Bool {
-        Self.tsnetLock.withLock { homeProcess == nil && !nativeConfigured && Self.managedOwner == nil }
+        Self.tsnetLock.withLock { homeProcess == nil && !nativeConfigured && managedReservation == nil }
     }
 
     /// Install delivered/saved home authority; the connector still checks the
@@ -1461,5 +1495,117 @@ private final class BridgeHealthDelegate: NSObject, URLSessionTaskDelegate, Send
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+// The GUI's app scheme calls the selected owner directly. This does not start
+// the legacy listener (still used by the foreground CLI), redeem or read keys.
+extension ClientBridge: AppAPITransport {
+    /// GUI health uses the same direct API path, never the legacy listener.
+    public func appRuntimeHealth() async -> RuntimeHealth {
+        if lane == .managed, let failure = Self.tsnetLock.withLock({ managedFailure }) { return .managed(failure) }
+        let transfer = appRequest(method: "GET", target: "/api/v1/health", headers: [:], body: Data())
+        let timeout = Task { try await Task.sleep(for: .seconds(5)); transfer.cancel() }
+        defer { timeout.cancel() }
+        do {
+            for try await event in transfer.events {
+                if case .response(let status, _) = event {
+                    transfer.cancel()
+                    if status == 401 || status == 403 { return .denied }
+                    return (200...299).contains(status) ? .healthy : .unreachable
+                }
+            }
+        } catch { return .unreachable }
+        return .unreachable
+    }
+    public func appRequest(method: String, target: String, headers: [String: String], body: Data) -> AppAPITransfer {
+        let transfer = AppAPITransfer()
+        guard ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].contains(method),
+              target.hasPrefix("/api/v1/"), !target.contains("\r"), !target.contains("\n"),
+              body.count <= 67108864, let credential = deviceCredential,
+              !credential.isEmpty, credential.utf8.allSatisfy({ (33...126).contains($0) }) else {
+            transfer.finish(AppAPIError.notSent); return transfer
+        }
+        let kept = AppAPIHeaders.filtered(headers, allowed: AppAPIHeaders.request)
+        var text = "\(method) \(target) HTTP/1.1\r\nHost: \(homeConnectorHost):\(homeConnectorPort)\r\n"
+        for (key, value) in kept { text += "\(key): \(value)\r\n" }
+        text += "X-HappyRanch-Device-Credential: \(credential)\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: \(body.count)\r\n\r\n"
+        var encoded = Data(text.utf8); encoded.append(body)
+        let request = encoded
+        let reader = AppRemoteReader(transfer, head: method == "HEAD")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3600) { [weak transfer] in transfer?.cancel() }
+        if lane == .managed {
+            let attempt: UUID? = Self.tsnetLock.withLock {
+                guard managedReady, managedPaired, let attempt = managedAttempt else { return nil }
+                managedDials.enter()
+                return attempt
+            }
+            guard let attempt else { transfer.finish(AppAPIError.notSent); return transfer }
+            DispatchQueue.global(qos: .userInitiated).async { [self, request] in
+                defer { managedDials.leave() }
+                let handle = managedDial(timeoutMs: 30_000, expectedAttempt: attempt)
+                guard handle >= 0 else {
+                    if handle == -18 { cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
+                    transfer.finish(AppAPIError.notSent); return
+                }
+                // Install after dial: cancellation during dial closes immediately.
+                transfer.onCancel { [self] in
+                    let current = Self.tsnetLock.withLock { managedAttempt == attempt && managedHandles.contains(handle) }
+                    if current { closeManagedHandle(handle) }
+                }
+                guard transfer.beginRequest() else { return }
+                let sent = writeAll(request, handle: handle)
+                guard sent == 0 else {
+                    if sent == -18 { cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
+                    transfer.finish(AppAPIError.unavailable); return
+                }
+                var buffer = [CChar](repeating: 0, count: 65536)
+                while !transfer.isCancelled {
+                    let count = readManaged(handle, &buffer, Int32(buffer.count))
+                    guard count >= 0 else { transfer.finish(AppAPIError.unavailable); return }
+                    reader.receive(count == 0 ? Data() : buffer.withUnsafeBytes { Data($0.prefix(Int(count))) }, eof: count == 0)
+                    if count == 0 { return }
+                }
+            }
+        } else {
+            let connection = NWConnection(host: NWEndpoint.Host(homeConnectorHost),
+                port: NWEndpoint.Port(rawValue: homeConnectorPort)!, using: Self.directTCP)
+            transfer.onCancel { connection.cancel() }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    guard transfer.beginRequest() else { return }
+                    connection.send(content: request, completion: .contentProcessed { error in
+                        if error != nil { transfer.finish(AppAPIError.unavailable) }
+                        else { reader.receive(from: connection) }
+                    })
+                case .failed: transfer.connectionFailed()
+                default: break
+                }
+            }
+            connection.start(queue: DispatchQueue(label: "com.happyranch.app-api"))
+        }
+        return transfer
+    }
+}
+
+private final class AppRemoteReader: @unchecked Sendable {
+    private var parser: AppHTTPResponseParser
+    private let transfer: AppAPITransfer
+    init(_ transfer: AppAPITransfer, head: Bool) { self.transfer = transfer; parser = AppHTTPResponseParser(head: head) }
+    func receive(_ data: Data, eof: Bool) {
+        guard !transfer.isCancelled else { return }
+        do {
+            for event in try parser.receive(data, eof: eof) { transfer.emit(event) }
+            if parser.complete { transfer.finish() }
+        } catch { transfer.finish(AppAPIError.invalidResponse) }
+    }
+    func receive(from connection: NWConnection) {
+        guard !transfer.isCancelled else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, complete, error in
+            if error != nil { transfer.finish(AppAPIError.unavailable); return }
+            receive(data ?? Data(), eof: complete)
+            if !transfer.isCancelled { receive(from: connection) }
+        }
     }
 }

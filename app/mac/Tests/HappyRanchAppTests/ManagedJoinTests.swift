@@ -1,7 +1,28 @@
 import Testing
 import Foundation
+import XCTest
 import HappyRanchSupervisor
 @testable import HappyRanchApp
+
+final class ManagedCandidateMembershipTests: XCTestCase {
+    @MainActor
+    func testDiscardedCandidateProfileCannotReplaceActiveRevocationIdentity() {
+        let a = ManagedJoinProfile.fresh(controlURL: "https://a.invalid")
+        let b = ManagedJoinProfile.fresh(controlURL: "https://b.invalid")
+        var memberships = ManagedJoinModel.Memberships()
+        memberships.profiles = [a, b]
+        memberships.connected(a)
+        memberships.selectedProfileID = b.uuid
+        memberships.preparing(b)
+        XCTAssertEqual(memberships.candidateProfile, b)
+        XCTAssertEqual(memberships.revocationProfile, a)
+        memberships.discardCandidate()
+        XCTAssertNil(memberships.candidateProfile)
+        XCTAssertEqual(memberships.activeProfile, a)
+        memberships.requestRevocation()
+        XCTAssertEqual(memberships.confirmationProfile, a)
+    }
+}
 
 @Suite("Managed join UI state")
 @MainActor

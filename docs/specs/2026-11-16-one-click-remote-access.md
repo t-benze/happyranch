@@ -220,8 +220,21 @@ in I5c. RefreshHomeAddress remains absent and B13-deferred. StatusV2 retains the
 same bus-owner gate and no polkit prompt for reads, returns the canonical B15
 bounded JSON within a 2-second status budget, and leaves unsupported observation
 dimensions unknown. Setup comes from a read-only protected HomeActivationStore snapshot through the fixed bundled Python
-`-I` child; stopped connector means runtime unavailable, never setup Off. Status v1
-bytes are unchanged. At I1, the B16 writer bracketed the three device effects
+`-I` child; stopped connector alone means runtime unavailable. After replacement
+closure, Status and StatusV2 can report Off only after the unchanged read-only
+Enable capture proves clean, complete staged-inert or post-Disable inventory:
+no activation/transaction/invite authority, matching owner/provenance and
+quiescent services. No polkit, slot claim, repair or effect runs for this proof.
+If the connector is unavailable and this proof fails, reads refuse
+`host-state-unrecognized` (D-Bus suffix `host_state_unrecognized`). CLI and both
+Host views map that refusal and the existing owner-binding refusals to
+`hostStateUnrecognized`: “Remote access files or the release runtime owner could
+not be verified. Check the local installation.” Main uses Status, whose proven
+Off projection is known/offline with no devices, so the existing Turn on action
+is offered. StatusV2 reports setup off/runtime unavailable; a recognized live
+receipt still retains its own setup observation when the connector is down.
+Status v1 serialization shape, status deadlines and mutation admission stay
+unchanged. At I1, the B16 writer bracketed the three device effects
 with durable intent and fixed outcome/uncertainty records; the lifecycle/invite
 audit composition follows below.
 The fixed helper source contract already reflects B8/B9's optional compatibility UID

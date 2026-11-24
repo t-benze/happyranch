@@ -30,6 +30,7 @@ const errorKey: Record<string, Key> = {
   busy: 'errBusy', permissionDenied: 'errPermissionDenied', stateChanged: 'hErrStateChanged',
   documentChanged: 'hErrStateChanged', expired: 'hErrExpired', unavailable: 'errUnavailable',
   outcomeUnknown: 'errOutcomeUnknown', runtimeUnavailable: 'hErrRuntime',
+  hostStateUnrecognized: 'hErrStateUnrecognized',
 };
 const cleanupKey: Record<Cleanup, Key | null> = {
   confirmed: 'hConfirmed', incomplete: 'hIncomplete', unknown: 'unknownValue', notApplicable: null,

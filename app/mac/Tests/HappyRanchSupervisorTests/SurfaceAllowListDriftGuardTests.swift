@@ -218,9 +218,12 @@ struct SurfaceAllowListDriftGuardTests {
         #expect(unclassified.isEmpty, "All OpenAPI routes must be classified in route-classification.json")
     }
 
-    @Test("browser adapter status and bind-profile are ALLOWED (positive browser lifecycle check)")
+    @Test("browser adapter list/status are allowed and operator-only bind-profile is denied")
     func browserAdapterRoutesAllowed() throws {
         let policy = SurfaceAllowList.default
+
+        #expect(policy.isAllowed(method: "GET", path: "/runtime/adapters", rawPath: "/api/v1/runtime/adapters"),
+                "Browser adapter list remains included in the route contract")
 
         // Browser Settings/onboarding polls adapter status:
         //   web/src/shared/connect/useRuntimeConnect.ts → adapters.getAdapter(id)
@@ -231,14 +234,14 @@ struct SurfaceAllowListDriftGuardTests {
         )
         #expect(statusAllowed, "GET /runtime/adapters/{adapter_id} must be ALLOWED for browser status poll")
 
-        // Browser Settings/onboarding binds approved adapter to profile:
-        //   web/src/shared/connect/useRuntimeConnect.ts → adapters.bindAdapterProfile(id, body)
+        // THR-107 slice 3 retired manual browser binding. The existing contract
+        // retains this route only as operator disposition/recovery tooling.
         let bindAllowed = policy.isAllowed(
             method: "POST",
             path: "/runtime/adapters/adapter-1/bind-profile",
             rawPath: "/api/v1/runtime/adapters/adapter-1/bind-profile"
         )
-        #expect(bindAllowed, "POST /runtime/adapters/{adapter_id}/bind-profile must be ALLOWED for browser profile binding")
+        #expect(!bindAllowed, "POST /runtime/adapters/{adapter_id}/bind-profile must be DENIED per the route contract")
     }
 
     @Test("CLI-only adapter submit is DENIED remotely")

@@ -346,6 +346,29 @@ The connector rereads this evidence per connection; refusals log a short machine
 reason and return HTTP 503, with no fixed-port fallback. DEV 8765 and
 `~/.happyranch` are never modified. Random startup and desktop changes are PR-D.
 
+A retained manual-install release record uses this same owner-binding format;
+its age and installation origin do not invalidate it. The helper also requires
+exact keys, the authenticated caller's passwd user/UID, a canonical supported
+data folder with no symlink traversal, and a real caller-owned leaf without
+group/world write permission. Invalid record/fragment/home custody refuses
+`release_home_invalid`; user/UID mismatch refuses `owner_mismatch`. Do not delete
+the record or chmod/chown a folder to bypass a refusal. Preserve the evidence,
+check the nonsecret binding fields and folder metadata, and have the release
+installation owner correct a confirmed registration problem through the supported
+installation procedure before retrying. File size/mode alone do not validate it.
+
+After ReplaceFailed closure, retained inert configs and a stopped connector are
+expected. Status now proves Off through the existing Enable admission reads;
+missing connector IPC by itself never means Off. Unsafe/unrecognized or
+unavailable proof refuses `host-state-unrecognized`. CLI/GUI code
+`hostStateUnrecognized` says the files or release runtime owner could not be
+verified and asks to check the local installation. No read repairs state.
+The CLI's accepted-only ReplaceFailed call still reports `outcomeUnknown` at its
+original 482-second deadline even when closure completed earlier: the helper's
+private result and slot release are not a terminal client receipt. Inspect the
+existing closure witness and then status; do not replay solely because the
+admission-only call ended unknown.
+
 The root-owned socket is `/run/happyranch-release-verifier/control.sock`, mode
 0660 root:happyranch, under a root-owned 0755 directory. Only the closed
 `resolve` / `confirm <local-port> <daemon-port>` protocol is accepted. It accepts
