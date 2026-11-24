@@ -4464,43 +4464,6 @@ def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkey
     assert fixture.manager.calls == []
 
 
-# I5d reuses the retained installer/NSS/native/materializer venue. No host effects.
-def home_publication_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> object:
-    from scripts.home_legacy_fixture import LegacyNativeFixture as HeadscaleFixture, KernelDump
-    from runtime.remote_access import headscale_service as home
-
-    head = HeadscaleFixture(fixture.root)
-    io = fixture.installer
-    io.layout = "deb"
-    lookup = io._lookup_user
-    io._lookup_user = lambda name: head.lookup_user(name) if name == home.ACCOUNT else lookup(name)
-    io._lookup_group = head.lookup_group
-    io._run = head.run
-    manager = lifecycle_fixture(fixture)
-    show = manager.show_properties
-    manager.show_properties = lambda name, properties: {key: value for key, value in {
-        **show(name, tuple(key for key in properties if key != "Names")), "Names": name,
-    }.items() if key in properties}
-    monkeypatch.setattr(home.socket, "socket", lambda *args: KernelDump(head, args))
-    monkeypatch.setattr(home, "preflight_ports", head.preflights.append)
-    monkeypatch.setattr(os, "getgrouplist", lambda *args: [os.getgid()])
-    payload = fixture.root / "opt/happyranch-desktop"
-    for name in ("bin/happyranch-tsnet-sidecar", "python/bin/python3.12"):
-        path = payload / name
-        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        path.write_bytes(b"synthetic packaged executable")
-        path.chmod(0o755)
-    (payload / "python/bin/python3").symlink_to("python3.12")
-    for directory in (payload / "python", payload / "python/bin"):
-        directory.chmod(0o755)
-    # B8's non-optional state directory and ancestors are packaged already.
-    state = fixture.root / "var/lib/happyranch-remote-access"
-    state.mkdir(parents=True, mode=0o700)
-    for directory in (state.parent, state.parent.parent):
-        directory.chmod(0o755)
-    return head
-
-
 def home_unit_writes(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
     """Observe actual write-open/mkdir paths, including ephemeral pending names."""
     writes: list[str] = []
@@ -4538,433 +4501,93 @@ def home_unit_writes(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
     return writes
 
 
-@pytest.mark.parametrize("preexisting", [False, True])
-def test_home_units_clean_sequence_stays_in_b8(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, preexisting: bool,
+# Retained Disable/inventory uses historical inputs, never initial home publication.
+@pytest.mark.parametrize("old_generation", [0, 7])
+@pytest.mark.parametrize("case", ["classification", "live", "double", "tail", "ids", "connector", "state",
+    "pending", "txn", "minter", "unknown", "audit", "generation", "tls"])
+def test_home_disable_preserves_post_disable_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_generation: int, case: str,
 ) -> None:
-    head = home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    if preexisting:
-        head.present = head.group_present = True
-        io._service_owner = io._account(create=False)
-        io._headscale_preparing = True
-        io._headscale_owner = io.root_owner
-        for path in io._layout():
-            if path.startswith(("var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar",
-                                "var/lib/happyranch-headscale", "run/", "var/log/")):
-                with io._directory(path, create=True):
-                    pass
-        io._headscale_preparing = False
-    entries = [line.split("=", 1)[1] for line in Path(
-        "packaging/linux/systemd/happyranch-remote-access-helper.service").read_text().splitlines()
-        if line.startswith("ReadWritePaths=")]
-    allowed = [Path(entry.lstrip("-/")) for entry in entries
-               if not entry.startswith("-") or (fixture.root / entry[2:]).is_dir()]
-    before = staged_inventory(fixture)
-    writes = home_unit_writes(monkeypatch, fixture.root)
+    from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
+    from scripts.home_legacy_fixture import legacy_admission_fixture
 
-    def assert_inventory() -> None:
-        changed = [path for path, value in staged_inventory(fixture).items() if before.get(path) != value]
-        assert writes or changed
-        assert all(any(Path(path).is_relative_to(directory) for directory in allowed)
-                   for path in [*writes, *changed]), [path for path in [*writes, *changed]
-                   if not any(Path(path).is_relative_to(directory) for directory in allowed)]
-
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    assert_inventory()
-    assert io.prepare_headscale()["state"] == "inert"
-    assert_inventory()
-    io.publish_home_units()
-    assert_inventory()
-    if not preexisting:
-        assert all(not (fixture.root / base / name).exists() for base in ("var/lib", "var/log", "run")
-                   for name in ("happyranch-connector", "happyranch-tsnet-sidecar"))
-        assert not (fixture.root / "var/lib/happyranch-headscale").exists()
-        assert not (fixture.root / "run/happyranch-headscale").exists()
-    connector = json.loads((fixture.root / "etc/happyranch/connector.json").read_bytes())
-    units = module.managed_units("deb", connector_config=connector)
-    assert set(units) == set(module.UNITS) and len(units) == 5
-    for name, text in units.items():
-        path = fixture.root / "etc/systemd/system" / name
-        assert path.is_file(), name
-        assert path.read_bytes() == text.encode()
-        assert path.stat().st_mode & 0o777 == 0o644
-        assert (path.stat().st_uid, path.stat().st_gid) == io.root_owner
-    assert not any(call[0] in {"start", "enable", "restart"} for call in io.manager.calls)
-
-
-@pytest.mark.parametrize("case", ["exact", "different", "dropin", "prefix-dropin", "type-dropin",
-    "alias", "override", "pending", "symlink", "source-drift", "config-drift", "locked"])
-def test_home_units_reuse_or_refuse_before_effects(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
-) -> None:
-    import fcntl
-    home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    io.publish_home_units()
-    units = fixture.root / "etc/systemd/system"
-    target = units / module.UNITS[-1]  # Late conflict must veto earlier missing writes.
-    if case not in {"exact", "locked"}:
-        (units / module.UNITS[0]).unlink()
-    if case == "different": target.write_bytes(b"synthetic differing fragment")
-    elif case in {"dropin", "prefix-dropin", "type-dropin"}:
-        (units / {"dropin": target.name + ".d", "prefix-dropin": "happyranch-.service.d",
-                  "type-dropin": "service.d"}[case]).mkdir(mode=0o755)
-    elif case == "alias": (units / "alias.service").symlink_to(target.name)
-    elif case == "override":
-        path = fixture.root / "run/systemd/generator" / target.name
-        path.parent.mkdir(parents=True, mode=0o755)
-        path.write_bytes(target.read_bytes())
-        path.chmod(0o644)
-    elif case == "pending": (units / ("." + target.name + ".pending")).touch(mode=0o600)
-    elif case == "symlink":
-        data = target.read_bytes()
-        target.unlink()
-        (units / "other").write_bytes(data)
-        target.symlink_to("other")
-    elif case == "source-drift": fixture.token.write_bytes(b"synthetic rotated source")
-    elif case == "config-drift":
-        path = fixture.root / "etc/happyranch/sidecar.json"
-        path.write_bytes(path.read_bytes() + b"\n")
-    before = staged_inventory(fixture)
-    io.manager.calls.clear()
-    writes = home_unit_writes(monkeypatch, fixture.root)
-    fd = os.open(fixture.root / "var/lib/happyranch-remote-access", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        if case == "locked": fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if case == "exact": io.publish_home_units()
-        else:
-            with pytest.raises((module.InstallerError, module.headscale.HeadscaleServiceError, ValueError)):
-                io.publish_home_units()
-    finally:
-        os.close(fd)
-    assert writes == [] and staged_inventory(fixture) == before
-    assert all(call[0] == "show" or case == "exact" and call[0] == "reload" for call in io.manager.calls)
-
-
-def test_home_units_interrupted_prefix_retries_without_rewriting(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    sync = os.fsync
-    units = fixture.root / "etc/systemd/system"
-    def interrupt(fd: int) -> None:
-        sync(fd)
-        if os.readlink(f"/proc/self/fd/{fd}") == str(units) and len(list(units.iterdir())) == 2:
-            raise SystemExit("synthetic between-unit interruption")
-    with monkeypatch.context() as patch:
-        patch.setattr(os, "fsync", interrupt)
-        with pytest.raises(SystemExit, match="between-unit"):
-            io.publish_home_units()
-    prefix = {path.name: (path.stat().st_ino, path.read_bytes()) for path in units.iterdir()}
-    assert len(prefix) == 2
-    # A new process can still see not-found from systemd until daemon-reload.
-    io.manager.override.update(FragmentPath="", LoadState="not-found")
-    reload = io.manager.daemon_reload
-    def daemon_reload() -> None:
-        reload()
-        io.manager.override.clear()
-    monkeypatch.setattr(io.manager, "daemon_reload", daemon_reload)
-    writes = home_unit_writes(monkeypatch, fixture.root)
-    io.publish_home_units()
-    assert {name: ((units / name).stat().st_ino, (units / name).read_bytes()) for name in prefix} == prefix
-    assert {Path(path).name for path in writes} == set(module.UNITS) - prefix.keys()
-    assert not any(call[0] in {"enable", "start"} for call in io.manager.calls)
-
-
-def test_home_units_after_replace_failed_closure(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
-    manager, _ = staged_for_closure(fixture)
-    fixture.installer.replace_failed()
-    assert fixture.installer.inventory().detail == "staged-inert"
-    # The helper uses deb; this retained replacement fixture stages source.
-    show = manager.show_properties
-    manager.show_properties = lambda name, properties: {key: value for key, value in {
+    history = legacy_admission_fixture(tmp_path, monkeypatch, ready=True,
+                                       layout="deb", retain_headscale=True)
+    io = history.receipts._io
+    io.manager = LifecycleManager(history.root)
+    show = io.manager.show_properties
+    io.manager.show_properties = lambda name, properties: {key: value for key, value in {
         **show(name, tuple(key for key in properties if key != "Names")), "Names": name,
     }.items() if key in properties}
-    state = fixture.root / "var/lib/happyranch-remote-access"
-    state.mkdir(mode=0o700)
-    fixture.installer.publish_home_units()
-    assert {path.name for path in (fixture.root / "etc/systemd/system").iterdir() if path.is_file()} == set(module.UNITS)
-
-
-@pytest.mark.parametrize("old_generation", [0, 7])
-@pytest.mark.parametrize("case", ["classification", "publisher", "live", "double", "tail", "ids",
-    "connector", "state", "pending", "txn", "minter", "unknown", "audit", "generation", "tls"])
-def test_home_units_disable_cleanup_then_reuse(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, old_generation: int, case: str,
-) -> None:
-    from runtime.remote_access import home_activation as activation
-    from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
-    from runtime.remote_access.home_live_config import HomeLiveConfigOwner, render_home_live_configs
-    from scripts.test_home_activation import receipt_record
-
-    head = home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    io.prepare_headscale()
-    io.publish_home_units()
-    connector = json.loads((fixture.root / "etc/happyranch/connector.json").read_bytes())
-    # Build the retained B6 fixture's protected ready receipt over REAL prepared
-    # files. No live service or admin operation is simulated as accepted setup.
-    unit = fixture.root / "etc/systemd/system" / module.headscale.UNIT
-    unit.write_text(module.render_headscale_unit(home_transport=True))
-    invite = fixture.root / "etc/happyranch/invite-issuer.json"
-    invite.write_bytes(b"synthetic protected invite config for B6 digest verification")
-    invite.chmod(0o600)
-    record = receipt_record("ready")
-    record.update(release_uid=os.getuid(), activation_generation=old_generation,
-                  home_id=connector["home_id"], connector_id=connector["connector_id"],
-                  control_plane_id=connector["managed"]["control_plane_id"], dial_ip=head.dial_ip,
-                  ca_der_sha256=hashlib.sha256(b"synthetic public CA").hexdigest())
-    record["member_digests"] = {path: hashlib.sha256((fixture.root / path.lstrip("/")).read_bytes()).hexdigest()
-                                for path in activation.MEMBER_PATHS}
-    receipt = activation.HomeActivationReceipt.parse(json.dumps(record).encode())
-    state = fixture.root / "var/lib/happyranch-remote-access"
-    (state / "home-activation.json").write_bytes(receipt.to_bytes())
-    (state / "home-activation.json").chmod(0o600)
-    sidecar = fixture.root / "etc/happyranch/sidecar.json"
-    staged = sidecar.read_bytes()
-    sidecar.write_bytes(render_home_live_configs((fixture.root / "etc/happyranch/connector.json").read_bytes(),
-                                                staged, receipt)["/etc/happyranch/sidecar.json"])
-    sidecar_unit = fixture.root / "etc/systemd/system" / module.UNITS[1]
-    sidecar_unit.write_text(module.render_sidecar_unit(module.SidecarUnitSpec(
-        binary_path="/opt/happyranch-desktop/bin/happyranch-tsnet-sidecar", home_transport=True)))
-    before = {name: ((fixture.root / "etc/systemd/system" / name).stat().st_ino,
-                    (fixture.root / "etc/systemd/system" / name).read_bytes()) for name in module.UNITS}
+    state = history.root / "var/lib/happyranch-remote-access"
+    (state / "home-activation-txn.json").unlink()
+    (history.root / "etc/systemd/system/happyranch-managed.target.wants" / module.headscale.UNIT).unlink()
+    activation = state / "home-activation.json"
+    record = json.loads(activation.read_bytes())
+    record["activation_generation"] = old_generation
+    activation.write_bytes(json.dumps(record).encode())
+    sidecar = history.root / "etc/happyranch/sidecar.json"
+    sidecar.write_bytes(sidecar.read_bytes().replace(b'"activation_generation":7',
+        b'"activation_generation":' + str(old_generation).encode()))
+    connector = json.loads((history.root / "etc/happyranch/connector.json").read_bytes())
+    unit = history.root / "etc/systemd/system" / module.headscale.UNIT
+    before = {name: ((history.root / "etc/systemd/system" / name).stat().st_ino,
+                    (history.root / "etc/systemd/system" / name).read_bytes()) for name in module.UNITS}
+    retained = sidecar.read_bytes()
     backend = HelperLifecycleBackend(io=io)
     snapshot = backend.capture("Disable", os.getuid())
     # Native policy units are already quiescent in this retained B6 venue.
     monkeypatch.setattr(backend, "_policy_quiescence", lambda: [])
     assert backend.dispatch("Disable", os.getuid(), "cleanup", snapshot,
                             revoke_succeeded=True) == {"outcome": "off", "residue": []}
-    assert not (state / "home-activation.json").exists() and not unit.exists()
-    writes = home_unit_writes(monkeypatch, fixture.root)
-    io.manager.calls.clear()
-    io.publish_home_units()
-    assert writes == []
-    assert {name: ((fixture.root / "etc/systemd/system" / name).stat().st_ino,
-                   (fixture.root / "etc/systemd/system" / name).read_bytes()) for name in module.UNITS} == before
-    assert all(call[0] in {"show", "reload"} for call in io.manager.calls)
-    retained = sidecar.read_bytes()
+    assert not activation.exists() and not unit.exists()
+    assert {name: ((history.root / "etc/systemd/system" / name).stat().st_ino,
+                   (history.root / "etc/systemd/system" / name).read_bytes()) for name in module.UNITS} == before
+    assert sidecar.read_bytes() == retained
     if case == "classification":
+        untouched = staged_inventory(history)
         inventory = io.inventory()
         assert (inventory.state, inventory.detail) == ("modern", "post-disable")
-        return
-    io.prepare_headscale()
-    if case not in {"publisher", "live"}:
-        if case == "double":
-            tail = retained[retained.index(b',"ControlURL"'):retained.rindex(b'}')]
-            sidecar.write_bytes(retained[:retained.rindex(b'}')] + tail + retained[retained.rindex(b'}'):])
-        if case == "tail": sidecar.write_bytes(retained[:retained.rindex(b'}')] + b',"foreign":true}')
-        if case == "ids":
-            sidecar.write_bytes(retained.replace(b'"home_id":"' + connector["home_id"].encode() + b'"',
-                                                b'"home_id":"foreign"', 1))
-        if case == "connector":
-            path = fixture.root / "etc/happyranch/connector.json"
-            path.write_bytes(path.read_bytes() + b" ")
-        if case == "state":
-            path = fixture.root / "var/lib/happyranch-connector"
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            (path / "trust-state.json").write_bytes(b"synthetic retained trust")
-        if case == "pending": (sidecar.parent / ".sidecar.json.pending").touch(mode=0o600)
-        if case == "txn": (state / "home-activation-txn.json").write_bytes(b"{}")
-        if case == "minter": (state / "home-minter").mkdir(mode=0o700)
-        if case == "unknown": (sidecar.parent / "unknown").touch(mode=0o600)
-        if case == "audit": (state / "home-audit.jsonl").chmod(0o644)
-        if case == "generation":
-            sidecar.write_bytes(retained.replace(b'"activation_generation":' + str(old_generation).encode(),
-                                                b'"activation_generation":true'))
-        if case == "tls":
-            sidecar.write_bytes(retained.replace(b'},"home_binding":', b',"foreign":true},"home_binding":'))
-        untouched = staged_inventory(fixture)
-        writes.clear()
-        io.manager.calls.clear()
-        assert io.inventory().state == "manual-install-conflict"
-        with pytest.raises(ValueError): io.publish_invite_config()
-        assert staged_inventory(fixture) == untouched and writes == []
-        assert all(call[0] == "show" for call in io.manager.calls)
+        assert staged_inventory(history) == untouched
         return
     if case == "live":
-        # The existing Prepare boundary has not yet published a receipt. P3 is
-        # independently exercised without relying on the publisher succeeding.
-        first = __import__('dataclasses').replace(receipt, phase="prepared", activation_generation=0,
+        # Keep this read-only forward-owner case until that owner is retired.
+        from dataclasses import replace
+        from runtime.remote_access.home_live_config import HomeLiveConfigOwner
+        first = replace(history.ready, phase="prepared", activation_generation=0,
             operation_id="d" * 32, local_node_stable_id=None, home_endpoint=None)
         owner = HomeLiveConfigOwner(io=io, expected_generation=0, expected_operation_id=first.operation_id)
         rendered = owner._prepare(first)
-        assert owner._inputs["sidecar.json"].data == staged
+        assert owner._inputs["sidecar.json"].data == history.staged["sidecar.json"]
         assert json.loads(rendered["/etc/happyranch/sidecar.json"])["home_binding"]["activation_generation"] == 0
         assert sidecar.read_bytes() == retained
         return
-    io.publish_invite_config()
-    assert sidecar.read_bytes() == retained
-    assert hashlib.sha256(staged).hexdigest() == json.loads(
-        (fixture.root / "etc/happyranch/provision.json").read_bytes())["digests"]["sidecar.json"]
-    config = json.loads(invite.read_bytes())
-    assert config["format"] == "home-invite-config@2" and config["release_uid"] == os.getuid()
-    assert config["home_id"] == connector["home_id"] and "activation_generation" not in config
-
-
-@pytest.mark.parametrize("key,value", [("FragmentPath", "/foreign/fragment"), ("DropInPaths", "/foreign/dropin"),
-    ("NeedDaemonReload", "yes"), ("LoadState", "not-found"), ("Names", "alias.service")])
-def test_home_units_loaded_properties_verified_after_reload(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, key: str, value: str,
-) -> None:
-    home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    reload = io.manager.daemon_reload
-    show = io.manager.show_properties
-    reloaded = False
-    def daemon_reload() -> None:
-        nonlocal reloaded
-        reload()
-        reloaded = True
-    def properties(name: str, keys: tuple[str, ...]) -> dict[str, str]:
-        values = show(name, keys)
-        if reloaded and key in keys: values[key] = value
-        return values
-    monkeypatch.setattr(io.manager, "daemon_reload", daemon_reload)
-    monkeypatch.setattr(io.manager, "show_properties", properties)
-    with pytest.raises(ValueError, match="state"):
-        io.publish_home_units()
-    assert reloaded
-    assert not any(call[0] in {"enable", "start"} for call in io.manager.calls)
-
-
-def test_home_units_effects_hold_activation_lock(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
-    import fcntl
-    home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    opened = os.open
-    observed = []
-    def locked(name: object, flags: int, *args: object, **kwargs: object) -> int:
-        if flags & os.O_WRONLY:
-            fd = opened(fixture.root / "var/lib/happyranch-remote-access", os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                observed.append(name)
-            finally:
-                os.close(fd)
-        return opened(name, flags, *args, **kwargs)
-    monkeypatch.setattr(os, "open", locked)
-    io.publish_home_units()
-    assert observed == list(module.UNITS)
-
-
-def test_invite_config_clean_publication_and_reuse(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
-    import fcntl
-    from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
-    head = home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    assert io.prepare_headscale()['state'] == 'inert'
-    io.publish_home_units()
-    before = staged_inventory(fixture)
+    if case == "double":
+        tail = retained[retained.index(b',"ControlURL"'):retained.rindex(b'}')]
+        sidecar.write_bytes(retained[:retained.rindex(b'}')] + tail + retained[retained.rindex(b'}'):])
+    if case == "tail": sidecar.write_bytes(retained[:retained.rindex(b'}')] + b',"foreign":true}')
+    if case == "ids":
+        sidecar.write_bytes(retained.replace(b'"home_id":"' + connector["home_id"].encode() + b'"',
+                                            b'"home_id":"foreign"', 1))
+    if case == "connector":
+        path = history.root / "etc/happyranch/connector.json"
+        path.write_bytes(path.read_bytes() + b" ")
+    if case == "state":
+        path = history.root / "var/lib/happyranch-connector"
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (path / "trust-state.json").write_bytes(b"synthetic retained trust")
+    if case == "pending": (sidecar.parent / ".sidecar.json.pending").touch(mode=0o600)
+    if case == "txn": (state / "home-activation-txn.json").write_bytes(b"{}")
+    if case == "minter": (state / "home-minter").mkdir(mode=0o700)
+    if case == "unknown": (sidecar.parent / "unknown").touch(mode=0o600)
+    if case == "audit": (state / "home-audit.jsonl").chmod(0o644)
+    if case == "generation":
+        sidecar.write_bytes(retained.replace(b'"activation_generation":' + str(old_generation).encode(),
+                                            b'"activation_generation":true'))
+    if case == "tls":
+        sidecar.write_bytes(retained.replace(b'},"home_binding":', b',"foreign":true},"home_binding":'))
+    untouched = staged_inventory(history)
     io.manager.calls.clear()
-    head.calls.clear()
-    original_run = io._run
-    def run(args: list[str], **kwargs: object) -> tuple[int, str]:
-        if args[-1] == 'status':
-            descriptor = os.open(fixture.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            finally:
-                os.close(descriptor)
-        return original_run(args, **kwargs)
-    monkeypatch.setattr(io, '_run', run)
-    writes = home_unit_writes(monkeypatch, fixture.root)
-    syncs = []
-    original_sync = os.fsync
-    def sync(fd: int) -> None:
-        syncs.append('directory' if __import__('stat').S_ISDIR(os.fstat(fd).st_mode) else 'file')
-        original_sync(fd)
-    monkeypatch.setattr(os, 'fsync', sync)
-    io.publish_invite_config()
-    path = fixture.root / 'etc/happyranch/invite-issuer.json'
-    raw = json.loads(path.read_bytes())
-    connector = json.loads((fixture.root / 'etc/happyranch/connector.json').read_bytes())
-    assert raw == dict(format='home-invite-config@2', release_uid=os.getuid(),
-        home_id=connector['home_id'], control_plane_id=connector['managed']['control_plane_id'],
-        connector_id=connector['connector_id'], ca_der_sha256=hashlib.sha256(b'synthetic public CA').hexdigest(),
-        dial_ip='192.168.1.40', control_url='https://control.happyranch.invalid:8443')
-    assert HomeInviteConfigRecord.parse(path.read_bytes()).home_id == connector['home_id']
-    assert (path.stat().st_uid, path.stat().st_gid) == io.root_owner
-    assert path.stat().st_mode & 0o777 == 0o600
-    assert syncs == ['file', 'directory']
-    assert set(staged_inventory(fixture)) - set(before) == {'etc/happyranch/invite-issuer.json'}
-    after = staged_inventory(fixture)
-    assert all(after[key] == value for key, value in before.items() if key != 'etc/happyranch')
-    # Publication changes only this parent's size/mtime/ctime, not its custody.
-    assert after['etc/happyranch'][:6] == before['etc/happyranch'][:6]
-    assert after['etc/happyranch'][9:] == before['etc/happyranch'][9:]
-    assert set(writes) == {'etc/happyranch/.invite-issuer.json.pending'}
-    assert io.manager.calls == []
-    assert all(call == ['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status']
-               or call[0] == 'getent' or call[:2] == ['passwd', '--status'] for call in head.calls)
-    before, info = staged_inventory(fixture), path.stat()
-    writes.clear()
-    syncs.clear()
-    io.publish_invite_config()
-    assert staged_inventory(fixture) == before and path.stat() == info and writes == syncs == []
-
-
-@pytest.mark.parametrize('case', ['different', 'old-format', 'pending', 'symlink', 'hardlink', 'mode',
-    'source', 'provision', 'connector', 'release', 'missing-headscale', 'publication',
-    'materializer', 'ca-binding', 'locked', 'headscale-dir-mode'])
-def test_invite_config_refuses_without_effects(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
-    import fcntl
-    from runtime.remote_access.home_activation import HomeActivationError
-    from runtime.remote_access.invite_issuer import IssuerError
-    head = home_publication_setup(fixture, monkeypatch)
-    io = fixture.installer
-    io.provision(release_user=fixture.user, data_home=fixture.home)
-    if case != 'missing-headscale': io.prepare_headscale()
-    io.publish_home_units()
-    parent = fixture.root / 'etc/happyranch'
-    path = parent / 'invite-issuer.json'
-    if case in ('different', 'old-format', 'symlink', 'hardlink', 'mode'):
-        io.publish_invite_config()
-        if case == 'different': path.write_bytes(path.read_bytes() + b' ')
-        if case == 'old-format': path.write_bytes(path.read_bytes().replace(b'home-invite-config@2', b'home-invite-config@1'))
-        if case in ('symlink', 'hardlink'):
-            saved = path.with_name('saved-invite')
-            path.rename(saved)
-            if case == 'symlink': path.symlink_to(saved)
-            else: os.link(saved, path)
-        if case == 'mode': path.chmod(0o644)
-    if case == 'pending': (parent / '.invite-issuer.json.pending').touch(mode=0o600)
-    if case == 'source': fixture.token.write_bytes(b'synthetic rotated token')
-    if case in ('provision', 'connector', 'release'):
-        target = parent / {'provision': 'provision.json', 'connector': 'connector.json', 'release': 'release-daemon.json'}[case]
-        target.write_bytes(target.read_bytes() + b' ' if case == 'connector' else b'{}')
-    if case == 'publication':
-        (fixture.root / 'var/lib/happyranch-remote-access/headscale-publication.json').write_bytes(b'{}')
-    if case in ('materializer', 'ca-binding'):
-        status = json.loads(head.run(['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status'])[1])
-        if case == 'materializer': status['renewal_due'] = True
-        else: status['ca_fingerprint'] = 'a' * 64
-        head.materializer_result = (0, json.dumps(status) + '\n')
-    if case == 'headscale-dir-mode': (fixture.root / 'etc/happyranch/headscale').chmod(0o755)
-    before = staged_inventory(fixture)
-    writes = home_unit_writes(monkeypatch, fixture.root)
-    io.manager.calls.clear()
-    head.calls.clear()
-    fd = os.open(fixture.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        if case == 'locked': fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises((module.InstallerError, module.headscale.HeadscaleServiceError,
-                            HomeActivationError, IssuerError, OSError, ValueError)):
-            io.publish_invite_config()
-    finally:
-        os.close(fd)
-    assert writes == [] and staged_inventory(fixture) == before
-    assert io.manager.calls == []
-    assert all(call[0] == 'getent' or call[:2] == ['passwd', '--status']
-               or call == ['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status']
-               for call in head.calls)
+    assert io.inventory().state == "manual-install-conflict"
+    assert staged_inventory(history) == untouched
+    assert all(call[0] == "show" for call in io.manager.calls)

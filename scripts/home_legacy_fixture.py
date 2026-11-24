@@ -311,7 +311,8 @@ class LegacyAdmissionNative:
             (arg.split("=", 1)[1] for arg in args if arg.startswith("--property=")))
 
 
-def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> object:
+def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool,
+                             layout: str = "source", retain_headscale: bool = False) -> object:
     """Seed legacy data for real readback without activation/provisioning owners."""
     from runtime.remote_access.legacy_home_receipt import HomeActivationReceipt, HomeActivationTransaction
     from runtime.remote_access.legacy_home_readback import LegacyHomeReadback, LegacyHomeTransactions
@@ -324,14 +325,15 @@ def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> 
     head.seed_prepared_history()
     # This historical reader fixture predates the later installer publication
     # records; leave only the activation pair used by these existing cases.
-    for name in ("headscale-account.json", "headscale-publication.json", "home-issuer-publication.json"):
-        (fixture.root / STATE / name).unlink()
-    for name in ("ca.pem", "ca.key", "leaf.pem", "leaf.key"):
-        (fixture.root / STATE / "home-ca" / name).unlink()
-    for name in ("home-ca", "home-issuer"):
-        (fixture.root / STATE / name).rmdir()
+    if not retain_headscale:
+        for name in ("headscale-account.json", "headscale-publication.json", "home-issuer-publication.json"):
+            (fixture.root / STATE / name).unlink()
+        for name in ("ca.pem", "ca.key", "leaf.pem", "leaf.key"):
+            (fixture.root / STATE / "home-ca" / name).unlink()
+        for name in ("home-ca", "home-issuer"):
+            (fixture.root / STATE / name).rmdir()
     io = fixture.installer
-    io.layout = "source"
+    io.layout = layout
     lookup = io._lookup_user
     io._lookup_user = lambda name: head.lookup_user(name) if name == ACCOUNT else lookup(name)
     io._lookup_group = head.lookup_group
@@ -359,7 +361,7 @@ def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> 
         unit="happyranch-daemon.service", fragment_path="/usr/lib/systemd/user/happyranch-daemon.service")
     put_legacy(path("etc/happyranch/release-daemon.json"), json.dumps(release).encode(), 0o644)
     names = (*prepared, "release-daemon.json", "daemon.token")
-    provision = dict(version=1, phase="provisioned", layout="source",
+    provision = dict(version=1, phase="provisioned", layout=layout,
         digests={name: hashlib.sha256(path("etc/happyranch/" + name).read_bytes()).hexdigest() for name in names})
     put_legacy(path("etc/happyranch/provision.json"), json.dumps(provision).encode())
     invite = dict(format="home-invite-config@2", release_uid=os.getuid(), home_id="home",
@@ -368,8 +370,11 @@ def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> 
     put_legacy(path("etc/happyranch/invite-issuer.json"), json.dumps(invite).encode())
     for name in module.UNITS:
         source = "managed-home-sidecar.service" if ready and name == module.UNITS[1] else "managed-" + name
-        put_legacy(path("etc/systemd/system/" + name), (fixtures / source).read_bytes().replace(b"/opt/happyranch-desktop/", b"/opt/happyranch/").replace(
-            b"/opt/happyranch/python/bin/python3 -I", b"/opt/happyranch/venv/bin/python"), 0o644)
+        data = (fixtures / source).read_bytes()
+        if layout == "source":
+            data = data.replace(b"/opt/happyranch-desktop/", b"/opt/happyranch/").replace(
+                b"/opt/happyranch/python/bin/python3 -I", b"/opt/happyranch/venv/bin/python")
+        put_legacy(path("etc/systemd/system/" + name), data, 0o644)
     put_legacy(path("etc/systemd/system/" + UNIT), (fixtures / "headscale-home.service").read_bytes(), 0o644)
     record = legacy_activation_record("ready" if ready else "prepared")
     record.update(release_uid=os.getuid(), ca_der_sha256=invite["ca_der_sha256"],
@@ -408,6 +413,6 @@ def legacy_admission_fixture(tmp: Path, monkeypatch: object, *, ready: bool) -> 
     transactions._io = io
     native.calls.clear()
     return SimpleNamespace(root=fixture.root, receipts=receipts, transactions=transactions,
-        source=fixture.token, path=path, native=native, prepared=receipt, ready=receipt,
+        source=fixture.token, path=path, native=native, prepared=receipt, ready=receipt, staged=prepared,
         txn=transaction, mints=[], records=lambda: (path(STATE + "/home-activation.json").read_bytes(),
             path(STATE + "/home-activation-txn.json").read_bytes() if path(STATE + "/home-activation-txn.json").exists() else None))

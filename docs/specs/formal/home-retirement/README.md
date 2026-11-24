@@ -38,6 +38,10 @@ effects. This stronger entry-specific refusal adds no model transition; the
 OldAdmission action still abstracts legacy callers racing the retirement fence.
 Other programmatic/home helper owner retirement remains unfinished, so this
 mapping does not claim that every old admission path has been removed.
+Initial installer unit/invite publication writers are removed. The retained
+Disable/post-disable inventory keeper now starts from neutral historical files,
+observes real cleanup and preserves custody refusal without re-publication.
+This removes forward implementation without adding a model transition.
 
 ## Incremental implementation records
 

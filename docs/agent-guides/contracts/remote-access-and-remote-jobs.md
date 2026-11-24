@@ -4344,8 +4344,12 @@ imports no local admin/minter/issuer owner, calls no commit callback or connecto
 and preserves the existing closed refusal vocabulary plus the retirement message.
 The old issuance/recovery workers and their secret-bearing success parser are
 removed; bounded shared pipe transport and status projection remain for retained
-consumers. Lower programmatic writer owners still await separate source
-retirement; this boundary grants no account-network admission.
+consumers. Initial `publish_home_units` / `publish_invite_config` writers and
+their unused lock-borrowing helper are removed. Retained Disable and post-disable
+inventory read historical files without re-publication; their no-follow custody,
+exact original provenance and native observation checks remain. Programmatic
+Headscale preparation and other forward owners still await source retirement;
+this boundary grants no account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and
 `happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives
