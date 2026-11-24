@@ -449,29 +449,36 @@ struct AppDelegateRolePreferenceTests {
 
         // Production ContentView binds Main before this action. Exercise its
         // real owner gate, rather than bypassing it in a fixture without Main.
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        // Preserve the physical /private path used by the asset enumerator,
+        // matching AppSchemeSwitchTests.fixture().
+        let physical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(physical) }
+        let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try #require(try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true))
         defer { try? FileManager.default.removeItem(at: root) }
-        try Data("hello".utf8).write(to: root.appendingPathComponent("index.html"))
-        try Data(#"{"version":1,"entry":"index.html","resources":[{"path":"index.html","bytes":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}"#.utf8)
-            .write(to: root.appendingPathComponent("resource-manifest.json"))
+        try #require(try? Data("hello".utf8).write(to: root.appendingPathComponent("index.html")))
+        try #require(try? Data(#"{"version":1,"entry":"index.html","resources":[{"path":"index.html","bytes":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}"#.utf8)
+            .write(to: root.appendingPathComponent("resource-manifest.json")))
         let policy = root.appendingPathExtension("json")
         defer { try? FileManager.default.removeItem(at: policy) }
-        try Data(#"{"version":1,"entries":[{"method":"PUT","path_template":"/api/v1/config","class":"config"}]}"#.utf8).write(to: policy)
-        let scheme = try AppScheme(root: root, transport: delegate.clientBridge, remote: true, policyURL: policy)
+        try #require(try? Data(#"{"version":1,"entries":[{"method":"PUT","path_template":"/api/v1/config","class":"config"}]}"#.utf8).write(to: policy))
+        let scheme = try #require(try? AppScheme(root: root, transport: delegate.clientBridge, remote: true, policyURL: policy),
+                                  "Construct Main AppScheme from the physical asset root")
         defer { scheme.close() }
         delegate.bindMainScheme(scheme)
         for summary in [nil,
                         #"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#,
                         #"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":0,"unknown":1}}"#] as [String?] {
-            if let summary { try scheme.receiveOwnerSummary(summary) }
+            if let summary {
+                try #require(try? scheme.receiveOwnerSummary(summary), "Accept held owner summary: \(summary)")
+            }
             delegate.switchConnectionRole(to: .home)
             #expect(delegate.connectionRolePreference == .client)
             #expect(delegate.clientBridge != nil)
             #expect(delegate.webViewURL != nil)
         }
-        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        try #require(try? scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#))
 
         // Switch to HOME
         delegate.switchConnectionRole(to: .home)
