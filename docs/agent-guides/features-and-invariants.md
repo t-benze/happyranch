@@ -3256,7 +3256,14 @@ Traps:
 
 - Helper runs after task failure is finalized (no auto-revisit spawns; the task is already terminal FAILED).
 - Only root tasks fire followups.
-- Dispatcher identity comes from the `thread_dispatch` audit row.
+- Dispatcher identity comes from the thread-scoped `thread_dispatch` audit row
+  whose payload names the revisit origin. Resolve-escalation supersede writes
+  this provenance for each new thread-linked successor atomically, including
+  `superseded_task_id`. The resolving agent is dispatcher; Founder inherits the
+  predecessor's resolvable dispatcher, otherwise writes no row. Never record
+  `founder` as dispatcher. Replay adds no row or invocation dispatch binding.
+  Existing missing rows stay unresolved; no supersession-link read fallback,
+  backfill, migration or startup posting scan is added. See the thread contract.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 - Terminal gate is completion/failed **plus** `superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
 - **GH-688 Phase 1 isolation.** `TASK_FOLLOWUP` is a causal one-shot direct mint (`mint_followup_invocation_with_cap_extend`), never coalesced into reply delivery state and never routed through the claim/settle surface — even with a reply backlog on the same pair, the followup fires as its own `TASK_FOLLOWUP` row.

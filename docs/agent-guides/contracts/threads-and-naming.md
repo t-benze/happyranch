@@ -305,7 +305,17 @@ See the [current naming contract](../../specs/2026-10-09-identity-names-core.md)
   in-lineage escalations in all three purposes;
   same-token/task replay uses the persisted escalation_resolved invocation ID.
   Resolution commits successor, predecessor/family supersession and that audit
-  atomically. Parent wakes and thread followups run after commit even when
+  atomically. A thread-linked successor also receives a thread-scoped
+  `thread_dispatch` audit (`task_id` is the thread ID; payload fields are
+  `task_id`, `dispatcher`, `target_agent`, `team`, `superseded_task_id`). Its
+  dispatcher is the resolving invocation's agent, or the agent actor; Founder
+  break-glass inherits the predecessor's dispatcher using the ancestor-root /
+  revisit-origin lookup. If unresolved, no row is written; `founder` is never a
+  dispatcher. Replay writes no duplicate. This row supplies future escalation
+  and terminal followup provenance without an invocation dispatch binding or
+  `task_dispatched` message. Existing roots without a row stay unresolved; no
+  supersession fallback, backfill, migration or startup posting scan is added.
+  Parent wakes and thread followups run after commit even when
   successor enqueue fails. Replay recovers the predecessor and closed family
   from committed supersession audits and repeats their publication. Production
   parent wakes and thread-token publication deduplicate queued work; superseded
