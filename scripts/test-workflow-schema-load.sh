@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 27)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 29)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -7629,7 +7629,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         return tuple(f.conn.iterdump()), dict(f.db._v2_live_attempt_owners), tuple(s6queue(f))
 
     @asynccontextmanager
-    async def dr_fixture(*, configured=True, revisions=2):
+    async def dr_fixture(*, configured=True, revisions=2, launch=False):
         import httpx
         from runtime.daemon.app import create_app
         from runtime.daemon.state import DaemonState
@@ -7680,8 +7680,11 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             allowed=await setup_put(f,setup_admission(body,body['operation_key']+'-allow',1))
                             f.settings[body['definition']['identity']]=allowed.json()['original']
                             f.operation_receipts[body['operation_key']+'-allow']=allowed.content
-                    with patch.object(f.org.orchestrator,'_run_agent',side_effect=AssertionError('provider launch forbidden')):
+                    if launch:
                         yield f
+                    else:
+                        with patch.object(f.org.orchestrator,'_run_agent',side_effect=AssertionError('provider launch forbidden')):
+                            yield f
                 finally:
                     state.metrics_store.close();state.direct_connect_authority_store.close()
 
@@ -8571,6 +8574,121 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             assert dr_select(f,run_id)['terminal_outcome']=='cancelled'
             await dr_done(f)
 
+    async def dr_first_launch():
+        from runtime.daemon.dispatcher import Dispatcher
+        from runtime.daemon.state import DaemonState
+        from runtime.orchestrator.executors import ExecutorResult
+        from runtime.orchestrator.task_pause import discover_pause_work
+        async with dr_fixture(launch=True) as f:
+            runs = await dr_start(f)
+            snapshot = os.environ.get('WORKFLOW_QUEUED_DB')
+            replay = bool(snapshot and Path(snapshot).exists())
+            if replay:
+                # A previous pre-fix invocation exports its actual refused DB.
+                # Restore only into this fresh private runtime, never a live DB.
+                with closing(sqlite3.connect('file:' + str(Path(snapshot).resolve()) + '?mode=ro', uri=True)) as saved:
+                    saved.backup(f.conn)
+                # The ordinary startup owner reinstalls its authority cache
+                # after reopening retained SQLite in this private runtime.
+                authority = f.org.workflow_authority
+                _, journal_id, *_ = authority._pointer(f.conn, authority.namespace)
+                authority.canonical_path.write_bytes(bytes(authority._journal(f.conn, journal_id)['snapshot_bytes']))
+                authority.recover_or_publish()
+                runs = [dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_runs')]
+                assert len(runs) == 1
+                f.ids = dr_ids(f, runs[0])
+            task_id = f.ids.visit_task_id
+            visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+            task = f.db.get_task(task_id)
+            assert (runs[0]['state'], runs[0]['progress'], visit['state'], visit['session_id'], task.status.value,
+                    task.current_session_id) == ('running', 'queued', 'queued', None, 'pending', None)
+            settings = tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_settings ORDER BY id'))
+            workspace = f.root / 'workspaces' / task.assigned_agent
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / 'AGENTS.md').write_text('Private synthetic launch instructions.\n')
+            (workspace / 'CLAUDE.md').symlink_to('AGENTS.md')
+            marker = f.org.orchestrator._readiness_marker(workspace, 'codex')
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text('Private synthetic initialized workspace.\n')
+            observed = []
+            def subprocess(cmd, workspace, session_id, timeout_seconds, **kwargs):
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                bound = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                native = f.db.get_task(task_id)
+                assert (run['state'], run['progress'], bound['state'], bound['session_id'], native.status.value,
+                        native.current_session_id) == ('running', 'executing', 'running', session_id, 'in_progress', session_id)
+                assert session_id and 'workflow-sequential-node-brief@2' in kwargs['input_text']
+                assert 'Private' in kwargs['input_text']
+                observed.append(session_id)
+                # Only the provider subprocess is stubbed. Real prompt, queue,
+                # dispatcher, workspace/skills, supervisor and COMMIT run above.
+                return ExecutorResult(success=True, duration_seconds=0, session_id=session_id, returncode=0)
+            state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+            state.orgs['scratch'] = f.org
+            try:
+                if replay:
+                    await discover_pause_work(f.org, f.queue)
+                else:
+                    f.dispatcher.notify_queued(task_id, f.queue)
+                assert s6queue(f) == [task_id], ('first_launch: queued task not rediscovered', s6queue(f))
+                item = f.queue._queue.get_nowait()
+                f.queue._record_dequeue(item)
+                returns = []
+                real_run = f.org.orchestrator._run_agent
+                def observe_run(*args, **kwargs):
+                    value = real_run(*args, **kwargs)
+                    returns.append(value)
+                    return value
+                with patch('runtime.orchestrator.executors._run_command', side_effect=subprocess), patch.object(
+                        f.org.orchestrator, '_run_agent', side_effect=observe_run):
+                    await f.queue._consume(Dispatcher(state), item)
+                failures = [str(exc) for work in f.queue._native_work for exc in work.failures]
+                if snapshot and not replay:
+                    with closing(sqlite3.connect(snapshot)) as saved:
+                        f.conn.backup(saved)
+                    print('Exported pre-fix queued fixture', snapshot, failures, flush=True)
+                assert len(observed) == 1, ('first_launch: executor subprocess never reached', failures, returns,
+                    f.db.get_task(task_id).note, [dict(r) for r in f.conn.execute(
+                        'SELECT kind,evidence_bytes FROM workflow_seq_evidence WHERE visit_id=?', (f.ids.visit_id,))])
+                assert not failures, failures
+                assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_settings ORDER BY id')) == settings
+                print('PASS first_launch', 'pre-fix persisted queue rediscovered without Save/Allow' if replay else 'fresh Start@2 queue',
+                      task_id, 'real dispatch/render/commit; one subprocess stub', flush=True)
+            finally:
+                state.metrics_store.close(); state.direct_connect_authority_store.close()
+
+    async def dr_render_tuples():
+        from runtime.workflows.sequential_dispatch import SequentialRefusal
+        async with dr_fixture() as f:
+            runs = await dr_start(f)
+            run = runs[0]; visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+            capture = f.org.workflow_authority.capture_admission()
+            sid = 'private-prospective-sid'
+            with f.org.workflow_authority.admission_writer(capture) as writer:
+                rendered = f.dispatcher._generic_node_instruction(writer, run, visit, f.compiled,
+                    visit['principal'], sid, capture, seq_history._ReadBudget())
+                assert 'workflow-sequential-node-brief@2' in rendered
+                for label, run_delta, visit_delta, principal in (
+                    ('queued foreign SID', {}, dict(session_id='foreign'), visit['principal']),
+                    ('queued executing', dict(progress='executing'), {}, visit['principal']),
+                    ('running unbound', dict(progress='executing'), dict(state='running'), visit['principal']),
+                    ('running foreign SID', dict(progress='executing'), dict(state='running', session_id='foreign'), visit['principal']),
+                    ('cancelling', dict(progress='cancelling'), {}, visit['principal']),
+                    ('held', dict(state='held'), {}, visit['principal']),
+                    ('wrong active visit', dict(active_visit_id='foreign'), {}, visit['principal']),
+                    ('unselected', {}, dict(selected=0), visit['principal']),
+                    ('wrong principal', {}, {}, 's3_alt')):
+                    try:
+                        f.dispatcher._generic_node_instruction(writer, dict(run, **run_delta), dict(visit, **visit_delta),
+                            f.compiled, principal, sid, capture, seq_history._ReadBudget())
+                    except SequentialRefusal as exc:
+                        assert str(exc) == 'sequential_carrier_identity_conflict', (label, exc)
+                    else:
+                        raise AssertionError('render accepted invalid tuple: ' + label)
+            # Existing dr_visit owns the already-bound rendering keeper.
+            await dr_visit(f, run['id'], 'produced')
+            print('PASS render_tuples: queued/null accepted; nine invalid tuples refused; bound rendering retained', flush=True)
+
     if start2_case:
         for case in START2_CASES:
             if case == 'legacy_bytes' and start2_case == 'all':
@@ -8582,7 +8700,12 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
     if draft_review_case:
         for case in DRAFT_REVIEW_CASES:
             if draft_review_case in ('all',case):
-                asyncio.run(dr_case(case))
+                if case == 'C27':
+                    asyncio.run(dr_first_launch())
+                elif case == 'C28':
+                    asyncio.run(dr_render_tuples())
+                else:
+                    asyncio.run(dr_case(case))
                 print('PASS Draft',case,'private real released catalog/ASGI/native boundary; provider NOT RUN',flush=True)
         raise SystemExit(0)
 

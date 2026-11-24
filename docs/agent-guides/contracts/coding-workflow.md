@@ -2955,3 +2955,24 @@ Only positive subject COMMIT releases editing; failed COMMIT releases nothing.
 U7c1 GET `repository-preflight` remains a read of the already-bound subject.
 No selected-context, observer, schema, credential, permission generation,
 network/effect, historical evidence or live deployment change follows.
+
+## Generic prompt construction before session binding (TASK-18967)
+
+The ordinary queue builds the generic node prompt before the final launch
+COMMIT. Instruction rendering accepts only a running run whose active selected
+visit belongs to the invocation's principal and is either queued with queued
+progress and no session, or running with executing progress and the invocation's
+bound session. Cancellation remains a refusal. The in-memory brief state uses
+the prospective invocation SID, as the original engine does; rendering writes
+no visit/session binding. Generic assignment/current-authority and addressed
+input checks still run. Launch COMMIT independently rechecks queue eligibility,
+assignment, native claim and cancellation, then atomically binds the session and
+sets executing progress.
+
+This predicate works with previously admitted queued state and does not require
+new Save/Allow. It is not proof of complete launch readiness: the existing
+scratch component validator separately rejects Start@2's generated
+`TASK-SEQ-seq-first-task-<hash>` identity. TASK-18967 stops before changing that
+contract; its private real-queue C27 case retains the failing launch assertion.
+The two observed pilot runs therefore cannot yet be promised to launch after
+restart with this prompt fix alone. No live run/settings/restart change follows.
