@@ -42,6 +42,12 @@ def test_thr327_replacement_runtime_status(
     """The actual v2 replacement's closed output must be usable by Enable/Status."""
     from scripts.test_installer_token_custody import prepared_replacement, module
     f, m = renewal_fixture, mount
+    # Match installed package custody, as in the existing renewal_setup fixture;
+    # the source checkout itself may be group-writable.
+    source = f.inputs / 'route_policy.json'
+    source.write_bytes(Path(module.__file__).with_name('route_policy.json').read_bytes())
+    source.chmod(0o644)
+    monkeypatch.setattr(module, '__file__', str(f.inputs / 'installer.py'))
     f.installer.layout = 'deb'
     f.installer.units = module.managed_units('deb')
     lookup_user, lookup_group = f.installer._lookup_user, f.installer._lookup_group
@@ -171,7 +177,7 @@ def test_thr327_replacement_runtime_status(
     assert not m.helper.authority.call.called and not m.reader.effect.called
 
 
-@pytest.mark.parametrize('case', ['residue', 'policy-drift', 'non-shipped'])
+@pytest.mark.parametrize('case', ['residue', 'policy-drift', 'non-shipped', 'shipped-custody'])
 def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     from runtime.remote_access import helper_generation as generation
     v = composition
@@ -180,6 +186,8 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
         runtime = v.path('/run/happyranch-tsnet-sidecar')
         runtime.mkdir(mode=0o755)
         (runtime / 'unknown').write_bytes(b'synthetic-private-canary')
+    elif case == 'shipped-custody':
+        (v.root / 'package/route_policy.json').chmod(0o666)
     else:
         policy_path = v.path('/etc/happyranch/policy.json')
         if case == 'policy-drift':
@@ -209,7 +217,7 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
     monkeypatch.setattr(generation.subprocess, 'run', child)
     with pytest.raises(generation.GenerationUnavailable) as failure:
         generation.HomeLifecycleClient('Enable', os.getuid()).current_generation(2)
-    category = 'residue' if case == 'residue' else 'provenance'
+    category = {'residue': 'residue', 'shipped-custody': 'custody'}.get(case, 'provenance')
     assert getattr(failure.value, 'category', None) == category
     assert json.loads(frames[0]) == {'refusal': category}
     assert staged_inventory(v.fixture) == before and v.calls == calls and writes == []

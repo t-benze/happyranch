@@ -514,7 +514,9 @@ def test_thr327_stale_health_cannot_make_enable_ready(composition: Any, monkeypa
 
 
 @pytest.mark.parametrize('expired', [False, True])
-def test_thr327_old_headscale_intent_never_renews(venue: Venue, monkeypatch: pytest.MonkeyPatch, expired: bool) -> None:
+@pytest.mark.parametrize('entry', ['recover', 'enable'])
+def test_thr327_old_headscale_intent_never_renews(
+        venue: Venue, monkeypatch: pytest.MonkeyPatch, expired: bool, entry: str) -> None:
     from runtime.remote_access.home_activation_txn import HomeActivationTransaction
     from scripts.test_installer_token_custody import expire_staged_policy
     v = venue
@@ -548,8 +550,11 @@ def test_thr327_old_headscale_intent_never_renews(venue: Venue, monkeypatch: pyt
     # Existing I3a semantics: an interrupted nonterminal prefix is terminalized,
     # never resumed, including an intent predating early renewal.
     with pytest.raises(ActivationRefused):
-        v.backend.recover(expected_generation=7, expected_operation_id=receipt.operation_id,
-                          fresh_authenticated=True)
+        if entry == 'recover':
+            v.backend.recover(expected_generation=7, expected_operation_id=receipt.operation_id,
+                              fresh_authenticated=True)
+        else:
+            v.backend.enable(expected_generation=7, authenticated=True)
     terminal = v.transactions.read_optional()
     assert terminal.phase == 'failed_uncertain' and terminal.effects == parsed.effects
     assert v.receipts.current().phase == 'failed_uncertain' and calls == []

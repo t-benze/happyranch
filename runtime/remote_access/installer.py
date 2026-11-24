@@ -4578,9 +4578,9 @@ class ManagedInstaller:
             from runtime.remote_access.policy import PolicyEnvelope
             from runtime.remote_access.policy_renew_units import fresh_auth_renewal_candidate
             source = Path(__file__).with_name("route_policy.json")
-            # Same packaged artifact source as _generated_configs. The effect
-            # additionally enforces P1's protected source custody before writes.
-            shipped = self._json(source.read_bytes())
+            # Use P1's protected, bounded package read even in read-only capture.
+            with self._input_parent(source) as shipped_parent:
+                shipped = self._json(self._read_file(shipped_parent, source.name, owner=self.root_owner))
             if fresh_auth_renewal_candidate(PolicyEnvelope.model_validate(self._json(files["policy.json"])),
                     shipped, now=datetime.now(timezone.utc)) is None:
                 raise InstallerError("home publication shipped policy mismatch")

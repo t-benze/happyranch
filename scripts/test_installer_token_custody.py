@@ -4429,6 +4429,12 @@ def home_publication_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) ->
     (payload / "python/bin/python3").symlink_to("python3.12")
     for directory in (payload / "python", payload / "python/bin"):
         directory.chmod(0o755)
+    # Model installed package custody for the read-only shipped-policy check,
+    # matching renewal_setup rather than trusting a group-writable checkout.
+    source = payload / "route_policy.json"
+    source.write_bytes(Path(module.__file__).with_name("route_policy.json").read_bytes())
+    source.chmod(0o644)
+    monkeypatch.setattr(module, "__file__", str(payload / "installer.py"))
     # B8's non-optional state directory and ancestors are packaged already.
     state = fixture.root / "var/lib/happyranch-remote-access"
     state.mkdir(parents=True, mode=0o700)
