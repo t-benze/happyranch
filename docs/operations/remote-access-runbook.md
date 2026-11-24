@@ -234,6 +234,9 @@ Omitted-input generated home provisioning also refuses. Explicit non-home
 provisioning still requires all three configuration inputs; non-home policy
 renewal and its existing serialization remain available. Uncalled ReplaceFailed
 forward preparation/replacement writers are removed.
+The old Headscale `wait-ready` startup helper also refuses without network
+probes. Exact historical policy/config/unit bytes remain readable for selective
+cleanup; they do not provide a server preparation or readiness path.
 Legacy uninstall's underlying cleanup removes the proven inert Headscale unit/policy/custody and
 config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
 root-only publication receipt,

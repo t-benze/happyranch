@@ -9,9 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import socket
 import ssl
-import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -230,57 +228,8 @@ def legacy_activation_record(phase: str) -> dict:
                    "/etc/systemd/system/" + UNIT}))
 
 
-def nla(kind: int, data: bytes) -> bytes:
-    length = len(data) + 4
-    return struct.pack("=HH", length, kind) + data + bytes((-length) % 4)
 
 
-class KernelDump:
-    """Synthetic Linux UAPI frames, never source-selection/publication logic."""
-
-    def __init__(self, fixture: LegacyNativeFixture, args: tuple) -> None:
-        assert args == (socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
-        self.fixture = fixture
-
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
-    def bind(self, address): assert address == (0, 0)
-    def settimeout(self, timeout): assert 0 < timeout <= 6
-
-    def sendto(self, packet, address):
-        assert address == (0, 0)
-        _, request, _, self.sequence, _ = struct.unpack_from("=IHHII", packet)
-        self.response = {18: 16, 22: 20, 26: 24}[request]
-        return len(packet)
-
-    def recvmsg(self, limit):
-        value, case = self.fixture, self.fixture.kernel_case
-        address = socket.inet_pton(socket.AF_INET, value.dial_ip)
-        link = struct.pack("=BBHiII", 0, 0, 1, 2, 0 if case == "down" else 9 if case == "loopback" else 1, 0)
-        addr = struct.pack("=BBBBI", socket.AF_INET, 24, 0, 0, 2) + nla(2, address)
-        route = struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 254, 4, 0, 1, 0)
-        source = b"" if case == "unresolved" else nla(7, address)
-        route += source
-        if case == "ecmp":
-            route += nla(9, struct.pack("=HBBi", 8, 0, 0, 2) * 2)
-        else:
-            route += nla(4, struct.pack("=I", 99 if case == "unknown-interface" else 2))
-        bodies = {16: [link], 20: [addr], 24: [] if case == "no-route" else [route]}
-        if case == "duplicate-interface": bodies[16].append(link)
-        if case == "unresolved-second":
-            bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 254, 4, 0, 1, 0)
-                              + nla(4, struct.pack("=I", 2)))
-        if case == "ipv6":
-            ipv6 = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
-            bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, 2) + nla(1, ipv6))
-            bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 4, 0, 1, 0)
-                              + nla(4, struct.pack("=I", 2)) + nla(7, ipv6))
-        def message(kind, body, flags=2):
-            return struct.pack("=IHHII", 16 + len(body), kind, flags, self.sequence, 0) + body
-        frames = b"".join(message(self.response, body) for body in bodies[self.response])
-        frames += message(3, struct.pack("=i", 0), 0x10 if case == "interrupted" else 2)
-        if case == "error": frames = message(2, struct.pack("=i", -1))
-        return frames, [], socket.MSG_TRUNC if case == "truncated" else 0, (0, 0)
 
 
 def put_legacy(path: Path, data: bytes, mode: int = 0o600) -> None:

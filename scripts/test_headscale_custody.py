@@ -19,7 +19,7 @@ import pytest
 from runtime.remote_access import headscale_service as home
 from runtime.remote_access import installer as module
 from runtime.remote_access import systemd_unit
-from scripts.home_legacy_fixture import KernelDump, LegacyNativeFixture
+from scripts.home_legacy_fixture import LegacyNativeFixture
 
 PUBLICATION = "headscale-publication.json"
 CONFIG_FILES = ("config.yaml", "derp.yaml")
@@ -114,8 +114,6 @@ class Fixture(LegacyNativeFixture):
 @pytest.fixture
 def fixture(tmp_path: Path, monkeypatch) -> Fixture:
     value = Fixture(tmp_path)
-    monkeypatch.setattr(home.socket, "socket", lambda *args: KernelDump(value, args))
-    monkeypatch.setattr(home, "preflight_ports", value.preflights.append)
     return value
 
 
@@ -481,65 +479,10 @@ def test_policy_and_unit_exact_bytes() -> None:
     assert systemd_unit.render_headscale_unit() == EXPECTED_UNIT
 
 
-@pytest.mark.parametrize("occupied", [None, 0, 1, 2, 3, "uncertain"])
-def test_fixed_port_bindings_and_typed_refusal(monkeypatch, occupied) -> None:
-    calls, closed = [], []
-    class Probe:
-        def __init__(self, family, kind):
-            assert family == socket.AF_INET
-            self.kind = kind
-        def __enter__(self): return self
-        def __exit__(self, *args): closed.append(self.kind)
-        def bind(self, address):
-            index = len(calls)
-            calls.append((address, self.kind))
-            if index == occupied or occupied == "uncertain":
-                raise OSError(errno.EADDRINUSE if occupied != "uncertain" else errno.EACCES,
-                              "synthetic private diagnostic")
-    monkeypatch.setattr(home.socket, "socket", Probe)
-    if occupied is None:
-        home.preflight_ports("192.168.1.40")
-    else:
-        with pytest.raises(home.HeadscaleServiceError) as caught:
-            home.preflight_ports("192.168.1.40")
-        assert str(caught.value) == ("port-check-uncertain" if occupied == "uncertain" else "occupied-port")
-        assert caught.value.__context__ is None and caught.value.__cause__ is None
-    assert calls == [(("192.168.1.40", 8443), socket.SOCK_STREAM),
-                     (("192.168.1.40", 3478), socket.SOCK_DGRAM),
-                     (("127.0.0.1", 19090), socket.SOCK_STREAM),
-                     (("127.0.0.1", 50443), socket.SOCK_STREAM)][:len(calls)]
-    assert len(calls) == (4 if occupied is None else 1 if occupied == "uncertain" else occupied + 1)
-    assert len(closed) == len(calls)
 
 
-@pytest.mark.parametrize("address", ["0.0.0.0", "127.0.0.1", "::1", "8.8.8.8", "192.168.1.040", "bad"])
-def test_invalid_dial_ip_never_binds(monkeypatch, address) -> None:
-    def forbidden(*args): raise AssertionError("must not inspect host sockets")
-    monkeypatch.setattr(home.socket, "socket", forbidden)
-    with pytest.raises(home.HeadscaleServiceError, match="^dial-ip$"):
-        home.preflight_ports(address)
 
 
-@pytest.mark.parametrize("ready", [True, False])
-def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
-    clock, closed = [0.0], []
-    monkeypatch.setattr(home.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(home.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
-    class Connection:
-        def __init__(self, host, port, timeout):
-            assert (host, port) == ("127.0.0.1", 19090)
-            assert 0 < timeout <= 1.0
-        def request(self, method, path): assert (method, path) == ("GET", "/metrics")
-        def getresponse(self): return SimpleNamespace(status=200 if ready else 503)
-        def close(self): closed.append(True)
-    monkeypatch.setattr(home.http.client, "HTTPConnection", Connection)
-    if ready:
-        home.wait_ready()
-        assert clock[0] == 0.0 and len(closed) == 1
-    else:
-        with pytest.raises(home.HeadscaleServiceError, match="^readiness-timeout$"):
-            home.wait_ready()
-        assert 30.0 <= clock[0] < 30.1 and closed
 
 
 @pytest.mark.parametrize("command", ["disable-headscale", "uninstall"])
@@ -1497,3 +1440,15 @@ def test_b6_helper_operation_cas_under_receipt_lock(
             fixture.installer.cleanup_headscale(**_HOME_EXPECTED, expected_operation_id=operation)
         assert b6_snapshot(fixture.root) == before
         assert not any(args[0] in {'userdel', 'groupdel'} or args[:2] == ['systemctl', 'disable'] for args in fixture.calls)
+
+
+def test_retired_headscale_startup_has_no_effect(monkeypatch, capsys) -> None:
+    import http.client
+    from runtime.remote_access.home_retirement import MESSAGE
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired startup attempted native network observation")
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(http.client, "HTTPConnection", forbidden)
+    monkeypatch.setattr(home.sys, "argv", ["headscale_service", "wait-ready"])
+    assert home.main() == 1
+    assert capsys.readouterr() == ("", MESSAGE + "\n")

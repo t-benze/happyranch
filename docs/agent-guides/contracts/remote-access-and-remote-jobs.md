@@ -22,6 +22,12 @@ and actual policy-renewal publication/locking remain. Renewal maps a retained
 pending-custody refusal to its existing closed `InstallerError` boundary without
 changing the refusal or touching pending evidence.
 
+The uncalled LAN selector/netlink collection and port probes are removed.
+Historical Headscale policy/config/DERP renderers and exact unit bytes remain
+for protected readback. The historical `headscale_service wait-ready` command
+spelling now returns the retirement error without HTTP/socket observation or
+readiness success; a saved unit cannot use it to resume a home.
+
 ## Public host compatibility metadata (THR-387 S4a)
 
 `GET /api/v1/health` is already remote-allowed. Its additive `api_contract`

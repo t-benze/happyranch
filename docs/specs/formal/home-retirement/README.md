@@ -59,6 +59,12 @@ inputs; the production retirement outcome is never supplied by a fixture. The
 closed renewal error adapter preserves pending refusal. No modeled state/action,
 record grammar or TLC result changes with this source deletion.
 
+Unmounted LAN selection/netlink/port probes are removed; pure historical
+Headscale renderers/constants remain for exact custody recognition. The old
+wait-ready command spelling is a closed retirement refusal with no network
+observation. This implements the existing no-new-home boundary without adding
+a model action or claiming installed systemd/TLC acceptance.
+
 ## Incremental implementation records
 
 The records below retain the scope limits of each earlier implementation slice.
