@@ -853,50 +853,8 @@ def test_legacy_ca_sources_refuse_unsafe_readback(fixture, monkeypatch, capsys, 
     assert not any(args[0] == MATERIALIZER for args in fixture.calls)
 
 
-@pytest.mark.parametrize("tamper", ["mode", "link", "hardlink", "fifo"])
-def test_legacy_materializer_binary_custody_refuses(fixture, monkeypatch, capsys, tamper) -> None:
-    fixture.seed_prepared_history()
-    path = fixture.root / MATERIALIZER.lstrip("/")
-    if tamper == "mode": path.chmod(0o777)
-    if tamper == "hardlink": os.link(path, fixture.root / "foreign-binary")
-    if tamper in {"link", "fifo"}:
-        path.rename(path.with_name("foreign-binary"))
-        if tamper == "link": path.symlink_to("foreign-binary")
-        else: os.mkfifo(path)
-    before = path.lstat()
-    publication = (fixture.receipt().parent / PUBLICATION).read_bytes()
-    fixture.calls.clear()
-    with pytest.raises(home.HeadscaleServiceError, match="^materializer-uncertain$"):
-        fixture.installer._headscale_materializer("status")
-    assert path.lstat() == before
-    assert (fixture.receipt().parent / PUBLICATION).read_bytes() == publication
-    assert fixture.calls == []
 
 
-@pytest.mark.parametrize("result", [
-    (1, "synthetic private diagnostic"), (0, "{}"), (0, "[]"), (0, "{}\n{}\n"),
-    (0, '{"ca_fingerprint":"x","ca_fingerprint":"y"}'), (0, "x" * 4097),
-    *[(0, json.dumps(dict(ca_fingerprint=fp, ca_not_after=ca, leaf_not_after=leaf, renewal_due=due)))
-      for fp, ca, leaf, due in [
-          ("0"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", "false"),
-          ("0"*64, "yesterday", "2027-01-01T00:00:00Z", False),
-          ("0"*64, "2030-01-01T00:00:00Z", "", False),
-          ("A"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", False)]]])
-def test_legacy_materializer_status_refuses_malformed_response(fixture, monkeypatch, capsys, result) -> None:
-    fixture.seed_prepared_history()
-    receipt = fixture.receipt().parent / PUBLICATION
-    before = receipt.read_bytes(), receipt.stat()
-    fixture.materializer_result = result
-    fixture.calls.clear()
-    # The retained reader exposes JSON-object refusal before the old handoff's
-    # outer error mapping; preserve that exact parser contract at this boundary.
-    non_object = result[1] in ("[]", '{"ca_fingerprint":"x","ca_fingerprint":"y"}')
-    error = module.InstallerError if non_object else home.HeadscaleServiceError
-    message = "invalid provisioning JSON object" if non_object else "materializer-uncertain"
-    with pytest.raises(error, match="^" + message + "$"):
-        fixture.installer._headscale_materializer("status")
-    assert (receipt.read_bytes(), receipt.stat()) == before
-    assert fixture.calls == [[MATERIALIZER, "status"]]
 
 
 def test_ca_private_key_is_never_read_by_installer(fixture, monkeypatch, capsys) -> None:
@@ -1423,12 +1381,14 @@ def test_b6_trust_and_sidecar_require_successful_revoke(
 def test_b6_issuer_and_transaction_retirement(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], outcome: str, revoked: bool,
 ) -> None:
-    from runtime.remote_access.home_activation import HomeActivationStore
-    from runtime.remote_access.home_activation_txn import HomeActivationTransaction, HomeActivationTransactionStore
+    from runtime.remote_access.legacy_home_readback import LegacyHomeReadback
+    from runtime.remote_access.legacy_home_receipt import HomeActivationTransaction
     activation, _ = b6_setup(fixture, monkeypatch, capsys)
-    receipts = HomeActivationStore(root=fixture.root, root_owner=(fixture.uid, fixture.gid))
-    transactions = HomeActivationTransactionStore(root=fixture.root, root_owner=(fixture.uid, fixture.gid))
-    transactions.publish(HomeActivationTransaction.begin(receipts.current()))
+    receipts = LegacyHomeReadback(root=fixture.root, root_owner=(fixture.uid, fixture.gid))
+    transaction = HomeActivationTransaction.begin(receipts.current())
+    path = activation.with_name("home-activation-txn.json")
+    path.write_bytes(transaction.to_bytes())
+    path.chmod(0o600)
     issuer_journal(fixture.root / ISSUER, outcome)
     txn = activation.with_name("home-activation-txn.json")
     if not revoked:

@@ -2821,6 +2821,11 @@ Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
 
 **G2-E1b delivered boundary (B4/Rulings 13/13a):**
+P24 source disposition: the unmounted live-config publication owner and its
+activation composition below are removed. This paragraph records the historical
+algorithm. The pure renderer remains in `legacy_home_readback.py` for actual
+protected historical inventory; it supplies no publication or admission.
+
 `home_live_config.py` supplies the unmounted `HomeLiveConfigOwner` required by
 `HomeActivationOwner(config_owner=...)`. Its exported pure
 `render_home_live_configs` is the shared E2 renderer. Connector bytes stay exactly
@@ -2906,6 +2911,11 @@ The owner has no separate retained-node singleton check; node observation remain
 with the existing B2/B3 observer and its live-node contract.
 
 **G2-E1a delivered boundary and stated assumptions:**
+P24 source disposition: these unmounted fixed-effect/process/observer owners
+are removed with their coordinator and recovery writers. The token-source
+verifier remains in `legacy_home_readback.py` for actual inventory consumers.
+The following description records their historical behavior.
+
 `home_activation_owner.py` supplies unmounted fixed-effect adapters, an independent
 same-FD release-token source verifier and the observer's exact-unit process owner.
 The coordinator retains all intent/lock/mint/recovery ownership; adapters issue
@@ -4352,9 +4362,13 @@ Headscale preparation, issuer-directory creation and initial CA handoff/empty-CA
 publication are removed. Retained cleanup tests use neutral historical files,
 including their original account, foreign-unit, no-follow and interruption
 inputs. Protected CA-source readback remains metadata-only for the private CA
-key. The materializer status executor still has a forward activation-owner
-consumer and awaits that owner's separate retirement; other forward owners
-remain incomplete. This boundary grants no account-network admission.
+key. The unmounted activation/coordinator/owner/recovery/transaction writers,
+live-config publisher, observer and unit publisher are removed. Their last
+materializer status executor is removed too. Legacy schema/readback, exact
+token-source checks, historical renderer and original directory lock remain
+for actual inventory/Disable/renewal consumers. Local admin/minter/issuer and
+invite-recovery disposition remains incomplete. This boundary grants no
+account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and
 `happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives

@@ -2,8 +2,8 @@
 
 The closed member set and validators are the original home-activation@1
 contract. Parsing this record never grants admission, provisioning, cleanup or
-service authority. The retiring activation owner temporarily re-exports these
-same types while its callers are adapted; the retirement reader owns no writer.
+service authority. Retired activation writers are absent; historical readers
+use these same closed types without publication or recovery authority.
 """
 from __future__ import annotations
 

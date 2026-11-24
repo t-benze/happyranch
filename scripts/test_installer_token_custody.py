@@ -4464,46 +4464,11 @@ def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkey
     assert fixture.manager.calls == []
 
 
-def home_unit_writes(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
-    """Observe actual write-open/mkdir paths, including ephemeral pending names."""
-    writes: list[str] = []
-    original_open, original_mkdir = os.open, os.mkdir
-
-    def path_at(name: object, directory: int | None) -> Path:
-        path = Path(name)
-        return path if path.is_absolute() else Path(os.readlink(f"/proc/self/fd/{directory}")) / path
-
-    def opened(name: object, flags: int, *args: object, **kwargs: object) -> int:
-        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC):
-            path = path_at(name, kwargs.get("dir_fd"))
-            if path.is_relative_to(root):
-                writes.append(str(path.relative_to(root)))
-        return original_open(name, flags, *args, **kwargs)
-
-    def mkdir(name: object, *args: object, **kwargs: object) -> None:
-        path = path_at(name, kwargs.get("dir_fd"))
-        if path.is_relative_to(root):
-            writes.append(str(path.relative_to(root)))
-        original_mkdir(name, *args, **kwargs)
-
-    def metadata(operation: Callable) -> Callable:
-        def changed(fd: int, *args: object, **kwargs: object) -> None:
-            path = Path(os.readlink(f"/proc/self/fd/{fd}"))
-            if path.is_relative_to(root):
-                writes.append(str(path.relative_to(root)))
-            operation(fd, *args, **kwargs)
-        return changed
-
-    monkeypatch.setattr(os, "open", opened)
-    monkeypatch.setattr(os, "mkdir", mkdir)
-    monkeypatch.setattr(os, "fchmod", metadata(os.fchmod))
-    monkeypatch.setattr(os, "fchown", metadata(os.fchown))
-    return writes
 
 
 # Retained Disable/inventory uses historical inputs, never initial home publication.
 @pytest.mark.parametrize("old_generation", [0, 7])
-@pytest.mark.parametrize("case", ["classification", "live", "double", "tail", "ids", "connector", "state",
+@pytest.mark.parametrize("case", ["classification", "double", "tail", "ids", "connector", "state",
     "pending", "txn", "minter", "unknown", "audit", "generation", "tls"])
 def test_home_disable_preserves_post_disable_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_generation: int, case: str,
@@ -4549,18 +4514,6 @@ def test_home_disable_preserves_post_disable_inventory(
         inventory = io.inventory()
         assert (inventory.state, inventory.detail) == ("modern", "post-disable")
         assert staged_inventory(history) == untouched
-        return
-    if case == "live":
-        # Keep this read-only forward-owner case until that owner is retired.
-        from dataclasses import replace
-        from runtime.remote_access.home_live_config import HomeLiveConfigOwner
-        first = replace(history.ready, phase="prepared", activation_generation=0,
-            operation_id="d" * 32, local_node_stable_id=None, home_endpoint=None)
-        owner = HomeLiveConfigOwner(io=io, expected_generation=0, expected_operation_id=first.operation_id)
-        rendered = owner._prepare(first)
-        assert owner._inputs["sidecar.json"].data == history.staged["sidecar.json"]
-        assert json.loads(rendered["/etc/happyranch/sidecar.json"])["home_binding"]["activation_generation"] == 0
-        assert sidecar.read_bytes() == retained
         return
     if case == "double":
         tail = retained[retained.index(b',"ControlURL"'):retained.rindex(b'}')]

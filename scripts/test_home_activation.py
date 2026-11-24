@@ -17,8 +17,10 @@ import pytest
 
 from runtime.remote_access.installer import ManagedInstaller
 
-from runtime.remote_access import legacy_home_readback, home_activation as activation
-from runtime.remote_access.home_activation import HomeActivationError, HomeActivationReceipt, HomeActivationStore
+from runtime.remote_access import legacy_home_readback
+from runtime.remote_access import legacy_home_readback as activation
+from runtime.remote_access.legacy_home_receipt import HomeActivationError, HomeActivationReceipt, TRANSACTION_FORMAT
+from runtime.remote_access.legacy_home_readback import LegacyHomeReadback as HomeActivationStore
 from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, IssuerError, read_home_invite_config
 
 RECEIPT = "var/lib/happyranch-remote-access/home-activation.json"
@@ -99,7 +101,7 @@ def test_receipt_roundtrip_and_frozen_inventory() -> None:
     assert json.loads(value.to_bytes()) == source
     assert tuple(value.member_digests) == tuple(sorted(DIGEST_MEMBERS))
     assert value.ownership.to_dict() == OWNERSHIP
-    assert activation.TRANSACTION_FORMAT == "home-activation-txn@1"
+    assert TRANSACTION_FORMAT == "home-activation-txn@1"
     with pytest.raises(FrozenInstanceError):
         value.phase = "ready"
     with pytest.raises(TypeError):
@@ -193,87 +195,12 @@ def test_observation_fields_by_phase(phase: str, observed: object) -> None:
         assert HomeActivationReceipt.parse(encoded(value)).phase == phase
 
 
-@pytest.mark.parametrize("before", ["prepared", "activating", "joined", "ready", "failed_uncertain"])
-@pytest.mark.parametrize("after", ["prepared", "activating", "joined", "ready", "failed_uncertain"])
-def test_phase_edges(before: str, after: str) -> None:
-    previous = receipt(before)
-    following = receipt(after)
-    if after == "failed_uncertain" and before in ("joined", "ready"):
-        following = replace(following, local_node_stable_id=previous.local_node_stable_id,
-                            home_endpoint=previous.home_endpoint)
-    allowed = (before, after) in {("prepared", "activating"), ("activating", "joined"),
-                                 ("joined", "ready")} or (after == "failed_uncertain" and before != after)
-    if allowed:
-        activation.validate_transition(previous, following)
-    else:
-        with pytest.raises(HomeActivationError):
-            activation.validate_transition(previous, following)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("activation_generation", 6), ("activation_generation", 8), ("release_uid", 1001),
-    ("home_id", "other"), ("control_plane_id", "other"), ("connector_id", "other"),
-    ("operation_id", "d" * 32), ("ca_der_sha256", "d" * 64), ("dial_ip", "192.168.1.41"),
-])
-def test_transition_preserves_generation_and_binding(field: str, value: object) -> None:
-    with pytest.raises(HomeActivationError):
-        activation.validate_transition(receipt(), replace(receipt("activating"), **{field: value}))
 
 
-def test_transition_preserves_observation_and_cannot_invent_it_on_failure() -> None:
-    with pytest.raises(HomeActivationError):
-        activation.validate_transition(receipt("joined"), replace(receipt("ready"), home_endpoint="100.64.0.11:443"))
-    with pytest.raises(HomeActivationError):
-        activation.validate_transition(receipt(), replace(receipt("failed_uncertain"),
-                                      local_node_stable_id="synthetic-local-node", home_endpoint="100.64.0.10:443"))
 
 
-def test_publication_fsync_atomic_replace_and_stale_cas(store: HomeActivationStore, tmp_path: Path,
-                                                       monkeypatch: pytest.MonkeyPatch) -> None:
-    synced: set[tuple[int, int]] = set()
-    sync = os.fsync
-    rename = ManagedInstaller._rename_provision_entry
-    observed: list[str] = []
-    def fsync(fd: int) -> None:
-        info = os.fstat(fd)
-        synced.add((info.st_dev, info.st_ino))
-        sync(fd)
-    def publish(parent: int, source: str, target: str, *, updating: bool = False) -> None:
-        pending = os.stat(source, dir_fd=parent, follow_symlinks=False)
-        assert (pending.st_dev, pending.st_ino) in synced, "pending bytes must be fsynced before publication"
-        assert stat.S_IMODE(pending.st_mode) == 0o600 and pending.st_nlink == 1
-        assert (pending.st_uid, pending.st_gid) == (os.getuid(), os.getgid())
-        assert source == ".home-activation.json.pending" and target == "home-activation.json"
-        if updating:
-            old = os.stat(target, dir_fd=parent, follow_symlinks=False)
-            assert (old.st_dev, old.st_ino) != (pending.st_dev, pending.st_ino)
-        rename(parent, source, target, updating=updating)
-        observed.append("replace" if updating else "create")
-    monkeypatch.setattr(activation.os, "fsync", fsync)
-    monkeypatch.setattr(ManagedInstaller, "_rename_provision_entry", staticmethod(publish))
-    prepared = receipt()
-    store.publish(prepared)
-    first = (tmp_path / RECEIPT).stat().st_ino
-    assert store.read(expected_generation=7) == prepared
-    assert not (tmp_path / RECEIPT).with_name(".home-activation.json.pending").exists()
-    previous = prepared
-    for phase in ("activating", "joined", "ready"):
-        updated = receipt(phase)
-        store.publish(updated, expected=previous)
-        assert store.read(expected_generation=7) == updated
-        current = (tmp_path / RECEIPT).stat().st_ino
-        assert current != first
-        first = current
-        previous = updated
-    assert observed == ["create", "replace", "replace", "replace"]
-    assert (tmp_path / RECEIPT).read_bytes() == receipt("ready").to_bytes()
-    assert ((tmp_path / RECEIPT).parent.stat().st_dev, (tmp_path / RECEIPT).parent.stat().st_ino) in synced
-    with pytest.raises(HomeActivationError):
-        store.publish(receipt("activating"), expected=prepared)
-    with pytest.raises(HomeActivationError):
-        store.publish(prepared)
-    with pytest.raises(HomeActivationError):
-        store.read(expected_generation=6)
 
 
 @pytest.mark.parametrize("path", [RECEIPT, CONFIG])
@@ -378,48 +305,6 @@ def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: 
     assert swapped
 
 
-@pytest.mark.parametrize("case", ["pending", "final", "missing-parent", "parent-link",
-                                 "parent-swap", "pending-swap", "late-final", "stale-final", "fsync"])
-def test_publication_refuses_and_retains_uncertainty(store: HomeActivationStore, tmp_path: Path,
-                                                    monkeypatch: pytest.MonkeyPatch, case: str) -> None:
-    final = tmp_path / RECEIPT
-    pending = final.with_name(".home-activation.json.pending")
-    if case == "pending": pending.write_bytes(b"foreign")
-    if case == "final": put(tmp_path, RECEIPT, b"foreign")
-    if case == "missing-parent": final.parent.rmdir()
-    if case == "parent-link":
-        final.parent.rename(final.parent.with_name("retained-parent"))
-        final.parent.symlink_to(final.parent.with_name("retained-parent"), target_is_directory=True)
-    expected = None
-    if case == "stale-final":
-        expected = receipt()
-        store.publish(expected)
-    sync = os.fsync
-    fired = False
-    def fsync(fd: int) -> None:
-        nonlocal fired
-        sync(fd)
-        if fired or not stat.S_ISREG(os.fstat(fd).st_mode): return
-        fired = True
-        if case == "parent-swap":
-            final.parent.rename(final.parent.with_name("retained-parent"))
-            final.parent.mkdir(mode=0o700)
-        if case == "pending-swap":
-            pending.rename(pending.with_name("retained-pending"))
-            pending.symlink_to("retained-pending")
-        if case in ("late-final", "stale-final"): put(tmp_path, RECEIPT, b"foreign")
-        if case == "fsync": raise OSError("synthetic-private-canary")
-    monkeypatch.setattr(activation.os, "fsync", fsync)
-    with pytest.raises(HomeActivationError) as caught:
-        store.publish(receipt("activating") if expected else receipt(), expected=expected)
-    assert str(caught.value) in ("state", "transition")
-    if case in ("final", "late-final", "stale-final"): assert final.read_bytes() == b"foreign"
-    if case == "pending": assert pending.read_bytes() == b"foreign"
-    if case == "parent-swap": assert not final.exists() and final.parent.with_name("retained-parent").is_dir()
-    if case in ("fsync", "pending-swap", "late-final", "stale-final"):
-        assert pending.lstat()
-        with pytest.raises(HomeActivationError):
-            store.read(expected_generation=7)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -478,7 +363,7 @@ def test_config_read_is_frozen_effect_free_and_redacted(store: HomeActivationSto
     assert after == before
     assert repr(result) == "HomeInviteConfigRecord(<redacted>)"
     assert repr(receipt("ready")) == "HomeActivationReceipt(<redacted>)"
-    assert repr(store) == "HomeActivationStore(<redacted>)"
+    assert repr(store) == "LegacyHomeReadback(<redacted>)"
     assert str(IssuerError("synthetic-private-canary")) == "state"
     assert str(HomeActivationError("synthetic-private-canary")) == "record"
     assert capsys.readouterr() == ("", "")

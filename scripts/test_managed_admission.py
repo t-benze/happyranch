@@ -454,7 +454,7 @@ def test_supervisor_reconcile_reports_incomplete_cleanup(monkeypatch):
             # that real foreground boundary in this fixture's private root;
             # keep the already-serving transport/trust store and its identities.
             from runtime.remote_access import installer
-            from runtime.remote_access.home_activation import CONTROL_URL
+            from runtime.remote_access.legacy_home_receipt import CONTROL_URL
             io = installer.ManagedInstaller(root=path.parent, root_owner=(os.getuid(), os.getgid()))
             monkeypatch.setattr(io, "_account", lambda **kw: (os.getuid(), os.getgid()))
             files = io._generated_configs()

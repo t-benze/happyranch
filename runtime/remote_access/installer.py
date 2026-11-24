@@ -1759,31 +1759,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 except FileNotFoundError:
                     return None
             raise headscale.HeadscaleServiceError("materializer-uncertain") from None
-    def _headscale_materializer(self, verb: str) -> dict:
-        # Trusted fixed package executable, never PATH or caller-supplied argv.
-        binary = Path(headscale.MATERIALIZER)
-        with self._directory(str(binary.parent)) as parent:
-            info = os.stat(binary.name, dir_fd=parent, follow_symlinks=False)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or (info.st_uid, info.st_gid) != self.root_owner or stat.S_IMODE(info.st_mode) != 0o755):
-                raise headscale.HeadscaleServiceError("materializer-uncertain")
-        code, output = self._run(["/" + headscale.MATERIALIZER, verb], timeout=30.0)
-        if code or type(output) is not str or len(output) > 4096 or len(output.splitlines()) != 1:
-            raise headscale.HeadscaleServiceError("materializer-uncertain")
-        result = self._json(output.encode())
-        if (set(result) != {"ca_fingerprint", "ca_not_after", "leaf_not_after", "renewal_due"}
-                or type(result["ca_fingerprint"]) is not str
-                or re.fullmatch("[0-9a-f]{64}", result["ca_fingerprint"]) is None
-                or type(result["renewal_due"]) is not bool):
-            raise headscale.HeadscaleServiceError("materializer-uncertain")
-        for name in ("ca_not_after", "leaf_not_after"):
-            value = result[name]
-            if value == "" and name == "leaf_not_after" and result["renewal_due"]:
-                continue
-            if type(value) is not str or re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value) is None:
-                raise headscale.HeadscaleServiceError("materializer-uncertain")
-            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
-        return result
     @staticmethod
     def _headscale_config(dial_ip: str) -> dict[str, bytes]:
         return {

@@ -46,8 +46,11 @@ Programmatic Headscale preparation, issuer-directory creation and initial
 CA handoff/empty-CA publication are also removed. Their surviving custody and
 cleanup cases now use neutral historical inputs and actual retained cleanup or
 protected readback; they do not recreate authority to test retirement. The
-materializer status executor remains until its existing forward activation
-consumer is retired. This source disposition adds no model action or TLC result.
+materializer status executor is removed with its last unmounted activation
+consumer. Activation/coordinator/owner/recovery/transaction writers, live-config
+and unit publishers and the observer are removed. Retained schema/readback,
+token-source, renderer and actual directory-lock consumers remain. This source
+disposition adds no model action or TLC result.
 
 ## Incremental implementation records
 
@@ -415,14 +418,15 @@ Ordinary home install and supervisor start/restart/enable/foreground now refuse
 valid legacy state with the accepted retirement message before native effects.
 The retained HomeProfileAdmission adapter permits only explicit read-only
 legacy inventory. This implements OldAdmission refusal without a new model
-action, account-positive path or destructive startup transition. Other Python
-activation/provisioning owners remain pending their separate source retirement.
+action, account-positive path or destructive startup transition. Unmounted
+activation/provisioning owners are removed; local admin/minter/issuer and
+invite-recovery disposition remains pending.
 
 Legacy inventory/unit readback now uses the fixed `legacy_home_readback` reader,
 original transaction directory lock, token check and pure historical config
-rendering without importing activation/admin/minter owners. Existing writers
-temporarily inherit/re-export those unchanged implementations. This dependency
-separation adds no model action, proof predicate or account admission.
+rendering without importing activation/admin/minter owners. Activation writers
+are absent. This dependency separation adds no model action, proof predicate
+or account admission.
 
 The retained legacy admission/inventory cases now seed independent historical
 config, receipt/transaction and frozen native inputs through the neutral fixture.

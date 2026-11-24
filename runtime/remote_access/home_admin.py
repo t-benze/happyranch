@@ -439,7 +439,7 @@ class DurableOperationRecordStore:
 def read_local_node_window(operation_id: str, *, root: Path = Path("/"),
                            root_owner: tuple[int, int] = (0, 0)) -> CreationWindow:
     """Read only the existing node reservation. No mkdir, repair or reservation write."""
-    from runtime.remote_access.home_activation import HomeActivationStore, _signature
+    from runtime.remote_access.legacy_home_readback import LegacyHomeReadback as HomeActivationStore, _signature
     try:
         if type(operation_id) is not str or re.fullmatch("[0-9a-f]{32}", operation_id) is None:
             raise ValueError

@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
 from runtime.remote_access import invite_v2
-from runtime.remote_access.home_activation import (
+from runtime.remote_access.legacy_home_receipt import (
     ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH,
-    HomeActivationError, HomeActivationReceipt, HomeActivationStore,
+    HomeActivationError, HomeActivationReceipt,
     _decode_record, _generation, _validate_identity,
 )
+from runtime.remote_access.legacy_home_readback import LegacyHomeReadback as HomeActivationStore
 from runtime.remote_access.pairing import PinnedPairingManager
 
 _OUTCOMES = frozenset(("minting", "issued", "refused", "uncertain", "expired",

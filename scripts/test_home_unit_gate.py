@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-from runtime.remote_access import home_activation as activation
 from runtime.remote_access import installer
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 from runtime.remote_access.home_unit_gate import HomeUnitGate, HomeUnitGateError
