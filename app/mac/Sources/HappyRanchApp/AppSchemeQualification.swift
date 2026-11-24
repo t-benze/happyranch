@@ -68,9 +68,11 @@ private final class AppSchemeLivenessProbe: @unchecked Sendable {
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let id = self.lock.withLock {
+            let id: Int? = self.lock.withLock {
+                guard self.sequence < 35 else { return nil }
                 self.sequence += 1; self.pending[self.sequence] = "main-dispatch-pending"; return self.sequence
             }
+            guard let id else { return }
             self.log.write("page_probe_requested", ["probe": id])
             DispatchQueue.main.async { probe(id) }
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.75) { [weak self] in
