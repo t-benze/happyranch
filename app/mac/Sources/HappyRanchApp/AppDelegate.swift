@@ -1134,8 +1134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             }
         case .client:
             // Disconnect client bridge if active.
-            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected {
-                disconnectRemote()
+            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.hasActiveSession || homeInvite.phase == .connected {
+                guard disconnectRemote() == nil else { return }
+                webViewURL = nil
             }
         }
 
@@ -1339,12 +1340,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     /// Disconnect from the remote home runtime (CLIENT role).
-    func disconnectRemote() {
-        guard disconnectSelectedTarget() == nil else { return }
+    @discardableResult
+    func disconnectRemote() -> String? {
+        if let reason = disconnectSelectedTarget() { return reason }
         isConnecting = false
         clientConnectError = nil
         connectionStateManager.onTailscaleLost()
         connectionState = connectionStateManager.state
+        return nil
     }
 
     func cancelManagedConnection() {

@@ -150,11 +150,20 @@ Settings/Connection dialog hosting, toolbar/menu, local controls and launch poli
 remain later slices. The existing native Connection view remains for later slices.
 Those later Mac contracts are not qualified by this transport PR.
 
+CLIENT→HOME uses the same Main disconnect gate: absent Main or pending/unknown
+owner evidence preserves CLIENT and its bridge. Successful admission retires
+the bridge before clearing the presentation URL and persisting HOME. Native
+`client.disconnect` still retains Main at `no_target`. The Swift remote-surface
+mirror follows the existing route-classification contract, including browser
+adapter list/status and operator-only adapter bind/reject. Daemon policy and
+route-classification semantics are unchanged.
+
 Historical build 62 measured incremental delivery of all five normal SSE events,
 but the page never reported EOF after native `didFinish`; that build remains **FAIL**.
 The MAC-1 baseline subsequently passed build 65 and merged as `efeee6e9`
 (PR #1839). MAC-2a native compilation and XCTest execution remain NOT RUN on
-the Linux maker host; its separate PR ledger starts at **Mac builds 0/6 used**.
+the Linux maker host. The PR body carries the current separate build ledger,
+including failed attempts; source delivery never renews that allowance.
 The build-62 EOF cause was **unproven** at that head. Framing headers are stripped before delivery,
 and the handler is MainActor-owned, but build 62 did not retain expected length,
 page read/parse/emit state or finish/stop facts. No speculative framing or
@@ -188,16 +197,25 @@ from both test directories at the checked-out source, not a fixed pass count.
 
 `app_scheme.native_tests` records each XCTest method and each Swift Testing
 invocation separately with PASS/FAIL (or INCOMPLETE), using function ID plus a
-case ordinal for parameters; argument/issue values are not retained. XCTest
+case ordinal for parameters. Ordinary functions use `testStarted/testEnded`;
+parameterized functions additionally require their `testCaseStarted/testCaseEnded`
+rows. Structured verdict rows omit argument/issue values. XCTest
 start/terminal lines and Swift Testing version-0 JSON events must agree with
-the independent source census. Every function needs start/end and at least one
-completed case; missing/duplicate/failed/skipped/cancelled evidence, a missing
+the independent source census. Every function needs one ordered start/end pair and at least one
+completed invocation; missing/duplicate/failed/skipped/cancelled evidence, a missing
 run boundary, nonzero exit, malformed/unsupported capture, or exhaustion fails
 the suite. Swift Testing uses `--event-stream-output-path` and
 `--event-stream-version 0`, so display names and aggregate console counts cannot
 hide omitted functions. Named terminal lines and structured cases are never
 truncated to the former 16 KiB bound. The native command and JSON event stream
-each have a 16 MiB acceptance cap; exceeding either refuses PASS.
+each have a 16 MiB acceptance cap; exceeding either refuses PASS. Before scratch
+cleanup (also on command failure/timeout), `native_tests.event_archive` in the
+collected `probe.json` retains the exact raw JSONL as `gzip+base64`, with raw and
+gzip byte counts/SHA256. The gzip limit is 4 MiB; missing/oversized archives fail
+closed without truncation. Decode `data` as base64, verify `gzip_sha256`, gunzip,
+and verify `sha256` to reconstruct issues and lifecycle events. The existing
+JSON artifact collection needs no Jenkins configuration change. Raw events may
+contain synthetic test argument/issue details; verdict rows remain closed.
 
 The native compile/test step is bounded to 1,200 seconds within a shared
 2,100-second suite deadline. The old 600-second filtered-test budget has no

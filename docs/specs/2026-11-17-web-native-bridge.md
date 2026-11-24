@@ -1684,10 +1684,18 @@ revocation retains exact-owner profile/Keychain cleanup independently of a
 concurrent candidate, with failed cleanup held for explicit Retry. No auth/security,
 daemon allowlist, shared-web, dependency or protocol change is included.
 
+CLIENT→HOME propagates a Main disconnect refusal before persisting the role;
+missing Main and pending/unknown saves retain CLIENT and its bridge. Successful
+admission retires the bridge and clears the presentation URL before HOME. The
+Swift SurfaceAllowList mirror follows the existing route-classification JSON,
+including browser adapter list/status and operator-only bind/reject; the daemon
+allowlist and contract semantics are unchanged.
+
 This is source delivery, not executed Mac acceptance. MAC-2b owns dialogs,
 toolbar/menu and screenshot qualification; MAC-4 owns Quit/close/Relaunch gating
-and language. Mac builds 0/6 used; a build requires independent exact-head
-review APPROVE and is submitted by QA, never the maker.
+and language. The PR body carries the current per-PR build ledger, including
+failed attempts. A build requires independent exact-head review APPROVE and is
+submitted by QA, never the maker.
 
 ### MAC-1 transport implementation and qualification status
 
@@ -1747,7 +1755,14 @@ Release tests explicitly enable testable imports and both libraries. The report
 retains every XCTest outcome and every serial Swift Testing invocation, including
 parameter ordinals, using version-0 JSON events and an independent source census.
 Missing source cases, skips, failures, incomplete/unsupported capture or nonzero
-exit fail closed. Results are not truncated; command/event overflow at 16 MiB
+exit fail closed. Ordinary ABI-v0 functions use their ordered
+`testStarted/testEnded` lifecycle; parameterized functions retain per-case rows.
+The collected `probe.json` includes `native_tests.event_archive`, a byte-exact
+`gzip+base64` copy of raw events with both byte counts/SHA256 (16 MiB input,
+4 MiB gzip); archive overflow/missing capture refuses PASS. Capture survives
+command failure/timeout before scratch cleanup. This uses the existing JSON
+artifact collector without changing Jenkins configuration.
+Results are not truncated; command/event overflow at 16 MiB
 fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed times
 recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
 The existing app-scheme qualification budgets/steps and Jenkins configuration

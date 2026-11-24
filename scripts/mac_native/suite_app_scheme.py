@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
-from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, assess_native, source_inventory, terminal_results
+from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _prepare_keychain
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
@@ -387,16 +387,24 @@ def run(report: dict[str, Any]) -> None:
             section['keychain_fixture'].append(dict(name=name, status=status, expected=expected, actual=actual))
         with ExitStack() as cleanup:
             _prepare_keychain(cleanup, env, scratch, deadline, keychain_row, section['keychain_fixture'])
-            raw = command('product_build_and_all_tests', swift + [
-                '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
-                '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
-                seconds=1200, allow_failure=True)
-            code = section['commands'][-1]['exit_code']
-            # Retain test evidence before cleanup, including when cleanup fails.
-            # Missing/unsupported capture fails even when swift test exits zero.
-            events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
-            section['native_tests'].update(assess_native(raw, events, inventory, code), capture='assessed',
-                event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
+            raw = b''
+            try:
+                raw = command('product_build_and_all_tests', swift + [
+                    '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
+                    '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
+                    seconds=1200, allow_failure=True)
+            finally:
+                code = section['commands'][-1]['exit_code']
+                # Retain even partial/failed captures before scratch/Keychain cleanup.
+                events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
+                native = section['native_tests']
+                native.update(assess_native(raw, events, inventory, code if code is not None else 1), capture='assessed',
+                    event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
+                try:
+                    native['event_archive'] = archive_events(events)
+                except ValueError as error:
+                    native['status'] = 'FAIL'
+                    native['errors'].append(str(error))
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):

@@ -1,6 +1,9 @@
 """Full-package test census and closed per-invocation evidence for app-scheme."""
 from __future__ import annotations
 
+import base64
+import gzip
+import hashlib
 import json
 import re
 from collections import Counter
@@ -8,6 +11,19 @@ from pathlib import Path
 from typing import Any
 
 TEST_OUTPUT_CAP = 16 * 1024 * 1024
+EVENT_ARCHIVE_CAP = 4 * 1024 * 1024
+
+
+def archive_events(events: bytes) -> dict[str, Any]:
+    """Keep byte-exact gzip in collected probe.json, without a Jenkins change."""
+    if not events or len(events) > TEST_OUTPUT_CAP:
+        raise ValueError('missing or oversized Swift Testing archive input')
+    compressed = gzip.compress(events, mtime=0)
+    if len(compressed) > EVENT_ARCHIVE_CAP:
+        raise ValueError('Swift Testing archive exceeds compressed bound')
+    return {'encoding': 'gzip+base64', 'bytes': len(events), 'sha256': hashlib.sha256(events).hexdigest(),
+            'gzip_bytes': len(compressed), 'gzip_sha256': hashlib.sha256(compressed).hexdigest(),
+            'data': base64.b64encode(compressed).decode('ascii')}
 
 
 def source_inventory(tests: Path) -> dict[str, Any]:
@@ -79,12 +95,17 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
                 elif payload['kind'] == 'function':
                     if key in functions:
                         raise ValueError('duplicate Swift Testing function')
+                    if type(payload['isParameterized']) is not bool:
+                        raise ValueError('missing Swift Testing parameterization')
                     functions[key] = {'source': payload['sourceLocation']['fileID'] + '/' + payload['name'].split('(')[0],
+                                      'parameterized': payload['isParameterized'],
                                       'starts': 0, 'ends': 0, 'cases': [], 'active': None, 'failed': False}
                 else:
                     raise ValueError('unsupported Swift Testing test kind')
             elif record['kind'] == 'event':
                 records.append(payload)
+            else:
+                raise ValueError('unsupported Swift Testing record kind')
         if Counter(row['source'] for row in functions.values()) != Counter(inventory['swift_testing']):
             errors.append('Swift Testing source inventory mismatch')
             missing = Counter(inventory['swift_testing']) - Counter(row['source'] for row in functions.values())
@@ -95,6 +116,8 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
             kind, key = event['kind'], event.get('testID')
             if kind in ('runStarted', 'runEnded'):
                 run[kind] += 1
+            elif run != Counter(runStarted=1):
+                errors.append('Swift Testing event outside run boundary')
             row = functions.get(key)
             if kind in ('issueRecorded', 'testSkipped', 'testCancelled', 'testCaseCancelled'):
                 errors.append(f'Swift Testing {kind}: {key}')
@@ -102,22 +125,49 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
                     row['failed'] = True
                     if row['active'] is not None:
                         row['active']['status'] = 'FAIL'
+                    elif not row['parameterized']:
+                        for item in row['cases']:
+                            item['status'] = 'FAIL'
             if row is None:
                 if key is not None and key not in suites:
                     errors.append('unknown Swift Testing event owner')
                 continue
             if kind == 'testStarted':
                 row['starts'] += 1
+                if row['starts'] != 1 or row['ends']:
+                    errors.append('duplicate or out-of-order Swift Testing function start')
+                if not row['parameterized']:
+                    item = {'library': 'Swift Testing', 'id': key, 'lifecycle': 'function',
+                            'status': 'FAIL' if row['failed'] else 'INCOMPLETE', 'starts': row['starts'], 'ends': 0}
+                    row['cases'].append(item)
+                    cases.append(item)
+                    row['active'] = item
             elif kind == 'testEnded':
                 row['ends'] += 1
+                if row['starts'] != 1 or row['ends'] != 1:
+                    errors.append('duplicate or out-of-order Swift Testing function end')
+                if not row['parameterized'] and row['active'] is not None:
+                    row['active']['ends'] = row['ends']
+                    if row['active']['status'] == 'INCOMPLETE':
+                        row['active']['status'] = 'PASS'
+                    row['active'] = None
+                elif row['active'] is not None:
+                    errors.append('Swift Testing function ended before case')
             elif kind == 'testCaseStarted':
+                if not row['parameterized'] or row['starts'] != 1 or row['ends']:
+                    errors.append('unexpected or out-of-order Swift Testing case start')
+                    continue
                 if row['active'] is not None:
                     errors.append('overlapping Swift Testing cases')
-                item = {'library': 'Swift Testing', 'id': key, 'case': len(row['cases']) + 1, 'status': 'INCOMPLETE'}
+                item = {'library': 'Swift Testing', 'id': key, 'case': len(row['cases']) + 1,
+                        'lifecycle': 'parameter', 'status': 'INCOMPLETE'}
                 row['cases'].append(item)
                 cases.append(item)
                 row['active'] = item
             elif kind == 'testCaseEnded':
+                if not row['parameterized'] or row['starts'] != 1 or row['ends']:
+                    errors.append('unexpected or out-of-order Swift Testing case end')
+                    continue
                 if row['active'] is None:
                     errors.append('Swift Testing case ended without start')
                 else:

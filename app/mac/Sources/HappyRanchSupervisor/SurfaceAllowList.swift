@@ -9,8 +9,8 @@ import Foundation
 /// auth-bootstrap/registration-token routes are DENIED on BOTH prefixed
 /// (`/api/v1/...`) and unprefixed forms.
 ///
-/// The exclusion list was originally mirrored from the ``EXCLUDED_PATHS`` map in
-/// ``web/src/test/openapi-coverage.test.ts`` (retired under THR-343).
+/// The mirror follows ``tests/contract/route-classification.json``; the drift
+/// guard checks included and excluded routes against that existing contract.
 ///
 /// Policy: **deny-by-default for sensitive routes, allow for normal SPA routes.**
 /// The deny gate is method-aware — a route may be denied for POST but allowed
@@ -86,6 +86,10 @@ public struct SurfaceAllowList: Sendable {
             // Executor conformance + registration
             ("POST", "/executors/conformance-checkin"),
             ("POST", "/executors/register"),
+            ("POST", "/executors/runtime/conformance-checkin"),
+            ("POST", "/executors/runtime/register"),
+            ("POST", "/executors/runtime/register-binary"),
+            ("POST", "/auth/registration-token/runtime"),
             // Founder set-executor (CLI-only)
             ("PUT", "/agents/{agent_name}/executor"),
             // Artifacts — agent-facing v1 (upload, list)
@@ -94,9 +98,13 @@ public struct SurfaceAllowList: Sendable {
             // Metrics — agent/CLI facing (operational metrics)
             ("GET", "/metrics"),
             ("GET", "/metrics/history"),
-            // Adapter administration (agent-only; browser status/bind are INCLUDED)
-            ("GET", "/runtime/adapters"),
+            // Adapter administration (agent-only; browser list/status are included)
             ("POST", "/runtime/adapters/register"),
+            ("POST", "/runtime/custom-cli/connect"),
+            ("POST", "/schedules"),
+            ("POST", "/skills/agent"),
+            ("POST", "/skills/recover"),
+            ("POST", "/custom-skills/agent-create"),
             // Adapter submission (CLI-only scoped-token; not in browser)
             ("POST", "/runtime/adapters/submit"),
             // Org-portability (CLI-only / founder-only — no browser consumer)
@@ -116,6 +124,8 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/workflows/sequential/repository-resolve"),
             ("POST", "/workflows/sequential/repository-bind"),
             ("GET", "/workflows/sequential/final-manager"),
+            ("GET", "/workflows/sequential/start-context"),
+            ("GET", "/workflows/sequential/start-context/v2"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -147,6 +157,13 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/threads/", "/decline"),
             ("POST", "/threads/", "/dispatch"),
             ("POST", "/threads/", "/post-as-agent"),
+            ("POST", "/threads/", "/resolve-escalation"),
+            ("POST", "/threads/", "/abort-predecessors/"),
+            ("GET", "/jobs/", "/receipt"),
+            ("POST", "/jobs/", "/run"),
+            ("POST", "/schedules/", "/spawn"),
+            ("POST", "/artifacts/", "/renew"),
+            ("POST", "/artifacts/", "/restore"),
             // Attachments: POST uses contains (no single-attachment upload route),
             // GET uses ends-with to avoid over-matching /attachments/{id} download.
             ("POST", "/threads/", "/attachments"),
@@ -156,8 +173,10 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/work-hours/", "/spawn"),
             // Artifacts — agent-facing download (GET /artifacts/{name})
             ("GET", "/artifacts/", ""),
-            // Adapter founder approval (agent-only; browser status/bind are INCLUDED)
+            // Adapter operator actions (browser list/status remain included)
             ("POST", "/adapters/", "/approve"),
+            ("POST", "/runtime/adapters/", "/reject"),
+            ("POST", "/runtime/adapters/", "/bind-profile"),
         ]
         let memoryEndsWithDenies: [(String, String, String)] = [
             // Memory writes where suffix must be path-end to avoid

@@ -1,6 +1,8 @@
 """Standalone MAC-1 evidence-verdict checks, outside retired Python units."""
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import http.client
 import json
@@ -15,20 +17,22 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, qualify_steps, read_events, run, synthetic_daemon
-from scripts.mac_native.app_scheme_test_evidence import assess_native, source_inventory, terminal_results
+from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import _build_environment, _prepare_keychain
 
 
-def native_evidence() -> tuple[bytes, list[dict], dict]:
+def native_evidence(parameterized: bool = True) -> tuple[bytes, list[dict], dict]:
     inventory = {'xctest': ['HappyRanchAppTests.HomeCandidateOwnershipTests/testKeepsActive'],
                  'swift_testing': ['HappyRanchAppTests/HomeInviteModelTests.swift/retainsSave']}
     raw = ("Test Case '-[HappyRanchAppTests.HomeCandidateOwnershipTests testKeepsActive]' started.\n"
            "Test Case '-[HappyRanchAppTests.HomeCandidateOwnershipTests testKeepsActive]' passed (0.1 seconds).\n").encode()
-    key = 'HappyRanchAppTests.HomeInviteModelTests/retainsSave(_:)/HappyRanchAppTests/HomeInviteModelTests.swift:12:3'
-    records = [dict(version=0, kind='test', payload=dict(kind='function', id=key, name='retainsSave(_:)',
-               sourceLocation=dict(fileID='HappyRanchAppTests/HomeInviteModelTests.swift'), isParameterized=True))]
-    for kind in ('runStarted', 'testStarted', 'testCaseStarted', 'testCaseEnded',
-                 'testCaseStarted', 'testCaseEnded', 'testEnded', 'runEnded'):
+    signature = 'retainsSave(_:)' if parameterized else 'retainsSave()'
+    key = f'HappyRanchAppTests.HomeInviteModelTests/{signature}/HappyRanchAppTests/HomeInviteModelTests.swift:12:3'
+    records = [dict(version=0, kind='test', payload=dict(kind='function', id=key, name=signature,
+               sourceLocation=dict(fileID='HappyRanchAppTests/HomeInviteModelTests.swift'), isParameterized=parameterized))]
+    kinds = (['runStarted', 'testStarted'] + (['testCaseStarted', 'testCaseEnded'] * 2 if parameterized else [])
+             + ['testEnded', 'runEnded'])
+    for kind in kinds:
         records.append(dict(version=0, kind='event', payload=dict(kind=kind, **(
             {} if kind in ('runStarted', 'runEnded') else {'testID': key}))))
     return raw, records, inventory
@@ -40,45 +44,61 @@ def native_stream(records: list[dict]) -> bytes:
 
 class NativeWorkloadEvidenceTests(unittest.TestCase):
     def test_full_package_workload_enables_both_libraries_and_records_each_case(self) -> None:
-        raw, records, inventory = native_evidence()
-        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
-            report, calls = {}, []
-            def transfer(url: str, archive: Path, *args: object) -> dict:
-                with tarfile.open(archive, 'w:gz'):
-                    pass
-                return {'curl_exit_code': 0}
-            def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
-                calls.append((argv, kwargs))
-                if 'test' in argv:
-                    if '--event-stream-output-path' in argv:
-                        Path(argv[argv.index('--event-stream-output-path') + 1]).write_bytes(native_stream(records))
-                    return 0, raw
-                return (1, b'') if '--show-bin-path' in argv else (0, b'')
-            with patch.dict('os.environ', {'TMPDIR': folder}), patch(
-                'scripts.mac_native.suite_app_scheme._command', side_effect=command
-            ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
-                'scripts.mac_native.suite_app_scheme.verify_checksum'
-            ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True), patch(
-                'scripts.mac_native.suite_app_scheme._prepare_keychain', create=True
-            ):
-                with self.assertRaisesRegex(RuntimeError, 'bin_path failed'):
-                    run(report)
-            test_calls = [(argv, kwargs) for argv, kwargs in calls if 'test' in argv]
-            self.assertEqual(len(test_calls), 1, 'one full-package build/test invocation')
-            argv, kwargs = test_calls[0]
-            self.assertNotIn('--filter', argv)
-            self.assertNotIn('--skip', argv)
-            for option in ('--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel'):
-                self.assertIn(option, argv)
-            self.assertEqual(argv[argv.index('-c') + 1], 'release')
-            self.assertEqual(argv[argv.index('--event-stream-version') + 1], '0')
-            self.assertEqual(kwargs['output_cap'], 16 * 1024 * 1024)
-            result = report['app_scheme']['native_tests']
-            self.assertEqual(result['status'], 'PASS')
-            self.assertEqual([row['status'] for row in result['cases']], ['PASS'] * 3)
-            self.assertEqual([row['case'] for row in result['cases'][1:]], [1, 2])
-            row = next(row for row in report['app_scheme']['commands'] if row['name'] == 'product_build_and_all_tests')
-            self.assertEqual(row['timeout_seconds'], 1200)
+        for parameterized, code in ((True, 0), (False, 0), (False, 1), (False, None)):
+            raw, records, inventory = native_evidence(parameterized=parameterized)
+            stream = native_stream(records) + (b'{' if code is None else b'')
+            with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+                report, calls = {}, []
+                def transfer(url: str, archive: Path, *args: object) -> dict:
+                    with tarfile.open(archive, 'w:gz'):
+                        pass
+                    return {'curl_exit_code': 0}
+                def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                    calls.append((argv, kwargs))
+                    if 'test' in argv:
+                        if '--event-stream-output-path' in argv:
+                            Path(argv[argv.index('--event-stream-output-path') + 1]).write_bytes(stream)
+                        if code is None:
+                            raise TimeoutError('synthetic native timeout')
+                        return code, raw
+                    return (1, b'') if '--show-bin-path' in argv else (0, b'')
+                with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                    'scripts.mac_native.suite_app_scheme._command', side_effect=command
+                ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
+                    'scripts.mac_native.suite_app_scheme.verify_checksum'
+                ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True), patch(
+                    'scripts.mac_native.suite_app_scheme._prepare_keychain', create=True
+                ):
+                    with self.assertRaisesRegex((RuntimeError, TimeoutError), 'bin_path failed|synthetic native timeout'):
+                        run(report)
+                test_calls = [(argv, kwargs) for argv, kwargs in calls if 'test' in argv]
+                self.assertEqual(len(test_calls), 1, 'one full-package build/test invocation')
+                argv, kwargs = test_calls[0]
+                self.assertNotIn('--filter', argv)
+                self.assertNotIn('--skip', argv)
+                for option in ('--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel'):
+                    self.assertIn(option, argv)
+                self.assertEqual(argv[argv.index('-c') + 1], 'release')
+                self.assertEqual(argv[argv.index('--event-stream-version') + 1], '0')
+                self.assertEqual(kwargs['output_cap'], 16 * 1024 * 1024)
+                result = report['app_scheme']['native_tests']
+                self.assertEqual(result['status'], 'PASS' if code == 0 else 'FAIL')
+                if code == 0:
+                    self.assertEqual([row['status'] for row in result['cases']], ['PASS'] * (3 if parameterized else 2))
+                    if parameterized:
+                        self.assertEqual([row['case'] for row in result['cases'][1:]], [1, 2])
+                    else:
+                        self.assertEqual(result['cases'][1]['starts'], 1)
+                        self.assertEqual(result['cases'][1]['ends'], 1)
+                archive = result['event_archive']
+                compressed = base64.b64decode(archive['data'], validate=True)
+                self.assertEqual(gzip.decompress(compressed), stream)
+                self.assertEqual(archive['bytes'], len(stream))
+                self.assertEqual(archive['sha256'], hashlib.sha256(stream).hexdigest())
+                self.assertEqual(archive['gzip_bytes'], len(compressed))
+                self.assertEqual(archive['gzip_sha256'], hashlib.sha256(compressed).hexdigest())
+                row = next(row for row in report['app_scheme']['commands'] if row['name'] == 'product_build_and_all_tests')
+                self.assertEqual(row['timeout_seconds'], 1200)
 
     def test_disposable_fixture_cleans_exact_scratch_keychain_and_checks_preferences(self) -> None:
         for fails in (False, True):
@@ -160,6 +180,66 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                     stream += b'{'
                 result = assess_native(raw, stream, inventory, 1 if failure == 'nonzero_exit' else 0)
                 self.assertEqual(result['status'], 'FAIL')
+
+    def test_ordinary_function_lifecycle_and_parameter_cases_are_independent(self) -> None:
+        raw, records, inventory = native_evidence()
+        _, ordinary, ordinary_inventory = native_evidence(parameterized=False)
+        ordinary_key = ordinary[0]['payload']['id'].replace('retainsSave()', 'ordinarySave()')
+        ordinary[0]['payload'].update(id=ordinary_key, name='ordinarySave()')
+        for row in ordinary[1:]:
+            if 'testID' in row['payload']:
+                row['payload']['testID'] = ordinary_key
+        inventory['swift_testing'].append(ordinary_inventory['swift_testing'][0].replace('retainsSave', 'ordinarySave'))
+        records.insert(1, ordinary[0])
+        records[-1:-1] = ordinary[2:-1]  # ordinary function start/end, same run
+        result = assess_native(raw, native_stream(records), inventory, 0)
+        self.assertEqual(result['status'], 'PASS', result['errors'])
+        rows = [row for row in result['cases'] if row['id'] == ordinary_key]
+        self.assertEqual(rows, [dict(library='Swift Testing', id=ordinary_key, lifecycle='function',
+                                     status='PASS', starts=1, ends=1)])
+        self.assertEqual([row['case'] for row in result['cases'] if 'case' in row], [1, 2])
+
+    def test_ordinary_lifecycle_never_falls_back_to_terminal_text(self) -> None:
+        for failure in ('missing_start', 'missing_end', 'duplicate_start', 'duplicate_end', 'reversed',
+                        'issue', 'late_issue', 'skip', 'cancel', 'unexpected_case', 'unknown_owner',
+                        'outside_run', 'bad_parameterization'):
+            with self.subTest(failure=failure):
+                raw, records, inventory = native_evidence(parameterized=False)
+                key = records[0]['payload']['id']
+                event = lambda kind: dict(version=0, kind='event', payload=dict(kind=kind, testID=key))
+                if failure in ('missing_start', 'missing_end'):
+                    records.pop(2 if failure == 'missing_start' else 3)
+                elif failure in ('duplicate_start', 'duplicate_end'):
+                    records.insert(3, event('testStarted' if failure == 'duplicate_start' else 'testEnded'))
+                elif failure == 'reversed':
+                    records[2], records[3] = records[3], records[2]
+                elif failure in ('issue', 'late_issue', 'skip', 'cancel'):
+                    kind = {'issue': 'issueRecorded', 'late_issue': 'issueRecorded',
+                            'skip': 'testSkipped', 'cancel': 'testCancelled'}[failure]
+                    records.insert(4 if failure == 'late_issue' else 3, event(kind))
+                elif failure == 'unexpected_case':
+                    records.insert(3, event('testCaseEnded'))
+                elif failure == 'unknown_owner':
+                    records[2]['payload']['testID'] = 'foreign'
+                elif failure == 'outside_run':
+                    records[1], records[2] = records[2], records[1]
+                else:
+                    records[0]['payload']['isParameterized'] = 'false'
+                raw += b'\nTest "retainsSave" passed after 0.001 seconds.\n'
+                result = assess_native(raw, native_stream(records), inventory, 0)
+                self.assertEqual(result['status'], 'FAIL')
+                if failure in ('issue', 'late_issue', 'skip', 'cancel'):
+                    self.assertEqual(result['cases'][-1]['status'], 'FAIL')
+
+    def test_raw_archive_preserves_failed_partial_bytes_and_refuses_overflow(self) -> None:
+        raw = b'{"version":0}\n{"partial":'
+        self.assertEqual(gzip.decompress(base64.b64decode(archive_events(raw)['data'])), raw)
+        for value in (b'', b'x' * (16 * 1024 * 1024 + 1)):
+            with self.assertRaises(ValueError):
+                archive_events(value)
+        with patch('scripts.mac_native.app_scheme_test_evidence.EVENT_ARCHIVE_CAP', 1):
+            with self.assertRaises(ValueError):
+                archive_events(raw)
 
     def test_results_beyond_old_16k_bound_are_retained_without_truncation(self) -> None:
         raw, records, inventory = native_evidence()

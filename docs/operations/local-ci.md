@@ -4276,7 +4276,12 @@ package: all XCTest classes and Swift Testing functions in both test targets,
 including the MAC-1 parser/route/load and MAC-2a ownership/HomeInviteModel cases.
 Release testable imports and both libraries are explicitly enabled. Every
 XCTest start/outcome and Swift Testing version-0 JSON invocation is retained,
-without the former 16 KiB named-result truncation. The source census must match;
+without the former 16 KiB named-result truncation. Ordinary functions use ordered
+function start/end events; parameterized functions additionally retain case
+ordinals. `native_tests.event_archive` in the collected JSON carries exact raw
+ABI bytes as gzip+base64 with raw/gzip sizes and hashes (16 MiB input, 4 MiB gzip).
+Missing/overflow archives refuse PASS and partial streams are preserved on
+failure/timeout before scratch cleanup. The source census must match;
 missing, skipped, failed or incomplete evidence fails closed. Hard output/event
 caps are 16 MiB each, and the compile/test step has 1,200s within the 2,100s suite
 deadline with elapsed times recorded. These bounds are not measured full-suite

@@ -65,12 +65,33 @@ private final class FakeHomeConnectorServer: @unchecked Sendable {
         )
 
         let listener = try NWListener(using: parameters)
+        let ready = DispatchSemaphore(value: 0)
+        let startup = HTTPResult()
+        listener.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                startup.setResult(status: 1, body: "", raw: "")
+                ready.signal()
+            case .failed(let error):
+                startup.setError(error.localizedDescription)
+                ready.signal()
+            case .cancelled:
+                ready.signal()
+            default:
+                break
+            }
+        }
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
         listener.start(queue: queue)
         self.listener = listener
+        guard ready.wait(timeout: .now() + 2) == .success, startup.status == 1 else {
+            listener.cancel()
+            throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                "Fake home listener did not become ready: \(startup.error ?? "timeout or cancelled")"])
+        }
     }
 
     func stop() {
@@ -152,7 +173,10 @@ private func sendHTTPRequest(
         host: NWEndpoint.Host(host),
         port: NWEndpoint.Port(integerLiteral: port)
     )
-    let connection = NWConnection(to: endpoint, using: .tcp)
+    // This fixture connects only to loopback, like ClientBridge's direct hop.
+    let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+    parameters.preferNoProxies = true
+    let connection = NWConnection(to: endpoint, using: parameters)
     let queue = DispatchQueue(label: "com.happyranch.test-client-\(UUID().uuidString)")
     let semaphore = DispatchSemaphore(value: 0)
 
@@ -587,28 +611,28 @@ struct ClientBridgeTests {
         defer { bridge.stop() }
 
         let spaCredential = "hr_session_fake_spa_token_123"
-        _ = try sendHTTPRequest(
+        let response = try sendHTTPRequest(
             host: "127.0.0.1",
             port: bridgePort,
             path: "/tasks",
             headers: ["Authorization": "Bearer \(spaCredential)"],
             timeout: 5
         )
+        #expect(response.status == 200, "The request must complete through the real bridge")
 
         Thread.sleep(forTimeInterval: 0.1)
         let requests = fakeHome.receivedRequests
         #expect(!requests.isEmpty, "Home connector should have received a request")
 
-        if let req = requests.first {
-            #expect(
-                !req.contains("Authorization: Bearer \(spaCredential)"),
-                "SPA Authorization header must be stripped before forwarding. Request: \(req)"
-            )
-            #expect(
-                !req.contains("hr_session_"),
-                "Session-scoped credential must not reach home connector. Request: \(req)"
-            )
-        }
+        let req = try #require(requests.first)
+        #expect(
+            !req.contains("Authorization: Bearer \(spaCredential)"),
+            "SPA Authorization header must be stripped before forwarding. Request: \(req)"
+        )
+        #expect(
+            !req.contains("hr_session_"),
+            "Session-scoped credential must not reach home connector. Request: \(req)"
+        )
     }
 
     @Test("session credential never appears in home connector request")
