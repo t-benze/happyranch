@@ -174,7 +174,7 @@ def read_capability_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     Caller-owned coherent raw-value read snapshot and native/J structural
     admission are prerequisites; no transaction control occurs here. Fixed
     parameterized SELECTs only. One shared call budget:8192 accepted rows,
-    16384 traversal steps,16MiB accepted raw TEXT/BLOB bytes; setup inventory
+    32768 traversal steps,16MiB accepted raw TEXT/BLOB bytes; setup inventory
     cap1024 and selected capability ancestry64. Each variable native value is
     capped at1MiB before fetch; original typeof/genuine nullable owner NULL
     survive. One bounded overflow fetch refuses without partial history.

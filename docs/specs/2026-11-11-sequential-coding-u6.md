@@ -150,8 +150,8 @@ permits only the derived cancellation fields on the exact live write set;
 original result identities, owners, parents and all other native fields match.
 
 Under EM ruling R-M3-2 (ROOT TASK-15165, 2026-11-11), pre-write authentication
-and post-write WHOLE retained-target replay each have their OWN unchanged D2
-A/B/C/L allowance, including the retained 16384 traversal limit. Both share the
+and post-write WHOLE retained-target replay each have their OWN D2
+A/B/C/L allowance, with the current retained 32768 traversal limit. Both share the
 ONE original operation deadline. PRD v1.0.4 specifies no reader traversal
 allowance; this replaces U6's engineering-only shared-read allowance rule.
 Extra discovery, copying, native comparison, control collection and writer work

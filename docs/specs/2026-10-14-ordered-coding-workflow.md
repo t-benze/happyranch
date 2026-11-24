@@ -26,7 +26,7 @@ native ownership. Existing human/system releases remain write-free no-ops.
 ONE attempt-local native census allowance 8192 rows/16MiB/2097152 visits covers
 complete ordered history, every suffix and historical/live/fixed safety work;
 per-native-cell/payload cap remains 16384. ONE separate ORIGINAL release/source/
-expansion/target allowance remains 8192 rows/16MiB/16384 visits. No per-pass reset,
+expansion/target allowance remains 8192 rows/16MiB/32768 visits. No per-pass reset,
 latest-only history, trusted cache or census watermark is permitted. Original
 strict types/UTF8/duplicates/bindings/lifecycle/transitions/exclusions remain.
 Native reservation/settlement replay is separate; no SQL/RSS/time guarantee follows.
@@ -650,7 +650,7 @@ original SQLite storage class and each TEXT/BLOB UTF8 byte length (including mul
 and the whole row must fit the remaining shared raw-byte and candidate budget.
 Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
 invalid/oversized rows never become coerced, truncated or partial success.
-One call shares8192 fetched candidates,16384 traversal steps and16MiB accepted
+One call shares8192 fetched candidates,32768 traversal steps and16MiB accepted
 raw bytes across setup, mapping, original-capture and central selected scans;
 per-value1MiB and mapping/setup inventories1024 remain upper bounds. Bounds may
 refuse earlier; they do not bound total SQLite/process/decoded-object memory.
@@ -1446,7 +1446,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
@@ -1513,7 +1513,7 @@ class and byte length BEFORE fetch; TEXT uses BLOB byte length including NUL
 suffixes/multibyte characters. Original typeof/refusal sentinels and genuine
 nullable journal-owner NULL survive; no coercion or truncation. Each variable
 value is at most1MiB. One shared whole-call budget permits8192 accepted native
-rows,16384 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
+rows,32768 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
 and selected capability ancestry64. One bounded overflow fetch only refuses.
 Call-local setup caching retains complete histories; no recursive budget reset.
 Enclosing/decoded saved bounds remain and can refuse before64 nodes. These raw
@@ -1577,7 +1577,7 @@ control/DTO/default/converter. Original typeof/native byte gates precede fetch,
 including multibyte/NUL suffixes; each new native row's combined variable bytes
 must fit remaining budget. Singleton keyset pages renew that gate; bounded task
 uniqueness probe prevents LIMIT1 conflict masking. Every fetched/rejected/overflow
-candidate shares8192 rows/16384 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
+candidate shares8192 rows/32768 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
 source20. Nullable/empty/finite-REAL accounting does not weaken existing mandatory
 setup/admission validation. This is not a total process/SQLite/copy memory bound.
 Category-only coding_source_history_invalid returns no partial records/private SQL.
@@ -1640,7 +1640,7 @@ One coherent caller-owned raw SQLite transaction/lock; SELECT only. Complete
 bounded fixed-action audit inventory exposes duplicate/conflicting/foreign owners
 without JSON-selection predicates or latest-row fallback. Native typeof and each
 row's remaining row/byte ceilings gate payloads BEFORE fetch. Shared8192 fetched
-candidates/16384 traversal steps/16MiB byte budget includes conservative decoded
+candidates/32768 traversal steps/16MiB byte budget includes conservative decoded
 byte copies, with1MiB per value/whole raw audit, source20/P64/setup1024. These are
 not total SQLite/process/JSON-object memory limits. Missing required captures
 raise coding_source_capture_unavailable; invalid evidence raises category-only
@@ -2151,7 +2151,7 @@ changed snapshot keys. Independent SELECT-only readers validate native storage
 classes, all original admission/journal/capture evidence, audit envelope/order,
 contiguous native-prefix/human-suffix generations, snapshot digest chain,
 original versus retained publication authority, orphans and current pointer.
-They use one cumulative existing allowance (8192 fetched candidates, 16384
+They use one cumulative existing allowance (8192 fetched candidates, 32768
 traversal steps, 16 MiB raw/decoded/canonical work, stricter per-value/table caps),
 without nested reset, schema recursion, global cache or trusted after-image.
 Cold/schema(data=False)/recovery/drain and mapping inventory inherit this closure.

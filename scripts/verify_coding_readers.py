@@ -1004,20 +1004,20 @@ try:
                 equal(checks,'caller transaction preserved',conn.in_transaction,transaction)
                 equal(checks,'whole native typed rows preserved',digest(canonical(saved_rows(conn))),digest(canonical(before)))
                 if target == 'traversed':
-                    equal(checks,'original traversal allowance crossed',b.traversed,16385)
+                    equal(checks,'original traversal allowance crossed',b.traversed,32769)
                     equal(checks,'byte allowance not first',b.consumed<=16777216,True)
                 elif target == 'consumed':
                     # _copies checks before increment: the failing reservation
                     # can leave consumed below the limit. Its concrete next
                     # input-derived reservation is separately retained.
-                    equal(checks,'traversal allowance not first',b.traversed<=16384,True)
+                    equal(checks,'traversal allowance not first',b.traversed<=32768,True)
                     equal(checks,'prior bytes actually consumed',b.consumed>8388608,True)
                 else:
                     if b.accepted_rows <=8192:
                         result['unproved'][label]=dict(reason='Traversal/byte refusal precedes candidate target; no candidate aggregate PASS',
                             target=8193,observed=vars(b).copy(),components=len(components),
-                            source_bounds='8192 candidates,16384 visits,16MiB; each release component has 12 candidates plus lexical/column visits; singleton fixed-release grammar; queued native rows visit every column')
-                    equal(checks,'attempt reached actual earlier traversal bound',b.traversed,16385)
+                            source_bounds='8192 candidates,32768 visits,16MiB; each release component has 12 candidates plus lexical/column visits; singleton fixed-release grammar; queued native rows visit every column')
+                    equal(checks,'attempt reached actual earlier traversal bound',b.traversed,32769)
                 check_trace(scope)
             result['cases'].append(dict(name=label,checks=checks,components=components,expected_work=expected_work,
                 trace=trace,counters=vars(b).copy(),target=target))
@@ -1028,7 +1028,7 @@ try:
         # All result rows are synthetic fixture data via the ordinary native
         # caller-owned constructor, never report-completion or genuine proof.
         def candidate_group(label: str) -> None:
-            for i in range(400):
+            for i in range(850):
                 db._insert_task_result(task_id='SYNTHETIC-OLD-TASK',agent='synthetic_worker',
                     session_id='SYNTHETIC-'+label+'-'+str(i),output_summary='SYNTHETIC ordinary history',
                     confidence_score=0,decision_json='{"action":"done"}')
@@ -1038,21 +1038,21 @@ try:
             cb=_Budget()
             observe('F5-R1c.aggregate-candidates.component-'+label+'.positive',
                 lambda:queued_storage(conn,org,budget=cb),supplied=cb,kind='queued')
-            equal(result['cases'][-1]['checks'],'input-derived cumulative candidates',cb.accepted_rows,12+401)
-            equal(result['cases'][-1]['checks'],'input-derived cumulative traversal',cb.traversed,1982+19*401)
+            equal(result['cases'][-1]['checks'],'input-derived cumulative candidates',cb.accepted_rows,12+851)
+            equal(result['cases'][-1]['checks'],'input-derived cumulative traversal',cb.traversed,1982+19*851)
             conn.execute('ROLLBACK TO candidate_component');conn.execute('RELEASE candidate_component')
         conn.execute('SAVEPOINT candidate_combined')
         candidate_group('a');candidate_group('b')
         cb=_Budget()
         observe('F5-R1c.aggregate-candidates',lambda:queued_storage(conn,org,budget=cb),
             'coding_authority_history_invalid',supplied=cb)
-        equal(result['cases'][-1]['checks'],'actual earlier traversal bound',cb.traversed,16385)
-        equal(result['cases'][-1]['checks'],'input-derived partial candidate accumulation',cb.accepted_rows,771)
+        equal(result['cases'][-1]['checks'],'actual earlier traversal bound',cb.traversed,32769)
+        equal(result['cases'][-1]['checks'],'input-derived partial candidate accumulation',cb.accepted_rows,1633)
         equal(result['cases'][-1]['checks'],'candidate guard not reached',cb.accepted_rows<8193,True)
         equal(result['cases'][-1]['checks'],'bytes not first',cb.consumed<=16777216,True)
-        result['cases'][-1]['input_components']=dict(first=400,second=400,existing=1,native_columns=18)
+        result['cases'][-1]['input_components']=dict(first=850,second=850,existing=1,native_columns=18)
         result['outstanding_broader_targets']['candidate8193'].update(
-            observed=vars(cb).copy(),input_components=[400,400],
+            observed=vars(cb).copy(),input_components=[850,850],
             grammar='ordinary18-column task_results plus fixed release; no global infeasibility claim')
         conn.execute('ROLLBACK TO candidate_combined');conn.execute('RELEASE candidate_combined')
         # A fixed larger VALID v1 snapshot exercises actual nested base64,
@@ -1210,12 +1210,12 @@ try:
                 if category is None:
                     equal(row['checks'],'independent complete row/copy/traversal arithmetic',vars(budget),work)
                 elif summary_size is None:
-                    equal(row['checks'],'independent traversal crossing',work['traversed']>16384,True)
-                    equal(row['checks'],'actual original traversal guard',budget.traversed,16385)
+                    equal(row['checks'],'independent traversal crossing',work['traversed']>32768,True)
+                    equal(row['checks'],'actual original traversal guard',budget.traversed,32769)
                     equal(row['checks'],'bytes are not first',budget.consumed<=16777216,True)
                 else:
                     equal(row['checks'],'independent byte crossing',work['consumed']>16777216,True)
-                    equal(row['checks'],'traversal is not first',budget.traversed<=16384,True)
+                    equal(row['checks'],'traversal is not first',budget.traversed<=32768,True)
             finally:
                 conn.execute('ROLLBACK TO schema_variant');conn.execute('RELEASE schema_variant')
         # Select sizes only by fixed input arithmetic, never reader counters or
@@ -1225,7 +1225,7 @@ try:
         native_for_work=[tuple(v for i,v in enumerate(r) if i!=decision_index)+(r[decision_index],)
             for r in conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL')]
         traversal_size=next(n for n in range(1,1001)
-            if schema_work(snapshot_variant(['x']*n),native_for_work)['traversed']>16384)
+            if schema_work(snapshot_variant(['x']*n),native_for_work)['traversed']>32768)
         schema_variant('F8-R1c.schema.aggregate-traversal.positive',snapshot_variant(['x']*(traversal_size-1)),None)
         schema_variant('F8-R1c.schema.aggregate-traversal.refusal',snapshot_variant(['x']*traversal_size),'coding_authority_history_invalid')
         # Free native output text is charged without JSON-character traversal.

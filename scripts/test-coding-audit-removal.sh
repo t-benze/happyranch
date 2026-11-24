@@ -27,7 +27,7 @@ def retained_history(path):
         actual = coding._read_coding_data(db._conn, layout='F', expected_org_slug='scratch')
         assert actual is not None and actual.release is not None
         print('PASS retained accepted built-in coding history')
-        for field, value in (('consumed', 16777216), ('accepted_rows', 8192), ('traversed', 16384)):
+        for field, value in (('consumed', 16777216), ('accepted_rows', 8192), ('traversed', 32768)):
             try:
                 coding._read_coding_data(db._conn, layout='F', expected_org_slug='scratch', budget=_Budget(**{field: value}))
             except ValueError:

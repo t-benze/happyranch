@@ -218,7 +218,7 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     or ended. Fixed parameterized SELECTs only, at most1024 mapping inventory
     rows and1024 setup inventory rows, each text/BLOB value capped at1MiB BEFORE
     fetch with original typeof evidence. Across the entire composed call:
-    at most8192 fetched native candidates,16384 traversal steps and16MiB accepted
+    at most8192 fetched native candidates,32768 traversal steps and16MiB accepted
     raw text/BLOB bytes, without per-root resets. Singleton keyset pages gate
     each complete row against remaining row/byte budgets before fetch. One bounded overflow fetch
     refuses; SQL engine/rejected-row/decoded-copy memory is not bounded here.

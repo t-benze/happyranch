@@ -75,7 +75,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     assert draft_review_case in ('all', *DRAFT_REVIEW_CASES)
     sys.argv[1:] = ['--assignments']
 START2_CASES = ('staged_unavailable', 'discovery', 'audience', 'pins_settings', 'compose',
-    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'recovery_input_retired', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources')
+    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'recovery_input_retired', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources', 'populated_long_batch')
 start2_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--start2='):
     start2_case = sys.argv[1].split('=', 1)[1]
@@ -6199,6 +6199,52 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         state.metrics_store.close();state.direct_connect_authority_store.close()
 
     async def start2_cases(case):
+        if case == 'populated_long_batch':
+            async with dr_fixture() as f:
+                stamp = f.source.created_at.isoformat()
+                f.conn.executemany('INSERT INTO tasks(id,assigned_agent,team,brief,status,task_type,created_at,updated_at) '
+                    'VALUES (?,?,?,?,?,?,?,?)', ((f'ordinary-{i}', 's3_author', 'engineering', 'Ordinary history',
+                        'completed', 'subtask', stamp, stamp) for i in range(18817)))
+                f.conn.execute("INSERT INTO workflow_task_ownership SELECT id,'scratch',1,'legacy',NULL "
+                    "FROM tasks WHERE id GLOB 'ordinary-*'")
+                f.conn.executemany('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+                    ((f'ordinary-{i % 18817}', 's3_author', f'ordinary-sid-{i}', 'completed', stamp) for i in range(33940)))
+                f.conn.commit()
+                decision = await dr_compose(f, (DR_IDENTITY, 'release/happyranch/coding'),
+                    overrides=dict(request='x' * 4096))
+                assert len(decision['workflows'][0]['request']) == 4096
+                await dr_start(f, (DR_IDENTITY, 'release/happyranch/coding'), decision=decision)
+                read_sequential_history(f.conn, expected_org_slug='scratch')
+                row = f.original_callback[0]
+                from runtime.workflows.coding_authority_history import _Budget
+                from runtime.workflows.sequential_initiator import native_decision
+                # The original retained reader may already have traversed the
+                # old ceiling before it reaches this public native result.
+                before = dr_inventory(f)
+                budget = _Budget(traversed=16384)
+                parsed = native_decision(row['decision_json'].encode('utf8'), budget)
+                assert parsed['workflows'] == decision['workflows']
+                assert 16384 < budget.traversed <= 32768 and dr_inventory(f) == before
+                print('PASS populated native callback on original Coding ledger',
+                    16384, budget.traversed, 'ceiling', 32768, flush=True)
+                for extra in (dict(extra=dict(action='coding_unknown')), dict(workflows=[])):
+                    f.conn.execute('SAVEPOINT malformed_start')
+                    try:
+                        original = json.loads(row['decision_json'])
+                        f.conn.execute('UPDATE task_results SET decision_json=? WHERE id=?',
+                            (json.dumps(dict(original, **extra)), row['id']))
+                        try:
+                            read_sequential_history(f.conn, expected_org_slug='scratch')
+                        except ValueError:
+                            pass
+                        else:
+                            raise AssertionError('populated_long_batch accepted malformed native decision')
+                    finally:
+                        f.conn.execute('ROLLBACK TO malformed_start')
+                        f.conn.execute('RELEASE malformed_start')
+                print('PASS Start2 populated_long_batch ordinary_tasks=18817 ordinary_results=33940 '
+                    'request_bytes=4096 HTTP200 two runs/memberships/receipt; malformed decisions refused', flush=True)
+            return
         if case == 'recovery_input_retired':
             await dr_coding_retired()
             print('PASS Start2 recovery_input_retired real Coding v3 exhausted correction/refusal/cancel/source done',flush=True)
@@ -7907,8 +7953,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     (_ReadBudget,16384,True,65536),
                     (_ReadBudget,65535,False,65536),
                     (_ReadBudget,65536,False,65536),
-                    (_Budget,16383,False,16384),
-                    (_Budget,16384,False,16384),
+                    (_Budget,16384,True,32768),
+                    (_Budget,32767,False,32768),
+                    (_Budget,32768,False,32768),
                 ):
                     budget=ledger(traversed=start)
                     error=None
@@ -7919,7 +7966,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert (error is None)==admitted,('caller ledger admission',ledger.__name__,start,admitted,str(error))
                     if admitted:
                         assert parsed==observed and start<budget.traversed<ceiling
-                        assert budget.remaining_bytes>0 and budget.sql_steps==0
+                        assert budget.remaining_bytes>0
+                        if ledger is _ReadBudget: assert budget.sql_steps==0
                     else:
                         assert str(error)=='not a closed sequential callback'
                         assert isinstance(error.__cause__,ReadExhaustion)
@@ -10723,6 +10771,45 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
         assert _layout(db._conn) == before, 'A2 fixture failed exact trigger/layout restoration'
 
     if a2_case in (None, 'historical'):
+        # Constructor metadata is the sole non-marker populated-table exception.
+        # Observe the production initializer and rollback; do not mock its guard.
+        state_cases = (
+            ('quota_above', 1), ('crossing_sequence', 1),
+            ('reconciliation_status', 'complete'), ('rollout_started_at', 'started'),
+            ('last_completed_window', 'window'), ('preview_acceptance', '{}'),
+            ('inventory_review_id', 'review'), ('source_protection_verified', 1),
+            ('id', 2), ('extra_row', 2), ('unrelated_task', None),
+        )
+        with tempfile.TemporaryDirectory(prefix='a2-native-state-') as scratch:
+            for field, value in state_cases:
+                db = Database(Path(scratch) / (field + '.db'))
+                try:
+                    conn = db._conn
+                    if field == 'unrelated_task':
+                        db.insert_task(TaskRecord(id='TASK-synthetic', assigned_agent='synthetic',
+                            team='synthetic', brief='Existing native work'))
+                    else:
+                        # Only synthetic corrupt input construction needs this;
+                        # native CHECK enforcement is restored before the owner.
+                        conn.execute('PRAGMA ignore_check_constraints=ON')
+                        if field == 'extra_row':
+                            conn.execute('INSERT INTO shared_artifact_org_state(id) VALUES (?)', (value,))
+                        else:
+                            conn.execute('UPDATE shared_artifact_org_state SET "' + field + '"=?', (value,))
+                        conn.commit()
+                        conn.execute('PRAGMA ignore_check_constraints=OFF')
+                    assert conn.execute('PRAGMA ignore_check_constraints').fetchone()[0] == 0
+                    before = list(conn.iterdump())
+                    try:
+                        initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                    except ValueError as exc:
+                        assert str(exc) == 'workflow_coding_fresh_creation_requires_empty_native_database', (field, str(exc))
+                    else:
+                        raise AssertionError('A2 fresh J accepted non-default native state: ' + field)
+                    assert list(conn.iterdump()) == before, 'A2 refusal changed native rows/schema: ' + field
+                    print('PASS A2-J refuses non-default native state with rollback:', field, flush=True)
+                finally:
+                    db.close()
 
         with tempfile.TemporaryDirectory(prefix='a2-historical-') as scratch:
             # Historical constructor defaults are observed independently of the
@@ -10731,15 +10818,18 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                 db = Database(Path(scratch) / (expected + str(requested) + '.db'))
                 try:
                     assert not _layout(db._conn)[0], 'A2 generic Database installed workflow storage'
+                    default_state = [(1, 0, 0, 'incomplete', None, None, None, None, 0)]
+                    assert [tuple(row) for row in db._conn.execute('SELECT * FROM shared_artifact_org_state')] == default_state
                     kwargs = {} if requested is None else dict(layout=requested)
                     initialize_complete_org_schema(db, expected_org_slug='scratch', **kwargs)
                     assert validate_workflow_schema(db._conn, expected_org_slug='scratch') == expected, 'A2 historical default changed'
                     assert _layout(db._conn) == _canonical_layout(expected, coding_extension=expected == 'J', owner_indexed=True)
                     assert not read_sequential_history(db._conn, expected_org_slug='scratch').layout.sequential
+                    assert [tuple(row) for row in db._conn.execute('SELECT * FROM shared_artifact_org_state')] == default_state
                 finally:
                     db.close()
-            assert hashlib.sha256(inspect.getsource(initialize_complete_org_schema).encode()).hexdigest() == 'd0b462c6dd54bda7bef702a43fc0293cfbaadc3486f29e17c6fe9ef03406a582', 'A2 historical initializer bytes changed'
-            print('PASS A2-H historical default G and explicit G/H/I/J; independent references; exact initializer bytes', flush=True)
+            assert hashlib.sha256(inspect.getsource(initialize_complete_org_schema).encode()).hexdigest() == '2b57c1701843fc7001a24b7c7271ff4b4c79cff6d957e9de6215b490950f9339', 'A2 reviewed initializer bytes changed'
+            print('PASS A2-H historical default G and explicit G/H/I/J; pristine singleton preserved; independent references; exact reviewed initializer bytes', flush=True)
 
     async def a2_route_registration():
         with tempfile.TemporaryDirectory(prefix='a2-fresh-catalog-') as scratch:
@@ -17556,7 +17646,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         assert load_guard._current.get().sequential_saved is None, 'nondefault budget retained reuse'
                 print('PASS A0b sequential exclusion:', exclusion)
 
-            for dimension, limit in (('consumed', 16 * 1048576), ('accepted_rows', 8192), ('traversed', 16384)):
+            for dimension, limit in (('consumed', 16 * 1048576), ('accepted_rows', 8192), ('traversed', 32768)):
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
                     # A fresh known caller first imports the actual complete charge.
@@ -17867,7 +17957,8 @@ gate_cases = (
     ('exact-shared-bytes', None, {'consumed': 16777208}, 8192, 8, None, (8, 1, 7)),
     ('shared-byte-overflow', None, {'consumed': 16777209}, 8192, 8, 'withheld', (0, 1, 1)),
     ('shared-row-overflow', None, {'accepted_rows': 8192}, 8192, 8, 'withheld', (0, 1, 1)),
-    ('shared-work-overflow', None, {'traversed': 16384}, 8192, 8, 'unfetched', (0, 0, 1)),
+    ('exact-shared-work', None, {'traversed': 32761}, 8192, 8, None, (8, 1, 7)),
+    ('shared-work-overflow', None, {'traversed': 32768}, 8192, 8, 'unfetched', (0, 0, 1)),
     ('local-row-overflow', None, {}, 0, 8, 'withheld', (0, 1, 1)),
 )
 # S9 extends this keeper across retained and generic caller ledgers. The

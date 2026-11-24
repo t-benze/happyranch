@@ -1462,10 +1462,11 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
         if _layout(conn)[0]:
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         if layout == "J":
-            # Independent reference/fresh primitive only; the real create-org
-            # owner still selects I. Native generic initialization has exactly
-            # two completed remote-schema marker rows, not operational work.
-            # Validate those independently; inspect every other table too.
+            # The fresh create-org owner and independent reference use J.
+            # Native generic initialization has exactly
+            # two completed remote-schema marker rows and the default shared
+            # artifact singleton, not operational work. Validate both exactly;
+            # inspect every other table too.
             from runtime.infrastructure.remote_job_schema import (
                 COMPLETE_STAGE, IDENTITY_MIGRATION_NAME, MIGRATION_NAME,
                 validate_identity_enrollment_schema_preflight, validate_remote_job_schema_preflight,
@@ -1483,6 +1484,12 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
                         timestamp = datetime.fromisoformat(row[2])
                         if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
                             raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
+                elif table == 'shared_artifact_org_state':
+                    # Only the constructor's pristine singleton is metadata.
+                    # LIMIT 2 also rejects an extra row in a corrupt database.
+                    rows = [tuple(row) for row in conn.execute(f'SELECT * FROM "{quoted}" LIMIT 2')]
+                    if rows and rows != [(1, 0, 0, 'incomplete', None, None, None, None, 0)]:
+                        raise ValueError('workflow_coding_fresh_creation_requires_empty_native_database')
                 elif conn.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone() is not None:
                     raise ValueError('workflow_coding_fresh_creation_requires_empty_native_database')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
@@ -1511,7 +1518,10 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
 
     An absent DB observed by startup is never creation authority. O_EXCL proves
     this invocation created the file; native J initialization independently
-    refuses any work. Historical initializers and their defaults stay unchanged.
+    refuses any work. Fresh J additionally recognizes the constructor's pristine
+    shared_artifact_org_state singleton (id=1, all default metadata); nondefault
+    state, alternate IDs and extra rows still refuse with transaction rollback.
+    Historical initializer defaults and the constructor seed stay unchanged.
     The caller owns the returned Database and its original close.
     """
     from runtime.infrastructure.database import Database
