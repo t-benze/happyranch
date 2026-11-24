@@ -125,6 +125,7 @@ async function api(req,res) {
   const entry={method:req.method,path:url.pathname,search:url.search,body:raw?JSON.parse(raw):null,observed_at:new Date().toISOString()};ledger.push(entry);
   const end=(body,status=200)=>{entry.status=status;if(entry.agentTasks)entry.payload=body;res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
   if(url.pathname.endsWith('/auth/bootstrap')) return end({token:'ui-transport-only-token'});
+  if(slice==='held'&&url.pathname.endsWith('/sequential-workflows'))return end({format:'workflow-sequential-task-runs@2',org_slug:'pause-org',task_id:url.pathname.split('/').at(-2),storage:'absent',runs:[]});
   if(url.pathname==='/api/v1/orgs') return end({orgs:[{slug:'pause-org',root:'/synthetic-only'}],broken:[]});
   if(correctionOnly && /\/orgs\/[^/]+\/tasks$/.test(url.pathname)) {
     const match=req.method==='GET'&&url.pathname==='/api/v1/orgs/pause-org/tasks'
@@ -157,9 +158,11 @@ async function api(req,res) {
   }
   const match=url.pathname.match(/\/tasks\/([^/]+)(?:\/(recall))?$/);
   if(match && correctionOnly && correctionFixture(match[1])){const fixture=correctionFixture(match[1]);if(match[2]){if(match[1].endsWith('loading'))await sleep(600);if(match[1].endsWith('error'))return end({detail:'synthetic recall unavailable'},503);return end(fixture.recall);}return end({task:fixture.task,pause:fixture.task.pause,results:[],audit_log:fixture.audit,revisit_chain:[],direct_revisits:[],active_chain:['UI-A01','UI-A04'].includes(match[1])?{step_index:1,first_leg_expect_verdict:'APPROVE',legs:[{agent:'code_reviewer',expect_verdict:'PASS'}]}:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});}
-  if(match){const task=match[1]==='CHILD-1'?root('CHILD-1','in_progress',{parent_task_id:'ROOT-PAUSING',pause:projection('ROOT-PAUSING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers,evidence_complete:false})}):roots().find(t=>t.task_id===match[1]);
+  if(match){let task=match[1]==='CHILD-1'?root('CHILD-1','in_progress',{parent_task_id:'ROOT-PAUSING',pause:projection('ROOT-PAUSING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers,evidence_complete:false})}):roots().find(t=>t.task_id===match[1]);
+    if(slice==='held'&&task)task={...task,block_kind:'delegated',child_wait:{state:'continuation_pending',observed_at:stamp}};
     if(match[2])return end({task_id:match[1],assigned_agent:'dev_agent',brief:task?.brief??'raw',status:task?.status??'pending',output_summary:null,children:[]});
-    return end({task,pause:task?.pause,results:[],audit_log:[],revisit_chain:[],direct_revisits:[],active_chain:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});
+    const {pause,...detailTask}=task??{};
+    return end({task:detailTask,pause,results:[],audit_log:[],revisit_chain:[],direct_revisits:[],active_chain:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:slice==='held'?'Delegated to dev_agent (child=TASK-synthetic-ended)':null}});
   }
   if(/\/jobs\/?$/.test(url.pathname)) return end({jobs:[],next_cursor:null});
   return end({});
@@ -371,6 +374,41 @@ async function main(){
       const name=`${locale}-${width}-${theme}`;
       scenario='populated';const child=await open('/orgs/pause-org/tasks/CHILD-1',locale,width,height,theme);await wait(child,"!!document.querySelector('[data-task-pause=\"CHILD-1\"]')");check(`${name} child has inherited root link`,await evaluate(child,"document.querySelector('[data-task-pause] a').getAttribute('href')"),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${name} child inherited explanation`,await evaluate(child,`document.querySelector('[data-task-pause]').textContent.includes(${quote(String(tr(locale,'tasks.pause.inherited')).split('{')[0].trim())})`));check(`${name} child has no controls`,await evaluate(child,"document.querySelector('[data-task-pause] button')===null"));check(`${name} child fits`,await evaluate(child,'document.documentElement.scrollWidth <= innerWidth + 1'));await shot(child,`${name}-child`,{locale,width,height,theme,state:'child inherited'});await close(child);
     }
+    }
+    if(correctionOnly && slice==='held') {
+      const region=id=>`document.querySelector('main [data-task-pause="${id}"]')`;
+      for(const locale of selectedLocales)for(const viewport of detailViewports)for(const id of selectedDetailCases??['ROOT-PAUSING','ROOT-PAUSED','ROOT-PARKED']) {
+        const [width,height]=viewport.split('x').map(Number),name=`held-${locale}-${viewport}-${id}`;
+        const held=id!=='ROOT-PARKED';
+        const page=await open('/orgs/pause-org/tasks/'+id,locale,width,height);
+        await wait(page,`!!document.querySelector('[data-task-pause="${id}"] button')`);
+        await sleep(500);
+        check(`${name} envelope pause displayed`,await evaluate(page,`${region(id)}.textContent.includes(${quote(tr(locale,!held?'tasks.pause.pause':id==='ROOT-PAUSING'?'tasks.pause.pausing':'tasks.pause.paused'))})`));
+        check(`${name} no stale delegated note`,await evaluate(page,"!document.body.textContent.includes('Delegated to dev_agent')"));
+        check(`${name} current child qualifier`,await evaluate(page,`document.querySelector('header').textContent.includes(${quote(tr(locale,'tasks.waiting.continuationPending'))})`),!held);
+        check(`${name} action retained`,await evaluate(page,`!!${rootButton(id,tr(locale,held?'tasks.pause.resume':'tasks.pause.pause'))}`));
+        if(id==='ROOT-PAUSING') {
+          await evaluate(page,`${region(id)}.querySelector('details').open=true`);
+          check(`${name} unknown blocker in plain words`,await evaluate(page,`${region(id)}.textContent.includes(${quote(tr(locale,'tasks.pause.blocker.unknown'))})`));
+        }
+        check(`${name} fits`,await evaluate(page,'document.documentElement.scrollWidth<=innerWidth+1'));
+        await shot(page,name,{locale,width,height,state:id,fixture:'terminal children; top-level pause envelope; stale delegated work-status note'});
+        await enter(page,button(tr(locale,'tasks.detail.cancel')));
+        await wait(page,"!!document.querySelector('[role=\"dialog\"] textarea')");
+        await evaluate(page,"(()=>{const t=document.querySelector('[role=\"dialog\"] textarea');t.focus();window.heldDraft=t;})()");
+        await cdp.send('Input.insertText',{text:'Preserved draft 中文'},page.sessionId);
+        await evaluate(page,'heldDraft.setSelectionRange(2,8)');
+        await sleep(100);
+        const before=ledger.length;
+        // A second same-origin document produces a real storage event without
+        // a tab-focus change (which independently refetches stale queries).
+        await evaluate(page,`new Promise(resolve=>{const frame=document.createElement('iframe');frame.hidden=true;frame.src='/pause-locale-switch.html';frame.onload=()=>{frame.contentWindow.localStorage.setItem('happyranch.ui.locale',${quote(locale==='en'?'zh-CN':'en')});frame.remove();resolve(true);};document.body.append(frame);})`);
+        await wait(page,`document.documentElement.lang===${quote(locale==='en'?'zh-CN':'en')}`);
+        await sleep(100);
+        check(`${name} locale preserves draft focus selection`,await evaluate(page,"[heldDraft===document.querySelector('[role=\"dialog\"] textarea'),heldDraft.value,document.activeElement===heldDraft,heldDraft.selectionStart,heldDraft.selectionEnd]"),[true,'Preserved draft 中文',true,2,8]);
+        check(`${name} locale sends no requests`,ledger.slice(before),[]);
+        await close(page);
+      }
     }
     if(correctionOnly && slice==='agents') {
       // Wrong selections are HTTP negative observations, not backend authority proof.

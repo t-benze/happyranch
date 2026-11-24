@@ -201,6 +201,20 @@ retired Python units, skipped general integration and scheduled Product E2E.
 
 ## Focused repository refresh (THR-381)
 
+THR-395 adds `RepoRefreshTests.test_refused_lease_tail_closes_every_repository_and_pauses`
+and `test_refused_tail_retains_unknown_without_positive_closure` in the same
+standalone venue. The real Git/preparation/refusal/terminal/Pause paths observe
+durable closure and a paused held root, with a test-side lease-release fault.
+Possible launch, observed launch, open/missing/unreadable evidence, cleanup with
+live processes and running jobs retain unknown. No retired suite or CI lane is added.
+The held-before-closure tests (`test_hold_before_closure_defers_lease_error_and_pauses`,
+`test_hold_before_closure_missing_proof_stays_unknown` and
+`test_hold_before_closure_unknown_cleanup_stays_unknown`) additionally observe
+original closure under hold, pending/no-refusal/unchanged-attempt settlement,
+fresh-preparation veto, Resume with ordinary refusal accounting, and fail-closed
+open-interval/independently-unknown-cleanup tails. Each runs in the venue's
+existing fresh-process isolation; product closure and OSError handling are real.
+
 `uv run --frozen pytest --import-mode=importlib scripts/test_repo_refresh.py scripts/test_preparation_startup.py -v --tb=short`
 uses standalone synthetic orgs, scratch local Git origins and the owned native
 process-group supervisor. It checks the three-call identity, SHA-1/SHA-256 and

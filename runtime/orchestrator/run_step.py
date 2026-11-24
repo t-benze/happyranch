@@ -1376,8 +1376,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         root_delivery['teardown_incomplete'] = True
         try:
             if isinstance(exc, Exception) and not invocation.launch_observed:
-                from runtime.orchestrator.launch_refusals import settle_refusal
-                if settle_refusal(invocation, exc, prepared=True):
+                from runtime.orchestrator.launch_refusals import defer_held_preparation, settle_refusal
+                if (settle_refusal(invocation, exc, prepared=True)
+                        or defer_held_preparation(invocation, exc)):
                     return
             if invocation.admitted:
                 invocation.phase("unknown")

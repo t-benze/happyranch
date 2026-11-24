@@ -241,6 +241,31 @@ def record_started(invocation) -> None:
              "session_id": invocation.session_id, "count": 0})
 
 
+def defer_held_preparation(invocation: Any, exc: Exception) -> bool:
+    """Recognize the original lease-error hold winner, without settling proof.
+
+    Final close still requires all durable preparation and outer cleanup proof.
+    A missing predicate keeps the pending producer unknown, never terminal.
+    """
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    if (exc is not getattr(invocation, '_repository_lease_release_error', None)
+            or not getattr(invocation, '_repository_lease_releases_attempted', False)
+            or invocation.owner not in {'ordinary', 'v2'}
+            or invocation.admitted or invocation.attempt_committed or invocation.launch_observed):
+        return False
+    with invocation.orch._db._lock:
+        if invocation.store._live.get(invocation.identity) is not invocation or not _current(invocation):
+            return False
+        try:
+            invocation.store.held_uncommitted(invocation.task.id)
+        except PauseControlError as held:
+            if held.detail['code'] == 'root_paused':
+                invocation._held_preparation_deferred = True
+                return True
+            raise
+    return False
+
+
 def settle_refusal(invocation, exc: Exception, *, prepared: bool) -> bool:
     """Record an actual refusal; return True only for this exact FAILED owner.
 

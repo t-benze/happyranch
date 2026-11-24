@@ -63,6 +63,7 @@ type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /** Detail-page waiting qualifier: finished-job state first, then the shared projection. */
 function detailWaitingQualifier(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | null {
+  if (task.pause?.effective_hold) return null;
   return finishedJobsQualifier(task, blockedOnJobs, t) ?? resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
 }
 
@@ -750,6 +751,8 @@ export function TaskStatusCard({
   const { locale, t } = useTranslation();
   const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
   const created = formatDateTime(task.created_at, locale);
+  const held = task.pause?.effective_hold === true;
+  const childrenSettled = childWaitState(task) === 'continuation_pending';
 
   return (
     <aside aria-label={t('tasks.rail.label')} className="min-w-0 lg:w-80 lg:shrink-0">
@@ -767,7 +770,7 @@ export function TaskStatusCard({
               />
             </span>
           </RailRow>
-          {task.block_kind && (
+          {task.block_kind && !held && !childrenSettled && (
             <RailRow label={t('tasks.rail.blockKind')}>
               <span className="text-text-secondary break-words font-mono text-xs">
                 {task.block_kind}
@@ -818,7 +821,7 @@ export function TaskStatusCard({
             </RailRow>
           )}
         </dl>
-        {workStatus && (
+        {workStatus && !held && !childrenSettled && (
           <div className="border-border-default mt-4 min-w-0 border-t pt-4">
             <ExecutionStatusDetails status={workStatus} />
           </div>
@@ -1096,6 +1099,7 @@ export function TaskDetailPage(): JSX.Element {
               </div>
             )}
             {task.data?.status === 'in_progress' && task.data.block_kind === 'delegated'
+              && !task.data.pause?.effective_hold
               && (!childWaitState(task.data) || childWaitState(task.data) === 'unavailable')
               && <p className="text-text-secondary mt-2 text-xs">{t('tasks.waiting.childUnavailable')}</p>}
             <TaskPauseControls task={task.data} routes={routes} actions={headerActions} />
