@@ -255,11 +255,14 @@ Testing, and uses `--no-parallel` for per-invocation attribution. Release testin
 with `--enable-testable-imports` is supported by SwiftPM; this harness does not
 substitute a debug product. Native compatibility and elapsed time at the revised
 head are **NOT RUN on Linux**. Unsupported options or output fail closed.
-The full workload includes MAC-1's 14 XCTests, all MAC-2a ownership cases and
-Swift Testing cases such as HomeInviteModelTests. The source census at this
-revision is 56 XCTest methods plus 557 `@Test` functions across 48 files;
-parameterized functions can execute more than one case. The census is recomputed
-from both test directories at the checked-out source, not a fixed pass count.
+The full workload includes MAC-1 transport tests, MAC-2a ownership cases,
+MAC-2b dialog and save-outcome cases, and Swift Testing cases such as
+HomeInviteModelTests. The census is recomputed from both test directories at
+the checked-out source by
+[`source_inventory()`](../../scripts/mac_native/app_scheme_test_evidence.py).
+`probe.json.app_scheme.native_tests.inventory` retains that run's expected
+XCTest methods and Swift Testing functions. Parameterized functions can execute
+more than one case; the source census is not a fixed pass count.
 
 `app_scheme.native_tests` records each XCTest method and each Swift Testing
 invocation separately with PASS/FAIL (or INCOMPLETE), using function ID plus a
