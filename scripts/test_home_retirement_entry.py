@@ -204,14 +204,20 @@ def test_fixed_entry_preserves_fresh_completed_and_refused_layouts(tmp_path, mon
     ('inert', 'final-parent-sync'), ('inert', 'final-return'),
     ('active', 'final-parent-sync'),
     ('active', 'preinst-fragment'), ('inert', 'preinst-publication'), ('active', 'preinst-first-device'),
+    ('inert', 'failed-fragment'), ('inert', 'failed-publication'),
+    ('inert', 'controller-reset-failed'), ('inert', 'preinst-failed-fragment'),
 ], indirect=['active'])
 def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_reappearance(active, monkeypatch, capsys, request, boundary, tmp_path):
     generated = boundary.startswith('preinst-')
     boundary = boundary.removeprefix('preinst-')
+    failed_controller = boundary.startswith('failed-') or boundary == 'controller-reset-failed'
+    boundary = boundary.removeprefix('failed-')
     inert = request.node.callspec.params['active'] == 'inert'
     auxiliary_journal_setup(active.controller)
     if inert:
         (active.root / TRANSACTION).unlink()
+        if failed_controller:
+            active.controller.properties.update(ActiveState='failed', SubState='failed')
     else:
         def failed_close():
             raise OSError('synthetic failed original physical cleanup')
@@ -239,7 +245,7 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
             for props in (active.controller.properties, *active.native.values()):
                 assert not (active.root / 'etc/systemd/system' / props['Id']).exists()
                 props.update(LoadState='not-found', FragmentPath='', NeedDaemonReload='no',
-                    ActiveState='inactive', SubState='dead', UnitFileState='')
+                    UnitFileState='')
                 if 'MainPID' in props:
                     props.update(MainPID='0', ControlPID='0', ControlGroup='', User='', Group='')
             return 0, ''
@@ -406,6 +412,8 @@ def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_rea
     assert json.loads(produced) == {'account': 'absent', 'format': 'home-retirement@1', 'state': 'retired'}
     assert not state['user'] and not state['group']
     assert deletions(active.calls) == ['userdel', 'groupdel'] and reloads == [True]
+    assert active.calls.count(['systemctl', 'reset-failed', entry.UNIT]) == int(failed_controller)
+    assert HomeRetirement(fresh_installer(layout='deb')).detect().state == 'retired'
     if uncertain_command is not None:
         assert active.calls.count(uncertain_command) == 1
     assert len(constructed) >= 4

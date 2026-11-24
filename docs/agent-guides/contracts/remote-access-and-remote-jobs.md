@@ -4982,6 +4982,12 @@ current original/cutoff-or-inert/native/custody/exclusion proof. Partial native
 recovery selects the same live original connector or the independent original
 death/quiescence path; a missing process never supplies cutoff authority.
 
+An originally owned controller in failed state is normalized with unit-specific
+`reset-failed` before artifact or account cleanup. The same cutoff/inert guard
+and fresh original native/filesystem/account observation precede the reset;
+its result must read back inactive. Daemon-reload does not clear runtime failure.
+Foreign or replaced targets receive no reset, stop, disable or removal.
+
 The sequence stops on the first failed effect, retaining committed denial and
 all remaining evidence. It never tries an alternative mutator after failure.
 Distinct explicit cleanup operations reopen saved originals with their existing
@@ -5012,9 +5018,11 @@ that already imported installed runtime/CLI modules refuses rather than mixing
 old and incoming implementations.
 
 The existing system Python runs only the stdlib bootstrap. `install` uses the
-canonical read-only detector and succeeds only for a genuinely fresh layout,
-without requiring an old interpreter. Legacy/conflicting/unsafe evidence refuses
-this shortcut. `upgrade` requires the fixed installed
+canonical read-only detector and succeeds for a genuinely fresh layout or an
+independently confirmed retired receipt, including reinstall after package removal,
+without requiring an old interpreter or replaying retirement effects.
+Legacy/conflicting/unsafe evidence still refuses this shortcut. `upgrade` requires
+the fixed installed
 `/opt/happyranch-desktop/python/bin/python3` alias to its CPython3.12 executable,
 protected root-owned ancestors and a bounded, root-owned, non-writable Python
 tree with contained links. It then sends the incoming code via stdin to that
@@ -5036,8 +5044,9 @@ Focused entry venue:
 Its native and filesystem adapters cannot establish installed dpkg ordering.
 
 The same entry table includes interrupted original preparation, ceremony burn,
-first-device denial, failed physical closure, controller stop/disable, partial
-account removal and the boundary before final publication. Each call constructs
+first-device denial, failed physical closure, controller stop/disable, owned
+failed-controller reset and recovery, partial account removal and the boundary
+before final publication. Each call constructs
 a fresh installer over the surviving real files and anchored store. Read-only
 detection and explicit recovery with unsafe original-record custody must stay
 pending without unproven effects. Failed closure additionally remains pending

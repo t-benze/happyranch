@@ -396,6 +396,18 @@ class OwnedService:
             self.io.manager.stop(self.identity.unit, timeout=50.0)
         current = self.observe(stopped=True)
         self._same_members(before, current)
+        if dict(current.properties)["ActiveState"] == "failed":
+            # Reload only flushes configuration. Clear runtime failure while
+            # original fragment/binary/account ownership is still provable.
+            if before_effect is not None:
+                before_effect()
+            if self.observe(stopped=True) != current:
+                raise RetirementUncertain()
+            self.io.manager.reset_failed(self.identity.unit)
+            current = self.observe(stopped=True)
+            self._same_members(before, current)
+            if dict(current.properties)["ActiveState"] != "inactive":
+                raise RetirementUncertain()
         if before_effect is not None:
             before_effect()
         if self.observe(stopped=True) != current:
@@ -404,6 +416,8 @@ class OwnedService:
             self.io.manager.disable(self.identity.unit)
         final = self.observe(stopped=True, disabled=True)
         self._same_members(before, final)
+        if dict(final.properties)["ActiveState"] != "inactive":
+            raise RetirementUncertain()
         return OwnedStopReceipt(self.identity.unit, final)
 
     def confirm(self, receipt: OwnedStopReceipt) -> None:

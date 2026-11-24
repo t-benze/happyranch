@@ -83,12 +83,13 @@ class ServiceFixture(Fixture):
                 return 0, self.ps_output
             return 0, (" ".join([str(self.pid), *([str(os.getuid())] * 4)]) + "\n"
                        if self.properties["MainPID"] != "0" else "")
-        assert argv in (["systemctl", "stop", SERVICE], ["systemctl", "disable", SERVICE])
+        assert argv in (["systemctl", "stop", SERVICE], ["systemctl", "reset-failed", SERVICE],
+                        ["systemctl", "disable", SERVICE])
         self.effect(argv)
         if argv[1] == self.fail:
             return 1, "synthetic-private-native-error"
         if argv[1] != self.lie:
-            if argv[1] == "stop":
+            if argv[1] in ("stop", "reset-failed"):
                 self.stopped()
             else:
                 (self.root / LINK).unlink()
@@ -96,7 +97,8 @@ class ServiceFixture(Fixture):
         return 0, ""
 
     def effects(self) -> list[list[str]]:
-        return [argv for argv in self.calls if argv[:2] in (["systemctl", "stop"], ["systemctl", "disable"])]
+        return [argv for argv in self.calls if argv[:2] in (["systemctl", "stop"],
+            ["systemctl", "reset-failed"], ["systemctl", "disable"])]
 
 
 @pytest.fixture
@@ -104,11 +106,19 @@ def service(tmp_path: Path) -> ServiceFixture:
     return ServiceFixture(tmp_path / "root")
 
 
-def test_owned_stop_receipt_requires_native_and_process_readback(service: ServiceFixture) -> None:
+@pytest.mark.parametrize("initial", ["active", "inactive", "failed"])
+def test_owned_stop_receipt_requires_native_and_process_readback(service: ServiceFixture, initial: str) -> None:
+    if initial != "active":
+        service.stopped()
+        if initial == "failed":
+            service.properties.update(ActiveState="failed", SubState="failed")
     before = service.snapshot()
     receipt = service.owner.stop_and_disable()
     assert receipt.unit == SERVICE
-    assert service.effects() == [["systemctl", "stop", SERVICE], ["systemctl", "disable", SERVICE]]
+    expected = ([["systemctl", "stop", SERVICE]] if initial == "active" else
+                [["systemctl", "reset-failed", SERVICE]] if initial == "failed" else [])
+    assert service.effects() == [*expected, ["systemctl", "disable", SERVICE]]
+    assert dict(receipt.observation.properties)["ActiveState"] == "inactive"
     service.owner.confirm(receipt)
     after = service.snapshot()
     assert set(before) - set(after) == {LINK}
@@ -176,7 +186,11 @@ def test_controller_cleanup_observation_retains_original_ownership(service: Serv
     ("Transient", "yes"), ("MainPID", "01bad"), ("ControlGroup", "/foreign"),
     ("UnitFileState", "enabled-runtime"), ("SubState", "start-post"), ("ActiveState", "activating"),
 ])
-def test_foreign_native_identity_has_zero_effects(service: ServiceFixture, key: str, value: str) -> None:
+@pytest.mark.parametrize("initial", ["active", "failed"])
+def test_foreign_native_identity_has_zero_effects(service: ServiceFixture, key: str, value: str, initial: str) -> None:
+    if initial == "failed":
+        service.stopped()
+        service.properties.update(ActiveState="failed", SubState="failed")
     service.properties[key] = value
     before = service.snapshot()
     with pytest.raises(RetirementUncertain, match="^migration pending$"):
@@ -259,12 +273,19 @@ def test_foreign_files_aliases_accounts_and_processes_are_preserved(
     assert service.snapshot() == before
 
 
-@pytest.mark.parametrize("boundary,change", [
-    (4, "fragment"), (4, "alias"), (4, "process"), (4, "binary"),
-    (8, "fragment"), (8, "alias"), (8, "binary"),
+@pytest.mark.parametrize("initial,boundary,change", [
+    ("active", 4, "fragment"), ("active", 4, "alias"), ("active", 4, "process"), ("active", 4, "binary"),
+    ("active", 8, "fragment"), ("active", 8, "alias"), ("active", 8, "binary"),
+    ("failed", 8, "fragment"), ("failed", 8, "alias"), ("failed", 8, "binary"),
+    ("failed", 12, "fragment"), ("failed", 12, "alias"), ("failed", 12, "binary"),
 ])
 def test_replacement_immediately_before_stop_or_disable_gets_no_effect(
-        service: ServiceFixture, boundary: int, change: str) -> None:
+        service: ServiceFixture, boundary: int, change: str, initial: str) -> None:
+    # Failed units reset at show #8 and disable at #12; active units stop at
+    # #4 and disable at #8. Every call requires the same original identity.
+    if initial == "failed":
+        service.stopped()
+        service.properties.update(ActiveState="failed", SubState="failed")
     snapshots = []
 
     def replace_target(count: int) -> None:
@@ -285,19 +306,25 @@ def test_replacement_immediately_before_stop_or_disable_gets_no_effect(
     with pytest.raises(RetirementUncertain, match="^migration pending$"):
         service.owner.stop_and_disable()
     assert snapshots, "the intended last-observation boundary was not reached"
-    assert service.effects() == ([] if boundary == 4 else [["systemctl", "stop", SERVICE]])
+    expected = ([] if boundary == 8 else [["systemctl", "reset-failed", SERVICE]]) if initial == "failed" else (
+        [] if boundary == 4 else [["systemctl", "stop", SERVICE]])
+    assert service.effects() == expected
     assert service.snapshot() == snapshots[0], "replacement received a stop/disable/delete effect"
 
 
 @pytest.mark.parametrize("operation,kind", [("stop", "error"), ("stop", "lie"),
-                                          ("disable", "error"), ("disable", "lie")])
+                                          ("disable", "error"), ("disable", "lie"),
+                                          ("reset-failed", "error"), ("reset-failed", "lie")])
 def test_owned_errors_or_misleading_zero_exit_never_produce_receipt(
         service: ServiceFixture, operation: str, kind: str) -> None:
+    if operation == "reset-failed":
+        service.stopped()
+        service.properties.update(ActiveState="failed", SubState="failed")
     setattr(service, "fail" if kind == "error" else "lie", operation)
     before = service.snapshot()
     with pytest.raises(RetirementUncertain, match="^migration pending$"):
         service.owner.stop_and_disable()
-    expected = [["systemctl", "stop", SERVICE]]
+    expected = [["systemctl", "reset-failed" if operation == "reset-failed" else "stop", SERVICE]]
     if operation == "disable":
         expected.append(["systemctl", "disable", SERVICE])
     assert service.effects() == expected

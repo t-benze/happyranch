@@ -62,11 +62,11 @@ assert not any(name in sys.modules for name in ('pydantic', 'runtime.remote_acce
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_fresh_install_uses_canonical_detector_without_old_interpreter(self) -> None:
-        for case in ('fresh', 'legacy', 'malformed'):
+        for case in ('fresh', 'legacy', 'malformed', 'retired', 'drift'):
             with self.subTest(case=case):
                 root = self.work / case
                 root.mkdir(mode=0o755)
-                if case != 'fresh':
+                if case in ('legacy', 'malformed'):
                     target = root / ('etc/happyranch/invite-issuer.json' if case == 'legacy' else
                                      'var/lib/happyranch-remote-access/home-retirement.json')
                     target.parent.mkdir(parents=True)
@@ -83,7 +83,9 @@ from unittest.mock import patch
 entry = runpy.run_path(sys.argv[1])
 sys.meta_path.insert(0, entry['InlineSources']())
 from runtime.remote_access import retirement_io
-from runtime.remote_access.home_retirement import _ABSENT_UNIT
+from runtime.remote_access.home_retirement import _ABSENT_UNIT, HomeRetirement, STATE_DIRECTORY
+from runtime.remote_access.home_retirement_fence import retirement_fence
+from runtime.remote_access.home_retirement_publication import publish_final
 root = Path(sys.argv[2])
 def absent(name):
     raise KeyError(name)
@@ -94,19 +96,45 @@ def native(command, **kwargs):
     return 0, '\\n'.join(key + '=' + value for key, value in _ABSENT_UNIT.items())
 io = retirement_io.RetirementIO(root=root, root_owner=(os.getuid(), os.getgid()),
     run=native, lookup_user=absent, lookup_group=absent)
-before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+if sys.argv[3] in ('retired', 'drift'):
+    state = root / STATE_DIRECTORY
+    state.mkdir(parents=True)
+    for directory in root.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o700 if directory == state else 0o755)
+    with retirement_fence(io) as fence:
+        publish_final(io, fence, require=lambda: 'absent')
+    assert HomeRetirement(io).detect().state == 'retired'
+    if sys.argv[3] == 'drift':
+        target = root / 'etc/happyranch/invite-issuer.json'
+        target.parent.mkdir(parents=True)
+        for directory in (target.parent, target.parent.parent):
+            directory.chmod(0o755)
+        target.write_text('synthetic-private-evidence')
+        target.chmod(0o600)
+def snapshot():
+    result = {}
+    for path in root.rglob('*'):
+        info = path.lstat()
+        result[str(path.relative_to(root))] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns, path.read_bytes() if path.is_file() else None)
+    return result
+before = snapshot()
 def no_old_python():
     raise AssertionError('fresh detection must not require old capability')
 entry['main'].__globals__['trusted_python'] = no_old_python
-with patch.object(retirement_io, 'RetirementIO', return_value=io), patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'install']):
-    result = entry['main']()
-assert result == (0 if sys.argv[3] == 'fresh' else 1)
-assert {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+case = sys.argv[3]
+for arguments in (['preinst', 'install'], ['preinst', 'install', 'old-version', 'new-version']):
+    with patch.object(retirement_io, 'RetirementIO', return_value=io), patch('os.geteuid', return_value=0), patch.object(sys, 'argv', arguments):
+        result = entry['main']()
+    assert result == (0 if case in ('fresh', 'retired') else 1), (case, arguments, result)
+    assert snapshot() == before
+assert all(command[:3] == ['systemctl', 'show', 'happyranch-headscale.service'] for command in calls)
 '''
                 result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script), str(root), case],
                                         text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('"state": "fresh"' if case == 'fresh' else '"state": "migration pending"', result.stdout)
+                self.assertIn('"state": "' + (case if case in ('fresh', 'retired') else 'migration pending') + '"', result.stdout)
                 self.assertNotIn('synthetic-private', result.stdout + result.stderr)
 
     def test_installed_python_custody_refusals(self) -> None:

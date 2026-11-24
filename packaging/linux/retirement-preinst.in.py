@@ -82,7 +82,7 @@ def main() -> int:
             from runtime.remote_access.retirement_io import RetirementIO
             status = HomeRetirement(RetirementIO()).detect()
             print(json.dumps(status.public(), sort_keys=True))
-            return 0 if status.state == 'fresh' else 1
+            return 0 if status.state in ('fresh', 'retired') else 1
         if action != 'upgrade':
             raise ValueError
         trusted_python()
