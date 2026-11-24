@@ -72,9 +72,9 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
                                    live_writers: dict) -> str | None:
     """Read local evidence only; keep the historical native record UNKNOWN.
 
-    Complete cross-org eligibility is checked by _rebind_adoption before the
-    coordinator exempts this row. No other publisher or live owner is borrowed.
-    The caller holds the org DB lock.
+    In-flight cross-org eligibility is checked by _rebind_adoption before the
+    coordinator exempts this row. Finalized history needs no adoption. No other
+    publisher or live owner is borrowed. The caller holds the org DB lock.
     """
     if (row.state != 'unknown' or row.publisher not in {
             'profile:remove_runtime_executor_profile', 'profile:remove_adapter_entry'}
@@ -82,6 +82,13 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
         return None
     authority = org.workflow_authority
     journal = authority._active_journal(org.db._conn, authority.namespace)
+    finalized = journal is None
+    if finalized:
+        journal = org.db._conn.execute(
+            "SELECT publisher_invocation FROM workflow_publication_journals "
+            "WHERE namespace=? AND state='cache_installed' ORDER BY rowid DESC LIMIT 1",
+            (authority.namespace,),
+        ).fetchone()
     if journal is None or not journal['publisher_invocation'].startswith('profile-coordinator:'):
         return None
     invocation = journal['publisher_invocation'].removeprefix('profile-coordinator:')
@@ -90,8 +97,15 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
         (invocation,),
     ).fetchall()
     if (len(operations) != 1 or operations[0]['operation_kind'] != 'remove'
-            or operations[0]['state'] != 'forward_recovery_required'):
+            or operations[0]['state'] != ('published' if finalized else 'forward_recovery_required')):
         return None
+    if finalized:
+        # Native history has no operation ID. Multiple removes cannot be bound
+        # unambiguously, even if only one matches the latest installed journal.
+        removes = org.db._conn.execute(
+            "SELECT id FROM workflow_profile_operations WHERE operation_kind='remove' LIMIT 2",
+        ).fetchall()
+        return str(operations[0]['profile_name']) if len(removes) == 1 else None
     try:
         authority._validate_profile_binding(ProfileFenceBinding(
             str(journal['id']), str(journal['publisher_invocation']), int(journal['profile_fence'])))
@@ -1977,6 +1991,11 @@ class ProfileCoordinator:
                                 continue
                             with org.db._lock:
                                 name = startup_forward_remove_profile(org, row, live)
+                                if name is not None and org.workflow_authority._active_journal(
+                                        org.db._conn, org.workflow_authority.namespace) is None:
+                                    # Published removal has no prepared fence to
+                                    # adopt or defer; normal synchronization applies.
+                                    continue
                             if name is not None and self._rebind_adoption((name,)) is not None:
                                 deferred_removes.add(name)
                                 continue

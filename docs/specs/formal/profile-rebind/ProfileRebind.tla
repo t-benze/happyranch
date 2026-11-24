@@ -6,8 +6,11 @@ VARIABLES pending, canonical, publishedRoster, phase, owner, binding, held,
 vars == <<pending, canonical, publishedRoster, phase, owner, binding, held,
           startupEvidence, startupChecked, startupHeld, nativeState>>
 StartupVars == <<startupEvidence, startupChecked, startupHeld, nativeState>>
-Evidence == {"matching", "unrelated", "ordinary", "mixed", "partial", "active", "live", "scoped"}
+Evidence == {"matching", "unrelated", "ordinary", "mixed", "partial", "active", "live", "scoped",
+             "ambiguous-remove", "other-invocation", "not-published", "ordinary-installed"}
 Home == [c \in Consumers |-> c]
+Forward == \A o \in Orgs : phase[o] = "prepared"
+Finalized == \A o \in Orgs : phase[o] = "published"
 
 Init == /\ pending = Consumers
         /\ canonical = [c \in Consumers |-> "removed-profile"]
@@ -24,10 +27,11 @@ Init == /\ pending = Consumers
 Classify == /\ ~startupChecked
             /\ startupChecked' = TRUE
             /\ startupHeld' = IF BrokenStartup THEN FALSE ELSE
-                    (startupEvidence # "matching" \/ \E o \in Orgs : phase[o] # "prepared")
+                    (startupEvidence # "matching" \/ ~(Forward \/ Finalized))
             /\ UNCHANGED <<pending, canonical, publishedRoster, phase, owner, binding, held, startupEvidence, nativeState>>
 
-Adopt == /\ startupChecked /\ ~startupHeld /\ ~held /\ \A o \in Orgs : phase[o] = "prepared"
+(* Finalized classification has no prepared journal to adopt or defer. *)
+Adopt == /\ startupChecked /\ ~startupHeld /\ ~held /\ Forward
          /\ held' = TRUE
          /\ owner' = IF BrokenIdentity THEN "new-rebind" ELSE owner
          /\ UNCHANGED <<pending, canonical, publishedRoster, phase, binding, StartupVars>>
@@ -75,6 +79,6 @@ ClosureFence == pending # {} => \A o \in Orgs : phase[o] = "prepared"
 CurrentRoster == \A c \in Consumers : phase[Home[c]] = "published" => publishedRoster[c] = canonical[c]
 StartupIsolation == /\ (startupChecked /\ ~startupHeld => startupEvidence = "matching")
                     /\ (held => startupChecked /\ ~startupHeld)
-EligibleStartup == startupChecked /\ startupEvidence = "matching" /\ (\A o \in Orgs : phase[o] = "prepared") => ~startupHeld
+EligibleStartup == startupChecked /\ startupEvidence = "matching" /\ (Forward \/ Finalized) => ~startupHeld
 UnknownPreserved == startupEvidence # "active" => nativeState = "unknown"
 =============================================================================
