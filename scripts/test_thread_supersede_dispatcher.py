@@ -69,8 +69,8 @@ async def supersede(org: OrgState, client: httpx.AsyncClient, *, task_id: str = 
 
 
 def dispatch_rows(org: OrgState, task_id: str) -> list[dict]:
-    return [row for row in org.db.get_audit_logs(THREAD)
-            if row["action"] == "thread_dispatch" and row["payload"]["task_id"] == task_id]
+    return [row for row in org.db.get_audit_logs_by_action("thread_dispatch")
+            if row["payload"]["task_id"] == task_id]
 
 
 def assert_dispatch(org: OrgState, successor: str, dispatcher: str, predecessor: str = PREDECESSOR) -> None:
@@ -166,7 +166,7 @@ async def test_no_invented_dispatcher(org_client: OrgClient, case: str) -> None:
     org, client = org_client
     seed(org, dispatcher=None if case == "unresolved" else "founder" if case == "founder-row" else "keeper",
          linked=case != "unlinked")
-    successor = await supersede(org, client)
+    successor = await supersede(org, client, actor="manager" if case == "unlinked" else "founder")
     assert dispatch_rows(org, successor) == []
 
 
