@@ -932,6 +932,11 @@ are not covered by that rail — are documented in the **manage-agent** skill an
    reconstruction of absent owners follows from a refusal, later exit, source
    update or restart. Native prelaunch refusals have at most three consecutive
    attempts per logical continuation; unclosed preparation can refuse earlier.
+   Engine-v2 Coding/Draft→Review instruction rendering happens before native
+   preparation. Three preparation-free refusals hold that visit as launch_refused
+   and notify only its recorded initiator through the existing inbox. No Pause
+   entry is created by those refusals; no existing unknown is cleared. The
+   receipts are business hold evidence, never native cleanup proof.
 3. Never manually repair/reset journals, clear ownership, fabricate retry links
    or use a reserved SID as running-session proof. The human-only write is
    `happyranch reconcile-preparation TASK --org ORG --from-file ABS`; this syntax

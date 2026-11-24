@@ -330,10 +330,14 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
 
 
 def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, compiled: object,
-                       budget: _ReadBudget, unavailable: bool = False) -> tuple[str, dict]:
+                       budget: _ReadBudget, unavailable: bool = False, launch_refused: bool = False) -> tuple[str, dict]:
     from runtime.platform.session_backend import TerminalReason
     from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+    if launch_refused:
+        from runtime.workflows.sequential_launch_refusals import refusal_proof
+        _require(not unavailable and proof['kind'] == 'never_launched', 'launch_refusal_owner_conflict')
+        return 'launch_refused', refusal_proof(conn, run, visit, budget)
     if unavailable:
         _require(proof['kind'] == 'never_launched', 'hold_unavailable_conflict')
         return 'assignee_unavailable', proof
@@ -379,7 +383,7 @@ def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, comp
 
 def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str, run_id: str,
                               visit_id: str, expected_cas: int, compiled: object,
-                              authority: object, capture: object, unavailable: bool = False) -> str:
+                              authority: object, capture: object, unavailable: bool = False, launch_refused: bool = False) -> str:
     """Persist Held without a synthetic result or successor. Consumer is unmounted."""
     from runtime.workflows.authority import generic_assignment_authority
     from runtime.workflows.sequential_assignments import recheck_launch_assignment, selection_agent
@@ -410,7 +414,7 @@ def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: 
             _require(not eligible or target['status'] != 'active' or not target['executor']
                 or recheck_launch_assignment(value, selection_agent(target)) is not None, 'assignee_available')
         cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled,
-                                         budget=budget, unavailable=unavailable)
+                                         budget=budget, unavailable=unavailable, launch_refused=launch_refused)
         event_id = _append_event(conn, run, kind='held', operation_key='hold-' + visit_id,
             payload=dict(visit_id=visit_id, node=visit['node_id'], cause=cause, closure=proof), budget=budget,
             resulting_state='held',

@@ -847,7 +847,8 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
                 and current['active_visit_id'] == visit['id'] and body['node'] == visit['node_id']
                 and visit['selected'] == 0 and visit['state'] in ('held', 'cancelled'), 'generic_hold_state_conflict')
             cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled, budget=budget,
-                                             unavailable=body['cause'] == 'assignee_unavailable')
+                                             unavailable=body['cause'] == 'assignee_unavailable',
+                                             launch_refused=body['cause'] == 'launch_refused')
             closed_visits.add(visit['id'])
             _require((body['cause'], body['closure'], event['source_visit_id'], event['source_result_id']) ==
                 (cause, proof, visit['id'], proof['result_id']), 'generic_hold_proof_conflict')

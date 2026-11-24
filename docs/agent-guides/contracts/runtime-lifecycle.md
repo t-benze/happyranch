@@ -1653,3 +1653,20 @@ aggregation retains root protection and Option B's ordinary/document UNSETTLED
 fallback. Pause delays new sessions while committed fences/native closure
 remain; Resume creates no new allowance or terminal-source session. @1 and
 legacy cancellation event/audit bytes and standalone owner paths are retained.
+
+
+### Sequential instruction refusal before preparation (TASK-19011)
+
+The sequential queue renders/fixes its prospective instruction bytes before
+TaskInvocation creation/prepare and before workspace, skills, repository or
+attachment preparation effects. Deterministic refusal at that boundary appends
+no admission-journal entry. No absence-of-PID or telemetry inference supplies
+this property: the preparation owner has not been created by this control flow.
+
+Engine-v2 Coding/Draft→Review visits enter the existing business Held state on
+three original pre-preparation refusal receipts. The held event and recorded
+initiator notification commit together. This bounds publication, not native
+cleanup: these audit receipts never authorize journal settlement. Existing
+unknowns (including the cancelled pilot's 256 entries), strict journal limits,
+producer checks, preparation_recovery and original-owner proof rules above are
+unchanged. Later preparation/launch uncertainty retains those same rules.
