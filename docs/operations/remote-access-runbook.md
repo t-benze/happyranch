@@ -226,7 +226,10 @@ construction or native effects, with “Home mode has been retired. Sign in to u
 your account's private network. Your local work is kept.” Use the canonical
 explicit retirement entry in the P24 upgrade/recovery section below; use
 `home-retirement-status --layout deb` for read-only detection.
-The programmatic preparation owner still awaits its P24 source disposition.
+The programmatic preparation and unmounted activation/issuer/minter/admin/recovery
+owners are removed. Historical protected readers, explicit retirement/Disable
+cleanup and non-home policy renewal remain. The following preparation details
+record historical behavior and do not provide a runnable preparation path.
 Legacy uninstall's underlying cleanup removes the proven inert Headscale unit/policy/custody and
 config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
 root-only publication receipt,

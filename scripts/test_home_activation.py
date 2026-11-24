@@ -21,7 +21,7 @@ from runtime.remote_access import legacy_home_readback
 from runtime.remote_access import legacy_home_readback as activation
 from runtime.remote_access.legacy_home_receipt import HomeActivationError, HomeActivationReceipt, TRANSACTION_FORMAT
 from runtime.remote_access.legacy_home_readback import LegacyHomeReadback as HomeActivationStore
-from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, IssuerError, read_home_invite_config
+from runtime.remote_access.legacy_home_receipt import HomeInviteConfigRecord
 
 RECEIPT = "var/lib/happyranch-remote-access/home-activation.json"
 CONFIG = "etc/happyranch/invite-issuer.json"
@@ -85,9 +85,6 @@ def store(tmp_path: Path) -> HomeActivationStore:
     return HomeActivationStore(root=tmp_path, root_owner=(os.getuid(), os.getgid()))
 
 
-def load_config(root: Path, generation: int = 7) -> HomeInviteConfigRecord:
-    return read_home_invite_config(root=root, root_owner=(os.getuid(), os.getgid()),
-                                   expected_generation=generation)
 
 
 def put_pair(root: Path, *, phase: str = "ready") -> None:
@@ -121,7 +118,7 @@ def test_receipt_roundtrip_and_frozen_inventory() -> None:
 def test_closed_record_parsers(kind: str, case: str) -> None:
     value = receipt_record() if kind == "receipt" else config_record()
     parser = HomeActivationReceipt.parse if kind == "receipt" else HomeInviteConfigRecord.parse
-    error = HomeActivationError if kind == "receipt" else IssuerError
+    error = HomeActivationError
     if case == "extra": value["secret"] = "synthetic-private-canary"
     if case == "missing": value.pop("connector_id")
     if case == "format": value["format"] = "foreign@1"
@@ -203,7 +200,7 @@ def test_observation_fields_by_phase(phase: str, observed: object) -> None:
 
 
 
-@pytest.mark.parametrize("path", [RECEIPT, CONFIG])
+@pytest.mark.parametrize("path", [RECEIPT])
 @pytest.mark.parametrize("pending", [False, True])
 def test_missing_final_and_pending_are_never_adopted(store: HomeActivationStore, tmp_path: Path,
                                                     path: str, pending: bool) -> None:
@@ -215,8 +212,8 @@ def test_missing_final_and_pending_are_never_adopted(store: HomeActivationStore,
     if pending:
         partial.write_bytes(original)
         partial.chmod(0o600)
-    call = (lambda: store.read(expected_generation=7)) if path == RECEIPT else (lambda: load_config(tmp_path))
-    with pytest.raises((HomeActivationError, IssuerError)):
+    call = lambda: store.read(expected_generation=7)
+    with pytest.raises(HomeActivationError):
         call()
     assert not final.exists()
     assert partial.exists() == pending
@@ -235,14 +232,14 @@ def spoof_metadata(monkeypatch: pytest.MonkeyPatch, path: Path, field: str) -> N
     monkeypatch.setattr(activation.os, "fstat", lambda *args, **kwargs: changed(original_fstat(*args, **kwargs)))
 
 
-@pytest.mark.parametrize("path", [RECEIPT, CONFIG])
+@pytest.mark.parametrize("path", [RECEIPT])
 @pytest.mark.parametrize("case", ["mode", "owner", "group", "symlink", "hardlink", "directory", "fifo",
                                  "oversized", "pending-file", "pending-link", "pending-directory", "parent-mode",
                                  "parent-owner", "parent-link"])
 def test_protected_reader_custody(store: HomeActivationStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                  path: str, case: str) -> None:
     put_pair(tmp_path)
-    assert load_config(tmp_path).home_id == "home"
+    assert store.read(expected_generation=7).home_id == "home"
     final = tmp_path / path
     original = final.read_bytes()
     if case == "mode": final.chmod(0o644)
@@ -269,19 +266,19 @@ def test_protected_reader_custody(store: HomeActivationStore, tmp_path: Path, mo
         moved = final.parent.with_name("moved-parent")
         final.parent.rename(moved)
         final.parent.symlink_to(moved, target_is_directory=True)
-    call = (lambda: store.read(expected_generation=7)) if path == RECEIPT else (lambda: load_config(tmp_path))
-    with pytest.raises((HomeActivationError, IssuerError)):
+    call = lambda: store.read(expected_generation=7)
+    with pytest.raises(HomeActivationError):
         call()
     assert final.lstat()
     if case.startswith("pending-"): assert pending.lstat()
 
 
-@pytest.mark.parametrize("path", [RECEIPT, CONFIG])
+@pytest.mark.parametrize("path", [RECEIPT])
 @pytest.mark.parametrize("swap", ["leaf", "parent", "ancestor"])
 def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: Path,
                                         monkeypatch: pytest.MonkeyPatch, path: str, swap: str) -> None:
     put_pair(tmp_path)
-    assert load_config(tmp_path).home_id == "home"
+    assert store.read(expected_generation=7).home_id == "home"
     final = tmp_path / path
     original_read = ManagedInstaller._read_file
     swapped = False
@@ -299,74 +296,18 @@ def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: 
                 directory.mkdir(mode=0o700 if path == RECEIPT and swap == "parent" else 0o755)
         return data
     monkeypatch.setattr(ManagedInstaller, "_read_file", staticmethod(read))
-    call = (lambda: store.read(expected_generation=7)) if path == RECEIPT else (lambda: load_config(tmp_path))
-    with pytest.raises((HomeActivationError, IssuerError)):
+    call = lambda: store.read(expected_generation=7)
+    with pytest.raises(HomeActivationError):
         call()
     assert swapped
 
 
 
 
-@pytest.mark.parametrize("field,value", [
-    ("release_uid", 1001), ("home_id", "other"), ("control_plane_id", "other"), ("connector_id", "other"),
-    ("activation_generation", 6), ("ca_der_sha256", "d" * 64), ("dial_ip", "192.168.1.41"),
-    ("home_endpoint", "100.64.0.11:443"),
-])
-def test_reader_cross_checks_each_binding(store: HomeActivationStore, tmp_path: Path,
-                                        field: str, value: object) -> None:
-    config = config_record()
-    config[field] = value
-    data = encoded(config)
-    current = receipt_record("ready")
-    # Keep the full-file digest matching so this observes the field cross-check.
-    current["member_digests"]["/" + CONFIG] = hashlib.sha256(data).hexdigest()
-    put(tmp_path, CONFIG, data)
-    put(tmp_path, RECEIPT, encoded(current))
-    with pytest.raises(IssuerError):
-        load_config(tmp_path)
 
 
-@pytest.mark.parametrize("case", ["stale-pair", "partial", "missing-receipt", "config-digest",
-                                 "control-url", "endpoint", "invalid-receipt"])
-def test_config_requires_current_ready_complete_pair(store: HomeActivationStore, tmp_path: Path, case: str) -> None:
-    put_pair(tmp_path)
-    if case == "partial": put(tmp_path, RECEIPT, encoded(receipt_record("joined")))
-    if case == "missing-receipt": (tmp_path / RECEIPT).unlink()
-    if case == "config-digest": (tmp_path / CONFIG).write_bytes(encoded(config_record()) + b" ")
-    if case == "invalid-receipt": (tmp_path / RECEIPT).write_bytes(b"{}")
-    if case in ("control-url", "endpoint"):
-        config = config_record()
-        config["control_url" if case == "control-url" else "home_endpoint"] = "https://arbitrary.invalid"
-        put(tmp_path, CONFIG, encoded(config))
-    with pytest.raises(IssuerError):
-        load_config(tmp_path, 8 if case == "stale-pair" else 7)
 
 
-def test_config_read_is_frozen_effect_free_and_redacted(store: HomeActivationStore, tmp_path: Path,
-                                                      monkeypatch: pytest.MonkeyPatch,
-                                                      capsys: pytest.CaptureFixture[str]) -> None:
-    put_pair(tmp_path)
-    journal = tmp_path / "var/lib/happyranch-remote-access/home-issuer"
-    journal.mkdir(mode=0o700)
-    (journal / "invite-issuer.json").write_bytes(b"synthetic-journal-canary")
-    before = sorted((str(path.relative_to(tmp_path)), path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file())
-    def no_effect(*args: object, **kwargs: object) -> None:
-        pytest.fail("reader attempted a write, fsync, directory creation or service command")
-    for name in ("write", "fsync", "mkdir", "rename", "unlink", "fchown", "fchmod"):
-        monkeypatch.setattr(activation.os, name, no_effect)
-    monkeypatch.setattr(ManagedInstaller, "_rename_provision_entry", no_effect)
-    result = load_config(tmp_path)
-    assert result.control_url == "https://control.happyranch.invalid:8443"
-    assert not hasattr(result, "activation_generation") and not hasattr(result, "home_endpoint")
-    with pytest.raises(FrozenInstanceError): result.home_id = "other"
-    after = sorted((str(path.relative_to(tmp_path)), path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file())
-    assert after == before
-    assert repr(result) == "HomeInviteConfigRecord(<redacted>)"
-    assert repr(receipt("ready")) == "HomeActivationReceipt(<redacted>)"
-    assert repr(store) == "LegacyHomeReadback(<redacted>)"
-    assert str(IssuerError("synthetic-private-canary")) == "state"
-    assert str(HomeActivationError("synthetic-private-canary")) == "record"
-    assert capsys.readouterr() == ("", "")
 
 
 @pytest.mark.parametrize("kind", ["receipt", "config"])
@@ -374,7 +315,7 @@ def test_record_size_maximum_is_inclusive(kind: str) -> None:
     data = encoded(receipt_record() if kind == "receipt" else config_record())
     parser = HomeActivationReceipt.parse if kind == "receipt" else HomeInviteConfigRecord.parse
     assert parser(data + b" " * (16384 - len(data)))
-    with pytest.raises((HomeActivationError, IssuerError)):
+    with pytest.raises(HomeActivationError):
         parser(data + b" " * (16385 - len(data)))
 
 
@@ -425,21 +366,3 @@ def test_helper_snapshot_is_closed_and_read_only(store: HomeActivationStore, tmp
     assert json.loads(legacy_home_readback.helper_snapshot()) == {
         'generation': 7, 'operation': 'b' * 32, 'release_uid': 1000, 'phase': 'prepared'}
     assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize("case", ["current", "rollover", "old-format", "old-fields"])
-def test_stable_config_receipt_generation(store: HomeActivationStore, tmp_path: Path, case: str) -> None:
-    config = config_record()
-    current = receipt_record("ready")
-    if case == "rollover": current["activation_generation"] = 8
-    if case in ("old-format", "old-fields"):
-        config["format"] = "home-invite-config@1" if case == "old-format" else "home-invite-config@2"
-        config.update(activation_generation=7, home_endpoint="100.64.0.10:443")
-    data = encoded(config)
-    current["member_digests"]["/" + CONFIG] = hashlib.sha256(data).hexdigest()
-    put(tmp_path, CONFIG, data)
-    put(tmp_path, RECEIPT, encoded(current))
-    if case in ("old-format", "old-fields"):
-        with pytest.raises(IssuerError): load_config(tmp_path)
-    else:
-        assert load_config(tmp_path, current["activation_generation"]).home_id == "home"

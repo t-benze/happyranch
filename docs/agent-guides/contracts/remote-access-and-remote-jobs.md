@@ -6,6 +6,15 @@
 > do not describe the whole current managed lane. Historical evidence remains
 > historical, and every unexecuted acceptance obligation stays explicit.
 
+P24 source retirement supersedes the historical home preparation, activation,
+READY/resume, local admin/minter/issuer and invite-recovery algorithms recorded
+in the earlier slice sections below. Their uncalled owners are removed.
+Protected historical readers, selective retirement/Disable, real non-home
+policy renewal, pairing/device revoke and native custody remain. The current
+P24 upgrade/recovery section owns the explicit retirement path; these historical
+sections do not authorize creating or resuming a home. Account-network positive
+access remains unavailable on main until P21–P23.
+
 ## Public host compatibility metadata (THR-387 S4a)
 
 `GET /api/v1/health` is already remote-allowed. Its additive `api_contract`
@@ -4366,8 +4375,9 @@ key. The unmounted activation/coordinator/owner/recovery/transaction writers,
 live-config publisher, observer and unit publisher are removed. Their last
 materializer status executor is removed too. Legacy schema/readback, exact
 token-source checks, historical renderer and original directory lock remain
-for actual inventory/Disable/renewal consumers. Local admin/minter/issuer and
-invite-recovery disposition remains incomplete. This boundary grants no
+for actual inventory/Disable/renewal consumers. Uncalled local admin/minter/issuer
+and invite-recovery owners are removed too. Retained invite-v2, pairing, device
+revoke/private control and canonical retirement cutoff remain. This boundary grants no
 account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and

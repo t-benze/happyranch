@@ -419,8 +419,8 @@ valid legacy state with the accepted retirement message before native effects.
 The retained HomeProfileAdmission adapter permits only explicit read-only
 legacy inventory. This implements OldAdmission refusal without a new model
 action, account-positive path or destructive startup transition. Unmounted
-activation/provisioning owners are removed; local admin/minter/issuer and
-invite-recovery disposition remains pending.
+activation/provisioning and local admin/minter/issuer/invite-recovery owners are
+removed. Retained pairing/control and canonical retirement own burn/deny/closure.
 
 Legacy inventory/unit readback now uses the fixed `legacy_home_readback` reader,
 original transaction directory lock, token check and pure historical config
