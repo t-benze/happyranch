@@ -2050,6 +2050,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                         (directory / 'second.json').write_bytes(raw)
                         (directory / 'coding.v2.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes())
                         (directory / 'coding.v3.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v3.json').read_bytes())
+                        (directory / 'draft-review.v1.json').write_bytes(Path('runtime/workflows/builtin_templates/draft-review.v1.json').read_bytes())
                         entry = SimpleNamespace(package='runtime', resource=('workflows', 'builtin_templates', 'second.json'),
                             size=len(raw), pin=second.pin)
                         manifest = dict(original_manifest)
