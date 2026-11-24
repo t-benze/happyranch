@@ -4,7 +4,10 @@ P24 source-status amendment: historical home Enable/READY/resume/local issuance
 and generated replacement algorithms below are retired with their uncalled
 owners. Protected legacy readers, selective retirement/Disable, pairing/device
 revoke and actual non-home renewal/locking remain. Current P24 upgrade/recovery
-behavior is maintained in the remote-access contract; positive account-network
+behavior is maintained in the remote-access contract. The later THR-327
+replacement-reload/reset-failed continuation below is historical with that
+removed owner; its independent returned-worker settlement fix remains for
+Disable. Positive account-network
 access on main awaits P21–P23. This amendment grants no host or P25 UI change.
 
 Status: **design proposal; no implementation or host change authorized by this file**. TASK-16631,
@@ -933,6 +936,19 @@ dpkg prefix, foreign files, custom units or unknown drop-ins. Unsafe/unrecognize
 `manual-install-conflict` with precise non-secret paths; it needs operator recovery, not a terminal
 recipe for the user. Interrupted replacement stays off; next authenticated ReplaceFailed resumes
 only the exact journal generation. Do not roll back revoked credentials into service.
+
+THR-327 closure retains the existing replacement-reload intent for daemon-reload
+followed by reset-failed of only journal-removed fixed managed units. Fresh
+not-found, empty fragment/drop-ins, zero main/control PIDs, empty job and
+failed/inactive admission is required before reset; inactive is a no-op. Both v1
+and v2 already-reloaded journals resume with unchanged caller/auth/custody checks.
+Ordinary absent-unit inventory still requires inactive before retirement; a
+remaining failed marker refuses without another retry or changed deadline.
+When a lifecycle worker returns, settlement waits for its RLock, then records
+completion or uncertain and releases its slot while sealing process exit, even
+if completion raises. Unfinished effects retain ownership. See the maintained
+[closure contract](../agent-guides/contracts/remote-access-and-remote-jobs.md)
+and [formal model](formal/replacement-closure/README.md).
 
 I2b supplies only the unmounted `ManagedInstaller.begin_replacement` first-intent
 entry for B17; I3a mounts it and I5a exposes public ReplaceFailed. Linux CLI

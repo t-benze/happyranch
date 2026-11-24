@@ -614,6 +614,7 @@ class OrgState:
                 )
                 from runtime.orchestrator.team_move import DeferredTeamMove
                 from runtime.workflows.authority import WorkflowAuthorityError
+                from runtime.workflows.profile_coordinator import startup_forward_remove_profile
                 with _startup_span("org_startup_owner", org=slug):
                     try:
                         with db._lock:
@@ -628,7 +629,9 @@ class OrgState:
                                 owner = None
                             unsettled = any(
                                 row.state != "settled"
-                                and (owner is None or not historical_disk_sweep(key, row, owner.writers))
+                                and (owner is None or (
+                                    not historical_disk_sweep(key, row, owner.writers)
+                                    and startup_forward_remove_profile(state, row, owner.writers) is None))
                                 for key, row in history.items()
                             )
                             ordinary = (active is not None and active["publisher"] != "org-startup"

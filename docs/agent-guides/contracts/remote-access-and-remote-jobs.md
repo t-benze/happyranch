@@ -25,6 +25,14 @@ non-home provisioning remains supported. Renewal maps a retained
 pending-custody refusal to its existing closed `InstallerError` boundary without
 changing the refusal or touching pending evidence.
 
+The later THR-327 replacement-reload/reset-failed continuation also retires
+with the removed replacement owner; ordinary absent-unit inventory still
+requires inactive and never interprets a legacy journal as replay authority.
+The independent returned-lifecycle-worker settlement fix remains: after its
+effects return, the worker waits for the helper lock, records completion or
+uncertainty, releases its slot and seals admission for process exit. Disable
+exercises this boundary; retired ReplaceFailed is not required to reach it.
+
 The uncalled LAN selector/netlink collection and port probes are removed.
 Historical Headscale policy/config/DERP renderers and exact unit bytes remain
 for protected readback. The historical `headscale_service wait-ready` command
@@ -1134,9 +1142,20 @@ configs/secrets, and the staging intent has already published the final modern
 or rewrites those files, IDs or an expired policy.
 
 The reload intent rechecks custody, full fixed inventory, quiescence and pinned
-no-follow parents before daemon-reload. It may repeat after interruption. The
-retirement intent additionally requires the ordinary no-unit manager shape;
-cached own fragments no longer qualify. Immediately before descriptor-relative
+no-follow parents before daemon-reload, then resets retained failed markers only
+for fixed managed unit names whose removal precedes this validated journal phase.
+Before each reset, fresh show must prove not-found, empty FragmentPath/DropInPaths,
+zero MainPID/ControlPID, empty Job and failed or inactive ActiveState; inactive
+units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
+existing service-manager transport and timeout. No caller supplies a unit name.
+The persisted replacement-reload phase is the durable intent for both idempotent
+effects; there is no new phase/schema. V1/v2 journals already at reload, including
+already-reloaded not-found/failed units, resume through this narrowly checked
+inventory route with unchanged authorization, caller and custody checks.
+The retirement intent additionally requires the ordinary no-unit manager shape;
+cached own fragments no longer qualify and every absent unit must be inactive.
+If reset leaves a unit failed, refuse without looping or adding retry budget.
+Immediately before descriptor-relative
 journal unlink, closure repeats exact journal/leaf metadata, source-UID/same-FD
 token custody, full bounded inventory, quiescence and pinned-parent checks. It
 fsyncs the journal's parent last. Unknown, unsafe, unrecognized pending, quarantined or changed
@@ -3636,7 +3655,12 @@ CancelInvite or RecoverInvite operation settles, including terminal refusal,
 the helper seals admission and exits through its idle/close path after the
 accepted/terminal reply and B16 settlement attempts finish. It waits for any
 inflight authorization/effect and StatusV2 worker; unresolved ownership keeps
-the slot sealed. The well-known bus name is released before loop exit, so the
+the slot sealed while the worker is still running. After a lifecycle worker's
+effects return, its finally waits for the RLock (main-context holders never join
+that worker), records completion or uncertain, releases its captured slot and
+seals admission for exit even if complete raises. It never synthesizes success.
+This does not preempt a still-blocked effect or audit operation. The well-known
+bus name is released before loop exit, so the
 next call auto-activates a fresh Type=dbus instance and mount namespace. Calls
 racing the old instance receive an existing non-success error, never success.
 Status/StatusV2 and device methods otherwise retain the 60-second idle behavior.
@@ -3664,9 +3688,13 @@ the terminal/cancellation rules retain the same slot through the entire worker.
 The slot is captured before authorization; its callback constructs the worker
 under the helper lock, then starts it only after leaving that lock. The slot stays
 captured across unlock/start, so another caller still refuses as busy; the worker
-retains current-caller revalidation and the nonblocking effect/settlement guards.
+retains current-caller revalidation and the nonblocking effect guards.
 Worker startup failure uses the existing locked error/clear handling. Genuine
-effect or settlement uncertainty retains its existing sealed-slot behavior.
+effect uncertainty retains ownership until the worker returns; returned-worker
+settlement uncertainty is recorded as uncertain and releases the slot while
+sealing admission for process exit. The next activation recovers the durable
+journal. The host's actual stuck-busy mechanism remains unproved. See the
+[replacement/slot model](../../specs/formal/replacement-closure/README.md).
 Except for IssueInvite below, it replies accepted before effects and keeps the original 480/300-second budget
 (120 seconds total for I3b CancelInvite/RecoverInvite, including capture/auth).
 I4b-2 RetryPolicyRenewal also returns accepted before its worker and retains

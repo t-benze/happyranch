@@ -68,6 +68,38 @@ class ProfileCoordinatorError(RuntimeError):
         super().__init__(code)
 
 
+def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
+                                   live_writers: dict) -> str | None:
+    """Read local evidence only; keep the historical native record UNKNOWN.
+
+    Complete cross-org eligibility is checked by _rebind_adoption before the
+    coordinator exempts this row. No other publisher or live owner is borrowed.
+    The caller holds the org DB lock.
+    """
+    if (row.state != 'unknown' or row.publisher not in {
+            'profile:remove_runtime_executor_profile', 'profile:remove_adapter_entry'}
+            or row.agents or row.teams or row.writer_id in live_writers):
+        return None
+    authority = org.workflow_authority
+    journal = authority._active_journal(org.db._conn, authority.namespace)
+    if journal is None or not journal['publisher_invocation'].startswith('profile-coordinator:'):
+        return None
+    invocation = journal['publisher_invocation'].removeprefix('profile-coordinator:')
+    operations = org.db._conn.execute(
+        'SELECT profile_name,operation_kind,state FROM workflow_profile_operations WHERE coordinator_invocation=?',
+        (invocation,),
+    ).fetchall()
+    if (len(operations) != 1 or operations[0]['operation_kind'] != 'remove'
+            or operations[0]['state'] != 'forward_recovery_required'):
+        return None
+    try:
+        authority._validate_profile_binding(ProfileFenceBinding(
+            str(journal['id']), str(journal['publisher_invocation']), int(journal['profile_fence'])))
+    except WorkflowAuthorityError:
+        return None
+    return str(operations[0]['profile_name'])
+
+
 @dataclass(frozen=True)
 class _EffectiveProfile:
     digest: str
@@ -97,6 +129,13 @@ class _OrgDependencyCapture:
     effective_profiles: dict[str, _EffectiveProfile] = field(default_factory=dict)
     canonical_error: str | None = None
     effective_identity: tuple = ()
+
+
+@dataclass(frozen=True)
+class _RebindAdoption:
+    invocation: str
+    operations: tuple[_ProfileOperation, ...]
+    bindings: dict[str, ProfileFenceBinding]
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -132,6 +171,7 @@ class _ConsumerWriterInterval(_SupportedWriterInterval):
         self.initial_mirror = None
         self.initial_bytes = None
         self.initial_profiles = {}
+        self.adoption: _RebindAdoption | None = None
 
     @contextmanager
     def canonical_change(self):
@@ -147,7 +187,13 @@ class _ConsumerWriterInterval(_SupportedWriterInterval):
         )
         target = _dependency_profile(executor) if executor is not None else None
         self.owned_profiles.update(name for name in (source, target) if name is not None)
-        with self.profiles.dependency_writer(sorted(self.owned_profiles)):
+        with self.profiles.dependency_writer(
+            sorted(self.owned_profiles),
+            rebind_from=source if executor is not None and source != target else None,
+            org=self.org, consumer=self.consumer, adoption=self.adoption,
+        ) as adoption:
+            if adoption is not None:
+                self.adoption = adoption
             with self.org.workflow_authority._publisher_lock:
                 fresh = prompt_loader.load_agent_snapshot(paths, self.consumer)
                 fresh_pending = prompt_loader.load_pending_agent(paths, self.consumer) if before is None else None
@@ -163,7 +209,9 @@ class _ConsumerWriterInterval(_SupportedWriterInterval):
                         name: (self.profiles.profile_digest(name), max(1, self.profiles._max_generation(name)))
                         for name in self.owned_profiles
                     }
-                with super().canonical_change():
+                with super().canonical_change(
+                    profile_binding=None if self.adoption is None else self.adoption.bindings[self.org.slug],
+                ):
                     try:
                         if source != target:
                             self.profiles.rebind_consumer(
@@ -346,12 +394,29 @@ class ProfileCoordinator:
             yield
 
     @contextmanager
-    def dependency_writer(self, profile_names: Sequence[str]) -> Iterator[None]:
+    def dependency_writer(self, profile_names: Sequence[str], *, rebind_from: str | None = None,
+                          org: OrgState | None = None, consumer: str | None = None,
+                          adoption: _RebindAdoption | None = None) -> Iterator[_RebindAdoption | None]:
         """Serialize a supported consumer rebind before its org writer gate."""
         with self._profile_leases(profile_names, wait=True) as names:
+            if adoption is None and rebind_from is not None and org is not None:
+                adoption = self._rebind_adoption((rebind_from,))
+                if adoption is not None:
+                    operation = adoption.operations[0]
+                    with org.db._lock:
+                        row = org.db._conn.execute(
+                            "SELECT state FROM workflow_profile_dependencies WHERE org_namespace=? "
+                            "AND profile_name=? AND consumer_identity=?",
+                            (org.workflow_authority.namespace, rebind_from, consumer),
+                        ).fetchone()
+                    if org.slug not in operation.members or row is None or row["state"] != "unbound":
+                        adoption = None
+            if adoption is not None:
+                self._validate_adoption(adoption)
             for name in names or (None,):
-                self._assert_no_active_operation(name)
-            yield
+                if adoption is None or name != adoption.operations[0].profile_name:
+                    self._assert_no_active_operation(name)
+            yield adoption
 
     @asynccontextmanager
     async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False, teams=()):
@@ -374,7 +439,10 @@ class ProfileCoordinator:
                     yield interval
                 except BaseException:
                     if interval.fenced:
-                        if not org.workflow_authority.publish_after_supported_change(
+                        if interval.adoption is not None:
+                            if not self._finish_consumer_adoption(interval):
+                                disposition.uncertain = True
+                        elif not org.workflow_authority.publish_after_supported_change(
                             publisher=f"{publisher}:compensation",
                             fence_journal_id=interval.fence_journal_id,
                             publisher_invocation=interval.publisher_invocation,
@@ -383,11 +451,110 @@ class ProfileCoordinator:
                     raise
                 else:
                     if interval.fenced:
-                        if not org.workflow_authority.publish_after_supported_change(
+                        if interval.adoption is not None:
+                            if not self._finish_consumer_adoption(interval):
+                                disposition.uncertain = True
+                        elif not org.workflow_authority.publish_after_supported_change(
                             publisher=publisher, fence_journal_id=interval.fence_journal_id,
                             publisher_invocation=interval.publisher_invocation,
                         ):
                             disposition.uncertain = True
+
+    def _rebind_adoption(self, names: Sequence[str]) -> _RebindAdoption | None:
+        """Recognize only a complete, same-profile, forward remove owner.
+
+        This is read-only. Ineligible candidates fall through to the existing
+        operation guard, including startup holds and mixed-profile invocations.
+        """
+        if len(names) != 1 or self._startup_unknown:
+            return None
+        name = names[0]
+        if name in self._startup_hold_profiles:
+            return None
+        with self._capture_orgs() as orgs:
+            rows = []
+            for org in orgs.values():
+                with org.db._lock:
+                    rows.extend(org.db._conn.execute(
+                        "SELECT * FROM workflow_profile_operations WHERE profile_name=? "
+                        "AND state NOT IN ('published','aborted')", (name,),
+                    ).fetchall())
+            if (not rows or any(row["state"] != "forward_recovery_required"
+                                or row["operation_kind"] != "remove" for row in rows)
+                    or len({row["coordinator_invocation"] for row in rows}) != 1):
+                return None
+            invocation = rows[0]["coordinator_invocation"]
+            try:
+                operations = self._load_group_operations(invocation, names)
+                # _load_group_operations permits partially terminal recovery;
+                # explicit adoption requires EVERY original mirror forward.
+                if (len(rows) != len(operations[0].members)
+                        or self._startup_holds.keys() & set(operations[0].members)):
+                    return None
+                bindings = {}
+                for slug in operations[0].members:
+                    authority = orgs[slug].workflow_authority
+                    with orgs[slug].db._lock:
+                        journal = authority._active_journal(orgs[slug].db._conn, authority.namespace)
+                        if journal is None or journal["publisher_invocation"] != f"profile-coordinator:{invocation}":
+                            return None
+                        binding = ProfileFenceBinding(str(journal["id"]), str(journal["publisher_invocation"]),
+                                                      int(journal["profile_fence"]))
+                        authority._validate_profile_binding(binding)
+                    bindings[slug] = binding
+            except (ProfileCoordinatorError, WorkflowAuthorityError, TypeError, ValueError):
+                return None
+            return _RebindAdoption(invocation, operations, bindings)
+
+    def _validate_adoption(self, adoption: _RebindAdoption) -> None:
+        fresh = self._rebind_adoption((adoption.operations[0].profile_name,))
+        if fresh != adoption:
+            raise ProfileCoordinatorError("profile_consumer_changed")
+
+    def _finish_consumer_adoption(self, interval: _ConsumerWriterInterval) -> bool:
+        """Capture the changed roster outside leases, then finalize its owner."""
+        adoption = interval.adoption
+        assert adoption is not None
+        try:
+            with self._capture_orgs() as orgs:
+                captures = {}
+                for slug in adoption.bindings:
+                    org = orgs[slug]
+                    # This writer owns its async gate. Other canonical writers
+                    # remain conflicts; DB/native bookends cover the scan.
+                    if slug != interval.org.slug and org.workflow_authority._async_writer_lock.locked():
+                        raise ProfileCoordinatorError("profile_consumer_changed")
+                    before = self._roster_revision(org)
+                    snapshot = org.workflow_authority.capture_canonical_snapshot()
+                    if before != self._roster_revision(org) or before[2]:
+                        raise ProfileCoordinatorError("profile_consumer_changed")
+                    captures[slug] = (before, snapshot)
+                names = {adoption.operations[0].profile_name}
+                for revision, snapshot in captures.values():
+                    names.update(row[2] for row in revision[4]
+                                 if row[0] == "dependency" and row[5] in {"active", "unbound"})
+                    names.update(name for agent in json.loads(snapshot)["agents"]
+                                 if agent["status"] == "active"
+                                 if (name := _dependency_profile(agent["executor"])) is not None)
+                with self._profile_leases(sorted(names), wait=True), ExitStack() as stack:
+                    for slug in sorted(captures):
+                        stack.enter_context(orgs[slug].workflow_authority._publisher_lock)
+                    self._validate_adoption(adoption)
+                    for name in names - {adoption.operations[0].profile_name}:
+                        self._assert_no_active_operation(name)
+                    for slug, (revision, _) in captures.items():
+                        if revision != self._roster_revision(orgs[slug]):
+                            raise ProfileCoordinatorError("profile_consumer_changed")
+                    return self._finalize(
+                        operations=adoption.operations, bindings=adoption.bindings,
+                        publisher=interval.publisher, mutation_succeeded=True,
+                        canonical_snapshots={slug: snapshot for slug, (_, snapshot) in captures.items()},
+                    )
+        except Exception:
+            logger.exception("profile consumer adoption publication deferred org=%s", interval.org.slug)
+            return False
+        finally:
+            self._release_diagnostic_leases(adoption.operations, coordinator_invocation=adoption.invocation)
 
     def validate_requirements(self, definitions, projection) -> None:
         desired = {
@@ -749,9 +916,13 @@ class ProfileCoordinator:
             return publishable
 
     def _closure_coherent(self, org: OrgState, *, effective_profiles: dict[str, _EffectiveProfile] | None = None) -> bool:
+        return not self._incoherent_dependencies(org, effective_profiles=effective_profiles)
+
+    def _incoherent_dependencies(self, org: OrgState, *,
+                                effective_profiles: dict[str, _EffectiveProfile] | None = None) -> list[dict]:
         with org.db._lock:
             rows = org.db._conn.execute(
-                "SELECT d.profile_name,d.state,d.bound_generation,s.generation,"
+                "SELECT d.consumer_identity,d.profile_name,d.state,d.bound_generation,s.generation,"
                 "s.profile_digest,s.state AS store_state,r.published_generation "
                 "FROM workflow_profile_dependencies d "
                 "LEFT JOIN workflow_profile_store s "
@@ -761,6 +932,7 @@ class ProfileCoordinator:
                 "WHERE d.org_namespace=? AND d.state IN ('active','unbound')",
                 (org.workflow_authority.namespace,),
             ).fetchall()
+        incoherent = []
         for row in rows:
             profile_name = str(row["profile_name"])
             effective = (self._effective_profile(profile_name) if effective_profiles is None
@@ -778,8 +950,13 @@ class ProfileCoordinator:
                 and row["profile_digest"] == effective.digest
                 and effective.resolvable
             ):
-                return False
-        return True
+                # Only dependency identity/state/generations are diagnostic.
+                # Never include adapter config, commands or credential data.
+                incoherent.append({key: row[key] for key in (
+                    "consumer_identity", "profile_name", "state", "bound_generation",
+                    "generation", "store_state", "published_generation",
+                )})
+        return incoherent
 
     def _republish(
         self,
@@ -789,18 +966,33 @@ class ProfileCoordinator:
         publisher: str,
         expected_fenced: set[str],
         effective_profiles: dict[str, _EffectiveProfile] | None = None,
+        canonical_snapshots: dict[str, bytes] | None = None,
     ) -> bool:
         with self._capture_orgs() as orgs:
             all_published = True
             for slug in sorted(expected_fenced):
-                org = orgs[slug]
-                if not self._closure_coherent(org, effective_profiles=effective_profiles):
+                incoherent = self._incoherent_dependencies(orgs[slug], effective_profiles=effective_profiles)
+                if incoherent:
                     all_published = False
-                    continue
+                    for operation in operations:
+                        logger.warning(
+                            "profile closure incoherent; forward_recovery_required org=%s profile=%s operation=%s dependencies=%s",
+                            slug, operation.profile_name, operation.operation_id, incoherent,
+                        )
+            # Keep every original prepared binding until the captured closure
+            # can publish. A partial consumer move must not consume one org's
+            # journal and strand the remaining members of the original owner.
+            if not all_published:
+                for operation in operations:
+                    self._set_operation_state(operation, "forward_recovery_required")
+                return False
+            for slug in sorted(expected_fenced):
+                org = orgs[slug]
                 try:
                     org.workflow_authority.publish_profile_change(
                         publisher=publisher,
                         binding=bindings[slug],
+                        canonical_snapshot=None if canonical_snapshots is None else canonical_snapshots[slug],
                     )
                 except Exception:
                     all_published = False
@@ -822,6 +1014,7 @@ class ProfileCoordinator:
         publisher: str,
         mutation_succeeded: bool,
         effective_profiles: dict[str, _EffectiveProfile] | None = None,
+        canonical_snapshots: dict[str, bytes] | None = None,
     ) -> bool:
         fenced = set(bindings)
         all_resolved = True
@@ -857,6 +1050,7 @@ class ProfileCoordinator:
             publisher=publisher if mutation_succeeded else f"{publisher}:compensation",
             expected_fenced=fenced,
             effective_profiles=effective_profiles,
+            canonical_snapshots=canonical_snapshots,
         )
         if republished:
             for operation in changed_operations:
@@ -877,11 +1071,13 @@ class ProfileCoordinator:
         *,
         operation_kind: str,
         publisher: str,
+        adoption: _RebindAdoption | None = None,
+        canonical_snapshots: dict[str, bytes] | None = None,
     ) -> Iterator[None]:
         """Create the durable U1A claim after profile leases are held."""
         with self._capture_orgs() as orgs:
-            coordinator_invocation = uuid.uuid4().hex
-            operations = tuple(
+            coordinator_invocation = uuid.uuid4().hex if adoption is None else adoption.invocation
+            operations = adoption.operations if adoption is not None else tuple(
                 _ProfileOperation(
                     operation_id=f"WPO-{uuid.uuid4().hex}",
                     profile_name=name,
@@ -924,19 +1120,28 @@ class ProfileCoordinator:
                             orgs[slug].workflow_authority.profile_change_interval(
                                 reason=f"profile:{','.join(names)}:{publisher}",
                                 coordinator_invocation=coordinator_invocation,
+                                resume=adoption is not None,
                             )
                         )
-                    for operation in operations:
-                        self._set_operation_state(operation, "fenced")
+                    if adoption is None:
+                        for operation in operations:
+                            self._set_operation_state(operation, "fenced")
                     try:
                         yield
                     except BaseException:
                         try:
-                            reconciled = self._finalize(
+                            # Validation failures without a store effect retain
+                            # the exact prior forward operation and fence.
+                            unchanged = adoption is not None and all(
+                                self._effective_profile(op.profile_name).digest == op.prior.digest
+                                for op in operations
+                            )
+                            reconciled = False if unchanged else self._finalize(
                                 operations=operations,
                                 bindings=bindings,
                                 publisher=publisher,
                                 mutation_succeeded=False,
+                                canonical_snapshots=canonical_snapshots,
                             )
                             if not reconciled:
                                 for disposition in dispositions:
@@ -956,6 +1161,7 @@ class ProfileCoordinator:
                                 bindings=bindings,
                                 publisher=publisher,
                                 mutation_succeeded=True,
+                                canonical_snapshots=canonical_snapshots,
                             )
                             if not reconciled:
                                 for disposition in dispositions:
@@ -980,63 +1186,65 @@ class ProfileCoordinator:
                                 disposition.uncertain = True
 
     @contextmanager
-    def operation(
-        self,
-        profile_names: Sequence[str],
-        *,
-        operation_kind: str,
-        publisher: str,
-    ) -> Iterator[None]:
-        """Fence dependents, run one existing writer, then publish coherently."""
+    def _rebind_request(self, profile_names: Sequence[str], *, operation_kind: str,
+                        publisher: str, terminal_check: Callable[[], bool] | None = None) -> Iterator[bool]:
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
-        with self._profile_leases(profile_names, wait=False) as names:
-            for name in names or (None,):
-                self._assert_no_active_operation(name)
-            if not names:
-                yield
-                return
-            with self._operation_with_leases_held(
-                names,
-                operation_kind=operation_kind,
-                publisher=publisher,
-            ):
-                yield
-
-    @contextmanager
-    def claimed_operation(
-        self,
-        profile_names: Sequence[str],
-        *,
-        operation_kind: str,
-        publisher: str,
-        terminal_check: Callable[[], bool],
-    ) -> Iterator[bool]:
-        """Claim a retryable writer once, before any U1A fence or mutation.
-
-        The stable profile flock serializes independent processes. After it is
-        acquired, the durable terminal check lets a loser return the winner's
-        outcome without creating a second operation row, fence, or publication.
-        A winner then records the existing U1A operation/lease claim before the
-        caller can mutate adapter or profile state.
-        """
-        if operation_kind not in {"register", "rebind", "remove"}:
-            raise ProfileCoordinatorError("profile_operation_kind_invalid")
-        with self._profile_leases(profile_names, wait=True) as names:
-            for name in names or (None,):
-                self._assert_no_active_operation(name)
-            if not names:
-                yield True
-                return
-            if terminal_check():
+        names = tuple(sorted({name.strip().lower() for name in profile_names if name.strip()}))
+        # A terminal projection loser must not discover/adopt or claim a writer.
+        if terminal_check is not None:
+            with self._profile_leases(names, wait=True):
+                if terminal_check():
+                    yield False
+                    return
+        adoption = self._rebind_adoption(names) if operation_kind in {"register", "rebind"} else None
+        captures = {}
+        if adoption is not None:
+            with self._capture_orgs() as orgs:
+                captures = {slug: self._capture_org_dependencies(orgs[slug]) for slug in adoption.bindings}
+                for capture in captures.values():
+                    if capture.snapshot is None:
+                        raise WorkflowAuthorityError(capture.canonical_error or "authority_snapshot_not_canonical")
+        closure_names = sorted(set(names) | {name for capture in captures.values() for name in capture.profile_names})
+        with self._profile_leases(closure_names, wait=terminal_check is not None):
+            if terminal_check is not None and terminal_check():
                 yield False
                 return
+            if adoption is not None:
+                self._validate_adoption(adoption)
+                with self._capture_orgs() as orgs:
+                    for slug, capture in captures.items():
+                        self._validate_capture(orgs[slug], capture.revision)
+            for name in closure_names or (None,):
+                if adoption is None or name != adoption.operations[0].profile_name:
+                    self._assert_no_active_operation(name)
+            if not names:
+                yield True
+                return
             with self._operation_with_leases_held(
-                names,
-                operation_kind=operation_kind,
-                publisher=publisher,
+                names, operation_kind=operation_kind, publisher=publisher, adoption=adoption,
+                canonical_snapshots=None if adoption is None else {slug: capture.snapshot for slug, capture in captures.items()},
             ):
                 yield True
+
+    @contextmanager
+    def operation(self, profile_names: Sequence[str], *, operation_kind: str,
+                  publisher: str) -> Iterator[None]:
+        """Fence dependents, or resume the same remove for an explicit rebind."""
+        with self._rebind_request(profile_names, operation_kind=operation_kind, publisher=publisher):
+            yield
+
+    @contextmanager
+    def claimed_operation(self, profile_names: Sequence[str], *, operation_kind: str,
+                          publisher: str, terminal_check: Callable[[], bool]) -> Iterator[bool]:
+        """Serialize a retryable projection and retain its original profile owner.
+
+        Terminal losers return before any operation, diagnostic lease or org
+        publication ownership. Winners use the same ordinary rebind path.
+        """
+        with self._rebind_request(profile_names, operation_kind=operation_kind,
+                                  publisher=publisher, terminal_check=terminal_check) as owns:
+            yield owns
 
     def _roster_revision(self, org: OrgState) -> tuple:
         """Complete DB/native bookend; no discovery or filesystem I/O."""
@@ -1685,6 +1893,7 @@ class ProfileCoordinator:
                             publisher="profile-startup-recovery",
                             mutation_succeeded=True,
                             effective_profiles=effective_profiles,
+                            canonical_snapshots={slug: capture.snapshot for slug, capture in captures.items()},
                         )
                         self._release_diagnostic_leases(
                             operations,
@@ -1714,6 +1923,7 @@ class ProfileCoordinator:
         """
         with self._capture_orgs() as orgs:
             captures = {}
+            deferred_removes: set[str] = set()
             edges: dict[str, set[str]] = {slug: set() for slug in orgs}
             reasons = dict(self._startup_holds)
             unknown = self._startup_unknown
@@ -1758,10 +1968,20 @@ class ProfileCoordinator:
                     live = json.loads(capture.revision[8][1]) if capture.revision[8] else None
                     history = [NativeWriterLifecycle.model_validate_json(raw, strict=True)
                                for _, raw in capture.revision[7]]
-                    if (any(row.state != "settled"
-                            and (live is None or not historical_disk_sweep(row.writer_id, row, live))
-                            for row in history)
-                            or live):
+                    unsettled = False
+                    for row in history:
+                        if row.state == 'settled':
+                            continue
+                        if live is not None:
+                            if historical_disk_sweep(row.writer_id, row, live):
+                                continue
+                            with org.db._lock:
+                                name = startup_forward_remove_profile(org, row, live)
+                            if name is not None and self._rebind_adoption((name,)) is not None:
+                                deferred_removes.add(name)
+                                continue
+                        unsettled = True
+                    if unsettled or live:
                         reasons.setdefault(slug, "profile_consumer_changed")
                     try:
                         self._validate_capture(org, capture.revision)
@@ -1866,6 +2086,12 @@ class ProfileCoordinator:
                         break
                     component = expanded
                 remaining.difference_update(component)
+                # Recovery may correctly retain the remove's fence while its
+                # consumers stay unbound. Synchronization cannot claim over it;
+                # leave this eligible original owner for an explicit rebind.
+                if any(self._rebind_adoption((name,)) is not None
+                       for name in deferred_removes & names):
+                    continue
                 try:
                     self._synchronize_captured([(slug, orgs[slug], captures[slug]) for slug in sorted(component)], publish=True)
                 except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,

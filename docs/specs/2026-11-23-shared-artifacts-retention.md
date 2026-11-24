@@ -44,6 +44,10 @@ values below remain explicit proposals. No new Founder decision is requested.
    version **or any materialization/recovery reader** references it. This is a
    verified live dependency: counted toward quota, audited as a deferral and
    rechecked every sweep, not a permanent retention class or prefix exemption.
+   A completed projection's exact `Q3:reader_exclusion_unavailable` deferral
+   is accounted protection, not incomplete sweep scope. It does not prevent a
+   complete preview from starting `rollout_started_at`; source protection and
+   destructive activation gates remain unchanged.
    Slice B implements/verifies that reference check. **STOP destructive
    activation until it is implemented and verified.** This disposition lifts
    the prior STOP for design and implementation dispatch only. Follow-up:
@@ -323,7 +327,8 @@ by a hold; the next destructive pass still requires fresh negative references.
 
 ### Exact reference definition and fail-closed check
 
-The authoritative scan reads the complete same-org SQLite task/thread corpus,
+The authoritative scan reads the complete bounded live projection of the
+same-org SQLite task/thread corpus,
 not a filesystem name prefix or a recent-page sample:
 
 1. Live tasks are `pending`, `in_progress` (including delegated/job waits), and
@@ -331,10 +336,22 @@ not a filesystem name prefix or a recent-page sample:
    Parse `tasks.brief` and `tasks.final_output_summary`, and all
    `task_results.output_summary`, `decision_json` string values and
    `risks_flagged` belonging to that task or its direct children (parent-wake
-   inputs). Follow explicit same-org TASK-ID tokens in those fields to the
-   referenced task's brief/final summary/result fields, to closure. A visited
+   inputs). Follow explicit same-org TASK-ID tokens in those fields when the task
+   exists in the same-org snapshot, to its brief/final summary/result fields,
+   up to two handoff hops (`_MAX_HANDOFF_DEPTH = 2`). Live tasks and their
+   direct children are depth 0; breadth-first traversal gives each task its
+   shortest depth. All text/payloads at depths 0, 1 and 2 are parsed; handoffs
+   beyond depth 2 do not load task/result text unless independently in that set.
+   Live read-only measurements selected two hops: approximately 17.6 MB /2.6 s,
+   near half the unchanged 32 MiB cap, versus 21.7 MB /3.4 s at three hops.
+   Unbounded traversal reaches almost all task history, exhausting the byte/time
+   budget and letting unrelated historical malformed text poison every proof.
+   A valid text mention of a nonexistent task carries no dependency. Malformed or
+   undecodable org-qualified identities retain the required handoff. A visited
    set bounds cycles without discarding their already scanned references;
-   missing/unreadable required handoffs make absence indeterminate. Private
+   missing/unreadable required handoffs within the bound make absence
+   indeterminate. Malformed selected text/references/payloads and all existing
+   status, snapshot, row/byte and deadline failures remain indeterminate. Private
    task attachment `storage_key` is not itself a shared artifact reference.
    This is a definition of explicit stored dependencies: arbitrary files in
    output_dir, binaries and unstated future use are not scanned. Task authors
@@ -375,7 +392,14 @@ reference defers expiry and deletion, keeps the source retrievable, counts its
 bytes and audits/rechecks the deferral every sweep. Do not infer liveness from
 a filename prefix, assume retirement removes every reader, or treat missing/
 incomplete reader evidence as a negative. The same fresh-negative fence applies
-before unlink. Until that exact source check is implemented and verified,
+before unlink. When a completed projection returns exactly
+`['Q3:reader_exclusion_unavailable']`, retain protection and quota accounting,
+audit/recheck it, and count it separately as `q3_deferred` in
+`artifact_sweep_finished`. This decided reader-exclusion hold does not mark the
+sweep incomplete. Any other indeterminate reason or reason list, including a
+Q3 reason combined with another failure, still marks reference scope incomplete
+and prevents the preview clock from starting. Until that exact source check is
+implemented and verified,
 destructive activation stays STOPped. Unreferenced sources are eligible only
 through normal reviewed classification/retention; this adds no permanent source
 class. Dedicated-store relocation remains the separate engineering-owned
@@ -504,6 +528,19 @@ implementation evidence must include the roughly 7,500-file existing shape;
 if a complete reference check cannot finish, optimize/index the actual
 recognized reference projection under writer transactions rather than treating
 cap exhaustion as no dependency.
+
+Preview collects all current-inventory outcomes once, before its own notice
+and protection audit writes, under one retained `BEGIN IMMEDIATE`/Database
+RLock. It keeps that same fence through the 250-row keyset batches, without
+COMMIT, await or lock release between projection and batch processing. The
+bounded inventory and reference caps/deadline are unchanged. This avoids
+reparsing the full live task/thread/skill projection for each batch: measured
+7,523-file live data required about 2.85–3.29 seconds per proof, mostly text
+parsing, so 31 separate proofs alone exceeded the 60-second pass budget.
+Preview outcomes describe the inventory before the sweep's own notices; they
+authorize no expiry or unlink. Enforce and off retain per-batch proofs, and
+enforce deletion always obtains another fresh negative inside `finish_delete`'s
+final writer fence after the intent COMMIT. No proof crosses that COMMIT.
 
 Org configuration proposal:
 
@@ -642,6 +679,8 @@ enforcement. No unaudited backfill from artifact_put audit attribution, no
 automatic 90-day assignment and no bulk age-based retirement. Canonical skill
 sources follow decided Q3: verified version/reader dependencies defer expiry
 and deletion, count toward quota, and are audited/rechecked each sweep. Their
+exact reader-exclusion deferrals from a completed projection count as protected
+`q3_deferred` rows without making the preview incomplete. Their
 reference check must be implemented and verified before destructive activation;
 this is not approval for indefinite exempt storage.
 

@@ -499,13 +499,21 @@ The existing schema shell adds focused `--org-access-fence`, `--org-access-opene
 2026-11-17 source supersedes the earlier fresh-I/offline-only registration
 checkpoint. POST `/orgs` retains A1's pre-open fence and exclusively creates its
 skeleton. The distinct `initialize_fresh_org_database` uses native O_EXCL file
-creation, the byte-unchanged historical J initializer, sequential literals and
-an empty-only ownership-2 owner. A complete default reader validates the literal
+creation, the historical J initializer with the constructor metadata exception
+below, sequential literals and an empty-only ownership-2 owner. A complete default reader validates the literal
 independent J + Coding + sequential/ownership-2 reference, followed by a target
 full physical integrity check before publication. The route retains the current
 Default human-managed team, zero agents and current intentional `none` reviewer
-configuration. Historical initializer bytes/defaults and generic Database stay
-unchanged. Startup DB absence is never fresh-creation authority.
+configuration. Historical initializer defaults and generic Database stay
+unchanged. The J emptiness check permits only empty native tables, the two exact
+completed remote-schema markers, and the constructor-created
+`shared_artifact_org_state` singleton: `id=1`, `quota_above=0`,
+`crossing_sequence=0`, `reconciliation_status='incomplete'`, NULL
+`rollout_started_at`, `last_completed_window`, `preview_acceptance` and
+`inventory_review_id`, and `source_protection_verified=0`. Extra rows, any
+non-default state or any other native work still refuse before workflow
+installation. The constructor seed is unchanged. Startup DB absence is never
+fresh-creation authority.
 
 `sequential_builtin.PRESET_CATALOG` literally names only the reviewed Coding v2
 source and definition digests. The additive generic catalog holds Coding@3 and Draft→Review@1 on ABI@2; the same registrar selects all three exact definition rows. Resource discovery precedes SQL ownership. Real

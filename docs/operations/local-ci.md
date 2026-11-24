@@ -41,7 +41,7 @@ stale-selection rejection at the reducer boundary, with zero persisted changes.
 | C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |
 | C22 | Five fixed historical resource hashes. Raw base/head comparisons below are separate and mandatory; all does not invent a raw oracle. |
 | C23–C26 | Actual manager/worker and node briefs; two real identities' generations/CAS/global operation keys and admitted pins; unchanged Coding Setup list/export; exact documented Founder API sequence. |
-| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding refuses at its unchanged 16384 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
+| caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding also admits after 16384 units, then refuses at its finite 32768 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
 
 Retain the ordinary focused keepers on **both** Python versions:
 `--start2=all`, `--setup-admission=all`, `--generic-abi=all`, `--s8a=all`,
@@ -125,6 +125,13 @@ It starts no provider and performs no live cancellation. Native
 containment and mounting remain separate acceptance; source checks do not prove
 them. Required keepers and boundary-lint follow the task brief. Full schema/all,
 retired units, skipped integration and Product E2E are outside this focused run.
+
+The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --fresh-catalog=historical`
+selection (also Python3.12) covers default G and explicit G/H/I/J initialization,
+the exact reviewed initializer bytes, preservation of the constructor's pristine
+shared-artifact singleton, and transactional refusal of every non-default field,
+alternate/extra IDs and unrelated native task data. The J exception changes no
+constructor seed or native-work emptiness guard.
 
 ## Focused pre-session task scratch cleanup (THR-307 seq388/389)
 
@@ -3173,13 +3180,14 @@ completion and outstanding broader targets are separate explicit fields.
 It includes populated literal @1 template/native task/result history and natural
 shared-budget aggregate attempts. Traversal and intermediate-copy byte cases
 compose actual queued/release readers with their original allowances; every
-component has an immediate independently admitted positive sibling. Candidate
-attempts combine two400-row ordinary native-history components, each first
-admitted independently, through the actual queued owner. They retain the actual
+component has an immediate independently admitted positive sibling. Historical candidate
+attempts combined two400-row ordinary native-history components, each first
+admitted independently, through the actual queued owner. They retained the actual
 earlier stopping bound if traversal/bytes prevent8193 candidates. The native
-18-column reader spends at least19 visits per candidate, so its original16384
+18-column reader spends at least19 visits per candidate, so its current32768
 visit bound is stricter than8193 candidates in this named fixture family. The
-component input arithmetic is C413/T9601; the combination observes C771/T16385.
+historical component input arithmetic at the former16384-visit bound was
+C413/T9601; the combination observed C771/T16385.
 The native-only18-column candidate8193 overflow lower bound is155649 visits
 (8192*19+1), with no global infeasibility claim. Assigned cumulative accounting
 and traversal dominance may complete; `outstanding_broader_targets.candidate8193`
@@ -4005,6 +4013,15 @@ I5b/I5c; RefreshHomeAddress has no helper method and is deferred to B13.
 
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
+THR-327 returned-worker regressions use the retained Disable path:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -k thr327 -q --tb=short`.
+P24 retires replacement-reload/reset-specific cases with the removed replacement
+owner; ordinary inventory/transaction refusal and real non-home renewal remain
+in the full installer custody selection above.
+The full owner selection also includes `scripts/test_home_activation_backend.py`;
+the private-Gio selection below includes `scripts/test_helper_lifecycle.py`.
+Run full modules through durable jobs. These temporary-root/private-bus tests
+do not exercise installed system units or establish the host's actual busy cause.
 It drives real temp-root provisioning, install admission and drift with a fake
 service manager, real FDs, source swaps and metadata changes. Foreign ownership
 is simulated at the OS stat boundary without chown or sudo. Refusal must leave
@@ -4083,6 +4100,21 @@ ordinary subtasks, mismatched legs, launch provenance and the 64-row bound.
 This uses the existing standalone unittest venue outside the retired Python
 suite, general integration and Product E2E, and adds no required CI check.
 
+## Explicit profile-remove rebind recovery
+
+`uv run --frozen pytest scripts/test_profile_rebind.py -q --tb=short` uses the
+retained standalone synthetic-org venue and real SQLite, adapter/profile binding,
+canonical consumer writer and publication. No daemon lifespan, provider, listener
+or live state runs. It covers ordinary and claimed reconnect, consumer moves and
+partial closure, owner/refusal boundaries, invalid rebinds, terminal projection
+losers, warning diagnostics and retained independent native startup holds. Fresh
+org/coordinator startup cases cover the forward remove's unknown native writer,
+explicit rebind through publication, unchanged native uncertainty, and unrelated,
+scoped, mismatched-journal, mixed-profile and partially-forward refusal evidence.
+This is outside retired Python units, skipped general integration, Product E2E
+and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
+is review evidence only.
+
 ## History
 
 Citations removed from the body, with the section they supported:
@@ -4150,6 +4182,18 @@ queue IDs. They do not establish live provider or deployment acceptance. Run
 required long selections through durable jobs and inspect their actual receipts.
 
 ## Start2 public admission and continuation cases
+
+`--start2=populated_long_batch` adds 18817 ordinary tasks and 33940 results,
+composes a mixed Draft/Coding batch with a 4096-byte request and requires the
+real callback's two runs, memberships and receipt. Its actual saved native
+decision must also parse after 16384 traversal units on the original Coding
+ledger without changing native rows. Malformed stored decisions still refuse.
+The fresh public fixture's admission alone also succeeds with the former cap;
+the copied pilot DB owns the historical whole-callback fail/pass proof. The
+shared-ledger assertions own the new supported traversal range and isolate
+retained reader work from native-history row count.
+The retained Coding traversal cap is 32768; `--bounded-acquisition` covers exact
+work exhaustion and withholding at cap+1, with row/byte/value bounds unchanged.
 
 The existing private ASGI/SQLite schema-load venue supports
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start2=all`

@@ -247,7 +247,7 @@ admission or receipt. Package capture precedes locks. Native reservation,
 publisher/DB ownership, full source/target closure and positive COMMIT
 remain mandatory. Complete native history/suffixes/state/live/fixed safety work
 share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
-release/source/target allowance remains 8192/16MiB/16384 without phase resets.
+release/source/target allowance remains 8192/16MiB/32768 without phase resets.
 Only registrar-owned pure refusals can defer optional registration. Registration
 no longer checks a team-move hold. Native identity, complete history, scan bounds,
 SQL failures and cleanup uncertainty retain their existing handling. Deferral requires successful cursor
@@ -829,7 +829,7 @@ original SQLite storage class and each TEXT/BLOB UTF8 byte length (including mul
 and the whole row must fit the remaining shared raw-byte and candidate budget.
 Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
 invalid/oversized rows never become coerced, truncated or partial success.
-One call shares8192 fetched candidates,16384 traversal steps and16MiB accepted
+One call shares8192 fetched candidates,32768 traversal steps and16MiB accepted
 raw bytes across setup, mapping, original-capture and central selected scans;
 per-value1MiB and mapping/setup inventories1024 remain upper bounds. Bounds may
 refuse earlier; they do not bound total SQLite/process/decoded-object memory.
@@ -1099,14 +1099,28 @@ include both inventories. Dynamic add refuses a retained held slug and never
 constructs a replacement to clear it. An idle local DB close does not settle an
 external ordinary writer or its durable UNKNOWN evidence.
 Startup holds an org when its native writer history has any non-`settled` record
-or an ordinary publication journal is active. The single exception is the
-THR320seq477 historical sweep record (`historical_disk_sweep`): `unknown`,
-publisher `disk_sweep`, empty agents AND teams, and absent from the mounted
-native owner's live writers. The nightly sweep only changes workspace scratch and
-worktrees, never startup's publication inputs. The org load check and the
-profile coordinator's `reconcile_startup` classification apply the same
-predicate. An unavailable native owner keeps every record blocking; the record
-stays UNKNOWN; it is never cleared by this startup exception.
+or an ordinary publication journal is active, subject to two bounded exceptions.
+The THR320seq477 historical sweep record (`historical_disk_sweep`) is exempt when
+`unknown`, publisher `disk_sweep`, empty agents AND teams, and absent from the
+mounted native owner's live writers. The nightly sweep only changes workspace
+scratch and worktrees, never startup's publication inputs. The org load check and
+the profile coordinator's `reconcile_startup` classification apply the same
+historical-sweep predicate.
+The profile-remove exception accepts only an `unknown` record from the exact
+production publisher `profile:remove_runtime_executor_profile` or
+`profile:remove_adapter_entry`, with empty agents AND teams and absent from the
+mounted native owner's live writers. The local active journal must be the same
+`forward_recovery_required` remove invocation's prepared profile-coordinator
+journal with a valid original publication binding. Coordinator reconciliation
+additionally validates the complete original same-profile group, every captured
+mirror in `forward_recovery_required`, and every original publication binding.
+Startup defers synchronization of that component to explicit rebind; its fence
+remains until the existing finalizer can publish the coherent closure. This
+exception does not apply on a later boot without that exact active forward
+remove/journal binding. Other unsettled writers, ordinary or mismatched journals,
+mixed-profile invocations and partially forward groups retain their holds.
+An unavailable native owner keeps every record blocking. Both exceptions preserve
+the UNKNOWN history; neither settles or clears the native record.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement
@@ -2121,6 +2135,52 @@ Format: ISO-8601 with offset plus the zone label, e.g.
 `2026-06-27T12:47+08:00 (Asia/Shanghai)`, or `2026-06-27T12:47+08:00 (UTC+08:00)`
 when only an offset is derivable. The wall clock is an injectable `now` callable
 (default `datetime.now(timezone.utc)`) so prompt snapshot tests are deterministic.
+
+## Org Config: Shared Artifacts cleanup (source only)
+
+`shared_artifacts.cleanup_mode` defaults to `preview`; allowed strings are
+`preview`, `enforce`, and `"off"` (quote off so YAML does not read a boolean).
+Unknown/unreadable config holds mutation with an audited refusal. The daily
+artifact scheduler is separate from workspace cleanup and the disk sweeper:
+04:00 in the effective org timezone, 30-second warm-up, latest-current-window
+catch-up only, fold0 for ambiguous occurrences and skip nonexistent ones.
+Audit rows persist the window/run identity and an honest incomplete cursor.
+Keyset batches contain250 current generations; one60-second monotonic budget
+covers inventory, reference projection, notices, identity hashing and deletion.
+A capped/unavailable proof holds affected work; unseen rows wait for another
+window. Only previously issued delete intents are restart-reconciled.
+Preview collects all inventory outcomes once before its own notice/audit writes
+and retains that same writer transaction and Database RLock through all250-row
+batches. It does not COMMIT or release the fence between projection and preview work.
+Enforce/off retain per-batch proofs; enforce unlink still requires another fresh
+negative under the final writer fence after the delete intent COMMIT. The60s
+pass budget and reference caps are unchanged.
+
+Preview preserves existing artifact state/expiry/bytes and consumes no recovery
+interval. Inventory registration, notices, quota latch and audits still persist;
+legacy files receive null expiry. Off suspends cleanup while notice/quota paths
+continue. A first complete preview stores its completion time. An exact
+`['Q3:reader_exclusion_unavailable']` hold from a completed projection is protected,
+counted, audited/rechecked and reported as `q3_deferred`; it does not make the
+sweep incomplete. Every other indeterminate reason list still prevents complete
+preview and clock start. Enforce remains
+effective preview until seven elapsed preview days, recorded preview acceptance,
+inventory review and verified Q3 source protection all exist. This code supplies
+no automatic approval or activation setter; the scheduler never sets those three gates.
+The separately operated [reviewed legacy importer](../operations/shared-artifacts-classification.md)
+records only authenticated inventory review, under the existing exclusive org
+fence with a per-item transaction; it never sets preview acceptance or source
+verification, changes cleanup mode or unlinks bytes. Classification requires
+both review and the elapsed preview week and reclaims no space.
+Retired B2 sources without authoritative reader exclusion remain held. Deployment,
+independent Q3 verification and an explicitly authorized operator release/config
+workflow remain prerequisites; source delivery establishes none of them.
+
+Rollback to preview/off stops new destructive decisions. Already issued unlink
+custody remains in the durable journal until an exact safe reconciliation; mode
+rollback cannot resurrect bytes. The loop drains native work on cancellation
+before the org database closes. See the [Shared Artifacts contract](contracts/shared-artifacts.md)
+for notice routing, final-fence behavior and verification commands.
 
 ## Org Config: Dreaming
 
@@ -3681,7 +3741,7 @@ length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
 values become bounded NULL refusal sentinels with original typeof evidence, not
 coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
 at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
-whole composed call one shared budget limits8192 accepted native rows,16384
+whole composed call one shared budget limits8192 accepted native rows,32768
 traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
 fetch. Call-local indexed inventory/verified history can avoid repeated reads;
 no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
@@ -3748,7 +3808,7 @@ class and byte length BEFORE fetch; TEXT uses BLOB byte length including NUL
 suffixes/multibyte characters. Original typeof/refusal sentinels and genuine
 nullable journal-owner NULL survive; no coercion or truncation. Each variable
 value is at most1MiB. One shared whole-call budget permits8192 accepted native
-rows,16384 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
+rows,32768 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
 and selected capability ancestry64. One bounded overflow fetch only refuses.
 Call-local setup caching retains complete histories; no recursive budget reset.
 Enclosing/decoded saved bounds remain and can refuse before64 nodes. These raw
@@ -3812,7 +3872,7 @@ control/DTO/default/converter. Original typeof/native byte gates precede fetch,
 including multibyte/NUL suffixes; each new native row's combined variable bytes
 must fit remaining budget. Singleton keyset pages renew that gate; bounded task
 uniqueness probe prevents LIMIT1 conflict masking. Every fetched/rejected/overflow
-candidate shares8192 rows/16384 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
+candidate shares8192 rows/32768 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
 source20. Nullable/empty/finite-REAL accounting does not weaken existing mandatory
 setup/admission validation. This is not a total process/SQLite/copy memory bound.
 Category-only coding_source_history_invalid returns no partial records/private SQL.
@@ -3875,7 +3935,7 @@ One coherent caller-owned raw SQLite transaction/lock; SELECT only. Complete
 bounded fixed-action audit inventory exposes duplicate/conflicting/foreign owners
 without JSON-selection predicates or latest-row fallback. Native typeof and each
 row's remaining row/byte ceilings gate payloads BEFORE fetch. Shared8192 fetched
-candidates/16384 traversal steps/16MiB byte budget includes conservative decoded
+candidates/32768 traversal steps/16MiB byte budget includes conservative decoded
 byte copies, with1MiB per value/whole raw audit, source20/P64/setup1024. These are
 not total SQLite/process/JSON-object memory limits. Missing required captures
 raise coding_source_capture_unavailable; invalid evidence raises category-only

@@ -43,10 +43,18 @@ receipts/pins before later Disable checks. Neither recovery nor new runs renew
 wider-goal allowances.
 
 Native decision parsing uses the supplied reader ledger's original traversal
-allowance: 65536 for the sequential reader and 16384 for Coding authority.
+allowance: 65536 for the sequential reader and 32768 for Coding authority.
 Prechecks reserve on that same ledger before the next operation. No parser
-creates a replacement allowance or raises these existing ceilings; byte, SQL
+creates a replacement allowance or raises these ceilings; byte, SQL
 and deadline bounds remain unchanged.
+
+The retained Coding reader's internal traversal ceiling is 32768. The former
+16384 ceiling could reject an ordinary mixed Draft/Coding Start@2 callback
+during complete post-write validation: the R2 pilot's 6682-byte native decision
+needed 19293 steps including retained schema/history. The same finite ceiling
+applies to admission, reopen and cancellation readers; parsers never replenish
+it. The 8192 candidate, 16 MiB retained-byte and 1 MiB value bounds, sequential
+65536-step ceiling, and all pinned run limits are unchanged.
 
 ### Founder API-only Draft configuration
 
@@ -57,6 +65,15 @@ Use your existing authorized Founder API client and bearer custody; never copy
 a real token into files, examples or transcripts. The examples use synthetic
 permanent worker IDs `s3_author` and `s3_review`; substitute two distinct active
 permanent worker IDs in your org. Keep operation keys stable for each exact body.
+
+**Send canonical bytes.** Each PUT body must be byte-for-byte canonical JSON:
+keys sorted, separators `,` and `:` with no whitespace, UTF-8 without ASCII
+escaping, and no trailing newline. Pretty-printed or reordered bodies are refused
+with 422 `sequential_settings_request_invalid`. The bodies below are already
+canonical; send each line exactly, without the code fence's trailing newline
+(for example, `curl --data-binary @body.json` from a file written with `printf '%s'`).
+After substituting your own values, regenerate the bytes with
+`python3 -c 'import json,sys;sys.stdout.write(json.dumps(json.load(sys.stdin),sort_keys=True,separators=(",",":"),ensure_ascii=False))' < edited.json > body.json`.
 
 The complete reviewed pin below comes directly from the literal
 `STAGED_GENERIC[("release/happyranch/draft-review", 1)]` release manifest and
@@ -72,40 +89,7 @@ All paths below are relative to `/api/v1/orgs/{slug}`:
    first Save produces generation 1 **Disabled**, and starts no work.
 
 ```json
-{
-  "format": "workflow-sequential-settings-put@2",
-  "operation_key": "draft-save",
-  "expected_generation": 0,
-  "definition": {
-    "identity": "release/happyranch/draft-review",
-    "version": 1,
-    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
-    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
-    "compiler": "workflow-sequential-compiler@2",
-    "validator": "workflow-sequential-validator@2",
-    "interpreter": "workflow-sequential-interpreter@2",
-    "capabilities": "workflow-sequential-capabilities@2"
-  },
-  "bindings": [
-    {
-      "role": "author",
-      "principal": "s3_author"
-    },
-    {
-      "role": "reviewer",
-      "principal": "s3_review"
-    }
-  ],
-  "limits": {
-    "max_visits": 16,
-    "max_events": 4096,
-    "max_recoveries": 2,
-    "node_revisions": {
-      "draft": 2,
-      "review": 2
-    }
-  }
-}
+{"bindings":[{"principal":"s3_author","role":"author"},{"principal":"s3_review","role":"reviewer"}],"definition":{"capabilities":"workflow-sequential-capabilities@2","compiler":"workflow-sequential-compiler@2","definition_digest":"f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65","identity":"release/happyranch/draft-review","interpreter":"workflow-sequential-interpreter@2","source_digest":"7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2","validator":"workflow-sequential-validator@2","version":1},"expected_generation":0,"format":"workflow-sequential-settings-put@2","limits":{"max_events":4096,"max_recoveries":2,"max_visits":16,"node_revisions":{"draft":2,"review":2}},"operation_key":"draft-save"}
 ```
 
 3. GET `/workflows/sequential/settings/v2/operations?operation_key=draft-save`
@@ -115,22 +99,7 @@ All paths below are relative to `/api/v1/orgs/{slug}`:
    taking expected_generation from this identity's latest receipt/read:
 
 ```json
-{
-  "format": "workflow-sequential-admission@1",
-  "operation_key": "draft-allow",
-  "expected_generation": 1,
-  "definition": {
-    "identity": "release/happyranch/draft-review",
-    "version": 1,
-    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
-    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
-    "compiler": "workflow-sequential-compiler@2",
-    "validator": "workflow-sequential-validator@2",
-    "interpreter": "workflow-sequential-interpreter@2",
-    "capabilities": "workflow-sequential-capabilities@2"
-  },
-  "admission": "Allowed"
-}
+{"admission":"Allowed","definition":{"capabilities":"workflow-sequential-capabilities@2","compiler":"workflow-sequential-compiler@2","definition_digest":"f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65","identity":"release/happyranch/draft-review","interpreter":"workflow-sequential-interpreter@2","source_digest":"7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2","validator":"workflow-sequential-validator@2","version":1},"expected_generation":1,"format":"workflow-sequential-admission@1","operation_key":"draft-allow"}
 ```
 
 5. GET `/workflows/sequential/settings/admission/operations?operation_key=draft-allow`
@@ -139,22 +108,7 @@ All paths below are relative to `/api/v1/orgs/{slug}`:
 6. To Disable new starts, PUT `/workflows/sequential/settings/admission` with:
 
 ```json
-{
-  "format": "workflow-sequential-admission@1",
-  "operation_key": "draft-disable",
-  "expected_generation": 2,
-  "definition": {
-    "identity": "release/happyranch/draft-review",
-    "version": 1,
-    "source_digest": "7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2",
-    "definition_digest": "f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65",
-    "compiler": "workflow-sequential-compiler@2",
-    "validator": "workflow-sequential-validator@2",
-    "interpreter": "workflow-sequential-interpreter@2",
-    "capabilities": "workflow-sequential-capabilities@2"
-  },
-  "admission": "Disabled"
-}
+{"admission":"Disabled","definition":{"capabilities":"workflow-sequential-capabilities@2","compiler":"workflow-sequential-compiler@2","definition_digest":"f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65","identity":"release/happyranch/draft-review","interpreter":"workflow-sequential-interpreter@2","source_digest":"7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2","validator":"workflow-sequential-validator@2","version":1},"expected_generation":2,"format":"workflow-sequential-admission@1","operation_key":"draft-disable"}
 ```
 
 7. GET `/workflows/sequential/settings/admission/operations?operation_key=draft-disable`
@@ -989,8 +943,12 @@ definition-only registration of the literal reviewed Coding v2 catalog. The
 fresh owner exclusively creates the DB file, initializes J + Coding + sequential
 and ownership-2, and validates the independent combined reference. The current
 Default team remains human-managed with zero agents and reviewer configuration
-`none`. Historical initializers/defaults stay byte-unchanged; absent DBs on
-startup remain historical. Registration inserts an absent exact definition,
+`none`. Historical initializer defaults and the constructor seed stay unchanged.
+Fresh-J's emptiness guard now additionally recognizes the constructor-created
+pristine `shared_artifact_org_state` singleton (`id=1`, all default metadata);
+nondefault state, alternate IDs, extra rows and other native work still refuse
+and roll back. Absent DBs on startup remain historical.
+Registration inserts an absent exact definition,
 does zero writes for an exact existing row and refuses mismatch. It creates no
 settings, admission, roles, runs or tasks; missing defaults remain Disabled and
 roles unset. Existing saved settings/admission/history stay exact. Native and
@@ -1526,7 +1484,7 @@ charges: each retained row/byte/work counter is added back to C on success or
 refusal, and C's byte/work/deadline checks run before success. L meters retained
 SQL under the same original deadline. No allowance replenishes. Seeding the wider new-reader metadata
 charges
-into the original 16 MiB/16384-step counters would reject even empty Coding.
+into the original 16 MiB/32768-step counters would reject even empty Coding.
 Retained readers may refuse at their own original caps. Their acquisition is
 bounded by those caps plus L's SQL meter and the shared deadline, **not
 pre-reservation against C's 64 MiB cap**. Retained document/ownership queries

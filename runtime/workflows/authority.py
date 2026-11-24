@@ -111,17 +111,24 @@ class _SupportedWriterInterval:
                 yield
 
     @contextmanager
-    def canonical_change(self) -> Iterator[None]:
+    def canonical_change(self, *, profile_binding: ProfileFenceBinding | None = None) -> Iterator[None]:
         """Fence and own only one synchronous canonical mutation segment."""
         self.native_disposition.no_effect_error = None
         owner = f"workflow-writer:{self.publisher}:{uuid.uuid4().hex}"
         self._coordinator._acquire_lease(owner)
         try:
-            self.fence_journal_id = self._coordinator._fence_under_lease(
-                reason=self.publisher,
-                publisher_invocation=owner,
-            )
-            self.publisher_invocation = owner
+            if profile_binding is None:
+                self.fence_journal_id = self._coordinator._fence_under_lease(
+                    reason=self.publisher,
+                    publisher_invocation=owner,
+                )
+                self.publisher_invocation = owner
+            else:
+                # A consumer rebind continues the original profile remove's
+                # prepared publication; it must never supersede that owner.
+                self._coordinator._validate_profile_binding(profile_binding)
+                self.fence_journal_id = profile_binding.journal_id
+                self.publisher_invocation = profile_binding.publisher_invocation
             self.fenced = True
             yield
         finally:
@@ -708,6 +715,19 @@ class WorkflowAuthorityCoordinator:
                 publisher_invocation=publisher_invocation,
                 profile_fence=profile_fence,
             )
+
+    def _validate_profile_binding(self, binding: ProfileFenceBinding) -> None:
+        with self._db._lock:
+            active = self._active_journal(self._db._conn, self.namespace)
+            generation, _, _, state, profile_fence = self._pointer(self._db._conn, self.namespace)
+            if (active is None or active["state"] != "prepared" or state != "fenced"
+                    or active["id"] != binding.journal_id
+                    or active["publisher_invocation"] != binding.publisher_invocation
+                    or int(active["profile_fence"]) != binding.profile_fence
+                    or profile_fence != binding.profile_fence
+                    or int(active["expected_generation"]) != generation
+                    or int(active["generation"]) != generation + 1):
+                raise WorkflowAuthorityError("publication_fence_superseded")
 
     def publish_profile_change(
         self,

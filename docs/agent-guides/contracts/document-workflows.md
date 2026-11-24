@@ -447,8 +447,23 @@ compensation, and release before publication capture or awaited bootstrap.
 Missing dependency rows are never proof of an empty canonical requirement set.
 A profile contender refuses an unfinished ordinary canonical batch before its
 global operation claim; startup authority recovery owns interrupted batches. Removal leaves
-an outstanding consumer unbound and the org fenced until an explicit coherent
-rebind/removal. Cold startup recovers only complete eligible interrupted profile
+an outstanding consumer unbound and the org fenced. Explicit valid same-profile
+register/reconnect (ordinary or direct-connect claimed projection) and a consumer's
+explicit move to another executor may adopt only a complete same-profile remove
+in `forward_recovery_required`. The original operation ID, kind, captured members,
+target generation, coordinator invocation and prepared publication bindings stay
+unchanged; no fresh operation or terminal marker admits the writer. Incomplete or
+inconsistent mirrors/bindings, other states/kinds, unrelated consumers and original
+invocations spanning other profiles remain refused. Invalid rebinds retain the
+prior durable operation/fence through existing validation. A terminal projection
+loser acquires no durable operation/publication ownership. Partial consumer moves
+commit under the retained binding while the entire captured closure stays fenced;
+only coherence allows `_finalize` to publish the changed canonical roster and
+terminalize the old remove. Reconnect that restores coherence finalizes immediately.
+Incoherent publication logs org/profile/operation and dependency identity, state and
+generation diagnostics without adapter payloads. Independent native startup holds
+are not cleared or bypassed by adoption. Cold startup recovers only complete eligible
+interrupted profile
 operations through their existing synchronous owner; a post-commit republish
 failure preserves the writer's established response while
 leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
@@ -486,7 +501,20 @@ inconsistent mirrors/identities/states. Failed reads or unknown membership hold
 the broader scope whose independence cannot be proved. An ordinary prepared
 journal remains org-local and retains its original invocation; absent PID/lease
 or a terminal task never settles it. Original native UNKNOWN/active ownership
-also prevents startup writers from adopting or republishing it on a later boot.
+generally also prevents startup adoption or republication on a later boot. The
+[bounded profile-remove exception](../agent-executors-and-permissions.md) accepts
+only an `unknown` record from `profile:remove_runtime_executor_profile` or
+`profile:remove_adapter_entry`, with empty agents/teams and absent from the mounted
+native owner's live writers. It requires the same local forward remove invocation's
+prepared profile-coordinator journal and valid original binding; the coordinator
+additionally validates the complete original same-profile group, every captured
+mirror in `forward_recovery_required`, and every original publication binding.
+Startup defers that component's synchronization to explicit rebind, retaining its
+fence until the existing finalizer can publish the coherent closure. Native history
+stays UNKNOWN. This exception does not apply on a later boot without that exact
+active forward remove/journal binding; other unsettled or unavailable native
+ownership, ordinary or mismatched journals, mixed-profile invocations and partially
+forward groups retain their startup holds.
 
 Complete pointer, journal, dependency/store/registry, operation, lease and native
 history/epoch images bracket discovery and are revalidated before mutation.

@@ -174,9 +174,9 @@ class SharedArtifactService:
                      'before_state':None,'after_state':row.get('state'),'effective_mode':effective_mode,
                      'outcome':'committed', **extra})
 
-    def reconcile_usage_uncommitted(self, conn: object) -> tuple[int, int]:
+    def reconcile_usage_uncommitted(self, conn: object, *, deadline: float | None = None) -> tuple[int, int]:
         """Bounded complete no-follow scan. Discover legacy; never infer its TTL."""
-        deadline = time.monotonic() + SCAN_SECONDS
+        deadline = deadline if deadline is not None else time.monotonic() + SCAN_SECONDS
         public = {}
         internal = {}
         count = 0
@@ -746,6 +746,7 @@ class SharedArtifactService:
     def prepare_delete_uncommitted(
         self, conn: object, *, name: str, generation: int, expected_revision: int,
         reference_outcome: str, effective_mode: str, operation_id: str,
+        deadline: float | None = None,
     ) -> dict:
         """B persists this exact intent before its separately fenced unlink."""
         if conn is not self.db._conn or not conn.in_transaction:
@@ -764,7 +765,7 @@ class SharedArtifactService:
             if (prior['name'],prior['generation'],prior['operation']) != (name,generation,'delete'):
                 raise SharedArtifactError(409,'artifact_operation_conflict')
             return json.loads(prior['filesystem_identity'])
-        identity = self.identity(self.store.path_for(name))
+        identity = self.identity(self.store.path_for(name),deadline=deadline)
         if (identity['sha256'],identity['size_bytes']) != (row['sha256'],row['size_bytes']):
             raise SharedArtifactError(503,'artifact_usage_unavailable',reason='delete_identity_changed')
         now = _iso(self.clock())
@@ -775,9 +776,9 @@ class SharedArtifactService:
         self._event(row,'artifact_delete_intent','daemon',operation_id,source='system',outcome='issued',effective_mode='enforce')
         return identity
 
-    def quota_crossing_uncommitted(self, conn: object) -> dict:
+    def quota_crossing_uncommitted(self, conn: object, *, deadline: float | None = None) -> dict:
         """B's durable crossing identity; delivery remains pending until its transaction."""
-        used,reserved = self.reconcile_usage_uncommitted(conn)
+        used,reserved = self.reconcile_usage_uncommitted(conn,deadline=deadline)
         state = conn.execute('SELECT * FROM shared_artifact_org_state WHERE id=1').fetchone()
         above = used+reserved >= ALERT_BYTES
         sequence = state['crossing_sequence']
@@ -793,6 +794,7 @@ class SharedArtifactService:
         self, conn: object, *, name: str, generation: int, expected_revision: int,
         action: str, reason: str, reference_outcome: str, effective_mode: str,
         operation_id: str, actor: str = 'daemon', operation_source: str = 'system',
+        reclaimed_bytes: int | None = None,
     ) -> dict:
         """B's state-only fence. Never unlinks bytes or activates a scheduler.
 
@@ -848,7 +850,8 @@ class SharedArtifactService:
             raise SharedArtifactError(422,'artifact_transition_invalid')
         conn.execute('UPDATE shared_artifacts SET revision=revision+1 WHERE name=?',(name,))
         self._event(row,'artifact_expire' if action in ('expire','retire') else 'artifact_delete',actor,operation_id,source=operation_source,
-                    effective_mode=effective_mode,outcome='committed')
+                    effective_mode=effective_mode,outcome='committed',
+                    **({'reclaimed_bytes':reclaimed_bytes} if reclaimed_bytes is not None else {}))
         return {**self.projection(row),'mutated':True}
 
     def record_inventory_review_uncommitted(self, conn: object, *, review: dict) -> None:
@@ -858,9 +861,12 @@ class SharedArtifactService:
         self._insert(conn,'shared_artifact_inventory_reviews',review)
 
     def classify_legacy_uncommitted(self, conn: object, *, name: str, metadata: dict,
-                                    review_id: str, inventory_digest: str, expected_hash: str) -> dict:
+                                    review_id: str, inventory_digest: str, expected_hash: str,
+                                    expected_size: int | None = None) -> dict:
         """D applies an exactly reviewed item after both inventory and preview gates."""
-        review = conn.execute('SELECT * FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
+        if conn is not self.db._conn or not conn.in_transaction:
+            raise RuntimeError('artifact_classification_requires_transaction')
+        review = conn.execute('SELECT inventory_digest,reviewer_agent_id FROM shared_artifact_inventory_reviews WHERE review_id=?',(review_id,)).fetchone()
         rollout = conn.execute('SELECT * FROM shared_artifact_org_state WHERE id=1').fetchone()
         if (not review or review['inventory_digest'] != inventory_digest or not rollout['preview_acceptance']
             or not rollout['rollout_started_at'] or self.clock() < _date(rollout['rollout_started_at'])+timedelta(days=RECOVERY_DAYS)):
@@ -868,8 +874,10 @@ class SharedArtifactService:
         row = self._row(conn,name)
         if not row or row['state'] != 'legacy_unclassified':
             raise SharedArtifactError(409,'artifact_classification_invalid')
-        observed = self.identity(self.store.path_for(name))
-        if row['sha256'] != expected_hash or observed['sha256'] != expected_hash:
+        self.store.validate_name(name)
+        observed = self.identity(self.store.root / name)
+        if (row['sha256'] != expected_hash or observed['sha256'] != expected_hash
+            or (expected_size is not None and (row['size_bytes'] != expected_size or observed['size_bytes'] != expected_size))):
             raise SharedArtifactError(409,'artifact_inventory_changed')
         permitted = {'owner_kind','owner','owner_agent_id','origin_task_id','origin_thread_id',
                      'purpose','retention_class','reference_reason','created_at','expires_at','state','attribution_status','requested_expires_at'}

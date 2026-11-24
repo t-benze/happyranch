@@ -33,7 +33,9 @@ _VALUE_LIMIT = 1048576
 _ROW_LIMIT = 1024
 _BYTE_LIMIT = 16 * _VALUE_LIMIT
 _CALL_ROW_LIMIT = 8192
-_TRAVERSAL_LIMIT = 16384
+# Includes retained schema and closed multi-template Start@2 recognition.
+# A two-template Start@2 batch exceeds the former 16384-step allowance.
+_TRAVERSAL_LIMIT = 32768
 _INTEGER_MAX = 9223372036854775807
 _SOURCE_PIN = 'coding-capability-issuer@1'
 _REFUSAL = 'coding_authority_history_invalid'

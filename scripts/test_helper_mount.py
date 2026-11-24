@@ -493,6 +493,63 @@ def test_auth_loss_retains_slot_until_terminal_ack(mount: Any) -> None:
     assert v.helper.inflight is None
 
 
+@pytest.mark.parametrize('settlement', ['lock_contended', 'complete_raises'])
+def test_thr327_returned_worker_does_not_seal_slot(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, settlement: str) -> None:
+    v = mount
+    v.message.get_member = lambda: 'Disable'
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        assert v.helper.inflight is not None
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        return {'outcome': 'off', 'residue': []}
+    v.reader.effect.side_effect = effect
+    queued = []
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args, **kw:
+                        SimpleNamespace(start=lambda: queued.append((target, args))))
+    v.admit()
+    operation = v.helper.lifecycle_operation
+    finished, held, release = threading.Event(), threading.Event(), threading.Event()
+    step = operation.run_step
+
+    def run_step(execute: Any) -> Any:
+        result = step(execute)
+        if settlement == 'lock_contended':
+            finished.set()
+            assert held.wait(2), 'test lock holder did not reach settlement boundary'
+        return result
+
+    operation.run_step = run_step
+    if settlement == 'complete_raises':
+        operation.complete = Mock(side_effect=RuntimeError('synthetic settlement failure'))
+
+    def hold() -> None:
+        assert finished.wait(2), 'worker did not finish its audited effect'
+        with v.helper.lock:
+            held.set()
+            assert release.wait(2), 'test lock holder was not released'
+
+    holder = REAL_THREAD(target=hold) if settlement == 'lock_contended' else None
+    if holder is not None:
+        holder.start()
+    worker = REAL_THREAD(target=queued[0][0], args=queued[0][1])
+    worker.start()
+    try:
+        if holder is not None:
+            assert held.wait(2)
+        worker.join(.05)
+    finally:
+        release.set()
+        if holder is not None:
+            holder.join(2)
+        worker.join(2)
+    assert not worker.is_alive()
+    print(json.dumps(dict(settlement=settlement, worker_returned=True,
+        slot_released=v.helper.inflight is None, exit_requested=v.helper.exit_requested,
+        outcome=v.helper.lifecycle_result), sort_keys=True))
+    assert v.helper.inflight is None, 'terminated lifecycle worker left permanent busy'
+    assert v.helper.exit_requested, 'terminated lifecycle helper did not seal admission for exit'
+
+
 @pytest.mark.parametrize('case', ['complete', 'refused', 'lost', 'audit_late', 'validation_late', 'denied', 'uid'])
 def test_retry_policy_public_auth_slot_audit_deadline(mount: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     v = mount

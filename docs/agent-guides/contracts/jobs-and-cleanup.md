@@ -715,3 +715,16 @@ The reader SQL is unchanged. Breaker delivery listing and mint use sequential
 serializes connection access; removal can cause a logged sweep error. Cancellation
 can leave a worker running or a committed pending token for later recovery.
 There is no added orgs_lock hold, worker drain or lifespan guarantee.
+
+## Shared Artifacts lifecycle authority (source only)
+
+The [Shared Artifacts scheduler](shared-artifacts.md#slice-b-daily-lifecycle-source-only)
+is an org-owned daily lifecycle service, separate from this document's machine
+disk sweeper and owning-agent workspace cleanup tasks. Neither existing cleanup
+system gains eligibility over shared artifacts. B alone consumes A's metadata,
+reference, notice and journal interfaces: preview by default; full seven-day
+recovery before fenced unlink/tombstone; legacy null-expiry files excluded.
+Its60-second budget,250-row keysets,04:00 org-local current window and mandatory
+rollout/source-verification gates do not alter either existing scheduler.
+It creates routine tagless system inbox notices without dispatching an agent
+reply or creating a user Schedule. No live activation or deployment is included.

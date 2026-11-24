@@ -647,14 +647,19 @@ class RemoteAccessHelper:
         except Exception:
             outcome = lifecycle.SetupPhase.UNCERTAIN if operation.dispatched else lifecycle.SetupPhase.FAILED
         finally:
-            # Keep ownership until the result is recorded; complete releases the slot.
-            try:
-                with self.effect_guard(capture):
+            # Main-context lock holders never join this worker. Wait here after
+            # all effects return, so transient contention cannot strand its slot.
+            with self.lock:
+                try:
                     settled = operation.complete(outcome)
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
-            except Exception:
-                # Unsettled worker keeps the slot sealed; no synthetic completion.
-                self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+                except Exception:
+                    self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
+                finally:
+                    # A failed completion is uncertain, never synthetic success.
+                    # Seal admission and let the next activation read the journal.
+                    self.exit_requested = True
+                    self.release(capture)
 
     def _run_policy_renewal(self, operation: object) -> None:
         capture = operation.capture

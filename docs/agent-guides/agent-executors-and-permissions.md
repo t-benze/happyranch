@@ -493,8 +493,31 @@ Publication compares the dependency projection with the canonical active roster;
 an absent row cannot silently authorize a ready empty closure. Profile contenders
 refuse an unfinished ordinary canonical batch before their global operation claim;
 a later healthy publication/recovery permits the next action. A removed profile leaves its
-remaining consumers unbound and their org fenced until an explicit valid rebind
-or removal. Live contention returns `profile_coordinator_busy`; process death
+remaining consumers unbound and their org fenced. An explicit valid same-profile
+register/reconnect (including direct-connect projection), or an explicit consumer
+move to another executor, may adopt a complete same-profile remove operation in
+`forward_recovery_required`. Adoption preserves its operation ID, kind, captured
+members, target generation and coordinator invocation and resumes that invocation's
+existing prepared publication bindings. Invalid requests retain the old operation
+and fence; other operation states/kinds, unrelated consumers and invocations spanning
+other profiles remain refused. A valid individual move may succeed while remaining
+consumers are unbound: the whole captured closure stays fenced until coherent,
+then `_finalize` publishes the current canonical roster and terminalizes the old
+operation. Same-profile reconnect finalizes immediately when it restores coherence.
+An incoherent closure logs a warning with org, profile, operation and dependency
+identities/states/generations. Independent startup/native ownership holds still apply.
+At cold startup, an unknown native writer from `profile:remove_runtime_executor_profile`
+or `profile:remove_adapter_entry`, with empty agents/teams and absent from the
+mounted owner's live reservations, does not itself latch a hold when the local
+active journal is that same forward remove invocation's prepared profile-coordinator
+journal. Coordinator reconciliation additionally requires the complete same-profile
+group, every captured mirror in `forward_recovery_required`, and valid original
+publication bindings. Recovery may retain its fence for unbound consumers; startup
+defers synchronization of that component to the explicit rebind. The native record
+stays unknown: no settlement is inferred. Other unsettled writers, unavailable
+native ownership, ordinary or mismatched journals, mixed-profile invocations and
+partially forward groups retain their startup holds.
+Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly
 once. Existing admitted work is not killed, and U2B adds no workflow admission
 or activation surface.
@@ -1205,10 +1228,12 @@ The built-in prompt drives the candidate through:
 1. **Self-discovery** — the CLI uses ``command -v`` or ``which`` to
    resolve its own absolute binary path and exits with a clear error if
    the binary is not found or not executable.
-2. **Sequential conformance check-ins** — four independent ``curl``
+2. **Conformance check-ins** — four independent ``curl``
    commands POST ``workspace_access``, ``loopback_reachable``,
    ``cli_callback``, and ``emit_envelope`` in order. Each response is
-   printed; a failed request stops the sequence.
+   printed; a failed request stops the sequence. POST each step once; the
+   daemon accepts any order. On a rerun, ``arrived:false`` only means that
+   the step was already recorded.
 3. **Completion gate** — the fourth (``emit_envelope``) response is
    captured and checked: the script reads the returned JSON and exits
    unless ``"all_complete":true`` is present. This is a **mechanical
@@ -1228,9 +1253,9 @@ source code:
   pre-handler rejection (``_check_registration_token`` — invalid,
   expired, consumed, or non-registration-form token) and post-handler
   validation (``validate_runtime`` — consumed mid-flight).
-- **400 (incomplete conformance)** — names the pending steps and
-  instructs the candidate to complete them sequentially and await
-  ``all_complete:true``.
+- **400 (incomplete conformance)** — names the pending steps and requests
+  ``all_complete:true``. Its sequential wording is advisory; the daemon
+  does not require check-ins to arrive in order.
 - **422 (bad path)** — reports whether the path is non-absolute,
   non-existent, or non-executable so the candidate can correct it.
 - **500 (write failure)** — releases the token for retry and advises

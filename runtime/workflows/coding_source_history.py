@@ -408,7 +408,7 @@ def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: s
     """Five immutable identity fields under one shared native/P/U budget.
 
     Fixed parameterized SELECTs only, exact prefetch typeof/byte gates,1MiB
-    per variable value,16MiB call raw bytes,8192 fetched candidates/16384
+    per variable value,16MiB call raw bytes,8192 fetched candidates/32768
     traversal steps; native ancestry20 including source, P64/setup1024.
     Raw byte limits are not total SQLite/process/decoded-copy memory bounds.
     Native result REAL must be finite; native NULL counters/free-text empty
