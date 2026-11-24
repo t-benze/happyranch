@@ -210,8 +210,11 @@ def test_fixed_entry_preserves_fresh_completed_and_refused_layouts(tmp_path, mon
 def test_canonical_entry_completes_actual_interrupted_retirement_and_refuses_reappearance(active, monkeypatch, capsys, request, boundary, tmp_path):
     generated = boundary.startswith('preinst-')
     boundary = boundary.removeprefix('preinst-')
-    failed_controller = boundary.startswith('failed-') or boundary == 'controller-reset-failed'
-    boundary = boundary.removeprefix('failed-')
+    # Only F1 rows start with a failed controller; failed-close is a separate
+    # active physical-close fault and must keep its callback and retry checks.
+    failed_controller = boundary in ('failed-fragment', 'failed-publication', 'controller-reset-failed')
+    if failed_controller:
+        boundary = boundary.removeprefix('failed-')
     inert = request.node.callspec.params['active'] == 'inert'
     auxiliary_journal_setup(active.controller)
     if inert:
