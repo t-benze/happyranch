@@ -93,4 +93,5 @@
 | [2026-11-14-automatic-workflow-setup.md](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2/A4 and S2b source; S9 reader naming deferred | THR-336 | Automatic workflow setup — incremental delivery |
 | [2026-11-16-one-click-remote-access.md](2026-11-16-one-click-remote-access.md) | unlisted; retained reference | THR-327 | One-click remote access and one invite (THR-327) |
 | [2026-11-16-workflow-replace-chain-design.md](2026-11-16-workflow-replace-chain-design.md) | R1/S1–S8b source; S9 parity with naming deferred; live acceptance open | THR-336 | Workflow replacement of dispatch chains: technical design and migration plan |
+| [2026-11-24-thread-guest-desktop-app.md](2026-11-24-thread-guest-desktop-app.md) | proposal; not approved, nothing built | THR-362 | A desktop app joins a thread as a guest (replaces the unmerged PR #1555 hand-off design) |
 | [org-portability-reference-consumers.md](org-portability-reference-consumers.md) | current (design reference for THR-187 Step 0 only); kept as unclear | THR-187 | Org Portability — DB-to-Filesystem Reference Consumers (THR-187 Step 0 Evidence Gate) |
