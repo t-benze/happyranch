@@ -18,7 +18,7 @@ from pathlib import Path
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
+from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_cold_client, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import _build_environment, _prepare_keychain
 
@@ -112,6 +112,38 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                 self.assertEqual(calls, ['en', 'zh'])
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
                 self.assertEqual(len(section['dialogs']['screenshots']), 12 if failure == 'missing-file' else 24)
+
+
+class ColdClientCompositionEvidenceTests(unittest.TestCase):
+    def test_requires_exact_composition_receipt_and_successful_process(self) -> None:
+        receipt = dict(event='cold_client', status='PASS', entries=5, dialogs=True, no_target=True, unchanged_target=True)
+        for failure in ('none', 'missing', 'duplicate', 'failed', 'entries', 'dialogs', 'no-target', 'target-changed', 'nonzero'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                rows = [dict(receipt)]
+                if failure == 'missing':
+                    rows = []
+                elif failure == 'duplicate':
+                    rows *= 2
+                elif failure == 'failed':
+                    rows[0]['status'] = 'FAIL'
+                elif failure == 'entries':
+                    rows[0]['entries'] = 4
+                elif failure == 'dialogs':
+                    rows[0]['dialogs'] = False
+                elif failure == 'no-target':
+                    rows[0]['no_target'] = False
+                elif failure == 'target-changed':
+                    rows[0]['unchanged_target'] = False
+                def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                    self.assertEqual(argv[-1], 'cold-client')
+                    Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                    return (1 if failure == 'nonzero' else 0), b''
+                section = {}
+                with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
+                    qualify_cold_client(['product', '--qualify-app-scheme', 'assets', 'policy', '0'], {},
+                                        root, time.monotonic() + 10, section, root)
+                self.assertEqual(section['cold_client']['status'], 'PASS' if failure == 'none' else 'FAIL')
 
 
 class NativeWorkloadEvidenceTests(unittest.TestCase):

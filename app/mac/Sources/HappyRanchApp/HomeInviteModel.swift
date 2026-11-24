@@ -61,7 +61,7 @@ final class HomeInviteModel: ObservableObject {
     @Published private var candidateSaveFailure: SavedAccessFailure?
     var saveFailure: SavedAccessFailure? {
         if let active { return active.saveFailure }
-        return candidateSaveFailure
+        return candidateSaveFailure ?? unconfirmedSaves.first?.failure
     }
     @Published private(set) var removalFailures: [String] = []
     @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
@@ -79,6 +79,14 @@ final class HomeInviteModel: ObservableObject {
     var appTransport: (any AppAPITransport)? { try? active?.session.appTransport() }
     var activeID: UUID? { active?.id }
     var activeHasUnsavedAccess: Bool { active?.unsaved != nil }
+    // Outcome evidence survives session/credential teardown. Only a protected
+    // save/readback for the matching binding settles its failed-save warning.
+    private struct UnconfirmedSave {
+        let binding: SavedDeviceBinding
+        let failure: SavedAccessFailure
+    }
+    @Published private var unconfirmedSaves: [UnconfirmedSave] = []
+    var hasUnsavedAccessWarning: Bool { !unconfirmedSaves.isEmpty || activeHasUnsavedAccess }
     var hasActiveSession: Bool { active != nil }
     var bridgeAccessObservation: AccessObservation? {
         if let active { return active.observation }
@@ -204,7 +212,7 @@ final class HomeInviteModel: ObservableObject {
         startActiveMonitor()
         if let previous { retire(previous) }
         return AppScheme.Target(id: id.uuidString, transport: transport, remote: true,
-                                health: health, accessUnsaved: unsaved != nil)
+                                health: health, accessUnsaved: hasUnsavedAccessWarning)
     }
 
     /// Admission belongs to AppScheme; storage/attempt settlement must finish first.
@@ -576,11 +584,15 @@ final class HomeInviteModel: ObservableObject {
             retainSaved(credential)
         } catch {
             guard lifetime == token || cancelledSave == token else { return }
-            candidateSaveFailure = (error as? SavedAccessFailure) ?? .saveFailed
+            let failure = (error as? SavedAccessFailure) ?? .saveFailed
+            candidateSaveFailure = failure
+            unconfirmedSaves.removeAll { $0.binding == credential.binding }
+            unconfirmedSaves.append(UnconfirmedSave(binding: credential.binding, failure: failure))
         }
     }
 
     private func retainSaved(_ credential: SavedDeviceCredential) {
+        unconfirmedSaves.removeAll { $0.binding == credential.binding }
         guard let id = credential.networkProfileID else { return }
         records[id] = credential
         savedHomes.removeAll { $0.id == id }
@@ -629,6 +641,7 @@ final class HomeInviteModel: ObservableObject {
                     try await store.save(credential)
                     guard active === selected else { return }
                     selected.unsaved = nil; selected.saveFailure = nil
+                    unconfirmedSaves.removeAll { $0.binding == credential.binding }
                     if let id = credential.networkProfileID {
                         records[id] = credential
                         savedHomes.removeAll { $0.id == id }

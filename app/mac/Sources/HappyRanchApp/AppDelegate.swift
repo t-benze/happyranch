@@ -1008,7 +1008,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         refreshDerivedState()
                         if connectionRole == .home && !homeInvite.hasActiveSession,
-                           mainScheme == nil || mainScheme?.hasLocalTarget == true {
+                           mainScheme == nil || mainScheme?.hasLocalTarget == true || webViewURL == nil {
                             if selectMainTransport(id: baseURL, transport: LocalAppAPITransport(port: port,
                                 credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome())), remote: false, promptURL: baseURL + "/api/v1") == nil {
                                 webViewURL = baseURL

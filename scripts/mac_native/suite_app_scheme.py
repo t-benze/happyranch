@@ -166,6 +166,28 @@ def qualify_steps(argv: list[str], env: dict[str, str], scratch: Path, deadline:
     return 0 if all(code == 0 for code in codes) else 1
 
 
+def qualify_cold_client(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                        section: dict[str, Any], downloads: Path) -> None:
+    """Require the product's cold ContentView/AppDelegate composition receipt."""
+    events = scratch / 'cold-client.jsonl'
+    command = [*argv, str(events), str(downloads), 'cold-client']
+    result: dict[str, Any] = {'status': 'FAIL', 'argv': command, 'exit_code': None}
+    section['cold_client'] = result
+    try:
+        code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+        result.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                      head=raw[:1024].decode(errors='replace'), tail=raw[-1024:].decode(errors='replace'))
+        receipts = [row for row in read_events(events) if row.get('event') == 'cold_client']
+        result['events'] = receipts
+        if (code == 0 and len(receipts) == 1 and receipts[0].get('status') == 'PASS'
+                and receipts[0].get('entries') == 5 and receipts[0].get('dialogs') is True
+                and receipts[0].get('no_target') is True
+                and receipts[0].get('unchanged_target') is True):
+            result['status'] = 'PASS'
+    except (OSError, ValueError, TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+        result['command_error'] = type(error).__name__
+
+
 def screenshot_archive(folder: Path, locale: str) -> list[dict[str, Any]]:
     """Fixed names, bounded native PNGs in the already collected probe JSON."""
     if locale not in ('en', 'zh'):
@@ -484,7 +506,14 @@ def run(report: dict[str, Any]) -> None:
         manifest = json.loads(manifest_path.read_text())
         manifest['resources'] = [row for row in manifest['resources'] if not row['path'].endswith('.map')]
         manifest_path.write_text(json.dumps(manifest) + '\n')
+        # Give the scratch product binary its normal Bundle.main resource paths;
+        # XCTest's main bundle can belong to the system runner and is never edited.
+        shutil.copytree(dist, binary.parent / 'web/dist')
+        shutil.copy2(assets / 'protocol/remote-client-config-policy.v1.json', binary.parent / 'remote-client-config-policy.v1.json')
         downloads = scratch / 'downloads'; downloads.mkdir()
+        qualify_cold_client([str(binary), '--qualify-app-scheme', str(dist),
+            str(assets / 'protocol/remote-client-config-policy.v1.json'), '0'],
+            env, scratch, deadline, section, downloads)
         code = None
         with synthetic_daemon() as (port, sends):
             try:
@@ -502,6 +531,8 @@ def run(report: dict[str, Any]) -> None:
             qualify_dialogs([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
                 str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
                 env, scratch, deadline, section, downloads)
+        if section['cold_client']['status'] != 'PASS':
+            raise RuntimeError('cold-client production composition failed; retain receipt')
         if section['dialogs']['status'] != 'PASS':
             raise RuntimeError('dialog screenshot qualification failed; retain capture evidence')
         if section['qualification']['status'] != 'PASS':

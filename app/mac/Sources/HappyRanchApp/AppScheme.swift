@@ -346,7 +346,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if let reason = switchRefusal { return reason }
         self.transport = transport; self.remote = remote; targetID = id
         self.promptURL = remote ? nil : promptURL
-        accessUnsaved = false; hostContract = nil; state = "target_starting"
+        hostContract = nil; state = "target_starting"
         advanceGeneration()
         return nil
     }
@@ -355,7 +355,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     func disconnect() -> String? {
         if let reason = switchRefusal { return reason }
         guard disconnectSelected?() == true else { return "busy" }
-        transport = nil; targetID = nil; accessUnsaved = false
+        transport = nil; targetID = nil
         state = "no_target"; hostContract = nil
         advanceGeneration()
         return nil
@@ -527,6 +527,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             if !["GET", "HEAD"].contains(method) && owners.values.filter({ !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }).count >= 2 {
                 reply(urlSchemeTask, status: 429, code: "too_many_requests"); return
             }
+            guard transport != nil else { reply(urlSchemeTask, status: 503, code: "no_target"); return }
             owners[key] = Owner(requestID: id, generation: generation, task: urlSchemeTask)
             lifecycle(key, "start")
             owners[key]?.worker = Task { [weak self] in

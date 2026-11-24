@@ -58,7 +58,11 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 The native toolbar and application menu now request the existing shared web
 Settings and Connection dialogs in the retained Main document. Settings… uses
-Cmd+,. The packager no longer builds/stages the obsolete `dist-connection` /
+Cmd+,. ContentView creates Main on a cold client with no selected target;
+dialog subscription readiness is independent of transport readiness. API calls
+without a selected target return `503 no_target`. Dialog entry starts no daemon
+and makes no connection. The packager no longer builds/stages the obsolete
+`dist-connection` /
 `Contents/Resources/Connection` auxiliary app. No second web app or listener is
 created. The shared dialog owner gate
 continues to own switching, unsaved edits, focus and close; opening a dialog
@@ -73,7 +77,11 @@ confirmation/Keychain and write/readback implementation. Main reuses that
 dispatcher without constructing its former auxiliary window or bundle. Named
 dialog/client subscriptions are document scoped; retirement revokes them and
 late replies cannot enter a replacement Main. A missing document never clears
-the warning as though access had been saved. The legacy phase strip remains
+the warning as though access had been saved. Disconnect, Cancel, target changes
+and navigation retain failed-save outcomes, without retaining session credentials.
+Only the existing protected write/readback for the matching binding clears its
+warning; saving a different computer does not confirm the original failure.
+The legacy phase strip remains
 until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
 launch/close/Quit/Relaunch policy are outside this slice.
 
@@ -102,7 +110,15 @@ The source PR starts at **0/6 Mac builds**. The existing portable command below
 checks collector failures and the shipping JavaScript event/retirement seam;
 it does not establish native acceptance. `MainDialogTests` adds real WebKit
 drop/subscription/retirement and native toolbar/Retry/warning coverage to the
-unfiltered native workload.
+unfiltered native workload. The same product qualifier also runs a portless
+`cold-client` case through the real ContentView/AppDelegate composition, using
+the release assets at its normal bundle resource paths. It requires focused
+Settings/Connection from menus, toolbar and manual Retry, no replay/selection,
+and explicit `503 no_target`; its receipt is required independently of captures.
+The native save-outcome cases exercise model → scheme Disconnect → toolbar and
+a matching production Keychain write/readback in the existing disposable login
+fixture. These added native cases and their regression proofs are **NOT RUN**
+on Linux.
 
 ### MAC-1 / MAC-2a: Main app scheme, transport and ownership
 

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import CoreFoundation
 import WebKit
 import HappyRanchSupervisor
@@ -515,10 +516,104 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
 })();
 """#
 
+    /// Existing product qualification venue, using the actual ContentView and
+    /// AppDelegate composition with resources staged beside this scratch binary.
+    private static func qualifyColdClient(events: String) -> Never {
+        do {
+            let log = try AppSchemeEventLog(events)
+            let application = NSApplication.shared
+            application.setActivationPolicy(.regular)
+            let app = AppDelegate()
+            app.connectionRolePreference = .client
+            app.showSettings() // Unavailable entry requires a new manual Retry.
+            let host = NSHostingView(rootView: ContentView().environmentObject(app))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = host; window.makeKeyAndOrderFront(nil)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 35) { log.write("watchdog"); _exit(124) }
+            Task { @MainActor in
+                var checkpoint = "composition"
+                @MainActor func findWebView(_ parent: NSView) -> WKWebView? {
+                    if let view = parent as? WKWebView { return view }
+                    return parent.subviews.lazy.compactMap { findWebView($0) }.first
+                }
+                do {
+                    let deadline = Date().addingTimeInterval(25)
+                    while findWebView(host) == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+                    guard let view = findWebView(host),
+                          let scheme = view.configuration.urlSchemeHandler(forURLScheme: "happyranch-app") as? AppScheme else { throw AppAPIError.unavailable }
+                    defer { scheme.close() }
+                    checkpoint = "document-admission"
+                    while scheme.documentAdmission.readiness != "no_target", Date() < deadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    guard scheme.documentAdmission.bind == "true", scheme.documentAdmission.readiness == "no_target" else { throw AppAPIError.unavailable }
+                    let generation = scheme.generation
+                    checkpoint = "subscription"
+                    _ = try await view.callAsyncJavaScript("window.coldDialogs = []; window.happyranchConnection.on('app.dialogRequested', raw => coldDialogs.push(JSON.parse(raw).dialog)); await window.happyranchConnection.call('app.status', '{}');", arguments: [:], in: nil, contentWorld: .page)
+                    try await Task.sleep(for: .milliseconds(100))
+                    let queued = try await view.callAsyncJavaScript("return coldDialogs.length;", arguments: [:], in: nil, contentWorld: .page) as? Int
+                    guard queued == 0, let toolbar = window.toolbar else { throw AppAPIError.unavailable }
+                    @MainActor func click(_ id: String) throws {
+                        guard let button = toolbar.items.first(where: { $0.itemIdentifier.rawValue == id })?.view as? NSButton else { throw AppAPIError.unavailable }
+                        button.performClick(nil)
+                    }
+                    @MainActor func requireDialog(_ expected: String) async throws {
+                        while Date() < deadline {
+                            let ready = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);", arguments: ["expected": expected], in: nil, contentWorld: .page) as? Bool
+                            if ready == true { return }
+                            try await Task.sleep(for: .milliseconds(25))
+                        }
+                        throw AppAPIError.unavailable
+                    }
+                    checkpoint = "retry-settings"
+                    try click("dialog-retry"); try await requireDialog("settings")
+                    checkpoint = "menu-connection"
+                    app.showConnection(); try await requireDialog("connection")
+                    checkpoint = "menu-settings"
+                    app.showSettings(); try await requireDialog("settings") // Cmd+, action.
+                    checkpoint = "toolbar-connection"
+                    try click("connection"); try await requireDialog("connection")
+                    checkpoint = "toolbar-settings"
+                    try click("settings"); try await requireDialog("settings")
+                    let expected = #"["settings","connection","settings","connection","settings"]"#
+                    var received: String?
+                    repeat {
+                        received = try await view.callAsyncJavaScript("return JSON.stringify(coldDialogs);", arguments: [:], in: nil, contentWorld: .page) as? String
+                        if received != expected { try await Task.sleep(for: .milliseconds(10)) }
+                    } while received != expected && Date() < deadline
+                    guard received == expected else { throw AppAPIError.unavailable }
+                    checkpoint = "api-no-target"
+                    let raw = try await view.callAsyncJavaScript("const r = await fetch('happyranch-app://app/api/v1/auth/bootstrap'); return JSON.stringify({status:r.status,body:await r.json()});", arguments: [:], in: nil, contentWorld: .page) as? String
+                    guard let raw, let response = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                          response["status"] as? Int == 503, let body = response["body"] as? [String: Any],
+                          (body["detail"] as? [String: String])?["code"] == "no_target",
+                          scheme.generation == generation, app.webViewURL == nil, app.appAPITransport == nil,
+                          app.clientBridge == nil, !app.homeInvite.hasActiveSession, app.homeInvite.candidateID == nil,
+                          !app.isConnecting, app.currentHandle == nil, app.supervisor.state == .notConfigured else { throw AppAPIError.unavailable }
+                    log.write("cold_client", ["status": "PASS", "entries": 5, "dialogs": true, "no_target": true, "unchanged_target": true])
+                    scheme.close()
+                    window.orderOut(nil); window.contentView = nil
+                    exit(0)
+                } catch {
+                    log.write("cold_client", ["status": "FAIL", "checkpoint": checkpoint])
+                    exit(1)
+                }
+            }
+            application.run()
+            exit(1)
+        } catch { exit(2) }
+    }
+
     static func run(_ arguments: [String]) -> Never {
-        guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]), port > 0 else { exit(2) }
+        guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]) else { exit(2) }
         let mode = arguments.count == 7 ? arguments[6] : "all"
-        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh"].contains(mode) else { exit(2) }
+        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh", "cold-client"].contains(mode) else { exit(2) }
+        if mode == "cold-client" {
+            guard port == 0 else { exit(2) } // Portless: no transport is constructed.
+            qualifyColdClient(events: arguments[4])
+        }
+        guard port > 0 else { exit(2) }
         if mode.hasPrefix("dialogs-") {
             UserDefaults.standard.setVolatileDomain(["AppleLanguages": [mode == "dialogs-zh" ? "zh-Hans" : "en"]], forName: UserDefaults.argumentDomain)
         }

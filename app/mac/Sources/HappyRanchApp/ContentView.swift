@@ -173,7 +173,7 @@ struct WebView: NSViewRepresentable {
         do {
             guard let root = Bundle.main.resourceURL?.appendingPathComponent("web/dist", isDirectory: true) else { throw AppAPIError.unavailable }
             let scheme = try AppScheme(root: root, transport: transport, remote: remote,
-                promptURL: remote ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
+                promptURL: remote || transport == nil ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
             scheme.configure(config); context.coordinator.scheme = scheme
             onScheme?(scheme)
             scheme.updateCandidate(candidate, accessUnsaved: accessUnsaved)
@@ -209,32 +209,32 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
-                ZStack(alignment: .top) {
-                    let lifetime = appDelegate.homeInvite.lifetime
-                    WebView(url: url, transport: appDelegate.appAPITransport,
-                        remote: appDelegate.homeInvite.hasActiveSession || appDelegate.connectionRole == .client,
-                        accessUnsaved: appDelegate.homeInvite.activeHasUnsavedAccess,
-                        readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
-                        candidate: appDelegate.homeInvite.bridgeCandidate,
-                        onScheme: { appDelegate.bindMainScheme($0) },
-                        onLoaded: {
-                            appDelegate.homeInvite.mainDocumentAdmitted()
-                            appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime)
-                        },
-                        onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
-                        .id("happyranch-main-document")
-                    if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
-                        HomeSessionStatus(model: appDelegate.homeInvite)
-                            .environmentObject(appDelegate)
-                    }
-                    if appDelegate.supervisor.state == .unhealthy ||
-                       appDelegate.supervisor.state == .failed {
-                        unhealthyBanner
-                    }
+            // The packaged document hosts dialogs even before a target exists.
+            // This URL is callback identity only; WebKit always loads app origin.
+            let url = appDelegate.webViewURL.flatMap { URL(string: $0) }
+                ?? URL(string: AppSchemeRoute.origin + "/")!
+            ZStack(alignment: .top) {
+                let lifetime = appDelegate.homeInvite.lifetime
+                WebView(url: url, transport: appDelegate.appAPITransport,
+                    remote: appDelegate.homeInvite.hasActiveSession || appDelegate.connectionRole == .client,
+                    accessUnsaved: appDelegate.homeInvite.hasUnsavedAccessWarning,
+                    readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
+                    candidate: appDelegate.homeInvite.bridgeCandidate,
+                    onScheme: { appDelegate.bindMainScheme($0) },
+                    onLoaded: {
+                        appDelegate.homeInvite.mainDocumentAdmitted()
+                        appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime)
+                    },
+                    onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
+                    .id("happyranch-main-document")
+                if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
+                    HomeSessionStatus(model: appDelegate.homeInvite)
+                        .environmentObject(appDelegate)
                 }
-            } else {
-                placeholderView
+                if appDelegate.supervisor.state == .unhealthy ||
+                   appDelegate.supervisor.state == .failed {
+                    unhealthyBanner
+                }
             }
         }
         .sheet(isPresented: $appDelegate.showDiagnostics) {

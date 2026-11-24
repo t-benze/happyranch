@@ -1701,7 +1701,10 @@ submitted by QA, never the maker.
 
 Mac now requests Settings… (Cmd+,) and Connection… from the application menu
 and labelled native toolbar entries through the same `app.dialogRequested`
-event. Native emits only to the current Main's admitted subscriber, including
+event. ContentView hosts the bundled Main before any target is selected, so a
+cold/no-target client can subscribe and use these entries. API calls still
+refuse with `503 no_target`; dialog entry never starts or connects a target.
+Native emits only to the current Main's admitted subscriber, including
 target recovery. Requests without that subscriber are dropped; a named native
 Retry needs a new explicit click. Opening, switching and closing remain the
 existing shared web dialog/owner gate's responsibility. There is no auxiliary
@@ -1720,7 +1723,10 @@ dependency, schema or credential-custody rule changes.
 The native status/candidate pill and persistent access-unsaved warning use
 `app.status` projections. Clicking the warning opens Connection's existing
 save-specific Retry presentation. Unavailable document evidence preserves the
-warning until a current native status confirms otherwise. Native labels follow
+warning across Disconnect, Cancel, target changes and navigation. Native retains
+nonsecret failed-save binding evidence independently of session custody; only
+the matching protected write/readback success clears it. No active target and
+an unrelated computer's successful save are not confirmation. Native labels follow
 the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
 legacy phase-strip/compatibility cutover remain separate.
 
@@ -1730,8 +1736,12 @@ EN/ZH and light/dark (24 total). Same-product qualifier processes check the
 visible/focused dialog and locale, then combine WebKit snapshots with the native
 AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
 in `probe.json.app_scheme.dialogs`; no Jenkins job/config change is required.
-The full unfiltered XCTest + Swift Testing and transport qualification remain
-in the same workload. Native compile/tests/captures/layout/accessibility are
+A required portless cold-client qualification uses the real ContentView/
+AppDelegate composition and production resource lookup; it checks focused
+Settings/Connection from menus, toolbar and manual Retry, no replay or target
+selection, and explicit `503 no_target`. The full unfiltered XCTest + Swift
+Testing and transport qualification remain in the same workload. Native
+compile/tests/captures/layout/accessibility are
 NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
 exact head and consumes this PR's allowance (initial ledger 0/6).
 
