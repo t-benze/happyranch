@@ -59,6 +59,15 @@ other roots, threads, dreams, wakes and schedules can start independently.
 
 ## Admission and drain
 
+THR-395 narrows original-tail settlement for a terminal native refusal before
+executor admission/launch: all original repository obligations must already
+have durable, coherent native command, worker, outer-effect and closed receipts,
+the producer must be settled, and no running job or cleanup-reported live process
+may remain. Only that actual original owner can retire its Pause entry. Missing
+or unreadable evidence, possible/observed launch, unfinished commands and
+historical unknown owners still block. Holds and sticky native cleanup history
+remain unchanged. See the [lifecycle contract](../agent-guides/contracts/runtime-lifecycle.md#bounded-ordinary-native-launch-refusals-thr-315).
+
 Preparation reserves only a closed, bounded invocation journal and prospective
 identity. After actual host/provider readiness, the short final transaction
 rechecks actual ancestry, hold, original owner, eligibility and authority. It
@@ -245,10 +254,19 @@ available through GET /tasks/pause-overview, its TS client and
 Pending roots have no Pause; descendant detail shows inherited hold and the actual
 root link. Founder THR-292 seq77 (TASK-11155) sets the header presentation from the
 shared "Task Header - Pause States" artifact: compact Pause in the ordinary
-Revisit/Cancel/audit row; Pausing = amber "Waiting for current work to finish"
+Revisit/Cancel/audit row; Pausing = amber "Pausing"
 indicator, secondary Resume and a default-closed disclosure; Paused = separate
 Paused indicator and primary Resume; mobile order indicator/Resume, disclosure,
-actions in normal document flow. Supported-data adaptations: blocker rows render only
+actions in normal document flow. THR-395: held detail uses the same API pause
+projection as roots/list reads and suppresses the ordinary child/job waiting
+qualifier and old work-status block context. With observed terminal children,
+old delegated block metadata/work-status context is also suppressed. The
+existing detail envelope already supplies pause; list rows remain pause-free.
+The disclosure explains whether current work or unconfirmed cleanup is blocking.
+The existing browser evidence harness has a `--correction-only --slice held`
+selection for real detail components with terminal-child fixtures, top-level
+pause envelopes, blockers, both locales/viewports and preserved Cancel drafts.
+Supported-data adaptations: blocker rows render only
 kind, actual task/job links, raw owner_kind and reason (no title, agent or start
 time exists); owner_kind is not an assignee and observed_at is not a start time, so
 the single projection observed_at appears inside the disclosure. Only
@@ -334,7 +352,7 @@ or unknown causal actions still refuse before terminal or parent effects.
 An actual refusal after durable preparation fails earlier: the existing outer
 settlement makes an unclosed preparation unknown, and unknown owners cannot safely
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
-parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
+parent enqueue and thread followup; it never clears `failed_cleanup`, unresolved
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
 provider and recovery ceilings remain. Intentional Pause or shared preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no

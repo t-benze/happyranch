@@ -480,6 +480,37 @@ lint/static analysis cannot establish behavioral acceptance.
 
 ### Bounded ordinary native launch refusals (THR-315)
 
+THR-395: original repository completion records every worker/outer/closed receipt
+before releasing the batch's original leases. A lease-release exception records
+unknown before further fallible cleanup, preserves the first error and attempts
+every remaining release; it cannot abandon a later repository's completion.
+The existing version1 `repository_preparation` events/APIs and native refusal
+audit shape are unchanged. A successful last fetch is not the refusal's cause.
+
+The original task tail may retire its own unknown Pause entry only after a real
+terminal task and producer settlement, with no committed executor admission or
+observed launch, no active preparation worker/completion, no running job, and no
+cleanup-reported live process. Every original obligation must have coherent
+durable native receipts plus worker/outer/closed records matching the same
+owner, attempt and current closed effect intervals. Missing, unreadable or
+conflicting evidence retains unknown. Native `failed_cleanup` history remains
+sticky; this closes only proven-idle Pause attribution and grants no admission,
+hold release, retry or foreign-owner cleanup.
+
+The generic `transition_capture_or_teardown_unavailable` tail disposition may
+be discharged only by this independent original no-launch/closure proof. Other
+unknown cleanup dispositions remain blocking even with an empty process list.
+
+This proof needs the actual original owner; discovery and startup never
+reconstruct it. Historical unknown records missing worker/outer/closed evidence
+(including TASK-18934's services preparation) remain unresolved after deployment
+or restart. Finished commands alone cannot supply missing outer-effect closure.
+The read-only `happyranch tasks preparation-recovery TASK-18934 --org happyranch --json`
+shows the missing predicates. Human `reconcile-preparation` also requires the
+original owner and complete proof; with that owner lost it will refuse, so there
+is no supported repair command to recommend. Historical recovery needs a separate
+authorized design/action; do not resume, repair the DB or restart to force it.
+
 THR-307 seq388/389: before the existing session admission commits, scratch
 preparation/launch exits compensate only an empty root exclusively created by
 that attempt. Creation pins the directory inode; cleanup rechecks its identity
@@ -509,7 +540,7 @@ or unknown causal actions still refuse before terminal or parent effects.
 An actual refusal after durable preparation fails earlier: the existing outer
 settlement makes an unclosed preparation unknown, and unknown owners cannot safely
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
-parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
+parent enqueue and thread followup; it never clears `failed_cleanup`, unresolved
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
 provider and recovery ceilings remain. Intentional Pause/shared-preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no

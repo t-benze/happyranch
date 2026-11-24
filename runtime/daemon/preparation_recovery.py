@@ -1,4 +1,4 @@
-"""Initial-startup repository preparation settlement; never reconstruct a live owner."""
+"""Original-tail and initial-startup preparation proof; never reconstruct a live owner."""
 from __future__ import annotations
 
 from contextlib import ExitStack
@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 import stat
 import time
@@ -18,6 +19,69 @@ from runtime.orchestrator.workspace_adapters import _repo_directory, _repo_refre
 
 logger = logging.getLogger('happyranch.daemon')
 STARTUP_ACTION = 'repository_preparation_startup_closed'
+
+
+def refused_task_idle(live: Any, entry: dict, cleanup: Any) -> bool:
+    """Positive original-tail proof only; never reconstruct a historical owner.
+
+    Called under the Pause writer AFTER durable unknown and producer settlement.
+    Repository closure receipts prove the preparation processes, while the
+    original invocation proves that executor admission was never committed.
+    Sticky native cleanup history and hold/admission policy are unchanged.
+    """
+    from runtime.infrastructure.db.tasks import RepositoryPreparationError, repository_preparation_closed
+    from runtime.models import TaskStatus
+    if (live.owner not in {'ordinary', 'v2', 'recovery'} or live.unsettled
+            or live.launch_observed or live.attempt_committed or live.admitted
+            or live._repository_worker_active or getattr(live, '_repository_completion_active', False)
+            or not entry['context'].get('producer_settled') or entry['started_at'] is not None
+            or live.identity in live.store._live
+            or cleanup is not None and (cleanup.processes or cleanup.kind not in {'safe', 'unknown'}
+                or cleanup.kind == 'unknown' and cleanup.reason != 'transition_capture_or_teardown_unavailable')):
+        return False
+    db = live.orch._db
+    task = db.get_task(live.task.id)
+    reservation = live.move_reservation
+    evidence = live._repository_preparations
+    if (task is None or task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED,
+            TaskStatus.CANCELLED, TaskStatus.SUPERSEDED} or task.current_session_id is not None
+            or reservation is None or reservation.possible_launch
+            or not reservation.owner_live
+            or live.orch._team_moves._reservations.get(reservation.owner_id) is not reservation
+            or not evidence or set(evidence) != set(reservation.repository_obligations)
+            or not all(reservation.repository_obligations.values())
+            or any(e.owner is not live or not e.closed or not e.worker_returned or e.pending or e.uncertain
+                   for e in evidence.values())
+            or any(not v['closed'] or v['failed'] for v in live._repository_effect_intervals)
+            or any(other.task.id == task.id for other in live.store._live.values())
+            or db._conn.execute("SELECT 1 FROM jobs WHERE task_id=? AND status='running' LIMIT 1", (task.id,)).fetchone()):
+        return False
+    try:
+        history = db.repository_preparation_history_uncommitted(task.id)
+        streams: dict[str, list[dict]] = {}
+        for row in history:
+            event = row['event']
+            if event['owner']['invocation_id'] == live.identity:
+                if (event['obligation'] not in evidence or event['owner'] != evidence[event['obligation']].binding
+                        or event['owner']['attempt_id'] != live.refusal_attempt_id):
+                    return False
+                streams.setdefault(event['obligation'], []).append(event)
+        if set(streams) != set(evidence) or any(not repository_preparation_closed(events)
+                or events[-1]['phase'] != 'closed'
+                or next(e['inventory']['intervals'] for e in events if e['phase'] == 'outer_closed')
+                    != live._repository_effect_intervals for events in streams.values()):
+            return False
+        rows = db._conn.execute("SELECT CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=8192 "
+            "THEN payload END FROM audit_log WHERE task_id=? AND action='task_native_launch_boundary' "
+            "ORDER BY id DESC LIMIT 3", (task.id,)).fetchall()
+        native = [json.loads(row[0]) for row in rows]
+        return bool(native and native[0]['kind'] == 'refused'
+            and native[0]['invocation_id'] == live.identity
+            and native[0]['attempt_id'] == live.refusal_attempt_id
+            and native[0]['session_id'] == live.session_id
+            and native[0]['disposition'] == 'unclosed_preparation')
+    except (RepositoryPreparationError, sqlite3.Error, ValueError, TypeError, KeyError, StopIteration):
+        return False
 
 
 def settle_preparation(current: dict, live: Any, native_binding: dict | None) -> str | None:

@@ -3427,8 +3427,20 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
                     safe_error.add_note("repository preparation cause attribution failed; original failure retained")
             if primary is None:
                 primary = safe_error
-        finally:
+    # Every original worker has returned. Close ALL preparation obligations
+    # while their original leases are still held; a descriptor-release error
+    # must not strand the next repository's worker/outer receipts.
+    for record in work:
+        try:
             record["lease"].__exit__(None, None, None)
+        except BaseException as exc:
+            # Retain unknown before another fallible release or attribution.
+            try:
+                preparation.failed_cleanup(repository_deadline=record["deadline"])
+            except BaseException:
+                exc.add_note("repository lease release attribution unavailable; ownership remains unknown")
+            if primary is None:
+                primary = _repo_pull_safe_error(exc)
     if primary is not None:
         raise primary from None
     return results

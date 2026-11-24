@@ -413,7 +413,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "seqwf.v2.banner.linked": "此任务关联到运行 {run}。",
   "tasks.pause.pause": "暂停",
   "tasks.pause.resume": "恢复",
-  "tasks.pause.pausing": "正在等待当前工作完成",
+  "tasks.pause.pausing": "正在暂停",
   "tasks.pause.paused": "已暂停",
   "tasks.pause.unavailable": "暂停控制不可用：缺少投影或代数信息，或与此任务及组织不匹配。",
   "tasks.pause.inherited": "继承根任务 {id} 的暂停状态",
