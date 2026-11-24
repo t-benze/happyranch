@@ -4282,7 +4282,10 @@ caps are 16 MiB each, and the compile/test step has 1,200s within the 2,100s sui
 deadline with elapsed times recorded. These bounds are not measured full-suite
 timing evidence on Linux. The portable command above also checks full-workload
 invocation, multiline source census, per-case negative evidence and retention
-beyond 16 KiB; it does not execute Swift or establish native PASS. The suite
+beyond 16 KiB, plus scratch-Keychain cleanup/preference bookends. The full run
+reuses the supervisor fixture for existing enrollment tests; its 30s cleanup
+grace and preference checks are unchanged. Portable execution does not invoke
+Security.framework or establish native PASS. The suite
 then qualifies the production loader, body adapter and SPA against a private
 synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 The deep reload targets stable `/onboarding` for the empty-org fixture:

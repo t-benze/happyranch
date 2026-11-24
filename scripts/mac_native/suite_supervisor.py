@@ -175,6 +175,116 @@ def _swift_test_command(
     ]
 
 
+def _prepare_keychain(
+    cleanup: ExitStack, env: dict[str, str], scratch: Path, deadline: float,
+    row: Callable[[str, str, Any, Any], None], checks: list[dict[str, Any]],
+) -> None:
+    """Existing disposable login fixture, shared by native test workloads."""
+    # Jenkins itself redirects HOME before this suite starts. Account data,
+    # rather than the inherited scratch HOME, selects the read-only bookends.
+    real_env = dict(os.environ)
+    real_env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+    real_env.pop("CFFIXED_USER_HOME", None)
+    def preferences() -> dict[str, Any]:
+        values = {}
+        for command in ("list-keychains", "default-keychain"):
+            argv = ["/usr/bin/security", command, "-d", "user"]
+            stderr = bytearray()
+            try:
+                code, output = _command(argv, real_env, scratch,
+                                        min(deadline + 30, time.monotonic() + 10),
+                                        output_cap=4096, stderr_data=stderr)
+                stdout = "\n".join(line.strip() for line in output.decode(errors="replace").splitlines()).strip()
+                diagnostic = stderr.decode(errors="replace").strip()
+                category = "unexpected_error"
+                if code == 0 and not diagnostic:
+                    category = "none"
+                elif (command == "default-keychain" and code == 1 and not stdout
+                      and diagnostic == "security: SecKeychainCopyDomainDefault user: A default keychain could not be found."):
+                    category = "no_default_keychain"
+                values[command] = {"exit_code": code, "stdout": stdout, "stderr_category": category}
+                if category == "unexpected_error":
+                    values[command]["diagnostic"] = diagnostic[:1024]
+            except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                values[command] = {"exit_code": None, "stdout": "", "stderr_category": "read_error",
+                                   "error": type(exc).__name__}
+        return values
+
+    before = preferences()
+
+    def preferences_unchanged() -> None:
+        after = preferences()
+        for command in before:
+            unchanged = before[command] == after[command]
+            row("real_keychain_" + command.replace("-", "_") + "_unchanged",
+                "PASS" if unchanged else "FAIL", "original user preference unchanged",
+                {"before": before[command], "after": after[command]})
+        if any(item["status"] == "FAIL" for item in checks):
+            raise RuntimeError("native verification or Keychain fixture failed; inspect checks")
+
+    # Registered before fixture creation; runs after exact keychain deletion
+    # and before scratch removal, even when preflight or tests fail.
+    cleanup.callback(preferences_unchanged)
+    before_ok = all(value["stderr_category"] in {"none", "no_default_keychain"}
+                    for value in before.values())
+    row("real_keychain_preferences_before", "PASS" if before_ok else "FAIL",
+        "read user preferences with account HOME; empty list/no default are valid", before)
+    if not before_ok:
+        raise RuntimeError("real Keychain preferences unavailable; no fixture or tests ran")
+    keychain = scratch / "home/Library/Keychains/login.keychain-db"
+    keychain.parent.mkdir(parents=True, exist_ok=True)
+    create_attempted = False
+
+    def remove_keychain() -> None:
+        if create_attempted:
+            argv = ["/usr/bin/security", "delete-keychain", str(keychain)]
+            try:
+                code, output = _command(argv, env, scratch,
+                                        min(deadline + 30, time.monotonic() + 10),
+                                        output_cap=4096)
+                gone = not keychain.exists()
+                row("disposable_keychain_deleted", "PASS" if code == 0 and gone else "FAIL",
+                    "delete exact scratch login Keychain before scratch removal",
+                    {"command": argv, "exit_code": code, "absent": gone,
+                     "output": output.decode(errors="replace")[:1024]})
+            except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                row("disposable_keychain_deleted", "FAIL", "delete exact scratch login Keychain",
+                    {"error": type(exc).__name__})
+
+    cleanup.callback(remove_keychain)
+    password = secrets.token_hex(32)
+    try:
+        # security -i reads one command from stdin and returns that command's
+        # status. Never use -v, expose the password in argv, or retain its output.
+        quoted_path = '"' + str(keychain).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        if any(char in quoted_path for char in "\r\n"):
+            raise RuntimeError("invalid scratch Keychain path")
+        for command in ("create-keychain", "unlock-keychain", "set-keychain-settings"):
+            secret = " -p " + password if command != "set-keychain-settings" else ""
+            instruction = (command + secret + " " + quoted_path + "\n").encode()
+            create_attempted = True
+            try:
+                code, _ = _command(["/usr/bin/security", "-i"], env, scratch,
+                                   min(deadline, time.monotonic() + 15),
+                                   output_cap=4096, input_data=instruction)
+            except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                code = -1
+                failure = type(exc).__name__
+            else:
+                failure = None
+            passed = code == 0 and keychain.is_file()
+            row("disposable_keychain_" + command.replace("-keychain", "").replace("-", "_"),
+                "PASS" if passed else "FAIL", "scratch login Keychain; unlocked; no timeout",
+                {"operation": command, "path": str(keychain), "exit_code": code,
+                 "password_transport": "stdin only; output suppressed", "error": failure})
+            if not passed:
+                raise RuntimeError("disposable Keychain fixture failed; no tests ran")
+    finally:
+        password = ""
+        instruction = b""
+        secret = ""
+
+
 def supervisor(report: dict[str, Any]) -> None:
     """No installs, Jenkins operations, GUI launch, or daemon startup."""
     checks: list[dict[str, Any]] = []
@@ -213,11 +323,6 @@ def supervisor(report: dict[str, Any]) -> None:
         cleanup.callback(scratch_removed)
         folder = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="supervisor-", dir=tmp))
         scratch = Path(folder).resolve(strict=True)
-        # Jenkins itself redirects HOME before this suite starts. Account data,
-        # rather than the inherited scratch HOME, selects the read-only bookends.
-        real_env = dict(os.environ)
-        real_env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
-        real_env.pop("CFFIXED_USER_HOME", None)
         env = _build_environment(scratch)
 
         # FIRST rows: actual, read-only toolchain observations. Always attempt
@@ -237,104 +342,7 @@ def supervisor(report: dict[str, Any]) -> None:
         if not cap_ok:
             raise RuntimeError("native file cap unavailable; no build ran")
 
-        def preferences() -> dict[str, Any]:
-            values = {}
-            for command in ("list-keychains", "default-keychain"):
-                argv = ["/usr/bin/security", command, "-d", "user"]
-                stderr = bytearray()
-                try:
-                    code, output = _command(argv, real_env, scratch,
-                                            min(deadline + 30, time.monotonic() + 10),
-                                            output_cap=4096, stderr_data=stderr)
-                    stdout = "\n".join(line.strip() for line in output.decode(errors="replace").splitlines()).strip()
-                    diagnostic = stderr.decode(errors="replace").strip()
-                    category = "unexpected_error"
-                    if code == 0 and not diagnostic:
-                        category = "none"
-                    elif (command == "default-keychain" and code == 1 and not stdout
-                          and diagnostic == "security: SecKeychainCopyDomainDefault user: A default keychain could not be found."):
-                        category = "no_default_keychain"
-                    values[command] = {"exit_code": code, "stdout": stdout, "stderr_category": category}
-                    if category == "unexpected_error":
-                        values[command]["diagnostic"] = diagnostic[:1024]
-                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                    values[command] = {"exit_code": None, "stdout": "", "stderr_category": "read_error",
-                                       "error": type(exc).__name__}
-            return values
-
-        before = preferences()
-
-        def preferences_unchanged() -> None:
-            after = preferences()
-            for command in before:
-                unchanged = before[command] == after[command]
-                row("real_keychain_" + command.replace("-", "_") + "_unchanged",
-                    "PASS" if unchanged else "FAIL", "original user preference unchanged",
-                    {"before": before[command], "after": after[command]})
-            if any(item["status"] == "FAIL" for item in checks):
-                raise RuntimeError("native verification or Keychain fixture failed; inspect checks")
-
-        # Registered before fixture creation; runs after exact keychain deletion
-        # and before scratch removal, even when preflight or tests fail.
-        cleanup.callback(preferences_unchanged)
-        before_ok = all(value["stderr_category"] in {"none", "no_default_keychain"}
-                        for value in before.values())
-        row("real_keychain_preferences_before", "PASS" if before_ok else "FAIL",
-            "read user preferences with account HOME; empty list/no default are valid", before)
-        if not before_ok:
-            raise RuntimeError("real Keychain preferences unavailable; no fixture or tests ran")
-        keychain = scratch / "home/Library/Keychains/login.keychain-db"
-        keychain.parent.mkdir(parents=True, exist_ok=True)
-        create_attempted = False
-
-        def remove_keychain() -> None:
-            if create_attempted:
-                argv = ["/usr/bin/security", "delete-keychain", str(keychain)]
-                try:
-                    code, output = _command(argv, env, scratch,
-                                            min(deadline + 30, time.monotonic() + 10),
-                                            output_cap=4096)
-                    gone = not keychain.exists()
-                    row("disposable_keychain_deleted", "PASS" if code == 0 and gone else "FAIL",
-                        "delete exact scratch login Keychain before scratch removal",
-                        {"command": argv, "exit_code": code, "absent": gone,
-                         "output": output.decode(errors="replace")[:1024]})
-                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                    row("disposable_keychain_deleted", "FAIL", "delete exact scratch login Keychain",
-                        {"error": type(exc).__name__})
-
-        cleanup.callback(remove_keychain)
-        password = secrets.token_hex(32)
-        try:
-            # security -i reads one command from stdin and returns that command's
-            # status. Never use -v, expose the password in argv, or retain its output.
-            quoted_path = '"' + str(keychain).replace("\\", "\\\\").replace('"', '\\"') + '"'
-            if any(char in quoted_path for char in "\r\n"):
-                raise RuntimeError("invalid scratch Keychain path")
-            for command in ("create-keychain", "unlock-keychain", "set-keychain-settings"):
-                secret = " -p " + password if command != "set-keychain-settings" else ""
-                instruction = (command + secret + " " + quoted_path + "\n").encode()
-                create_attempted = True
-                try:
-                    code, _ = _command(["/usr/bin/security", "-i"], env, scratch,
-                                       min(deadline, time.monotonic() + 15),
-                                       output_cap=4096, input_data=instruction)
-                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                    code = -1
-                    failure = type(exc).__name__
-                else:
-                    failure = None
-                passed = code == 0 and keychain.is_file()
-                row("disposable_keychain_" + command.replace("-keychain", "").replace("-", "_"),
-                    "PASS" if passed else "FAIL", "scratch login Keychain; unlocked; no timeout",
-                    {"operation": command, "path": str(keychain), "exit_code": code,
-                     "password_transport": "stdin only; output suppressed", "error": failure})
-                if not passed:
-                    raise RuntimeError("disposable Keychain fixture failed; no tests ran")
-        finally:
-            password = ""
-            instruction = b""
-            secret = ""
+        _prepare_keychain(cleanup, env, scratch, deadline, row, checks)
         swift = discovered["swift_path"]
         common = _swift_test_command(swift, ROOT / "app/mac", scratch, env)
         for name, extra in (

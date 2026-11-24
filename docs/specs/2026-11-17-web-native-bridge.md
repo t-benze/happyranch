@@ -1752,6 +1752,10 @@ fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed ti
 recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
 The existing app-scheme qualification budgets/steps and Jenkins configuration
 remain unchanged. See the full workload and bounds in `app/mac/README.md`.
+The full run reuses the supervisor's scratch login-Keychain fixture for the
+existing enrollment tests, with exact cleanup and unchanged real-user preference
+bookends (including the existing bounded 30s cleanup grace). Fixture failure
+refuses success; product custody implementation and real preferences are unchanged.
 Every page event is emitted immediately to native and fsynced; final-only arrays
 are forbidden. Pass requires all five one-second-spaced events below 500 ms
 receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later

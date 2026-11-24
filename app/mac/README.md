@@ -163,8 +163,14 @@ APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
 It compiles the product and runs **all tests in both app/mac test targets** in
 one unfiltered `swift test -c release` invocation, then launches that same
 product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
-uses the production loader/adapter and built SPA. No real daemon, Keychain,
-helper, signing or production data is used. The synthetic local venue uses the
+uses the production loader/adapter and built SPA. The full tests reuse the
+supervisor suite's disposable, unlocked login Keychain inside scratch HOME for
+EnrollmentKeyStoreTests. Its generated password travels only over stdin;
+creation/unlock output is discarded. Exact scratch-Keychain deletion and
+read-only real-user search-list/default preference bookends run even on failure,
+and any fixture/cleanup discrepancy fails the suite. The real user's Keychain
+preferences are never set. No real daemon, helper, signing or production data
+is used. The synthetic local venue uses the
 SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
 The internal qualification entry is explicitly commissioned by MAC-1 and is the
 only test-only app entry added; ordinary app startup never selects it.
@@ -191,7 +197,7 @@ the suite. Swift Testing uses `--event-stream-output-path` and
 `--event-stream-version 0`, so display names and aggregate console counts cannot
 hide omitted functions. Named terminal lines and structured cases are never
 truncated to the former 16 KiB bound. The native command and JSON event stream
-each have a hard 16 MiB cap; exceeding either refuses PASS.
+each have a 16 MiB acceptance cap; exceeding either refuses PASS.
 
 The native compile/test step is bounded to 1,200 seconds within a shared
 2,100-second suite deadline. The old 600-second filtered-test budget has no
@@ -199,7 +205,8 @@ full-suite timing evidence: this larger bound accommodates the 611 source
 functions and existing network tests with 30-second request bounds, but is not
 a measured sufficiency claim. Node transfer (90s), npm install (240s), SPA build
 (180s), and three qualification processes (40s each) retain their budgets,
-leaving 270s for metadata/overhead. Each command records its limit and elapsed
+leaving 270s for fixture/metadata/overhead. Existing fixture cleanup retains its
+bounded 30-second grace after the command deadline. Each command records its limit and elapsed
 time. Timeout/output overflow records an incomplete capture and fails; it is
 never reported as test success. The existing Jenkins job envelope/configuration
 is unchanged; reviewed SOURCE_SHA dispatch selects this in-repo workload.

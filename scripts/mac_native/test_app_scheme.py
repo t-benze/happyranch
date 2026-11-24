@@ -11,10 +11,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from contextlib import ExitStack
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, qualify_steps, read_events, run, synthetic_daemon
 from scripts.mac_native.app_scheme_test_evidence import assess_native, source_inventory, terminal_results
+from scripts.mac_native.suite_supervisor import _build_environment, _prepare_keychain
 
 
 def native_evidence() -> tuple[bytes, list[dict], dict]:
@@ -56,7 +58,9 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                 'scripts.mac_native.suite_app_scheme._command', side_effect=command
             ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
                 'scripts.mac_native.suite_app_scheme.verify_checksum'
-            ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True):
+            ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True), patch(
+                'scripts.mac_native.suite_app_scheme._prepare_keychain', create=True
+            ):
                 with self.assertRaisesRegex(RuntimeError, 'bin_path failed'):
                     run(report)
             test_calls = [(argv, kwargs) for argv, kwargs in calls if 'test' in argv]
@@ -75,6 +79,42 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
             self.assertEqual([row['case'] for row in result['cases'][1:]], [1, 2])
             row = next(row for row in report['app_scheme']['commands'] if row['name'] == 'product_build_and_all_tests')
             self.assertEqual(row['timeout_seconds'], 1200)
+
+    def test_disposable_fixture_cleans_exact_scratch_keychain_and_checks_preferences(self) -> None:
+        for fails in (False, True):
+            with self.subTest(create_fails=fails), tempfile.TemporaryDirectory() as folder:
+                scratch = Path(folder); env = _build_environment(scratch)
+                keychain = scratch / 'home/Library/Keychains/login.keychain-db'
+                checks, operations = [], []
+                def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                    if argv[1] == '-i':
+                        operation = kwargs['input_data'].split(b' ', 1)[0].decode()
+                        operations.append(operation)
+                        if operation == 'create-keychain':
+                            keychain.write_bytes(b'synthetic')
+                            return (1 if fails else 0), b''
+                    elif argv[1] == 'delete-keychain':
+                        self.assertEqual(argv[2], str(keychain))
+                        operations.append('delete-keychain'); keychain.unlink()
+                    else:
+                        self.assertEqual(argv[2:], ['-d', 'user'], 'preference commands are read-only')
+                        operations.append(argv[1])
+                    return 0, b''
+                def row(name: str, status: str, expected: object, actual: object) -> None:
+                    checks.append(dict(name=name, status=status, expected=expected, actual=actual))
+                with patch('scripts.mac_native.suite_supervisor._command', side_effect=command):
+                    if fails:
+                        with self.assertRaises(RuntimeError), ExitStack() as cleanup:
+                            _prepare_keychain(cleanup, env, scratch, time.monotonic() + 30, row, checks)
+                    else:
+                        with ExitStack() as cleanup:
+                            _prepare_keychain(cleanup, env, scratch, time.monotonic() + 30, row, checks)
+                            self.assertTrue(keychain.is_file())
+                self.assertFalse(keychain.exists())
+                self.assertEqual(operations.count('delete-keychain'), 1)
+                self.assertEqual(operations.count('list-keychains'), 2)
+                self.assertEqual(operations.count('default-keychain'), 2)
+                self.assertNotIn('input_data', json.dumps(checks))
 
     def test_source_census_includes_xctest_and_multiline_swift_testing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

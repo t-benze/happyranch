@@ -14,13 +14,13 @@ import tarfile
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
 from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, assess_native, source_inventory, terminal_results
-from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command
+from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _prepare_keychain
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
@@ -382,16 +382,21 @@ def run(report: dict[str, Any]) -> None:
         inventory = source_inventory(ROOT / 'app/mac/Tests')
         section['native_tests'] = {'status': 'FAIL', 'capture': 'incomplete', 'inventory': inventory}
         swift_events = scratch / 'swift-testing.jsonl'
-        raw = command('product_build_and_all_tests', swift + [
-            '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
-            '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
-            seconds=1200, allow_failure=True)
-        code = section['commands'][-1]['exit_code']
-        # No aggregate-only fallback: missing/unsupported Swift Testing capture
-        # fails even when swift test exits zero. Never trim individual results.
-        events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
-        section['native_tests'].update(assess_native(raw, events, inventory, code), capture='assessed',
-            event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
+        section['keychain_fixture'] = []
+        def keychain_row(name: str, status: str, expected: Any, actual: Any) -> None:
+            section['keychain_fixture'].append(dict(name=name, status=status, expected=expected, actual=actual))
+        with ExitStack() as cleanup:
+            _prepare_keychain(cleanup, env, scratch, deadline, keychain_row, section['keychain_fixture'])
+            raw = command('product_build_and_all_tests', swift + [
+                '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
+                '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
+                seconds=1200, allow_failure=True)
+            code = section['commands'][-1]['exit_code']
+            # Retain test evidence before cleanup, including when cleanup fails.
+            # Missing/unsupported capture fails even when swift test exits zero.
+            events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
+            section['native_tests'].update(assess_native(raw, events, inventory, code), capture='assessed',
+                event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):
