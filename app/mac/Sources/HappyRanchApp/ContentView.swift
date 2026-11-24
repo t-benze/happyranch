@@ -7,10 +7,12 @@ import os
 /// owner for existing release-load callbacks; it is never loaded by WebKit.
 struct WebView: NSViewRepresentable {
     let url: URL
-    let transport: any AppAPITransport
+    let transport: (any AppAPITransport)?
     let remote: Bool
     var accessUnsaved = false
     var readiness: AppAPIHealth?
+    var candidate: [String: Any]?
+    var onScheme: (@MainActor (AppScheme) -> Void)?
     var onLoaded: (@MainActor (URL) -> Void)?
     var onFailed: (@MainActor (URL, AppSchemeLoadFailure) -> Void)?
     private static let logger = Logger(subsystem: "com.happyranch.app", category: "AppSchemeLoad")
@@ -115,20 +117,19 @@ struct WebView: NSViewRepresentable {
             recordCallback("finish", url: webView.url)
             guard let navigation, self.navigation === navigation, let scheme,
                   let url = webView.url, (try? AppSchemeRoute(url)) != nil else { return }
-            let expected = loadID, selected = owner.url
-            let onLoaded = owner.onLoaded, onFailed = owner.onFailed
+            let expected = loadID
             Task {
                 do {
                     try await scheme.admitDocument()
                     guard loadID == expected, self.navigation === navigation, self.scheme === scheme,
-                          webView.url == url, owner.url == selected else { return }
+                          webView.url == url else { return }
                     WebView.logger.debug("App load admitted: \(scheme.documentAdmission.description, privacy: .public)")
-                    onLoaded?(selected)
+                    owner.onLoaded?(owner.url)
                 } catch {
-                    guard loadID == expected, self.scheme === scheme, owner.url == selected else { return }
+                    guard loadID == expected, self.scheme === scheme else { return }
                     let failure = (error as? AppSchemeLoadFailure) ?? AppSchemeLoadFailure(stage: .readiness, error: error)
                     WebView.logFailure(failure, callbacks: callbackURLs)
-                    onFailed?(selected, failure)
+                    owner.onFailed?(owner.url, failure)
                 }
             }
         }
@@ -174,6 +175,8 @@ struct WebView: NSViewRepresentable {
             let scheme = try AppScheme(root: root, transport: transport, remote: remote,
                 promptURL: remote ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
             scheme.configure(config); context.coordinator.scheme = scheme
+            onScheme?(scheme)
+            scheme.updateCandidate(candidate, accessUnsaved: accessUnsaved)
             let view = WKWebView(frame: .zero, configuration: config)
             view.navigationDelegate = context.coordinator
             scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
@@ -188,6 +191,10 @@ struct WebView: NSViewRepresentable {
     }
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.owner = self
+        if let scheme = context.coordinator.scheme {
+            onScheme?(scheme)
+            scheme.updateCandidate(candidate, accessUnsaved: accessUnsaved)
+        }
         if let readiness { context.coordinator.scheme?.updateReadiness(readiness) }
     }
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
@@ -202,16 +209,21 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString),
-               let transport = appDelegate.appAPITransport {
+            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
                 ZStack(alignment: .top) {
                     let lifetime = appDelegate.homeInvite.lifetime
-                    WebView(url: url, transport: transport, remote: appDelegate.connectionRole == .client,
-                        accessUnsaved: appDelegate.homeInvite.bridgeHasUnsavedAccess,
+                    WebView(url: url, transport: appDelegate.appAPITransport,
+                        remote: appDelegate.homeInvite.hasActiveSession || appDelegate.connectionRole == .client,
+                        accessUnsaved: appDelegate.homeInvite.activeHasUnsavedAccess,
                         readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
-                        onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime) },
+                        candidate: appDelegate.homeInvite.bridgeCandidate,
+                        onScheme: { appDelegate.bindMainScheme($0) },
+                        onLoaded: {
+                            appDelegate.homeInvite.mainDocumentAdmitted()
+                            appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime)
+                        },
                         onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
-                        .id(urlString + lifetime.attempt.uuidString + lifetime.document.uuidString + appDelegate.appTargetGeneration.uuidString)
+                        .id("happyranch-main-document")
                     if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
                         HomeSessionStatus(model: appDelegate.homeInvite)
                             .environmentObject(appDelegate)

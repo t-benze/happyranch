@@ -2,6 +2,8 @@ import Foundation
 import Combine
 import CryptoKit
 import Testing
+import XCTest
+import WebKit
 @testable import HappyRanchSupervisor
 @testable import HappyRanchApp
 
@@ -95,6 +97,8 @@ private actor HomeSessionFixture: HomeInviteSession {
     let gate: HomeAwaitGate
     init(gate: HomeAwaitGate = HomeAwaitGate()) { self.gate = gate }
     private(set) var stops = 0
+    private var stopFailure: HomeConnectionFailure?
+    func failStop() { stopFailure = .cleanupIncomplete }
     private(set) var opens = 0
     var joinFailure: HomeConnectionFailure?
     var accessFailure: HomeConnectionFailure?
@@ -162,7 +166,10 @@ private actor HomeSessionFixture: HomeInviteSession {
         return URL(string: "http://127.0.0.1:49152/")!
     }
     func checkAccess() async throws { if let accessFailure { throw accessFailure } }
-    func stop() async throws { stops += 1; await gate.pause("stop") }
+    func stop() async throws {
+        stops += 1; await gate.pause("stop")
+        if let stopFailure { throw stopFailure }
+    }
 }
 
 @Suite("Single home invite UI contract")
@@ -171,7 +178,7 @@ struct HomeInviteModelTests {
     // Public synthetic CA; no private key is present in this fixture.
     private let ca = "MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF"
 
-    private func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://control.happyranch.invalid:8443", dialIP: String = "192.168.1.40", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
+    fileprivate func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://control.happyranch.invalid:8443", dialIP: String = "192.168.1.40", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
         func wire(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
         let now = Int(Date().timeIntervalSince1970)
         let fields: [String: Any] = ["v": 2, "mode": "home", "control_url": control,
@@ -182,7 +189,7 @@ struct HomeInviteModelTests {
         return "hrinvite2:" + wire(try JSONSerialization.data(withJSONObject: fields))
     }
 
-    private func eventually(timeout: TimeInterval = 5, _ predicate: @MainActor () -> Bool) async -> Bool {
+    fileprivate func eventually(timeout: TimeInterval = 5, _ predicate: @MainActor () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
         return predicate()
@@ -197,10 +204,12 @@ struct HomeInviteModelTests {
         try #require(await eventually { model.webURL != nil })
         let url = try #require(model.webURL), context = model.lifetime
         model.webLoaded(url: url, lifetime: context)
+        await model.bridgeSettle()
+        try model.commitCandidate()
         #expect(model.phase == .connected)
         var published: [URL?] = []
         let observation = model.$webURL.sink { published.append($0) }
-        defer { observation.cancel(); model.cancel() }
+        defer { observation.cancel(); model.disconnectActive() }
         session.readiness.setBusy(true)
         try #require(await eventually(timeout: 7) { model.phase == .runtimeBusy })
         #expect(model.phase != .connected && model.appReadiness?.state == "busy")
@@ -241,7 +250,7 @@ struct HomeInviteModelTests {
         let model = HomeInviteModel(store: store, makeSession: { session })
         var phases: [HomeInviteModel.Phase] = []
         let observation = model.$phase.sink { phases.append($0) }
-        defer { observation.cancel(); model.cancel() }
+        defer { observation.cancel(); model.cancel(); model.disconnectActive() }
         model.accept(try invite())
         #expect(await eventually { model.phase == .awaitingApproval })
         #expect(model.webURL == nil)
@@ -257,10 +266,14 @@ struct HomeInviteModelTests {
         model.webLoaded(url: URL(string: "http://127.0.0.1:49153/")!, lifetime: model.lifetime)
         #expect(model.phase == .opening)
         model.webLoaded(url: url, lifetime: model.lifetime)
+        #expect(model.phase == .readyToSwitch)
+        #expect(!model.hasActiveSession)
+        await model.bridgeSettle()
+        try model.commitCandidate()
         #expect(model.phase == .connected)
         #expect(model.expiresAt == nil && model.comparisonPhrase == nil)
-        #expect(phases.filter { [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .connected].contains($0) } ==
-            [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .connected])
+        #expect(phases.filter { [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .readyToSwitch, .connected].contains($0) } ==
+            [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .readyToSwitch, .connected])
     }
 
     @Test("1563: failed home control join leaves a sanitized failure and Retry")
@@ -342,7 +355,7 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.saveFailure == nil && !model.savedHomes.isEmpty && model.phase == .opening })
         #expect(model.phase == .opening, "Save retry cannot bypass a native confirmation hold")
         model.endConfirmation(for: savingContext)
-        #expect(model.phase == .connected && !model.busy)
+        #expect(model.phase == .readyToSwitch && !model.busy)
         model.cancel()
         #expect(await eventually { !model.busy })
         let reopen = HomeInviteModel(store: store, makeSession: { session })
@@ -397,7 +410,7 @@ struct HomeInviteModelTests {
         try #require(await eventually { model.webURL != nil })
         let url = try #require(model.webURL), old = model.lifetime
         model.webLoaded(url: url, lifetime: old)
-        try #require(await eventually { model.phase == .connected && !model.busy })
+        try #require(await eventually { model.phase == .readyToSwitch && !model.busy })
         let target = try #require(model.savedHomes.first)
         let credential = try #require(try await store.savedHomes().credentials.first)
         await store.configure(read: readFailure, deleteFails: readFailure == nil)
@@ -450,7 +463,7 @@ struct HomeInviteModelTests {
         #expect(await store.saves == 1)
         #expect(model.savedHomes.first?.trust.dialIP == "192.168.1.41")
         model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
-        #expect(model.phase == .connected)
+        #expect(model.phase == .readyToSwitch)
         model.cancel()
     }
 
@@ -668,7 +681,7 @@ struct HomeInviteModelTests {
         #expect(result == (cancel ? .changed : .saved))
         #expect(await eventually { !model.busy })
         #expect(model.savedHomes.count == 1 && model.saveFailure == nil)
-        #expect(model.phase == (cancel ? .idle : .connected))
+        #expect(model.phase == (cancel ? .idle : .readyToSwitch))
         #expect(await store.saves == 2)
         #expect(await model.bridgeRetrySave() == .refused)
         if !cancel { model.cancel(); #expect(await eventually { !model.busy }) }
@@ -686,7 +699,7 @@ struct HomeInviteModelTests {
         #expect(model.phase == .opening && model.saveFailure == failure)
         #expect(await session.stops == 0)
         model.webLoaded(url: try #require(model.webURL), lifetime: context)
-        #expect(model.phase == .connected && model.lifetime == context)
+        #expect(model.phase == .readyToSwitch && model.lifetime == context)
         #expect(ConnectionClientProjection.savedAccess(model) == (failure == .unavailable ? "unknown" : "needsPermission"))
         model.cancel(); #expect(await eventually { !model.busy })
         #expect(model.saveFailure == failure)
@@ -961,12 +974,12 @@ struct HomeInviteModelTests {
         model.accept(try invite(home: "after-removal"))
         #expect(await eventually { model.webURL != nil })
         model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
-        #expect(model.phase == .connected, "Settled cleanup releases the new-connection guard")
+        #expect(model.phase == .readyToSwitch, "Settled cleanup releases the new-connection guard")
         model.cancel()
         #expect(await eventually { !model.busy })
     }
 
-    @Test("Only a current native loaded document can leave a confirmation hold on every entry")
+    @Test("First Main load is fenced; later candidates reuse that admitted document")
     func confirmationLoadGate() async throws {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
@@ -985,35 +998,306 @@ struct HomeInviteModelTests {
         model.webLoaded(url: url, lifetime: first)
         #expect(model.phase == .opening)
         model.endConfirmation(for: first)
-        #expect(model.phase == .connected)
+        #expect(model.phase == .readyToSwitch && !model.hasActiveSession)
         model.cancel()
         #expect(await eventually { !model.busy })
         model.reconnect()
-        #expect(await eventually { model.webURL != nil })
+        #expect(await eventually { model.phase == .readyToSwitch && !model.busy })
         let second = model.lifetime
-        #expect(model.beginConfirmation(for: second))
+        #expect(first.attempt != second.attempt && first.document == second.document)
         model.webLoaded(url: url, lifetime: first)
         model.webFailed(url: url, lifetime: first)
-        model.endConfirmation(for: first)
-        #expect(model.phase == .opening)
-        model.endConfirmation(for: second)
-        #expect(model.phase == .opening, "Dismissing without a native load proves nothing")
-        #expect(model.beginConfirmation(for: second))
-        model.webLoaded(url: url, lifetime: second)
-        #expect(model.phase == .opening)
+        #expect(model.phase == .readyToSwitch && !model.hasActiveSession)
         model.cancel()
-        model.endConfirmation(for: second)
         #expect(await eventually { !model.busy })
-        #expect(model.phase == .idle)
-        model.reconnect()
-        #expect(await eventually { model.webURL != nil })
-        model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
-        #expect(model.phase == .connected, "Saved entry still requires its own native load")
-        model.cancel()
     }
 
 }
 
 private func certificateDigest(_ ca: Data) -> String {
     SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined()
+}
+
+private final class HomeSessionFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sessions: [HomeSessionFixture]
+    private(set) var count = 0
+    init(_ sessions: [HomeSessionFixture]) { self.sessions = sessions }
+    func next() -> any HomeInviteSession {
+        lock.withLock { count += 1; return sessions.isEmpty ? HomeSessionFixture() : sessions.removeFirst() }
+    }
+}
+
+final class HomeCandidateOwnershipTests: XCTestCase {
+    @MainActor
+    private func firstSelection(_ model: HomeInviteModel, home: String = "A") async throws {
+        let cases = HomeInviteModelTests()
+        model.accept(try cases.invite(home: home))
+        let opened = await cases.eventually { model.webURL != nil }
+        XCTAssertTrue(opened)
+        model.webLoaded(url: try XCTUnwrap(model.webURL), lifetime: model.lifetime)
+        await model.bridgeSettle()
+        XCTAssertEqual(model.phase, .readyToSwitch)
+        XCTAssertNil(model.appTransport, "Readiness alone does not select a transport")
+        try model.commitCandidate()
+    }
+
+    @MainActor
+    func testCandidateCancelPreservesActiveTransportHealthAndSaveResult() async throws {
+        for candidateSaveFails in [false, true] {
+            let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
+            await a.approve(); await b.approve(); await store.configure(saveFails: true)
+            let factory = HomeSessionFactory([a, b])
+            let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+            try await firstSelection(model)
+            let activeID = try XCTUnwrap(model.activeID), document = model.documentGeneration
+            await store.configure(saveFails: candidateSaveFails)
+            model.accept(try HomeInviteModelTests().invite(home: "B"))
+            let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+            XCTAssertTrue(ready)
+            XCTAssertEqual(model.activeID, activeID)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            XCTAssertEqual(model.connectionStates.state, .online)
+            XCTAssertEqual(model.documentGeneration, document)
+            XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "ready_to_switch")
+            XCTAssertEqual(model.saveFailure, .saveFailed, "The native warning still projects selected A's failure while B is ready")
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "notSaved")
+            XCTAssertTrue(model.bridgeCanRetrySave, "The warning's Retry action still targets unsaved A")
+            await store.configure()
+            model.cancel(); await model.bridgeSettle()
+            XCTAssertEqual(model.activeID, activeID)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "cancelled")
+            XCTAssertEqual(model.saveFailure, .saveFailed)
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "notSaved")
+            XCTAssertTrue(model.bridgeCanRetrySave)
+            XCTAssertTrue(model.activeHasUnsavedAccess)
+            let aStops = await a.stops, bStops = await b.stops
+            XCTAssertEqual(aStops, 0); XCTAssertEqual(bStops, 1)
+            let saved = await model.bridgeRetrySave()
+            XCTAssertEqual(saved, .saved)
+            XCTAssertFalse(model.activeHasUnsavedAccess)
+            XCTAssertNil(model.saveFailure)
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "saved")
+            model.disconnectActive()
+            let stopped = await model.waitForCleanup(id: activeID)
+            XCTAssertTrue(stopped)
+        }
+    }
+
+    @MainActor
+    func testRetainedNativeDisconnectAndRemoveUseMainGatesAndConfirmSelectedCleanup() async throws {
+        for removing in [false, true] {
+            let session = HomeSessionFixture(), store = HomeStoreFixture()
+            await session.approve()
+            let model = HomeInviteModel(store: store, makeSession: { session })
+            try await firstSelection(model)
+            let active = try XCTUnwrap(model.activeID)
+            let saved = try XCTUnwrap(model.savedHomes.first)
+            let (root, scheme, view, transport) = try AppSchemeSwitchTests().fixture()
+            defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+            scheme.disconnectSelected = { model.disconnectActive(); return true }
+            @MainActor func act() async -> String? {
+                if removing { return await model.removeSavedSelection(using: scheme) }
+                return await model.disconnectSelected(using: scheme)
+            }
+            let missingOwner = await act()
+            XCTAssertEqual(missingOwner, "owner_save_unknown")
+            XCTAssertEqual(model.activeID, active)
+            try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#)
+            let pendingOwner = await act()
+            XCTAssertEqual(pendingOwner, "owner_save_pending")
+            try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+            let mutation = SwitchSchemeTask(method: "POST", path: "/api/v1/pending", generation: scheme.generation)
+            scheme.webView(view, start: mutation)
+            let sent = await HomeInviteModelTests().eventually { transport.count == 1 }
+            XCTAssertTrue(sent)
+            let pendingTransfer = await act()
+            XCTAssertEqual(pendingTransfer, "non_get_pending")
+            XCTAssertEqual(model.activeID, active)
+            let stopsBefore = await session.stops, deletesBefore = await store.deletedBindings
+            XCTAssertEqual(stopsBefore, 0); XCTAssertTrue(deletesBefore.isEmpty)
+            scheme.webView(view, stop: mutation)
+            let completed = await act()
+            XCTAssertNil(completed)
+            XCTAssertNil(model.activeID); XCTAssertNil(model.appTransport)
+            XCTAssertNil(model.appReadiness)
+            XCTAssertEqual(model.connectionStates.state, .offline)
+            XCTAssertEqual(model.cleanupOutcomes[active], "confirmed")
+            let stops = await session.stops, deleted = await store.deletedBindings
+            XCTAssertEqual(stops, 1)
+            XCTAssertEqual(deleted, removing ? [saved.binding] : [])
+            XCTAssertEqual(model.savedHomes.contains(saved), !removing)
+            let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            XCTAssertEqual(state["state"] as? String, "no_target")
+            XCTAssertTrue(state["target"] is NSNull)
+        }
+    }
+
+    @MainActor
+    func testRetainedNativeRemoveKeepsSavedIdentityWhenSelectedStopFails() async throws {
+        let session = HomeSessionFixture(), store = HomeStoreFixture()
+        await session.approve(); await session.failStop()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        try await firstSelection(model)
+        let selected = try XCTUnwrap(model.activeID), saved = try XCTUnwrap(model.savedHomes.first)
+        let (root, scheme, view, _) = try AppSchemeSwitchTests().fixture()
+        defer { _ = view; scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+        scheme.disconnectSelected = { model.disconnectActive(); return true }
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        let reason = await model.removeSavedSelection(using: scheme)
+        XCTAssertEqual(reason, "removalIncomplete")
+        XCTAssertEqual(model.cleanupOutcomes[selected], "incomplete")
+        XCTAssertTrue(model.savedHomes.contains(saved))
+        let deleted = await store.deletedBindings
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertNil(model.appTransport, "Failed teardown is retained separately and cannot serve Main")
+    }
+
+    @MainActor
+    func testCancelCommandReportsCandidateCleanupWithSelectedOwnerRetained() async throws {
+        for stopFails in [false, true] {
+            let a = HomeSessionFixture(), b = HomeSessionFixture()
+            await a.approve(); await b.approve()
+            if stopFails { await b.failStop() }
+            let factory = HomeSessionFactory([a, b])
+            let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { factory.next() })
+            try await firstSelection(model)
+            let active = try XCTUnwrap(model.activeID)
+            model.accept(try HomeInviteModelTests().invite(home: "B"))
+            let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+            XCTAssertTrue(ready)
+            let result = await ConnectionWindow.cancelAttempt(model: model, catalog: ConnectionComputerCatalog())
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.reply(id: "r1").utf8)) as? [String: Any])
+            if stopFails {
+                let error = try XCTUnwrap(reply["error"] as? [String: Any])
+                XCTAssertEqual(error["code"] as? String, "outcomeUnknown")
+                XCTAssertEqual(error["effect"] as? String, "unknown")
+            } else {
+                let action = try XCTUnwrap(reply["result"] as? [String: Any])
+                XCTAssertEqual(action["localCleanup"] as? String, "confirmed")
+                XCTAssertEqual(action["effect"] as? String, "confirmed")
+                XCTAssertEqual(model.phase, .connected)
+            }
+            XCTAssertEqual(model.activeID, active)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            let aStops = await a.stops, bStops = await b.stops
+            XCTAssertEqual(aStops, 0); XCTAssertEqual(bStops, 1)
+            model.disconnectActive()
+            let cleaned = await model.waitForCleanup(id: active)
+            XCTAssertTrue(cleaned)
+        }
+    }
+
+    @MainActor
+    func testFailureAndSameHomeRefusalPreserveActiveWithoutSecondIdentity() async throws {
+        let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
+        await a.approve(); await b.configure(join: .controlUnreachable)
+        let factory = HomeSessionFactory([a, b])
+        let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+        try await firstSelection(model)
+        let activeID = try XCTUnwrap(model.activeID)
+        model.accept(try HomeInviteModelTests().invite(home: "B"))
+        let failed = await HomeInviteModelTests().eventually { model.phase == .failed(.controlUnreachable) && !model.busy }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(model.activeID, activeID)
+        XCTAssertEqual(model.connectionStates.state, .online)
+        XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "failed")
+        model.accept(try HomeInviteModelTests().invite(dialIP: "192.168.1.41", home: "A"))
+        let refused = await HomeInviteModelTests().eventually { model.phase == .failed(.identityUnavailable) && !model.busy }
+        XCTAssertTrue(refused)
+        model.selectedHomeID = model.savedHomes.first?.id
+        model.reconnect()
+        XCTAssertEqual(factory.count, 2, "Neither changed-address invite nor saved reconnect may duplicate A")
+        XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+        let stops = await a.stops
+        XCTAssertEqual(stops, 0)
+        model.disconnectActive()
+        let stopped = await model.waitForCleanup(id: activeID)
+        XCTAssertTrue(stopped)
+    }
+
+    @MainActor
+    func testAdmittedSwitchRetainsIncompleteOldCleanupWithoutRollback() async throws {
+        let a = HomeSessionFixture(), b = HomeSessionFixture()
+        await a.approve(); await b.approve(); await a.failStop()
+        let factory = HomeSessionFactory([a, b])
+        let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { factory.next() })
+        try await firstSelection(model)
+        let previous = try XCTUnwrap(model.activeID), document = model.documentGeneration
+        model.accept(try HomeInviteModelTests().invite(home: "B"))
+        let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+        XCTAssertTrue(ready)
+        try model.commitCandidate()
+        XCTAssertNotEqual(model.activeID, previous)
+        XCTAssertEqual(model.documentGeneration, document)
+        XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === b.readiness)
+        XCTAssertEqual(model.cleanupOutcomes[previous], "unknown")
+        let cleaned = await model.waitForCleanup(id: previous)
+        XCTAssertFalse(cleaned)
+        XCTAssertEqual(model.cleanupOutcomes[previous], "incomplete")
+        XCTAssertEqual(model.phase, .connected)
+        XCTAssertNil(model.bridgeCandidate)
+        model.accept(try HomeInviteModelTests().invite(home: "A"))
+        let refused = await HomeInviteModelTests().eventually { model.phase == .failed(.identityUnavailable) && !model.busy }
+        XCTAssertTrue(refused)
+        XCTAssertEqual(factory.count, 2, "Unknown old cleanup cannot authorize identity reuse")
+        let current = try XCTUnwrap(model.activeID)
+        model.disconnectActive()
+        let stopped = await model.waitForCleanup(id: current)
+        XCTAssertTrue(stopped)
+    }
+
+    @MainActor
+    func testExistingLocalMainLetsCandidateBecomeReadyWithoutReplacingDocument() async throws {
+        let session = HomeSessionFixture()
+        await session.approve()
+        let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { session })
+        let document = model.documentGeneration
+        model.mainDocumentAdmitted()
+        model.accept(try HomeInviteModelTests().invite())
+        let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+        XCTAssertTrue(ready)
+        XCTAssertFalse(model.hasActiveSession)
+        XCTAssertEqual(model.documentGeneration, document)
+        try model.commitCandidate()
+        let id = try XCTUnwrap(model.activeID)
+        model.disconnectActive()
+        let stopped = await model.waitForCleanup(id: id)
+        XCTAssertTrue(stopped)
+    }
+
+    @MainActor
+    func testActiveRevocationRemovesOnlyItsSavedIdentityWhileCandidateSurvives() async throws {
+        let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
+        await a.approve(); await b.approve()
+        let factory = HomeSessionFactory([a, b])
+        let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+        try await firstSelection(model)
+        let previous = try XCTUnwrap(model.activeID)
+        let initial = try await store.savedHomes().credentials
+        let aBinding = try XCTUnwrap(initial.first?.binding)
+        model.accept(try HomeInviteModelTests().invite(home: "B"))
+        let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+        XCTAssertTrue(ready)
+        let candidate = model.candidateID
+        await a.configure(access: .revoked)
+        let revoked = await HomeInviteModelTests().eventually(timeout: 7) { model.selectedFailure == .revoked }
+        XCTAssertTrue(revoked)
+        let removed = await model.waitForCleanup(id: previous)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(model.candidateID, candidate)
+        XCTAssertEqual(model.phase, .readyToSwitch)
+        let remaining = try await store.savedHomes().credentials
+        let deleted = await store.deletedBindings
+        XCTAssertEqual(remaining.map { $0.trust.homeID }, ["B"])
+        XCTAssertEqual(deleted, [aBinding])
+        let bStops = await b.stops
+        XCTAssertEqual(bStops, 0)
+        try model.commitCandidate()
+        let id = try XCTUnwrap(model.activeID)
+        model.disconnectActive()
+        let stopped = await model.waitForCleanup(id: id)
+        XCTAssertTrue(stopped)
+    }
 }

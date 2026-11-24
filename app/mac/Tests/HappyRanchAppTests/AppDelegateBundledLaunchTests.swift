@@ -445,9 +445,9 @@ struct BundledLaunchTests {
                     "Bundled launch should NOT use /usr/bin/env")
         }
 
-        // Arguments should be empty (no uv/python wrappers)
-        #expect(fake.lastArguments?.isEmpty == true,
-                "Bundled launch should have no arguments, got \(fake.lastArguments ?? [])")
+        // Bundled launch keeps the reader guard without uv/python wrappers
+        #expect(fake.lastArguments == ["--reader-guarded-start=online-team-move@3"],
+                "Bundled launch must request guarded startup, got \(fake.lastArguments ?? [])")
 
         // Working directory should be the daemon home, not the repo root
         if let cwd = fake.lastCurrentDirectoryURL {
@@ -549,9 +549,9 @@ struct BundledLaunchTests {
                     "Recovery launch in bundled mode must NOT use /usr/bin/env")
         }
 
-        // Arguments must be empty (no uv/python wrappers in bundled mode)
-        #expect(fake.lastArguments?.isEmpty == true,
-                "Recovery launch in bundled mode must have no arguments, got \(fake.lastArguments ?? [])")
+        // Recovery keeps the same reader guard without uv/python wrappers
+        #expect(fake.lastArguments == ["--reader-guarded-start=online-team-move@3"],
+                "Recovery bundled launch must request guarded startup, got \(fake.lastArguments ?? [])")
 
         // Working directory must be daemon home
         if let cwd = fake.lastCurrentDirectoryURL {
@@ -739,7 +739,7 @@ struct DevLaunchTests {
 
         #expect(fake.launchCallCount == 1)
         #expect(fake.lastExecutableURL?.path == "/usr/bin/env")
-        #expect(fake.lastArguments == ["uv", "run", "python", "-m", "runtime.daemon"])
+        #expect(fake.lastArguments == ["uv", "run", "python", "-m", "runtime.daemon", "--reader-guarded-start=online-team-move@3"])
     }
 
     @Test("startDaemon in dev mode records dev start command")
@@ -788,7 +788,7 @@ struct DevLaunchTests {
                 "Recovery launch in dev mode must use /usr/bin/env, got \(fake.lastExecutableURL?.path ?? "nil")")
 
         // Dev mode: must pass uv run arguments
-        #expect(fake.lastArguments == ["uv", "run", "python", "-m", "runtime.daemon"],
+        #expect(fake.lastArguments == ["uv", "run", "python", "-m", "runtime.daemon", "--reader-guarded-start=online-team-move@3"],
                 "Recovery launch in dev mode must use uv run arguments, got \(fake.lastArguments ?? [])")
 
         // Diagnostics must record the dev start command

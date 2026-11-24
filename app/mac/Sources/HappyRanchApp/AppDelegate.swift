@@ -35,8 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Selected native endpoint/owner identity, never the WebKit page URL.
     @Published var webViewURL: String?
     var appAPITransport: (any AppAPITransport)? {
+        if let selected = homeInvite.appTransport { return selected }
         if connectionRole == .client {
-            return homeInvite.appTransport ?? clientBridge
+            return clientBridge
         }
         guard let value = webViewURL, let url = URL(string: value), url.host == "127.0.0.1",
               let port = url.port, let checked = UInt16(exactly: port) else { return nil }
@@ -46,6 +47,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     @Published var showDiagnostics = false
     @Published var showRemoteAccess = false
     private var connectionWindow: ConnectionWindow?
+    private weak var mainScheme: AppScheme?
+    private let mainComputerCatalog = ConnectionComputerCatalog()
+
+    func bindMainScheme(_ scheme: AppScheme) {
+        mainScheme = scheme
+        scheme.candidateSnapshot = { [weak self] in self?.homeInvite.bridgeCandidate }
+        if homeInvite.selectedFailure != nil, !homeInvite.hasActiveSession { scheme.selectedUnavailable() }
+        scheme.switchCandidate = { [weak self] in
+            guard let self else { throw AppAPIError.unavailable }
+            let target = try self.homeInvite.commitCandidate()
+            if let old = self.clientBridge {
+                self.clientBridge = nil
+                self.homeInvite.retireBridge(old)
+                if self.managedJoin.bridge === old { self.managedJoin.disconnect() }
+            }
+            return target
+        }
+        scheme.disconnectSelected = { [weak self] in
+            guard let self, self.homeInvite.canDisconnect else { return false }
+            self.homeInvite.disconnectActive()
+            self.remoteHealthTask?.cancel(); self.remoteHealthTask = nil
+            if self.managedJoin.bridge != nil || self.managedJoin.busy { self.managedJoin.disconnect() }
+            if let old = self.clientBridge { self.homeInvite.retireBridge(old); self.clientBridge = nil }
+            return true
+        }
+        scheme.actionResult = { [weak self] in
+            guard let self else { return [:] }
+            let outcomes = self.homeInvite.cleanupOutcomes.values
+            let cleanup = outcomes.contains("incomplete") ? "incomplete" : outcomes.contains("unknown") ? "unknown" : outcomes.isEmpty ? "notApplicable" : "confirmed"
+            return ConnectionClientProjection.savedAction(self.homeInvite, catalog: self.mainComputerCatalog, localCleanup: cleanup)
+        }
+    }
+
+    /// Shared native entries use exactly the same Main owner/transfer gate.
+    func disconnectSelectedTarget() -> String? {
+        guard let mainScheme else { return "owner_save_unknown" }
+        return mainScheme.disconnect()
+    }
+
+    func disconnectHomeSelection() async -> String? {
+        await homeInvite.disconnectSelected(using: mainScheme)
+    }
+
+    func removeHomeSelection() async -> String? {
+        await homeInvite.removeSavedSelection(using: mainScheme)
+    }
+
+    /// Explicit direct-connection completion rebinds the retained Main. Candidate
+    /// readiness never calls this; its only selection path is commitSwitch.
+    func selectMainTransport(id: String, transport: any AppAPITransport, remote: Bool, promptURL: String? = nil) -> String? {
+        mainScheme?.selectTransport(id: id, transport: transport, remote: remote, promptURL: promptURL)
+    }
 
     func showConnection() {
         connectionWindow?.invalidate(showNotice: false)
@@ -89,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The home connector (only active in HOME role).
     var homeConnector: HomeConnector?
 
-    /// GUI transport identity; replacing a selected client retires its document.
+    /// Direct client identity; explicit pairing completion rebinds the stable Main.
     @Published private(set) var appTargetGeneration = UUID()
     var clientBridge: ClientBridge? {
         didSet { if oldValue !== clientBridge { appTargetGeneration = UUID() } }
@@ -106,16 +159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     override init() {
         super.init()
         managedJoinObservation = managedJoin.$phase.sink { [weak self] phase in
-            guard let self, self.clientLane == .managed else { return }
+            guard let self, self.clientLane == .managed, !self.homeInvite.hasActiveSession else { return }
             self.connectionState = phase.connectionState
         }
         homeInvite.$webURL.sink { [weak self] url in
             guard let self, self.clientLane == .managed else { return }
-            self.webViewURL = url?.absoluteString
+            // Once created, Main survives target loss, Cancel and disconnect.
+            if let url { self.webViewURL = url.absoluteString }
         }.store(in: &homeInviteObservations)
-        homeInvite.$phase.sink { [weak self] phase in
-            guard let self, self.clientLane == .managed else { return }
-            self.connectionState = phase == .connected ? .online : (phase == .idle ? .tailnetNotDetected : .offline)
+        homeInvite.objectWillChange.sink { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.clientLane == .managed { self.connectionState = self.homeInvite.connectionStates.state }
+                self.objectWillChange.send()
+            }
         }.store(in: &homeInviteObservations)
     }
 
@@ -943,7 +1000,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                         diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         refreshDerivedState()
-                        webViewURL = baseURL
+                        if connectionRole == .home && !homeInvite.hasActiveSession,
+                           mainScheme == nil || mainScheme?.hasLocalTarget == true {
+                            if selectMainTransport(id: baseURL, transport: LocalAppAPITransport(port: port,
+                                credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome())), remote: false, promptURL: baseURL + "/api/v1") == nil {
+                                webViewURL = baseURL
+                            }
+                        }
                         if wasRecovering {
                             dismissDiagnosticsOnRecovery()
                         }
@@ -969,7 +1032,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         await MainActor.run {
             if success {
                 diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
-                webViewURL = baseURL
+                if connectionRole == .home && !homeInvite.hasActiveSession {
+                    if selectMainTransport(id: baseURL, transport: LocalAppAPITransport(port: port,
+                        credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome())), remote: false, promptURL: baseURL + "/api/v1") == nil {
+                        webViewURL = baseURL
+                    }
+                }
             } else {
                 diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
             }
@@ -1066,8 +1134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             }
         case .client:
             // Disconnect client bridge if active.
-            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected {
-                disconnectRemote()
+            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.hasActiveSession || homeInvite.phase == .connected {
+                guard disconnectRemote() == nil else { return }
+                webViewURL = nil
             }
         }
 
@@ -1169,7 +1238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// home connector, sets deviceCredential on success, then points the
     /// WebView at the bridge's local URL.
     func connectToRemote() {
-        guard case .client = connectionRole, !isConnecting else { return }
+        guard case .client = connectionRole, !isConnecting, clientBridge == nil, !homeInvite.hasActiveSession else { return }
         let managed = clientLane == .managed
         if managed && !managedJoin.canPair { return }
         guard !clientHomeHost.isEmpty,
@@ -1218,6 +1287,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                 await MainActor.run {
                     guard self.clientBridge === bridge else { return }
                     isConnecting = false
+                    if let reason = selectMainTransport(id: appTargetGeneration.uuidString, transport: bridge, remote: true) {
+                        clientConnectError = reason
+                        homeInvite.retireBridge(bridge); self.clientBridge = nil
+                        if managed { managedJoin.disconnect() }
+                        return
+                    }
                     webViewURL = (!managed || healthy) ? "happyranch-app://app/" : nil
                     if managed {
                         applyManagedHealth(health)
@@ -1265,18 +1340,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     /// Disconnect from the remote home runtime (CLIENT role).
-    func disconnectRemote() {
-        homeInvite.cancel()
-        remoteHealthTask?.cancel()
-        remoteHealthTask = nil
+    @discardableResult
+    func disconnectRemote() -> String? {
+        if let reason = disconnectSelectedTarget() { return reason }
         isConnecting = false
-        if clientLane == .managed { managedJoin.disconnect() }
-        clientBridge?.stop()
-        clientBridge = nil
-        webViewURL = nil
         clientConnectError = nil
         connectionStateManager.onTailscaleLost()
         connectionState = connectionStateManager.state
+        return nil
     }
 
     func cancelManagedConnection() {

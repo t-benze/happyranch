@@ -1,6 +1,29 @@
 import Testing
 import Foundation
+import XCTest
 @testable import HappyRanchSupervisor
+
+final class ConnectionOwnershipStateTests: XCTestCase {
+    func testCandidateDoesNotReplaceActiveHealthOrHeartbeatAndStaleCommitRefuses() {
+        let state = ConnectionStateManager(), a = UUID(), b = UUID()
+        state.beginCandidate(id: a)
+        XCTAssertFalse(state.state.isConnected)
+        state.commitCandidate(id: a)
+        let heartbeat = state.lastHeartbeat
+        state.beginCandidate(id: b)
+        XCTAssertEqual(state.activeID, a)
+        XCTAssertEqual(state.candidateID, b)
+        XCTAssertEqual(state.state, .online)
+        XCTAssertEqual(state.lastHeartbeat, heartbeat)
+        state.cancelCandidate()
+        state.commitCandidate(id: b)
+        XCTAssertEqual(state.activeID, a)
+        XCTAssertEqual(state.lastHeartbeat, heartbeat)
+        state.disconnectActive()
+        XCTAssertFalse(state.state.isConnected)
+        XCTAssertNil(state.activeID)
+    }
+}
 
 @Suite("ConnectionState enum")
 struct ConnectionStateTests {
