@@ -1,5 +1,10 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
+P24 retires self-hosted home mode and supersedes the historical positive Enable,
+preparation and replacement instructions below. Use the explicit retirement and
+read-only status entries in the current remote-access contract. Account-network
+positive access on main awaits P21–P23; no installed acceptance is claimed here.
+
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
 **Phase-2 Part A** — deploy artifact runbook

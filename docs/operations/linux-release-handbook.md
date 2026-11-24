@@ -406,8 +406,10 @@ P24 retires ordinary `prepare-headscale` and `disable-headscale` commands for
 both installer layouts. They fail with the exact home-retirement message before
 installer construction or native effects. Use the canonical explicit retirement
 entry for upgrade/recovery and `home-retirement-status --layout deb` for read-only
-detection. The programmatic owners below still await their P24 source disposition;
-the following describes the historical custody they produced.
+detection. Programmatic preparation, activation/local-issuer and generated-home
+replacement writers are removed; the old wait-ready command refuses without
+network observation. The following describes historical custody. Protected
+readback, selective retirement/Disable and actual non-home renewal remain.
 
 The historical `ManagedInstaller.prepare_headscale` owner prepares the locked dedicated
 `happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,

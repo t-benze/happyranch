@@ -1,5 +1,13 @@
 # Managed embedded-tailnet sidecar
 
+P24 supersedes the historical home provisioning/ReplaceFailed/preparation
+algorithms described below: their uncalled Python/native owners are removed,
+and generated home provisioning and the old wait-ready command refuse. Exact
+historical renderers/readers, selective retirement/Disable and real non-home
+renewal/locking remain. The shared Go transport/client pins remain unchanged;
+account-network positive access on main awaits P21–P23. Current recovery is in
+the [remote-access contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md).
+
 This Go module transports opaque TCP bytes to the loopback connector. It has no
 HTTP or daemon-bearer knowledge. `tailscale.com v1.78.0`, the module identity and
 the existing dependency pins are shared by Linux and Darwin. Use Go 1.23.12
