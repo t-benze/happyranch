@@ -119,9 +119,12 @@ console.log('PASS: shipped bootstrap diagnostics distinguish missing/refused/thr
 // not prevent the later independent steps; this does not emulate WebKit EOF.
 const qualifierSource = readFileSync(resolve(root, 'app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift'), 'utf8');
 const qualifier = qualifierSource.split('private static let page = #"""\n')[1].split('\n"""#')[0];
-for (const fault of ['stream-eof', 'none', 'parse', 'emit', 'abort-read', 'download-fetch', 'download-save']) {
+for (const [fault, mode] of [
+  ...['stream-eof', 'none', 'parse', 'emit', 'abort-read', 'download-fetch', 'download-save'].map(fault => [fault, 'all']),
+  ...['stream', 'abort', 'download'].map(mode => ['none', mode]),
+]) {
   const events = [], calls = [], aborted = [];
-  const win = { happyranchConnection:{ call:async () => '{"generation":"synthetic"}' },
+  const win = { __hrQualificationMode:mode, happyranchConnection:{ call:async () => '{"generation":"synthetic"}' },
     webkit:{ messageHandlers:{ macQualification:{ postMessage(item) {
       if (fault === 'emit' && item.event === 'stream_end') throw Error('synthetic-private-value');
       events.push(item);
@@ -150,15 +153,22 @@ for (const fault of ['stream-eof', 'none', 'parse', 'emit', 'abort-read', 'downl
     sessionStorage:{getItem:() => '1'}, Blob, FormData, Response, TextDecoder, TextEncoder, Uint8Array, AbortController, Date,
     URL:{createObjectURL:() => 'blob:synthetic', revokeObjectURL() {}},
     setTimeout:(callback, milliseconds) => setTimeout(callback, Math.min(milliseconds, 30)), clearTimeout};
+  if (mode !== 'all') {
+    // A fresh process gets a fresh realm. Its liveness facts remain readable
+    // when the page->native reporting channel is subsequently disconnected.
+    assert.equal(win.__hrQualificationFacts, undefined);
+  }
   let watchdog;
   try {
     await Promise.race([vm.runInNewContext(qualifier, environment), new Promise((_, reject) => {
       watchdog = setTimeout(() => reject(Error(`${fault}: independent steps did not finish`)), 300);
     })]);
   } finally { clearTimeout(watchdog); }
-  assert.deepEqual(calls.slice(-3), ['stream','abort','download'], `${fault}: every independent step must run`);
+  const expectedSteps = mode === 'all' ? ['stream','abort','download'] : [mode];
+  assert.deepEqual(calls.filter(call => expectedSteps.includes(call)), expectedSteps, `${fault}/${mode}: selected steps run once`);
+  assert.deepEqual(calls.filter(call => ['stream','abort','download'].includes(call)), expectedSteps, `${mode}: no shared earlier step`);
   const steps = events.filter(item => item.event === 'step');
-  assert.deepEqual(steps.map(item => item.step), ['stream','abort','download'], `${fault}: one result per step`);
+  assert.deepEqual(steps.map(item => item.step), expectedSteps, `${fault}: one result per step`);
   const failedStep = ['stream-eof','parse','emit'].includes(fault) ? 'stream' : fault === 'abort-read' ? 'abort'
     : fault.startsWith('download-') ? 'download' : null;
   for (const step of steps) assert.equal(step.status, step.step === failedStep ? 'FAIL' : 'PASS', `${fault}/${step.step}`);
@@ -174,6 +184,14 @@ for (const fault of ['stream-eof', 'none', 'parse', 'emit', 'abort-read', 'downl
     }
     if (fault === 'emit') assert.equal(diagnostic.lastPageStep, 'end-emit');
   } else assert.ok(!events.some(item => item.event === 'step_diagnostic'), 'successful runs emit no failure diagnostics');
-  assert.ok(aborted.includes('abort'), `${fault}: explicit abort reaches the fetch signal`);
+  if (expectedSteps.includes('abort')) assert.ok(aborted.includes('abort'), `${fault}: explicit abort reaches the fetch signal`);
+  assert.equal(win.__hrQualificationFacts.step, 'done');
+  assert.equal(win.__hrQualificationFacts.pendingTimers, 0, 'no pending step deadline after settlement');
+  if (mode !== 'all') {
+    win.webkit.messageHandlers.macQualification.postMessage = () => { throw Error('disconnected'); };
+    const facts = vm.runInNewContext('window.__hrQualificationFacts', environment);
+    assert.equal(facts.readerState, mode === 'abort' ? 'abort-sent' : 'complete', 'native evaluation reads facts without the message handler');
+    assert.ok(facts.bytesReceived > 0);
+  }
 }
 console.log('PASS: qualifier bounds EOF/parse/emit/abort/download failures, continues every step and emits closed failure facts');

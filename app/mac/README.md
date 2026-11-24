@@ -184,9 +184,12 @@ under **500 ms** (less than half the interval); the two-event abort must stop it
 native owner within **500 ms**, with no writes from that owner afterward. No
 completion-only receipt array can pass. The normal stream must also reach actual
 reader EOF with all five data receipts and no partial trailing frame.
-Stream, abort and download run as independent steps with respective 9s, 4s and
-5s deadlines. Each emits one `step` PASS/FAIL and later steps still run after a
-failure. Download awaits the native WKDownload result within its own deadline;
+Stream, abort and download each run in a fresh invocation of the built product,
+with separate native MainActor, WebKit view/content process and JSONL evidence.
+Their page deadlines remain 9s, 4s and 5s. Each emits one `step` PASS/FAIL. The
+collector launches abort and download even after a stream watchdog, native
+command timeout or unreadable stream evidence; every process exit and its own
+`done` receipt are required for overall PASS. Download awaits the native WKDownload result within its own deadline;
 fetch bytes alone cannot pass saving. The assessor reports each step separately
 and requires all three PASS plus every existing timing/body/navigation check.
 Any failure remains an overall FAIL, even if later steps pass.
@@ -200,8 +203,29 @@ cancellation and task-stopped facts. Page progress stays in bounded native memor
 until failure; native snapshots are capped at 32 streams. Neither diagnostic
 contains header values, body bytes, context/credential values, arbitrary errors
 or URLs. Ordinary app startup does not enable this qualification observer.
-The 34s main-thread failure dump precedes the existing 35s hard watchdog; a blocked
-main thread can still leave only that hard-watchdog receipt.
+The 34s main-thread failure dump precedes the 35s background hard watchdog in
+each process. Native background probes run every second: request and 750ms
+pending records distinguish missing main dispatch from a pending JavaScript
+reply. Main evaluates only current qualifier step/reader state, received byte/
+frame counts, pending framing bytes and qualifier timer count. Results are
+projected to closed native keys, enums and bounded integers; they do not use the
+page message handler. Native content-process termination and provisional/
+committed navigation failures have dedicated records. API scheme lifecycle
+records precede and follow response/data/finish callbacks and owner retirement,
+with delivered totals, cancellation/thread facts, stop and completion guards.
+Completion is claimed before WebKit is called, preventing a second completion;
+stop removes ownership before cancellation. These records are written as events
+occur, so a later stalled main queue cannot suppress already retained facts.
+At most 35 liveness requests and 32 retained completed-owner IDs per process are
+needed before its watchdog. Raw page results and error values are never logged.
+
+Builds 62 and 63 measured incremental SSE; the post-finish stall remains
+unproven. Build 63 also lacked the native main-queue timeout, so page timers
+alone cannot attribute it. Process isolation repairs the proven qualifier
+dependency; it does not claim WebKit EOF closure or change response framing.
+Round-15 authority: engineering_manager `output/TASK-18895/round15-decision.md`
+and `ledger.md`: 10/14 builds used, 4 remain, next 64. Only independent QA may
+spend build 64 after exact-head review APPROVE. The maker runs no Mac build.
 
 The suite also checks JSON POST/PUT,
 10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root

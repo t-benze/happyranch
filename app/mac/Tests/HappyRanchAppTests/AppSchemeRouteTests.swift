@@ -2,6 +2,31 @@ import XCTest
 @testable import HappyRanchApp
 
 final class AppSchemeRouteTests: XCTestCase {
+    func testPageLivenessRetainsOnlyClosedFactsWithoutMessageChannel() throws {
+        let privateValue = "synthetic-private-context"
+        let fields = AppSchemePageLiveness.fields(["step": "stream", "readerState": "read-pending",
+            "bytesReceived": 42, "framesReceived": 5, "pendingBytes": 0, "pendingTimers": 1,
+            "context": privateValue, "error": privateValue])
+        XCTAssertEqual(fields["step"] as? String, "stream")
+        XCTAssertEqual(fields["readerState"] as? String, "read-pending")
+        XCTAssertEqual(fields["bytesReceived"] as? Int, 42)
+        XCTAssertEqual(fields["framesReceived"] as? Int, 5)
+        XCTAssertEqual(fields["pendingBytes"] as? Int, 0)
+        XCTAssertEqual(fields["pendingTimers"] as? Int, 1)
+        XCTAssertEqual(Set(fields.keys), ["result", "step", "readerState", "bytesReceived", "framesReceived", "pendingBytes", "pendingTimers"])
+        XCTAssertFalse(String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self).contains(privateValue))
+        let invalidValues: [Any] = [privateValue, true, -1, 1.5, 67108865]
+        for invalid in invalidValues {
+            let forged = AppSchemePageLiveness.fields(["step": privateValue, "readerState": privateValue,
+                "bytesReceived": invalid, "pendingTimers": invalid])
+            XCTAssertEqual(forged["step"] as? String, "invalid")
+            XCTAssertEqual(forged["readerState"] as? String, "invalid")
+            XCTAssertEqual(forged["bytesReceived"] as? String, "invalid")
+            XCTAssertEqual(forged["pendingTimers"] as? String, "invalid")
+        }
+        XCTAssertEqual(AppSchemePageLiveness.fields(nil)["result"] as? String, "missing")
+    }
+
     func testStreamDiagnosticRetainsOnlyFramingAndLifecycleFacts() throws {
         let privateValue = "synthetic-private-context"
         let response = HTTPURLResponse(url: URL(string: "happyranch-app://app/api/v1/synthetic")!, statusCode: 200,

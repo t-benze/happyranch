@@ -4231,15 +4231,23 @@ handler to use the deep path, preventing a reload of `/` plus redirect from
 passing. Failure-only closed diagnostics retain requested/served paths,
 navigation decision/path and final pathname, including navigation/admission
 failure and reload timeout.
-Normal stream, abort and download have independent 9s/4s/5s deadlines and emit
-individual PASS/FAIL results while continuing after failure. The download step
+Normal stream, abort and download have independent 9s/4s/5s page deadlines and
+emit individual PASS/FAIL results. Each now owns a fresh product process and
+JSONL file, so a stream process watchdog or command/evidence failure cannot
+prevent later native invocations. All three zero exits and separate `done`
+receipts are required. The portable venue checks this collector boundary too. The download step
 awaits native saving. Overall PASS still requires every prior timing, abort,
 saved-byte and navigation assertion, all three step results and actual normal
 reader EOF. Failure-only diagnostics compare page/native byte and frame counts,
 last page stage, closed framing-header names/presence/expected length and
 didFinish main-thread/MainActor/cancellation/stopped facts. Build 62 established
 incremental receipts but failed EOF; the cause remains unproven. See the Mac
-contract above for diagnostic bounds and the watchdog limit.
+contract above for diagnostic bounds and the watchdog limit. Native background
+liveness requests/pending records survive a stalled MainActor; the main-side
+evaluation returns only closed qualifier state/counts independently of page
+messages. Dedicated native termination/navigation and per-callback API lifecycle
+records provide attribution before failure. Builds 62/63 do not prove the EOF
+cause; no speculative framing fix or streaming fallback is introduced.
 Only the QA leg may execute it after exact-head independent review APPROVE,
 within the PR's founder-approved combined unsigned build allowance (current
 ledger in the PR body). Native execution,

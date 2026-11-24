@@ -181,6 +181,10 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         let task: any WKURLSchemeTask
         var worker: Task<Void, Never>?
         var upstream: AppAPITransfer?
+        var responseSent = false
+        var bytesDelivered = 0
+        var dataCallbacks = 0
+        var completionClaimed = false
     }
     private var owners: [ObjectIdentifier: Owner] = [:]
     private var cancelled: Set<String> = []
@@ -202,11 +206,32 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     /// Optional diagnostic observer receives lifecycle IDs and closed document
     /// path classes, never raw URLs, headers or bytes. Used by qualification.
     var observe: ((String, String) -> Void)?
+    var observeLifecycle: (([String: Any]) -> Void)?
+    private var completedOwners: [(ObjectIdentifier, String)] = []
     // Only the existing qualification observer enables capture; emitted on failure.
     private(set) var streamDiagnostics: [AppSchemeStreamDiagnostic] = []
 
     private func updateStream(_ id: String, _ change: (inout AppSchemeStreamDiagnostic) -> Void) {
         if let index = streamDiagnostics.firstIndex(where: { $0.requestID == id }) { change(&streamDiagnostics[index]) }
+    }
+
+    private func lifecycle(_ key: ObjectIdentifier, _ stage: String) {
+        guard let owner = owners[key] else { return }
+        observeLifecycle?(["requestID": owner.requestID, "stage": stage, "responseSent": owner.responseSent,
+            "bytesDelivered": owner.bytesDelivered, "dataCallbacks": owner.dataCallbacks,
+            "completionClaimed": owner.completionClaimed, "mainThread": Thread.isMainThread,
+            "taskCancelled": Task.isCancelled])
+    }
+
+    /// Claim completion before entering WebKit; no subsequent path may complete
+    /// this owner again. Stop removes ownership before cancelling its worker.
+    private func claimCompletion(_ key: ObjectIdentifier) -> Owner? {
+        guard let owner = owners[key], !owner.completionClaimed else {
+            observeLifecycle?(["stage": "completion-refused"]); return nil
+        }
+        owners[key]?.completionClaimed = true
+        lifecycle(key, "completion-claimed")
+        return owner
     }
 
     init(root: URL, transport: any AppAPITransport, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
@@ -252,8 +277,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
 
     func close() {
         documentDidStart()
-        for owner in owners.values { owner.worker?.cancel(); owner.upstream?.cancel() }
-        owners.removeAll(); admission?.cancel(); admission = nil
+        for key in Array(owners.keys) { stop(key, closing: true) }
+        admission?.cancel(); admission = nil
         view?.configuration.userContentController.removeScriptMessageHandler(forName: "appTransport", contentWorld: .page)
         view = nil
     }
@@ -349,6 +374,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         let key = ObjectIdentifier(urlSchemeTask)
+        completedOwners.removeAll { $0.0 == key }
         do {
             guard webView === view, let url = urlSchemeTask.request.url else { throw AppAPIError.unavailable }
             let route = try AppSchemeRoute(url), method = urlSchemeTask.request.httpMethod ?? "GET"
@@ -399,6 +425,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                 reply(urlSchemeTask, status: 429, code: "too_many_requests"); return
             }
             owners[key] = Owner(requestID: id, task: urlSchemeTask)
+            lifecycle(key, "start")
             owners[key]?.worker = Task { [weak self] in
                 guard let self else { return }
                 await self.forward(key, request: urlSchemeTask.request, route: route, method: method, headers: headers, bootstrap: bootstrap)
@@ -409,10 +436,17 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         stop(ObjectIdentifier(urlSchemeTask))
     }
-    private func stop(_ key: ObjectIdentifier) {
-        guard let owner = owners.removeValue(forKey: key) else { return }
+    private func stop(_ key: ObjectIdentifier, closing: Bool = false) {
+        guard let owner = owners[key] else {
+            if let id = completedOwners.last(where: { $0.0 == key })?.1 {
+                observeLifecycle?(["requestID": id, "stage": "stop-after-completion"])
+            }
+            return
+        }
+        lifecycle(key, closing ? "close" : "stop")
+        owners.removeValue(forKey: key)
         updateStream(owner.requestID) { $0.taskStopped = true }
-        owner.worker?.cancel(); owner.upstream?.cancel(); observe?("native_stop", owner.requestID)
+        owner.worker?.cancel(); owner.upstream?.cancel(); observe?(closing ? "native_close" : "native_stop", owner.requestID)
     }
 
     private func checkAdmission(refresh: Bool = false) async throws {
@@ -445,15 +479,29 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                          method: String, headers: [String: String], bootstrap: Bool) async {
         var began = false
         var forwarded = false
-        defer { owners.removeValue(forKey: key) }
+        defer {
+            lifecycle(key, "worker-return")
+            let id = owners[key]?.requestID
+            if observeLifecycle != nil, let owner = owners[key] {
+                if completedOwners.count == 32 { completedOwners.removeFirst() }
+                completedOwners.append((key, owner.requestID))
+            }
+            owners.removeValue(forKey: key)
+            if let id { observeLifecycle?(["requestID": id, "stage": "owner-retired"]) }
+        }
         do {
             try await checkAdmission()
             try Task.checkCancellation()
             guard let owner = owners[key] else { return }
             if bootstrap {
                 let bytes = Data(#"{"token":"hr_native_session","user":"founder","role":"admin"}"#.utf8)
+                owners[key]?.responseSent = true; lifecycle(key, "response-enter")
                 respond(owner.task, status: 200, headers: ["content-type": "application/json"])
-                owner.task.didReceive(bytes); owner.task.didFinish(); return
+                lifecycle(key, "response-return")
+                owners[key]?.bytesDelivered += bytes.count; owners[key]?.dataCallbacks += 1
+                lifecycle(key, "data-enter"); owner.task.didReceive(bytes); lifecycle(key, "data-return")
+                guard let completing = claimCompletion(key) else { return }
+                lifecycle(key, "finish-enter"); completing.task.didFinish(); lifecycle(key, "finish-return"); return
             }
             let body = try Self.body(request)
             guard owners[key] != nil else { return }
@@ -466,7 +514,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                 switch event {
                 case .response(let status, let fields):
                     guard !began else { throw AppAPIError.invalidResponse }
+                    owners[key]?.responseSent = true; lifecycle(key, "response-enter")
                     let response = respond(owner.task, status: status, headers: fields); began = true
+                    lifecycle(key, "response-return")
                     if status == 200 && fields["content-type"]?.lowercased().hasPrefix("text/event-stream") == true {
                         if observe != nil {
                             if streamDiagnostics.count == 32 { streamDiagnostics.removeFirst() }
@@ -476,26 +526,33 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                     }
                 case .bytes(let data):
                     guard began else { throw AppAPIError.invalidResponse }
+                    owners[key]?.bytesDelivered += data.count; owners[key]?.dataCallbacks += 1
+                    lifecycle(key, "data-enter")
                     owner.task.didReceive(data)
+                    lifecycle(key, "data-return")
                     updateStream(owner.requestID) { $0.bytesDelivered += data.count }
                     observe?("native_write", owner.requestID)
                 }
             }
-            guard let owner = owners[key] else { return }
             guard began else { throw AppAPIError.invalidResponse }
+            guard let owner = claimCompletion(key) else { return }
+            lifecycle(key, "finish-enter")
             owner.task.didFinish()
+            lifecycle(key, "finish-return")
             updateStream(owner.requestID) {
                 $0.didFinish = true; $0.finishOnMainThread = Thread.isMainThread; $0.finishTaskCancelled = Task.isCancelled
             }
             observe?("native_finish", owner.requestID)
         } catch {
             owners[key]?.upstream?.cancel()
-            guard let owner = owners[key] else { return }
+            guard let owner = claimCompletion(key) else { return }
             if state == "ready", !(error is CancellationError), (error as? AppAPIError) != .cancelled {
                 state = "unreachable"; admission = nil; emitStatus()
             }
+            lifecycle(key, "failure-enter")
             if began || (forwarded && (error as? AppAPIError) != .notSent) { owner.task.didFailWithError(AppAPIError.unavailable) }
             else { reply(owner.task, status: 503, code: state == "busy" ? "busy" : state == "incompatible" ? "incompatible" : "target_unreachable") }
+            lifecycle(key, "failure-return")
         }
     }
 

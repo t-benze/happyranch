@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import threading
@@ -124,6 +125,40 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     data = path.read_bytes()
     lines = data.splitlines(keepends=True)
     return [json.loads(line) for line in lines if line.endswith(b'\n')]
+
+
+def qualify_steps(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                  section: dict[str, Any], downloads: Path) -> int:
+    """Each step owns a fresh native process/MainActor/WebKit content process.
+
+    A stream watchdog or dead page channel cannot suppress abort/download.
+    This is the existing product binary/fixture venue, with separate JSONL files.
+    """
+    codes = []
+    section['native_processes'] = []
+    for step in ('stream', 'abort', 'download'):
+        events = scratch / f'{step}-events.jsonl'
+        command = [*argv, str(events), str(downloads), step]
+        error_class = None
+        try:
+            code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+        except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+            # _command reaps its process group before raising. Preserve the
+            # failure and continue with a separately launched product process.
+            code, raw = 124 if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)) else 1, b''
+            error_class = type(error).__name__
+        codes.append(code)
+        section['native_processes'].append({'step': step, 'argv': command, 'exit_code': code,
+            'command_error': error_class, 'bytes': len(raw),
+            'sha256': hashlib.sha256(raw).hexdigest(), 'head': raw[:1024].decode(errors='replace'),
+            'tail': raw[-1024:].decode(errors='replace')})
+        try:
+            section['events'].extend({**row, 'processStep': step} for row in read_events(events))
+        except (ValueError, RuntimeError):
+            section['events'].append({'event': 'process_evidence_failure', 'step': step})
+            codes[-1] = 1
+        section['events'].append({'event': 'process_exit', 'step': step, 'exit_code': code})
+    return 0 if all(code == 0 for code in codes) else 1
 
 
 def _error_context(raw: bytes) -> dict[str, Any]:
@@ -264,8 +299,14 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
         results = [row for row in events if row.get('event') == 'step' and row.get('step') == step]
         step_results[step] = 'PASS' if len(results) == 1 and results[0].get('status') == 'PASS' and observations[step] else 'FAIL'
     steps_ok = all(value == 'PASS' for value in step_results.values())
-    failed = any(row.get('event') in ('failure', 'step_diagnostic', 'download_failure', 'watchdog') for row in events)
-    complete = exit_code == 0 and any(row.get('event') == 'done' for row in events) and any(row.get('event') == 'download_finish' for row in events)
+    process_results = {}
+    for step in ('stream', 'abort', 'download'):
+        results = [row for row in events if row.get('event') == 'process_exit' and row.get('step') == step]
+        process_results[step] = len(results) == 1 and results[0].get('exit_code') == 0 and any(
+            row.get('event') == 'done' and row.get('processStep') == step for row in events)
+    failed = any(row.get('event') in ('failure', 'step_diagnostic', 'download_failure', 'watchdog',
+                                    'content_process_terminated', 'navigation_failure', 'process_evidence_failure') for row in events)
+    complete = exit_code == 0 and all(process_results.values()) and any(row.get('event') == 'download_finish' for row in events)
     return {'status': 'PASS' if complete and steps_ok and not failed and valid and abort_ok and root_ok and deep_ok and json_ok and upload_ok
             and download == b'mac1 download\n' else 'FAIL',
             'path': 'WKURLSchemeHandler', 'fallback': 'NOT IMPLEMENTED; buffering requires manager follow-up',
@@ -273,7 +314,7 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
             'measurements': measurements, 'send_intervals_ms': intervals, 'abort_delay_ms': delay, 'abort_pass': abort_ok,
             'post_stop_writes': post_stop_writes, 'stream_owners': stream_owners,
             'root_redirect_pass': root_ok, 'deep_reload_pass': deep_ok, 'json_pass': json_ok,
-            'stream_eof_pass': eof_ok, 'step_results': step_results,
+            'stream_eof_pass': eof_ok, 'step_results': step_results, 'process_results': process_results,
             'upload_pass': upload_ok, 'download_pass': download == b'mac1 download\n',
             'complete': complete, 'partial': not complete}
 
@@ -348,21 +389,17 @@ def run(report: dict[str, Any]) -> None:
         manifest = json.loads(manifest_path.read_text())
         manifest['resources'] = [row for row in manifest['resources'] if not row['path'].endswith('.map')]
         manifest_path.write_text(json.dumps(manifest) + '\n')
-        events = scratch / 'events.jsonl'
         downloads = scratch / 'downloads'; downloads.mkdir()
         code = None
         with synthetic_daemon() as (port, sends):
             try:
-                code, raw = _command([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
-                    str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port), str(events), str(downloads)],
-                    env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+                code = qualify_steps([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
+                    str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
+                    env, scratch, deadline, section, downloads)
                 section['native_exit'] = code
-                section['native_output'] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
-                                            'head': raw[:1024].decode(errors='replace'), 'tail': raw[-1024:].decode(errors='replace')}
             finally:
                 # Even timeout/failure keeps per-event receipts, never just an
                 # end-of-stream array. probe.py serializes this partial report.
-                section['events'] = read_events(events)
                 section['sends'] = list(sends)
                 downloaded = downloads / 'mac1.txt'
                 data = downloaded.read_bytes() if downloaded.is_file() and downloaded.stat().st_size <= 1024 else None

@@ -1698,14 +1698,21 @@ Every page event is emitted immediately to native and fsynced; final-only arrays
 are forbidden. Pass requires all five one-second-spaced events below 500 ms
 receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later
 writes for that owner. Timeouts retain partial JSONL in the report and fail.
-Stream, abort and download now have independent 9s/4s/5s deadlines and per-step
-PASS/FAIL receipts; later steps continue after failure. Overall PASS additionally
+Stream, abort and download retain independent 9s/4s/5s deadlines and per-step
+PASS/FAIL receipts. Each runs in its own invocation of the product, so a stream
+process/main-queue stall cannot starve abort or download. Every process must
+exit zero and emit its own `done`; a failed or missing step still fails overall. Overall PASS additionally
 requires actual normal reader EOF with five receipts and no partial frame,
 all three step results and native saved-file completion. Failure-only closed
 diagnostics retain page bytes/frames/last stage and native delivered bytes,
 framing-header names/presence/expected length and finish actor/thread/stopped
 state; no header/body/context/credential values are retained. Bounds and the
-hard-watchdog limitation are documented in `app/mac/README.md`.
+watchdog bounds are documented in `app/mac/README.md`. Native background
+liveness requests distinguish main-dispatch/reply delays and query closed
+page step/reader/count/timer facts without page messaging. Native process-loss,
+navigation-failure and scheme callback/owner lifecycle records are emitted
+independently of page receipts. The build-62/63 post-finish cause remains
+unproven; process isolation fixes the proven qualifier dependency only.
 This is a local transport fixture with development tsnet stubs, not live remote,
 Keychain, packaged release, minimum-macOS or native save-panel acceptance.
 If measured buffering appears, native-message delivery and a web SSE helper
