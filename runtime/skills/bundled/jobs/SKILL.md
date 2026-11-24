@@ -148,6 +148,18 @@ output and truncation/total-byte metadata. Inspect truncation before treating
 captured output as complete. The script itself must print effective runtime
 path/version when that evidence is needed; the receipt does not discover it.
 
+The job must belong to the presented task, and the session must be that task's
+current live session for the job's agent. A completed job remains readable by
+its own live session (including a genuine resumed session of the same task).
+A successor task cannot authenticate a predecessor task's job with `--json`.
+Use the unbound read-only `jobs show` / `jobs output` forms above for that
+historical receipt, and retain its original task attribution; never substitute
+a predecessor session ID. `409 session_mismatch` explains the actual refusal
+and includes expected/presented task and session fields. `expected_session_state`
+distinguishes `active` from `inactive`; an unseen active session ID is withheld
+(null) to avoid disclosing an authentication credential. CLI output explicitly
+distinguishes a withheld active ID from no active session.
+
 Verify the exact command, cwd, runtime, output, exit code and observable side
 effects before acting. Terminal state and exit code are separate facts:
 
@@ -397,7 +409,7 @@ action, never a fabricated earlier result or another task's callback.
 | `404 unknown_task` | Submission references a missing task. |
 | `404 unknown_job` | Show, receipt, output, Stop or wait references a missing job ID. |
 | `409 not_terminal` | Receipt/output requested before terminal state. |
-| `409 session_mismatch` | Current task/agent session differs; exit immediately. |
+| `409 session_mismatch` | Receipt task differs from the job's owner, binding is missing, task/agent ownership differs, or session is inactive/different. Inspect the reason and expected/presented pair; do not retry with a predecessor SID. Historical unbound read-only show/output remain available. |
 
 Do not automatically retry submission or flip policy fields. Reconcile the
 actual ID and effects and resolve the error before a fresh authorized request.

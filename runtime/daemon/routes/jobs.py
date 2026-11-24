@@ -77,18 +77,20 @@ def _enforce_session_or_bearer(
 
     if not task_id or not session_id:
         raise HTTPException(
-            status_code=409, detail={"code": "session_mismatch"},
+            status_code=409, detail={"code": "session_mismatch", "reason": "missing_binding"},
         )
 
     task = org.db.get_task(task_id)
     if task is None or task.assigned_agent != record.agent_name:
         raise HTTPException(
-            status_code=409, detail={"code": "session_mismatch"},
+            status_code=409, detail={"code": "session_mismatch",
+                "reason": "unknown_task" if task is None else "task_agent_mismatch"},
         )
     expected = org.sessions.get_active(task_id, record.agent_name)
     if expected is None or expected != session_id:
         raise HTTPException(
-            status_code=409, detail={"code": "session_mismatch"},
+            status_code=409, detail={"code": "session_mismatch",
+                "reason": "no_active_session" if expected is None else "session_mismatch"},
         )
     if org.sessions.is_recovery_session(task_id, record.agent_name, session_id):
         # Recovery is purpose-bound: it may inspect only the exact task's jobs,
@@ -112,18 +114,35 @@ def _enforce_exact_receipt_session(
     and the job must belong to that exact task rather than merely the same
     agent. Existing job endpoints retain their current authorization behavior.
     """
-    if task_id is None or record.task_id != task_id:
-        raise HTTPException(
-            status_code=409, detail={"code": "session_mismatch"},
+    try:
+        if task_id is None or record.task_id != task_id:
+            raise HTTPException(
+                status_code=409, detail={"code": "session_mismatch",
+                    "reason": "missing_binding" if not task_id else "job_task_mismatch"},
+            )
+        _enforce_session_or_bearer(
+            record,
+            has_bearer=False,
+            task_id=task_id,
+            session_id=session_id,
+            org=org,
+            allow_recovery_read=True,
         )
-    _enforce_session_or_bearer(
-        record,
-        has_bearer=False,
-        task_id=task_id,
-        session_id=session_id,
-        org=org,
-        allow_recovery_read=True,
-    )
+    except HTTPException as exc:
+        if not isinstance(exc.detail, dict) or exc.detail.get("code") != "session_mismatch":
+            raise
+        # Explain the existing denial without accepting another task or an
+        # inactive session. The expected SID is live, not a historical submit SID.
+        expected = org.sessions.get_active(record.task_id, record.agent_name)
+        raise HTTPException(status_code=exc.status_code, detail={
+            **exc.detail,
+            "expected_task_id": record.task_id,
+            # A failed request must not disclose an unseen authentication SID.
+            "expected_session_id": expected if expected == session_id else None,
+            "expected_session_state": "active" if expected is not None else "inactive",
+            "presented_task_id": task_id,
+            "presented_session_id": session_id,
+        }) from exc
 
 _MAX_SCRIPT_BYTES = 65536
 _MAX_TITLE_LEN = 200
