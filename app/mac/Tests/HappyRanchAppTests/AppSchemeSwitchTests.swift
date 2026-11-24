@@ -25,7 +25,7 @@ final class SwitchTransport: AppAPITransport, @unchecked Sendable {
 
 @MainActor
 final class SwitchSchemeTask: NSObject, WKURLSchemeTask {
-    let request: URLRequest
+    nonisolated let request: URLRequest
     var finished = false
     var failed = false
     var received = false
@@ -39,10 +39,18 @@ final class SwitchSchemeTask: NSObject, WKURLSchemeTask {
         if method != "GET" { request.setValue("1", forHTTPHeaderField: "X-HappyRanch-Body-Bytes") }
         self.request = request
     }
-    func didReceive(_ response: URLResponse) { received = true; status = (response as? HTTPURLResponse)?.statusCode }
-    func didReceive(_ data: Data) {}
-    func didFinish() { finished = true }
-    func didFailWithError(_ error: Error) { failed = true; onFailure?() }
+    // WKURLSchemeTask's requirements are nonisolated. AppScheme delivers these
+    // callbacks on MainActor; bridge synchronously so ordering assertions hold.
+    nonisolated func didReceive(_ response: URLResponse) {
+        MainActor.assumeIsolated { received = true; status = (response as? HTTPURLResponse)?.statusCode }
+    }
+    nonisolated func didReceive(_ data: Data) {}
+    nonisolated func didFinish() {
+        MainActor.assumeIsolated { finished = true }
+    }
+    nonisolated func didFailWithError(_ error: Error) {
+        MainActor.assumeIsolated { failed = true; onFailure?() }
+    }
 }
 
 final class AppSchemeSwitchTests: XCTestCase {

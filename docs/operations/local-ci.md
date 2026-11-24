@@ -4287,7 +4287,7 @@ reuses the supervisor fixture for existing enrollment tests; its 30s cleanup
 grace and preference checks are unchanged. Portable execution does not invoke
 Security.framework or establish native PASS. The suite
 then qualifies the production loader, body adapter and SPA against a private
-synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
+synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1--mac-2a-main-app-scheme-transport-and-ownership).
 The deep reload targets stable `/onboarding` for the empty-org fixture:
 desktop `/settings` intentionally opens a dialog then returns Main to `/`.
 Native qualification additionally requires the reload navigation and scheme
