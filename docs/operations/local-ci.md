@@ -34,7 +34,7 @@ WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --draft-re
 WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --draft-review=C14
 ```
 
-The dispatcher accepts `C01` through `C28`, `caller_ledger`, or `all`, and emits
+The dispatcher accepts `C01` through `C29`, `caller_ledger`, or `all`, and emits
 attributable outcomes. Positive Draft/coexistence paths use the unpatched real
 `generic_start_catalog()`, qualified registrar and Founder Save/Allow APIs. No
 SQL-seeded new definitions/Allowed defaults substitute for those owners.
@@ -64,8 +64,9 @@ stale-selection rejection at the reducer boundary, with zero persisted changes.
 | C21 | Valid Founder/template/authority/role activation reaches old-lane retirement409; removed human stage/sign routes and CLI verbs remain absent; retained history reads. Other old author/revision/claim guards remain source-unchanged; this focused row does not claim new live old-lane execution. |
 | C22 | Five fixed historical resource hashes. Raw base/head comparisons below are separate and mandatory; all does not invent a raw oracle. |
 | C23–C26 | Actual manager/worker and node briefs; two real identities' generations/CAS/global operation keys and admitted pins; unchanged Coding Setup list/export; exact documented Founder API sequence. |
-| C27 | Real TaskQueue → Dispatcher → run_step → SequentialDispatcher → _run_agent → node_instruction → launch COMMIT → subprocess boundary. Only `_run_command` is stubbed; current execution stops earlier at the separate scratch-ID validator. The assertion remains failing until that contract is resolved. Set absolute `WORKFLOW_QUEUED_DB` to export the actual refused DB on first invocation, then restore it into a fresh private runtime on a later invocation; no live DB is used. |
+| C27 | Real TaskQueue → Dispatcher → run_step → SequentialDispatcher → _run_agent → node_instruction → launch COMMIT → subprocess boundary. Only the provider `_run_command` is stubbed; the real scratch preparation and launch COMMIT must succeed. Set absolute `WORKFLOW_QUEUED_DB` to export the actual refused DB on first invocation, then restore it into a fresh private runtime on a later invocation; no live DB is used. |
 | C28 | Exact queued/null rendering, nine invalid state/identity tuples, and the existing bound-rendering keeper. No stored binding is fabricated for pre-bind rendering. |
+| C29 | Generated engine-v2 carrier, first-task and second-visit IDs and the exact original-engine bare-hash advance form pass real scratch preparation/manifest validation, canonical coverage and report discovery; malformed kind/digest/path components remain refused. No cleanup is performed. |
 | caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding also admits after 16384 units, then refuses at its finite 32768 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
 
 Retain the ordinary focused keepers on **both** Python versions:

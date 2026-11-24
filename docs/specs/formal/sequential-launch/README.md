@@ -12,8 +12,12 @@ Save/Allow is not a prerequisite for that state.
 
 The model abstracts authority, active selection and principal into `identity`;
 Python validation, budgets, native closure and actual providers remain separate
-obligations. Weak fairness assumes an available queue/host with no permanent
-interference; it is not an unconditional daemon liveness claim.
+obligations. C27 executes real scratch preparation and manifest writing before
+launch COMMIT; C29 covers the exact persisted v2 carrier/first-task/visit names
+and original-engine bare-hash advance form through scratch, coverage and report
+discovery. The model abstracts this filesystem readiness and does not prove those component grammars. Weak fairness
+assumes an available queue/host with no permanent interference; it is not an
+unconditional daemon liveness claim.
 
 Run the pinned jar and Java recipe from
 [task lifecycle](../task-lifecycle/README.md#run-tlc), with module

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Literal
 from runtime.orchestrator.task_scratch_coverage import collect_task_scratch_coverage
 from runtime.orchestrator.task_scratch_evidence import SCAN_NS as EVIDENCE_SCAN_NS
 from runtime.orchestrator.task_scratch_evidence import collect_task_scratch_evidence
-from runtime.orchestrator.task_scratch import validate_task_scratch_manifest
+from runtime.orchestrator.task_scratch import SEQUENTIAL_TASK_ID_PATTERN, validate_task_scratch_manifest
 
 if TYPE_CHECKING:
     from runtime.daemon.sessions import SessionTracker
@@ -35,7 +35,7 @@ _MAX_CANDIDATES = 64
 _MAX_DISCOVERY_ENTRIES = 256
 _SCAN_NS = 12_000_000_000
 _MAX_REASONS = 32
-_TASK_ID = re.compile(r"TASK-[A-Z0-9-]{1,59}(?<!-)\Z")
+_TASK_ID = re.compile(rf"(?:TASK-[A-Z0-9-]{{1,59}}(?<!-)|{SEQUENTIAL_TASK_ID_PATTERN})\Z")
 
 
 @dataclass(frozen=True)

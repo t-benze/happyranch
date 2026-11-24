@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 29)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 30)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -7681,7 +7681,19 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             f.settings[body['definition']['identity']]=allowed.json()['original']
                             f.operation_receipts[body['operation_key']+'-allow']=allowed.content
                     if launch:
-                        yield f
+                        from runtime.orchestrator.executor_binary_registry import set_binary, validate_binary
+                        # Provision the isolated registry; real resolution stays
+                        # enabled and only _run_command is stubbed by C27.
+                        binary = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'private-codex'
+                        binary.write_text('#!/bin/sh\nexit 97\n')
+                        binary.chmod(0o700)
+                        set_binary('codex', validate_binary(str(binary)))
+                        with patch.dict(os.environ, {}):
+                            # This fixture is a private daemon, not a nested
+                            # child of the maker's containing task session.
+                            for key in ('HAPPYRANCH_TASK_TMP_ROOT', 'HAPPYRANCH_TASK_SCRATCH_MANIFEST'):
+                                os.environ.pop(key, None)
+                            yield f
                     else:
                         with patch.object(f.org.orchestrator,'_run_agent',side_effect=AssertionError('provider launch forbidden')):
                             yield f
@@ -8657,6 +8669,58 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             finally:
                 state.metrics_store.close(); state.direct_connect_authority_store.close()
 
+    async def dr_scratch_ids():
+        from runtime.orchestrator.task_scratch import TaskScratchError, prepare_task_scratch, observe_task_scratch_manifest
+        from runtime.orchestrator.task_scratch_coverage import collect_task_scratch_coverage
+        from runtime.orchestrator.task_scratch_report import report_registered_agent_task_scratch, report_task_scratch
+        async with dr_fixture() as f:
+            run = (await dr_start(f))[0]
+            first = f.ids.visit_task_id
+            await dr_visit(f, run['id'], 'produced')
+            second = s4row(f, 'workflow_seq_visits', dr_select(f, run['id'])['active_visit_id'])['task_id']
+            ids = (run['carrier_task_id'], first, second)
+            assert [value.rsplit('-', 1)[0] for value in ids] == [
+                'TASK-SEQ-seq-carrier', 'TASK-SEQ-seq-first-task', 'TASK-SEQ-seq-visit']
+            # Original-engine advance (:856) uses a bare SHA256 suffix.
+            ids += ('TASK-SEQ-' + hashlib.sha256(b'private original advance').hexdigest(),)
+            workspace = f.root / 'workspaces' / 's3_author'
+            workspace.mkdir(parents=True, exist_ok=True)
+            for task_id in ids:
+                prepared = prepare_task_scratch(workspace=workspace, task_id=task_id,
+                    producer_kind='task', producer_id='private-scratch-id')
+                assert prepared.root.name == task_id and prepared.root.is_dir()
+                manifest = observe_task_scratch_manifest(workspace=workspace, task_id=task_id)
+                assert manifest['status'] == 'ok' and manifest['manifest']['task_id'] == task_id and manifest['manifest']['producers']
+            coverage = collect_task_scratch_coverage(workspace=workspace)
+            buckets = {row.relative_path: row.classification for row in coverage.buckets}
+            for task_id in ids:
+                assert buckets.get('.happyranch/task-tmp/' + task_id) == 'canonical_regenerable', (task_id, coverage)
+            reports = report_registered_agent_task_scratch(db=f.db, sessions=f.org.sessions,
+                agent='s3_author', workspace=workspace)
+            assert len(reports) == 4, reports
+            assert {row.payload.get('root') for row in reports} == {
+                str(workspace / '.happyranch/task-tmp' / task_id) for task_id in ids}
+            assert all(row.payload.get('manifest_status') == 'ok' and row.payload.get('candidate_identity')
+                       for row in reports), reports
+            # Exact path-component grammar: no generic lowercase, extra kinds,
+            # altered digest length/case, separators or trailing newline.
+            invalid = ('TASK-lower', 'TASK-SEQ-seq-other-' + 'a'*64,
+                'TASK-SEQ-seq-first-task-' + 'a'*63, 'TASK-SEQ-seq-first-task-' + 'a'*65,
+                'TASK-SEQ-seq-first-task-' + 'A'*64, first + '/child', '../' + first, first + '\n')
+            for task_id in invalid:
+                try:
+                    prepare_task_scratch(workspace=workspace, task_id=task_id,
+                        producer_kind='task', producer_id='private-invalid-id')
+                except TaskScratchError as exc:
+                    assert str(exc).startswith('invalid task_id:'), (task_id, exc)
+                else:
+                    raise AssertionError('invalid scratch component accepted: ' + repr(task_id))
+                report = report_task_scratch(db=f.db, sessions=f.org.sessions, task_id=task_id,
+                    agent='s3_author', workspace=workspace, source='teardown', observation_id='private-invalid-id')
+                assert 'canonical_boundary_invalid' in report.reasons, (task_id, report)
+            print('PASS scratch_ids: generated carrier/first-task/second-visit prepared and manifested; '
+                  'plus original advance form; coverage canonical; report discovery attributed all four; eight malformed IDs refused', flush=True)
+
     async def dr_render_tuples():
         from runtime.workflows.sequential_dispatch import SequentialRefusal
         async with dr_fixture() as f:
@@ -8704,6 +8768,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     asyncio.run(dr_first_launch())
                 elif case == 'C28':
                     asyncio.run(dr_render_tuples())
+                elif case == 'C29':
+                    asyncio.run(dr_scratch_ids())
                 else:
                     asyncio.run(dr_case(case))
                 print('PASS Draft',case,'private real released catalog/ASGI/native boundary; provider NOT RUN',flush=True)

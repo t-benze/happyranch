@@ -2969,10 +2969,16 @@ input checks still run. Launch COMMIT independently rechecks queue eligibility,
 assignment, native claim and cancellation, then atomically binds the session and
 sets executing progress.
 
-This predicate works with previously admitted queued state and does not require
-new Save/Allow. It is not proof of complete launch readiness: the existing
-scratch component validator separately rejects Start@2's generated
-`TASK-SEQ-seq-first-task-<hash>` identity. TASK-18967 stops before changing that
-contract; its private real-queue C27 case retains the failing launch assertion.
-The two observed pilot runs therefore cannot yet be promised to launch after
-restart with this prompt fix alone. No live run/settings/restart change follows.
+Previously admitted queued state is rediscovered without new Save/Allow.
+Scratch preparation, manifest validation, report discovery and coverage accept
+exactly the persisted engine-v2 `TASK-SEQ-seq-` IDs with kind `carrier`,
+`first-task` or `visit`, followed by a hyphen and 64 lowercase hex digits.
+The original engine's `TASK-SEQ-<64 lowercase hex>` advance form is also
+recognized across these consumers; their uppercase grammar is retained. No
+future ID rename or historical row rewrite is needed. The private C27 case
+reaches launch COMMIT and the provider-subprocess boundary through the real
+queue; replay restores an
+actual pre-fix refused DB and rediscovers it without Save/Allow. C29 covers
+scratch/manifest/report/coverage for generated carrier, first-task and second
+visit IDs, plus the original-engine advance form. These source checks grant no
+live restart or run/settings mutation.
