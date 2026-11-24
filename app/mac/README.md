@@ -224,8 +224,9 @@ unproven. Build 63 also lacked the native main-queue timeout, so page timers
 alone cannot attribute it. Process isolation repairs the proven qualifier
 dependency; it does not claim WebKit EOF closure or change response framing.
 Round-15 authority: engineering_manager `output/TASK-18895/round15-decision.md`
-and `ledger.md`: 10/14 builds used, 4 remain, next 64. Only independent QA may
-spend build 64 after exact-head review APPROVE. The maker runs no Mac build.
+and `ledger.md`. Builds 54–64 were used through round 15. The PR body records
+the current build ledger. Only independent QA may build after independent review
+APPROVE at the exact head. The maker runs no Mac build.
 
 The suite also checks JSON POST/PUT,
 10 MiB serialized upload/digest, saved blob bytes, and root/deep reload. Root
@@ -262,11 +263,11 @@ the existing SwiftPM venue, run by the native suite. They are NOT RUN on Linux.
 periodic connected → busy/unknown → ready monitor, unchanged lifetime/webURL,
 no session reopen/replay and genuine revocation teardown in the existing
 HomeInviteModelTests venue.
-All Mac builds/runs require prior exact-head reviewer APPROVE and consume this
-PR's combined ten-run unsigned allowance across Jenkins and GitHub Actions
-(Founder THR-387 seq134).
-Ledger after build 61: **8 of 10 used**, builds **54–61 all FAILURE**;
-**2 remain**, next **62**, only after renewed exact-head review APPROVE.
+Founder THR-387 seq136 (2026-11-24T00:25:44Z) raised PR #1839's allowance
+to **14 total Mac builds**, combined across Jenkins and GitHub Actions unsigned
+builds. The seq89/95 default of **6 builds per Mac PR** still applies to other
+Mac PRs. Build only after independent review APPROVE at the exact head; never
+merge Mac code not built at its exact final head.
 The PR body records the current build ledger. No diagnostic-only run,
 extra retry, new Jenkins job or required check is added.
 

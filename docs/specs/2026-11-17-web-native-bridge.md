@@ -1729,7 +1729,10 @@ Failure-only closed diagnostics retain requested/served paths, navigation
 decision/path and final pathname. JSON methods, serialized 10 MiB upload/digest and blob-download
 file bytes are additional assertions, not substitutes for per-event timing.
 
-Builds are gated on independent reviewer APPROVE and capped at ten combined
-unsigned Jenkins/GitHub Actions runs for this PR (Founder THR-387 seq134).
+Founder THR-387 seq136 (2026-11-24T00:25:44Z) raised PR #1839's allowance
+to **14 total Mac builds**, combined across Jenkins and GitHub Actions unsigned
+builds. The seq89/95 default of **6 builds per Mac PR** still applies to other
+Mac PRs. Build only after independent review APPROVE at the exact head; never
+merge Mac code not built at its exact final head.
 The PR body records the current ledger. No S0 diagnostic allowance, daily E2E trigger, required test/build
 check, dialog/toolbar/menu/local-control/language or launch-policy work is added.
