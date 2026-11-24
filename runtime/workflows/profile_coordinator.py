@@ -76,8 +76,8 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
     coordinator exempts this row. Finalized history needs no adoption. No other
     publisher or live owner is borrowed. The caller holds the org DB lock.
     """
-    if (row.state != 'unknown' or row.publisher not in {
-            'profile:remove_runtime_executor_profile', 'profile:remove_adapter_entry'}
+    remove_publishers = ('profile:remove_runtime_executor_profile', 'profile:remove_adapter_entry')
+    if (row.state != 'unknown' or row.publisher not in remove_publishers
             or row.agents or row.teams or row.writer_id in live_writers):
         return None
     authority = org.workflow_authority
@@ -93,19 +93,44 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
         return None
     invocation = journal['publisher_invocation'].removeprefix('profile-coordinator:')
     operations = org.db._conn.execute(
-        'SELECT profile_name,operation_kind,state FROM workflow_profile_operations WHERE coordinator_invocation=?',
+        'SELECT profile_name,operation_kind,state,created_at FROM workflow_profile_operations WHERE coordinator_invocation=?',
         (invocation,),
     ).fetchall()
     if (len(operations) != 1 or operations[0]['operation_kind'] != 'remove'
             or operations[0]['state'] != ('published' if finalized else 'forward_recovery_required')):
         return None
     if finalized:
-        # Native history has no operation ID. Multiple removes cannot be bound
-        # unambiguously, even if only one matches the latest installed journal.
+        # A failed insertion can leave another native remove writer without an
+        # operation. Require this exact ACTIVE -> UNKNOWN audit pair to be the
+        # only remove-publisher history, and to bracket operation creation.
+        # Settled attempts and duplicate records also make provenance ambiguous.
         removes = org.db._conn.execute(
             "SELECT id FROM workflow_profile_operations WHERE operation_kind='remove' LIMIT 2",
         ).fetchall()
-        return str(operations[0]['profile_name']) if len(removes) == 1 else None
+        if len(removes) != 1:
+            return None
+        evidence = org.db._conn.execute(
+            "SELECT task_id,agent,payload,timestamp FROM audit_log "
+            "WHERE action='team_move_native_writer' AND json_extract(payload,'$.publisher') IN (?,?) "
+            "ORDER BY id LIMIT 3", remove_publishers,
+        ).fetchall()
+        if len(evidence) != 2 or any(
+                item['task_id'] != 'config:team-move-writer:' + row.writer_id
+                or item['agent'] != 'native_writer' for item in evidence):
+            return None
+        try:
+            if [NativeWriterLifecycle.model_validate_json(item['payload'], strict=True) for item in evidence] != [
+                    row.model_copy(update={'state': 'active'}), row]:
+                return None
+            started, captured, finished = (
+                datetime.fromisoformat(value) for value in (
+                    evidence[0]['timestamp'], operations[0]['created_at'], evidence[1]['timestamp']))
+            if (any(value.tzinfo is None for value in (started, captured, finished))
+                    or not started < captured < finished):
+                return None
+        except (ValueError, TypeError):
+            return None
+        return str(operations[0]['profile_name'])
     try:
         authority._validate_profile_binding(ProfileFenceBinding(
             str(journal['id']), str(journal['publisher_invocation']), int(journal['profile_fence'])))

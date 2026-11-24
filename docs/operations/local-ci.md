@@ -4105,7 +4105,11 @@ A second startup after finalization covers both remove publishers: the org loads
 the coordinator synchronizes without adoption, the published operation and journal
 remain unchanged, and native history stays UNKNOWN. Finalized refusal cases cover
 invocation/state/kind mismatch, active ordinary or latest installed ordinary journal,
-multiple removes (same or different invocation), live/scoped and unrelated writers.
+multiple removes (same or different invocation), live/scoped and unrelated writers,
+a second UNKNOWN after failed operation insertion, another settled remove attempt,
+and tied, non-bracketing or timezone-naive writer timestamps. The insertion fault
+is test-side; the real coordinator reserves the second writer before the fault,
+and restart retains both UNKNOWN records and the startup hold.
 This is outside retired Python units, skipped general integration, Product E2E
 and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
 is review evidence only.

@@ -854,8 +854,13 @@ After finalization, both startup callers also exempt the record when no journal
 is active and the namespace's latest installed (`cache_installed`) journal has a
 `profile-coordinator:` invocation matching exactly one operation, a `published`
 remove. Since the native record has no operation ID, the org must have exactly
-one remove operation in total; multiple removes fail closed even across different
-invocations. The finalized case needs no rebind adoption or deferred synchronization:
+one remove operation in total. Its creation timestamp must fall strictly between
+the specific writer's timezone-aware ACTIVE and UNKNOWN audit timestamps, in audit
+ID order. Those two validated records must be the entire history of both remove
+publishers. Another attempt (including a settled or operation-less writer),
+duplicate/missing evidence, tied/invalid timestamps or a non-bracketing interval
+fails closed. No nearest-time match or historical rewrite is used. The finalized
+case needs no rebind adoption or deferred synchronization:
 there is no prepared fence left to resume. Other unsettled writers, ordinary or
 mismatched journals, mixed-profile invocations and partially forward groups retain
 their holds. An unavailable native owner keeps every record blocking. Both

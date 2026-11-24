@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -173,13 +174,44 @@ async def test_restart_finalized_remove_loads_without_adoption(tmp_path: Path, p
 
 @pytest.mark.parametrize('case', ['other-invocation', 'not-published', 'ordinary-journal',
                                   'ordinary-installed', 'scoped-agent', 'scoped-team', 'active',
-                                  'unrelated', 'ambiguous-remove', 'mixed-profile', 'not-remove'])
+                                  'unrelated', 'ambiguous-remove', 'mixed-profile', 'not-remove',
+                                  'failed-insertion', 'settled-remove-attempt', 'writer-time-tie',
+                                  'writer-time-outside', 'writer-time-naive'])
 async def test_restart_ineligible_finalized_remove_stays_held(tmp_path: Path, case: str) -> None:
     async with removed(tmp_path, publisher='remove_runtime_executor_profile') as f:
         with f.coordinator.operation(['dsh'], operation_kind='register', publisher='direct_connect_projection'):
             bind_direct_connect_adapter(f.entry, operation_id='synthetic-finalized', via='direct_connect')
         conn = f.org.db._conn
-        if case == 'other-invocation':
+        if case == 'failed-insertion':
+            prior_history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+            prior_operation, prior_fence = operation(f.org), fence(f.org)
+            with patch.object(f.coordinator, '_insert_operation_rows',
+                              side_effect=sqlite3.OperationalError('synthetic operation insert failure')):
+                with pytest.raises(sqlite3.OperationalError, match='synthetic operation insert failure'):
+                    with f.coordinator.operation(['dsh'], operation_kind='remove',
+                                                 publisher='remove_runtime_executor_profile'):
+                        pytest.fail('failed operation insertion entered mutation')
+            history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+            added = history.keys() - prior_history.keys()
+            assert len(added) == 1
+            writer = history[next(iter(added))]
+            assert writer.state == 'unknown' and not writer.agents and not writer.teams
+            assert writer.writer_id not in native_owner_uncommitted(f.org.db).writers
+            assert sum(row.state == 'unknown' for row in history.values()) == 2
+            assert conn.execute("SELECT COUNT(*) FROM workflow_profile_operations WHERE operation_kind='remove'").fetchone()[0] == 1
+            assert operation(f.org) == prior_operation and fence(f.org) == prior_fence
+        elif case == 'settled-remove-attempt':
+            with native_writer(f.org.db, publisher='profile:remove_adapter_entry'):
+                pass
+        elif case.startswith('writer-time-'):
+            created_at = operation(f.org)['created_at']
+            conn.execute("UPDATE audit_log SET timestamp=? WHERE action='team_move_native_writer' "
+                         "AND json_extract(payload,'$.publisher')='profile:remove_runtime_executor_profile' "
+                         "AND json_extract(payload,'$.state')='active'",
+                         (created_at if case == 'writer-time-tie' else
+                          '9999-01-01T00:00:00+00:00' if case == 'writer-time-outside' else
+                          created_at.removesuffix('+00:00'),))
+        elif case == 'other-invocation':
             conn.execute("UPDATE workflow_profile_operations SET coordinator_invocation='other'")
         elif case == 'not-published':
             conn.execute("UPDATE workflow_profile_operations SET state='store_committed'")

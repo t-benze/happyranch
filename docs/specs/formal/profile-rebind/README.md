@@ -21,7 +21,7 @@ state, and an ordinary latest installed journal; they retain their holds.
 | Move / Reconnect | Consumer canonical segment plus `rebind_consumer`; ordinary/claimed profile writer with the existing validated adapter binder. |
 | Publish / ClosureFence | `_finalize` and `_republish` retain every prepared journal while any captured org has incoherent dependencies. |
 | CurrentRoster | Consumer completion captures the changed canonical roster outside leases, validates its bookends, and passes it to bound publication; startup recovery also uses its captured roster. |
-| Classify / StartupIsolation / EligibleStartup | `startup_forward_remove_profile` checks local unknown remove evidence. The forward case retains the original prepared journal, complete-group `_rebind_adoption` and deferred synchronization. With nothing active, finalized evidence requires a single published remove matching the latest namespace-installed coordinator journal and exactly one remove in the org; it needs no adoption or deferral. Other native ownership still holds. |
+| Classify / StartupIsolation / EligibleStartup | `startup_forward_remove_profile` checks local unknown remove evidence. The forward case retains the original prepared journal, complete-group `_rebind_adoption` and deferred synchronization. With nothing active, finalized evidence requires a single published remove matching the latest namespace-installed coordinator journal and exactly one remove in the org plus the unambiguous writer audit pair described below; it needs no adoption or deferral. Other native ownership still holds. |
 | UnknownPreserved | Neither startup exception writes or settles the historical native record. |
 | Crash | Process-local interval ownership and startup classification are lost. Durable operation, binding and native evidence remain. |
 
@@ -33,9 +33,15 @@ file-phase publication and its original recovery owner remain the existing
 publication protocol's responsibility. The finite evidence classes abstract the
 Python predicates and cross-org checks. All-published phase abstracts the matching
 published operation and installed journal together; operation/journal mismatches
-and multiple removes are ineligible evidence classes. The model does not prove
-SQL row selection or writer-to-operation binding. The finite model reaches
-finalized startup through Publish, Crash and Classify; the standalone restart
+and multiple removes are ineligible evidence classes. The ambiguous-remove class
+also abstracts competing native remove attempts, including insertion failure
+before an operation exists. Finalized Python classification additionally requires
+that the specific writer's validated ACTIVE/UNKNOWN pair is the entire history
+of both remove publishers, in audit ID order, with timezone-aware timestamps
+strictly bracketing operation creation. Missing/duplicate records, settled
+competitors and tied/invalid/non-bracketing timestamps retain the hold. The model
+does not prove SQL row selection or writer-to-operation binding. The finite model
+reaches finalized startup through Publish, Crash and Classify; the standalone restart
 regressions exercise those actual boundaries. A retained startup hold is not an
 enabled adoption. No runtime dependency, CI gate or scheduled run is added.
 
