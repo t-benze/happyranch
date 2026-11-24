@@ -22,8 +22,11 @@ MUTATIONS = contract.HOST_MUTATIONS | contract.CLI_LIFECYCLE_TIMEOUTS.keys()
 
 
 class ClosedError(Exception):
-    def __init__(self, code: str = "unavailable", effect: str = "none", recovery: str = "nativeRecovery") -> None:
+    def __init__(self, code: str = "unavailable", effect: str = "none", recovery: str = "nativeRecovery",
+                 category: str | None = None) -> None:
         self.value = dict(code=code, effect=effect, recovery=recovery)
+        if code == "hostStateUnrecognized":
+            self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES else 'unknown'
 
 
 class Terminal:
@@ -86,7 +89,7 @@ class Host:
         loop, outcome = self.GLib.MainLoop(), []
         self.mutating = method in MUTATIONS
 
-        def finish(result: dict | None = None, code: str | None = None, effect: str = "none") -> None:
+        def finish(result: dict | None = None, code: str | dict | None = None, effect: str = "none") -> None:
             outcome.append((result, code, effect))
             loop.quit()
 
@@ -99,8 +102,10 @@ class Host:
         result, code, effect = outcome[0]
         self.mutating = False
         if code:
+            category = code.get('category') if type(code) is dict else None
+            code = code['code'] if type(code) is dict else code
             raise ClosedError(code, effect, "nativeRecovery" if effect == "unknown" else
-                              "nativePermission" if code == "permissionDenied" else "refresh")
+                              "nativePermission" if code == "permissionDenied" else "refresh", category)
         return result
 
     def close(self) -> None:
@@ -168,7 +173,7 @@ def main() -> int:
     except ClosedError as error:
         if error.value["code"] == "hostStateUnrecognized":
             print("Remote access files or the release runtime owner could not be verified. "
-                  "Check the local installation.", file=sys.stderr)
+                  "Check the local installation. Category: " + error.value['category'] + ".", file=sys.stderr)
         print(json.dumps(error.value))
         return 1
     except (Exception, KeyboardInterrupt):

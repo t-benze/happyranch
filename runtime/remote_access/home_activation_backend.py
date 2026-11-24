@@ -74,12 +74,13 @@ class HomeActivationBackend:
         self._prepare = HomeActivationPrepare(io=self._io)
         self._prepare._transactions = self._transactions
 
-    def _compose(self, receipt: HomeActivationReceipt) -> tuple[
+    def _compose(self, receipt: HomeActivationReceipt, *, defer_policy_expiry: bool = False) -> tuple[
             HomeActivationCoordinator, HomeActivationRecovery, HomeObserver]:
         binding = dict(expected_generation=receipt.activation_generation,
                        expected_operation_id=receipt.operation_id)
         config = HomeLiveConfigOwner(io=self._io, **binding)
-        owner = HomeActivationOwner(io=self._io, config_owner=config, **binding)
+        owner = HomeActivationOwner(io=self._io, config_owner=config,
+                                    defer_policy_expiry=defer_policy_expiry, **binding)
         coordinator = HomeActivationCoordinator(owner=owner, root=self._io.root,
                                                 root_owner=self._io.root_owner)
         recovery = HomeActivationRecovery(owner=owner, admin=owner._admin,
@@ -88,7 +89,8 @@ class HomeActivationBackend:
         observer = HomeObserver(owner=owner, admin=owner._admin, root=self._io.root)
         return coordinator, recovery, observer
 
-    def enable(self, *, expected_generation: int, authenticated: bool) -> HomeActivationReceipt:
+    def enable(self, *, expected_generation: int, authenticated: bool,
+               _defer_policy_expiry: bool = False) -> HomeActivationReceipt:
         try:
             _generation(expected_generation)
             if authenticated is not True or os.geteuid() != 0:
@@ -130,7 +132,7 @@ class HomeActivationBackend:
                         raise ActivationRefused()
                 if receipt.phase != "prepared":
                     raise ActivationRefused()
-                coordinator, _, observer = self._compose(receipt)
+                coordinator, _, observer = self._compose(receipt, defer_policy_expiry=_defer_policy_expiry)
                 coordinator.run(receipt)
                 return coordinator.publish_ready(expected_generation=expected_generation, observer=observer)
         except Exception:
@@ -446,7 +448,8 @@ class HelperLifecycleBackend:
                         self._enable_staging(uid, snapshot['prestate'], directory, deadline)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise ActivationRefused()
-                    current = backend.enable(expected_generation=snapshot['generation'], authenticated=True)
+                    current = backend.enable(expected_generation=snapshot['generation'], authenticated=True,
+                        _defer_policy_expiry=current is None and snapshot.get('prestate') in ('staged-inert', 'post-disable'))
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ActivationRefused()
                 return {'outcome': current.phase, 'residue': []}
@@ -611,6 +614,8 @@ def helper_main() -> int:
         if (type(request) is dict and request.get('method') == 'Enable'
                 and request.get('step') == 'capture'):
             log_enable_refusal(error, child=True)
+            from runtime.remote_access.helper_generation import host_state_category
+            print(json.dumps({'refusal': host_state_category(error)}))
         elif (type(request) is dict and request.get('method') == 'Enable'
                 and request.get('step') == 'enable'):
             _log_activation_failure(error)

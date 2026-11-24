@@ -359,7 +359,17 @@ const HOST_ERROR: Record<string, MessageKey> = {
   hostStateUnrecognized: 'connection.host.hErrStateUnrecognized',
 };
 
-export function errorKey(command: ConnectionCommand, code: string): MessageKey {
+const HOST_STATE_ERROR: Record<string, MessageKey> = {
+  residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
+  provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',
+  inventory: 'connection.host.hErrStateInventory', quiescence: 'connection.host.hErrStateQuiescence',
+  timeout: 'connection.host.hErrStateTimeout', unknown: 'connection.host.hErrStateUnknown',
+};
+
+export function errorKey(command: ConnectionCommand, code: string, category?: ConnectionFailure['category']): MessageKey {
+  if (command.startsWith('host.') && code === 'hostStateUnrecognized' && category) {
+    return HOST_STATE_ERROR[category] ?? HOST_STATE_ERROR.unknown;
+  }
   const table = command.startsWith('host.') ? HOST_ERROR : CLIENT_ERROR;
   return table[code] ?? 'connection.err.unavailable';
 }
@@ -440,7 +450,7 @@ export function outcomeView(
     return null;
   }
   const { failure } = outcome;
-  const lines: OutcomeLine[] = [{ key: 'connection.client.failedAction', action: true }, { key: errorKey(command, failure.code), name: true }];
+  const lines: OutcomeLine[] = [{ key: 'connection.client.failedAction', action: true }, { key: errorKey(command, failure.code, failure.category), name: true }];
   if (failure.effect === 'unknown' && failure.code !== 'outcomeUnknown') lines.push({ key: 'connection.client.effectUnknown' });
   const hints: MessageKey[] = [];
   if (failure.recovery === 'newInviteOnHost') hints.push(command.startsWith('host.') ? 'connection.host.hNewInviteHint' : 'connection.client.newInviteHint');

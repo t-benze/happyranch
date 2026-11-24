@@ -118,6 +118,7 @@ def venue(tmp_path, monkeypatch):
     io.manager = SystemdServiceManager(system=True, run=v.native.run)
     io._run = v.native.run
     v.config = ConfigOwner()
+    v.config.renew_policy = lambda receipt: io._renew_policy_locked(fresh_auth=True)
     v.production = h.HomeActivationOwner(config_owner=v.config, io=io,
         expected_generation=7, expected_operation_id=v.prepared.operation_id)
     v.admin = Admin()

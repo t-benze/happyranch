@@ -212,6 +212,12 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   return;
  }
  if(sources.case==='errors'){
+ for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown',null,'/private/canary']){
+  contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
+  const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
+  assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'hostStateUnrecognized',effect:'none',recovery:'refresh',
+   category:!category || category.startsWith('/') ? 'unknown' : category});
+ }
  for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown','hostStateUnrecognized']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};
   const error=await vm.runInContext("happyranchConnection.call('client.commitSwitch','{}').catch(raw=>JSON.parse(raw))",contexts[0]);

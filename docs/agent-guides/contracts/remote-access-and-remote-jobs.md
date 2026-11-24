@@ -2726,7 +2726,13 @@ all binding fields use the B1 receipt predicates and must equal that receipt.
 Phase is `activating`, `joined` or terminal `failed_uncertain`. `effects` is a
 nonempty ordered prefix of exactly `preflight, headscale_start_verify,
 db_users, local_node_mint, credential_staging, home_config, managed_services,
-joined`. Each entry has exactly `name, state, member_digests`; state is
+joined`. The tuple, effect names, `TRANSACTION_FORMAT` and journal JSON shape
+are unchanged. Forward `headscale_start_verify` now renews the same shipped
+policy and strictly validates currentness after its intent and before its own
+reload/enable/start; the later `managed_services` renewal remains. Old journals
+at that intent still parse and follow the existing I3a terminal/recovery rules
+without renewal or effect replay. Each entry has exactly
+`name, state, member_digests`; state is
 `intent` or `done`. Only the last entry may be intent. Each intent is fsynced
 before its effect; done is fsynced only after independent verification.
 `member_digests` is empty except for done `home_config`, where its exact keys
@@ -4015,13 +4021,23 @@ current causes no restart or stream closure. Refusal retains the cache. On cache
 expiry, the existing readiness gate, shutdown/stream closure, return 1 and
 systemd `Restart=on-failure` remain unchanged. Startup still reads the file fresh.
 
-**Delivered in I4b-2:** Forward Enable runs the existing installer's fresh-auth
-renewal transition inside `managed_services`, before enabling the timer through
-`SystemdServiceManager.enable` and starting the managed target. The coordinator
-already holds the same activation-directory flock, so it calls the existing
-`_renew_policy_locked` transition used by `renew_policy`, without releasing or
-reacquiring it. The existing preflight current-policy checks are unchanged.
-Ready Enable stays inspect-only. I3a fresh-auth recovery still only verifies and
+**Delivered in I4b-2 (THR-327 restoration ordering):** Fresh-auth forward Enable
+from staged-inert or post-Disable inventory defers ONLY policy expiry during
+capture, inert publication and the forward owner's preflight. Exact shipped
+artifact/digest, provenance, owner/mode, token source and custody checks remain.
+After `headscale_start_verify` intent is durable, that effect calls the existing
+`_renew_policy_locked(fresh_auth=True)` under the SAME held activation-directory
+flock, through the live-config owner. That owner accepts only P1's exact
+policy-digest update to its captured provision record; all other captured inputs
+retain their original custody signatures. It enforces `require_current` on the
+renewed policy, and the forward owner restores strict checks BEFORE this effect's
+`daemon_reload`, Headscale enable and Headscale start. Renewal refusal or a
+noncurrent renewed policy enables/starts zero units. Earlier inert publication
+retains its existing reloads and read-only manager inspection. Every subsequent
+check, admission and runtime gate is strict. The later `managed_services`
+re-stamp remains, with timer enable before verifier socket/target enable and
+managed target start. Ready Enable stays inspect-only. I3a fresh-auth recovery
+still only verifies and
 publishes (or rolls over to prepared); it never renews policy, links the timer or
 replays any other effect. A later forward Enable runs the existing effect path.
 The existing managed-fragment check also validates both renewal units before
@@ -4431,3 +4447,24 @@ Standalone synthetic verification: `uv run --frozen pytest
 scripts/test_home_minter.py scripts/test_invite_issuer.py -v`. Fake operations
 model the tagged fields/expiration semantics; they do not establish protected
 socket custody, real server execution, Linux/Mac integration or installed access.
+
+### THR-327 closed-host restoration diagnostics
+
+Staged-inert and post-Disable absence proof permits only existing bounded H1
+`health.json` / `.health-N` diagnostic metadata in the preserved sidecar runtime
+directory, with the sidecar inactive and quiescent. No other live socket/state
+is admitted, including verifier `control.sock`. These diagnostics never establish
+readiness: HomeObserver still requires the live `observe.sock` SO_PEERCRED peer,
+current unit PID/UID, activation binding and independent Headscale identity.
+Status and StatusV2 only read; valid aged retained staging reports Off and an
+explicit, authenticated Turn on performs the renewal above. No retained-file
+manipulation or other host action is required for that validated shape.
+
+`hostStateUnrecognized` retains its code and adds optional closed category
+`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown`. The child
+emits only `{refusal: category}` on Enable capture refusal; HomeLifecycleClient
+validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
+The shared native request projection, CLI JSON, Main protocol/relay and Connection
+parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
+refusals map to owner; generic, missing or invalid categories map to unknown.
+No path, file content, UID, exception message or secret crosses this boundary.

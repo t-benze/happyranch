@@ -11,10 +11,39 @@ from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
+HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
+                                    'inventory', 'quiescence', 'timeout', 'unknown'})
+
+
+def host_state_category(error: Exception) -> str:
+    """Project shipped refusal stages, never exception text or host metadata."""
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return 'timeout'
+    stages = {
+        '_account': 'owner', '_headscale_shape': 'owner', '_check_release_record': 'owner',
+        '_release_record': 'owner', '_home_unit_provisioning': 'provenance',
+        '_validate_install_record': 'provenance', '_check_provisioning': 'provenance',
+        '_directory': 'custody', '_check_directory': 'custody', '_publication_parent': 'custody',
+        '_read_file': 'custody', '_record': 'custody', '_parent': 'custody',
+        '_confirm_quiescent': 'quiescence', '_headscale_stopped': 'quiescence',
+        '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
+        '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
+        '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
+        '_refuse_install_transaction': 'residue', '_headscale_ca_sources': 'residue',
+    }
+    category = 'unknown'
+    trace = error.__traceback__
+    for _ in range(32):
+        if trace is None:
+            break
+        category = stages.get(trace.tb_frame.f_code.co_name, category)
+        trace = trace.tb_next
+    return category
 
 
 class GenerationUnavailable(ValueError):
-    def __init__(self) -> None:
+    def __init__(self, category: str = 'unknown') -> None:
+        self.category = category if type(category) is str and category in HOST_STATE_CATEGORIES else 'unknown'
         super().__init__('unavailable')
 
 
@@ -70,7 +99,7 @@ class HomeLifecycleClient:
 
     def _call(self, step: str, expected: str | None, remaining: float, *, revoke_succeeded: bool = False) -> dict:
         if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
-            raise GenerationUnavailable()
+            raise GenerationUnavailable('timeout')
         deadline = time.monotonic() + remaining
         request = dict(method=self.method, uid=self.uid, step=step, expected=expected,
                        deadline=deadline)
@@ -80,12 +109,23 @@ class HomeLifecycleClient:
             result = subprocess.run(LIFECYCLE_COMMAND, input=json.dumps(request).encode(),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=remaining,
                 check=False, env={}, cwd='/')
-            if result.returncode or len(result.stdout) > 4096 or time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
+                raise GenerationUnavailable('timeout')
+            if len(result.stdout) > 4096:
                 raise GenerationUnavailable()
             value = json.loads(result.stdout)
+            if result.returncode:
+                if (self.method == 'Enable' and step == 'capture' and result.returncode == 1
+                        and type(value) is dict and set(value) == {'refusal'}):
+                    raise GenerationUnavailable(value['refusal'])
+                raise GenerationUnavailable()
             if type(value) is not dict:
                 raise GenerationUnavailable()
             return value
+        except GenerationUnavailable:
+            raise
+        except subprocess.TimeoutExpired:
+            raise GenerationUnavailable('timeout') from None
         except Exception:
             raise GenerationUnavailable() from None
 

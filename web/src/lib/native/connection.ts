@@ -136,6 +136,7 @@ export interface ConnectionFailure {
   effect: Effect;
   recovery: Recovery;
   side?: 'host' | 'app' | 'unknown';
+  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown';
 }
 
 type Obj = Record<string, unknown>;
@@ -293,7 +294,7 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return UNKNOWN_FAILURE;
   const obj = value as Obj;
   const keys = Object.keys(obj);
-  const allowed = ['code', 'effect', 'recovery', 'side'];
+  const allowed = ['code', 'effect', 'recovery', 'side', 'category'];
   if (!keys.every((key) => allowed.includes(key))) return UNKNOWN_FAILURE;
   if (typeof obj.code !== 'string' || !/^[A-Za-z_]{1,64}$/.test(obj.code)) return UNKNOWN_FAILURE;
   if (!oneOf(obj.effect, EFFECT) || !oneOf(obj.recovery, RECOVERY)) return UNKNOWN_FAILURE;
@@ -301,6 +302,11 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   if ('side' in obj) {
     if (obj.code !== 'incompatible' || !oneOf(obj.side, ['host', 'app', 'unknown'])) return UNKNOWN_FAILURE;
     failure.side = obj.side as 'host' | 'app' | 'unknown';
+  }
+  if ('category' in obj && obj.code !== 'hostStateUnrecognized') return UNKNOWN_FAILURE;
+  if (obj.code === 'hostStateUnrecognized') {
+    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown'];
+    failure.category = (oneOf(obj.category, categories) ? obj.category : 'unknown') as ConnectionFailure['category'];
   }
   return failure;
 }

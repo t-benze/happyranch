@@ -444,6 +444,10 @@
     "error": {
       "type": "object",
       "properties": {
+        "category": {
+          "description": "Optional hostStateUnrecognized refusal category; absent or unrecognized maps to unknown. No host metadata.",
+          "enum": ["residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown"]
+        },
         "code": {
           "enum": [
             "invalidRequest",

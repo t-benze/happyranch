@@ -210,6 +210,40 @@ class HomeLiveConfigOwner:
                     raise ActivationRefused()
             check()
 
+    def renew_policy(self, receipt: HomeActivationReceipt) -> None:
+        """Re-stamp policy at the first start intent, retaining captured custody.
+
+        P1 intentionally replaces provision.json to change ONLY its policy
+        digest. Accept that exact owned change in our captured provenance;
+        every other input keeps its original signature and bytes.
+        """
+        txn = self._context(receipt)
+        if (txn is None or txn.phase != "activating" or receipt.phase != "activating"
+                or tuple((e.name, e.state) for e in txn.effects) != (
+                    ("preflight", "done"), ("headscale_start_verify", "intent"))
+                or self._attempted or not self._inputs):
+            raise ActivationRefused()
+        self._stable()
+        previous = self._io._json(self._inputs["provision.json"].data)
+        self._source.require(receipt)
+        self._io._renew_policy_locked(fresh_auth=True)
+        with self._io._publication_parent() as (parent, check):
+            renewed = self._read(parent, "provision.json", owner=self._io.root_owner, mode=0o600)
+            policy = self._read(parent, "policy.json",
+                owner=(self._io.root_owner[0], self._io._account(create=False)[1]), mode=0o640)
+            self._io._validate_configs({"policy.json": policy.data}, partial=True)
+            previous["digests"]["policy.json"] = policy.digest
+            if self._io._json(renewed.data) != previous or self._context(receipt) != txn:
+                raise ActivationRefused()
+            # Keep the old signatures until all unchanged inputs have verified.
+            for name, item in self._inputs.items():
+                if name != "provision.json" and _signature(os.stat(
+                        name, dir_fd=parent, follow_symlinks=False)) != item.signature:
+                    raise ActivationRefused()
+            check()
+            self._inputs["provision.json"] = renewed
+        self._stable()
+
     def _verify_live(self, receipt: HomeActivationReceipt,
                      txn: HomeActivationTransaction) -> None:
         effect = next((e for e in txn.effects if e.name == "home_config"), None)

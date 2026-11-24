@@ -4209,7 +4209,7 @@ class ManagedInstaller:
         except OSError:
             raise InstallerError("provisioning failed; inspect partial files before retrying") from None
 
-    def _check_provisioning(self) -> None:
+    def _check_provisioning(self, *, require_current: bool = True) -> None:
         try:
             with self._directory("etc/happyranch") as parent:
                 sidecar = self._json(self._read_file(parent, "sidecar.json"))
@@ -4226,7 +4226,7 @@ class ManagedInstaller:
                         raise InstallerError("provisioned service account is missing")
                     files = {name: self._read_file(parent, name, owner=(self.root_owner[0], self._service_owner[1]), mode=0o640)
                              for name in ("connector.json", "sidecar.json", "policy.json")}
-                    self._validate_configs(files, staged=True)
+                    self._validate_configs(files, staged=True, require_current=require_current)
                     if self._json(files["connector.json"])["managed"].get("profile") != "linux-managed-identity-v1":
                         raise InstallerError("versioned provisioning requires the identity profile")
                     files["release-daemon.json"] = self._read_file(parent, "release-daemon.json", owner=self.root_owner, mode=0o644)
@@ -4245,7 +4245,7 @@ class ManagedInstaller:
                          for name in ("connector.json", "sidecar.json", "policy.json")}
                 if record["configs"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}:
                     raise InstallerError("provisioned configuration drift")
-                self._validate_configs(files, staged=True)
+                self._validate_configs(files, staged=True, require_current=require_current)
                 staged = self._read_file(parent, "daemon.token", owner=self._service_owner, mode=0o600)
             source = self._input(Path(record["token_source"]), token=True, source_uid=release['uid'])
             if (hashlib.sha256(source).hexdigest() != record["token_sha256"]
@@ -4400,7 +4400,8 @@ class ManagedInstaller:
                     retained = "home_binding" in sidecar
                     if retained:
                         self._home_staged_inventory()
-                    self._home_unit_provisioning(parent, record, reuse=retained)
+                    self._home_unit_provisioning(parent, record, reuse=retained,
+                                                 require_current=_activation_directory is None)
                     release = self._check_release_record()
                     connector = self._json(self._read_file(parent, "connector.json",
                         owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
@@ -4473,9 +4474,10 @@ class ManagedInstaller:
                     home_transport=True))
                 # Inspect every destination and every load root before any effect.
                 present = self._home_unit_inventory(units, retained)
-                self._home_unit_provisioning(config_parent, provenance, reuse=len(present) == len(units))
+                self._home_unit_provisioning(config_parent, provenance, reuse=len(present) == len(units),
+                                             require_current=_activation_directory is None)
                 if len(present) != len(units):
-                    self._check_provisioning()
+                    self._check_provisioning(require_current=_activation_directory is None)
                     # A partially published set may contain only the inert bytes.
                     if any(present[name] != units[name].encode() for name in present):
                         raise InstallerError("partial home unit generation")
@@ -4498,7 +4500,8 @@ class ManagedInstaller:
                             if self._read_unit(parent, name) != present[name]:
                                 raise InstallerError("home unit changed during publication")
                             continue
-                        self._home_unit_provisioning(config_parent, provenance, reuse=False)
+                        self._home_unit_provisioning(config_parent, provenance, reuse=False,
+                                                     require_current=_activation_directory is None)
                         descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                             | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=parent)
                         try:
@@ -4524,7 +4527,8 @@ class ManagedInstaller:
                     raise InstallerError("home unit changed after reload")
                 config_check()
 
-    def _home_unit_provisioning(self, parent: int, record: dict, *, reuse: bool) -> dict[str, bytes]:
+    def _home_unit_provisioning(self, parent: int, record: dict, *, reuse: bool,
+                                require_current: bool = True) -> dict[str, bytes]:
         """Reverify the complete original generation, even after Disable.
 
         Live sidecar publication appends fixed fields without changing prepared
@@ -4567,7 +4571,19 @@ class ManagedInstaller:
         if record["digests"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}:
             raise InstallerError("home publication generation drift")
         self._validate_configs({name: files[name] for name in ("connector.json", "sidecar.json", "policy.json")},
-                               staged=True, require_current=not reuse)
+                               staged=True, require_current=require_current and not reuse)
+        if not require_current or reuse:
+            # Expiry-only deferral still requires the SAME shipped artifact.
+            # Reuse P1's decision without publishing its candidate.
+            from runtime.remote_access.policy import PolicyEnvelope
+            from runtime.remote_access.policy_renew_units import fresh_auth_renewal_candidate
+            source = Path(__file__).with_name("route_policy.json")
+            # Use P1's protected, bounded package read even in read-only capture.
+            with self._input_parent(source) as shipped_parent:
+                shipped = self._json(self._read_file(shipped_parent, source.name, owner=self.root_owner))
+            if fresh_auth_renewal_candidate(PolicyEnvelope.model_validate(self._json(files["policy.json"])),
+                    shipped, now=datetime.now(timezone.utc)) is None:
+                raise InstallerError("home publication shipped policy mismatch")
         release = self._check_release_record()
         source = self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
         if source != files["daemon.token"]:
@@ -4638,8 +4654,17 @@ class ManagedInstaller:
                 check()
             for relative in (*_STATE_DIRS, "run/happyranch-connector", "run/happyranch-tsnet-sidecar",
                              "run/happyranch-release-verifier"):
-                if self._inventory_files(relative, {}):
+                diagnostics = relative == "run/happyranch-tsnet-sidecar"
+                entries = self._inventory_files(relative, {}, runtime_diagnostics=diagnostics)
+                if entries and not diagnostics:
                     raise InstallerError("retained live state")
+                if entries:
+                    # RuntimeDirectoryPreserve=yes leaves H1 diagnostics after
+                    # stop. Reuse inventory's bounded metadata predicate only;
+                    # observe.sock, state and all other entries still refuse.
+                    if self.manager.show_properties(UNITS[1], ("ActiveState",)).get("ActiveState") != "inactive":
+                        raise InstallerError("staged units are not inactive")
+                    self._confirm_quiescent()
             self._check_enrollment()
             for relative, name in (("etc/happyranch", "enrollment.key"), (_CREDSTORE, _CREDENTIAL_NAME)):
                 try:
@@ -4672,7 +4697,7 @@ class ManagedInstaller:
             provenance = self._json(record)
             if provenance.get("version") != 1:
                 raise InstallerError("retained provenance")
-            files = self._home_unit_provisioning(parent, provenance, reuse=post_disable)
+            files = self._home_unit_provisioning(parent, provenance, reuse=post_disable, require_current=False)
             live = self._json(self._read_file(parent, "sidecar.json",
                 owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
             if ("home_binding" in live) != post_disable:
