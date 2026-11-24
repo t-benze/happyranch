@@ -16,7 +16,8 @@ Any design/PR touching task, job or thread-token lifecycles, or restart/retry
 behaviour, updates or adds a TLA+ model under `docs/specs/formal/` in the same PR,
 and the author includes the TLC model-check result as review evidence.
 Existing model: [docs/specs/formal/task-lifecycle/](../../specs/formal/task-lifecycle/README.md)
-(PR #1754, updated in PR #1784). Next model candidate: job lifecycle (not part of
+(PR #1754, updated in PR #1784; [sequential first-launch refusals](../../specs/formal/task-lifecycle/README.md#sequential-first-launch-refusals)
+cover the future-only retry cap in PR #1865). Next model candidate: job lifecycle (not part of
 this PR).
 Existing model: [Linux local-service supervisor](../../specs/formal/local-service-supervisor/README.md) (PR #1815).
 

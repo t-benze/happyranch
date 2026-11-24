@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 33)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 34)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -2050,6 +2050,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-co
                         (directory / 'second.json').write_bytes(raw)
                         (directory / 'coding.v2.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes())
                         (directory / 'coding.v3.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v3.json').read_bytes())
+                        (directory / 'draft-review.v1.json').write_bytes(Path('runtime/workflows/builtin_templates/draft-review.v1.json').read_bytes())
                         entry = SimpleNamespace(package='runtime', resource=('workflows', 'builtin_templates', 'second.json'),
                             size=len(raw), pin=second.pin)
                         manifest = dict(original_manifest)
@@ -8767,6 +8768,71 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 await dr_first_launch('release/happyranch/coding', snapshot=snapshot)
                 await dr_first_launch('release/happyranch/coding', snapshot=snapshot)
 
+    async def dr_refused_launches():
+        from runtime.daemon.dispatcher import Dispatcher
+        from runtime.daemon.state import DaemonState
+        from runtime.daemon.org_state import _OrgBusyError
+        from runtime.orchestrator.task_pause import discover_pause_work
+        from runtime.workflows.sequential_dispatch import SequentialRefusal
+        from runtime.orchestrator.orchestrator import refresh_session_instructions
+        observed = []
+        for identity in (DR_IDENTITY, 'release/happyranch/coding'):
+            try:
+                async with dr_fixture(launch=True) as f:
+                    await dr_start(f, (identity,))
+                    store = f.db._task_pause_store
+                    with store.writer(f.source.id) as (root, _):
+                        store.ensure_uncommitted(root['id'])
+                    task_id = f.ids.visit_task_id
+                    task = f.db.get_task(task_id)
+                    workspace = f.root / 'workspaces' / task.assigned_agent
+                    workspace.mkdir(parents=True, exist_ok=True)
+                    (workspace / 'AGENTS.md').write_text('Private launch instructions.\n')
+                    (workspace / 'CLAUDE.md').symlink_to('AGENTS.md')
+                    marker = f.org.orchestrator._readiness_marker(workspace, 'codex')
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    marker.write_text('Private initialized workspace.\n')
+                    state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+                    state.orgs['scratch'] = f.org
+                    counts = []
+                    try:
+                        with patch.object(f.dispatcher, '_generic_node_instruction', side_effect=SequentialRefusal(
+                                'sequential_carrier_identity_conflict')) as refused, patch(
+                                'runtime.orchestrator.executors._run_command', side_effect=AssertionError(
+                                    'provider boundary must remain unreached')) as provider, patch(
+                                'runtime.orchestrator.orchestrator.refresh_session_instructions', wraps=refresh_session_instructions) as preparation:
+                            for ordinal in range(1, 6):
+                                f.dispatcher.notify_queued(task_id, f.queue)
+                                await discover_pause_work(f.org, f.queue)
+                                queued = s6queue(f)
+                                if queued:
+                                    assert queued in ([task_id], [f.source.id]), queued
+                                    item = f.queue._queue.get_nowait(); f.queue._record_dequeue(item)
+                                    if item[1] == task_id:
+                                        await f.queue._consume(Dispatcher(state), item)
+                                    else:
+                                        f.queue._queue.task_done()
+                                counts.append(len(store.row_uncommitted(root['id'])['journal']['entries']))
+                                print('REFUSAL', identity, ordinal, 'journal_entries', counts[-1],
+                                    'queued', queued, flush=True)
+                            run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                            inbox = list(f.conn.execute('SELECT initiator_task_id,run_id FROM workflow_seq_inbox'))
+                            observed.append((identity, counts, refused.call_count, run['state'],
+                                [tuple(row) for row in inbox], (f.source.id, run['id']), preparation.call_count,
+                                not store._live and not f.dispatcher._queue_live and not f.queue._native_work))
+                            assert provider.call_count == 0
+                    finally:
+                        state.metrics_store.close(); state.direct_connect_authority_store.close()
+            except _OrgBusyError as exc:
+                assert str(exc) == 'native_tasks_in_flight', exc
+                print('OBSERVED original queue close barrier preserved', flush=True)
+        print('OBSERVED refusal boundaries:', observed, flush=True)
+        assert all(row[1] == [0]*5 for row in observed), 'refused launch grew pause journal'
+        assert all(row[7] for row in observed), 'refusal retained native ownership'
+        assert all(row[6] == 0 for row in observed), 'refusal reached preparation effects'
+        assert all(row[2] == 3 and row[3] == 'held' for row in observed), 'refusal cap failed to hold at three'
+        assert all(row[4] == [row[5]] for row in observed), 'wake must address only recorded initiator'
+
     async def dr_cancelled_launch():
         from runtime.daemon.dispatcher import Dispatcher
         from runtime.daemon.state import DaemonState
@@ -8914,6 +8980,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     asyncio.run(dr_coding_launch())
                 elif case == 'C31':
                     asyncio.run(dr_first_launch(successor=True))
+                elif case == 'C33':
+                    asyncio.run(dr_refused_launches())
                 elif case == 'C32':
                     asyncio.run(dr_cancelled_launch())
                 else:

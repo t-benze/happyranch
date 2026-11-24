@@ -914,11 +914,25 @@ class SequentialDispatcher:
         from runtime.orchestrator.task_pause import TaskInvocation, release_live
         _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
         with self._reader() as conn:
-            _, visit, _ = self._entry(conn, task_id)
+            run, visit, _ = self._entry(conn, task_id)
             task = self.org.db.get_task(task_id)
+        sid = self.org.orchestrator._build_session_id()
+        # This original queue owner has not prepared, reserved or materialized anything.
+        # Freeze exactly these rendered bytes; launch authority is still rechecked at COMMIT.
+        try:
+            instruction = self._render_node_instruction(task_id, task.assigned_agent, sid)
+        except SequentialRefusal:
+            if run.get('engine_version', 1) == 2:
+                self._record_preparation_free_refusal(task_id, sid)
+                owner = dict(invocation=None, binding=None, preparation_free_refusal=True)
+                with self.org.db._lock:
+                    self._queue_live.setdefault(task_id, {})[id(owner)] = owner
+                return owner
+            raise
         invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
-            self.org.orchestrator._build_session_id(), owner='sequential')
+            sid, owner='sequential')
         invocation.workflow_dispatcher = self
+        invocation.sequential_instruction = instruction
         invocation.draft_request_key = hashlib.sha256(_bytes(dict(
             visit_id=visit['id'], invocation_id=invocation.identity))).hexdigest()
         owner = dict(invocation=invocation, binding=None)
@@ -936,6 +950,22 @@ class SequentialDispatcher:
                     exc.add_note(f'sequential queue preparation settlement failed: {type(cleanup_error).__name__}')
             raise
         return owner
+
+    def _record_preparation_free_refusal(self, task_id: str, sid: str) -> None:
+        from runtime.workflows.sequential_launch_refusals import record_refusal
+        from runtime.workflows.sequential_initiator import hold_and_wake_uncommitted
+        capture = self._capture_authority(task_id)
+        async def record() -> None:
+            async with self.org.workflow_authority._async_writer_lock, self.org.teams_lock, self.org.db_lock:
+                with self.org.workflow_authority.admission_writer(capture) as conn:
+                    _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
+                    run, visit, compiled = self._entry(conn, task_id)
+                    if record_refusal(conn, run, visit, sid) == 3:
+                        hold_and_wake_uncommitted(conn, self.org.db, org_slug=self.org.slug,
+                            run_id=run['id'], visit_id=visit['id'], expected_cas=run['cas'],
+                            compiled=compiled, authority=self.org.workflow_authority, capture=capture,
+                            launch_refused=True)
+        self._on_loop(record())
 
     def queue_finished(self, task_id: str, owner: dict) -> None:
         from runtime.orchestrator.task_pause import release_live
@@ -976,6 +1006,10 @@ class SequentialDispatcher:
 
     def dispatch(self, task_id: str) -> None:
         from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
+        with self.org.db._lock:
+            owners = list(self._queue_live.get(task_id, {}).values())
+            if len(owners) == 1 and owners[0].get('preparation_free_refusal') is True:
+                return
         _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
         with self._reader() as conn:
             self._entry(conn, task_id)
@@ -1118,6 +1152,13 @@ class SequentialDispatcher:
         return True
 
     def node_instruction(self, task_id: str, agent: str, sid: str) -> str:
+        invocation = self._invocation(task_id, sid)
+        _check(invocation.agent == agent)
+        if hasattr(invocation, 'sequential_instruction'):
+            return invocation.sequential_instruction
+        return self._render_node_instruction(task_id, agent, sid, invocation=invocation)
+
+    def _render_node_instruction(self, task_id: str, agent: str, sid: str, *, invocation: Any = None) -> str:
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
         from runtime.workflows.sequential_briefs import BriefInputs, RecipientInput, render_node_brief
         from runtime.workflows.sequential_contracts import Counters, Finding, Limits
@@ -1125,8 +1166,6 @@ class SequentialDispatcher:
         from runtime.workflows.sequential_engine import _identity
         from runtime.workflows.sequential_history import _WIRE_TOKENS
         from runtime.workflows.sequential_reducer import ActiveVisit, RunState
-        invocation = self._invocation(task_id, sid)
-        _check(invocation.agent == agent)
         budget = _ReadBudget()
         capture = self._capture_authority(task_id)
         # Three capture decodes plus the owned admission validator's decode.
@@ -1154,7 +1193,10 @@ class SequentialDispatcher:
                     async with self.org.db_lock:
                         with self.org.workflow_authority.admission_writer(capture) as conn:
                             with _sql_budget(conn, budget):
-                                _check(invocation is invocation.store._live.get(invocation.identity))
+                                if invocation is None:
+                                    _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
+                                else:
+                                    _check(invocation is invocation.store._live.get(invocation.identity))
                                 run, visit, compiled = self._entry(conn, task_id, budget=budget)
                                 if run.get('engine_version', 1) == 2:
                                     return self._generic_node_instruction(conn, run, visit, compiled, agent, sid, capture, budget)

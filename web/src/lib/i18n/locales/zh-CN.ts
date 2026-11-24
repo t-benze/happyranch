@@ -306,6 +306,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "seqwf.v2.cause.resultTooLarge": "返回结果过大",
   "seqwf.v2.cause.unknownOutcome": "返回的结果类型未知",
   "seqwf.v2.cause.assigneeUnavailable": "被分配的智能体不可用",
+  "seqwf.v2.cause.launchRefused": "节点启动在准备前连续被拒绝三次",
   "seqwf.v2.cause.revisionLimitExhausted": "修订次数已用尽",
   "seqwf.v2.cause.declaredEdge": "智能体声明的暂停",
   "seqwf.v2.cause.undeclaredOutcome": "该结果未在定义中声明",

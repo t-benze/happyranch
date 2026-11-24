@@ -2958,8 +2958,24 @@ network/effect, historical evidence or live deployment change follows.
 
 ## Generic prompt construction before session binding (TASK-18967)
 
-The ordinary queue builds the generic node prompt before the final launch
-COMMIT. Instruction rendering accepts only a running run whose active selected
+The ordinary queue renders and freezes the generic node instruction before
+creating TaskInvocation or calling prepare, and before workspace instructions,
+skills, repository refresh or attachments can have effects. A deterministic
+instruction refusal therefore creates no Pause entry. Launch COMMIT still
+independently validates current authority, assignment, native ownership and
+cancellation; the frozen instruction grants no launch authority.
+
+For engine-v2 Coding and Draft→Review visits, three consecutive instruction
+refusals produce Held/launch_refused through the existing business hold and
+recorded-initiator inbox. Original pre-preparation receipts in the bounded audit
+ledger authenticate this business cause; neither receipts nor Held settle a
+Pause entry or any preparation obligation. Held stops queue/reaper publication;
+only the recorded initiator can use the existing recovery controls. A fresh
+visit owns its own bound. Historical unknown entries and original-owner closure
+requirements remain unchanged. Other preparation failures retain their existing
+uncertainty behavior.
+
+Instruction rendering accepts only a running run whose active selected
 visit belongs to the invocation's principal and is either queued with queued
 progress and no session, or running with executing progress and the invocation's
 bound session. Cancellation remains a refusal. The in-memory brief state uses

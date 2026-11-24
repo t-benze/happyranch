@@ -34,7 +34,7 @@ WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --draft-re
 WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --draft-review=C14
 ```
 
-The dispatcher accepts `C01` through `C32`, `caller_ledger`, or `all`, and emits
+The dispatcher accepts `C01` through `C33`, `caller_ledger`, or `all`, and emits
 attributable outcomes. Positive Draft/coexistence paths use the unpatched real
 `generic_start_catalog()`, qualified registrar and Founder Save/Allow APIs. No
 SQL-seeded new definitions/Allowed defaults substitute for those owners.
@@ -70,6 +70,7 @@ stale-selection rejection at the reducer boundary, with zero persisted changes.
 | C30 | Coding v3 first-node real queue → prompt → scratch → launch COMMIT, plus an already-admitted queued/null DB restored into a fresh private runtime and rediscovered by `discover_pause_work` without Save/Allow. Both subprocess boundaries assert running/executing run, running visit/exact SID, in_progress native task/exact SID and rendered brief. Absolute `WORKFLOW_CODING_QUEUED_DB` exports/replays the actual pre-fix refused Coding DB, like C27's Draft export. |
 | C31 | Draft → Review successor through the real queue path after an actual ASGI completion callback and the first invocation's original terminal/outer settlement. Uses the existing real POSIX process-group backend and OS-selected process census around a harmless private sleep subprocess; only provider `_run_command` is stubbed. Persisted callback/result/closure identities and the second `TASK-SEQ-seq-visit-…` launch COMMIT are asserted. This private Linux lifecycle fixture is not Mac platform acceptance. |
 | C32 | Genuine initiator cancellation persists finished/cancelled before consuming the stale item for the formerly queued visit. Queue admission/publication and real stale-item consumption refuse it, with no subprocess, SID binding or persisted work/visit/task changes. This tests terminal cancellation rather than only cancelling progress. |
+| C33 | Both released graphs through real queue: five delivery/discovery cycles, zero preparation calls/journal entries, exactly three instruction refusals, Held and only the recorded initiator inbox/wake. Positive launch C27/C30 and successor C31 remain the keepers for launch/outer behavior. |
 | caller_ledger | Parse the actual ASGI-admitted native SQLite decision after 16384 sequential traversal units on the original ledger; still refuse before a new operation at its existing 65536 ceiling. Coding also admits after 16384 units, then refuses at its finite 32768 ceiling with the same causal code and original ledger. Pure reads leave the full persisted/accounting/queue inventory unchanged. C18 remains the end-to-end coexistence keeper, unchanged in order and assertions. |
 
 Retain the ordinary focused keepers on **both** Python versions:

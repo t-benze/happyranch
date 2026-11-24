@@ -496,7 +496,7 @@ ProjectionCause = Literal['history_unverified', 'read_budget_exhausted', 'author
 GenericHoldCause = Literal[
     'task_failed_without_result', 'task_timed_out_without_result', 'task_failed_after_result',
     'task_timed_out_after_result', 'result_bad_shape', 'result_too_large', 'unknown_outcome',
-    'assignee_unavailable', 'revision_limit_exhausted', 'declared_edge', 'undeclared_outcome',
+    'assignee_unavailable', 'launch_refused', 'revision_limit_exhausted', 'declared_edge', 'undeclared_outcome',
     'limit_exhausted', 'settlement_unverified', 'output_evidence_mismatch', 'exhausted',
     'required_input_unavailable', 'terminal_evidence_unavailable',
 ]

@@ -325,7 +325,7 @@ def wake_uncommitted(conn: sqlite3.Connection, run: dict, event: dict, compiled:
 
 def hold_and_wake_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str, run_id: str,
                               visit_id: str, expected_cas: int, compiled: Any, authority: Any,
-                              capture: Any, unavailable: bool = False) -> str:
+                              capture: Any, unavailable: bool = False, launch_refused: bool = False) -> str:
     """S5 member hold wrapper: deferred event FK and wake share one COMMIT."""
     from runtime.workflows.sequential_business_hold import generic_hold_cause, hold_generic_uncommitted
     budget = _ReadBudget()
@@ -334,7 +334,7 @@ def hold_and_wake_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: st
         if _rows(conn, 'workflow_seq_source_memberships', budget, 'run_id=?', (run_id,)):
             visit = _rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))[0]
             cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled,
-                budget=budget, unavailable=unavailable)
+                budget=budget, unavailable=unavailable, launch_refused=launch_refused)
             event_id = _id('event', run_id, str(run['event_count'] + 1))
             event_raw = _bytes(dict(cause=cause))
             event = dict(id=event_id, kind='held', sequence=run['event_count'] + 1,
@@ -344,7 +344,7 @@ def hold_and_wake_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: st
             wake_uncommitted(conn, run, event, compiled, {visit_id: visit}, budget)
         return hold_generic_uncommitted(conn, db, org_slug=org_slug, run_id=run_id,
             visit_id=visit_id, expected_cas=expected_cas, compiled=compiled, authority=authority,
-            capture=capture, unavailable=unavailable)
+            capture=capture, unavailable=unavailable, launch_refused=launch_refused)
 
 
 def source_owner(conn: sqlite3.Connection, run: dict) -> bool:

@@ -8,6 +8,47 @@ or merge gate is added.
 
 New risky lifecycle changes must update a model per the [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
 
+## Sequential first-launch refusals
+
+`RefusedSequentialLaunch.tla` / `sequential-refused.cfg` model the future-only
+instruction-refusal path for Coding v3 and Draft→Review v1 (TASK-19020, PR #1865).
+The initial journal ranges over zero, one or two historical unknown entries,
+including both unsettled and producer-settled unknowns. A refused render creates
+no `TaskInvocation` and no journal entry. A successful render may prepare its
+own single entry and launch; this keeps the no-growth property specific to
+refusals rather than prohibiting normal preparation.
+
+| Model action | Source correspondence |
+|---|---|
+| `Refuse` | `SequentialDispatcher.queue_started`: `_render_node_instruction` refuses before `TaskInvocation` construction/`prepare`; `_record_preparation_free_refusal`, `sequential_launch_refusals.record_refusal` and existing `hold_and_wake_uncommitted` record count three, Held/event and the recorded initiator inbox in one writer |
+| `Render`, `Prepare`, `Launch` | Successful instruction freeze, `TaskInvocation.prepare`, then existing launch COMMIT; detailed authority/cancellation revalidation remains in Python and the separate [sequential launch model](../sequential-launch/README.md) |
+| `Reaper` | `discover_pause_work` / zombie-reaper queue hints, filtered by `queue_admission_allowed`; Held is ineligible |
+| `Restart` | Stuttering over retained receipts, Held, inbox and journal; no counter reset or historical cleanup |
+
+`JournalGrowthBound` requires zero added entries while queued/refused/Held and
+at most one own entry after successful rendering/preparation. `RefusalCap`
+requires at most three consecutive refusals, with the third reaching Held.
+`HeldInboxAndNoPublication` requires exactly one Held event and one inbox item
+addressed to the recorded initiator, and freezes reaper publications at Hold.
+`HistoricalUnknownPreserved` retains each original unknown disposition. No
+action clears or settles those entries; these receipts are not recovery proof.
+`Settles` additionally checks eventual Held or launch under fair queue/host
+delivery and successful durable writes. Restart does not discard queue hints
+in this abstraction. Crash windows, failed writes, byte-level journals, native
+closure, provider execution, human recovery and later visits are not proved.
+There is no unbounded-history or Python refinement proof.
+
+Run the pinned [TLC recipe below](#run-tlc) with module
+`RefusedSequentialLaunch`, config `sequential-refused.cfg` and a distinct
+task-scratch metadir. Actual TLC 2.19 / Java 21.0.13.1 result on 2026-11-24:
+**exit 0**, no errors, 240 generated / 120 distinct states, depth 8, queue empty;
+all five invariants and `Settles` checked. Exact argv, stream hashes and logs:
+`output/TASK-19020/commands.jsonl` and
+`output/TASK-19020/tlc-sequential-refused.stdout.txt`. This is review evidence,
+not a CI gate or authority to recover historical entries, restart or launch a pilot.
+
+## Refused repository preparation
+
 THR-395: `RefusedPreparation.tla` separately abstracts the original preparation
 tail for two repositories. `Close` maps to worker/outer/durable closure in
 `_repo_refresh_complete`; `Release` models a lease exception; `Refuse` and

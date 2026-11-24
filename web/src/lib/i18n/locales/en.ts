@@ -307,6 +307,7 @@ export const en = {
   "seqwf.v2.cause.resultTooLarge": "The returned result was too large",
   "seqwf.v2.cause.unknownOutcome": "The returned outcome is unknown",
   "seqwf.v2.cause.assigneeUnavailable": "The assigned agent is unavailable",
+  "seqwf.v2.cause.launchRefused": "The node launch was refused before preparation three times",
   "seqwf.v2.cause.revisionLimitExhausted": "The revision limit is exhausted",
   "seqwf.v2.cause.declaredEdge": "Agent-declared hold",
   "seqwf.v2.cause.undeclaredOutcome": "The outcome is not declared by the definition",
