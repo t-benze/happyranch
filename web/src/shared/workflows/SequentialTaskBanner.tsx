@@ -91,6 +91,7 @@ const CAUSE: Record<GenericHoldCause, MessageKey> = {
   result_too_large: 'seqwf.v2.cause.resultTooLarge',
   unknown_outcome: 'seqwf.v2.cause.unknownOutcome',
   assignee_unavailable: 'seqwf.v2.cause.assigneeUnavailable',
+  launch_refused: 'seqwf.v2.cause.launchRefused',
   revision_limit_exhausted: 'seqwf.v2.cause.revisionLimitExhausted',
   declared_edge: 'seqwf.v2.cause.declaredEdge',
   undeclared_outcome: 'seqwf.v2.cause.undeclaredOutcome',
