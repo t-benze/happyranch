@@ -8,6 +8,34 @@ or merge gate is added.
 
 New risky lifecycle changes must update a model per the [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
 
+THR-395: `RefusedPreparation.tla` separately abstracts the original preparation
+tail for two repositories. `Close` maps to worker/outer/durable closure in
+`_repo_refresh_complete`; `Release` models a lease exception; `Refuse` and
+`Settle` map to native unheld refusal/held deferral and `refused_task_idle` under the Pause
+writer. Launch/possibly-running, unreadable, cleanup-live and running-job flags
+abstract independent missing proof. `refused-current.cfg` checks no false paused,
+hold preservation, hold-winner accounting, Resume accounting and safe-case progress.
+Pause may precede the original closure; only original finishing receipts drain
+under hold. A held lease-error winner keeps its child pending with zero refused
+rows/attempts; positive closure/cleanup removes its journal, while missing proof
+stays unknown. One Resume re-prepares under unheld refusal accounting. The model
+uses successful journal removal for the producer-settled disposition, without
+inventing a terminal held refusal. `refused-before.cfg` must find the
+stranded-tail liveness counterexample (exit13); `refused-unsafe.cfg` must find a
+false-paused safety counterexample (exit12). Use the documented TLC command with
+these configs and module `RefusedPreparation`. This finite model abstracts
+successful durable writes; it does not prove Python execution, COMMIT behavior,
+historical repair, native containment or deployment.
+
+Prior TASK-18947 TLC v2.19 result (before the held-timing extension): current exit0, 296 generated /248 distinct states;
+before exit13, 320 /312 and a retained-open last repository; unsafe exit12,
+241 /201 and false paused with unreadable proof. All completed under one second
+using the pinned jar below; logs are task output for TASK-18947.
+
+TASK-18970 held-timing extension: TLC current exit0 (660 generated /506 distinct
+states); before exit13 (expected liveness counterexample); unsafe exit12
+(expected NoFalsePaused violation). Logs are `output/TASK-18970/tlc-*.log`.
+
 **Result:** both historical incidents and the preserved pre-fix repeated-revisit
 counterexamples reproduce. With transactional live-descendant admission,
 `current.cfg` passes `OneDriver` and `current-executors.cfg` passes

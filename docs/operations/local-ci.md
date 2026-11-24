@@ -204,6 +204,20 @@ retired Python units, skipped general integration and scheduled Product E2E.
 
 ## Focused repository refresh (THR-381)
 
+THR-395 adds `RepoRefreshTests.test_refused_lease_tail_closes_every_repository_and_pauses`
+and `test_refused_tail_retains_unknown_without_positive_closure` in the same
+standalone venue. The real Git/preparation/refusal/terminal/Pause paths observe
+durable closure and a paused held root, with a test-side lease-release fault.
+Possible launch, observed launch, open/missing/unreadable evidence, cleanup with
+live processes and running jobs retain unknown. No retired suite or CI lane is added.
+The held-before-closure tests (`test_hold_before_closure_defers_lease_error_and_pauses`,
+`test_hold_before_closure_missing_proof_stays_unknown` and
+`test_hold_before_closure_unknown_cleanup_stays_unknown`) additionally observe
+original closure under hold, pending/no-refusal/unchanged-attempt settlement,
+fresh-preparation veto, Resume with ordinary refusal accounting, and fail-closed
+open-interval/independently-unknown-cleanup tails. Each runs in the venue's
+existing fresh-process isolation; product closure and OSError handling are real.
+
 `uv run --frozen pytest --import-mode=importlib scripts/test_repo_refresh.py scripts/test_preparation_startup.py -v --tb=short`
 uses standalone synthetic orgs, scratch local Git origins and the owned native
 process-group supervisor. It checks the three-call identity, SHA-1/SHA-256 and
@@ -4128,6 +4142,15 @@ losers, warning diagnostics and retained independent native startup holds. Fresh
 org/coordinator startup cases cover the forward remove's unknown native writer,
 explicit rebind through publication, unchanged native uncertainty, and unrelated,
 scoped, mismatched-journal, mixed-profile and partially-forward refusal evidence.
+A second startup after finalization covers both remove publishers: the org loads,
+the coordinator synchronizes without adoption, the published operation and journal
+remain unchanged, and native history stays UNKNOWN. Finalized refusal cases cover
+invocation/state/kind mismatch, active ordinary or latest installed ordinary journal,
+multiple removes (same or different invocation), live/scoped and unrelated writers,
+a second UNKNOWN after failed operation insertion, another settled remove attempt,
+and tied, non-bracketing or timezone-naive writer timestamps. The insertion fault
+is test-side; the real coordinator reserves the second writer before the fault,
+and restart retains both UNKNOWN records and the startup hold.
 This is outside retired Python units, skipped general integration, Product E2E
 and required CI. The [bounded TLA+ companion](../specs/formal/profile-rebind/README.md)
 is review evidence only.

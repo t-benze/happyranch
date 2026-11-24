@@ -414,7 +414,7 @@ export const en = {
   "seqwf.v2.banner.linked": "This task is linked to run {run}.",
   "tasks.pause.pause": "Pause",
   "tasks.pause.resume": "Resume",
-  "tasks.pause.pausing": "Waiting for current work to finish",
+  "tasks.pause.pausing": "Pausing",
   "tasks.pause.paused": "Paused",
   "tasks.pause.unavailable": "Pause controls unavailable: projection or generation is missing or does not match this task and organization.",
   "tasks.pause.inherited": "Hold inherited from root {id}",

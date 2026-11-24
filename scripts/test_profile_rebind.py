@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,7 +18,7 @@ from scripts.test_agent_retirement import fixture
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.direct_connect_binding import bind_direct_connect_adapter
-from runtime.infrastructure.producer_admission import NativeWriterStore
+from runtime.infrastructure.producer_admission import NativeWriterStore, native_owner_uncommitted
 from runtime.orchestrator import executor_registry, prompt_loader
 from runtime.orchestrator.producer_move import native_writer
 from runtime.orchestrator._paths import OrgPaths
@@ -25,7 +26,9 @@ from runtime.orchestrator.adapter_store import AdapterEntry
 from runtime.orchestrator.agent_def import render_agent_text
 from runtime.orchestrator.runtime_executor_store import remove_runtime_profile
 from runtime.workflows.authority import WorkflowAuthorityError
-from runtime.workflows.profile_coordinator import ProfileCoordinator, ProfileCoordinatorError
+from runtime.workflows.profile_coordinator import (
+    ProfileCoordinator, ProfileCoordinatorError, startup_forward_remove_profile,
+)
 
 
 def operation(org: OrgState) -> dict:
@@ -149,6 +152,110 @@ async def test_restart_forward_remove_allows_explicit_rebind(tmp_path: Path, act
                 ready(org, {'worker': 'codex' if action == 'consumer' else 'dsh'})
             history = NativeWriterStore(fresh.org.db, fresh.org.slug).history_uncommitted()
             assert {key: history[key] for key in unknown} == unknown, 'no native settlement may be inferred'
+
+
+@pytest.mark.parametrize('publisher', ['remove_runtime_executor_profile', 'remove_adapter_entry'])
+async def test_restart_finalized_remove_loads_without_adoption(tmp_path: Path, publisher: str) -> None:
+    async with removed(tmp_path, publisher=publisher) as f:
+        with f.coordinator.operation(['dsh'], operation_kind='register', publisher='direct_connect_projection'):
+            bind_direct_connect_adapter(f.entry, operation_id='synthetic-finalized', via='direct_connect')
+        before, old_fence = operation(f.org), fence(f.org)
+        assert before['state'] == 'published'
+        history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+        assert any(row.state == 'unknown' for row in history.values())
+        async with restarted(f) as fresh:
+            assert not fresh.org._startup_publication_held, 'finalized removal must survive another startup'
+            assert not fresh.coordinator._startup_holds and not fresh.coordinator._startup_hold_profiles
+            assert not fresh.coordinator._startup_unknown
+            assert operation(fresh.org) == before and fence(fresh.org) == old_fence
+            ready(fresh.org, {'worker': 'dsh'})
+            assert NativeWriterStore(fresh.org.db, fresh.org.slug).history_uncommitted() == history
+
+
+@pytest.mark.parametrize('case', ['other-invocation', 'not-published', 'ordinary-journal',
+                                  'ordinary-installed', 'scoped-agent', 'scoped-team', 'active',
+                                  'unrelated', 'ambiguous-remove', 'mixed-profile', 'not-remove',
+                                  'failed-insertion', 'settled-remove-attempt', 'writer-time-tie',
+                                  'writer-time-outside', 'writer-time-naive'])
+async def test_restart_ineligible_finalized_remove_stays_held(tmp_path: Path, case: str) -> None:
+    async with removed(tmp_path, publisher='remove_runtime_executor_profile') as f:
+        with f.coordinator.operation(['dsh'], operation_kind='register', publisher='direct_connect_projection'):
+            bind_direct_connect_adapter(f.entry, operation_id='synthetic-finalized', via='direct_connect')
+        conn = f.org.db._conn
+        if case == 'failed-insertion':
+            prior_history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+            prior_operation, prior_fence = operation(f.org), fence(f.org)
+            with patch.object(f.coordinator, '_insert_operation_rows',
+                              side_effect=sqlite3.OperationalError('synthetic operation insert failure')):
+                with pytest.raises(sqlite3.OperationalError, match='synthetic operation insert failure'):
+                    with f.coordinator.operation(['dsh'], operation_kind='remove',
+                                                 publisher='remove_runtime_executor_profile'):
+                        pytest.fail('failed operation insertion entered mutation')
+            history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+            added = history.keys() - prior_history.keys()
+            assert len(added) == 1
+            writer = history[next(iter(added))]
+            assert writer.state == 'unknown' and not writer.agents and not writer.teams
+            assert writer.writer_id not in native_owner_uncommitted(f.org.db).writers
+            assert sum(row.state == 'unknown' for row in history.values()) == 2
+            assert conn.execute("SELECT COUNT(*) FROM workflow_profile_operations WHERE operation_kind='remove'").fetchone()[0] == 1
+            assert operation(f.org) == prior_operation and fence(f.org) == prior_fence
+        elif case == 'settled-remove-attempt':
+            with native_writer(f.org.db, publisher='profile:remove_adapter_entry'):
+                pass
+        elif case.startswith('writer-time-'):
+            created_at = operation(f.org)['created_at']
+            conn.execute("UPDATE audit_log SET timestamp=? WHERE action='team_move_native_writer' "
+                         "AND json_extract(payload,'$.publisher')='profile:remove_runtime_executor_profile' "
+                         "AND json_extract(payload,'$.state')='active'",
+                         (created_at if case == 'writer-time-tie' else
+                          '9999-01-01T00:00:00+00:00' if case == 'writer-time-outside' else
+                          created_at.removesuffix('+00:00'),))
+        elif case == 'other-invocation':
+            conn.execute("UPDATE workflow_profile_operations SET coordinator_invocation='other'")
+        elif case == 'not-published':
+            conn.execute("UPDATE workflow_profile_operations SET state='store_committed'")
+        elif case in ('ordinary-journal', 'ordinary-installed'):
+            row = dict(conn.execute('SELECT * FROM workflow_publication_journals ORDER BY rowid DESC LIMIT 1').fetchone())
+            row.update(id='WAJ-synthetic-ordinary', publisher='ordinary', publisher_invocation='workflow-writer:ordinary',
+                       expected_generation=row['generation'], generation=row['generation'] + 1,
+                       state='prepared' if case == 'ordinary-journal' else 'cache_installed')
+            conn.execute('INSERT INTO workflow_publication_journals VALUES (' + ','.join('?' for _ in row) + ')',
+                         tuple(row.values()))
+            if case == 'ordinary-installed':
+                conn.execute('UPDATE workflow_authority_pointers SET current_generation=?,journal_id=?',
+                             (row['generation'], row['id']))
+        elif case in ('ambiguous-remove', 'mixed-profile'):
+            row = operation(f.org)
+            row.update(id='WPO-synthetic-other', profile_name='other')
+            if case == 'ambiguous-remove':
+                row['coordinator_invocation'] = 'other'
+            conn.execute('INSERT INTO workflow_profile_operations VALUES (' + ','.join('?' for _ in row) + ')',
+                         tuple(row.values()))
+        elif case == 'not-remove':
+            conn.execute("UPDATE workflow_profile_operations SET operation_kind='register'")
+        elif case == 'active':
+            from runtime.infrastructure.producer_admission import NativeWriterLifecycle
+            native_owner_uncommitted(f.org.db).write_writer(NativeWriterLifecycle(
+                org_slug=f.org.slug, writer_id='synthetic-active', publisher='profile:remove_runtime_executor_profile'))
+        else:
+            with native_writer(f.org.db, publisher='unrelated' if case == 'unrelated' else 'profile:remove_runtime_executor_profile',
+                               agents=('worker',) if case == 'scoped-agent' else (),
+                               teams=('retiring',) if case == 'scoped-team' else ()) as disposition:
+                disposition.uncertain = True
+        conn.commit()
+        before, old_fence = operation(f.org), fence(f.org)
+        history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
+        with f.org.db._lock:
+            owner = native_owner_uncommitted(f.org.db)
+            row = (history['synthetic-active'] if case == 'active' else
+                   next(row for row in reversed(tuple(history.values())) if row.state == 'unknown'))
+            assert startup_forward_remove_profile(f.org, row, owner.writers) is None
+        async with restarted(f) as fresh:
+            assert fresh.org._startup_publication_held
+            assert fresh.coordinator._startup_holds and 'dsh' in fresh.coordinator._startup_hold_profiles
+            assert operation(fresh.org) == before and fence(fresh.org) == old_fence
+            assert NativeWriterStore(fresh.org.db, fresh.org.slug).history_uncommitted() == history
 
 
 @pytest.mark.parametrize('case', ['unrelated', 'active', 'scoped-agent', 'scoped-team', 'ordinary-journal',

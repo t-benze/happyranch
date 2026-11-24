@@ -513,8 +513,18 @@ active journal is that same forward remove invocation's prepared profile-coordin
 journal. Coordinator reconciliation additionally requires the complete same-profile
 group, every captured mirror in `forward_recovery_required`, and valid original
 publication bindings. Recovery may retain its fence for unbound consumers; startup
-defers synchronization of that component to the explicit rebind. The native record
-stays unknown: no settlement is inferred. Other unsettled writers, unavailable
+defers synchronization of that component to the explicit rebind. After finalization,
+both startup callers also accept no active journal and the namespace's latest
+installed (`cache_installed`) journal with a `profile-coordinator:` invocation matching exactly
+one operation, a `published` remove. The org must have exactly one remove operation
+in total. The specific writer's validated ACTIVE and UNKNOWN records, in audit
+ID order, must be the entire history of both remove publishers, with timezone-aware
+timestamps strictly bracketing operation creation. Another attempt, including
+settled or operation-less native history, duplicate/missing evidence, tied/invalid
+timestamps or a non-bracketing interval keeps holding. Finalized history needs no
+rebind adoption or deferred synchronization because no prepared fence remains. The
+native record stays unknown:
+no settlement is inferred. Other unsettled writers, unavailable
 native ownership, ordinary or mismatched journals, mixed-profile invocations and
 partially forward groups retain their startup holds.
 Live contention returns `profile_coordinator_busy`; process death

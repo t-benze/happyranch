@@ -669,7 +669,7 @@ class TaskInvocation:
             record_started(self)
             self.phase("running", started_at=now())
 
-    def close(self) -> dict:
+    def close(self, *, cleanup: Any = None) -> dict:
         # Read sticky uncertainty and commit its disposition under the SAME
         # native writer. A later read/removal gap cannot erase new uncertainty.
         with self.store.writer(self.task.id) as (_, row):
@@ -690,6 +690,12 @@ class TaskInvocation:
                              or task.current_session_id != self.session_id)):
                     entry["context"]["producer_settled"] = True
                 removed = False
+                from runtime.daemon.preparation_recovery import refused_task_idle
+                if refused_task_idle(self, entry, cleanup):
+                    if getattr(self, '_held_preparation_deferred', False):
+                        entry['context'].pop('execution_unknown', None)
+                    row['journal']['entries'] = [e for e in row['journal']['entries'] if e['id'] != self.identity]
+                    removed = True
             else:
                 row["journal"]["entries"] = [e for e in row["journal"]["entries"] if e["id"] != self.identity]
                 removed = True
@@ -925,7 +931,7 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
         # existing redelivery owner. Failure must first become durable unknown.
         if (failed or (reservation is not None and reservation.cleanup_failed)
                 or phase not in {"retry_deferred", "recovery_deferred"}):
-            close_disposition = invocation.close()
+            close_disposition = invocation.close(cleanup=cleanup)
             native_entry = close_disposition["invocation"]
     except BaseException as exc:
         failed = True
