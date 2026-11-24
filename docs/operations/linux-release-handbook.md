@@ -1614,8 +1614,9 @@ uses those packaged executables and retains separate config/state ownership. See
 | `/usr/share/doc/happyranch/` | Debian copyright/changelog, unchanged PR1 licenses/notices/inventories and build-info |
 
 The incoming `preinst` performs the P24 home-retirement gate before unpack. A
-fresh install or reinstall with a confirmed retired receipt uses read-only
-detection without an old interpreter; legacy/conflicting/unsafe evidence still
+fresh install uses read-only detection without an old interpreter; reinstall with
+a retired receipt uses canonical same-inode sync/readback confirmation without
+replaying retirement. Uncertain sync or legacy/conflicting/unsafe evidence still
 refuses this install shortcut. A legacy upgrade requires the protected installed
 bundled CPython3.12 and confirmed
 canonical retirement before replacement. Missing capability or proof refuses

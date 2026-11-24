@@ -5020,7 +5020,9 @@ old and incoming implementations.
 The existing system Python runs only the stdlib bootstrap. `install` uses the
 canonical read-only detector and succeeds for a genuinely fresh layout or an
 independently confirmed retired receipt, including reinstall after package removal,
-without requiring an old interpreter or replaying retirement effects.
+without requiring an old interpreter or replaying retirement effects. A retired
+result uses the canonical same-inode file/parent sync and fresh readback before
+acceptance; a failed sync or changed proof refuses. Fresh detection stays read-only.
 Legacy/conflicting/unsafe evidence still refuses this shortcut. `upgrade` requires
 the fixed installed
 `/opt/happyranch-desktop/python/bin/python3` alias to its CPython3.12 executable,

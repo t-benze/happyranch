@@ -62,7 +62,7 @@ assert not any(name in sys.modules for name in ('pydantic', 'runtime.remote_acce
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_fresh_install_uses_canonical_detector_without_old_interpreter(self) -> None:
-        for case in ('fresh', 'legacy', 'malformed', 'retired', 'drift'):
+        for case in ('fresh', 'legacy', 'malformed', 'retired', 'drift', 'retired-sync-failure'):
             with self.subTest(case=case):
                 root = self.work / case
                 root.mkdir(mode=0o755)
@@ -96,7 +96,7 @@ def native(command, **kwargs):
     return 0, '\\n'.join(key + '=' + value for key, value in _ABSENT_UNIT.items())
 io = retirement_io.RetirementIO(root=root, root_owner=(os.getuid(), os.getgid()),
     run=native, lookup_user=absent, lookup_group=absent)
-if sys.argv[3] in ('retired', 'drift'):
+if sys.argv[3] in ('retired', 'drift', 'retired-sync-failure'):
     state = root / STATE_DIRECTORY
     state.mkdir(parents=True)
     for directory in root.rglob('*'):
@@ -112,7 +112,7 @@ if sys.argv[3] in ('retired', 'drift'):
             directory.chmod(0o755)
         target.write_text('synthetic-private-evidence')
         target.chmod(0o600)
-def snapshot():
+def snapshot() -> dict[str, tuple]:
     result = {}
     for path in root.rglob('*'):
         info = path.lstat()
@@ -124,9 +124,15 @@ def no_old_python():
     raise AssertionError('fresh detection must not require old capability')
 entry['main'].__globals__['trusted_python'] = no_old_python
 case = sys.argv[3]
+def sync_failure(fd: int) -> None:
+    raise OSError('synthetic final confirmation failure')
 for arguments in (['preinst', 'install'], ['preinst', 'install', 'old-version', 'new-version']):
     with patch.object(retirement_io, 'RetirementIO', return_value=io), patch('os.geteuid', return_value=0), patch.object(sys, 'argv', arguments):
-        result = entry['main']()
+        if case == 'retired-sync-failure':
+            with patch('os.fsync', sync_failure):
+                result = entry['main']()
+        else:
+            result = entry['main']()
     assert result == (0 if case in ('fresh', 'retired') else 1), (case, arguments, result)
     assert snapshot() == before
 assert all(command[:3] == ['systemctl', 'show', 'happyranch-headscale.service'] for command in calls)
@@ -134,7 +140,8 @@ assert all(command[:3] == ['systemctl', 'show', 'happyranch-headscale.service'] 
                 result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script), str(root), case],
                                         text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('"state": "' + (case if case in ('fresh', 'retired') else 'migration pending') + '"', result.stdout)
+                states = [json.loads(line)['state'] for line in result.stdout.splitlines() if line.startswith('{')]
+                self.assertEqual(states, [case if case in ('fresh', 'retired') else 'migration pending'] * 2)
                 self.assertNotIn('synthetic-private', result.stdout + result.stderr)
 
     def test_installed_python_custody_refusals(self) -> None:
