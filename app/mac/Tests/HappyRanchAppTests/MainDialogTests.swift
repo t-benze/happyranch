@@ -145,14 +145,17 @@ final class MainDialogTests: XCTestCase {
                 arguments: ["before": try XCTUnwrap(eventsBeforeClient)], in: nil, contentWorld: .page) as? Bool == true
         }
         XCTAssertTrue(eventsRestored, "Restore the existing subscription")
+        let eventsAtClient = try await view.callAsyncJavaScript("return clientEvents.length;",
+            arguments: [:], in: nil, contentWorld: .page) as? Int
         menu.executeRoleSwitch(from: .client, in: app)
         XCTAssertEqual(app.connectionRole, .home)
         app.showConnection()
         let reopenedEntries = try await eventually {
-            try await view.callAsyncJavaScript("return dialogs.length === 3;", arguments: [:], in: nil, contentWorld: .page) as? Bool == true
+            try await view.callAsyncJavaScript("return dialogs.length === 3 && clientEvents.length > before;",
+                arguments: ["before": try XCTUnwrap(eventsAtClient)], in: nil, contentWorld: .page) as? Bool == true
         }
         XCTAssertTrue(reopenedEntries)
-        let reopened = try await view.callAsyncJavaScript("const hello = JSON.parse(await window.happyranchConnection.call('bridge.hello', '{\"minVersion\":1,\"maxVersion\":1}')); const status = JSON.parse(await window.happyranchConnection.call('client.status', '{}')); return JSON.stringify({hello, status, sameDocument: originalContext === window.__hrAppContext, dialogs: dialogs.length});",
+        let reopened = try await view.callAsyncJavaScript("const hello = JSON.parse(await window.happyranchConnection.call('bridge.hello', '{\"minVersion\":1,\"maxVersion\":1}')); const status = JSON.parse(await window.happyranchConnection.call('client.status', '{}')); return JSON.stringify({hello, status, sameDocument: originalContext === window.__hrAppContext, dialogs: dialogs.length, orderedEvents: clientEvents.every((e, i, all) => Number.isSafeInteger(e.sequence) && e.sequence > 0 && (i === 0 || e.sequence > all[i - 1].sequence))});",
             arguments: [:], in: nil, contentWorld: .page) as? String
         let last = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(reopened).utf8)) as? [String: Any])
         let homeHello = try XCTUnwrap(last["hello"] as? [String: Any])
@@ -160,6 +163,7 @@ final class MainDialogTests: XCTestCase {
         XCTAssertNotNil((last["status"] as? [String: Any])?["stage"])
         XCTAssertEqual(last["sameDocument"] as? Bool, true)
         XCTAssertEqual(last["dialogs"] as? Int, 3)
+        XCTAssertEqual(last["orderedEvents"] as? Bool, true, "Adapter renewal cannot reset Main's event sequence")
         XCTAssertEqual(loads, 1); XCTAssertEqual(scheme.generation, initial)
         XCTAssertFalse(scheme.allowsNavigation, "Role renewal preserves protected Main owners")
         XCTAssertEqual(app.homeInvite.phase, .idle)

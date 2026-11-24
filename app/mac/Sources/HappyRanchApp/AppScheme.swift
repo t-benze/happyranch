@@ -193,6 +193,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     weak var connectionApp: AppDelegate?
     var statusChanged: ((String) -> Void)?
     private var connectionCommands: ConnectionWindow?
+    private var connectionEventSequence = 0
     private var subscriptions: Set<String> = []
     private var targetID: String?
     private var candidate: [String: Any]?
@@ -389,6 +390,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         statusChanged?("{}") // Keep unsaved access until a confirmed state says otherwise.
         subscriptions.removeAll()
         connectionCommands?.invalidate(showNotice: false); connectionCommands = nil
+        connectionEventSequence = 0
         documentURL = url; documentResponse = nil
         documentContext = nil
         document = UUID(); hasDocument = true
@@ -781,8 +783,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     /// Role changes retire only the command adapter, not Main's document,
     /// owners or target. Old operations retain their invalidated dispatcher.
     func connectionRoleDidChange() {
-        guard let app = connectionApp,
-              connectionCommands?.invalidateIfRoleChanged(app.connectionRole, showNotice: false) == true else { return }
+        guard let app = connectionApp, let commands = connectionCommands,
+              commands.invalidateIfRoleChanged(app.connectionRole, showNotice: false) else { return }
+        connectionEventSequence = commands.eventSequence
         connectionCommands = nil
         if subscriptions.contains("client.stateChanged") {
             mainConnectionCommands()?.subscribeMain(true)
@@ -793,7 +796,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if let connectionCommands { return connectionCommands }
         guard let app = connectionApp, let view, let context = documentContext else { return nil }
         let identity = document
-        let commands = ConnectionWindow(app: app, mainHost: view, currentDocument: { [weak self, weak view] in
+        let commands = ConnectionWindow(app: app, mainHost: view, eventSequence: connectionEventSequence, currentDocument: { [weak self, weak view] in
             guard let self, let view else { return false }
             return self.document == identity && self.documentContext == context && self.view === view
         }, event: { [weak self] raw in

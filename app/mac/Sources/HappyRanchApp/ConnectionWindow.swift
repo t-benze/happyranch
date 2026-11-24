@@ -29,7 +29,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private var eventScheduled = false
     private var eventInFlight = false
     private var eventDirty = false
-    private var eventSequence = 0
+    private(set) var eventSequence = 0
     private var reads = 0
     private var mutations = 0
     private var cancellations = 0
@@ -45,9 +45,10 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
 
     /// Reuse the existing parser, ledger, confirmations and actions for admitted
     /// Main. This creates neither an auxiliary window nor another web app.
-    init(app: AppDelegate, mainHost: WKWebView, currentDocument: @escaping () -> Bool,
+    init(app: AppDelegate, mainHost: WKWebView, eventSequence: Int = 0, currentDocument: @escaping () -> Bool,
          event: @escaping (String) -> Void) {
         self.app = app; openingRole = app.connectionRole
+        self.eventSequence = eventSequence
         self.mainHost = mainHost; mainDocumentCurrent = currentDocument; mainEvent = event
         super.init(window: nil)
         admitted = true
