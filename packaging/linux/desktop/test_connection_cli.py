@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from unittest.mock import Mock, patch
 
 from gi.repository import Gio, GLib
@@ -237,6 +238,22 @@ class ConnectionCLITests(unittest.TestCase):
         self.bus.status_error = None
         self.bus.raw = json.dumps({**self.bus.snapshot, "private": "private-error-canary"})
         self.assertEqual(self.run_native("status")[1]["code"], "unavailable")
+
+    def test_closed_host_state_diagnostic(self) -> None:
+        for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
+                         "owner_unsupported", "owner_mismatch", "release_home_invalid"):
+            with self.subTest(category=category):
+                self.bus.status_error = "ai.happyranch.RemoteAccess1.Error." + category
+                # Keep the exact CLI transcript assertion independent of the
+                # system Gio event adapter's Python 3.14 deprecation warnings.
+                with warnings.catch_warnings(record=True) as observed:
+                    code, result, message = self.run_native("status")
+                for warning in observed:
+                    self.assertIs(warning.category, DeprecationWarning)
+                    self.assertTrue(warning.filename.endswith('/gi/events.py'))
+                self.assertEqual(code, 1)
+                self.assertEqual(result, dict(code="hostStateUnrecognized", effect="none", recovery="refresh"))
+                self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. Check the local installation.")
 
     def test_headless_unavailable(self) -> None:
         import gi

@@ -28,7 +28,7 @@ MUTATIONS = {'ApprovePending': 'approve-pending', 'RejectPending': 'reject-pendi
              'RevokeSelected': 'revoke-selected'}
 INVITE_MUTATIONS = frozenset({'invite-reserve@1', 'invite-invalidate@1', 'revoke-all@1'})
 FAILURES = frozenset({'invalid-request', 'unknown-method', 'wrong-uid', 'unavailable',
-                      'busy', 'denied', 'expired', 'changed', 'disconnected'})
+                      'busy', 'denied', 'expired', 'changed', 'disconnected', 'host-state-unrecognized'})
 
 
 class Refused(Exception):

@@ -3994,6 +3994,7 @@ export const en = {
   "connection.host.hErrStateChanged": "Remote access changed before this action ran. Check current status.",
   "connection.host.hErrExpired": "The request expired.",
   "connection.host.hErrRuntime": "HappyRanch isn’t running on this computer.",
+  "connection.host.hErrStateUnrecognized": "Remote access files or the release runtime owner could not be verified. Check the local installation.",
   "connection.host.confirmCancel": "Cancel",
   "connection.current.label": "Current connection",
   "connection.state.notConnected": "Not connected",

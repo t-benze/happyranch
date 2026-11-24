@@ -375,6 +375,9 @@ def request_host(self: object, method: str, complete: object, current: object, o
                       "ai.happyranch.RemoteAccess1.Error.busy": "busy",
                       "ai.happyranch.RemoteAccess1.Error.invalid_request": "invalidRequest",
                       "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
+            for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
+                             "owner_unsupported", "owner_mismatch", "release_home_invalid"):
+                closed["ai.happyranch.RemoteAccess1.Error." + category] = "hostStateUnrecognized"
             code = closed.get(remote)
             if code:
                 complete(None, code)

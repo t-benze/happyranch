@@ -3806,6 +3806,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "connection.host.hErrStateChanged": "此操作运行前远程访问已发生变化。请检查当前状态。",
   "connection.host.hErrExpired": "请求已过期。",
   "connection.host.hErrRuntime": "HappyRanch 未在这台电脑上运行。",
+  "connection.host.hErrStateUnrecognized": "无法验证远程访问文件或发布版运行时的所有者。请检查本机安装。",
   "connection.host.confirmCancel": "取消",
   "connection.current.label": "当前连接",
   "connection.state.notConnected": "未连接",
