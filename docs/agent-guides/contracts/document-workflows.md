@@ -511,10 +511,19 @@ additionally validates the complete original same-profile group, every captured
 mirror in `forward_recovery_required`, and every original publication binding.
 Startup defers that component's synchronization to explicit rebind, retaining its
 fence until the existing finalizer can publish the coherent closure. Native history
-stays UNKNOWN. This exception does not apply on a later boot without that exact
-active forward remove/journal binding; other unsettled or unavailable native
-ownership, ordinary or mismatched journals, mixed-profile invocations and partially
-forward groups retain their startup holds.
+stays UNKNOWN. On a later boot after finalization, both startup callers also accept
+no active journal plus the namespace's latest installed (`cache_installed`)
+profile-coordinator journal matching exactly one operation, a `published` remove.
+There must be exactly one remove operation in the org: the native record has no
+operation ID. Its creation timestamp must be strictly bracketed by the specific
+writer's timezone-aware ACTIVE and UNKNOWN audit timestamps, in audit ID order.
+Those two validated records must be the entire history of both remove publishers.
+Another attempt, including settled or operation-less native history, duplicate or
+missing records, tied/invalid timestamps or a non-bracketing interval fails closed.
+No prepared fence remains, so this finalized case needs neither rebind adoption
+nor deferred synchronization. Other unsettled or unavailable native ownership,
+ordinary or mismatched journals, mixed-profile invocations and partially forward
+groups retain their startup holds.
 
 Complete pointer, journal, dependency/store/registry, operation, lease and native
 history/epoch images bracket discovery and are revalidated before mutation.
