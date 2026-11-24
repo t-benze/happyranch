@@ -13,11 +13,17 @@ private final class HTTPResult: @unchecked Sendable {
     private var _body: String = ""
     private var _raw: String = ""
     private var _error: String? = nil
+    private var _waitingError: String? = nil
 
     var status: Int { lock.withLock { _status } }
     var body: String { lock.withLock { _body } }
     var raw: String { lock.withLock { _raw } }
     var error: String? { lock.withLock { _error } }
+    var waitingError: String? { lock.withLock { _waitingError } }
+
+    func setWaitingError(_ message: String) {
+        lock.withLock { _waitingError = message }
+    }
 
     func setResult(status: Int, body: String, raw: String) {
         lock.withLock {
@@ -29,6 +35,32 @@ private final class HTTPResult: @unchecked Sendable {
 
     func setError(_ msg: String) {
         lock.withLock { _error = msg }
+    }
+}
+
+/// Start once and wait for an affirmative listener readiness result.
+private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, port: UInt16) throws {
+    let ready = DispatchSemaphore(value: 0)
+    let startup = HTTPResult()
+    listener.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            startup.setResult(status: 1, body: "", raw: "")
+            ready.signal()
+        case .failed(let error):
+            startup.setError(error.localizedDescription)
+            ready.signal()
+        case .cancelled:
+            ready.signal()
+        default:
+            break
+        }
+    }
+    listener.start(queue: queue)
+    guard ready.wait(timeout: .now() + 2) == .success, startup.status == 1 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Fake listener 127.0.0.1:\(port) did not become ready: \(startup.error ?? "timeout or cancelled")"])
     }
 }
 
@@ -65,33 +97,12 @@ private final class FakeHomeConnectorServer: @unchecked Sendable {
         )
 
         let listener = try NWListener(using: parameters)
-        let ready = DispatchSemaphore(value: 0)
-        let startup = HTTPResult()
-        listener.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                startup.setResult(status: 1, body: "", raw: "")
-                ready.signal()
-            case .failed(let error):
-                startup.setError(error.localizedDescription)
-                ready.signal()
-            case .cancelled:
-                ready.signal()
-            default:
-                break
-            }
-        }
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
-        listener.start(queue: queue)
+        try startReadyListener(listener, queue: queue, port: port)
         self.listener = listener
-        guard ready.wait(timeout: .now() + 2) == .success, startup.status == 1 else {
-            listener.cancel()
-            throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
-                "Fake home listener did not become ready: \(startup.error ?? "timeout or cancelled")"])
-        }
     }
 
     func stop() {
@@ -143,19 +154,67 @@ private final class FakeHomeConnectorServer: @unchecked Sendable {
 
 // MARK: - Helpers
 
-/// Thread-safe port allocator — avoids port conflicts between parallel tests.
+/// Disjoint test range below the default macOS ephemeral range (49152+).
 private let portAllocator = NSLock()
-nonisolated(unsafe) private var nextPort: UInt16 = 51000
+nonisolated(unsafe) private var nextPort: UInt16 = 25000
 
-/// Allocate a pair of ports (bridgePort, homeConnectorPort) for one test.
-private func allocatePortPair() -> (bridge: UInt16, homeConnector: UInt16) {
+/// Verify availability below the default macOS ephemeral range. No retry:
+/// a competing fixed bind must fail here or at listener readiness.
+private func requireAvailableLoopbackPort(_ port: UInt16) throws {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bound == 0 else {
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) unavailable: \(error.localizedDescription)"])
+    }
+}
+
+private func allocatePortPair() throws -> (bridge: UInt16, homeConnector: UInt16) {
     portAllocator.lock()
     defer { portAllocator.unlock() }
-    let bridge = nextPort
-    let homeConnector = nextPort + 1
+    guard nextPort < 29000 else {
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Loopback test port range exhausted"])
+    }
+    let first = nextPort
+    let second = nextPort + 1
     nextPort += 2
-    if nextPort > 61000 { nextPort = 51000 }
-    return (bridge, homeConnector)
+    try requireAvailableLoopbackPort(first)
+    try requireAvailableLoopbackPort(second)
+    return (first, second)
+}
+
+/// Wait for running, never accepting a failed state as startup success.
+private func requireRunning(_ bridge: ClientBridge) throws {
+    for _ in 0..<50 {
+        switch bridge.state {
+        case .running:
+            return
+        case .failed:
+            let state = bridge.state
+            bridge.stop()
+            throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                "ClientBridge failed readiness: \(state)"])
+        case .stopped:
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+    let state = bridge.state
+    bridge.stop()
+    throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+        "ClientBridge readiness timed out: \(state)"])
 }
 
 /// Send an HTTP request to the given host:port and return the response.
@@ -219,6 +278,8 @@ private func sendHTTPRequest(
                     }
                 }
             )
+        case .waiting(let error):
+            result.setWaitingError(String(describing: error))
         case .failed(let error):
             result.setError(error.localizedDescription)
             semaphore.signal()
@@ -236,7 +297,7 @@ private func sendHTTPRequest(
 
     if let errMsg = result.error {
         throw NSError(domain: "test", code: -1,
-                      userInfo: [NSLocalizedDescriptionKey: errMsg])
+                      userInfo: [NSLocalizedDescriptionKey: "\(errMsg); clientWaiting=\(result.waitingError ?? "none")"])
     }
     return result
 }
@@ -270,7 +331,7 @@ struct ClientBridgeTests {
 
     @Test("bridge binds to 127.0.0.1 — never 0.0.0.0")
     func bindsLoopbackOnly() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -285,10 +346,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         guard case .running(let actualPort) = bridge.state else {
@@ -302,7 +360,7 @@ struct ClientBridgeTests {
 
     @Test("state transitions: stopped -> running -> stopped")
     func stateTransitions() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -319,11 +377,7 @@ struct ClientBridgeTests {
         #expect(bridge.state == .stopped)
         try bridge.start()
 
-        var stateCheckCount = 0
-        while case .stopped = bridge.state, stateCheckCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05)
-            stateCheckCount += 1
-        }
+        try requireRunning(bridge)
 
         guard case .running = bridge.state else {
             #expect(Bool(false), "Expected .running but got \(bridge.state)")
@@ -336,7 +390,7 @@ struct ClientBridgeTests {
 
     @Test("throws alreadyRunning when started twice")
     func throwsAlreadyRunning() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -351,10 +405,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         do {
@@ -371,7 +422,7 @@ struct ClientBridgeTests {
 
     @Test("answers /auth/bootstrap with session-scoped credential — NOT daemon token")
     func authBootstrapReturnsSessionCredential() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -386,10 +437,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response = try sendHTTPRequest(
@@ -413,7 +461,7 @@ struct ClientBridgeTests {
 
     @Test("/auth/bootstrap is NOT forwarded to home connector")
     func authBootstrapNotForwarded() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -428,10 +476,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         _ = try sendHTTPRequest(
@@ -447,7 +492,7 @@ struct ClientBridgeTests {
 
     @Test("each /auth/bootstrap call returns a FRESH session credential")
     func authBootstrapReturnsFreshCredentialEachTime() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -462,10 +507,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response1 = try sendHTTPRequest(
@@ -484,7 +526,7 @@ struct ClientBridgeTests {
 
     @Test("forwards normal SPA requests to home connector")
     func forwardsRequestsToHomeConnector() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -500,10 +542,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response = try sendHTTPRequest(
@@ -523,7 +562,7 @@ struct ClientBridgeTests {
 
     @Test("relays response body from home connector to client")
     func relaysResponseBody() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -539,10 +578,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response = try sendHTTPRequest(
@@ -555,7 +591,7 @@ struct ClientBridgeTests {
 
     @Test("relays error statuses from home connector")
     func relaysErrorStatuses() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -572,10 +608,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response = try sendHTTPRequest(
@@ -589,7 +622,7 @@ struct ClientBridgeTests {
 
     @Test("strips Authorization header from SPA before forwarding to home connector")
     func stripsAuthorizationHeader() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -604,10 +637,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let spaCredential = "hr_session_fake_spa_token_123"
@@ -637,7 +667,7 @@ struct ClientBridgeTests {
 
     @Test("session credential never appears in home connector request")
     func sessionCredentialNeverReachesHomeConnector() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -652,10 +682,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         // First get a session credential from bootstrap
@@ -691,7 +718,7 @@ struct ClientBridgeTests {
 
     @Test("ephemeral port: bridge allocates a port when bridgePort is nil")
     func ephemeralPortAllocatesRandomPort() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let homePort = ports.homeConnector
 
         let fakeHome = FakeHomeConnectorServer(port: homePort)
@@ -705,10 +732,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         guard case .running(let port) = bridge.state else {
@@ -722,7 +746,7 @@ struct ClientBridgeTests {
 
     @Test("subsequent requests after initial connection are proxied")
     func subsequentRequestsProxied() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -737,10 +761,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         _ = try sendHTTPRequest(host: "127.0.0.1", port: bridgePort, path: "/tasks", timeout: 5)
@@ -758,7 +779,7 @@ struct ClientBridgeTests {
 
     @Test("returns 502 when home connector connection fails")
     func returns502WhenHomeConnectionFails() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -776,10 +797,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         do {
@@ -805,7 +823,7 @@ struct ClientBridgeTests {
 
     @Test("forwards POST requests to home connector")
     func forwardsPostRequests() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -821,10 +839,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         let response = try sendHTTPRequest(
@@ -850,7 +865,7 @@ struct ClientBridgeTests {
 
     @Test("answers /api/v1/auth/bootstrap with session-scoped credential — NOT daemon token")
     func prefixedAuthBootstrapReturnsSessionCredential() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -865,10 +880,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         // Request the PREFIXED bootstrap path — the one the real SPA uses
@@ -893,7 +905,7 @@ struct ClientBridgeTests {
 
     @Test("/api/v1/auth/bootstrap is NOT forwarded to home connector")
     func prefixedAuthBootstrapNotForwarded() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -908,10 +920,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         _ = try sendHTTPRequest(
@@ -927,7 +936,7 @@ struct ClientBridgeTests {
 
     @Test("raw daemon token (hr_token_) never appears in any forwarded request bytes")
     func hrTokenNeverInForwardedBytes() throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let bridgePort = ports.bridge
         let homePort = ports.homeConnector
 
@@ -942,10 +951,7 @@ struct ClientBridgeTests {
         )
 
         try bridge.start()
-        var waitCount = 0
-        while case .stopped = bridge.state, waitCount < 50 {
-            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
-        }
+        try requireRunning(bridge)
         defer { bridge.stop() }
 
         // Bootstrap through both path forms
@@ -977,7 +983,7 @@ struct ClientBridgeTests {
 
     @Test("redeemPairing happy path — POST /pair returns 200, sets deviceCredential")
     func redeemPairingHappyPath() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let pairPort = ports.homeConnector
 
         let expectedCredential = "hrpair_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
@@ -1007,7 +1013,7 @@ struct ClientBridgeTests {
 
     @Test("redeemPairing 403 — throws refused error, deviceCredential stays nil")
     func redeemPairing403Refused() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let pairPort = ports.homeConnector
 
         let fakeServer = FakePairingServer(
@@ -1042,7 +1048,7 @@ struct ClientBridgeTests {
 
     @Test("redeemPairing connection refused — throws connectionFailed")
     func redeemPairingConnectionRefused() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         // Use a port where nothing is listening
         let closedPort = ports.homeConnector
 
@@ -1071,7 +1077,7 @@ struct ClientBridgeTests {
 
     @Test("redeemPairing sends the pairing code in the POST body")
     func redeemPairingSendsCodeInBody() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let pairPort = ports.homeConnector
 
         let expectedCredential = "hrpair_abcdef1234567890abcdef1234567890"
@@ -1103,7 +1109,7 @@ struct ClientBridgeTests {
 
     @Test("redeemPairing invalid response (200 without credential) throws invalidResponse")
     func redeemPairingInvalidResponseNoCredential() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let pairPort = ports.homeConnector
 
         let fakeServer = FakePairingServer(
@@ -1183,7 +1189,7 @@ private final class FakePairingServer: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
-        listener.start(queue: queue)
+        try startReadyListener(listener, queue: queue, port: port)
         self.listener = listener
     }
 
@@ -1257,7 +1263,7 @@ struct ManagedClientBridgeTests {
 
     @Test("Unjoined managed pairing never selects the reachable DIY listener")
     func unjoinedManagedPairingHasNoFallback() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let server = FakePairingServer(port: ports.homeConnector, responseStatus: 200, responseCredential: "synthetic-credential")
         try server.start()
         defer { server.stop() }
@@ -1275,7 +1281,7 @@ struct ManagedClientBridgeTests {
 
     @Test("Unpaired managed forwarding cannot send a credential to a DIY sink")
     func unpairedManagedForwardingHasNoFallback() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let server = FakeHomeConnectorServer(port: ports.homeConnector)
         try server.start()
         defer { server.stop() }
@@ -1327,7 +1333,7 @@ struct ManagedClientBridgeTests {
 
     @Test("Runtime health requires pairing and never follows a remote redirect")
     func runtimeHealthStaysOnBridge() async throws {
-        let ports = allocatePortPair()
+        let ports = try allocatePortPair()
         let server = FakeHomeConnectorServer(port: ports.homeConnector)
         try server.start()
         defer { server.stop() }
