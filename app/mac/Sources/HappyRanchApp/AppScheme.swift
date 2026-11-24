@@ -778,6 +778,17 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         observe?("native_state_changed", generation)
     }
 
+    /// Role changes retire only the command adapter, not Main's document,
+    /// owners or target. Old operations retain their invalidated dispatcher.
+    func connectionRoleDidChange() {
+        guard let app = connectionApp,
+              connectionCommands?.invalidateIfRoleChanged(app.connectionRole, showNotice: false) == true else { return }
+        connectionCommands = nil
+        if subscriptions.contains("client.stateChanged") {
+            mainConnectionCommands()?.subscribeMain(true)
+        }
+    }
+
     private func mainConnectionCommands() -> ConnectionWindow? {
         if let connectionCommands { return connectionCommands }
         guard let app = connectionApp, let view, let context = documentContext else { return nil }

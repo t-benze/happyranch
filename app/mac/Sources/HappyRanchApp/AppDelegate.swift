@@ -126,7 +126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// this preference takes priority over supervisor-state heuristics.
     @Published var connectionRolePreference: ConnectionRolePreference? {
         didSet {
-            if oldValue != connectionRolePreference { connectionWindow?.invalidate() }
+            if oldValue != connectionRolePreference {
+                connectionWindow?.invalidate()
+                mainScheme?.connectionRoleDidChange()
+            }
             if let pref = connectionRolePreference {
                 UserDefaults.standard.set(pref.rawValue, forKey: "connectionRolePreference")
             } else {
@@ -1413,6 +1416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// across all supervisor states.
     func refreshDerivedState() {
         connectionWindow?.invalidateIfRoleChanged(connectionRole)
+        mainScheme?.connectionRoleDidChange()
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)

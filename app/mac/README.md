@@ -81,8 +81,12 @@ confirmation/Keychain and write/readback implementation. Main reuses that
 dispatcher without constructing its former auxiliary window or bundle. Named
 dialog/client subscriptions are document scoped; retirement revokes them and
 late replies cannot enter a replacement Main. A missing document never clears
-the warning as though access had been saved. Disconnect, Cancel, target changes
-and navigation retain failed-save outcomes, without retaining session credentials.
+the warning as though access had been saved. A valid HOME/CLIENT role change
+retires the old command adapter and restores any active client subscription on
+a fresh adapter in the same Main document. Old-role work remains refused, even
+after switching back; Main's owners, target and generation are preserved.
+Disconnect, Cancel, target changes and navigation retain failed-save outcomes,
+without retaining session credentials.
 Only the existing protected write/readback for the matching binding clears its
 warning; saving a different computer does not confirm the original failure.
 The legacy phase strip remains

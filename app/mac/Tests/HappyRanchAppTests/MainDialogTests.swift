@@ -7,10 +7,10 @@ import XCTest
 
 final class MainDialogTests: XCTestCase {
     @MainActor
-    private func eventually(_ condition: () -> Bool) async -> Bool {
+    private func eventually(_ condition: () async throws -> Bool) async rethrows -> Bool {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
-            if condition() { return true }
+            if try await condition() { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
@@ -82,6 +82,118 @@ final class MainDialogTests: XCTestCase {
         scheme.documentDidStart()
         XCTAssertFalse(scheme.requestDialog("settings"))
         XCTAssertEqual(scheme.generation, initial, "Dialog entry never selects a target")
+    }
+
+    @MainActor
+    func testMainConnectionReopensAcrossMenuRoleSwitchesInTheSameDocument() async throws {
+        let preference = UserDefaults.standard.object(forKey: "connectionRolePreference")
+        defer { UserDefaults.standard.set(preference, forKey: "connectionRolePreference") }
+        let physical = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(physical) }
+        let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let assets = root.appendingPathComponent("web", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let html = Data("<!doctype html><html><body><main>Main</main></body></html>".utf8)
+        try html.write(to: assets.appendingPathComponent("index.html"))
+        let hash = SHA256.hash(data: html).map { String(format: "%02x", $0) }.joined()
+        try JSONSerialization.data(withJSONObject: ["version": 1, "entry": "index.html", "resources": [
+            ["path": "index.html", "bytes": html.count, "sha256": hash]]]).write(to: assets.appendingPathComponent("resource-manifest.json"))
+        let policy = root.appendingPathComponent("policy.json")
+        try Data(#"{"version":1,"entries":[{"method":"PUT","path_template":"/api/v1/config","class":"config"}]}"#.utf8).write(to: policy)
+        let scheme = try AppScheme(root: assets, transport: nil, remote: false, policyURL: policy)
+        defer { scheme.close() }
+        let app = AppDelegate(); app.connectionRolePreference = .home; app.bindMainScheme(scheme)
+        let initial = scheme.generation
+        var loads = 0
+        let owner = WebView(url: URL(string: AppSchemeRoute.origin + "/")!, transport: nil, remote: false,
+                            onLoaded: { _ in loads += 1 })
+        let coordinator = owner.makeCoordinator(); coordinator.scheme = scheme
+        let configuration = WKWebViewConfiguration(); scheme.configure(configuration)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 760, height: 500), configuration: configuration)
+        view.navigationDelegate = coordinator
+        scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
+        let loaded = await eventually { loads == 1 }; XCTAssertTrue(loaded, "\(coordinator.callbackURLs)")
+        _ = try await view.callAsyncJavaScript("window.dialogs = []; window.clientEvents = []; window.happyranchConnection.on('app.dialogRequested', raw => dialogs.push(JSON.parse(raw))); window.happyranchConnection.on('client.stateChanged', raw => clientEvents.push(JSON.parse(raw))); window.originalContext = window.__hrAppContext;",
+            arguments: [:], in: nil, contentWorld: .page)
+        let subscribed = await eventually { scheme.requestDialog("connection") }; XCTAssertTrue(subscribed)
+        let home = try await view.callAsyncJavaScript("return await window.happyranchConnection.call('bridge.hello', '{\"minVersion\":1,\"maxVersion\":1}');",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertFalse(try XCTUnwrap(home).contains("client.acceptInvite"))
+        // Model a protected owner in retained Main. Adapter renewal must not
+        // manufacture clean owner evidence or a target generation change.
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"prompt","counts":{"dirty":1,"failed":0,"pending":0,"unknown":0}}"#)
+        let eventsBeforeClient = try await view.callAsyncJavaScript("return clientEvents.length;",
+            arguments: [:], in: nil, contentWorld: .page) as? Int
+        let menu = HappyRanchApp()
+        menu.executeRoleSwitch(from: .home, in: app)
+        XCTAssertEqual(app.connectionRole, .client)
+        app.showConnection() // Reopen via the shipping entry, without reload.
+        let client = try await view.callAsyncJavaScript("const hello = JSON.parse(await window.happyranchConnection.call('bridge.hello', '{\"minVersion\":1,\"maxVersion\":1}')); const saved = JSON.parse(await window.happyranchConnection.call('client.savedComputers', '{}')); const status = JSON.parse(await window.happyranchConnection.call('client.status', '{}')); let error; try { await window.happyranchConnection.call('client.cancelAttempt', '{}'); } catch (e) { error = JSON.parse(e.message); } return JSON.stringify({hello, saved, status, error});",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(client).utf8)) as? [String: Any])
+        let hello = try XCTUnwrap(result["hello"] as? [String: Any])
+        let capabilities = try XCTUnwrap(hello["capabilities"] as? [[String: String]])
+        XCTAssertTrue(capabilities.contains { $0["command"] == "client.acceptInvite" })
+        XCTAssertNotNil((result["saved"] as? [String: Any])?["savedAccess"])
+        XCTAssertNotNil((result["status"] as? [String: Any])?["stage"])
+        XCTAssertEqual((result["error"] as? [String: Any])?["code"] as? String, "stateChanged",
+                       "The current-role action reaches its state guard, not documentChanged")
+        let eventsRestored = try await eventually {
+            try await view.callAsyncJavaScript("return clientEvents.length > before;",
+                arguments: ["before": try XCTUnwrap(eventsBeforeClient)], in: nil, contentWorld: .page) as? Bool == true
+        }
+        XCTAssertTrue(eventsRestored, "Restore the existing subscription")
+        menu.executeRoleSwitch(from: .client, in: app)
+        XCTAssertEqual(app.connectionRole, .home)
+        app.showConnection()
+        let reopenedEntries = try await eventually {
+            try await view.callAsyncJavaScript("return dialogs.length === 3;", arguments: [:], in: nil, contentWorld: .page) as? Bool == true
+        }
+        XCTAssertTrue(reopenedEntries)
+        let reopened = try await view.callAsyncJavaScript("const hello = JSON.parse(await window.happyranchConnection.call('bridge.hello', '{\"minVersion\":1,\"maxVersion\":1}')); const status = JSON.parse(await window.happyranchConnection.call('client.status', '{}')); return JSON.stringify({hello, status, sameDocument: originalContext === window.__hrAppContext, dialogs: dialogs.length});",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let last = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(reopened).utf8)) as? [String: Any])
+        let homeHello = try XCTUnwrap(last["hello"] as? [String: Any])
+        XCTAssertEqual((homeHello["capabilities"] as? [[String: String]])?.map { $0["command"] }, ["client.status"])
+        XCTAssertNotNil((last["status"] as? [String: Any])?["stage"])
+        XCTAssertEqual(last["sameDocument"] as? Bool, true)
+        XCTAssertEqual(last["dialogs"] as? Int, 3)
+        XCTAssertEqual(loads, 1); XCTAssertEqual(scheme.generation, initial)
+        XCTAssertFalse(scheme.allowsNavigation, "Role renewal preserves protected Main owners")
+        XCTAssertEqual(app.homeInvite.phase, .idle)
+        XCTAssertNil(app.clientBridge)
+    }
+
+    @MainActor
+    func testQueuedOldRoleMainActionIsRefusedIncludingAfterRetirementAndRoleRoundTrip() async throws {
+        let preference = UserDefaults.standard.object(forKey: "connectionRolePreference")
+        defer { UserDefaults.standard.set(preference, forKey: "connectionRolePreference") }
+        for roundTrip in [false, true] {
+            let app = AppDelegate(); app.connectionRolePreference = .home
+            let host = WKWebView(frame: .zero)
+            let commands = ConnectionWindow(app: app, mainHost: host, currentDocument: { true }, event: { _ in })
+            defer { commands.invalidate(showNotice: false) }
+            let lifetime = app.homeInvite.lifetime
+            let error: String? = await withCheckedContinuation { continuation in
+                // mainCall admits synchronously but dispatches in a MainActor
+                // task. Switch roles before that queued action can execute.
+                commands.mainCall(command: "client.cancelAttempt", data: "{}") { _, error in
+                    continuation.resume(returning: error)
+                }
+                app.connectionRolePreference = .client
+                if roundTrip {
+                    XCTAssertTrue(commands.invalidateIfRoleChanged(app.connectionRole, showNotice: false))
+                    app.connectionRolePreference = .home
+                }
+            }
+            let refusal = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(error).utf8)) as? [String: Any])
+            XCTAssertEqual(refusal["code"] as? String, "documentChanged")
+            XCTAssertEqual(app.homeInvite.lifetime, lifetime)
+            XCTAssertEqual(app.homeInvite.phase, .idle)
+            XCTAssertNil(app.clientBridge)
+        }
     }
 
     @MainActor

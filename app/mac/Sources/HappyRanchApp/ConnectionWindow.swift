@@ -194,8 +194,11 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
 
     func windowWillClose(_ notification: Notification) { invalidate(showNotice: false) }
 
-    func invalidateIfRoleChanged(_ role: ConnectionRole) {
-        if role != openingRole { invalidate() }
+    @discardableResult
+    func invalidateIfRoleChanged(_ role: ConnectionRole, showNotice: Bool = true) -> Bool {
+        guard role != openingRole else { return false }
+        invalidate(showNotice: showNotice)
+        return true
     }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {

@@ -1720,7 +1720,11 @@ and Keychain operations. It unwraps their existing v1 results/errors for the
 shared Main facade, and routes `client.stateChanged` separately from
 `app.stateChanged` and `app.dialogRequested`. The legacy auxiliary loader is
 not constructed. Current Main context/view/role fences guard entry and replies;
-document retirement invalidates dispatcher/subscriptions. MAC-2a target/owner
+document retirement invalidates dispatcher/subscriptions. Effective HOME/CLIENT
+role changes retire the captured-role dispatcher and restore an active client
+subscription on a fresh adapter without replacing Main or clearing its owners,
+target or generation. Old-role operations keep their retired adapter and cannot
+resume in the new role or after a role round trip. MAC-2a target/owner
 admission still owns commit/disconnect. No daemon auth, remote allowlist,
 dependency, schema or credential-custody rule changes.
 
