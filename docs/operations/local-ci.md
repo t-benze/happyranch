@@ -4004,35 +4004,17 @@ transaction deadline forwarding, removed-owner stream closure (including failure
 and denied admission after runtime rotation and connector restart. No host
 systemd, system bus or installed polkit acceptance is exercised.
 
-The retained Disable namespace keeper seeds historical service files directly,
-without activating or provisioning a home. It observes the stale writable-path
-projection refusing before capture/auth/revoke, then runs actual B6 cleanup in a
-fresh projection. Separate native-stop cases retain owned-stop ordering.
-
-The retained installer custody venue's `generated_bundle` name now denotes
-neutral historical input, not a production generation call. Actual omitted-input
-provisioning refuses; old ReplaceFailed forward writers are absent. Existing
-inventory/provenance/lifecycle/refusal and non-home renewal/lock assertions remain
-at their real production boundaries. Removed writer-only rows are individually
-dispositioned in the P24 PR record; no failing test is skipped as cleanup.
-
-`scripts/test_home_activation_backend.py` now checks the minimal closed
-Enable/ReplaceFailed adapters and actual root-child no-effect dispatch. Obsolete
-activation/rollover success algorithms retired with their backend owner. Public
-helper tests keep native authorization and revalidation, exact retirement copy,
-namespace/slot settlement, real Disable cleanup and non-home renewal.
-
 I3a lifecycle mounting uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
 I3b's retained focused selection is
-`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py scripts/test_invite_control.py scripts/test_home_audit.py -q --tb=short`.
-Run the full selection through a durable job. Current helper cases use neutral
-native/capture inputs for the unchanged sender/auth/budget guards and retained
-StatusV2 projection, and execute minimal root-child retirement refusal adapters.
-They no longer compose local issuance/admin/minter owners. Shared ready/commit
-pipe bounds and real non-home renewal remain exercised. Local issuer/admin/minter/recovery algorithms are removed with their uncalled
-owners. Retained invite-v2, pairing, private InviteControl and canonical retirement
-cutoff scripts own real ceremony burning, durable device denial and stream closure. This is separate from installed polkit/live
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py scripts/test_invite_recovery.py scripts/test_invite_control.py scripts/test_home_audit.py -q --tb=short`.
+Run the full selection through a durable job. Its mounted cases use real
+temporary issuer/trust/audit files, the existing B11 backend, InviteControl and
+HeadscaleRecoveryMinter, with only native transport/admin seams simulated. They
+cover both invite actions, absent state, capture/admission and live-caller
+drift, busy/contended locks, exact cleanup-proof result axes, IPC loss and late
+replies, public helper admission, existing StatusV2 fields/staleness and the
+fixed child ready/commit callback. This is separate from installed polkit/live
 acceptance and does not restore the retired Python or skipped integration suites.
 Test-side Gio/child transport seams run the shipping public mount, native-auth
 callback, B9 capture/slot/deadlines and real B16 file writer when no compatible
@@ -4056,20 +4038,14 @@ I5b/I5c; RefreshHomeAddress has no helper method and is deferred to B13.
 
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
-THR-327 returned-worker regressions use the retained Disable path:
-`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -k thr327 -q --tb=short`.
-P24 retires replacement-reload/reset-specific cases with the removed replacement
-owner; ordinary inventory/transaction refusal and real non-home renewal remain
-in the full installer custody selection above.
+THR-327 closure/returned-worker regressions use the same retained venue:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_installer_token_custody.py scripts/test_helper_mount.py -k thr327 -q --tb=short`.
 The focused post-closure read selection is
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -k thr327_closed_host_status -q --tb=short`.
-It uses the real temporary-root retired Enable capture with absent connector IPC
-and only child/Gio transport isolated. The retirement snapshot supplies no legacy
-inventory proof, so Status/StatusV2 refuse with host-state-unrecognized without
-native, authorization or audit effects. The former clean/staged Off and rejected
-inventory rows retired with their generated-home/Enable composition owner; their
-named dispositions are recorded in the P24 PR. No preparation/forward owner is
-restored to display Off.
+It uses the real temporary-root Enable capture and retained staging/release record,
+with absent connector IPC and only child/Gio transport isolated. Clean/staged
+states report Off in Status/StatusV2; partial, pending, unsafe, unknown, failed,
+changed-source and transaction-bearing inventories refuse without effects.
 Private-bus owner/unknown-proof checks use
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -k 'retained_manual_record or status_v2_stopped_connector' -v --tb=short`.
 The native CLI, Main bridge/relay and Connection model selections documented

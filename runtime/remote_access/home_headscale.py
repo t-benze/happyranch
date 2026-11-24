@@ -1,7 +1,12 @@
-"""Pure historical Headscale config/DERP rendering for protected readback."""
+"""Unwired, pure home Headscale v0.25.1 rendering and LAN address selection.
+
+These functions neither inspect the host nor establish custody or readiness.
+The installer must supply a complete inventory and protect the rendered files.
+"""
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import yaml
 
@@ -12,14 +17,70 @@ class HomeHeadscaleError(ValueError):
     """Closed categories: inventory, no_address, multiple_addresses, dial_ip, policy_path."""
 
 
+@dataclass(frozen=True, repr=False)
+class LANInterface:
+    """Observed interface identity and local address literals (without CIDRs)."""
+
+    index: int
+    up: bool
+    loopback: bool
+    addresses: tuple[str, ...]
 
 
+@dataclass(frozen=True, repr=False)
+class LANDefaultRoute:
+    """One usable default route and its selected local source, supplied by the caller.
+
+    Include every usable default route, including IPv6 and equal-cost routes;
+    do not choose a preferred route or silently drop an unresolved source.
+    """
+
+    interface_index: int
+    source_ip: str
 
 
 def _dial_ip_valid(dial_ip: object) -> bool:
     return type(dial_ip) is str and invite_v2._canonical_dial_ip(dial_ip)
 
 
+def select_lan_dial_ip(
+    interfaces: tuple[LANInterface, ...], default_routes: tuple[LANDefaultRoute, ...],
+) -> str:
+    """Accept exactly one usable default-route RFC1918 source; never rank routes.
+
+    Down/loopback interfaces cannot supply a usable route. Missing/duplicate
+    interface identities or a source not assigned to its interface refuse.
+    Multiple usable routes refuse even when their selected source is identical.
+    """
+    if type(interfaces) is not tuple or type(default_routes) is not tuple:
+        raise HomeHeadscaleError("inventory")
+    by_index: dict[int, LANInterface] = {}
+    for interface in interfaces:
+        if (type(interface) is not LANInterface or type(interface.index) is not int
+                or interface.index <= 0 or interface.index in by_index
+                or type(interface.up) is not bool or type(interface.loopback) is not bool
+                or type(interface.addresses) is not tuple
+                or any(type(address) is not str for address in interface.addresses)):
+            raise HomeHeadscaleError("inventory")
+        by_index[interface.index] = interface
+    candidates: list[str] = []
+    for route in default_routes:
+        if (type(route) is not LANDefaultRoute or type(route.interface_index) is not int
+                or type(route.source_ip) is not str or route.interface_index not in by_index):
+            raise HomeHeadscaleError("inventory")
+        interface = by_index[route.interface_index]
+        if route.source_ip not in interface.addresses:
+            raise HomeHeadscaleError("inventory")
+        if not interface.up or interface.loopback:
+            continue
+        if not _dial_ip_valid(route.source_ip):
+            raise HomeHeadscaleError("dial_ip")
+        candidates.append(route.source_ip)
+    if not candidates:
+        raise HomeHeadscaleError("no_address")
+    if len(candidates) != 1:
+        raise HomeHeadscaleError("multiple_addresses")
+    return candidates[0]
 
 
 def render_headscale_config(*, dial_ip: str, policy_path: str) -> str:

@@ -1,6 +1,7 @@
 """Standalone pure-renderer checks; synthetic LAN inventory, no host inspection."""
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 
 import pytest
 import yaml
@@ -13,6 +14,8 @@ IP = "192.168.1.40"
 POLICY = "/etc/happyranch/headscale/policy.hujson"
 
 
+def inventory(ip: str = IP) -> tuple[tuple[home.LANInterface, ...], tuple[home.LANDefaultRoute, ...]]:
+    return ((home.LANInterface(2, True, False, (ip,)),), (home.LANDefaultRoute(2, ip),))
 
 
 def config() -> dict:
@@ -120,7 +123,8 @@ def test_deterministic_independent_rendering() -> None:
 
 @pytest.mark.parametrize("ip", ["10.0.0.0", "10.255.255.255", "172.16.0.0", "172.31.255.255",
                                   "192.168.0.0", "192.168.255.255", IP])
-def test_renderer_accepts_shared_rfc1918_boundaries(ip: str) -> None:
+def test_selector_accepts_shared_rfc1918_boundaries(ip: str) -> None:
+    assert home.select_lan_dial_ip(*inventory(ip)) == ip
     f = fixture(); f["control_tls"]["dial_ip"] = ip
     assert invite_v2.decode(wire(f), now=NOW).dial_ip == ip
     assert invite_v2.decode(invite_v2.encode(**(inputs() | {"dial_ip": ip})).invite_text, now=NOW).dial_ip == ip
@@ -135,6 +139,7 @@ def test_renderer_accepts_shared_rfc1918_boundaries(ip: str) -> None:
                                   "::ffff:192.168.1.40", "SYNTHETIC-INPUT-CANARY"])
 def test_invalid_ip_refuses_at_every_boundary(ip: str) -> None:
     operations = (
+        lambda: home.select_lan_dial_ip(*inventory(ip)),
         lambda: home.render_headscale_config(dial_ip=ip, policy_path=POLICY),
         lambda: home.render_private_derp_map(dial_ip=ip),
     )
@@ -152,6 +157,38 @@ def test_invalid_ip_refuses_at_every_boundary(ip: str) -> None:
         assert error.value.__context__ is None and error.value.__cause__ is None
 
 
+@pytest.mark.parametrize("case,category", [
+    ("none", "no_address"), ("no-route", "no_address"), ("down", "no_address"),
+    ("loopback", "no_address"), ("two-routes", "multiple_addresses"),
+    ("two-same-source", "multiple_addresses"), ("missing-interface", "inventory"),
+    ("unassigned-source", "inventory"), ("duplicate-index", "inventory"),
+    ("bool-index", "inventory"), ("nonbool-up", "inventory"),
+    ("mutable-addresses", "inventory"), ("mutable-inventory", "inventory"),
+    ("foreign-record", "inventory"), ("bad-source-type", "inventory"),
+])
+def test_selector_inventory_refusals(case: str, category: str) -> None:
+    interfaces, routes = inventory()
+    if case == "none": interfaces, routes = (), ()
+    elif case == "no-route": routes = ()
+    elif case == "down": interfaces = (home.LANInterface(2, False, False, (IP,)),)
+    elif case == "loopback": interfaces = (home.LANInterface(2, True, True, (IP,)),)
+    elif case == "two-routes":
+        interfaces += (home.LANInterface(3, True, False, ("10.1.2.3",)),)
+        routes += (home.LANDefaultRoute(3, "10.1.2.3"),)
+    elif case == "two-same-source": routes += routes
+    elif case == "missing-interface": interfaces = ()
+    elif case == "unassigned-source": routes = (home.LANDefaultRoute(2, "10.1.2.3"),)
+    elif case == "duplicate-index": interfaces += interfaces
+    elif case == "bool-index": interfaces = (home.LANInterface(True, True, False, (IP,)),)
+    elif case == "nonbool-up": interfaces = (home.LANInterface(2, 1, False, (IP,)),)
+    elif case == "mutable-addresses": interfaces = (home.LANInterface(2, True, False, [IP]),)
+    elif case == "mutable-inventory": interfaces = list(interfaces)
+    elif case == "foreign-record": routes = ({"interface_index": 2, "source_ip": IP},)
+    elif case == "bad-source-type": routes = (home.LANDefaultRoute(2, True),)
+    with pytest.raises(home.HomeHeadscaleError) as error:
+        home.select_lan_dial_ip(interfaces, routes)
+    assert error.value.args == (category,)
+    assert error.value.__context__ is None and error.value.__cause__ is None
 
 
 @pytest.mark.parametrize("path", ["", "policy.hujson", "/tmp/policy.hujson", "/etc/happyranch/headscale/../policy.hujson",
@@ -172,15 +209,22 @@ def test_renderer_type_refusals(ip: object) -> None:
         assert error.value.args == ("dial_ip",)
 
 
-def test_one_rule_is_used_by_codec_and_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_rule_is_used_by_codec_and_selector(monkeypatch: pytest.MonkeyPatch) -> None:
     # Test-side interception of the shared existing rule. The observations are
-    # real renderer/encode/decode refusals, not a helper-call count.
-    assert config()["listen_addr"] == IP + ":8443"
+    # real selection/encode/decode refusals, not a helper-call count.
+    assert home.select_lan_dial_ip(*inventory()) == IP
     original = invite_v2.encode(**inputs()).invite_text
     monkeypatch.setattr(invite_v2, "_canonical_dial_ip", lambda _: False)
     with pytest.raises(home.HomeHeadscaleError, match="^dial_ip$"):
-        home.render_headscale_config(dial_ip=IP, policy_path=POLICY)
+        home.select_lan_dial_ip(*inventory())
     with pytest.raises(invite_v2.InviteError, match="^url$"):
         invite_v2.encode(**inputs())
     with pytest.raises(invite_v2.InviteError, match="^url$"):
         invite_v2.decode(original, now=NOW)
+
+
+def test_inventory_is_frozen() -> None:
+    interfaces, routes = inventory()
+    for record, name in ((interfaces[0], "up"), (routes[0], "source_ip")):
+        with pytest.raises(FrozenInstanceError):
+            setattr(record, name, None)

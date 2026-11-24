@@ -1,15 +1,5 @@
 # One-click remote access and one invite (THR-327)
 
-P24 source-status amendment: historical home Enable/READY/resume/local issuance
-and generated replacement algorithms below are retired with their uncalled
-owners. Protected legacy readers, selective retirement/Disable, pairing/device
-revoke and actual non-home renewal/locking remain. Current P24 upgrade/recovery
-behavior is maintained in the remote-access contract. The later THR-327
-replacement-reload/reset-failed continuation below is historical with that
-removed owner; its independent returned-worker settlement fix remains for
-Disable. Positive account-network
-access on main awaits P21–P23. This amendment grants no host or P25 UI change.
-
 Status: **design proposal; no implementation or host change authorized by this file**. TASK-16631,
 founder seq487. Baseline: `9a6844b61df3b64d3f6627e7b0e53c0872a3438f`. Authority: seq421 chose
 TASK-16298 revision 2's middle option: separate `happyranch` system user, system units and all

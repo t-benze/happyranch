@@ -538,7 +538,7 @@ strenum = getattr(enum, 'StrEnum', None)
 if sys.argv[2] == 'without-strenum' and hasattr(enum, 'StrEnum'):
     del enum.StrEnum
 source = root / 'runtime/remote_access'
-for name in ('status_v2', 'home_audit', 'legacy_home_readback', 'helper_generation',
+for name in ('status_v2', 'home_audit', 'home_activation', 'helper_generation',
              'helper_lifecycle', 'remote_access_helper', 'helper_control',
              'helper_owner', 'release_verifier'):
     path = source / (name + '.py')
@@ -571,13 +571,13 @@ else:
 if strenum is not None:
     enum.StrEnum = strenum
 sys.path.insert(0, str(root))
-activation = importlib.import_module('runtime.remote_access.legacy_home_readback')
+activation = importlib.import_module('runtime.remote_access.home_activation')
 if sys.argv[2] == 'without-strenum' and strenum is not None:
     del enum.StrEnum
 lifecycle = importlib.import_module('runtime.remote_access.helper_lifecycle')
 if strenum is not None:
     enum.StrEnum = strenum
-assert activation.LegacyHomeReadback is not None
+assert activation.HomeActivationStore is not None
 assert lifecycle.OperationBudget.status().remaining() > 0
 v2, audit = modules['status_v2'], modules['home_audit']
 vocabularies = [

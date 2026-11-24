@@ -1200,10 +1200,29 @@ class ConnectorSupervisor:
         self.manager.enable(self.config.unit_name)
 
     def _refuse_staged_identity(self, *, admit_home: bool = False, foreground: bool = False) -> None:
+        # Ordinary root lifecycle and fixed-user foreground serving have
+        # separate admission boundaries. Other home lifecycle stays deferred.
         if (sys.platform == "linux" and self.config.managed is not None
                 and self.config.managed.profile == LINUX_IDENTITY_PROFILE):
-            from runtime.remote_access.home_retirement import MESSAGE
-            raise ConnectorConfigError(MESSAGE)
+            if not (admit_home or foreground):
+                raise ConnectorConfigError("home control binding not provisioned; requires slice 3b-2")
+            from runtime.remote_access.home_admission import HomeProfileAdmission
+            from runtime.remote_access.installer import InstallerError, ManagedInstaller, UNITS
+            try:
+                if self._config_path != Path("/etc/happyranch/connector.json") or self.config.unit_name != UNITS[0]:
+                    raise InstallerError("home requires the fixed config and unit")
+                admission = HomeProfileAdmission(ManagedInstaller())
+                if foreground:
+                    admission.foreground(self.config)
+                else:
+                    admitted = admission.require()
+                    raw = admission.io._json(admitted.files["connector.json"])
+                    managed = raw.pop("managed")
+                    if ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed)) != self.config:
+                        raise InstallerError("home lifecycle config mismatch")
+                return
+            except Exception:
+                raise ConnectorConfigError("home control binding not provisioned; requires slice 3b-2") from None
         if sys.platform == "linux" and self.config.system and self.config.managed is not None:
             # A stopped failed-install replacement must not restart through the
             # alternate legacy lifecycle. Reuse the fixed installer's refusal

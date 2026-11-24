@@ -1,15 +1,5 @@
 # Replacement closure and returned workers
 
-P24 source-status amendment: the replacement journal replay/reset owner and its
-algorithm-specific tests are retired. Intent/Reload/Reset/Retire/Unlink/Crash
-and their production mappings below describe historical THR-327 behavior;
-ordinary current inventory refuses legacy transactions and requires absent units
-to be inactive. The independent returned-worker Lock/Unlock/Settle behavior
-remains current in `RemoteAccessHelper._run_lifecycle`, exercised through
-Disable by `test_thr327_returned_worker_does_not_seal_slot`. The historical
-model, configurations and recorded TLC results are preserved; this amendment
-claims no new TLC run or refinement proof.
-
 THR-327 / TASK-18883 companion for the existing replacement journal and helper
 slot. Both v1 and v2 start at staged or already-reloaded reload intent. Reload
 and reset can repeat after interruption; retirement requires inactive units.

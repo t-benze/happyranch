@@ -23,11 +23,28 @@ Font OFL originals remain beside the fonts in `web/dist/fonts`.
 target's actual module selection. `go-runtime/` retains the selected Go
 toolchain's originals and vendor notices.
 
-The local Headscale server and its CA/admin executables are retired under
-THR-378 P24. New payloads neither download that server nor build those commands;
-Headscale-only binary/toolchain notices are no longer generated. Retained
-sidecar and client dependencies continue to carry their original notices above.
-Historical asset pins remain source evidence for migration custody checks.
+Headscale v0.25.1 is shipped inert at `libexec/headscale/headscale`, outside
+`bin/`. Its BSD-3-Clause copyright, conditions and disclaimer are preserved
+byte-for-byte in `headscale-LICENSE` from the pinned tag:
+https://raw.githubusercontent.com/juanfont/headscale/v0.25.1/LICENSE
+`packaging/linux/headscale-pin.json` pins both official Linux release assets
+(amd64 and arm64) and their SHA-256 values, checked against upstream
+`checksums.txt` and independent downloads when the pin was introduced:
+https://github.com/juanfont/headscale/releases/tag/v0.25.1
+Builds verify the native asset before copying or inspecting it; they never
+execute Headscale. No service is installed, enabled or started by this payload.
+
+`headscale-modules.json` records Path, Version and Sum for the binary's exact
+linked dependency set from `go version -m`, rather than the tag's larger
+development/test graph. `headscale/modules/` retains those modules' original
+notices, downloaded through Go's public module proxy and checksum database,
+with sums also matched against the verified binary's embedded inventory.
+A missing original fails the build. `headscale-build-info.json` records the
+tag, release asset, SHA-256, embedded Go version (go1.23.4) and toolchain module
+identity/sum. `headscale/go-runtime/` contains that exact toolchain's original
+license and vendor notices, separately from the sidecar build toolchain.
+The .deb retains all these files both under the payload's `licenses/` and
+`/usr/share/doc/happyranch/licenses/`.
 
 These are dependency notice inputs for the later .deb release work. Signing
 and public distribution remain founder-owned steps.

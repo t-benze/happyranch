@@ -14,7 +14,7 @@ import stat
 from pathlib import Path
 from typing import Callable
 
-from runtime.remote_access import legacy_home_readback as activation
+from runtime.remote_access import home_activation as activation
 from runtime.remote_access import installer
 from runtime.remote_access.systemd_unit import render_headscale_unit
 
@@ -47,7 +47,7 @@ class HomeUnitGate:
                        (expected_home_id, expected_control_plane_id, expected_connector_id))):
             raise HomeUnitGateError()
         try:
-            self._store = activation.LegacyHomeReadback(root=root, root_owner=root_owner)
+            self._store = activation.HomeActivationStore(root=root, root_owner=root_owner)
         except activation.HomeActivationError:
             raise HomeUnitGateError() from None
         self._io = self._store._io
