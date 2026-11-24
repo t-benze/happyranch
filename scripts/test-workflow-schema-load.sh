@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 30)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 33)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -7682,6 +7682,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             f.operation_receipts[body['operation_key']+'-allow']=allowed.content
                     if launch:
                         from runtime.orchestrator.executor_binary_registry import set_binary, validate_binary
+                        # DaemonState normally attaches this same tracker at
+                        # startup. Direct OrgState fixture construction does not.
+                        f.org.orchestrator.attach_sessions(f.org.sessions)
                         # Provision the isolated registry; real resolution stays
                         # enabled and only _run_command is stubbed by C27.
                         binary = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'private-codex'
@@ -8586,15 +8589,13 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             assert dr_select(f,run_id)['terminal_outcome']=='cancelled'
             await dr_done(f)
 
-    async def dr_first_launch():
+    async def dr_first_launch(identity=DR_IDENTITY, *, successor=False, snapshot=None):
         from runtime.daemon.dispatcher import Dispatcher
         from runtime.daemon.state import DaemonState
         from runtime.orchestrator.executors import ExecutorResult
         from runtime.orchestrator.task_pause import discover_pause_work
-        async with dr_fixture(launch=True) as f:
-            runs = await dr_start(f)
-            snapshot = os.environ.get('WORKFLOW_QUEUED_DB')
-            replay = bool(snapshot and Path(snapshot).exists())
+        replay = bool(snapshot and Path(snapshot).exists())
+        async with dr_fixture(launch=True, configured=not replay) as f:
             if replay:
                 # A previous pre-fix invocation exports its actual refused DB.
                 # Restore only into this fresh private runtime, never a live DB.
@@ -8609,6 +8610,25 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 runs = [dict(r) for r in f.conn.execute('SELECT * FROM workflow_seq_runs')]
                 assert len(runs) == 1
                 f.ids = dr_ids(f, runs[0])
+            else:
+                runs = await dr_start(f, (identity,))
+                # The fixture's synthetic source closure has no native source
+                # preparation. Install its ordinary root control via the real
+                # store, as a genuinely prepared source session would have.
+                store = f.db._task_pause_store
+                with store.writer(f.source.id) as (root, _):
+                    store.ensure_uncommitted(root['id'])
+            assert json.loads(runs[0]['start_bytes'])['definition']['identity'] == identity
+            f.compiled = f.catalog[identity]
+            if successor:
+                from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+                from runtime.platform.macos_process_group import MacOSProcessGroupBackend
+                # Real private POSIX group/census teardown, not synthetic
+                # terminal/outer receipts. Only the provider boundary is stubbed.
+                f.org.orchestrator._host_supervisor = HostSessionSupervisor(
+                    backend=MacOSProcessGroupBackend(), policy=canary_policy(), publisher=lambda receipt: None)
+                (Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'private-codex').write_text(
+                    '#!/bin/sh\nexec /bin/sleep 30\n')
             task_id = f.ids.visit_task_id
             visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
             task = f.db.get_task(task_id)
@@ -8623,21 +8643,53 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text('Private synthetic initialized workspace.\n')
             observed = []
+            callbacks = []
+            loop = asyncio.get_running_loop()
             def subprocess(cmd, workspace, session_id, timeout_seconds, **kwargs):
                 run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                 bound = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
                 native = f.db.get_task(task_id)
                 assert (run['state'], run['progress'], bound['state'], bound['session_id'], native.status.value,
                         native.current_session_id) == ('running', 'executing', 'running', session_id, 'in_progress', session_id)
+                # An independent read-only connection proves COMMIT visibility,
+                # rather than merely observing the launch writer's own state.
+                database_path = f.conn.execute('PRAGMA database_list').fetchone()[2]
+                with closing(sqlite3.connect('file:' + database_path + '?mode=ro', uri=True)) as persisted:
+                    assert persisted.execute('SELECT state,progress FROM workflow_seq_runs WHERE id=?',
+                        (f.ids.run_id,)).fetchone() == ('running', 'executing')
+                    assert persisted.execute('SELECT state,session_id FROM workflow_seq_visits WHERE id=?',
+                        (f.ids.visit_id,)).fetchone() == ('running', session_id)
+                    assert persisted.execute('SELECT status,current_session_id FROM tasks WHERE id=?',
+                        (task_id,)).fetchone() == ('in_progress', session_id)
                 assert session_id and 'workflow-sequential-node-brief@2' in kwargs['input_text']
                 assert 'Private' in kwargs['input_text']
-                observed.append(session_id)
+                observed.append((task_id, session_id))
+                print('BOUNDARY launch COMMIT', identity, bound['node_id'], task_id,
+                      session_id, 'running/executing running/exact-SID in_progress/exact-SID rendered brief', flush=True)
+                if successor:
+                    content = (b'Private actual callback draft' if bound['node_id'] == 'draft' else
+                        b'{"evidence_limits":"private synthetic report","verdict":"reported"}')
+                    summary = s4bytes(dict(format='workflow-sequential-callback@2',
+                        outcome='produced' if bound['node_id'] == 'draft' else 'APPROVE',
+                        content_base64=base64.b64encode(content).decode('ascii'), findings=[])).decode()
+                    response = asyncio.run_coroutine_threadsafe(f.client.post(
+                        '/api/v1/orgs/scratch/tasks/' + task_id + '/completion', headers=f.auth,
+                        json=dict(session_id=session_id, agent=bound['principal'], status='completed',
+                            confidence=80, output_summary=summary)), loop).result(timeout=10)
+                    assert response.status_code == 200, response.text
+                    result = f.db.get_latest_task_result(task_id, bound['principal'], session_id)
+                    assert type(result['id']) is int
+                    callbacks.append(result['id'])
                 # Only the provider subprocess is stubbed. Real prompt, queue,
                 # dispatcher, workspace/skills, supervisor and COMMIT run above.
                 return ExecutorResult(success=True, duration_seconds=0, session_id=session_id, returncode=0)
             state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
             state.orgs['scratch'] = f.org
             try:
+                if snapshot and not replay:
+                    with closing(sqlite3.connect(snapshot)) as saved:
+                        f.conn.backup(saved)
+                    print('Exported already-admitted queued fixture', snapshot, flush=True)
                 if replay:
                     await discover_pause_work(f.org, f.queue)
                 else:
@@ -8654,18 +8706,106 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 with patch('runtime.orchestrator.executors._run_command', side_effect=subprocess), patch.object(
                         f.org.orchestrator, '_run_agent', side_effect=observe_run):
                     await f.queue._consume(Dispatcher(state), item)
+                    if successor:
+                        first_id, first_sid = observed[0]
+                        first = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                        assert first['state'] == 'completed' and first['result_id'] == callbacks[0], (
+                            first, returns, [dict(r) for r in f.conn.execute(
+                                'SELECT kind,evidence_bytes FROM workflow_seq_evidence WHERE visit_id=?', (first['id'],))],
+                            [dict(r) for r in f.conn.execute('SELECT kind,event_bytes FROM workflow_seq_events WHERE run_id=?', (runs[0]['id'],))])
+                        evidence = {r['kind']: json.loads(r['evidence_bytes']) for r in f.conn.execute(
+                            'SELECT kind,evidence_bytes FROM workflow_seq_evidence WHERE visit_id=?', (first['id'],))}
+                        terminal, outer = evidence['terminal'], evidence['outer']
+                        assert terminal['classification'] == 'success' and terminal['receipt']['quiescent'] is True
+                        assert outer['positive'] is True and outer['close_removed'] is True and outer['release_removed'] is True
+                        assert outer['invocation_id'] == terminal['invocation_id']
+                        assert terminal['callback']['result_id'] == outer['callback']['result_id'] == callbacks[0]
+                        assert terminal['session_id'] == outer['session_id'] == first_sid
+                        assert f.org.sessions.get_active(first_id, first['principal']) is None
+                        print('SETTLEMENT original invocation', terminal['invocation_id'], first_id, first_sid,
+                              'callback result', callbacks[0], 'terminal/outer positive close/release COMMIT', flush=True)
+                        run = dr_select(f, runs[0]['id'])
+                        second = s4row(f, 'workflow_seq_visits', run['active_visit_id'])
+                        task_id = second['task_id']
+                        assert first['node_id'] == 'draft' and second['node_id'] == 'review'
+                        assert task_id.startswith('TASK-SEQ-seq-visit-') and task_id != first_id
+                        assert (run['progress'], second['state'], second['session_id']) == ('queued', 'queued', None)
+                        assert s6queue(f) == [task_id], ('successor not published after original settlement', s6queue(f))
+                        workspace = f.root / 'workspaces' / second['principal']
+                        workspace.mkdir(parents=True, exist_ok=True)
+                        (workspace / 'AGENTS.md').write_text('Private synthetic review instructions.\n')
+                        (workspace / 'CLAUDE.md').symlink_to('AGENTS.md')
+                        marker = f.org.orchestrator._readiness_marker(workspace, 'codex')
+                        marker.parent.mkdir(parents=True, exist_ok=True)
+                        marker.write_text('Private synthetic initialized workspace.\n')
+                        item = f.queue._queue.get_nowait()
+                        f.queue._record_dequeue(item)
+                        await f.queue._consume(Dispatcher(state), item)
                 failures = [str(exc) for work in f.queue._native_work for exc in work.failures]
-                if snapshot and not replay:
+                if snapshot and not replay and not observed:
                     with closing(sqlite3.connect(snapshot)) as saved:
                         f.conn.backup(saved)
                     print('Exported pre-fix queued fixture', snapshot, failures, flush=True)
-                assert len(observed) == 1, ('first_launch: executor subprocess never reached', failures, returns,
+                assert len(observed) == (2 if successor else 1), ('first_launch: executor subprocess never reached', failures, returns,
                     f.db.get_task(task_id).note, [dict(r) for r in f.conn.execute(
                         'SELECT kind,evidence_bytes FROM workflow_seq_evidence WHERE visit_id=?', (f.ids.visit_id,))])
                 assert not failures, failures
                 assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_seq_settings ORDER BY id')) == settings
-                print('PASS first_launch', 'pre-fix persisted queue rediscovered without Save/Allow' if replay else 'fresh Start@2 queue',
-                      task_id, 'real dispatch/render/commit; one subprocess stub', flush=True)
+                print('PASS first_launch', identity, 'persisted queue rediscovered without Save/Allow' if replay else 'fresh Start@2 queue',
+                      task_id, 'real dispatch/render/commit; one subprocess stub',
+                      'genuine callback/original settlement/successor launch' if successor else '', flush=True)
+            finally:
+                state.metrics_store.close(); state.direct_connect_authority_store.close()
+
+    async def dr_coding_launch():
+        snapshot = os.environ.get('WORKFLOW_CODING_QUEUED_DB')
+        if snapshot:
+            await dr_first_launch('release/happyranch/coding', snapshot=snapshot)
+        else:
+            with tempfile.TemporaryDirectory(prefix='coding-queued-replay-') as scratch:
+                snapshot = str(Path(scratch) / 'queued.db')
+                await dr_first_launch('release/happyranch/coding', snapshot=snapshot)
+                await dr_first_launch('release/happyranch/coding', snapshot=snapshot)
+
+    async def dr_cancelled_launch():
+        from runtime.daemon.dispatcher import Dispatcher
+        from runtime.daemon.state import DaemonState
+        async with dr_fixture(launch=True) as f:
+            run = (await dr_start(f))[0]
+            task_id = f.ids.visit_task_id
+            f.dispatcher.notify_queued(task_id, f.queue)
+            assert s6queue(f) == [task_id]
+            item = f.queue._queue.get_nowait()
+            f.queue._record_dequeue(item)
+            # Cancel the admitted queued visit through its genuine initiator.
+            # The stale queue delivery survives; no preparation/SID has started.
+            await f.sid('private-cancelled-run')
+            await dr_post(f, dict(action='workflow_control', workflow=s4command(f, 'cancel')))
+            stopped = s4row(f, 'workflow_seq_runs', run['id'])
+            visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+            assert (stopped['state'], stopped['terminal_outcome'], stopped['progress'], stopped['active_visit_id']) == (
+                'finished', 'cancelled', None, None), stopped
+            assert visit['state'] == 'cancelled' and visit['session_id'] is None
+            # Consume only the already queued stale visit, not the initiator wake.
+            while not f.queue._queue.empty():
+                f.queue._record_dequeue(f.queue._queue.get_nowait())
+            before = dr_inventory(f)
+            state = DaemonState(runtime=RuntimeDir(f.root.parent.parent), settings=Settings())
+            state.orgs['scratch'] = f.org
+            try:
+                with patch('runtime.orchestrator.executors._run_command', side_effect=AssertionError('cancelled run launched provider')) as provider:
+                    assert not f.dispatcher.queue_admission_allowed(task_id), 'cancelled run admitted to queue'
+                    f.dispatcher.notify_queued(task_id, f.queue)
+                    assert not s6queue(f), 'cancelled run published extra work'
+                    await f.queue._consume(Dispatcher(state), item)
+                assert provider.call_count == 0
+                assert dr_inventory(f) == before, 'cancelled queue delivery changed persisted work/visits/tasks'
+                native = f.db.get_task(task_id)
+                assert native.current_session_id is None
+                assert s4row(f, 'workflow_seq_visits', f.ids.visit_id)['session_id'] is None
+                assert not f.queue._native_work and not f.dispatcher._queue_live
+                print('PASS cancelled_launch: persisted finished/cancelled; stale queued visit refused; '
+                      'no subprocess/SID bind/new work/visit/task', flush=True)
             finally:
                 state.metrics_store.close(); state.direct_connect_authority_store.close()
 
@@ -8765,11 +8905,17 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         for case in DRAFT_REVIEW_CASES:
             if draft_review_case in ('all',case):
                 if case == 'C27':
-                    asyncio.run(dr_first_launch())
+                    asyncio.run(dr_first_launch(snapshot=os.environ.get('WORKFLOW_QUEUED_DB')))
                 elif case == 'C28':
                     asyncio.run(dr_render_tuples())
                 elif case == 'C29':
                     asyncio.run(dr_scratch_ids())
+                elif case == 'C30':
+                    asyncio.run(dr_coding_launch())
+                elif case == 'C31':
+                    asyncio.run(dr_first_launch(successor=True))
+                elif case == 'C32':
+                    asyncio.run(dr_cancelled_launch())
                 else:
                     asyncio.run(dr_case(case))
                 print('PASS Draft',case,'private real released catalog/ASGI/native boundary; provider NOT RUN',flush=True)
