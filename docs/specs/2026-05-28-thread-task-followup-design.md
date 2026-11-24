@@ -64,7 +64,21 @@ Revisit roots (founder-initiated only since TASK-3604 removed daemon auto-revisi
 3. If `original.dispatched_from_thread_id is None` → no-op (not a thread-dispatched chain).
 4. `thread_id = original.dispatched_from_thread_id`; `original_task_id = original.id`.
 
-**Dispatcher identity** comes from the existing `task_dispatched` audit row, keyed by `original_task_id`. The dispatch route already writes `AuditLogger(db).log_thread_dispatch(thread_id, task_id, dispatcher, …)` (`threads.py:912`). The helper reads `dispatcher` out of that row. No new column on `tasks`.
+**Dispatcher identity** comes from the `thread_dispatch` audit row scoped to the thread (`audit_log.task_id = thread_id`), with `payload.task_id = original_task_id`. The helper reads `dispatcher` out of that row. No new column on `tasks`.
+
+Resolve-escalation supersede successors are new roots, not revisits. For a
+thread-linked successor, the resolver writes its own `thread_dispatch` row in
+the same transaction as successor creation and predecessor/family supersession.
+The payload is `{task_id, dispatcher, target_agent, team, superseded_task_id}`.
+The resolving invocation's agent (or the agent actor without an invocation) is
+the dispatcher. Founder break-glass instead inherits the predecessor's
+dispatcher by walking its ancestor root and revisit origin and finding the
+matching thread-scoped dispatch row. An unresolved dispatcher produces no row;
+`founder` is never recorded as dispatcher. Resolution replay adds no duplicate.
+This provenance row does not create an invocation dispatch binding or a
+`task_dispatched` SYSTEM message. Existing successor roots without a row remain
+unresolved: no supersession-link fallback, migration, backfill or startup scan
+is added. Posting remains driven by future escalation/terminal events.
 
 If the audit row is missing (shouldn't happen; defense-in-depth), write `thread_followup_skipped(reason=dispatcher_unresolved, task_id, thread_id)` and return.
 

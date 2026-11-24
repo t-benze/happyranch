@@ -1963,14 +1963,45 @@ async def resolve_escalation_in_process(
                             raise HTTPException(status_code=409, detail={"code": "task_not_supersedable"})
                         audit = AuditLogger(org.db)
                         successor_id = org.db.next_task_id()
-                        org.db._insert_task_uncommitted(TaskRecord(
+                        successor = TaskRecord(
                             id=successor_id,
                             brief=successor_brief,
                             team=task.team,
                             assigned_agent=task.assigned_agent,
                             parent_task_id=task.parent_task_id,
                             dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
-                        ))
+                        )
+                        org.db._insert_task_uncommitted(successor)
+                        if successor.dispatched_from_thread_id:
+                            # Resolution is not an invocation dispatch, but the
+                            # new root needs its own followup dispatcher provenance.
+                            dispatcher = thread_invocation.agent_name if thread_invocation is not None else actor
+                            if dispatcher == "founder":
+                                # Match escalation posting: ancestor root, then
+                                # revisit origin, then its thread-scoped audit row.
+                                from runtime.infrastructure.database import LineageTooDeep
+                                dispatcher = None
+                                try:
+                                    ancestors = org.db.walk_ancestors(task.id, max_hops=200)
+                                except LineageTooDeep:
+                                    ancestors = []
+                                if ancestors:
+                                    chain = org.db.walk_revisit_chain(ancestors[-1].id, max_hops=200, truncate=True)
+                                    original = chain[-1] if chain else ancestors[-1]
+                                    if original.dispatched_from_thread_id == successor.dispatched_from_thread_id:
+                                        rows = [r for r in org.db.get_audit_logs(successor.dispatched_from_thread_id)
+                                                if r["action"] == "thread_dispatch"
+                                                and r["payload"].get("task_id") == original.id]
+                                        if rows:
+                                            dispatcher = rows[0]["payload"].get("dispatcher")
+                            if dispatcher and dispatcher != "founder":
+                                org.db.insert_audit_log_uncommitted(
+                                    task_id=successor.dispatched_from_thread_id,
+                                    agent=dispatcher, action="thread_dispatch",
+                                    payload={"task_id": successor_id, "dispatcher": dispatcher,
+                                             "target_agent": successor.assigned_agent, "team": successor.team,
+                                             "superseded_task_id": task.id},
+                                )
                         note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
                         if trimmed:
                             note_suffix += f" — {trimmed}"

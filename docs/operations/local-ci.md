@@ -1,5 +1,16 @@
 # Local CI
 
+## Focused supersede dispatcher provenance (GH-1852)
+
+`uv run --frozen pytest scripts/test_thread_supersede_dispatcher.py -v --tb=short`
+uses the existing synthetic-org ASGI/SQLite fixture without lifespan, listener,
+provider or live org. It checks resolve-escalation successor dispatcher rows,
+escalation/terminal SYSTEM messages and queued dispatcher invocations, chained
+supersession/replay, Founder inheritance/unresolved behavior, transaction
+rollback and historical-task silence during queue attachment/new events. It is
+outside retired Python units and skipped general integration, and adds no CI
+trigger or required check.
+
 ## Draft → Review released-bundle cases (THR-336 R2 unit c)
 
 Use the existing private schema-shell venue:
