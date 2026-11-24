@@ -42,6 +42,12 @@ Initial installer unit/invite publication writers are removed. The retained
 Disable/post-disable inventory keeper now starts from neutral historical files,
 observes real cleanup and preserves custody refusal without re-publication.
 This removes forward implementation without adding a model transition.
+Programmatic Headscale preparation, issuer-directory creation and initial
+CA handoff/empty-CA publication are also removed. Their surviving custody and
+cleanup cases now use neutral historical inputs and actual retained cleanup or
+protected readback; they do not recreate authority to test retirement. The
+materializer status executor remains until its existing forward activation
+consumer is retired. This source disposition adds no model action or TLC result.
 
 ## Incremental implementation records
 

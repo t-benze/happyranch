@@ -19,7 +19,6 @@ import math
 import os
 import pwd
 import re
-import ssl
 import stat
 import sys
 import uuid
@@ -1760,7 +1759,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 except FileNotFoundError:
                     return None
             raise headscale.HeadscaleServiceError("materializer-uncertain") from None
-
     def _headscale_materializer(self, verb: str) -> dict:
         # Trusted fixed package executable, never PATH or caller-supplied argv.
         binary = Path(headscale.MATERIALIZER)
@@ -1786,54 +1784,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 raise headscale.HeadscaleServiceError("materializer-uncertain")
             datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
         return result
-
-    def _headscale_handoff(self, publication: dict | None) -> tuple[dict[str, bytes], bool]:
-        """Materializer owns certificate/key validation; bind its public status."""
-        try:
-            sources = self._headscale_ca_sources()
-            if publication and "directories" in publication:
-                bindings = {"ca.pem": "/" + headscale.CONTROL_CA,
-                            "leaf.pem": f"/{headscale.CUSTODY[0]}/server.crt",
-                            "leaf.key": f"/{headscale.CUSTODY[0]}/server.key"}
-                if sources is None or any(name not in sources or hashlib.sha256(sources[name]).hexdigest()
-                                          != publication["files"][path] for name, path in bindings.items()):
-                    raise ValueError
-            status = self._headscale_materializer("status" if sources is not None else "ensure")
-            if sources is not None:
-                ca = sources["ca.pem"].decode("ascii")
-                der = ssl.PEM_cert_to_DER_cert(ca)
-                if (ssl.DER_cert_to_PEM_cert(der) != ca
-                        or hashlib.sha256(der).hexdigest() != status["ca_fingerprint"]):
-                    raise ValueError
-            renewing = sources is not None and status["renewal_due"]
-            before = status
-            if sources is not None and (renewing or not publication or "directories" not in publication):
-                status = self._headscale_materializer("renew-leaf" if renewing else "ensure")
-                if (status["ca_fingerprint"], status["ca_not_after"]) != (
-                        before["ca_fingerprint"], before["ca_not_after"]):
-                    raise ValueError
-            sources = self._headscale_ca_sources()
-            if sources is None or status["renewal_due"] or not status["leaf_not_after"]:
-                raise ValueError
-            ca = sources["ca.pem"].decode("ascii")
-            der = ssl.PEM_cert_to_DER_cert(ca)
-            if (ssl.DER_cert_to_PEM_cert(der) != ca
-                    or hashlib.sha256(der).hexdigest() != status["ca_fingerprint"]):
-                raise ValueError
-            if self._headscale_materializer("status") != status or self._headscale_ca_sources() != sources:
-                raise ValueError
-            files = {f"/{headscale.CUSTODY[0]}/server.crt": sources["leaf.pem"],
-                     f"/{headscale.CUSTODY[0]}/server.key": sources["leaf.key"],
-                     "/" + headscale.CONTROL_CA: sources["ca.pem"]}
-            if publication and "directories" in publication:
-                unchanged = ("/" + headscale.CONTROL_CA,) if renewing else tuple(files)
-                if any(hashlib.sha256(files[path]).hexdigest() != publication["files"][path] for path in unchanged):
-                    raise ValueError
-            return files, renewing
-        except (OSError, InstallerError, KeyError, UnicodeError, ValueError):
-            pass
-        raise headscale.HeadscaleServiceError("materializer-uncertain")
-
     @staticmethod
     def _headscale_config(dial_ip: str) -> dict[str, bytes]:
         return {
@@ -2066,41 +2016,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                     or (self._headscale_owner is not None and self._headscale_owner[0] in map(int, fields))):
                 raise headscale.HeadscaleServiceError("cleanup-uncertain")
 
-
-    def _prepare_issuer(self) -> None:
-        receipt, present = self._issuer_inventory()
-        if not present:
-            with self._publication_parent(headscale.INSTALLER_STATE) as (parent, revalidate):
-                self._refuse_provision_entry(parent, "home-issuer")
-                os.mkdir(".home-issuer.pending", mode=0o700, dir_fd=parent)
-                fd = os.open(".home-issuer.pending", _DIR_FLAGS, dir_fd=parent)
-                try:
-                    os.fchown(fd, *self.root_owner)
-                    os.fchmod(fd, 0o700)
-                    os.fsync(fd)
-                    info = os.fstat(fd)
-                    self._check_directory(fd, HOME_ISSUER, (0o700, self.root_owner))
-                    if (os.stat(".home-issuer.pending", dir_fd=parent, follow_symlinks=False) != info
-                            or info.st_nlink != 2 or os.listdir(fd)):
-                        raise InstallerError("issuer pending changed")
-                    revalidate()
-                    self._rename_provision_entry(parent, ".home-issuer.pending", "home-issuer")
-                    os.fsync(parent)
-                finally:
-                    os.close(fd)
-        with self._publication_parent(HOME_ISSUER) as (directory, revalidate):
-            info = os.fstat(directory)
-            record = dict(version=1, directory="/" + HOME_ISSUER, uid=self.root_owner[0],
-                          gid=self.root_owner[1], device=info.st_dev, inode=info.st_ino)
-            self._issuer_members(directory)
-            revalidate()
-            if receipt is None:
-                self._write_provision_file(_ISSUER_RECEIPT, json.dumps(record, sort_keys=True).encode(),
-                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
-            elif receipt != record:
-                raise InstallerError("issuer receipt changed")
-            revalidate()
-            self._issuer_inventory()
 
     def _cleanup_issuer(self, *, db_retired: bool = False) -> None:
         partial = False
@@ -2909,163 +2824,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 os.unlink(name, dir_fd=parent)
             os.fsync(parent)
 
-    def _headscale_publish_empty_ca(self) -> None:
-        path = Path(headscale.EMPTY_CA)
-        with self._publication_parent(str(path.parent)) as (parent, revalidate):
-            self._refuse_provision_entry(parent, path.name)
-            pending = "." + path.name + ".pending"
-            os.mkdir(pending, mode=0o700, dir_fd=parent)
-            descriptor = os.open(pending, _DIR_FLAGS, dir_fd=parent)
-            try:
-                os.fchown(descriptor, *self.root_owner)
-                os.fchmod(descriptor, 0o755)
-                os.fsync(descriptor)
-                named, info = os.stat(pending, dir_fd=parent, follow_symlinks=False), os.fstat(descriptor)
-                if ((named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
-                        or (info.st_uid, info.st_gid, info.st_mode, info.st_nlink) !=
-                        (*self.root_owner, stat.S_IFDIR | 0o755, 2) or os.listdir(descriptor)):
-                    raise headscale.HeadscaleServiceError("publication-uncertain")
-                revalidate()
-                self._rename_provision_entry(parent, pending, path.name)
-                os.fsync(parent)
-            finally:
-                os.close(descriptor)
-
-    def prepare_headscale(self) -> dict[str, str]:
-        """Explicit inert root-step, separate from all connector activation.
-
-        Never runs Headscale or a service command. Existing accounts are never
-        modified or adopted; cleanup separately proves deletion authority.
-        """
-        if self.layout != "deb":
-            raise headscale.HeadscaleServiceError("deb-layout-required")
-        self._headscale_preparing = True
-        category = None
-        try:
-            try:
-                self._issuer_inventory()
-            except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
-                raise headscale.HeadscaleServiceError("issuer-state-uncertain") from None
-            self._headscale_owner = self._headscale_shape()
-            receipt = self._headscale_receipt()
-            if receipt and self._headscale_owner != (receipt["uid"], receipt["gid"]):
-                raise headscale.HeadscaleServiceError("account-receipt-uncertain")
-            self._headscale_inventory()
-            dial_ip = home_headscale.select_lan_dial_ip(*headscale.collect_lan_inventory())
-            publication = self._headscale_publication()
-            if publication and publication["dial_ip"] != dial_ip:
-                raise headscale.HeadscaleServiceError("address-changed")
-            headscale.preflight_ports(dial_ip)
-            outcome = "owned" if receipt else "unowned"
-            if self._headscale_owner is None:
-                try:
-                    self._lookup_group(headscale.ACCOUNT)
-                except KeyError:
-                    pass
-                else:
-                    raise headscale.HeadscaleServiceError("account-shape")
-                with self._directory(headscale.INSTALLER_STATE, create=True):
-                    pass
-                # No pre-useradd intent. A crash before receipt publication leaves
-                # an unowned account, never later adoption/deletion authority.
-                code, _ = self._run([
-                    "useradd", "--system", "--user-group", "--no-create-home",
-                    "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", headscale.ACCOUNT,
-                ], timeout=30.0)
-                if code:
-                    raise headscale.HeadscaleServiceError("account-create-uncertain")
-                self._headscale_owner = self._headscale_shape()
-                if self._headscale_owner is None:
-                    raise headscale.HeadscaleServiceError("account-create-uncertain")
-                uid, gid = self._headscale_owner
-                record = dict(version=1, account=headscale.ACCOUNT, uid=uid, gid=gid, group_created_with_user=True)
-                self._write_provision_file(headscale.RECEIPT, json.dumps(record, sort_keys=True).encode(),
-                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
-                outcome = "created"
-            # No running process may use this UID while we publish service
-            # custody. This observes only; preparation never stops a service.
-            self._headscale_stopped()
-            with self._directory(headscale.INSTALLER_STATE, create=True):
-                pass
-            # systemd creates state/runtime custody at first start. Only /etc
-            # needs pre-start writes; absent service directories stay absent.
-            with self._directory(headscale.CUSTODY[0], create=True):
-                pass
-            for relative, name, data, owner, mode in (
-                (headscale.CUSTODY[0], "policy.hujson", headscale.render_policy(), self._headscale_owner, 0o600),
-                (_UNIT_DIR, headscale.UNIT, render_headscale_unit().encode(), self.root_owner, 0o644),
-            ):
-                with self._directory(relative, create=True) as parent:
-                    try:
-                        existing = self._read_file(parent, name, owner=owner, mode=mode)
-                    except FileNotFoundError:
-                        existing = None
-                    if existing is not None and existing != data:
-                        raise headscale.HeadscaleServiceError("foreign-custody")
-                if existing is None:
-                    self._write_provision_file(name, data, owner, mode, relative=relative)
-            handoff, renewing = self._headscale_handoff(publication)
-            extended = publication is not None and "directories" in publication
-            if publication is None or not extended or renewing:
-                removed: tuple[str, ...] = ()
-                if publication:
-                    if renewing and extended:
-                        for name in ("server.key", "server.crt"):
-                            self._headscale_stopped()
-                            self._headscale_inventory(removed)
-                            if self._headscale_publication(removed) != publication:
-                                raise headscale.HeadscaleServiceError("publication-uncertain")
-                            self._headscale_remove_member(publication, name)
-                            removed += (name,)
-                    self._headscale_stopped()
-                    self._headscale_inventory(removed)
-                    if self._headscale_publication(removed) != publication:
-                        raise headscale.HeadscaleServiceError("publication-uncertain")
-                    with self._publication_parent(headscale.INSTALLER_STATE) as (parent, revalidate):
-                        if self._json(self._read_file(parent, headscale.PUBLICATION,
-                                                      owner=self.root_owner, mode=0o600)) != publication:
-                            raise headscale.HeadscaleServiceError("publication-uncertain")
-                        revalidate()
-                        os.unlink(headscale.PUBLICATION, dir_fd=parent)
-                        os.fsync(parent)
-                files = {f"/{headscale.CUSTODY[0]}/{name}": data
-                         for name, data in self._headscale_config(dial_ip).items()} | handoff
-                members = self._headscale_members()
-                # Key is durable before cert; no published certificate precedes its key.
-                order = (*headscale.CONFIG_FILES, "server.key", "server.crt", "control-ca.pem")
-                for name in order:
-                    path = next(path for path in files if Path(path).name == name)
-                    if publication and path in publication["files"] and name not in removed:
-                        continue
-                    self._headscale_stopped()
-                    self._write_provision_file(name, files[path], *members[path],
-                                               relative=str(Path(path.lstrip("/")).parent))
-                if not extended:
-                    self._headscale_publish_empty_ca()
-                uid, gid = self._headscale_owner
-                record = dict(version=1, uid=uid, gid=gid, dial_ip=dial_ip,
-                              files={path: hashlib.sha256(data).hexdigest() for path, data in files.items()},
-                              directories=["/" + headscale.EMPTY_CA])
-                self._headscale_stopped()
-                self._write_provision_file(headscale.PUBLICATION, json.dumps(record, sort_keys=True).encode(),
-                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
-            self._headscale_inventory()
-            try:
-                self._prepare_issuer()
-            except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
-                raise headscale.HeadscaleServiceError("issuer-state-uncertain") from None
-            return {"state": "inert", "account": outcome,
-                    "preservation": "preserved: not created by HappyRanch" if outcome == "unowned" else "receipt-recorded"}
-        except headscale.HeadscaleServiceError as error:
-            category = error.category
-        except home_headscale.HomeHeadscaleError as error:
-            category = str(error)
-        except (OSError, InstallerError, KeyError, UnicodeError, ValueError, ServiceManagerError):
-            category = "custody-uncertain"
-        finally:
-            self._headscale_preparing = False
-        # Leave native handlers before raising; no raw output/error context.
-        raise headscale.HeadscaleServiceError(category)
 
     def _layout(self) -> dict[str, tuple[int, tuple[int, int] | None]]:
         paths = ("opt/happyranch", "opt/happyranch/bin") if self.layout == "source" else ()

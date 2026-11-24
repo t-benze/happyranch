@@ -1,4 +1,4 @@
-"""Standalone inert preparation/cleanup; temp root and fake commands, never host effects.
+"""Standalone historical cleanup/readback; temp root and fake commands, never host effects.
 
 Run: uv run --frozen --python /usr/bin/python3 pytest scripts/test_headscale_custody.py -v --tb=short
 """
@@ -92,16 +92,12 @@ StandardError=null
 
 
 class Fixture(LegacyNativeFixture):
-    def prepare(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> tuple[int, str]:
-        return self.cleanup(monkeypatch, capsys, "prepare-headscale")
-
     def cleanup(self, monkeypatch, capsys, command="disable-headscale"):
-        # Ordinary home CLI entries are retired. Keep these existing owner-level
-        # custody assertions until those owners receive their P24 disposition.
-        if command in ("prepare-headscale", "disable-headscale"):
+        # Ordinary home CLI entries are retired; exercise the retained cleanup
+        # owner against neutral historical files, never create a new home.
+        if command == "disable-headscale":
             try:
-                result = (self.installer.prepare_headscale() if command == "prepare-headscale"
-                          else self.installer.cleanup_headscale())
+                result = self.installer.cleanup_headscale()
             except (module.InstallerError, home.HeadscaleServiceError) as error:
                 return 1, f"error: {error}\n"
             return 0, json.dumps(result, sort_keys=True) + "\n"
@@ -143,65 +139,11 @@ def issuer_journal(path: Path, outcome: str = "issued") -> None:
     (path / "invite-issuer.json").chmod(0o600)
 
 
-@pytest.mark.parametrize("existing", [False, True])
-def test_issuer_prepare_receipts_exact_directory(fixture, monkeypatch, capsys, existing) -> None:
-    path = fixture.root / ISSUER
-    if existing:
-        path.parent.mkdir(parents=True, mode=0o700)
-        path.mkdir(mode=0o700)
-        (fixture.root / "var").chmod(0o755)
-        (fixture.root / "var/lib").chmod(0o755)
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 0, output
-    assert path.is_dir(), "prepare must publish the protected issuer directory"
-    info = path.stat()
-    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
-    receipt = path.parent / ISSUER_RECEIPT
-    assert json.loads(receipt.read_bytes()) == dict(version=1, directory="/" + ISSUER,
-        uid=fixture.uid, gid=fixture.gid, device=info.st_dev, inode=info.st_ino)
-    assert receipt.stat().st_mode & 0o777 == 0o600
-    before = receipt.read_bytes()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert receipt.read_bytes() == before
-    assert not any(call[:2] in (["systemctl", "start"], ["systemctl", "enable"],
-                                ["systemctl", "daemon-reload"]) for call in fixture.calls)
-
-
-@pytest.mark.parametrize("entry", ["symlink", "fifo", "file", "mode", "owner", "parent-link", "pending", "foreign"])
-def test_issuer_prepare_refuses_unsafe_without_repair(fixture, monkeypatch, capsys, entry) -> None:
-    path = fixture.root / ISSUER
-    path.parent.mkdir(parents=True, mode=0o700)
-    (fixture.root / "var").chmod(0o755)
-    (fixture.root / "var/lib").chmod(0o755)
-    if entry == "symlink":
-        target = fixture.root / "foreign-issuer"
-        target.mkdir(mode=0o700)
-        path.symlink_to(target)
-    elif entry == "fifo": os.mkfifo(path, 0o600)
-    elif entry == "file": path.write_bytes(b"foreign")
-    else:
-        path.mkdir(mode=0o755 if entry == "mode" else 0o700)
-        if entry == "owner":
-            foreign_metadata(monkeypatch, path)
-        if entry == "parent-link":
-            target = path.parent.with_name("redirected-state")
-            path.parent.rename(target)
-            path.parent.symlink_to(target)
-        if entry == "pending": (path.parent / ".home-issuer.pending").mkdir(mode=0o700)
-        if entry == "foreign": (path / "foreign").write_bytes(b"keep")
-    mode = path.lstat().st_mode
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "issuer-state-uncertain" in output
-    assert path.lstat().st_mode == mode
-    assert not (path.parent / ISSUER_RECEIPT).exists()
-    assert fixture.calls == []
-
-
 @pytest.mark.parametrize("name", [".home-issuer.pending", ".home-issuer-publication.json.pending",
     "home-issuer/invite-issuer.pending", "home-issuer/invite-issuer.cleanup.pending"])
 @pytest.mark.parametrize("kind", ["file", "directory", "symlink", "hardlink", "fifo"])
 def test_issuer_pending_residue_is_never_repaired(fixture, monkeypatch, capsys, name, kind) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / home.INSTALLER_STATE / name
     if kind == "directory": path.mkdir(mode=0o700)
     elif kind == "symlink": path.symlink_to(path.with_name("absent-target"))
@@ -210,14 +152,13 @@ def test_issuer_pending_residue_is_never_repaired(fixture, monkeypatch, capsys, 
     else: path.write_bytes(b"synthetic pending")
     before = path.lstat()
     fixture.calls.clear()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
     assert fixture.cleanup(monkeypatch, capsys)[0] == 1
     assert path.lstat() == before and fixture.calls == []
 
 
 @pytest.mark.parametrize("outcome", [None, "issued", "refused", "expired", "encoding", "pairing", "recovered"])
 def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypatch, capsys, outcome) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / ISSUER
     if outcome: issuer_journal(path, outcome)
     minter = path.parent / "home-minter"
@@ -231,10 +172,6 @@ def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypat
     assert receipt.read_bytes() == before
     assert (minter / "keep").read_bytes() == b"operation fence"
     assert (path.parent / "home-ca/ca.key").read_bytes() == b"synthetic CA private key"
-    fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "issuer-state-uncertain" in output
-    assert not path.exists() and fixture.calls == []
 
 
 @pytest.mark.parametrize("tamper", ["minting", "uncertain", "pending", "foreign", "edited", "mode", "owner",
@@ -242,10 +179,9 @@ def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypat
     "receipt-hardlink", "receipt-symlink", "receipt-mode", "receipt-fifo", "receipt-owner", "receipt-missing",
     "lock-symlink", "lock-hardlink", "lock-mode", "lock-fifo", "lock-owner", "directory-swap",
     "oversized-not-before", "oversized-expires-at", "negative-oversized-not-before", "negative-oversized-expires-at"])
-@pytest.mark.parametrize("command", ["prepare-headscale", "disable-headscale"])
-def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper, command) -> None:
+def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper) -> None:
     import fcntl
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / ISSUER
     issuer_journal(path, tamper if tamper in {"minting", "uncertain"} else "issued")
     journal = path / "invite-issuer.json"
@@ -298,14 +234,13 @@ def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch
     contents = {p.name: p.read_bytes() for p in path.iterdir()} if "oversized" in tamper else None
     fixture.calls.clear()
     try:
-        code, output = fixture.cleanup(monkeypatch, capsys, command)
-        category = "issuer-state-uncertain" if command == "prepare-headscale" else "issuer-cleanup-uncertain"
+        code, output = fixture.cleanup(monkeypatch, capsys)
+        category = "issuer-cleanup-uncertain"
         assert code == 1 and category in output
         assert "Traceback" not in output and "OverflowError" not in output
         assert str(10 ** 400) not in output
         with pytest.raises(home.HeadscaleServiceError) as caught:
-            if command == "prepare-headscale": fixture.installer.prepare_headscale()
-            else: fixture.installer.cleanup_headscale()
+            fixture.installer.cleanup_headscale()
         assert str(caught.value) == category
         assert caught.value.__cause__ is None and caught.value.__context__ is None
     finally:
@@ -315,36 +250,8 @@ def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch
     assert fixture.calls == []
 
 
-@pytest.mark.parametrize("boundary", ["directory-pending", "directory-published", "receipt-pending", "receipt-published"])
-def test_issuer_publication_crash_and_retry_preserves_residue(fixture, monkeypatch, capsys, boundary) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    path = fixture.root / ISSUER
-    path.rmdir()
-    (path.parent / ISSUER_RECEIPT).unlink()
-    original = fixture.installer._rename_provision_entry
-    pid = os.fork()
-    if pid == 0:
-        def crash(parent, source, target, **kwargs):
-            selected = target == ("home-issuer" if boundary.startswith("directory") else ISSUER_RECEIPT)
-            if selected and boundary.endswith("pending"): os._exit(73)
-            original(parent, source, target, **kwargs)
-            if selected: os._exit(73)
-        fixture.installer._rename_provision_entry = crash
-        fixture.installer.prepare_headscale()
-        os._exit(74)
-    assert os.waitpid(pid, 0)[1] == 73 << 8
-    if boundary.endswith("pending"):
-        pending = ".home-issuer.pending" if boundary.startswith("directory") else "." + ISSUER_RECEIPT + ".pending"
-        before = (path.parent / pending).lstat()
-        assert fixture.prepare(monkeypatch, capsys)[0] == 1
-        assert (path.parent / pending).lstat().st_ino == before.st_ino
-    else:
-        assert path.is_dir()
-        assert fixture.prepare(monkeypatch, capsys)[0] == 0
-
-
 def test_issuer_partial_cleanup_preserves_pending_on_retry(fixture, monkeypatch, capsys) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / ISSUER
     issuer_journal(path)
     original = os.unlink
@@ -359,42 +266,10 @@ def test_issuer_partial_cleanup_preserves_pending_on_retry(fixture, monkeypatch,
     assert fixture.cleanup(monkeypatch, capsys)[0] == 1
 
 
-def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) -> None:
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 0, output
-    assert json.loads(output) == {"state": "inert", "account": "created", "preservation": "receipt-recorded"}
-    assert json.loads(fixture.receipt().read_bytes()) == {
-        "version": 1, "account": "happyranch-headscale", "uid": fixture.uid, "gid": fixture.gid,
-        "group_created_with_user": True}
-    assert fixture.receipt().stat().st_mode & 0o777 == 0o600
-    assert fixture.receipt().parent.stat().st_mode & 0o777 == 0o700
-    info = (fixture.root / "etc/happyranch/headscale").stat()
-    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
-    assert not (fixture.root / "var/lib/happyranch-headscale").exists()
-    assert not (fixture.root / "run/happyranch-headscale").exists()
-    policy = fixture.root / "etc/happyranch/headscale/policy.hujson"
-    assert policy.read_bytes() == EXPECTED_POLICY
-    assert policy.stat().st_mode & 0o777 == 0o600
-    unit = fixture.root / "etc/systemd/system/happyranch-headscale.service"
-    assert unit.read_bytes() == EXPECTED_UNIT.encode()
-    assert unit.stat().st_mode & 0o777 == 0o644
-    assert [args[0] for args in fixture.calls].count("useradd") == 1
-    assert set(args[0] for args in fixture.calls) == {"useradd", "getent", "passwd", "systemctl", "ps", MATERIALIZER}
-    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
-    assert sorted(p.name for p in policy.parent.iterdir()) == ["config.yaml", "derp.yaml", "policy.hujson", "server.crt", "server.key"]
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert [args[0] for args in fixture.calls].count("useradd") == 1
-
-
 def test_expected_account_without_receipt_is_unowned(fixture, monkeypatch, capsys) -> None:
-    fixture.present = fixture.group_present = True
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 0, output
-    assert json.loads(output)["account"] == "unowned"
-    assert json.loads(output)["preservation"] == "preserved: not created by HappyRanch"
-    assert not fixture.receipt().exists()
-    assert all(args[0] in {"getent", "passwd", "systemctl", "ps", MATERIALIZER} for args in fixture.calls)
-    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
+    fixture.seed_prepared_history()
+    fixture.receipt().unlink()
+    fixture.calls.clear()
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 0 and json.loads(output) == {
         "state": "preserved", "account": "preserved: not created by HappyRanch", "home_ca": "preserved"}
@@ -402,27 +277,9 @@ def test_expected_account_without_receipt_is_unowned(fixture, monkeypatch, capsy
     assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("shape", ["uid", "gid", "shell", "home", "members", "primary", "password", "group-only"])
-def test_account_shape_refuses_before_effects(fixture, monkeypatch, capsys, shape) -> None:
-    fixture.present = fixture.group_present = True
-    if shape == "uid": fixture.user.pw_uid = fixture.uid + 10
-    if shape == "gid": fixture.group.gr_gid = fixture.gid + 10
-    if shape == "shell": fixture.user.pw_shell = "/bin/bash"
-    if shape == "home": fixture.user.pw_dir = "/missing-home"
-    if shape == "members": fixture.group.gr_mem = ["other"]
-    if shape == "primary": fixture.shared = True
-    if shape == "password": fixture.locked = False
-    if shape == "group-only": fixture.present = False
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "account-shape" in output
-    assert not fixture.receipt().exists()
-    assert not (fixture.root / "etc/happyranch").exists()
-    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
-
-
 @pytest.mark.parametrize("tamper", ["uid", "gid", "account", "bool-id", "extra", "malformed", "mode", "symlink", "pending"])
 def test_receipt_tamper_preserves_account_and_receipt(fixture, monkeypatch, capsys, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     receipt = fixture.receipt()
     value = json.loads(receipt.read_bytes())
     if tamper in {"uid", "gid"}: value[tamper] += 1
@@ -437,36 +294,10 @@ def test_receipt_tamper_preserves_account_and_receipt(fixture, monkeypatch, caps
     if tamper == "pending": receipt.with_name(".headscale-account.json.pending").write_text("residue")
     before = receipt.read_bytes()
     fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and ("account-receipt-uncertain" in output or "custody-uncertain" in output)
-    assert "synthetic private diagnostic" not in output
-    assert fixture.present and fixture.group_present
-    assert receipt.read_bytes() == before
-    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert "synthetic private diagnostic" not in output
     assert fixture.present and fixture.group_present and receipt.read_bytes() == before
-    assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
-
-
-def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> None:
-    with monkeypatch.context() as patch:
-        def crash(*args, **kwargs):
-            raise OSError("synthetic private diagnostic")
-        patch.setattr(fixture.installer, "_write_provision_file", crash)
-        code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "custody-uncertain" in output
-    assert fixture.present and not fixture.receipt().exists()
-    fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 0 and json.loads(output)["account"] == "unowned"
-    assert not fixture.receipt().exists()
-    assert all(args[0] in {"getent", "passwd", "systemctl", "ps", MATERIALIZER} for args in fixture.calls)
-    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
-    code, output = fixture.cleanup(monkeypatch, capsys)
-    assert code == 0 and json.loads(output)["account"] == "preserved: not created by HappyRanch"
-    assert fixture.present and fixture.group_present and not fixture.receipt().exists()
     assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
@@ -510,7 +341,7 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     if entry.startswith("activation:"):
         _, path, kind, account = entry.split(":")
         if account == "owned":
-            assert fixture.prepare(monkeypatch, capsys)[0] == 0
+            fixture.seed_prepared_history()
         elif account == "unowned":
             fixture.present = fixture.group_present = True
         parent = fixture.root / path
@@ -582,7 +413,7 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     elif entry.startswith("load:"):
         _, path, kind, account = entry.split(":")
         if account == "owned":
-            assert fixture.prepare(monkeypatch, capsys)[0] == 0
+            fixture.seed_prepared_history()
         elif account == "unowned":
             fixture.present = fixture.group_present = True
         foreign = fixture.root / path / (home.UNIT + (".d" if kind.startswith("dropin") else ""))
@@ -598,7 +429,7 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
             # Even identical bytes at an alternate location confer no ownership.
             foreign.write_bytes(EXPECTED_UNIT.encode())
     else:
-        assert fixture.prepare(monkeypatch, capsys)[0] == 0
+        fixture.seed_prepared_history()
     folder = fixture.root / "etc/happyranch/headscale"
     if entry == "unknown": (folder / "unknown").write_bytes(b"foreign")
     if entry == "policy": (folder / "policy.hujson").write_bytes(b"foreign")
@@ -627,31 +458,16 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     contents = snapshot()
     before = sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*"))
     fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
     if entry.startswith("activation:") and kind == "unrelated":
+        code, output = fixture.cleanup(monkeypatch, capsys)
         assert code == 0, output
-        assert json.loads(output)["state"] == "inert"
-        after = snapshot()
-        # Successful preparation may add child directories (changing st_nlink).
-        assert all((after[name][:4], after[name][-1]) == (value[:4], value[-1])
-                   for name, value in contents.items())
-        assert after[str(foreign.relative_to(fixture.root))] == contents[str(foreign.relative_to(fixture.root))]
         assert foreign.read_bytes() == data
-        assert fixture.present and fixture.group_present
-        assert fixture.receipt().exists() == (account != "unowned")
-        assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
-        assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
+        assert snapshot()[str(foreign.relative_to(fixture.root))] == contents[str(foreign.relative_to(fixture.root))]
+        assert fixture.present == fixture.group_present == (account == "unowned")
+        assert not fixture.receipt().exists()
+        assert not any(args[0] in {"useradd", MATERIALIZER} for args in fixture.calls)
+        assert not any(args[0] == "systemctl" and args[1] in {"start", "enable"} for args in fixture.calls)
         return
-    assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
-    if entry.startswith(("load:", "prelink:")):
-        assert "foreign-unit" in output
-    if entry.startswith("activation:"):
-        assert ("custody-uncertain" if kind in {"oversized", "unreadable"} else "foreign-unit") in output
-    assert "synthetic private diagnostic" not in output
-    assert snapshot() == contents
-    assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
-    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
-    assert (fixture.present, fixture.group_present, fixture.receipt().exists()) == identities
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
@@ -735,7 +551,7 @@ def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
                                   "runtime-alias", "runtime-wants", "runtime-requires", "dangling-alias",
                                   "unrelated-links", "merged-usr-relative", "merged-usr-absolute"])
 def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, case) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     fixture.service_directories()
     receipt = fixture.receipt().read_bytes()
     payload = fixture.root / "opt/happyranch-desktop/libexec/headscale/headscale"
@@ -772,7 +588,6 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
         (fixture.root / "usr").mkdir(mode=0o755)
         (fixture.root / "usr/lib").mkdir(mode=0o755)
         (fixture.root / "lib").symlink_to("usr/lib" if case.endswith("relative") else "/usr/lib")
-        assert fixture.prepare(monkeypatch, capsys)[0] == 0
     foreign_links = []
     if case in {"foreign-alias", "foreign-wants", "foreign-requires", "manual-managed-link",
                 "runtime-alias", "runtime-wants", "runtime-requires", "dangling-alias",
@@ -842,74 +657,11 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     assert not any(args[0] == "systemctl" and args[1] in {"start", "enable", "restart"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("case,category", [
-    ("ecmp", "multiple_addresses"), ("ipv6", "dial_ip"),
-    ("unresolved", "inventory"), ("unresolved-second", "inventory"), ("unknown-interface", "inventory"),
-    ("down", "no_address"), ("loopback", "no_address"),
-    ("duplicate-interface", "inventory"), ("interrupted", "inventory"),
-    ("error", "inventory"), ("truncated", "inventory"), ("no-route", "no_address"),
-])
-def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category) -> None:
-    fixture.kernel_case = case
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and category in output
-    assert not fixture.preflights
-    assert not fixture.receipt().exists()
-    assert not (fixture.root / "etc/happyranch").exists()
-    assert fixture.calls == []
-
-
-def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    root = fixture.root / home.CUSTODY[0]
-    config, derp = root / "config.yaml", root / "derp.yaml"
-    assert config.is_file() and derp.is_file()
-    assert b"listen_addr: 192.168.1.40:8443\n" in config.read_bytes()
-    assert b"ipv4: 192.168.1.40\n" in derp.read_bytes()
-    receipt = fixture.receipt().parent / PUBLICATION
-    record = json.loads(receipt.read_bytes())
-    assert record == {"version": 1, "uid": fixture.uid, "gid": fixture.gid, "dial_ip": "192.168.1.40",
-                      "files": {f"/{home.CUSTODY[0]}/{p.name}": hashlib.sha256(p.read_bytes()).hexdigest()
-                                for p in (config, derp, root / "server.crt", root / "server.key")} |
-                               {"/" + CONTROL_CA: hashlib.sha256((fixture.root / CONTROL_CA).read_bytes()).hexdigest()},
-                      "directories": ["/" + EMPTY_CA]}
-    leaf, key, ca = root / "server.crt", root / "server.key", fixture.root / CONTROL_CA
-    assert leaf.read_bytes() == fixture.leaf_pem
-    assert key.read_bytes() == fixture.leaf_key
-    assert ca.read_bytes() == fixture.ca_pem
-    paths = (config, derp, leaf, key, receipt)
-    before = [(p.read_bytes(), p.stat()) for p in paths]
-    assert all((p.stat().st_uid, p.stat().st_gid, p.stat().st_mode & 0o7777, p.stat().st_nlink)
-               == (fixture.uid, fixture.gid, 0o600, 1) for p in paths)
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert [(p.read_bytes(), p.stat()) for p in paths] == before
-    unchanged = [ca, fixture.root / EMPTY_CA,
-                 *(fixture.receipt().parent / "home-ca" / name for name in ("ca.pem", "ca.key", "leaf.pem", "leaf.key"))]
-    def metadata(path):
-        info = path.stat()
-        return info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-    stable = [metadata(path) for path in unchanged]
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert [metadata(path) for path in unchanged] == stable
-    fixture.dial_ip = "192.168.1.41"
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "address-changed" in output
-    assert [(p.read_bytes(), p.stat()) for p in paths] == before
-    assert fixture.preflights == ["192.168.1.40"] * 3
-    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
-    assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
-    assert (ca.stat().st_uid, ca.stat().st_gid, ca.stat().st_mode & 0o7777, ca.stat().st_nlink) == (fixture.uid, fixture.gid, 0o640, 1)
-    empty = fixture.root / EMPTY_CA
-    assert not list(empty.iterdir())
-    assert (empty.stat().st_uid, empty.stat().st_gid, empty.stat().st_mode & 0o7777, empty.stat().st_nlink) == (fixture.uid, fixture.gid, 0o755, 2)
-    assert [args[1] for args in fixture.calls if args[0] == MATERIALIZER] == ["ensure", "status", *(["status", "status"] * 2)]
-
-
 @pytest.mark.parametrize("name", PUBLISHED)
 @pytest.mark.parametrize("tamper", ["bytes", "mode", "link", "hardlink", "pending", "missing",
                                   "directory", "fifo", "oversized"])
 def test_publication_tamper_is_preserved(fixture, monkeypatch, capsys, name, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     parent = (fixture.receipt().parent if name == PUBLICATION else fixture.root / "etc/happyranch"
               if name == "control-ca.pem" else fixture.root / home.CUSTODY[0])
     path = parent / name
@@ -934,36 +686,14 @@ def test_publication_tamper_is_preserved(fixture, monkeypatch, capsys, name, tam
                 for p in fixture.root.rglob("*")}
     before = snapshot()
     fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "synthetic" not in output
-    assert snapshot() == before
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert snapshot() == before
     assert not any(args[0] in {"useradd", "userdel", "groupdel", "systemctl"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("crash", PUBLISHED)
-def test_interrupted_publication_is_never_adopted(fixture, monkeypatch, capsys, crash) -> None:
-    original = fixture.installer._write_provision_file
-    def interrupted(name, *args, **kwargs):
-        original(name, *args, **kwargs)
-        if name == crash: raise OSError("synthetic crash")
-    with monkeypatch.context() as patch:
-        patch.setattr(fixture.installer, "_write_provision_file", interrupted)
-        assert fixture.prepare(monkeypatch, capsys)[0] == 1
-    # A durable final receipt is the commit point; lost success is idempotent.
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == (0 if crash == PUBLICATION else 1)
-    if crash != PUBLICATION:
-        fixture.calls.clear()
-        code, output = fixture.cleanup(monkeypatch, capsys)
-        assert code == 1 and "cleanup-uncertain" in output
-        assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
-
-
 def test_publication_cleanup_preserves_ca_staging(fixture, monkeypatch, capsys) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     staging = fixture.receipt().parent / "home-ca"
     assert staging.is_dir()
     key = staging / "ca.key"
@@ -977,39 +707,10 @@ def test_publication_cleanup_preserves_ca_staging(fixture, monkeypatch, capsys) 
     assert not (fixture.receipt().parent / PUBLICATION).exists()
 
 
-def test_port_preflight_precedes_all_publication(fixture, monkeypatch, capsys) -> None:
-    def occupied(address):
-        assert address == "192.168.1.40"
-        assert not fixture.receipt().exists()
-        assert not (fixture.root / "etc/happyranch").exists()
-        raise home.HeadscaleServiceError("occupied-port")
-    monkeypatch.setattr(home, "preflight_ports", occupied)
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "occupied-port" in output
-    assert not fixture.receipt().exists()
-    assert fixture.calls == []
-
-
-@pytest.mark.parametrize("name", [*PUBLISHED, "empty-ca-directory"])
-def test_publication_never_replaces_late_foreign_inode(fixture, monkeypatch, capsys, name) -> None:
-    rename = fixture.installer._rename_provision_entry
-    def arrive(parent, source, target, **kwargs):
-        if target == name:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
-            with os.fdopen(fd, "wb") as stream: stream.write(b"synthetic late foreign")
-        rename(parent, source, target, **kwargs)
-    monkeypatch.setattr(fixture.installer, "_rename_provision_entry", arrive)
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "synthetic" not in output
-    parent = (fixture.receipt().parent if name == PUBLICATION else fixture.root / "etc/happyranch"
-              if name in {"control-ca.pem", "empty-ca-directory"} else fixture.root / home.CUSTODY[0])
-    assert (parent / name).read_bytes() == b"synthetic late foreign"
-
-
 @pytest.mark.parametrize("parent", [home.CUSTODY[0], home.INSTALLER_STATE, "etc/happyranch", EMPTY_CA])
 @pytest.mark.parametrize("tamper", ["mode", "link"])
 def test_publication_parent_custody_is_preserved(fixture, monkeypatch, capsys, parent, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / parent
     if tamper == "mode": path.chmod(0o777)
     else:
@@ -1017,7 +718,6 @@ def test_publication_parent_custody_is_preserved(fixture, monkeypatch, capsys, p
         path.symlink_to(path.name + "-foreign", target_is_directory=True)
     before = path.lstat()
     fixture.calls.clear()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     after = path.lstat()
@@ -1027,7 +727,7 @@ def test_publication_parent_custody_is_preserved(fixture, monkeypatch, capsys, p
 
 @pytest.mark.parametrize("name", [*CONFIG_FILES, *LEAF_FILES, "control-ca.pem", "empty-ca-directory"])
 def test_cleanup_interruption_keeps_receipt_and_refuses_retry(fixture, monkeypatch, capsys, name) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     receipt = fixture.receipt().parent / PUBLICATION
     assert receipt.is_file()
     original = receipt.read_bytes()
@@ -1048,20 +748,9 @@ def test_cleanup_interruption_keeps_receipt_and_refuses_retry(fixture, monkeypat
     assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("busy", ["uid", "unit"])
-def test_preparation_never_adopts_running_service(fixture, monkeypatch, capsys, busy) -> None:
-    fixture.present = fixture.group_present = True
-    fixture.busy, fixture.unit_busy = busy == "uid", busy == "unit"
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "cleanup-uncertain" in output
-    assert not fixture.receipt().exists()
-    assert not (fixture.root / "etc/happyranch").exists()
-    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
-
-
 @pytest.mark.parametrize("tamper", ["uid", "gid", "bool-id", "version", "path", "digest", "address", "extra"])
 def test_publication_receipt_binds_exact_identity_and_files(fixture, monkeypatch, capsys, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     receipt = fixture.receipt().parent / PUBLICATION
     assert receipt.is_file()
     record = json.loads(receipt.read_bytes())
@@ -1075,8 +764,6 @@ def test_publication_receipt_binds_exact_identity_and_files(fixture, monkeypatch
     receipt.write_text(json.dumps(record))
     before = receipt.read_bytes(), receipt.stat()
     fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "synthetic" not in output
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert (receipt.read_bytes(), receipt.stat()) == before
@@ -1091,7 +778,7 @@ def test_publication_receipt_binds_exact_identity_and_files(fixture, monkeypatch
 def test_unreceipted_handoff_is_foreign(fixture, monkeypatch, capsys, entry, account) -> None:
     fixture.present = fixture.group_present = account != "absent"
     if account == "owned":
-        assert fixture.prepare(monkeypatch, capsys)[0] == 0
+        fixture.seed_prepared_history()
         (fixture.receipt().parent / PUBLICATION).unlink()
     parent = fixture.root / ("etc/happyranch" if "ca." in entry or "directory" in entry else home.CUSTODY[0])
     parent.mkdir(parents=True, exist_ok=True, mode=0o700 if parent.name == "headscale" else 0o755)
@@ -1103,7 +790,6 @@ def test_unreceipted_handoff_is_foreign(fixture, monkeypatch, capsys, entry, acc
         path.chmod(0o600)
     before = path.lstat()
     fixture.calls.clear()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
     assert fixture.cleanup(monkeypatch, capsys)[0] == 1
     assert path.lstat() == before
     assert not any(args[0] in {"useradd", "userdel", "groupdel", MATERIALIZER} for args in fixture.calls)
@@ -1112,7 +798,7 @@ def test_unreceipted_handoff_is_foreign(fixture, monkeypatch, capsys, entry, acc
 
 @pytest.mark.parametrize("tamper", ["nonempty", "subdirectory", "mode", "link", "pending", "missing"])
 def test_empty_ca_directory_tamper_preserved(fixture, monkeypatch, capsys, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / EMPTY_CA
     if tamper == "nonempty": (path / "foreign").write_bytes(b"synthetic")
     if tamper == "subdirectory": (path / "foreign").mkdir()
@@ -1127,43 +813,18 @@ def test_empty_ca_directory_tamper_preserved(fixture, monkeypatch, capsys, tampe
         list(path.iterdir())
     before = path.lstat() if path.exists() or path.is_symlink() else None
     fixture.calls.clear()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
     assert fixture.cleanup(monkeypatch, capsys)[0] == 1
     assert (path.lstat() if path.exists() or path.is_symlink() else None) == before
     assert not any(args[0] in {"userdel", "groupdel", MATERIALIZER} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("result", [
-    (1, "synthetic private diagnostic"), (0, "{}"), (0, "[]"), (0, "{}\n{}\n"),
-    (0, '{"ca_fingerprint":"x","ca_fingerprint":"y"}'), (0, "x" * 4097),
-    *[(0, json.dumps(dict(ca_fingerprint=fp, ca_not_after=ca, leaf_not_after=leaf, renewal_due=due)))
-      for fp, ca, leaf, due in [
-          ("0"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", "false"),
-          ("0"*64, "yesterday", "2027-01-01T00:00:00Z", False),
-          ("0"*64, "2030-01-01T00:00:00Z", "", False),
-          ("0"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", False),
-          ("A"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", False)]]])
-def test_materializer_status_refuses_without_handoff(fixture, monkeypatch, capsys, result) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    receipt = fixture.receipt().parent / PUBLICATION
-    before = receipt.read_bytes(), receipt.stat()
-    fixture.calls.clear()
-    fixture.materializer_result = result
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "materializer-uncertain" in output and "synthetic" not in output
-    assert (receipt.read_bytes(), receipt.stat()) == before
-    assert [args[1] for args in fixture.calls if args[0] == MATERIALIZER] == ["status"]
-
-
 @pytest.mark.parametrize("member,tamper", [
-    *[(member, tamper) for member in ("leaf.pem", "leaf.key", "ca.pem", "ca.key", "binary")
-      for tamper in ("mode", "link", "hardlink", "oversized", "fifo")
-      if (member, tamper) != ("binary", "oversized")],
+    *[(member, tamper) for member in ("leaf.pem", "leaf.key", "ca.pem", "ca.key")
+      for tamper in ("mode", "link", "hardlink", "oversized", "fifo")],
     *[("home-ca", tamper) for tamper in ("mode", "link", "unknown", "pending", "partial")]])
-def test_materializer_source_custody_refuses(fixture, monkeypatch, capsys, member, tamper) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    path = (fixture.root / MATERIALIZER.lstrip("/") if member == "binary" else
-            fixture.receipt().parent / "home-ca" if member == "home-ca" else
+def test_legacy_ca_sources_refuse_unsafe_readback(fixture, monkeypatch, capsys, member, tamper) -> None:
+    fixture.seed_prepared_history()
+    path = (fixture.receipt().parent / "home-ca" if member == "home-ca" else
             fixture.receipt().parent / "home-ca" / member)
     if member == "home-ca" and tamper in {"unknown", "pending"}:
         (path / ("foreign" if tamper == "unknown" else ".leaf.key.pending")).write_bytes(b"synthetic")
@@ -1177,37 +838,65 @@ def test_materializer_source_custody_refuses(fixture, monkeypatch, capsys, membe
     elif tamper == "fifo":
         path.unlink()
         os.mkfifo(path)
-    else: path.write_bytes(b"x" * 4097 if member != "binary" else b"synthetic")
+    else: path.write_bytes(b"x" * 4097)
     if path.is_dir():
         # Retain the full stat assertion without confusing read-atime with a write.
         list(path.iterdir())
     before = path.lstat()
     publication = (fixture.receipt().parent / PUBLICATION).read_bytes()
     fixture.calls.clear()
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and "synthetic" not in output
+    with fixture.installer._home_preparation_custody():
+        with pytest.raises((module.InstallerError, home.HeadscaleServiceError, OSError)):
+            fixture.installer._headscale_ca_sources()
     assert path.lstat() == before
     assert (fixture.receipt().parent / PUBLICATION).read_bytes() == publication
     assert not any(args[0] == MATERIALIZER for args in fixture.calls)
 
 
-def test_due_leaf_renewal_uses_same_ca_and_receipt(fixture, monkeypatch, capsys) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    ca_key = fixture.receipt().parent / "home-ca/ca.key"
-    ca = fixture.root / CONTROL_CA
-    config = fixture.root / home.CUSTODY[0] / "config.yaml"
-    before = [(p.read_bytes(), p.stat()) for p in (ca_key, ca, config)]
-    key = fixture.root / home.CUSTODY[0] / "server.key"
-    old_key = key.read_bytes()
+@pytest.mark.parametrize("tamper", ["mode", "link", "hardlink", "fifo"])
+def test_legacy_materializer_binary_custody_refuses(fixture, monkeypatch, capsys, tamper) -> None:
+    fixture.seed_prepared_history()
+    path = fixture.root / MATERIALIZER.lstrip("/")
+    if tamper == "mode": path.chmod(0o777)
+    if tamper == "hardlink": os.link(path, fixture.root / "foreign-binary")
+    if tamper in {"link", "fifo"}:
+        path.rename(path.with_name("foreign-binary"))
+        if tamper == "link": path.symlink_to("foreign-binary")
+        else: os.mkfifo(path)
+    before = path.lstat()
+    publication = (fixture.receipt().parent / PUBLICATION).read_bytes()
     fixture.calls.clear()
-    fixture.materializer_due = True
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert [args[1] for args in fixture.calls if args[0] == MATERIALIZER] == ["status", "renew-leaf", "status"]
-    assert key.read_bytes() != old_key and key.read_bytes() == fixture.leaf_key
-    assert [(p.read_bytes(), p.stat()) for p in (ca_key, ca, config)] == before
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert fixture.cleanup(monkeypatch, capsys)[0] == 0
-    assert ca_key.read_bytes() == before[0][0]
+    with pytest.raises(home.HeadscaleServiceError, match="^materializer-uncertain$"):
+        fixture.installer._headscale_materializer("status")
+    assert path.lstat() == before
+    assert (fixture.receipt().parent / PUBLICATION).read_bytes() == publication
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("result", [
+    (1, "synthetic private diagnostic"), (0, "{}"), (0, "[]"), (0, "{}\n{}\n"),
+    (0, '{"ca_fingerprint":"x","ca_fingerprint":"y"}'), (0, "x" * 4097),
+    *[(0, json.dumps(dict(ca_fingerprint=fp, ca_not_after=ca, leaf_not_after=leaf, renewal_due=due)))
+      for fp, ca, leaf, due in [
+          ("0"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", "false"),
+          ("0"*64, "yesterday", "2027-01-01T00:00:00Z", False),
+          ("0"*64, "2030-01-01T00:00:00Z", "", False),
+          ("A"*64, "2030-01-01T00:00:00Z", "2027-01-01T00:00:00Z", False)]]])
+def test_legacy_materializer_status_refuses_malformed_response(fixture, monkeypatch, capsys, result) -> None:
+    fixture.seed_prepared_history()
+    receipt = fixture.receipt().parent / PUBLICATION
+    before = receipt.read_bytes(), receipt.stat()
+    fixture.materializer_result = result
+    fixture.calls.clear()
+    # The retained reader exposes JSON-object refusal before the old handoff's
+    # outer error mapping; preserve that exact parser contract at this boundary.
+    non_object = result[1] in ("[]", '{"ca_fingerprint":"x","ca_fingerprint":"y"}')
+    error = module.InstallerError if non_object else home.HeadscaleServiceError
+    message = "invalid provisioning JSON object" if non_object else "materializer-uncertain"
+    with pytest.raises(error, match="^" + message + "$"):
+        fixture.installer._headscale_materializer("status")
+    assert (receipt.read_bytes(), receipt.stat()) == before
+    assert fixture.calls == [[MATERIALIZER, "status"]]
 
 
 def test_ca_private_key_is_never_read_by_installer(fixture, monkeypatch, capsys) -> None:
@@ -1215,36 +904,19 @@ def test_ca_private_key_is_never_read_by_installer(fixture, monkeypatch, capsys)
     def public_or_leaf(parent, name, **kwargs):
         assert name != "ca.key"
         return read(parent, name, **kwargs)
+    fixture.seed_prepared_history()
     monkeypatch.setattr(fixture.installer, "_read_file", public_or_leaf)
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    with fixture.installer._home_preparation_custody():
+        assert fixture.installer._headscale_ca_sources() == {
+            "ca.pem": fixture.ca_pem, "leaf.pem": fixture.leaf_pem, "leaf.key": fixture.leaf_key}
     assert fixture.cleanup(monkeypatch, capsys)[0] == 0
     assert (fixture.receipt().parent / "home-ca/ca.key").is_file()
-
-
-def test_merged_config_only_receipt_extends_without_rewriting_config(fixture, monkeypatch, capsys) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    receipt = fixture.receipt().parent / PUBLICATION
-    record = json.loads(receipt.read_bytes())
-    for path in list(record["files"]):
-        if Path(path).name not in CONFIG_FILES:
-            (fixture.root / path.lstrip("/")).unlink()
-            del record["files"][path]
-    del record["directories"]
-    (fixture.root / EMPTY_CA).rmdir()
-    receipt.write_text(json.dumps(record))
-    paths = [fixture.root / home.CUSTODY[0] / name for name in CONFIG_FILES]
-    before = [(p.read_bytes(), p.stat()) for p in paths]
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    assert [(p.read_bytes(), p.stat()) for p in paths] == before
-    assert json.loads(receipt.read_bytes())["directories"] == ["/" + EMPTY_CA]
-    assert fixture.cleanup(monkeypatch, capsys)[0] == 0
 
 
 @pytest.mark.parametrize("name", ["server.crt", "server.key", "control-ca.pem", "empty-ca-directory"])
 @pytest.mark.parametrize("field", ["uid", "gid"])
 def test_handoff_owner_mismatch_preserves_all(fixture, monkeypatch, capsys, name, field) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.seed_prepared_history()
     path = fixture.root / (CONTROL_CA if name == "control-ca.pem" else EMPTY_CA if name == "empty-ca-directory"
                            else home.CUSTODY[0] + "/" + name)
     before = (path.read_bytes() if path.is_file() else None), path.stat()
@@ -1260,65 +932,9 @@ def test_handoff_owner_mismatch_preserves_all(fixture, monkeypatch, capsys, name
         patch.setattr(module.os, "stat", lambda *a, **kw: mismatched(original_stat(*a, **kw)))
         patch.setattr(module.os, "fstat", lambda *a, **kw: mismatched(original_fstat(*a, **kw)))
         fixture.calls.clear()
-        assert fixture.prepare(monkeypatch, capsys)[0] == 1
         assert fixture.cleanup(monkeypatch, capsys)[0] == 1
     assert ((path.read_bytes() if path.is_file() else None), path.stat()) == before
     assert not any(args[0] in {"userdel", "groupdel", MATERIALIZER} for args in fixture.calls)
-
-
-@pytest.mark.parametrize("crash", ["server.key", "server.crt", PUBLICATION, "empty-ca-directory"])
-def test_renewal_or_extension_crash_preserves_uncertainty(fixture, monkeypatch, capsys, crash) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    if crash == "empty-ca-directory":
-        receipt = fixture.receipt().parent / PUBLICATION
-        record = json.loads(receipt.read_bytes())
-        for path in list(record["files"]):
-            if Path(path).name not in CONFIG_FILES:
-                (fixture.root / path.lstrip("/")).unlink()
-                del record["files"][path]
-        del record["directories"]
-        (fixture.root / EMPTY_CA).rmdir()
-        receipt.write_text(json.dumps(record))
-    else:
-        fixture.materializer_due = True
-    rename = fixture.installer._rename_provision_entry
-    def interrupted(parent, source, target, **kwargs):
-        rename(parent, source, target, **kwargs)
-        if target == crash: raise OSError("synthetic lost publication")
-    with monkeypatch.context() as patch:
-        patch.setattr(fixture.installer, "_rename_provision_entry", interrupted)
-        assert fixture.prepare(monkeypatch, capsys)[0] == 1
-    assert fixture.prepare(monkeypatch, capsys)[0] == (0 if crash == PUBLICATION else 1)
-    if crash != PUBLICATION:
-        assert fixture.cleanup(monkeypatch, capsys)[0] == 1
-
-
-@pytest.mark.parametrize("name", ["ca.pem", "leaf.pem", "leaf.key"])
-def test_changed_staging_bytes_refuse_before_materializer(fixture, monkeypatch, capsys, name) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    path = fixture.receipt().parent / "home-ca" / name
-    path.write_bytes(b"synthetic changed staging")
-    before = path.read_bytes(), path.stat()
-    fixture.materializer_due = True
-    fixture.calls.clear()
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
-    assert not any(args[0] == MATERIALIZER for args in fixture.calls)
-    assert (path.read_bytes(), path.stat()) == before
-
-
-@pytest.mark.parametrize("name", ["server.key", "server.crt", PUBLICATION])
-def test_interrupted_renewal_removal_is_never_repaired(fixture, monkeypatch, capsys, name) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
-    fixture.materializer_due = True
-    unlink = os.unlink
-    def interrupted(path, *args, **kwargs):
-        unlink(path, *args, **kwargs)
-        if path == name: raise OSError("synthetic interrupted renewal")
-    with monkeypatch.context() as patch:
-        patch.setattr(module.os, "unlink", interrupted)
-        assert fixture.prepare(monkeypatch, capsys)[0] == 1
-    assert fixture.prepare(monkeypatch, capsys)[0] == 1
-    assert fixture.cleanup(monkeypatch, capsys)[0] == 1
 
 
 # B6 extends this retained installer venue; no host account/service/socket is used.

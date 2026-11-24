@@ -1470,8 +1470,8 @@ P24 retires the ordinary `prepare-headscale` and `disable-headscale` installer
 commands for both layouts. They return non-success and the exact home-retirement
 message before constructing an installer or observing/changing native state.
 Use the canonical explicit retirement entry below for upgrade/recovery; status
-remains read-only. The programmatic preparation/cleanup owners described in this
-historical section remain pending their separate P24 source disposition.
+remains read-only. The programmatic preparation owner is removed; the cleanup
+owner and the historical readers described below remain for retained consumers.
 
 Historically, `ManagedInstaller.prepare_headscale` prepared fixed local custody
 and an inert unit. It never runs Headscale,
@@ -4348,8 +4348,13 @@ consumers. Initial `publish_home_units` / `publish_invite_config` writers and
 their unused lock-borrowing helper are removed. Retained Disable and post-disable
 inventory read historical files without re-publication; their no-follow custody,
 exact original provenance and native observation checks remain. Programmatic
-Headscale preparation and other forward owners still await source retirement;
-this boundary grants no account-network admission.
+Headscale preparation, issuer-directory creation and initial CA handoff/empty-CA
+publication are removed. Retained cleanup tests use neutral historical files,
+including their original account, foreign-unit, no-follow and interruption
+inputs. Protected CA-source readback remains metadata-only for the private CA
+key. The materializer status executor still has a forward activation-owner
+consumer and awaits that owner's separate retirement; other forward owners
+remain incomplete. This boundary grants no account-network admission.
 
 **Current package boundary:** new payloads omit the local Headscale server and
 `happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives
