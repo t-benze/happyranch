@@ -52,6 +52,13 @@ and unit publishers and the observer are removed. Retained schema/readback,
 token-source, renderer and actual directory-lock consumers remain. This source
 disposition adds no model action or TLC result.
 
+Generated home provisioning and the uncalled ReplaceFailed forward writers are
+retired too. Actual non-home provision/renewal, the original lock and historical
+transaction readers remain. Custody/inventory tests seed independent historical
+inputs; the production retirement outcome is never supplied by a fixture. The
+closed renewal error adapter preserves pending refusal. No modeled state/action,
+record grammar or TLC result changes with this source deletion.
+
 ## Incremental implementation records
 
 The records below retain the scope limits of each earlier implementation slice.

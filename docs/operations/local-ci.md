@@ -3958,6 +3958,13 @@ without activating or provisioning a home. It observes the stale writable-path
 projection refusing before capture/auth/revoke, then runs actual B6 cleanup in a
 fresh projection. Separate native-stop cases retain owned-stop ordering.
 
+The retained installer custody venue's `generated_bundle` name now denotes
+neutral historical input, not a production generation call. Actual omitted-input
+provisioning refuses; old ReplaceFailed forward writers are absent. Existing
+inventory/provenance/lifecycle/refusal and non-home renewal/lock assertions remain
+at their real production boundaries. Removed writer-only rows are individually
+dispositioned in the P24 PR record; no failing test is skipped as cleanup.
+
 `scripts/test_home_activation_backend.py` now checks the minimal closed
 Enable/ReplaceFailed adapters and actual root-child no-effect dispatch. Obsolete
 activation/rollover success algorithms retired with their backend owner. Public

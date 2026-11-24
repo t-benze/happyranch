@@ -15,6 +15,13 @@ P24 upgrade/recovery section owns the explicit retirement path; these historical
 sections do not authorize creating or resuming a home. Account-network positive
 access remains unavailable on main until P21–P23.
 
+Omitted-input generated home provisioning now refuses with the same retirement
+message. Its uncalled ReplaceFailed quarantine/removal/staging/closure writers
+are removed. Explicit non-home provisioning, historical transaction inventory
+and actual policy-renewal publication/locking remain. Renewal maps a retained
+pending-custody refusal to its existing closed `InstallerError` boundary without
+changing the refusal or touching pending evidence.
+
 ## Public host compatibility metadata (THR-387 S4a)
 
 `GET /api/v1/health` is already remote-allowed. Its additive `api_contract`

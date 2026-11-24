@@ -12,7 +12,7 @@ import socket
 import tempfile
 import threading
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -457,7 +457,12 @@ def test_supervisor_reconcile_reports_incomplete_cleanup(monkeypatch):
             from runtime.remote_access.legacy_home_receipt import CONTROL_URL
             io = installer.ManagedInstaller(root=path.parent, root_owner=(os.getuid(), os.getgid()))
             monkeypatch.setattr(io, "_account", lambda **kw: (os.getuid(), os.getgid()))
-            files = io._generated_configs()
+            files = {
+                "connector.json": json.dumps(asdict(supervisor.config)).encode(),
+                "sidecar.json": json.dumps(dict(Profile="linux-managed-identity-v1",
+                    StateDir="/var/lib/happyranch-tsnet-sidecar", RoleIdentity="home-sidecar-fixture",
+                    DERPPolicy="private-only", ListenAddr=":443", ExcludedDaemonPorts=[8765])).encode(),
+            }
             raw = json.loads(files["connector.json"])
             raw.update(tenant_id=supervisor.config.tenant_id, home_id=supervisor.config.home_id,
                        connector_id=supervisor.config.connector_id)

@@ -760,215 +760,9 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             raise InstallerError("replacement pending is not the exact writer intent")
         return data
 
-    def _discard_replacement_pending(self, transaction: bytes) -> None:
-        """Discard validated intent only; the normal writer regenerates/rebinds."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        with self._publication_parent() as (parent, revalidate):
-            pending = self._replacement_pending(parent, transaction)
-            if pending is None:
-                return
-            name = ".install-transaction.json.pending"
-            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            self._check_replacement_transaction(parent, transaction)
-            self._replacement_custody(transaction)
-            if self._inventory(prepared_transaction=transaction,
-                               pending=("install-transaction.json", pending)).state != "known-failed-or-partial":
-                raise InstallerError("replacement pending inventory changed before discard")
-            self._check_replacement_transaction(parent, transaction)
-            if self._replacement_pending(parent, transaction) != pending:
-                raise InstallerError("replacement pending changed before discard")
-            revalidate()
-            after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
-            if any(getattr(before, field) != getattr(after, field) for field in fields):
-                raise InstallerError("replacement pending metadata changed before discard")
-            os.unlink(name, dir_fd=parent)
-            os.fsync(parent)
 
-    def begin_replacement(self, *, expected_release_uid: int, expected_generation: str) -> None:
-        """Bind inventory and derived release owner before the additive first intent.
 
-        Only the fresh-auth helper lifecycle owner may supply expectations.
-        Existing v1 journals already have a first intent and resume unchanged.
-        This entry is absent from the operator CLI and public D-Bus methods.
-        """
-        candidate = self.replacement_inventory()
-        generation = candidate.journal_generation or candidate.inventory_generation
-        if (type(expected_release_uid) is not int or expected_release_uid <= 0
-                or not isinstance(expected_generation, str) or generation != expected_generation
-                or candidate.installation.state != "known-failed-or-partial"):
-            raise InstallerError("replacement expectations or candidate changed")
-        try:
-            configs = {}
-            try:
-                with self._directory("etc/happyranch") as parent:
-                    for name in _QUARANTINE_CONFIGS:
-                        for entry in (name, ".replacement-" + name):
-                            try:
-                                info = os.stat(entry, dir_fd=parent, follow_symlinks=False)
-                                data = self._read_file(parent, entry,
-                                    owner=(info.st_uid, info.st_gid), mode=stat.S_IMODE(info.st_mode))
-                            except FileNotFoundError:
-                                continue
-                            if name in configs:
-                                raise InstallerError("duplicate replacement config placement")
-                            configs[name] = data
-            except FileNotFoundError:
-                pass
-            self._validate_configs(configs, staged=True, partial=True, require_current=False)
-            if candidate.journal_generation is not None:
-                with self._directory("etc/happyranch") as parent:
-                    transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
-                release = self._replacement_release(transaction)
-            else:
-                try:
-                    release = self._check_release_record()
-                except FileNotFoundError:
-                    user = pwd.getpwuid(expected_release_uid)
-                    release = self._release_record(user.pw_name, None)
-            if release["uid"] != expected_release_uid:
-                raise InstallerError("replacement release UID mismatch")
-            self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=expected_release_uid)
-            if self.replacement_inventory() != candidate:
-                raise InstallerError("replacement inventory changed before first intent")
-            if candidate.journal_generation is None:
-                snapshot = self._replacement_snapshot()
-                record = dict(format="replacement-intent@2", version=2, layout=self.layout, phase="prepared",
-                              release=release, inventory=snapshot,
-                              digests={name: snapshot["etc/happyranch/" + name].get("digest", "absent")
-                                       if isinstance(snapshot["etc/happyranch/" + name], dict) else "absent"
-                                       for name in _REPLACEMENT_FILES})
-                self._write_first_replacement(json.dumps(record, sort_keys=True).encode(), candidate)
-            self.replace_failed()
-        except (OSError, KeyError, ValueError):
-            raise InstallerError("replacement first intent or release binding incomplete") from None
 
-    def _write_first_replacement(self, data: bytes, candidate: ReplacementInventory) -> None:
-        """Publish only after fresh full inventory/owner binding, with no overwrite."""
-        self._validate_install_record("install-transaction.json", data, replacement=True)
-        record = self._json(data)
-        created_parent = False
-        try:
-            with self._directory("etc/happyranch"):
-                pass
-        except FileNotFoundError:
-            # The fixed journal's own parent is publication scaffolding, never
-            # authority to change any pre-existing replacement member.
-            if self.replacement_inventory() != candidate or self._replacement_snapshot() != record["inventory"]:
-                raise InstallerError("replacement first inventory changed before parent creation")
-            with self._publication_parent("etc") as (parent, revalidate):
-                release = record["release"]
-                if self._release_record(release["user"], Path(release["data_home"])) != release:
-                    raise InstallerError("replacement release owner changed before parent creation")
-                self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-                self._confirm_quiescent()
-                revalidate()
-                os.mkdir("happyranch", mode=0o700, dir_fd=parent)
-                directory = os.open("happyranch", _DIR_FLAGS, dir_fd=parent)
-                try:
-                    os.fchown(directory, *self.root_owner)
-                    os.fchmod(directory, 0o755)
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-                revalidate()
-                os.fsync(parent)
-            created_parent = True
-        with self._publication_parent() as (parent, revalidate):
-            snapshot = self._replacement_snapshot()
-            expected = dict(record["inventory"])
-            if created_parent:
-                expected["etc/happyranch"] = snapshot["etc/happyranch"]
-            if self.inventory() != candidate.installation or snapshot != expected:
-                raise InstallerError("replacement first inventory changed")
-            release = record["release"]
-            if self._release_record(release["user"], Path(release["data_home"])) != release:
-                raise InstallerError("replacement release owner changed before intent")
-            self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-            self._refuse_provision_entry(parent, "install-transaction.json")
-            name = ".install-transaction.json.pending"
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                         0o600, dir_fd=parent)
-            try:
-                os.fchown(fd, *self.root_owner)
-                with os.fdopen(fd, "wb", closefd=False) as stream:
-                    if stream.write(data) != len(data):
-                        raise InstallerError("incomplete first replacement intent")
-                    stream.flush()
-                    os.fsync(fd)
-                # The exclusive pending entry is not first-admission authority.
-                # Inventory validates its exact bytes separately before rename.
-                info = os.fstat(fd)
-                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                if ((info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
-                        or self._read_file(parent, name, owner=self.root_owner, mode=0o600) != data):
-                    raise InstallerError("first replacement pending changed")
-                if (self._inventory(pending=("install-transaction.json", data)) != candidate.installation
-                        or self._replacement_snapshot() != expected
-                        or self._release_record(release["user"], Path(release["data_home"])) != release):
-                    raise InstallerError("first replacement binding changed before rename")
-                self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                if ((named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
-                        or self._read_file(parent, name, owner=self.root_owner, mode=0o600) != data):
-                    raise InstallerError("first replacement pending changed before rename")
-                revalidate()
-                self._rename_provision_entry(parent, name, "install-transaction.json")
-                os.fsync(parent)
-            finally:
-                os.close(fd)
-
-    def replace_failed(self) -> None:
-        """Resume exact config quarantine, then fixed state/enrollment removal.
-
-        Prepared candidates publish stopped intent first; the next call quarantines
-        configs. A later call consumes quarantine to remove fixed retired state.
-        A further call removes quarantined configs, then another removes only
-        owned unit entries. A later call stages fresh inert files; the next call
-        closes that exact generation into ordinary modern staged-inert inventory.
-        Unjournaled candidates require begin_replacement's explicit expectations.
-        """
-        candidate = self.replacement_inventory()
-        installation = candidate.installation
-        if installation.state == "modern" and installation.detail == "staged-inert":
-            # Only a recognized journal resumes closure below. Retired staging
-            # is indistinguishable from a clean-host non-candidate.
-            raise InstallerError("replacement refused: modern:")
-        if installation.state != "known-failed-or-partial":
-            raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
-        if candidate.journal_generation is None:
-            raise InstallerError("replacement mutation unavailable; unjournaled replacement requires the next 3b-1c sub-part")
-        try:
-            with self._directory("etc/happyranch") as parent:
-                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
-            if hashlib.sha256(transaction).hexdigest() != candidate.journal_generation:
-                raise InstallerError("replacement journal changed before stop")
-            # H2: derive only from the validated recorded release home. Reuse
-            # the same-FD source-UID reader before ANY mutating manager call.
-            release = self._replacement_release(transaction)
-            self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-            if self.replacement_inventory() != candidate:
-                raise InstallerError("replacement inventory changed before stop")
-            self._discard_replacement_pending(transaction)
-            self.stop_and_confirm(_replacement_transaction=transaction)
-            record = self._json(transaction)
-            if record["phase"] == "prepared":
-                record["phase"] = "replacement-stopped"
-                self._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
-                                           self.root_owner, 0o600, expected_transaction=transaction)
-            elif record["phase"] in ("replacement-staged", *_CLOSURE_PHASES):
-                self._close_replacement(transaction)
-                return
-            elif record["phase"] in ("replacement-units-removed", *_ALL_STAGING_PHASES):
-                self._stage_replacement(transaction)
-            elif record["phase"] in (*_REMOVAL_PHASES, *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES,
-                                     "replacement-quarantined"):
-                self._remove_replacement_state(transaction)
-            else:
-                self._quarantine_configs(transaction)
-        except (OSError, ServiceManagerError):
-            raise InstallerError("replacement stop intent incomplete; inspect the fixed transaction record") from None
-        raise InstallerError("replacement paused after stop intent; quarantine/removal and fresh staging unavailable")
 
     def _quarantine_metadata(self, phase: str, *, record: dict | None = None) -> dict:
         """Accept exactly the before/after placement of ONE journaled rename.
@@ -1020,50 +814,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 metadata[entry] = actual
         return metadata
 
-    def _quarantine_configs(self, transaction: bytes) -> None:
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        while record["phase"] != "replacement-quarantined":
-            phase = record["phase"]
-            if phase in _QUARANTINE_PHASES:
-                self._quarantine_config(_QUARANTINE_CONFIGS[_QUARANTINE_PHASES.index(phase)], transaction)
-                next_phase = _QUARANTINE_PHASES[_QUARANTINE_PHASES.index(phase) + 1]
-            else:
-                next_phase = _QUARANTINE_PHASES[0]
-            record["phase"] = next_phase
-            updated = json.dumps(record, sort_keys=True).encode()
-            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
-                                       expected_transaction=transaction)
-            transaction = updated
-        raise InstallerError("replacement paused after config quarantine; removal and fresh staging unavailable")
 
-    def _remove_replacement_state(self, transaction: bytes) -> None:
-        """Consume one bounded removal group; retain the journal until closure."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        units = record["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES)
-        configs = record["phase"] in ("replacement-state-removed", *_CONFIG_REMOVAL_PHASES)
-        phases = _UNIT_REMOVAL_PHASES if units else _CONFIG_REMOVAL_PHASES if configs else _REMOVAL_PHASES
-        while record["phase"] != phases[-1]:
-            phase = record["phase"]
-            if phase in phases:
-                if units:
-                    self._remove_replacement_unit(transaction)
-                else:
-                    self._remove_replacement_entry(transaction)
-                next_phase = phases[phases.index(phase) + 1]
-            else:
-                next_phase = phases[0]
-            record["phase"] = next_phase
-            updated = json.dumps(record, sort_keys=True).encode()
-            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
-                                       expected_transaction=transaction)
-            transaction = updated
-        if units:
-            raise InstallerError("replacement paused after unit removal; fresh staging and transaction closure unavailable")
-        if configs:
-            raise InstallerError("replacement paused after config removal; unit removal and fresh staging unavailable")
-        raise InstallerError("replacement paused after state removal; config/unit removal and fresh staging unavailable")
 
     def _staging_inventory(self, transaction: bytes, *, pending: tuple[str, bytes] | None = None) -> InstallInventory:
         """Only completed/current effects may exist; old configs/state stay absent.
@@ -1163,106 +914,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         self._confirm_quiescent()
         return token
 
-    def _staging_data(self, name: str, transaction: bytes) -> bytes:
-        """Generate only new settings; never open quarantined or retired configs."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        if name == "release-daemon.json":
-            return json.dumps(self._replacement_release(transaction), sort_keys=True).encode()
-        if name == "daemon.token":
-            return self._replacement_custody(transaction)
-        if name == "provision.json":
-            record = self._json(transaction)
-            return json.dumps(dict(version=1, layout=self.layout, phase="provisioned",
-                                   digests={key: value for key, value in record["digests"].items()
-                                            if key != "provision.json"}), sort_keys=True).encode()
-        files = self._generated_configs()
-        if name == "sidecar.json":
-            with self._directory("etc/happyranch") as parent:
-                connector = self._json(self._read_file(parent, "connector.json",
-                    owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
-            sidecar = self._json(files[name])
-            sidecar["RoleIdentity"] = "home-sidecar-" + connector["home_id"]
-            return json.dumps(sidecar, sort_keys=True).encode()
-        return files[name]
 
-    def _stage_replacement(self, transaction: bytes) -> None:
-        """Stage the bounded inert prefix; keep every lifecycle guard closed."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        staging_files, staging_phases = _replacement_staging(record)
-        self._check_deb_payload()
-        while record["phase"] != "replacement-staged":
-            phase = record["phase"]
-            if phase in dict(_STAGING_REMOVALS):
-                self._remove_replacement_entry(transaction)
-            elif phase in dict(staging_files):
-                name = dict(staging_files)[phase]
-                with self._directory("etc/happyranch") as parent:
-                    try:
-                        os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        data = self._staging_data(name, transaction)
-                    else:
-                        data = None  # Full inventory already bound this completed effect.
-                if data is not None:
-                    # A crash before publication can lose generated UUID bytes.
-                    # Rebind ONLY the still-absent current file, behind a new
-                    # fsynced exact-generation intent. Existing files never change.
-                    record["digests"][name] = hashlib.sha256(data).hexdigest()
-                    updated = json.dumps(record, sort_keys=True).encode()
-                    self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
-                                               expected_transaction=transaction)
-                    transaction = updated
-                    owner = (self._service_owner if name == "daemon.token" else self.root_owner
-                             if name in {"provision.json", "release-daemon.json"} else (self.root_owner[0], self._service_owner[1]))
-                    mode = 0o640 if name in _QUARANTINE_CONFIGS else 0o644 if name == "release-daemon.json" else 0o600
-                    self._write_provision_file(name, data, owner, mode,
-                                               expected_transaction=transaction)
-            next_index = 0 if phase == "replacement-units-removed" else staging_phases.index(phase) + 1
-            record["phase"] = staging_phases[next_index]
-            updated = json.dumps(record, sort_keys=True).encode()
-            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
-                                       expected_transaction=transaction)
-            transaction = updated
-        raise InstallerError("replacement paused after fresh staging; retry ReplaceFailed to close transaction")
 
-    def _close_replacement(self, transaction: bytes) -> None:
-        """Keep the existing v1 payloads; retire the journal only after reload.
-
-        Old quarantine destruction and final provenance publication already have
-        individual fsynced intents. No file is regenerated or policy re-issued.
-        """
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        while record["phase"] != "replacement-retire-journal":
-            if record["phase"] == "replacement-reload":
-                with self._publication_parent() as (parent, revalidate):
-                    self._check_replacement_transaction(parent, transaction)
-                    self._replacement_custody(transaction)
-                    inventory = self._inventory(prepared_transaction=transaction)
-                    if inventory.state != "known-failed-or-partial":
-                        raise InstallerError("replacement closure inventory changed: " + ", ".join(inventory.paths))
-                    revalidate()
-                    self.manager.daemon_reload()
-            record["phase"] = _CLOSURE_PHASES[0] if record["phase"] == "replacement-staged" else _CLOSURE_PHASES[1]
-            updated = json.dumps(record, sort_keys=True).encode()
-            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
-                                       expected_transaction=transaction)
-            transaction = updated
-        with self._publication_parent() as (parent, revalidate):
-            before = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
-            self._check_replacement_transaction(parent, transaction)
-            self._replacement_custody(transaction)
-            inventory = self._inventory(prepared_transaction=transaction)
-            if inventory.state != "known-failed-or-partial":
-                raise InstallerError("replacement closure inventory changed: " + ", ".join(inventory.paths))
-            revalidate()
-            after = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
-            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
-            if any(getattr(before, field) != getattr(after, field) for field in fields):
-                raise InstallerError(str(self.root / "etc/happyranch/install-transaction.json"))
-            os.unlink("install-transaction.json", dir_fd=parent)
-            os.fsync(parent)
 
     def _unit_wants_names(self) -> set[str]:
         try:
@@ -1277,207 +930,10 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         except FileNotFoundError:
             return set()
 
-    def _remove_replacement_unit(self, transaction: bytes) -> None:
-        """Remove one fixed unit, reserved link or EMPTY owned unit directory."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        phase = self._json(transaction)["phase"]
-        entry = next(((relative, kind) for intent, relative, kind in _UNIT_REMOVALS if intent == phase), None)
-        if entry is None:
-            raise InstallerError("unit removal requires the exact fixed-path intent")
-        relative, kind = entry
-        with self._publication_parent() as (journal_parent, revalidate):
-            self._check_replacement_transaction(journal_parent, transaction)
-            if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
-                raise InstallerError("replacement inventory changed before unit removal")
-            folder, name = str(Path(relative).parent), Path(relative).name
-            try:
-                with self._publication_parent(folder) as (parent, revalidate_removal):
-                    try:
-                        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        revalidate()
-                        revalidate_removal()
-                        os.fsync(parent)
-                        return
-                    if (before.st_uid, before.st_gid) != self.root_owner:
-                        raise InstallerError("unsafe unit removal owner")
-                    self._check_replacement_member(relative, transaction)
-                    if kind == "directory":
-                        with self._directory(relative) as directory:
-                            if os.listdir(directory) or (os.fstat(directory).st_dev, os.fstat(directory).st_ino) != (
-                                    before.st_dev, before.st_ino):
-                                raise InstallerError("unit removal directory changed or is not empty")
-                    elif kind == "unit":
-                        # Inventory already selected the exact known profile bytes.
-                        self._read_unit(parent, name)
-                    elif (not stat.S_ISLNK(before.st_mode) or before.st_nlink != 1
-                          or os.readlink(name, dir_fd=parent) not in {f"../{name}", str(self.root / _UNIT_DIR / name)}):
-                        raise InstallerError("unsafe unit removal link")
-                    self._check_replacement_transaction(journal_parent, transaction)
-                    release = self._replacement_release(transaction)
-                    self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-                    if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
-                        raise InstallerError("replacement inventory changed before unit effect")
-                    self._confirm_quiescent()
-                    self._check_replacement_member(relative, transaction)
-                    revalidate()
-                    revalidate_removal()
-                    after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
-                              "st_size", "st_mtime_ns", "st_ctime_ns")
-                    if any(getattr(before, field) != getattr(after, field) for field in fields):
-                        raise InstallerError("unit removal entry changed")
-                    (os.rmdir if kind == "directory" else os.unlink)(name, dir_fd=parent)
-                    os.fsync(parent)
-            except FileNotFoundError:
-                # Only exact current intent absence is accepted by inventory.
-                pass
 
-    def _remove_replacement_entry(self, transaction: bytes) -> None:
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        phase = self._json(transaction)["phase"]
-        relative = dict((*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS, *_STAGING_REMOVALS)).get(phase)
-        if relative is None:
-            raise InstallerError("removal requires the exact fixed-path intent")
-        with self._publication_parent() as (journal_parent, revalidate):
-            if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
-                raise InstallerError("replacement inventory changed before removal")
-            self._check_replacement_transaction(journal_parent, transaction)
-            folder, name = str(Path(relative).parent), Path(relative).name
-            try:
-                with self._publication_parent(folder) as (parent, revalidate_removal):
-                    try:
-                        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        # The exact current intent may have already unlinked it.
-                        os.fsync(parent)
-                        return
-                    link = relative == f"{_CREDSTORE}/{_CREDENTIAL_NAME}"
-                    owner = (self.root_owner if relative == _ENROLLMENT or link or phase in _CONFIG_REMOVAL_PHASES
-                             or relative == "etc/happyranch/provision.json"
-                             else self._service_owner)
-                    if (before.st_nlink != 1 or (before.st_uid, before.st_gid) != owner
-                            or (not link and (not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o600))
-                            or (link and (not stat.S_ISLNK(before.st_mode)
-                                          or os.readlink(name, dir_fd=parent) != str(self.root / _ENROLLMENT)))):
-                        raise InstallerError("unsafe replacement removal entry")
-                    if phase not in (*_CONFIG_REMOVAL_PHASES, *_ALL_STAGING_PHASES):
-                        self._check_replacement_member(relative, transaction)
-                    # Opaque state is never read, interpreted, copied or restored.
-                    # Repeat the full bounded inventory before this effect.
-                    self._check_replacement_transaction(journal_parent, transaction)
-                    if phase in _ALL_STAGING_PHASES:
-                        self._replacement_custody(transaction)
-                    if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
-                        raise InstallerError("replacement inventory changed before unlink")
-                    revalidate()
-                    revalidate_removal()
-                    after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
-                              "st_size", "st_mtime_ns", "st_ctime_ns")
-                    if any(getattr(before, field) != getattr(after, field) for field in fields):
-                        raise InstallerError("removal entry changed")
-                    if self._json(transaction)["version"] == 2:
-                        self._confirm_quiescent()
-                        if phase not in (*_CONFIG_REMOVAL_PHASES, *_ALL_STAGING_PHASES):
-                            self._check_replacement_member(relative, transaction)
-                    os.unlink(name, dir_fd=parent)
-                    os.fsync(parent)
-            except FileNotFoundError:
-                # Absent fixed state directories were permitted by admission.
-                pass
 
-    def _quarantine_config(self, name: str, transaction: bytes) -> None:
-        """Tighten and move only a digest-bound fixed source; never overwrite."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        if record["phase"] != _QUARANTINE_PHASES[_QUARANTINE_CONFIGS.index(name)]:
-            raise InstallerError("quarantine requires the exact fixed-path intent")
-        with self._publication_parent() as (parent, revalidate):
-            if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
-                raise InstallerError("replacement inventory changed before quarantine")
-            self._check_replacement_transaction(parent, transaction)
-            metadata = self._quarantine_metadata(record["phase"], record=record)
-            quarantine = ".replacement-" + name
-            if record["version"] == 2 and record["digests"][name] == "absent":
-                return  # Missing at first admission; never manufacture an old digest.
-            if quarantine in metadata:
-                return  # The exact intent's rename already completed.
-            owner, mode, _ = metadata[name]
-            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            if hashlib.sha256(self._read_file(parent, name, owner=owner, mode=mode)).hexdigest() != record["digests"][name]:
-                raise InstallerError("quarantine source changed")
-            descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
-            try:
-                info = os.fstat(descriptor)
-                def signature(value: os.stat_result) -> tuple[int, ...]:
-                    return (value.st_dev, value.st_ino, value.st_uid, value.st_gid,
-                            value.st_mode, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-                if signature(info) != signature(before):
-                    raise InstallerError("quarantine source changed while opening")
-                revalidate()
-                self._check_replacement_transaction(parent, transaction)
-                if signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(info):
-                    raise InstallerError("quarantine source changed before metadata update")
-                revalidate()
-                # Journal is durable before either metadata change or rename.
-                os.fchmod(descriptor, 0o600)
-                os.fchown(descriptor, *self.root_owner)
-                os.fsync(descriptor)
-                if hashlib.sha256(self._read_file(parent, name, owner=self.root_owner, mode=0o600)).hexdigest() != record["digests"][name]:
-                    raise InstallerError("quarantine source changed before rename")
-                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
-                    raise InstallerError("quarantine source replaced before rename")
-                self._check_replacement_transaction(parent, transaction)
-                revalidate()
-                self._rename_provision_entry(parent, name, quarantine)
-                os.fsync(parent)
-            finally:
-                os.close(descriptor)
 
-    def _check_replacement_member(self, relative: str, transaction: bytes) -> None:
-        """V2 removes only an original fixed member, with its captured metadata."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        if record["version"] == 1:
-            return
-        current = self._replacement_snapshot()[relative]
-        if current != record["inventory"][relative]:
-            raise InstallerError("replacement original member changed")
 
-    def _check_replacement_transaction(self, parent: int, transaction: bytes) -> None:
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
-            raise InstallerError("replacement generation changed before mutation")
-        record = self._json(transaction)
-        if record["version"] == 2:
-            self._replacement_custody(transaction)
-        if record["phase"] in (*_ALL_STAGING_PHASES, *_CLOSURE_PHASES):
-            return  # The staging consumer checks the complete phase-bound inventory.
-        phase = ("replacement-configs-removed" if record["phase"] in _UNIT_REMOVAL_PHASES else
-                 "replacement-quarantined" if record["phase"] in _REMOVAL_PHASES else record["phase"])
-        configs = (self._quarantine_metadata(phase, record=record) if phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES) else
-                   {name: ((self.root_owner[0], self._service_owner[1]), 0o640, False)
-                    for name in _QUARANTINE_CONFIGS})
-        if record["version"] == 2 and phase not in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
-            for name in _QUARANTINE_CONFIGS:
-                original = record["inventory"]["etc/happyranch/" + name]
-                if isinstance(original, dict):
-                    info = original["metadata"]
-                    configs[name] = ((info[2], info[3]), stat.S_IMODE(info[4]), False)
-        metadata = {**configs, "release-daemon.json": (self.root_owner, 0o644, False),
-                    "provision.json": (self.root_owner, 0o600, False), "daemon.token": (self._service_owner, 0o600, False)}
-        for name, digest in record["digests"].items():
-            if digest == "absent":
-                self._refuse_provision_entry(parent, name)
-                continue
-            if phase in _CONFIG_REMOVAL_PHASES and name in _QUARANTINE_CONFIGS and ".replacement-" + name not in configs:
-                continue  # Exact current/completed intent absence was checked above.
-            entry = ".replacement-" + name if ".replacement-" + name in configs else name
-            owner, mode, _ = metadata[entry]
-            if hashlib.sha256(self._read_file(parent, entry, owner=owner, mode=mode)).hexdigest() != digest:
-                raise InstallerError("replacement fixed file changed before mutation")
 
     def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
@@ -3082,10 +2538,13 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
 
         if os.geteuid() != 0 or type(fresh_auth) is not bool:
             raise InstallerError("policy renewal unavailable")
-        with installer_state_lock(self):
-            if _before_renew is not None:
-                _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
-            self._renew_policy_locked(fresh_auth=fresh_auth)
+        try:
+            with installer_state_lock(self):
+                if _before_renew is not None:
+                    _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
+                self._renew_policy_locked(fresh_auth=fresh_auth)
+        except headscale.HeadscaleServiceError:
+            raise InstallerError("policy renewal unavailable") from None
 
     def _renew_policy_locked(self, *, fresh_auth: bool) -> None:
         from runtime.remote_access.policy import PolicyEnvelope
@@ -3138,10 +2597,10 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         self._recover_policy_renewal(transaction)
 
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int,
-                              *, expected_transaction: bytes | None = None, relative: str = "etc/happyranch",
+                              *, relative: str = "etc/happyranch",
                               policy_renewal: bytes | None = None) -> None:
-        # Fresh files never overwrite. Only the closed linear replacement
-        # transitions can update a final entry, through the same atomic writer.
+        # Fresh files never overwrite. Only real non-home policy renewal can
+        # update its exact protected old/new publication pair.
         metadata = {
             **{key: ((self.root_owner[0], self._service_owner[1]), 0o640)
                for key in ("connector.json", "sidecar.json", "policy.json")
@@ -3151,55 +2610,17 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             "provision.json": (self.root_owner, 0o600),
             "install-transaction.json": (self.root_owner, 0o600),
         }
-        if self._headscale_preparing and relative == "etc/happyranch" and expected_transaction is None:
-            metadata["control-ca.pem"] = self._headscale_members()["/" + headscale.CONTROL_CA]
-        if relative != "etc/happyranch":
-            metadata = {
-                headscale.INSTALLER_STATE: {name: (self.root_owner, 0o600)
-                                            for name in (headscale.RECEIPT, headscale.PUBLICATION, _ISSUER_RECEIPT)},
-                headscale.CUSTODY[0]: {name: (self._headscale_owner, 0o600)
-                                       for name in ("policy.hujson", *headscale.CONFIG_FILES, *headscale.LEAF_FILES)},
-                _UNIT_DIR: {headscale.UNIT: (self.root_owner, 0o644)},
-            }.get(relative, {}) if self._headscale_preparing and expected_transaction is None else {}
-        if (name not in metadata or metadata[name] != (owner, mode)
+        if (relative != "etc/happyranch" or name not in metadata or metadata[name] != (owner, mode)
                 or owner is None or not 0 < len(data) <= 65536):
             raise InstallerError("invalid provisioning publication")
         renewal_files = self._policy_renewal_record(policy_renewal) if policy_renewal is not None else None
         if renewal_files is not None:
-            if (expected_transaction is not None or relative != "etc/happyranch"
+            if (relative != "etc/happyranch"
                     or (data != policy_renewal if name == "install-transaction.json" else
                         name not in renewal_files or data != renewal_files[name]["new_bytes"])):
                 raise InstallerError("invalid policy renewal publication")
-        replacement = expected_transaction is not None
-        updating = (replacement and name == "install-transaction.json"
-                    or renewal_files is not None and name in renewal_files)
-        rebinding = False
-        if replacement:
-            self._validate_install_record("install-transaction.json", expected_transaction, replacement=True)
-        if replacement and updating:
-            self._validate_install_record(name, data, replacement=True)
-            expected_record = self._json(expected_transaction)
-            phases = _replacement_phases(expected_record)
-            previous = phases.index(expected_record["phase"])
-            if previous + 1 == len(phases):
-                raise InstallerError("replacement retirement intent has no successor")
-            updated_record = self._json(data)
-            staged_name = dict(_replacement_staging(expected_record)[0]).get(expected_record["phase"])
-            rebinding = staged_name is not None and updated_record["phase"] == expected_record["phase"]
-            if rebinding:
-                expected_record["digests"][staged_name] = updated_record["digests"][staged_name]
-            else:
-                expected_record["phase"] = phases[previous + 1]
-            if updated_record != expected_record:
-                raise InstallerError("replacement update must preserve the exact six digests")
-        elif replacement:
-            record = self._json(expected_transaction)
-            if (dict(_replacement_staging(record)[0]).get(record["phase"]) != name
-                    or hashlib.sha256(data).hexdigest() != record["digests"][name]):
-                raise InstallerError("replacement publication requires its exact staging intent")
-            if name == "provision.json":
-                self._validate_install_record(name, data)
-        elif renewal_files is None and name in ("provision.json", "install-transaction.json"):
+        updating = renewal_files is not None and name in renewal_files
+        if renewal_files is None and name in ("provision.json", "install-transaction.json"):
             self._validate_install_record(name, data)
         with self._publication_parent(relative) as (parent, revalidate):
             if renewal_files is not None:
@@ -3207,28 +2628,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 if not updating:
                     self._refuse_provision_entry(parent, name)
                 self._headscale_no_pending(parent, name)
-            elif replacement:
-                if self._json(expected_transaction)["version"] == 2:
-                    self._replacement_custody(expected_transaction)
-                if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
-                    raise InstallerError("replacement inventory changed before intent publication")
-                if self._json(expected_transaction)["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES,
-                                                                  *_ALL_STAGING_PHASES, *_CLOSURE_PHASES):
-                    token = self._replacement_custody(expected_transaction)
-                    if name == "daemon.token" and token != data:
-                        raise InstallerError("release token changed before staging")
-                if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != expected_transaction:
-                    raise InstallerError("replacement journal changed before intent publication")
-                if rebinding:
-                    self._refuse_provision_entry(parent, staged_name)
-                if not updating:
-                    self._refuse_provision_entry(parent, name)
-                try:
-                    os.stat(f".{name}.pending", dir_fd=parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    pass
-                else:
-                    raise InstallerError("replacement pending entry exists")
             else:
                 self._refuse_provision_entry(parent, name)
             pending = f".{name}.pending"
@@ -3253,24 +2652,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 revalidate()
                 if renewal_files is not None:
                     self._check_policy_renewal(parent, policy_renewal, publishing=name == "install-transaction.json")
-                    revalidate()
-                elif replacement:
-                    if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != expected_transaction:
-                        raise InstallerError("replacement journal changed before rename")
-                    self._check_replacement_transaction(parent, expected_transaction)
-                    if self._json(expected_transaction)["phase"] in ("replacement-units-removed", *_ALL_STAGING_PHASES, *_CLOSURE_PHASES):
-                        token = self._replacement_custody(expected_transaction)
-                        if name == "daemon.token" and token != data:
-                            raise InstallerError("release token changed before staging rename")
-                        if self._inventory(prepared_transaction=expected_transaction,
-                                           pending=(name, data)).state != "known-failed-or-partial":
-                            raise InstallerError("replacement staging inventory changed before rename")
-                        if rebinding:
-                            self._refuse_provision_entry(parent, staged_name)
-                        named = os.stat(pending, dir_fd=parent, follow_symlinks=False)
-                        if ((named.st_dev, named.st_ino) != (created.st_dev, created.st_ino)
-                                or self._read_file(parent, pending, owner=owner, mode=mode) != data):
-                            raise InstallerError("replacement pending generation changed before rename")
                     revalidate()
                 if not updating:
                     # Fresh publication must never overwrite a late arrival.
@@ -3396,54 +2777,26 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             raise InstallerError('invalid release install record') from None
         return record
 
-    @staticmethod
-    def _generated_configs() -> dict[str, bytes]:
-        """Fixed identity/socket settings and the shipped deny-default artifact.
-
-        Public Enable proves the protected home control binding separately
-        before activation; this staging step has no URL input.
-        """
-        from runtime.remote_access.managed_provider import ManagedProviderConfig
-        from runtime.remote_access.supervisor import ConnectorConfig
-
-        connector = asdict(ConnectorConfig(
-            tenant_id=uuid.uuid4().hex, home_id=uuid.uuid4().hex, connector_id=uuid.uuid4().hex,
-            system=True, service_user="happyranch", service_group="happyranch",
-            daemon_token_path="/etc/happyranch/daemon.token", policy_path="/etc/happyranch/policy.json",
-            state_path="/var/lib/happyranch-connector/trust-state.json", excluded_daemon_ports=[8765],
-            managed=ManagedProviderConfig(profile="linux-managed-identity-v1", control_plane_id=uuid.uuid4().hex),
-        ))
-        connector.pop("daemon_port")
-        sidecar = dict(Profile="linux-managed-identity-v1", StateDir="/var/lib/happyranch-tsnet-sidecar",
-                       RoleIdentity=f"home-sidecar-{connector['home_id']}", DERPPolicy="private-only",
-                       ListenAddr=":443", ExcludedDaemonPorts=[8765])
-        artifact = json.loads(Path(__file__).with_name("route_policy.json").read_bytes())
-        policy = dict(schema_version=1, artifact_version=int(artifact["version"]), artifact=artifact,
-                      issued_at=datetime.now(timezone.utc).isoformat(), max_age_seconds=3600,
-                      revision=1, state="active")
-        return {name: json.dumps(value, sort_keys=True).encode() for name, value in (
-            ("connector.json", connector), ("sidecar.json", sidecar), ("policy.json", policy))}
 
     def provision(self, *, connector_config: Path | None = None, sidecar_config: Path | None = None,
                   policy_file: Path | None = None,
                   release_user: str, data_home: Path | None = None,
                   daemon_token_source: Path | None = None) -> None:
-        """Stage fresh files; omitted config inputs generate an inert identity bundle.
+        """Stage explicit non-home configs; generated home provisioning is retired.
 
-        The operator CLI still requires its original three inputs. Clean helper
-        composition uses omitted inputs; service-owned state/log/runtime
-        directories are left to systemd. Existing directories remain checked.
+        The operator CLI retains its original three required inputs. Service
+        directories remain supplied by systemd, with existing custody checks.
         """
+        if connector_config is None and sidecar_config is None and policy_file is None:
+            from runtime.remote_access.home_retirement import MESSAGE
+            raise InstallerError(MESSAGE)
         try:
             self._refuse_install_transaction()
-            generated = connector_config is None and sidecar_config is None and policy_file is None
-            if not generated and any(path is None for path in (connector_config, sidecar_config, policy_file)):
-                raise InstallerError("provide all three config inputs or omit all three for staged generation")
-            if generated and daemon_token_source is not None:
-                raise InstallerError("generated bundle requires the fixed release-home token source")
+            if any(path is None for path in (connector_config, sidecar_config, policy_file)):
+                raise InstallerError("provide all three config inputs")
             release = self._release_record(release_user, data_home)
             daemon_token_source = daemon_token_source or Path(release['data_home']) / 'daemon.token'
-            files = self._generated_configs() if generated else {name: self._input(path) for name, path in (
+            files = {name: self._input(path) for name, path in (
                 ("connector.json", connector_config), ("sidecar.json", sidecar_config), ("policy.json", policy_file))}
             self._validate_configs(files)
             connector = self._json(files["connector.json"])
@@ -3485,12 +2838,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             record = dict(layout=self.layout, token_source=str(daemon_token_source),
                           token_sha256=hashlib.sha256(token).hexdigest(),
                           configs={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
-            if generated:
-                record = dict(version=1, layout=self.layout, phase="provisioned", digests={
-                    **{name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
-                    "release-daemon.json": hashlib.sha256(json.dumps(release, sort_keys=True).encode()).hexdigest(),
-                    "daemon.token": hashlib.sha256(token).hexdigest(),
-                })
             self._write_provision_file("provision.json", json.dumps(record, sort_keys=True).encode(), self.root_owner, 0o600)
             self._check_provisioning()
         except OSError:

@@ -230,6 +230,10 @@ The programmatic preparation and unmounted activation/issuer/minter/admin/recove
 owners are removed. Historical protected readers, explicit retirement/Disable
 cleanup and non-home policy renewal remain. The following preparation details
 record historical behavior and do not provide a runnable preparation path.
+Omitted-input generated home provisioning also refuses. Explicit non-home
+provisioning still requires all three configuration inputs; non-home policy
+renewal and its existing serialization remain available. Uncalled ReplaceFailed
+forward preparation/replacement writers are removed.
 Legacy uninstall's underlying cleanup removes the proven inert Headscale unit/policy/custody and
 config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
 root-only publication receipt,
