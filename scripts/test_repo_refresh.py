@@ -60,6 +60,119 @@ os.execv('/usr/bin/git', ['git', *args])
 
 
 class RepoRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hold_before_closure_defers_lease_error_and_pauses(self) -> None:
+        if not isolated(self):
+            return
+        await self.held_lease_tail()
+
+    async def test_hold_before_closure_missing_proof_stays_unknown(self) -> None:
+        if not isolated(self):
+            return
+        await self.held_lease_tail('open_interval')
+
+    async def test_hold_before_closure_unknown_cleanup_stays_unknown(self) -> None:
+        if not isolated(self):
+            return
+        await self.held_lease_tail('cleanup_unavailable')
+
+    async def held_lease_tail(self, fault: str | None = None) -> None:
+        from runtime.orchestrator.run_step import run_step_impl
+        from runtime.orchestrator.task_pause import current_invocation, settle_live
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = Path(folder)
+            with git_environment(scratch):
+                generated, _, _ = stale_clone(scratch)
+                async with fixture(scratch/'org') as (org, _):
+                    workspace = org.root/'workspaces'/'worker'
+                    (generated/'repos').rename(workspace/'repos')
+                    git(workspace, 'clone', str(scratch/'origin.git'), str(workspace/'repos'/'second'))
+                    org.db.insert_task(TaskRecord(id='TASK-root', brief='Synthetic held parent',
+                        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+                        assigned_agent='manager', team='retiring'))
+                    child = TaskRecord(id='TASK-refused', parent_task_id='TASK-root',
+                        brief='Synthetic held child', assigned_agent='worker', team='retiring')
+                    org.db.insert_task(child)
+                    observer = CollectionObserver(org=org.slug, root=org.root, db=org.db)
+                    org.db._memory_collection_context = SimpleNamespace(db=org.db, memory_collection=observer)
+                    supervisor = build_default_host_supervisor(backend=MacOSProcessGroupBackend())
+                    original_lease, original_complete = adapters._repo_refresh_lease, adapters._repo_refresh_complete
+                    released, owners = [], []
+
+                    @contextmanager
+                    def lease(*args: Any, **kwargs: Any) -> Iterator[Any]:
+                        with original_lease(*args, **kwargs) as held:
+                            yield held
+                        released.append(args[0])
+                        if len(released) % 2 == 1:
+                            raise OSError('synthetic lease-release refusal')
+
+                    def complete(preparation: Any, results: dict, work: list) -> dict:
+                        org.db._task_pause_store.control('TASK-root', held=True, expected_generation=0,
+                            actor='founder', sessions=org.sessions)
+                        return original_complete(preparation, results, work)
+
+                    def body(*args: Any, **kwargs: Any) -> None:
+                        owner = current_invocation()
+                        owners.append(owner)
+                        adapters.refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor)
+                        self.fail('the real lease error must reach the original run_step tail')
+
+                    def tail(invocation: TaskInvocation, **kwargs: Any) -> None:
+                        if fault == 'open_interval':
+                            invocation._repository_effect_intervals.append(dict(
+                                id=len(invocation._repository_effect_intervals), kind='native', closed=False, failed=False))
+                        elif fault == 'cleanup_unavailable':
+                            kwargs['cleanup'] = SimpleNamespace(kind='unknown',
+                                reason='synthetic independently unavailable cleanup', processes=[])
+                        return settle_live(invocation, **kwargs)
+
+                    error = None
+                    with patch.object(adapters, '_repo_refresh_lease', lease), patch.object(
+                            adapters, '_repo_refresh_complete', complete), patch(
+                            'runtime.orchestrator.run_step._run_step_body', body), patch(
+                            'runtime.orchestrator.task_pause.settle_live', tail):
+                        try:
+                            run_step_impl(org.orchestrator, child.id)
+                        except (OSError, RuntimeError) as exc:
+                            error = exc
+                    history = org.db.repository_preparation_history_uncommitted(child.id)
+                    self.assertEqual(Counter(v['event']['phase'] for v in history)['closed'], 2,
+                        f'Pause before closure must preserve both original finishing receipt streams: {error!r}; '
+                        f'{Counter(v["event"]["phase"] for v in history)}; {owners[0].preparation_cause}')
+                    self.assertIsNone(error, 'the held original lease OSError must be handled by production')
+                    self.assertEqual(len(released), 2)
+                    self.assertEqual(org.db.get_task(child.id).status, TaskStatus.PENDING)
+                    self.assertEqual(org.db.get_task(child.id).orchestration_step_count, child.orchestration_step_count)
+                    self.assertIsNone(org.db.get_task(child.id).current_session_id)
+                    self.assertFalse(owners[0].launch_observed or owners[0].attempt_committed or owners[0].admitted)
+                    self.assertEqual(org.db.execute("SELECT COUNT(*) FROM audit_log WHERE task_id=? "
+                        "AND action='task_native_launch_boundary'", (child.id,)).fetchone()[0], 0)
+                    store = org.db._task_pause_store
+                    pause = store.projection('TASK-root')
+                    self.assertTrue(pause['held'])
+                    self.assertEqual(pause['control_state'], 'pausing' if fault else 'paused', pause)
+                    self.assertEqual(pause['evidence_complete'], fault is None)
+                    self.assertEqual(bool(pause['blockers']), fault is not None)
+                    if fault:
+                        self.assertTrue(any(b['kind'] == 'unknown' for b in pause['blockers']))
+                    else:
+                        with patch('runtime.orchestrator.run_step._run_step_body', body):
+                            run_step_impl(org.orchestrator, child.id)
+                        self.assertEqual(len(owners), 1, 'hold must veto a fresh preparation')
+                        self.assertEqual(org.db.repository_preparation_history_uncommitted(child.id), history)
+                        # Resume creates a fresh owner and ordinary refusal accounting.
+                        store.control('TASK-root', held=False, expected_generation=1,
+                            actor='founder', sessions=org.sessions)
+                        with patch.object(adapters, '_repo_refresh_lease', lease), patch(
+                                'runtime.orchestrator.run_step._run_step_body', body):
+                            run_step_impl(org.orchestrator, child.id)
+                        self.assertEqual(len(owners), 2)
+                        self.assertNotEqual(owners[0].identity, owners[1].identity)
+                        self.assertEqual(org.db.get_task(child.id).status, TaskStatus.FAILED)
+                        self.assertEqual(org.db.execute("SELECT COUNT(*) FROM audit_log WHERE task_id=? "
+                            "AND action='task_native_launch_boundary' AND json_extract(payload,'$.kind')='refused'",
+                            (child.id,)).fetchone()[0], 1)
+
     async def test_refused_tail_retains_unknown_without_positive_closure(self) -> None:
         if not isolated(self):
             return

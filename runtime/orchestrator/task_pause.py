@@ -692,6 +692,8 @@ class TaskInvocation:
                 removed = False
                 from runtime.daemon.preparation_recovery import refused_task_idle
                 if refused_task_idle(self, entry, cleanup):
+                    if getattr(self, '_held_preparation_deferred', False):
+                        entry['context'].pop('execution_unknown', None)
                     row['journal']['entries'] = [e for e in row['journal']['entries'] if e['id'] != self.identity]
                     removed = True
             else:

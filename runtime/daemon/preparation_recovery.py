@@ -22,7 +22,7 @@ STARTUP_ACTION = 'repository_preparation_startup_closed'
 
 
 def refused_task_idle(live: Any, entry: dict, cleanup: Any) -> bool:
-    """Positive original-tail proof only; never reconstruct a historical owner.
+    """Positive refused/hold-deferred tail proof; never reconstruct an owner.
 
     Called under the Pause writer AFTER durable unknown and producer settlement.
     Repository closure receipts prove the preparation processes, while the
@@ -41,9 +41,16 @@ def refused_task_idle(live: Any, entry: dict, cleanup: Any) -> bool:
         return False
     db = live.orch._db
     task = db.get_task(live.task.id)
+    held_deferred = getattr(live, '_held_preparation_deferred', False)
+    if held_deferred:
+        from runtime.orchestrator.launch_refusals import _current
+        if (task is None or task.status != TaskStatus.PENDING or not _current(live)
+                or not getattr(live, '_repository_lease_releases_attempted', False)
+                or getattr(live, '_repository_lease_release_error', None) is None):
+            return False
     reservation = live.move_reservation
     evidence = live._repository_preparations
-    if (task is None or task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED,
+    if (task is None or not held_deferred and task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED,
             TaskStatus.CANCELLED, TaskStatus.SUPERSEDED} or task.current_session_id is not None
             or reservation is None or reservation.possible_launch
             or not reservation.owner_live
@@ -75,6 +82,8 @@ def refused_task_idle(live: Any, entry: dict, cleanup: Any) -> bool:
             "THEN payload END FROM audit_log WHERE task_id=? AND action='task_native_launch_boundary' "
             "ORDER BY id DESC LIMIT 3", (task.id,)).fetchall()
         native = [json.loads(row[0]) for row in rows]
+        if held_deferred:
+            return all(row['invocation_id'] != live.identity for row in native)
         return bool(native and native[0]['kind'] == 'refused'
             and native[0]['invocation_id'] == live.identity
             and native[0]['attempt_id'] == live.refusal_attempt_id

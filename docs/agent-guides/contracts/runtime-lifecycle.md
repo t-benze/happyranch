@@ -484,6 +484,10 @@ THR-395: original repository completion records every worker/outer/closed receip
 before releasing the batch's original leases. A lease-release exception records
 unknown before further fallible cleanup, preserves the first error and attempts
 every remaining release; it cannot abandon a later repository's completion.
+Under root hold, only the original inactive, returned worker may append its own
+worker/outer/closed suffix. Original binding, live-owner, task, attempt,
+obligation, sequence and coherent-receipt validation still apply. No new
+preparation, command admission or executor launch is allowed under hold.
 The existing version1 `repository_preparation` events/APIs and native refusal
 audit shape are unchanged. A successful last fetch is not the refusal's cause.
 
@@ -496,6 +500,16 @@ owner, attempt and current closed effect intervals. Missing, unreadable or
 conflicting evidence retains unknown. Native `failed_cleanup` history remains
 sticky; this closes only proven-idle Pause attribution and grants no admission,
 hold release, retry or foreign-owner cleanup.
+
+If root hold vetoes refusal accounting for the original lease-release OSError,
+the pending, never-admitted child may instead settle as hold-deferred. The
+original owner must prove every lease release was attempted and satisfy the
+same complete durable closure, inactive worker/outer interval, no launch/SID/job
+and independent cleanup checks above. Final close marks the producer settled
+and removes only its proven-idle Pause attribution using existing journal
+shapes. There is no FAILED transition, refused audit row or consumed attempt.
+Missing proof retains unknown. Resume creates a fresh preparation under ordinary
+refusal accounting; sticky cleanup history is not erased or reused as proof.
 
 The generic `transition_capture_or_teardown_unavailable` tail disposition may
 be discharged only by this independent original no-launch/closure proof. Other

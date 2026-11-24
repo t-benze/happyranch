@@ -335,6 +335,22 @@ publication and manager-guarded merges remain separate gates.
 
 ### Bounded ordinary native launch refusals (THR-315)
 
+THR-395 held original-tail correction: a root hold admits no new preparation,
+command or executor. It permits only the original inactive, returned worker's
+worker/outer/closed receipts, retaining binding, live-owner, current task,
+attempt, obligation, sequence and coherent native receipt checks.
+
+When hold vetoes refusal accounting for that owner's original lease-release
+OSError, Pause may classify the pending child as idle only after the original
+producer proves all preparation obligations durably closed, every lease release
+attempted, no executor admission/launch/SID, no running job, no worker or outer
+effect interval open and no live or independently unknown cleanup. Existing
+producer-settled journal/removal shapes carry this hold-deferred disposition;
+no terminal task, refused row or consumed attempt is invented. The root reaches
+`paused` with the child pending. Missing proof stays `pausing` with an unknown
+blocker. Resume re-prepares normally and uses ordinary refusal accounting.
+The unheld terminal-refusal idle proof and unsafe-retirement exclusions remain.
+
 Actual non-hold refusals before durable preparation allow at most THREE consecutive
 attempts for the same logical task continuation. Existing audit rows
 `task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
