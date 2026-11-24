@@ -133,7 +133,6 @@ def test_nonready_inventory_is_owned_and_never_adoptable(venue, phase, legacy_si
     put(v.path(TRANSACTION_PATH), txn.to_bytes())
     result = io.inventory()
     assert (result.state, result.detail) == ("owned", phase)
-    assert io.replacement_inventory().installation.state == "owned"
     with pytest.raises(InstallerError): io.install()
     assert not mutating(v)
 

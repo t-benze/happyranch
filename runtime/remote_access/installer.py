@@ -23,7 +23,7 @@ import stat
 import sys
 import uuid
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -105,8 +105,6 @@ _HOME_STATE_MEMBERS = (
     "/var/lib/happyranch-tsnet-sidecar/tailscaled.log2.txt",
 )
 _QUARANTINE_CONFIGS = ("connector.json", "sidecar.json", "policy.json")
-_QUARANTINE_PHASES = ("replacement-quarantine-connector", "replacement-quarantine-sidecar",
-                      "replacement-quarantine-policy", "replacement-quarantined")
 _REPLACEMENT_REMOVALS = (
     ("replacement-remove-trust-state", "var/lib/happyranch-connector/trust-state.json"),
     ("replacement-remove-trust-anchor", "var/lib/happyranch-connector/trust-state.json.anchor"),
@@ -119,13 +117,6 @@ _REPLACEMENT_REMOVALS = (
     ("replacement-remove-enrollment", _ENROLLMENT),
     ("replacement-remove-enrollment-link", f"{_CREDSTORE}/{_CREDENTIAL_NAME}"),
 )
-_REMOVAL_PHASES = (*[phase for phase, _ in _REPLACEMENT_REMOVALS], "replacement-state-removed")
-_CONFIG_REMOVALS = (
-    ("replacement-remove-config-connector", "etc/happyranch/.replacement-connector.json"),
-    ("replacement-remove-config-sidecar", "etc/happyranch/.replacement-sidecar.json"),
-    ("replacement-remove-config-policy", "etc/happyranch/.replacement-policy.json"),
-)
-_CONFIG_REMOVAL_PHASES = (*[phase for phase, _ in _CONFIG_REMOVALS], "replacement-configs-removed")
 _UNIT_REMOVALS = (
     ("replacement-remove-target-link", f"{_UNIT_DIR}/multi-user.target.wants/{UNITS[2]}", "link"),
     ("replacement-remove-verifier-link", f"{_UNIT_DIR}/{UNITS[2]}.wants/{UNITS[3]}", "link"),
@@ -135,36 +126,7 @@ _UNIT_REMOVALS = (
         ("connector", "sidecar", "target", "verifier-socket", "verifier-service"), UNITS)],
     ("replacement-remove-target-wants", f"{_UNIT_DIR}/{UNITS[2]}.wants", "directory"),
 )
-_UNIT_REMOVAL_PHASES = (*[phase for phase, _, _ in _UNIT_REMOVALS], "replacement-units-removed")
-_STAGING_REMOVALS = (
-    ("replacement-discard-token", "etc/happyranch/daemon.token"),
-    ("replacement-discard-provision", "etc/happyranch/provision.json"),
-)
-_STAGING_FILES = (
-    ("replacement-stage-connector", "connector.json"),
-    ("replacement-stage-sidecar", "sidecar.json"),
-    ("replacement-stage-policy", "policy.json"),
-    ("replacement-stage-token", "daemon.token"),
-    ("replacement-stage-provision", "provision.json"),
-)
-_STAGING_PHASES = (*[phase for phase, _ in (*_STAGING_REMOVALS, *_STAGING_FILES)], "replacement-staged")
-_CLOSURE_PHASES = ("replacement-reload", "replacement-retire-journal")
-_REPLACEMENT_PHASES = ("replacement-stopped", *_QUARANTINE_PHASES, *_REMOVAL_PHASES,
-                       *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES, *_STAGING_PHASES, *_CLOSURE_PHASES)
 _REPLACEMENT_FILES = (*_QUARANTINE_CONFIGS, "release-daemon.json", "daemon.token", "provision.json")
-_V2_STAGING_FILES = (("replacement-stage-release", "release-daemon.json"), *_STAGING_FILES)
-_V2_STAGING_PHASES = (*[phase for phase, _ in (*_STAGING_REMOVALS, *_V2_STAGING_FILES)], "replacement-staged")
-_V2_REPLACEMENT_PHASES = (*_REPLACEMENT_PHASES[:_REPLACEMENT_PHASES.index(_STAGING_PHASES[0])],
-                          *_V2_STAGING_PHASES, *_CLOSURE_PHASES)
-_ALL_STAGING_PHASES = (*_STAGING_PHASES, "replacement-stage-release")
-
-
-def _replacement_phases(record: dict) -> tuple[str, ...]:
-    return ("prepared", *(_V2_REPLACEMENT_PHASES if record["version"] == 2 else _REPLACEMENT_PHASES))
-
-
-def _replacement_staging(record: dict) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
-    return (_V2_STAGING_FILES, _V2_STAGING_PHASES) if record["version"] == 2 else (_STAGING_FILES, _STAGING_PHASES)
 
 
 @dataclass(frozen=True)
@@ -174,20 +136,6 @@ class InstallInventory:
     state: str
     detail: str
     paths: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ReplacementInventory:
-    """Read-only replacement candidate, never permission to replay a journal.
-
-    journal_generation fingerprints an exact validated recovery record.
-    inventory_generation binds an unjournaled fixed inventory for first admission.
-    Neither observation authorizes activation or mutation by itself.
-    """
-
-    installation: InstallInventory
-    journal_generation: str | None = None
-    inventory_generation: str | None = None
 
 
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
@@ -300,7 +248,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         return files
 
     def _inventory_units(
-        self, connector: dict, *, removing_units: set[str] | None = None,
+        self, connector: dict, *,
         observed_units: dict[str, str] | None = None,
     ) -> tuple[set[str], dict[str, dict[str, str]]]:
         if connector and not isinstance(connector.get("managed"), dict):
@@ -352,17 +300,11 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             except (ServiceManagerError, OSError):
                 raise InstallerError(path) from None
             loaded = name in present
-            # systemd can retain the old fragment after its journaled unlink,
-            # including across a new installer instance. Only this consumer's
-            # exact current/completed unit intent permits a cached OWN fragment.
-            cached = (not loaded and name in (removing_units or set())
-                      and props.get("LoadState") == "loaded" and props.get("FragmentPath") == path)
-            if (props.get("FragmentPath") != (path if loaded or cached else "")
+            if (props.get("FragmentPath") != (path if loaded else "")
                     or props.get("DropInPaths") != ""
-                    or props.get("NeedDaemonReload") not in ({"no", "yes"} if cached else {"no"})
-                    or props.get("LoadState") != ("loaded" if loaded or cached else "not-found")
-                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else
-                                                       {"inactive", "failed"} if cached else {"inactive"})):
+                    or props.get("NeedDaemonReload") != "no"
+                    or props.get("LoadState") != ("loaded" if loaded else "not-found")
+                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else {"inactive"})):
                 # Manager strings can contain arbitrary data: report fixed paths only.
                 raise InstallerError(path)
             properties[name] = props
@@ -399,8 +341,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
 
         return HomeRetirement(self).detect().public()
 
-    def _inventory(self, *, prepared_transaction: bytes | None = None,
-                   pending: tuple[str, bytes] | None = None) -> InstallInventory:
+    def _inventory(self) -> InstallInventory:
         preparing = self._headscale_preparing
         location = str(self.root / "etc/happyranch")
         paths: list[str] = []
@@ -408,86 +349,44 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             self._service_owner = self._account(create=False)
             service = self._service_owner
             config_owner = None if service is None else (self.root_owner[0], service[1])
-            phase = None
-            replacement_record = None
-            if prepared_transaction is not None:
-                self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
-                replacement_record = self._json(prepared_transaction)
-                phase = replacement_record["phase"]
-            if phase in (*_ALL_STAGING_PHASES, *_CLOSURE_PHASES):
-                return self._staging_inventory(prepared_transaction, pending=pending)
-            unit_removal = phase in _UNIT_REMOVAL_PHASES
-            quarantine_phase = ("replacement-configs-removed" if unit_removal else
-                                "replacement-quarantined" if phase in _REMOVAL_PHASES else phase)
-            removed = ({relative for _, relative in _REPLACEMENT_REMOVALS[:_REMOVAL_PHASES.index(phase)]}
-                       if phase in _REMOVAL_PHASES else set())
-            removable_configs: set[str] = set()
-            if phase in _CONFIG_REMOVAL_PHASES:
-                current = _CONFIG_REMOVAL_PHASES.index(phase)
-                removed = {relative for _, relative in (*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS[:current])}
-                removable_configs = set(_QUARANTINE_CONFIGS[:current + 1])
-            removing_units: set[str] = set()
-            if unit_removal:
-                current = _UNIT_REMOVAL_PHASES.index(phase)
-                removed = {relative for _, relative in (*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS)}
-                removed.update(relative for _, relative, _ in _UNIT_REMOVALS[:current])
-                removable_configs = set(_QUARANTINE_CONFIGS)
-                removing_units = {Path(relative).name for _, relative, kind in _UNIT_REMOVALS[:current + 1]
-                                  if kind == "unit"}
-            if unit_removal or phase == "replacement-configs-removed":
-                # Unlike multi-user.target.wants, this target's wants directory
-                # belongs solely to these units. Unknown contents veto deletion.
-                if self._unit_wants_names() - {UNITS[3]}:
-                    raise InstallerError(str(self.root / _UNIT_DIR / (UNITS[2] + ".wants")))
-            # Completed removal intents require absence, including on resume.
-            for relative in removed:
-                try:
-                    with self._directory(str(Path(relative).parent)) as parent:
-                        os.stat(Path(relative).name, dir_fd=parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                raise InstallerError(str(self.root / relative))
             home = None
-            if prepared_transaction is None:
-                activation_present = False
+            activation_present = False
+            try:
+                with self._directory(headscale.INSTALLER_STATE) as parent:
+                    for name in ("home-activation.json", ".home-activation.json.pending"):
+                        try:
+                            os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            activation_present = True
+                        except FileNotFoundError:
+                            pass
+            except FileNotFoundError:
+                pass
+            try:
+                with self._directory("etc/happyranch") as parent:
+                    sidecar = self._json(self._read_file(parent, "sidecar.json"))
+            except FileNotFoundError:
+                if activation_present:
+                    raise InstallerError(location) from None
+                sidecar = {}
+            if "home_binding" in sidecar and not activation_present:
+                return self._home_staged_inventory()
+            if "home_binding" in sidecar or activation_present:
+                from runtime.remote_access.home_admission import HomeProfileAdmission
+                home = HomeProfileAdmission(self).require(ordinary=False)
+                # Fixed Headscale custody map; readers only, never prepare.
+                self._headscale_preparing = True
+                self._inventory_files("etc/happyranch/headscale", {
+                    name: (self._headscale_owner, 0o600, False)
+                    for name in (*headscale.CONFIG_FILES, *headscale.LEAF_FILES, "policy.hujson")})
+            else:
+                # No B1 binding grants an exception to inert Headscale policy.
+                # In particular, a lone home fragment remains crash drift.
                 try:
-                    with self._directory(headscale.INSTALLER_STATE) as parent:
-                        for name in ("home-activation.json", ".home-activation.json.pending"):
-                            try:
-                                os.stat(name, dir_fd=parent, follow_symlinks=False)
-                                activation_present = True
-                            except FileNotFoundError:
-                                pass
-                except FileNotFoundError:
-                    pass
-                try:
-                    with self._directory("etc/happyranch") as parent:
-                        sidecar = self._json(self._read_file(parent, "sidecar.json"))
-                except FileNotFoundError:
-                    if activation_present:
-                        raise InstallerError(location) from None
-                    sidecar = {}
-                if "home_binding" in sidecar and not activation_present:
-                    return self._home_staged_inventory()
-                if "home_binding" in sidecar or activation_present:
-                    from runtime.remote_access.home_admission import HomeProfileAdmission
-                    home = HomeProfileAdmission(self).require(ordinary=False)
-                    # Fixed Headscale custody map; readers only, never prepare.
-                    self._headscale_preparing = True
-                    self._inventory_files("etc/happyranch/headscale", {
-                        name: (self._headscale_owner, 0o600, False)
-                        for name in (*headscale.CONFIG_FILES, *headscale.LEAF_FILES, "policy.hujson")})
-                else:
-                    # No B1 binding grants an exception to inert Headscale policy.
-                    # In particular, a lone home fragment remains crash drift.
-                    try:
-                        self._headscale_inventory()
-                    except headscale.HeadscaleServiceError:
-                        raise InstallerError(str(self.root / _UNIT_DIR / headscale.UNIT)) from None
+                    self._headscale_inventory()
+                except headscale.HeadscaleServiceError:
+                    raise InstallerError(str(self.root / _UNIT_DIR / headscale.UNIT)) from None
             config_metadata = {name: (config_owner, (0o600, 0o640, 0o644), False)
                                for name in _QUARANTINE_CONFIGS}
-            if quarantine_phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
-                config_metadata = self._quarantine_metadata(quarantine_phase, record=replacement_record)
             files = self._inventory_files("etc/happyranch", {
                 **config_metadata,
                 **({"control-ca.pem": (config_owner, 0o640, False),
@@ -496,34 +395,11 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 "provision.json": (self.root_owner, 0o600, False),
                 "daemon.token": (service, 0o600, False),
                 "enrollment.key": (self.root_owner, 0o600, False),
-                **({"install-transaction.json": (self.root_owner, 0o600, False)}
-                   if prepared_transaction is not None else {}),
-                **({".install-transaction.json.pending": (self.root_owner, 0o600, False)}
-                   if pending is not None and pending[0] == "install-transaction.json" else {}),
             }, directories={"headscale", "empty-ca-directory"} if home else None)
             if home is not None:
                 files.pop("control-ca.pem", None)
                 files.pop("invite-issuer.json", None)
-            if pending is not None and files.pop("." + pending[0] + ".pending", None) != pending[1]:
-                raise InstallerError(str(self.root / "etc/happyranch" / ("." + pending[0] + ".pending")))
             paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
-            if quarantine_phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
-                for name in _QUARANTINE_CONFIGS:
-                    quarantined = ".replacement-" + name
-                    if quarantined in files:
-                        files[name] = files.pop(quarantined)
-            if prepared_transaction is not None:
-                location = str(self.root / "etc/happyranch/install-transaction.json")
-                if files.pop("install-transaction.json", None) != prepared_transaction:
-                    raise InstallerError(location)
-                digests = self._json(prepared_transaction)["digests"]
-                if any((name in files if digest == "absent" else
-                        (name not in files and name not in removable_configs)
-                        or (name in files and hashlib.sha256(files[name]).hexdigest() != digest))
-                       for name, digest in digests.items()):
-                    raise InstallerError(location)
-                if replacement_record["version"] == 2:
-                    self._validate_configs(files, staged=True, partial=True, require_current=False)
             connector = self._json(files["connector.json"]) if "connector.json" in files else {}
             provenance = files.get("provision.json")
             modern = False
@@ -533,13 +409,12 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             if provenance is not None:
                 # Recorded provisioning retains its exact mode contract. Only
                 # unrecorded legacy configs may use the other safe modes above.
-                if quarantine_phase not in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES):
-                    with self._directory("etc/happyranch") as parent:
-                        for name in _QUARANTINE_CONFIGS:
-                            if name in files:
-                                location = str(self.root / "etc/happyranch" / name)
-                                if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
-                                    raise InstallerError(location)
+                with self._directory("etc/happyranch") as parent:
+                    for name in _QUARANTINE_CONFIGS:
+                        if name in files:
+                            location = str(self.root / "etc/happyranch" / name)
+                            if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
+                                raise InstallerError(location)
                 location = str(self.root / "etc/happyranch/provision.json")
                 self._validate_install_record("provision.json", provenance)
                 record = self._json(provenance)
@@ -596,18 +471,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             except FileNotFoundError:
                 pass
             location = str(self.root / _UNIT_DIR)
-            # After connector removal, v2 retains the independently validated
-            # unit digest even when provisioning provenance was originally absent.
-            # Select only the fixed rendering; never reconstruct old config/argv.
-            if (phase in _CONFIG_REMOVAL_PHASES or unit_removal) and "connector.json" not in files:
-                modern_connector = {"managed": {"profile": "linux-managed-identity-v1"}}
-                if replacement_record is not None and replacement_record["version"] == 2:
-                    original = replacement_record["inventory"][_UNIT_DIR + "/" + UNITS[0]]
-                    modern = (isinstance(original, dict) and original.get("digest") == hashlib.sha256(
-                        managed_units(self.layout, connector_config=modern_connector)[UNITS[0]].encode()).hexdigest())
-                if modern:
-                    connector = modern_connector
-            units, properties = self._inventory_units(connector, removing_units=removing_units,
+            units, properties = self._inventory_units(connector,
                 observed_units=HomeProfileAdmission(self).observed_units(home) if home else None)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             if home is not None:
@@ -617,11 +481,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                                         home.receipt.phase, tuple(sorted(paths)))
             complete = required <= files.keys()
             failed = any(props["ActiveState"] == "failed" for props in properties.values())
-            if phase in _REPLACEMENT_PHASES or replacement_record is not None and replacement_record["version"] == 2:
-                # Only the replacement consumer can recognize this intent. All
-                # remaining original files must still match; stopping changes manager
-                # state, so it cannot be used to infer a successful manual install.
-                return InstallInventory("known-failed-or-partial", phase, tuple(sorted(paths)))
             if modern and complete and len(units) in {0, len(UNITS)} and not failed:
                 managed = connector.get("managed")
                 profile = managed.get("profile") if isinstance(managed, dict) else None
@@ -641,38 +500,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         finally:
             self._headscale_preparing = preparing
 
-    def replacement_inventory(self) -> ReplacementInventory:
-        """Inspect a journal only for replacement candidate selection.
-
-        V1 and additive v2 recovery phases belong only to this consumer. Only exact
-        interrupted writer intents qualify; observation never discards them.
-        Missing/different fixed files, wrong placement or unsafe metadata refuse.
-        Normal inventory and every lifecycle operation still reject journals.
-        This observation neither reads a release-home token nor stops services.
-        """
-        location = str(self.root / "etc/happyranch/install-transaction.json")
-        try:
-            with self._publication_parent() as (parent, revalidate):
-                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
-                pending = self._replacement_pending(parent, transaction)
-                installation = self._inventory(prepared_transaction=transaction,
-                    pending=("install-transaction.json", pending) if pending is not None else None)
-                revalidate()
-        except FileNotFoundError:
-            installation = self.inventory()
-            if installation.state != "known-failed-or-partial":
-                return ReplacementInventory(installation)
-            try:
-                snapshot = self._replacement_snapshot()
-            except (OSError, InstallerError):
-                return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
-            generation = hashlib.sha256(json.dumps((asdict(installation), snapshot), sort_keys=True).encode()).hexdigest()
-            return ReplacementInventory(installation, inventory_generation=generation)
-        except (OSError, InstallerError):
-            return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
-        generation = (hashlib.sha256(transaction).hexdigest()
-                      if installation.state == "known-failed-or-partial" else None)
-        return ReplacementInventory(installation, generation)
 
     @staticmethod
     def _replacement_members() -> tuple[str, ...]:
@@ -713,235 +540,14 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 snapshot[relative] = "absent"
         return snapshot
 
-    def _replacement_release(self, transaction: bytes) -> dict:
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        if record["version"] == 1:
-            return self._check_release_record()
-        expected = record["release"]
-        if self._release_record(expected["user"], Path(expected["data_home"])) != expected:
-            raise InstallerError("replacement release owner changed")
-        try:
-            actual = self._check_release_record()
-        except FileNotFoundError:
-            staging_release = (record["phase"] == "replacement-stage-release"
-                               and record["inventory"]["etc/happyranch/release-daemon.json"] == "absent")
-            if record["digests"]["release-daemon.json"] != "absent" and not staging_release:
-                raise InstallerError("replacement release record disappeared") from None
-        else:
-            if actual != expected:
-                raise InstallerError("replacement release binding changed")
-        return expected
 
-    def _replacement_pending(self, parent: int, transaction: bytes) -> bytes | None:
-        """Recognize only the normal writer's exact interrupted journal intent."""
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        name = ".install-transaction.json.pending"
-        try:
-            data = self._read_file(parent, name, owner=self.root_owner, mode=0o600)
-        except FileNotFoundError:
-            return None
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        self._validate_install_record("install-transaction.json", data, replacement=True)
-        expected, intent = self._json(transaction), self._json(data)
-        phases = _replacement_phases(expected)
-        previous = phases.index(expected["phase"])
-        staged_name = dict(_replacement_staging(expected)[0]).get(expected["phase"])
-        if staged_name is not None and intent["phase"] == expected["phase"]:
-            if expected["digests"][staged_name] == intent["digests"][staged_name]:
-                raise InstallerError("replacement pending is not a digest rebind")
-            self._refuse_provision_entry(parent, staged_name)
-            expected["digests"][staged_name] = intent["digests"][staged_name]
-        elif previous + 1 < len(phases):
-            expected["phase"] = phases[previous + 1]
-        else:
-            raise InstallerError("replacement pending has no successor")
-        if data != json.dumps(expected, sort_keys=True).encode():
-            raise InstallerError("replacement pending is not the exact writer intent")
-        return data
-
-
-
-
-
-    def _quarantine_metadata(self, phase: str, *, record: dict | None = None) -> dict:
-        """Accept exactly the before/after placement of ONE journaled rename.
-
-        Only its source may have partially tightened metadata. Every earlier
-        config is root-only in quarantine; every later v1 config is still 0640.
-        V2 retains the captured legacy modes and explicitly absent originals.
-        Neither duplicate locations nor missing configs can resume until a
-        published config-removal intent permits that exact copy's absence.
-        """
-        removing = phase in _CONFIG_REMOVAL_PHASES
-        current = (_CONFIG_REMOVAL_PHASES if removing else _QUARANTINE_PHASES).index(phase)
-        metadata = {}
-        config_owner = (self.root_owner[0], self._service_owner[1])
-        with self._directory("etc/happyranch") as parent:
-            for index, name in enumerate(_QUARANTINE_CONFIGS):
-                quarantine = ".replacement-" + name
-                found = {}
-                for entry in (name, quarantine):
-                    try:
-                        found[entry] = os.stat(entry, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        pass
-                if record is not None and record["version"] == 2 and record["digests"][name] == "absent":
-                    if found:
-                        raise InstallerError(str(self.root / "etc/happyranch" / name))
-                    continue
-                if removing:
-                    if name in found or (index < current and found) or (index > current and not found):
-                        raise InstallerError(str(self.root / "etc/happyranch" / name))
-                    if not found:
-                        continue  # Only completed/current journaled unlinks may be absent.
-                    metadata[quarantine] = (self.root_owner, 0o600, False)
-                    continue
-                if (len(found) != 1 or (index < current and quarantine not in found)
-                        or (index > current and name not in found)):
-                    raise InstallerError(str(self.root / "etc/happyranch" / name))
-                entry, info = next(iter(found.items()))
-                actual = ((info.st_uid, info.st_gid), stat.S_IMODE(info.st_mode), False)
-                allowed = {(self.root_owner, 0o600, False)} if entry == quarantine else {
-                    (config_owner, 0o640, False)}
-                if entry == name and record is not None and record["version"] == 2:
-                    original = record["inventory"]["etc/happyranch/" + name]["metadata"]
-                    allowed = {((original[2], original[3]), stat.S_IMODE(original[4]), False)}
-                if index == current and entry == name:
-                    allowed |= {(config_owner, 0o600, False), (self.root_owner, 0o600, False)}
-                if actual not in allowed:
-                    raise InstallerError(str(self.root / "etc/happyranch" / entry))
-                metadata[entry] = actual
-        return metadata
-
-
-
-    def _staging_inventory(self, transaction: bytes, *, pending: tuple[str, bytes] | None = None) -> InstallInventory:
-        """Only completed/current effects may exist; old configs/state stay absent.
-
-        The v1 digest slots bind the new files individually as staging advances.
-        An absent current destination may receive a newly generated digest intent;
-        a published destination is immutable and must match its recorded digest.
-        """
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        record = self._json(transaction)
-        staging_files, staging_phases = _replacement_staging(record)
-        current = (staging_phases.index(record["phase"]) if record["phase"] in staging_phases
-                   else len(staging_phases))
-        self._check_deb_payload()
-        config_owner = (self.root_owner[0], self._service_owner[1])
-        metadata = {**{name: (config_owner, 0o640, False) for name in _QUARANTINE_CONFIGS},
-                    "release-daemon.json": (self.root_owner, 0o644, False),
-                    "daemon.token": (self._service_owner, 0o600, False),
-                    "provision.json": (self.root_owner, 0o600, False),
-                    "install-transaction.json": (self.root_owner, 0o600, False)}
-        if pending is not None:
-            name, data = pending
-            if name not in metadata:
-                raise InstallerError("invalid replacement pending destination")
-            metadata["." + name + ".pending"] = metadata[name]
-        files = self._inventory_files("etc/happyranch", metadata)
-        if pending is not None and files.pop("." + pending[0] + ".pending", None) != pending[1]:
-            raise InstallerError("replacement pending bytes changed")
-        if files.pop("install-transaction.json", None) != transaction:
-            raise InstallerError("replacement generation changed during staging inventory")
-        required = ({"release-daemon.json"} if record["version"] == 1
-                    or record["inventory"]["etc/happyranch/release-daemon.json"] != "absent" else set())
-        allowed = set(required)
-        for index, (_, name) in enumerate(staging_files, start=len(_STAGING_REMOVALS)):
-            if index <= current:
-                allowed.add(name)
-            if index < current:
-                required.add(name)
-        # Until each discard intent completes, only its original digest may exist.
-        for index, (_, relative) in enumerate(_STAGING_REMOVALS):
-            name = Path(relative).name
-            if current <= index:
-                allowed.add(name)
-                if current < index and record["digests"][name] != "absent":
-                    required.add(name)
-        if not required <= files.keys() <= allowed:
-            raise InstallerError("replacement staging placement changed")
-        if any(hashlib.sha256(data).hexdigest() != record["digests"][name] for name, data in files.items()):
-            raise InstallerError("replacement staging digest changed")
-        self._validate_configs({name: data for name, data in files.items() if name in _QUARANTINE_CONFIGS},
-                               staged=True, partial=True, require_current=False)
-        if current >= staging_phases.index("replacement-stage-provision") and "provision.json" in files:
-            self._validate_install_record("provision.json", files["provision.json"])
-            if self._json(files["provision.json"])["digests"] != {
-                    name: hashlib.sha256(data).hexdigest() for name, data in files.items() if name != "provision.json"}:
-                raise InstallerError("replacement provisioning digest changed")
-        from runtime.remote_access.release_verifier import validate_record
-        if "release-daemon.json" in files:
-            validate_record(self._json(files["release-daemon.json"]))
-        paths = [str(self.root / "etc/happyranch" / name) for name in (*files, "install-transaction.json")]
-        for relative in _STATE_DIRS:
-            self._inventory_files(relative, {})  # No old trust, keys or logs are read.
-        for _, relative, _ in _UNIT_REMOVALS:
-            try:
-                with self._directory(str(Path(relative).parent)) as parent:
-                    os.stat(Path(relative).name, dir_fd=parent, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            raise InstallerError(str(self.root / relative))
-        if self._check_enrollment():
-            raise InstallerError("replacement enrollment reappeared")
-        units, _ = self._inventory_units({"managed": {"profile": "linux-managed-identity-v1"}},
-                                         removing_units=set() if record["phase"] == "replacement-retire-journal" else set(UNITS))
-        if units:
-            raise InstallerError("replacement units reappeared")
-        for relative, entries in (
-                ("run/happyranch-connector", {name: (self._service_owner, 0o600, True)
-                                              for name in ("ingress.sock", "control.sock")}),
-                ("run/happyranch-tsnet-sidecar", {"health.json": (self._service_owner, 0o644, False)}),
-                ("run/happyranch-release-verifier", {"control.sock": (
-                    (self.root_owner[0], self._service_owner[1]), 0o660, True)})):
-            paths.extend(str(self.root / relative / name) for name in self._inventory_files(relative, entries))
-        return InstallInventory("known-failed-or-partial", record["phase"], tuple(sorted(paths)))
-
-    def _replacement_custody(self, transaction: bytes) -> bytes:
-        self._validate_install_record("install-transaction.json", transaction, replacement=True)
-        if self._json(transaction)["version"] == 1:
-            return self._staging_custody()
-        release = self._replacement_release(transaction)
-        token = self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-        self._confirm_quiescent()
-        return token
-
-    def _staging_custody(self) -> bytes:
-        release = self._check_release_record()
-        token = self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
-        self._confirm_quiescent()
-        return token
-
-
-
-
-    def _unit_wants_names(self) -> set[str]:
-        try:
-            with self._directory(f"{_UNIT_DIR}/{UNITS[2]}.wants") as parent:
-                with os.scandir(parent) as entries:
-                    names = set()
-                    for index, entry in enumerate(entries):
-                        if index >= 2:
-                            raise InstallerError(str(self.root / _UNIT_DIR / (UNITS[2] + ".wants")))
-                        names.add(entry.name)
-                return names
-        except FileNotFoundError:
-            return set()
-
-
-
-
-
-
-    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
+    def stop_and_confirm(self) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
 
         No filesystem mutation or admission reopening is performed. Callers must
         not cache this sampled observation as later file-mutation authority.
         """
-        inventory = self._inventory(prepared_transaction=_replacement_transaction)
+        inventory = self._inventory()
         if inventory.state in {"manual-install-conflict", "healthy-manual"}:
             raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
         order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
@@ -953,11 +559,8 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
             except (ServiceManagerError, OSError):
                 raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}") from None
         self._confirm_quiescent()
-        confirmed = self._inventory(prepared_transaction=_replacement_transaction)
-        # An admitted failed manual installation can look intact after stopping.
-        # Only the exact six-digest transaction consumer can cross that boundary.
-        if (confirmed.state == "manual-install-conflict"
-                or (confirmed.state == "healthy-manual" and _replacement_transaction is None)):
+        confirmed = self._inventory()
+        if confirmed.state in {"manual-install-conflict", "healthy-manual"}:
             raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
         return confirmed
 
@@ -2677,40 +2280,9 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                         os.fsync(parent)
 
 
-    def _validate_install_record(self, name: str, data: bytes, *, replacement: bool = False) -> None:
-        """Destination-bound records, with v1 provenance/recovery kept verbatim.
-
-        Publication alone supplies no service, transaction-update or recovery
-        authority. The generator computes these fixed digests; no path
-        manifest or secret field is accepted. Only the replacement consumer can
-        read/write stopped/quarantine phases; ordinary publication requires prepared.
-        The additive v2 first intent is accepted only by replacement consumers.
-        """
+    def _validate_install_record(self, name: str, data: bytes) -> None:
+        """Destination-bound ordinary provenance; legacy journals never grant recovery."""
         record = self._json(data)
-        if name == "install-transaction.json" and record.get("version") == 2:
-            from runtime.remote_access.release_verifier import validate_record
-            if (not replacement or record.keys() != {"format", "version", "layout", "phase", "digests", "release", "inventory"}
-                    or type(record["version"]) is not int or record["format"] != "replacement-intent@2"
-                    or record["layout"] != self.layout or record["phase"] not in _replacement_phases(record)
-                    or not isinstance(record["digests"], dict) or set(record["digests"]) != set(_REPLACEMENT_FILES)
-                    or any(not isinstance(value, str) or value != "absent" and re.fullmatch(r"[0-9a-f]{64}", value) is None
-                           for value in record["digests"].values())
-                    or not isinstance(record["inventory"], dict)
-                    or set(record["inventory"]) != set(self._replacement_members())
-                    or data != json.dumps(record, sort_keys=True).encode() or len(data) > 65536):
-                raise InstallerError("invalid first replacement intent")
-            validate_record(record["release"])
-            for value in record["inventory"].values():
-                if value == "absent":
-                    continue
-                if (not isinstance(value, dict) or not {"metadata"} <= value.keys() <= {"metadata", "digest", "target"}
-                        or not isinstance(value["metadata"], list) or len(value["metadata"]) != 9
-                        or any(type(part) is not int for part in value["metadata"])
-                        or "digest" in value and (not isinstance(value["digest"], str)
-                                                   or re.fullmatch(r"[0-9a-f]{64}", value["digest"]) is None)
-                        or "target" in value and not isinstance(value["target"], str)):
-                    raise InstallerError("invalid first replacement inventory")
-            return
         if name == "provision.json":
             self._validate_provision_record(data)
             return
@@ -2718,7 +2290,7 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
         phases = {"provisioned"}
         if name == "install-transaction.json":
             keys.add("provision.json")
-            phases = {"prepared", *_REPLACEMENT_PHASES} if replacement else {"prepared"}
+            phases = {"prepared"}
         digests = record.get("digests")
         if (record.keys() != {"version", "layout", "digests", "phase"}
                 or type(record["version"]) is not int or record["version"] != 1
@@ -2728,9 +2300,6 @@ class ManagedInstaller(InstallerIO, InstallerValidation, LegacyIssuerReadback):
                 or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                        for value in digests.values())):
             raise InstallerError("invalid versioned installation record")
-        if (name == "install-transaction.json" and record["phase"] in _REPLACEMENT_PHASES
-                and data != json.dumps(record, sort_keys=True).encode()):
-            raise InstallerError("replacement intent bytes are not the exact generated record")
 
     def _refuse_install_transaction(self) -> None:
         """Any transaction inventory is inert until its recovery owner ships."""

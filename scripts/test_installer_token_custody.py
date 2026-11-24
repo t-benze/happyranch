@@ -895,89 +895,10 @@ def prepared_replacement(fixture: Fixture, case: str = "failed") -> tuple[Lifecy
 
 
 
-@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
-def test_replacement_inventory_binds_exact_prepared_generation(fixture: Fixture, case: str) -> None:
-    manager, parent, data = prepared_replacement(fixture, case)
-    fixture.token.unlink()  # Classification must not reopen the release-home token.
-    before = staged_inventory(fixture)
-    result = fixture.installer.replacement_inventory()
-    assert result.installation.state == "known-failed-or-partial"
-    assert result.installation.detail == ("partial" if case == "partial" else "failed")
-    assert result.journal_generation == hashlib.sha256(data).hexdigest()
-    assert str(parent / "install-transaction.json") in result.installation.paths
-    assert staged_inventory(fixture) == before
-    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
 
 
 
-@pytest.mark.parametrize("bad", ["malformed", "unknown-phase", "extra-field", "layout", "digest", "missing-file",
-                                 "pending", "mode", "symlink", "foreign-owner", "changed-journal"])
-def test_replacement_inventory_refuses_unproven_journal(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
-) -> None:
-    manager, parent, data = prepared_replacement(fixture)
-    path = parent / "install-transaction.json"
-    record = json.loads(data)
-    changed_inventory: list[dict[str, tuple]] = []
-    if bad in {"unknown-phase", "extra-field", "layout", "digest"}:
-        if bad == "unknown-phase":
-            record["phase"] = "synthetic-secret"
-        elif bad == "extra-field":
-            record["token"] = "synthetic-secret"
-        elif bad == "layout":
-            record["layout"] = "deb"
-        else:
-            record["digests"]["provision.json"] = "f" * 64
-        fixture.write(path, json.dumps(record).encode())
-    elif bad == "malformed":
-        fixture.write(path, b"synthetic-secret")
-    elif bad == "missing-file":
-        (parent / "daemon.token").unlink()
-    elif bad == "pending":
-        fixture.write(parent / ".install-transaction.json.pending", data)
-    elif bad == "mode":
-        path.chmod(0o644)
-    elif bad == "symlink":
-        path.unlink()
-        path.symlink_to(fixture.inputs / "connector.json")
-    elif bad == "foreign-owner":
-        target, fstat = path.stat(), os.fstat
-
-        def foreign(fd: int) -> object:
-            info = fstat(fd)
-            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
-                return info
-            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
-            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
-
-        monkeypatch.setattr(os, "fstat", foreign)
-    else:
-        read = fixture.installer._read_file
-        reads = 0
-
-        def changed(parent_fd: int, name: str, **kwargs: object) -> bytes:
-            nonlocal reads
-            value = read(parent_fd, name, **kwargs)
-            if name == "install-transaction.json":
-                reads += 1
-                if reads == 1:
-                    # Replace the real final entry between the two real reads.
-                    # A semantically identical record still has different bytes.
-                    replacement = fixture.inputs / "replacement-journal.json"
-                    fixture.write(replacement, value + b"\n")
-                    os.replace(replacement, path)
-                    changed_inventory.append(staged_inventory(fixture))
-            return value
-
-        monkeypatch.setattr(fixture.installer, "_read_file", changed)
-    before = staged_inventory(fixture)
-    result = fixture.installer.replacement_inventory()
-    assert result.installation.state == "manual-install-conflict"
-    assert result.journal_generation is None
-    assert "synthetic-secret" not in repr(result)
-    assert staged_inventory(fixture) == (changed_inventory[0] if changed_inventory else before)
-    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
 
 
@@ -995,9 +916,8 @@ def test_replacement_inventory_refuses_unproven_journal(
 
 
 @pytest.mark.parametrize("operation", ["inventory", "stop"])
-def test_replacement_observation_never_relaxes_other_transaction_guards(fixture: Fixture, operation: str) -> None:
+def test_legacy_replacement_journal_never_relaxes_transaction_guards(fixture: Fixture, operation: str) -> None:
     manager, _, _ = prepared_replacement(fixture)
-    assert fixture.installer.replacement_inventory().journal_generation is not None
     manager.calls.clear()
     before = staged_inventory(fixture)
     if operation == "inventory":
@@ -1094,7 +1014,7 @@ def test_fixed_inventory_classifies_without_effects(
     if case in {"staged", "recorded"}:
         assert result.detail == ("staged-inert" if case == "staged" else "recorded")
     if delay:
-        assert fixture.installer.replacement_inventory().journal_generation is None
+        assert fixture.installer.inventory() == result
     assert staged_inventory(fixture) == before
     assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
@@ -2158,7 +2078,7 @@ def test_renewal_initial_refusals_have_no_effect(fixture: Fixture, monkeypatch: 
         assert fixture.manager.calls == []
 
 
-_RENEWAL_READERS = ['inventory', 'replacement_inventory', 'prepared_inventory', 'home_admission', 'home_inert_inventory', 'ordinary_record', 'replacement_record', 'provision', 'install', 'uninstall', 'check_drift', 'stop_and_confirm', '_refuse_install_transaction', '_replacement_release', '_replacement_pending', '_staging_inventory', '_replacement_custody']
+_RENEWAL_READERS = ['inventory', 'home_admission', 'home_inert_inventory', 'ordinary_record', 'provision', 'install', 'uninstall', 'check_drift', 'stop_and_confirm', '_refuse_install_transaction']
 
 @pytest.mark.parametrize('reader', _RENEWAL_READERS)
 def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, reader: str) -> None:
@@ -2172,23 +2092,16 @@ def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkey
     io = fixture.installer
     with io._publication_parent() as (parent, check):
         calls = dict(
-            inventory=io.inventory, replacement_inventory=io.replacement_inventory,
-            prepared_inventory=lambda: io._inventory(prepared_transaction=transaction),
+            inventory=io.inventory,
             home_admission=lambda: HomeProfileAdmission(io).require(),
             home_inert_inventory=lambda: HomeProfileAdmission(io).require(ordinary=False),
             ordinary_record=lambda: io._validate_install_record('install-transaction.json', transaction),
-            replacement_record=lambda: io._validate_install_record('install-transaction.json', transaction, replacement=True),
             provision=fixture.provision, install=lambda: io.install(enrollment_key_file=fixture.key),
             uninstall=io.uninstall, check_drift=io.check_drift,
-            stop_and_confirm=lambda: io.stop_and_confirm(_replacement_transaction=transaction),
-            _replacement_pending=lambda: io._replacement_pending(parent, transaction),
+            stop_and_confirm=io.stop_and_confirm,
         )
-        if reader in ('inventory', 'prepared_inventory'):
+        if reader == 'inventory':
             assert calls[reader]().state == 'manual-install-conflict'
-        elif reader == 'replacement_inventory':
-            result = calls[reader]()
-            assert result.installation.state == 'manual-install-conflict'
-            assert result.journal_generation is None
         else:
             call = calls.get(reader)
             if call is None:

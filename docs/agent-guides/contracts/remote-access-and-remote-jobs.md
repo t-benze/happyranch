@@ -17,8 +17,11 @@ access remains unavailable on main until P21–P23.
 
 Omitted-input generated home provisioning now refuses with the same retirement
 message. Its uncalled ReplaceFailed quarantine/removal/staging/closure writers
-are removed. Explicit non-home provisioning, historical transaction inventory
-and actual policy-renewal publication/locking remain. Renewal maps a retained
+are removed. The uncalled replacement-candidate/prepared-transaction inspectors
+and their staging/custody recovery paths are also removed. Ordinary inventory
+and Disable still reject every legacy install transaction; fixed historical
+file snapshots and actual policy-renewal publication/locking remain. Explicit
+non-home provisioning remains supported. Renewal maps a retained
 pending-custody refusal to its existing closed `InstallerError` boundary without
 changing the refusal or touching pending evidence.
 

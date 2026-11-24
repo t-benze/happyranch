@@ -13,10 +13,10 @@ manifest or deletion authority.
 | Fence | Original installer-directory flock and persistent historical pending-name refusal in `home_retirement_fence`. |
 | Original evidence before Burn | `home_retirement_journal` preserves closed original service/private/managed/auxiliary identities with exclusive publication, sync and readback. Fresh loads retain those observations, rather than recapturing partially cleaned or replaced members. Active preparation in `home_retirement_coordinator` joins this inventory with the original serving peer and managed-native journal before real revoke. This is evidence, not an effect acknowledgement; the model still abstracts file custody and durability. |
 | Burn / Deny / BeginClose / AckClose / FailClose | Actual serving `PinnedPairingManager.revoke_all`, anchored per-device transactions and original `StreamRegistry`, consumed through `home_retirement_cutoff`. Partial commits survive failure. A fresh registry cannot reset a failed close. |
-| OriginalDies | Independent original-process death and transport quiescence proof, **not** a successful response from a replacement process. `home_retirement_recovery` supplies this read-only proof only with original peer/native binding, anchored denial and all managed units/processes independently quiescent; full cleanup/final-receipt composition remains unfinished. |
+| OriginalDies | Independent original-process death and transport quiescence proof, **not** a successful response from a replacement process. `home_retirement_recovery` supplies this read-only proof only with original peer/native binding, anchored denial and all managed units/processes independently quiescent; the canonical explicit sequence consumes it before selective cleanup and final publication. |
 | ObserveCutoff | Original-owner physical acknowledgement or independent original-death/managed-quiescence proof, plus anchored burn/deny readback. No Boolean or phase intent substitutes for these. |
-| Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the full coordinator still needs to consume all pinned evidence before effects. |
-| Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. Final cleanup evidence disposition/completion remains unfinished. |
+| Stop / ObserveStop / Disable / ObserveDisable | Fresh exact native/fragment/process/link ownership and stopped/disabled observations in `home_retirement_service` and `home_retirement_transport`; effect and observation are separate crash boundaries. Original managed observations have a separate durable transport journal; the canonical coordinator consumes those pins before each effect. |
+| Remove / AccountDisposition / ObserveCleanup | Selective original-member cleanup and explicit active/inert `retire_account` entries: fresh saved provenance, complete native/cleanup absence, bounded name/numeric NSS and consumer checks, exclusive user/group deletion or locked owned static-consumer retention. The canonical explicit sequence consumes the resulting disposition before final publication/readback. |
 | WriteReceipt / SyncReceipt / ReadFinal | Publication in `home_retirement_publication` requires the absent or proven original retained-disabled account disposition, complete caller proof, canonical-prefix stage completion, staged file/parent sync, atomic no-replace rename and fresh readback; never seeded success. |
 | GateUnpack / ReplacePayload / RestoreEntry | Incoming preinst sends exact retained canonical sources to the protected installed isolated CPython3.12 before old-payload replacement; only the canonical result permits unpack. Missing capability refuses. Partial replacement/recovery and installed acceptance remain separate. |
 | Crash / InterruptWrite / Detect / SelectExplicit | Durable denies/effects survive; detection has no destructive action; only explicit recovery can progress. |
@@ -30,14 +30,20 @@ finish canonical retirement using the original installed capability first.
 Retained client/shared transport and their notices remain. Synthetic package
 checks do not establish installed dpkg or systemd acceptance.
 
+Generic replacement-candidate and prepared-transaction inspectors have no
+shipping consumer after forward-owner retirement and are removed. Ordinary
+inventory/Disable retain their transaction vetoes and exact native stop checks;
+fixed historical file snapshots and real non-home renewal/locking remain.
+This removes unused recovery interpretation without adding a model transition.
+
 F02's ordinary `prepare-headscale` and `disable-headscale` CLI adapters now
 refuse before installer construction for both layouts, independently of saved
 state. `test_home_retirement.py::test_retired_operator_commands_have_no_effect`
 observes the exact copy, non-success, unchanged local/legacy files and zero native
 effects. This stronger entry-specific refusal adds no model transition; the
 OldAdmission action still abstracts legacy callers racing the retirement fence.
-Other programmatic/home helper owner retirement remains unfinished, so this
-mapping does not claim that every old admission path has been removed.
+Programmatic preparation, activation, issuer and public home-helper forward
+owners are removed; retained compatibility entries return closed refusals.
 Initial installer unit/invite publication writers are removed. The retained
 Disable/post-disable inventory keeper now starts from neutral historical files,
 observes real cleanup and preserves custody refusal without re-publication.
@@ -458,7 +464,7 @@ native authorization, budget and revalidation checks and before any worker or
 effect. The root child retains only inert capture/refusal adapters; the positive
 activation backend/composition is removed. This strengthens OldAdmission refusal
 without adding a model transition. Disable still uses the same protected
-installer directory flock. Invite/lower writer removal remains separate; TLC
+installer directory flock. Invite/lower forward writers are also removed; TLC
 and installed native acceptance are NOT RUN.
 
 The same helper refusal boundary now includes IssueInvite, CancelInvite and
