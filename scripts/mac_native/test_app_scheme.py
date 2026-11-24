@@ -6,6 +6,7 @@ import http.client
 import json
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -13,6 +14,127 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, qualify_steps, read_events, run, synthetic_daemon
+from scripts.mac_native.app_scheme_test_evidence import assess_native, source_inventory, terminal_results
+
+
+def native_evidence() -> tuple[bytes, list[dict], dict]:
+    inventory = {'xctest': ['HappyRanchAppTests.HomeCandidateOwnershipTests/testKeepsActive'],
+                 'swift_testing': ['HappyRanchAppTests/HomeInviteModelTests.swift/retainsSave']}
+    raw = ("Test Case '-[HappyRanchAppTests.HomeCandidateOwnershipTests testKeepsActive]' started.\n"
+           "Test Case '-[HappyRanchAppTests.HomeCandidateOwnershipTests testKeepsActive]' passed (0.1 seconds).\n").encode()
+    key = 'HappyRanchAppTests.HomeInviteModelTests/retainsSave(_:)/HappyRanchAppTests/HomeInviteModelTests.swift:12:3'
+    records = [dict(version=0, kind='test', payload=dict(kind='function', id=key, name='retainsSave(_:)',
+               sourceLocation=dict(fileID='HappyRanchAppTests/HomeInviteModelTests.swift'), isParameterized=True))]
+    for kind in ('runStarted', 'testStarted', 'testCaseStarted', 'testCaseEnded',
+                 'testCaseStarted', 'testCaseEnded', 'testEnded', 'runEnded'):
+        records.append(dict(version=0, kind='event', payload=dict(kind=kind, **(
+            {} if kind in ('runStarted', 'runEnded') else {'testID': key}))))
+    return raw, records, inventory
+
+
+def native_stream(records: list[dict]) -> bytes:
+    return ('\n'.join(json.dumps(row) for row in records) + '\n').encode()
+
+
+class NativeWorkloadEvidenceTests(unittest.TestCase):
+    def test_full_package_workload_enables_both_libraries_and_records_each_case(self) -> None:
+        raw, records, inventory = native_evidence()
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            report, calls = {}, []
+            def transfer(url: str, archive: Path, *args: object) -> dict:
+                with tarfile.open(archive, 'w:gz'):
+                    pass
+                return {'curl_exit_code': 0}
+            def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                calls.append((argv, kwargs))
+                if 'test' in argv:
+                    if '--event-stream-output-path' in argv:
+                        Path(argv[argv.index('--event-stream-output-path') + 1]).write_bytes(native_stream(records))
+                    return 0, raw
+                return (1, b'') if '--show-bin-path' in argv else (0, b'')
+            with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                'scripts.mac_native.suite_app_scheme._command', side_effect=command
+            ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
+                'scripts.mac_native.suite_app_scheme.verify_checksum'
+            ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True):
+                with self.assertRaisesRegex(RuntimeError, 'bin_path failed'):
+                    run(report)
+            test_calls = [(argv, kwargs) for argv, kwargs in calls if 'test' in argv]
+            self.assertEqual(len(test_calls), 1, 'one full-package build/test invocation')
+            argv, kwargs = test_calls[0]
+            self.assertNotIn('--filter', argv)
+            self.assertNotIn('--skip', argv)
+            for option in ('--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel'):
+                self.assertIn(option, argv)
+            self.assertEqual(argv[argv.index('-c') + 1], 'release')
+            self.assertEqual(argv[argv.index('--event-stream-version') + 1], '0')
+            self.assertEqual(kwargs['output_cap'], 16 * 1024 * 1024)
+            result = report['app_scheme']['native_tests']
+            self.assertEqual(result['status'], 'PASS')
+            self.assertEqual([row['status'] for row in result['cases']], ['PASS'] * 3)
+            self.assertEqual([row['case'] for row in result['cases'][1:]], [1, 2])
+            row = next(row for row in report['app_scheme']['commands'] if row['name'] == 'product_build_and_all_tests')
+            self.assertEqual(row['timeout_seconds'], 1200)
+
+    def test_source_census_includes_xctest_and_multiline_swift_testing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            tests = Path(folder) / 'HappyRanchAppTests'; tests.mkdir()
+            (tests / 'Ownership.swift').write_text('''final class Ownership: XCTestCase {
+                func testCandidate() async throws {}
+            }
+            @Suite struct Invite {
+                @Test("save", arguments: [false, true])
+                func save(_ failed: Bool) async {}
+            }''')
+            self.assertEqual(source_inventory(Path(folder)), {
+                'xctest': ['HappyRanchAppTests.Ownership/testCandidate'],
+                'swift_testing': ['HappyRanchAppTests/Ownership.swift/save']})
+
+    def test_missing_failed_skipped_or_incomplete_case_never_passes(self) -> None:
+        for failure in ('missing_xctest', 'failed_xctest', 'skipped_xctest', 'duplicate_xctest',
+                        'missing_swift_function', 'missing_swift_case', 'missing_swift_end', 'swift_issue',
+                        'swift_skip', 'partial_stream', 'bad_schema', 'missing_run_end', 'nonzero_exit'):
+            with self.subTest(failure=failure):
+                raw, records, inventory = native_evidence()
+                if failure == 'missing_xctest':
+                    raw = b''
+                elif failure in ('failed_xctest', 'skipped_xctest'):
+                    raw = raw.replace(b'passed', b'failed' if failure == 'failed_xctest' else b'skipped')
+                elif failure == 'duplicate_xctest':
+                    raw += raw
+                elif failure == 'missing_swift_function':
+                    inventory['swift_testing'].append('HappyRanchAppTests/HomeInviteModelTests.swift/cancel')
+                elif failure == 'missing_swift_case':
+                    records = [row for row in records if row['payload']['kind'] not in ('testCaseStarted', 'testCaseEnded')]
+                elif failure == 'missing_swift_end':
+                    records.pop(6)
+                elif failure in ('swift_issue', 'swift_skip'):
+                    records.insert(4, dict(version=0, kind='event', payload=dict(
+                        kind='issueRecorded' if failure == 'swift_issue' else 'testSkipped', testID=records[0]['payload']['id'])))
+                elif failure == 'bad_schema':
+                    records[0]['version'] = 99
+                elif failure == 'missing_run_end':
+                    records.pop()
+                stream = native_stream(records)
+                if failure == 'partial_stream':
+                    stream += b'{'
+                result = assess_native(raw, stream, inventory, 1 if failure == 'nonzero_exit' else 0)
+                self.assertEqual(result['status'], 'FAIL')
+
+    def test_results_beyond_old_16k_bound_are_retained_without_truncation(self) -> None:
+        raw, records, inventory = native_evidence()
+        for index in range(400):
+            key = f'HappyRanchSupervisorTests.ParserTests/testAdditionalCase{index}'
+            inventory['xctest'].append(key)
+            raw += (f"Test Case '-[HappyRanchSupervisorTests.ParserTests testAdditionalCase{index}]' started.\n"
+                    f"Test Case '-[HappyRanchSupervisorTests.ParserTests testAdditionalCase{index}]' passed (0.1 seconds).\n").encode()
+        retained = terminal_results(raw.decode())
+        self.assertGreater(retained['json_bytes'], 16384)
+        self.assertFalse(retained['truncated'])
+        self.assertEqual(len(retained['lines']), 401)
+        result = assess_native(raw, native_stream(records), inventory, 0)
+        self.assertEqual(result['status'], 'PASS')
+        self.assertEqual(len(result['cases']), 403)
 
 
 def evidence() -> tuple[list[dict], list[dict]]:

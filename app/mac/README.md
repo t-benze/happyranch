@@ -160,7 +160,8 @@ and the handler is MainActor-owned, but build 62 did not retain expected length,
 page read/parse/emit state or finish/stop facts. No speculative framing or
 buffering change is made. After independent review
 APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
-It compiles the product and focused parser/route tests once, launches that same
+It compiles the product and runs **all tests in both app/mac test targets** in
+one unfiltered `swift test -c release` invocation, then launches that same
 product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
 uses the production loader/adapter and built SPA. No real daemon, Keychain,
 helper, signing or production data is used. The synthetic local venue uses the
@@ -168,15 +169,49 @@ SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
 The internal qualification entry is explicitly commissioned by MAC-1 and is the
 only test-only app entry added; ordinary app startup never selects it.
 
-SwiftPM compiles every file in both test targets even when execution is filtered.
+The test invocation explicitly enables testable imports, XCTest and Swift
+Testing, and uses `--no-parallel` for per-invocation attribution. Release testing
+with `--enable-testable-imports` is supported by SwiftPM; this harness does not
+substitute a debug product. Native compatibility and elapsed time at the revised
+head are **NOT RUN on Linux**. Unsupported options or output fail closed.
+The full workload includes MAC-1's 14 XCTests, all MAC-2a ownership cases and
+Swift Testing cases such as HomeInviteModelTests. The source census at this
+revision is 54 XCTest methods plus 557 `@Test` functions across 47 files;
+parameterized functions can execute more than one case. The census is recomputed
+from both test directories at the checked-out source, not a fixed pass count.
+
+`app_scheme.native_tests` records each XCTest method and each Swift Testing
+invocation separately with PASS/FAIL (or INCOMPLETE), using function ID plus a
+case ordinal for parameters; argument/issue values are not retained. XCTest
+start/terminal lines and Swift Testing version-0 JSON events must agree with
+the independent source census. Every function needs start/end and at least one
+completed case; missing/duplicate/failed/skipped/cancelled evidence, a missing
+run boundary, nonzero exit, malformed/unsupported capture, or exhaustion fails
+the suite. Swift Testing uses `--event-stream-output-path` and
+`--event-stream-version 0`, so display names and aggregate console counts cannot
+hide omitted functions. Named terminal lines and structured cases are never
+truncated to the former 16 KiB bound. The native command and JSON event stream
+each have a hard 16 MiB cap; exceeding either refuses PASS.
+
+The native compile/test step is bounded to 1,200 seconds within a shared
+2,100-second suite deadline. The old 600-second filtered-test budget has no
+full-suite timing evidence: this larger bound accommodates the 611 source
+functions and existing network tests with 30-second request bounds, but is not
+a measured sufficiency claim. Node transfer (90s), npm install (240s), SPA build
+(180s), and three qualification processes (40s each) retain their budgets,
+leaving 270s for metadata/overhead. Each command records its limit and elapsed
+time. Timeout/output overflow records an incomplete capture and fails; it is
+never reported as test success. The existing Jenkins job envelope/configuration
+is unchanged; reviewed SOURCE_SHA dispatch selects this in-repo workload.
+
 Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
 `error_context`: lines containing `: error:` or beginning `error:`, with two
 lines of surrounding context and original line numbers. Its serialized JSON is
 bounded to 64 KiB, with the total matching-line count and an explicit truncation
 flag. This evidence survives command failure and scratch removal; it does not
 change the build or qualification verdict.
-`test_results` also retains individual XCTest outcome lines (16 KiB, explicit
-truncation), independently of head/tail. The loader table prints `MAC1_LOADER`
+`test_results` also retains all named terminal outcome lines without truncation,
+independently of head/tail. The loader table prints `MAC1_LOADER`
 JSON at every initial row and ready checkpoint: closed result classes,
 context/bind/readiness, all 15 filtered page facts and callback/health counts.
 The collector projects only those closed fields into `loader_diagnostics`

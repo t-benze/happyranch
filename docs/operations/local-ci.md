@@ -4271,9 +4271,18 @@ Web static analysis remains part of `scripts/local_ci.sh all`.
 
 `python3 -B scripts/mac_native/probe.py --suite app-scheme --output /absolute/probe.json`
 is dispatcher-registered for the existing Jenkins `SUITE` string. It is skipped
-on Linux. On Mac it compiles the product plus focused Swift parser/route tests
-(including native owner retention, pre/post-send error outcomes and readiness)
-and the production navigation delegate's packaged-page load/admission cases,
+on Linux. On Mac it compiles the product and runs the full unfiltered app/mac
+package: all XCTest classes and Swift Testing functions in both test targets,
+including the MAC-1 parser/route/load and MAC-2a ownership/HomeInviteModel cases.
+Release testable imports and both libraries are explicitly enabled. Every
+XCTest start/outcome and Swift Testing version-0 JSON invocation is retained,
+without the former 16 KiB named-result truncation. The source census must match;
+missing, skipped, failed or incomplete evidence fails closed. Hard output/event
+caps are 16 MiB each, and the compile/test step has 1,200s within the 2,100s suite
+deadline with elapsed times recorded. These bounds are not measured full-suite
+timing evidence on Linux. The portable command above also checks full-workload
+invocation, multiline source census, per-case negative evidence and retention
+beyond 16 KiB; it does not execute Swift or establish native PASS. The suite
 then qualifies the production loader, body adapter and SPA against a private
 synthetic daemon with fsynced per-event receipts. See the [Mac contract](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 The deep reload targets stable `/onboarding` for the empty-org fixture:

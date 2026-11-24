@@ -19,7 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
-from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _test_results
+from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, assess_native, source_inventory, terminal_results
+from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
@@ -325,20 +326,28 @@ def run(report: dict[str, Any]) -> None:
     tmp = Path(os.environ.get('TMPDIR', ''))
     if not tmp.is_absolute() or not tmp.is_dir() or tmp == Path('/tmp') or tmp.is_relative_to('/tmp'):
         raise RuntimeError('requires existing private non-/tmp TMPDIR')
-    deadline = time.monotonic() + 1500
+    deadline = time.monotonic() + 2100
     with tempfile.TemporaryDirectory(prefix='app-scheme-', dir=tmp) as folder:
         scratch = Path(folder).resolve()
         env = _build_environment(scratch)
 
-        def command(name: str, argv: list[str], cwd: Path = ROOT, seconds: float = 60) -> bytes:
-            row: dict[str, Any] = {'name': name, 'argv': argv, 'exit_code': None}
+        def command(name: str, argv: list[str], cwd: Path = ROOT, seconds: float = 60,
+                    allow_failure: bool = False) -> bytes:
+            row: dict[str, Any] = {'name': name, 'argv': argv, 'exit_code': None, 'timeout_seconds': seconds}
             section['commands'].append(row)
-            code, raw = _command(argv, env, cwd, min(deadline, time.monotonic() + seconds), output_cap=1024 * 1024)
+            started = time.monotonic()
+            try:
+                code, raw = _command(argv, env, cwd, min(deadline, started + seconds),
+                                     output_cap=TEST_OUTPUT_CAP if name == 'product_build_and_all_tests' else 1024 * 1024)
+            except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+                row.update(command_error=type(error).__name__, elapsed_seconds=time.monotonic() - started)
+                raise
             row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                       elapsed_seconds=time.monotonic() - started,
                        head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
-                       error_context=_error_context(raw), test_results=_test_results(raw.decode(errors='replace')),
+                       error_context=_error_context(raw), test_results=terminal_results(raw.decode(errors='replace')),
                        loader_diagnostics=_loader_diagnostics(raw))
-            if code:
+            if code and not allow_failure:
                 raise RuntimeError(name + ' failed')
             return raw
 
@@ -370,7 +379,19 @@ def run(report: dict[str, Any]) -> None:
                  '--scratch-path', str(scratch / 'build'), '--cache-path', str(scratch / 'swiftpm-cache'),
                  '--config-path', str(scratch / 'swiftpm-config'), '--security-path', str(scratch / 'swiftpm-security'),
                  '-c', 'release', '-j', '2', '-Xswiftc', '-gnone']
-        command('product_build_and_parser_tests', swift + ['--filter', 'AppHTTPResponseParserTests|AppSchemeRouteTests|AppSchemeLoadTests'], seconds=600)
+        inventory = source_inventory(ROOT / 'app/mac/Tests')
+        section['native_tests'] = {'status': 'FAIL', 'capture': 'incomplete', 'inventory': inventory}
+        swift_events = scratch / 'swift-testing.jsonl'
+        raw = command('product_build_and_all_tests', swift + [
+            '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
+            '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
+            seconds=1200, allow_failure=True)
+        code = section['commands'][-1]['exit_code']
+        # No aggregate-only fallback: missing/unsupported Swift Testing capture
+        # fails even when swift test exits zero. Never trim individual results.
+        events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
+        section['native_tests'].update(assess_native(raw, events, inventory, code), capture='assessed',
+            event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):
@@ -406,3 +427,5 @@ def run(report: dict[str, Any]) -> None:
                 section['qualification'] = assess(section['events'], section['sends'], code, data)
         if section['qualification']['status'] != 'PASS':
             raise RuntimeError('app-scheme qualification failed; retain partial event evidence')
+        if section['native_tests']['status'] != 'PASS':
+            raise RuntimeError('full native test workload failed or evidence incomplete')

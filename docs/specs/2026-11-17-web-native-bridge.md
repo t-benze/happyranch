@@ -1740,8 +1740,18 @@ In build 62, all five normal receipts met the timing bound, but the page never
 reported stream completion after native finish. The cause was unproven at that head; no buffering
 fallback or speculative framing change is justified by that evidence. No native
 PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
-app-scheme` builds the actual product at the approved head and qualifies the
+app-scheme` builds the actual product at the approved head, executes the full
+unfiltered app/mac package (both XCTest and Swift Testing targets), and qualifies the
 shipping scheme/adapter against a synthetic local daemon using the built SPA.
+Release tests explicitly enable testable imports and both libraries. The report
+retains every XCTest outcome and every serial Swift Testing invocation, including
+parameter ordinals, using version-0 JSON events and an independent source census.
+Missing source cases, skips, failures, incomplete/unsupported capture or nonzero
+exit fail closed. Results are not truncated; command/event overflow at 16 MiB
+fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed times
+recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
+The existing app-scheme qualification budgets/steps and Jenkins configuration
+remain unchanged. See the full workload and bounds in `app/mac/README.md`.
 Every page event is emitted immediately to native and fsynced; final-only arrays
 are forbidden. Pass requires all five one-second-spaced events below 500 ms
 receipt-minus-send latency, plus abort-to-native-stop below 500 ms and no later
