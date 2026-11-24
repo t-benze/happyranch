@@ -429,17 +429,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                 return action(cleanup: "unknown")
             }
             ledger.markDispatched(request.id)
-            model.cancel() // invalidates now; storage teardown waits at its safe point
-            mutationLifetime = model.lifetime
-            let stopped = model.lifetime
-            await model.bridgeSettle()
-            guard live, generation == token, model.lifetime == stopped else {
-                return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
-            }
-            guard model.phase == .idle, model.removalFailures.isEmpty, model.saveFailure != .deletionFailed else {
-                return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery))
-            }
-            return action(cleanup: "confirmed")
+            return await cancelAttempt(model: model, token: token)
         case "client.retrySave":
             guard !model.bridgeHasConfirmation, model.bridgeCanRetrySave else {
                 if model.bridgeCanReplace { return .failure(.init(.identityChanged, recovery: .nativeRecovery)) }
@@ -519,6 +509,25 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
             return settled(model, context: started, token: token)
         default: return .failure(.init(.unavailable))
         }
+    }
+
+    private func cancelAttempt(model: HomeInviteModel, token: UUID) async -> ConnectionOutcome {
+        let candidate = model.candidateID
+        let result = await Self.cancelAttempt(model: model, catalog: catalog)
+        guard live, generation == token, model.candidateID == candidate else {
+            return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
+        }
+        mutationLifetime = model.lifetime
+        return result
+    }
+
+    /// Post-confirmation client.cancelAttempt command handler. Cleanup follows
+    /// the captured candidate even when the selected owner's phase is connected.
+    static func cancelAttempt(model: HomeInviteModel, catalog: ConnectionComputerCatalog) async -> ConnectionOutcome {
+        guard await model.cancelAttempt() else {
+            return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery))
+        }
+        return .result(ConnectionClientProjection.savedAction(model, catalog: catalog, localCleanup: "confirmed"))
     }
 
     private func savedTarget(_ request: ConnectionRequest, model: HomeInviteModel, target: HomeInviteModel.SavedHome,

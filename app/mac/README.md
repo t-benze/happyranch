@@ -447,8 +447,20 @@ back selection or authorize duplicate identity. Active revocation keeps its exac
 profile/Keychain erasure path without touching a concurrent candidate. Failed
 revocation cleanup retains that owner for explicit Retry. Disconnect uses the same gate.
 Removing selected saved access first uses that gate and waits for confirmed
-cleanup before deleting profile state. No shared-web/protocol/schema, daemon
-credential, remote-allowlist, dependency or auth change is included.
+cleanup before deleting profile state. The retained native form's Disconnect and
+Remove controls use these same gates, display named refusals, and retain saved
+identity when teardown is incomplete. Cancel remains candidate-only; confirmed
+candidate cancellation reports confirmed local cleanup even with another owner
+still connected. The native warning/Retry and savedAccess projection read the
+selected owner's save result independently of candidate reset, success or Cancel.
+
+Direct DIY pairing completion explicitly rebinds the stable Main through the
+same owner/transfer admission; reconnect after disconnect installs the fresh
+transport and generation without reloading the document. Local endpoint changes
+also use this admission and update the local prompt URL. Ordinary health cadence
+for the same endpoint is a no-op and cannot reselect a disconnected target.
+No shared-web/protocol/schema, daemon credential, remote-allowlist, dependency
+or auth change is included.
 
 Dialog/toolbar/menu/screenshot work is MAC-2b. Quit/close/Relaunch gating and
 language remain MAC-4. Native tests use the existing SwiftPM targets; on an

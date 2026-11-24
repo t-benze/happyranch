@@ -221,7 +221,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var hostContract: [String: Int]?
     private var incompatibleSide = "host"
     private(set) var documentAdmission = AppSchemeAdmissionDiagnostic()
-    private let promptURL: String?
+    private var promptURL: String?
     private var accessUnsaved: Bool
     private let configPolicy: [(String, [String])]
     /// Optional diagnostic observer receives lifecycle IDs and closed document
@@ -268,7 +268,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         self.transport = transport; self.remote = remote; self.promptURL = promptURL; self.accessUnsaved = accessUnsaved
         super.init()
-        targetID = transport == nil ? nil : (remote ? generation : "local")
+        targetID = transport == nil ? nil : (remote ? generation : promptURL.map { $0.replacingOccurrences(of: "/api/v1", with: "") } ?? "local")
         if transport == nil { state = "no_target" }
     }
 
@@ -316,6 +316,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         owners.values.contains { $0.generation == generation && ($0.task.request.httpMethod ?? "GET") != "GET" }
     }
     var switchRefusal: String? { nonGETPending ? "non_get_pending" : documentOwners.switchRefusal }
+    var hasLocalTarget: Bool { targetID != nil && !remote }
 
     /// No suspension between admission, selection and generation swap. Owner
     /// evidence belongs to Main and survives this transition.
@@ -329,6 +330,19 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         accessUnsaved = next.accessUnsaved; hostContract = next.health.contract
         incompatibleSide = next.health.incompatibleSide; state = next.health.state
         candidate = nil
+        advanceGeneration()
+        return nil
+    }
+
+    /// Retained DIY/local native producers explicitly select a fresh transport.
+    /// This is never called by candidate readiness or a SwiftUI metadata update.
+    @discardableResult
+    func selectTransport(id: String, transport: any AppAPITransport, remote: Bool, promptURL: String? = nil) -> String? {
+        if targetID == id { return nil }
+        if let reason = switchRefusal { return reason }
+        self.transport = transport; self.remote = remote; targetID = id
+        self.promptURL = remote ? nil : promptURL
+        accessUnsaved = false; hostContract = nil; state = "target_starting"
         advanceGeneration()
         return nil
     }

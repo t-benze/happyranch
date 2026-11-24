@@ -58,7 +58,11 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var webURL: URL?
     @Published private(set) var appReadiness: AppAPIHealth?
     @Published private(set) var savedHomes: [SavedHome] = []
-    @Published private(set) var saveFailure: SavedAccessFailure?
+    @Published private var candidateSaveFailure: SavedAccessFailure?
+    var saveFailure: SavedAccessFailure? {
+        if let active { return active.saveFailure }
+        return candidateSaveFailure
+    }
     @Published private(set) var removalFailures: [String] = []
     @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
     @Published private(set) var discoveryComplete = false
@@ -177,7 +181,7 @@ final class HomeInviteModel: ObservableObject {
 
     private func beginCandidate() {
         candidateID = UUID(); candidateOutcome = nil; candidateHealth = nil
-        unsaved = nil; saveFailure = nil; activeCredential = nil
+        unsaved = nil; candidateSaveFailure = nil; activeCredential = nil
         connectionStates.beginCandidate(id: candidateID!)
     }
 
@@ -190,7 +194,7 @@ final class HomeInviteModel: ObservableObject {
               let health = candidateHealth, health.state == "ready" else { throw AppAPIError.unavailable }
         let transport = try session.appTransport()
         let previous = active
-        active = ActiveSession(id: id, session: session, credential: credential, unsaved: unsaved, saveFailure: saveFailure,
+        active = ActiveSession(id: id, session: session, credential: credential, unsaved: unsaved, saveFailure: candidateSaveFailure,
             observation: AccessObservation(access: .allowed, observedAt: Date(), lifetime: lifetime))
         self.session = nil; candidateID = nil; candidateOutcome = nil
         candidateMonitor?.cancel(); candidateMonitor = nil
@@ -210,7 +214,7 @@ final class HomeInviteModel: ObservableObject {
         let previous = active; active = nil
         monitor?.cancel(); monitor = nil; appReadiness = nil
         connectionStates.disconnectActive()
-        if candidateID == nil { phase = .idle; activeCredential = nil; unsaved = nil; saveFailure = nil }
+        if candidateID == nil { phase = .idle; activeCredential = nil; unsaved = nil; candidateSaveFailure = nil }
         else if candidateOutcome != nil { phase = .idle }
         if let previous { retire(previous) }
     }
@@ -253,20 +257,19 @@ final class HomeInviteModel: ObservableObject {
         return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
     }
     var bridgeReplacementTarget: SavedHome? {
-        guard let credential = unsaved ?? (session == nil ? active?.unsaved : nil), let id = credential.networkProfileID else { return nil }
+        guard let credential = active?.unsaved ?? unsaved, let id = credential.networkProfileID else { return nil }
         return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
     }
     var bridgeNeedsNewInvite: Bool { needsNewInvite }
     var bridgeCanReplace: Bool {
-        !busy && ((unsaved != nil && saveFailure == .identityChanged) ||
-                  (retryingActiveSave && active?.saveFailure == .identityChanged))
+        !busy && (retryingActiveSave ? active?.saveFailure == .identityChanged :
+                  unsaved != nil && candidateSaveFailure == .identityChanged)
     }
-    private var retryingActiveSave: Bool { unsaved == nil && session == nil && active?.unsaved != nil }
+    private var retryingActiveSave: Bool { active?.unsaved != nil }
     var bridgeCanRetrySave: Bool {
-        !busy && ((unsaved != nil && !needsReplacementConsent && saveFailure != .identityChanged) ||
-                  (retryingActiveSave && active?.saveFailure != .identityChanged))
+        !busy && (retryingActiveSave ? active?.saveFailure != .identityChanged :
+                  unsaved != nil && !needsReplacementConsent && candidateSaveFailure != .identityChanged)
     }
-    var activeSaveFailure: SavedAccessFailure? { active?.saveFailure }
 
     private func loadSaved(_ credential: SavedDeviceCredential, token: Lifetime) async throws -> SavedDeviceCredential {
         // SecItem provides only a final result. No OS prompt observation exists.
@@ -314,11 +317,11 @@ final class HomeInviteModel: ObservableObject {
             if let failure = selected.saveFailure { return .failed(failure) }
             return selected.unsaved == nil ? .saved : .failed(.saveFailed)
         }
-        if let saveFailure { return .failed(saveFailure) }
+        if let candidateSaveFailure { return .failed(candidateSaveFailure) }
         return unsaved == nil ? .saved : .failed(.saveFailed)
     }
     var retryGuidance: String {
-        if saveFailure != nil, unsaved == nil { return "Saving was not confirmed. Retry checks saved access again; a new invite may be needed." }
+        if saveFailure != nil, !bridgeHasUnsavedAccess { return "Saving was not confirmed. Retry checks saved access again; a new invite may be needed." }
         if saveFailure != nil { return "Retry saving while this session is open. If the app quits before saving, create a new invite on Linux." }
         return needsNewInvite ? "Create a new invite on Linux. Retry accepts a new invite; the spent key is never reused." :
             "Connect to your home network / Retry. Saved access needs no new invite while its grant remains valid."
@@ -558,7 +561,7 @@ final class HomeInviteModel: ObservableObject {
             saving = nil; cancelledSave = nil
             if lifetime == token {
                 if previousPhase == .connected || previousPhase == .runtimeBusy {
-                    active?.unsaved = unsaved; active?.saveFailure = saveFailure
+                    active?.unsaved = unsaved; active?.saveFailure = candidateSaveFailure
                     phase = previousPhase
                 } else if previousPhase == .opening || (previousPhase == .readyToSwitch && confirmation != nil) {
                     phase = .opening
@@ -573,7 +576,7 @@ final class HomeInviteModel: ObservableObject {
             retainSaved(credential)
         } catch {
             guard lifetime == token || cancelledSave == token else { return }
-            saveFailure = (error as? SavedAccessFailure) ?? .saveFailed
+            candidateSaveFailure = (error as? SavedAccessFailure) ?? .saveFailed
         }
     }
 
@@ -582,7 +585,7 @@ final class HomeInviteModel: ObservableObject {
         records[id] = credential
         savedHomes.removeAll { $0.id == id }
         savedHomes.append(SavedHome(id: id, trust: credential.trust, binding: credential.binding))
-        selectedHomeID = id; saveFailure = nil; unsaved = nil
+        selectedHomeID = id; candidateSaveFailure = nil; unsaved = nil
         needsReplacementConsent = false
         if candidateID == nil, active?.credential.binding == credential.binding {
             active?.unsaved = nil; active?.saveFailure = nil
@@ -599,7 +602,7 @@ final class HomeInviteModel: ObservableObject {
         do { updated = try await write.value }
         catch {
             if lifetime == token || cancelledSave == token {
-                saveFailure = (error as? SavedAccessFailure) ?? .saveFailed
+                candidateSaveFailure = (error as? SavedAccessFailure) ?? .saveFailed
             }
             throw error
         }
@@ -656,13 +659,13 @@ final class HomeInviteModel: ObservableObject {
                     if lifetime != token, cancelledSave == token {
                         // Deletion settled, replacement did not. Retain the
                         // partial effect; Cancel cannot claim complete cleanup.
-                        saveFailure = .deletionFailed
+                        candidateSaveFailure = .deletionFailed
                         return
                     }
                     try check(token)
                 } catch {
                     guard lifetime == token || cancelledSave == token else { return }
-                    saveFailure = .deletionFailed; return
+                    candidateSaveFailure = .deletionFailed; return
                 }
             }
             await saveDelivered(token: token)
@@ -763,7 +766,7 @@ final class HomeInviteModel: ObservableObject {
                     if candidateID == nil {
                         attemptID = UUID(); webURL = nil; phase = .failed(failure)
                         activeCredential = nil; unsaved = nil
-                        if failure == .revoked { saveFailure = nil }
+                        if failure == .revoked { candidateSaveFailure = nil }
                         // The denial belongs to A, never to a concurrent B attempt.
                         accessObservation = AccessObservation(access: failure == .revoked ? .revokedConfirmed :
                             (failure == .approvalDenied ? .accessDenied : .unknown), observedAt: Date(), lifetime: lifetime)
@@ -824,7 +827,7 @@ final class HomeInviteModel: ObservableObject {
         candidateOutcome = "failed"; connectionStates.cancelCandidate()
         if failure == .revoked {
             pendingRemoval = activeCredential
-            unsaved = nil; saveFailure = nil
+            unsaved = nil; candidateSaveFailure = nil
         }
         let candidate = session
         do {
@@ -841,8 +844,8 @@ final class HomeInviteModel: ObservableObject {
         }
     }
 
-    /// Disconnect retains the Keychain record and native membership. Cancel
-    /// invalidates every late result and forgets pending secrets/handles.
+    /// Candidate-only Cancel invalidates late attempt results. Selected-owner
+    /// Disconnect must enter through Main's owner/transfer gate.
     func cancel(endingAt finalPhase: Phase = .idle) {
         let old = operation
         // Do not interrupt Keychain create/update + readback. Fencing is
@@ -857,7 +860,7 @@ final class HomeInviteModel: ObservableObject {
         webURL = nil
         if candidateID != nil { candidateOutcome = finalPhase == .idle ? "cancelled" : "failed" }
         connectionStates.cancelCandidate()
-        if finalPhase == .failed(.revoked) { saveFailure = nil }
+        if finalPhase == .failed(.revoked) { candidateSaveFailure = nil }
         if let pendingRemoval {
             target = pendingRemoval.trust
             removalFailures = ["Local removal was interrupted; Retry removal for this computer"]
@@ -886,6 +889,40 @@ final class HomeInviteModel: ObservableObject {
             operation = nil
             if finalPhase == .failed(.revoked) { removeSavedComputer(afterRevocation: true) }
         }
+    }
+
+    /// Retained native controls use Main's gate before releasing selected custody.
+    func disconnectSelected(using scheme: AppScheme?) async -> String? {
+        guard let scheme else { return "owner_save_unknown" }
+        let selected = activeID
+        if let reason = scheme.disconnect() { return reason }
+        if let selected, !(await waitForCleanup(id: selected)) { return "removalIncomplete" }
+        return nil
+    }
+
+    func removeSavedSelection(using scheme: AppScheme?) async -> String? {
+        guard !busy, let target = bridgeRemovalTarget ?? savedHomes.first(where: { $0.id == selectedHomeID }) else { return "stateChanged" }
+        let context = lifetime
+        if bridgeIsSelected(target) {
+            if let reason = await disconnectSelected(using: scheme) { return reason }
+            guard lifetime == context, self.selectedHomeID == target.id else { return "stateChanged" }
+        }
+        removeSavedComputer(expected: target)
+        await bridgeSettle()
+        guard bridgeRemovalTarget == nil, !savedHomes.contains(target), removalFailures.isEmpty else { return "removalIncomplete" }
+        return nil
+    }
+
+    /// A cancellation result belongs to the captured candidate, not the phase
+    /// of a different selected owner that remains connected.
+    func cancelAttempt() async -> Bool {
+        guard let candidate = candidateID, bridgeCanCancel else { return false }
+        cancel()
+        let stopped = lifetime
+        await bridgeSettle()
+        return lifetime == stopped && candidateID == candidate && session == nil &&
+            candidateOutcome == "cancelled" && phase != .failed(.cleanupIncomplete) &&
+            removalFailures.isEmpty && candidateSaveFailure != .deletionFailed
     }
 
     func retry() {
@@ -1000,6 +1037,6 @@ final class HomeInviteModel: ObservableObject {
         if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
         if activeCredential?.binding == credential.binding { activeCredential = nil }
         pendingRemoval = nil; pendingRemovalErased = false; pendingRemovalNetworkErased = false
-        removalFailures = []; target = nil; saveFailure = nil
+        removalFailures = []; target = nil; candidateSaveFailure = nil
     }
 }

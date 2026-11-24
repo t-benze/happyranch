@@ -4,7 +4,7 @@ import Darwin
 import HappyRanchSupervisor
 @testable import HappyRanchApp
 
-private final class SwitchTransport: AppAPITransport, @unchecked Sendable {
+final class SwitchTransport: AppAPITransport, @unchecked Sendable {
     private let lock = NSLock()
     private var held: [AppAPITransfer] = []
     var count: Int { lock.withLock { held.count } }
@@ -24,7 +24,7 @@ private final class SwitchTransport: AppAPITransport, @unchecked Sendable {
 }
 
 @MainActor
-private final class SwitchSchemeTask: NSObject, WKURLSchemeTask {
+final class SwitchSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
     var finished = false
     var failed = false
@@ -49,7 +49,7 @@ final class AppSchemeSwitchTests: XCTestCase {
     private let clean = #"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#
 
     @MainActor
-    private func fixture() throws -> (URL, AppScheme, WKWebView, SwitchTransport) {
+    func fixture() throws -> (URL, AppScheme, WKWebView, SwitchTransport) {
         let physical = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
         defer { free(physical) }
         let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
@@ -158,5 +158,50 @@ final class AppSchemeSwitchTests: XCTestCase {
         XCTAssertEqual(stale.status, 409)
         XCTAssertEqual(nextTransport.count, 1, "Old generation cannot forward into B")
         scheme.webView(view, stop: next)
+    }
+
+    @MainActor
+    func testDirectReconnectAndLocalSelectionRebindStableMainThroughAppAdmission() async throws {
+        let (root, scheme, view, first) = try fixture()
+        defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+        let app = AppDelegate()
+        app.bindMainScheme(scheme)
+        try scheme.receiveOwnerSummary(clean)
+        let initial = scheme.generation
+        XCTAssertNil(app.selectMainTransport(id: "DIY-A", transport: first, remote: true))
+        XCTAssertNotEqual(scheme.generation, initial)
+        XCTAssertNil(app.disconnectSelectedTarget())
+        let disconnected = scheme.generation
+        let second = SwitchTransport()
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#)
+        XCTAssertEqual(app.selectMainTransport(id: "DIY-B", transport: second, remote: true), "owner_save_pending")
+        XCTAssertEqual(scheme.generation, disconnected)
+        try scheme.receiveOwnerSummary(clean)
+        XCTAssertNil(app.selectMainTransport(id: "DIY-B", transport: second, remote: true))
+        let reconnected = scheme.generation
+        XCTAssertNotEqual(reconnected, disconnected)
+        let request = SwitchSchemeTask(method: "GET", path: "/api/v1/events", generation: reconnected)
+        scheme.webView(view, start: request)
+        let forwarded = await eventually { second.count == 1 && request.received }
+        XCTAssertTrue(forwarded, "The retained scheme forwards after explicit DIY reconnect")
+        XCTAssertEqual(first.count, 0)
+        XCTAssertFalse(request.failed || request.finished)
+        // A metadata rebind cannot select anything or change generation.
+        app.bindMainScheme(scheme)
+        XCTAssertEqual(scheme.generation, reconnected)
+        scheme.webView(view, stop: request)
+        let local = SwitchTransport()
+        XCTAssertNil(app.selectMainTransport(id: "http://127.0.0.1:9001", transport: local, remote: false, promptURL: "http://127.0.0.1:9001/api/v1"))
+        let localGeneration = scheme.generation
+        XCTAssertNil(app.selectMainTransport(id: "http://127.0.0.1:9001", transport: local, remote: false, promptURL: "http://127.0.0.1:9001/api/v1"))
+        XCTAssertEqual(scheme.generation, localGeneration, "Health cadence for the same local endpoint is not selection")
+        let localRequest = SwitchSchemeTask(method: "GET", path: "/api/v1/events", generation: localGeneration)
+        scheme.webView(view, start: localRequest)
+        let localForwarded = await eventually { local.count == 1 && localRequest.received }
+        XCTAssertTrue(localForwarded)
+        let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+        XCTAssertEqual((state["target"] as? [String: Any])?["kind"] as? String, "local")
+        XCTAssertEqual((state["local"] as? [String: Any])?["prompt_base_url"] as? String, "http://127.0.0.1:9001/api/v1")
+        scheme.webView(view, stop: localRequest)
     }
 }

@@ -168,12 +168,14 @@ struct RemoteConnectionView: View {
 }
 
 private struct HomeInviteForm: View {
+    @EnvironmentObject var appDelegate: AppDelegate
     @ObservedObject var model: HomeInviteModel
     @State private var draft = ""
     @State private var replacementConsent = false
     @State private var connectConsent = false
     @State private var pendingInvite = ""
     @State private var removalConsent = false
+    @State private var actionRefusal: String?
 
     var body: some View {
         ScrollView {
@@ -199,6 +201,7 @@ private struct HomeInviteForm: View {
                     }
                     Text("Compare this phrase on Linux, then approve this device there.").font(.caption)
                 }
+                if let actionRefusal { Text(actionRefusal).foregroundStyle(.red) }
                 if model.busy { ProgressView() }
                 if !model.busy, model.phase != .connected {
                     SecureField("Paste one invite from Linux", text: $draft)
@@ -224,11 +227,14 @@ private struct HomeInviteForm: View {
                     Text(model.retryGuidance).font(.caption)
                     Button("Retry") { draft = ""; model.retry() }
                 }
-                if model.busy {
+                if model.bridgeCanCancel || model.busy {
                     Button("Cancel") { draft = ""; model.cancel() }
                         .disabled(model.phase == .stopping)
-                } else if model.phase == .connected {
-                    Button("Disconnect") { draft = ""; model.cancel() }
+                } else if model.hasActiveSession {
+                    Button("Disconnect") {
+                        draft = ""
+                        Task { actionRefusal = await appDelegate.disconnectHomeSelection() }
+                    }
                     if model.saveFailure == nil, !model.savedHomes.isEmpty {
                         Text("Disconnect keeps saved access.").font(.caption)
                     }
@@ -260,13 +266,18 @@ private struct HomeInviteForm: View {
                     Button("Remove saved computer…", role: .destructive) { removalConsent = true }
                         .disabled(model.busy)
                         .confirmationDialog("Erase local access? This does not revoke the device on Linux.", isPresented: $removalConsent) {
-                            Button("Remove saved computer", role: .destructive) { draft = ""; model.removeSavedComputer() }
+                            Button("Remove saved computer", role: .destructive) {
+                                draft = ""
+                                Task { actionRefusal = await appDelegate.removeHomeSelection() }
+                            }
                         }
                 }
                 if !model.removalFailures.isEmpty {
                     Text("Removal incomplete").foregroundStyle(.red)
                     ForEach(model.removalFailures, id: \.self) { Text($0).font(.caption) }
-                    Button("Retry removal") { model.removeSavedComputer() }.disabled(model.busy)
+                    Button("Retry removal") {
+                        Task { actionRefusal = await appDelegate.removeHomeSelection() }
+                    }.disabled(model.busy)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

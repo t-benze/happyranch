@@ -438,14 +438,15 @@ enum ConnectionClientProjection {
     }
     static func savedAccess(_ model: HomeInviteModel) -> String {
         if !model.removalFailures.isEmpty { return "removalIncomplete" }
-        if case .keychain(let failure) = model.phase {
-            if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
-            return "unknown"
-        }
         if let failure = model.saveFailure {
             if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
             if failure == .unavailable || failure == .deletionFailed { return "unknown" }
             return "notSaved"
+        }
+        if model.hasActiveSession { return model.activeHasUnsavedAccess ? "notSaved" : "saved" }
+        if case .keychain(let failure) = model.phase {
+            if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
+            return "unknown"
         }
         if model.bridgeHasUnsavedAccess { return "notSaved" }
         if !model.savedHomes.isEmpty { return "saved" }

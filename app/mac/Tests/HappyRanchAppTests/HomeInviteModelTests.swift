@@ -3,6 +3,7 @@ import Combine
 import CryptoKit
 import Testing
 import XCTest
+import WebKit
 @testable import HappyRanchSupervisor
 @testable import HappyRanchApp
 
@@ -1043,37 +1044,149 @@ final class HomeCandidateOwnershipTests: XCTestCase {
 
     @MainActor
     func testCandidateCancelPreservesActiveTransportHealthAndSaveResult() async throws {
-        let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
-        await a.approve(); await b.approve(); await store.configure(saveFails: true)
-        let factory = HomeSessionFactory([a, b])
-        let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+        for candidateSaveFails in [false, true] {
+            let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
+            await a.approve(); await b.approve(); await store.configure(saveFails: true)
+            let factory = HomeSessionFactory([a, b])
+            let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+            try await firstSelection(model)
+            let activeID = try XCTUnwrap(model.activeID), document = model.documentGeneration
+            await store.configure(saveFails: candidateSaveFails)
+            model.accept(try HomeInviteModelTests().invite(home: "B"))
+            let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+            XCTAssertTrue(ready)
+            XCTAssertEqual(model.activeID, activeID)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            XCTAssertEqual(model.connectionStates.state, .online)
+            XCTAssertEqual(model.documentGeneration, document)
+            XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "ready_to_switch")
+            XCTAssertEqual(model.saveFailure, .saveFailed, "The native warning still projects selected A's failure while B is ready")
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "notSaved")
+            XCTAssertTrue(model.bridgeCanRetrySave, "The warning's Retry action still targets unsaved A")
+            await store.configure()
+            model.cancel(); await model.bridgeSettle()
+            XCTAssertEqual(model.activeID, activeID)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "cancelled")
+            XCTAssertEqual(model.saveFailure, .saveFailed)
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "notSaved")
+            XCTAssertTrue(model.bridgeCanRetrySave)
+            XCTAssertTrue(model.activeHasUnsavedAccess)
+            let aStops = await a.stops, bStops = await b.stops
+            XCTAssertEqual(aStops, 0); XCTAssertEqual(bStops, 1)
+            let saved = await model.bridgeRetrySave()
+            XCTAssertEqual(saved, .saved)
+            XCTAssertFalse(model.activeHasUnsavedAccess)
+            XCTAssertNil(model.saveFailure)
+            XCTAssertEqual(ConnectionClientProjection.savedAccess(model), "saved")
+            model.disconnectActive()
+            let stopped = await model.waitForCleanup(id: activeID)
+            XCTAssertTrue(stopped)
+        }
+    }
+
+    @MainActor
+    func testRetainedNativeDisconnectAndRemoveUseMainGatesAndConfirmSelectedCleanup() async throws {
+        for removing in [false, true] {
+            let session = HomeSessionFixture(), store = HomeStoreFixture()
+            await session.approve()
+            let model = HomeInviteModel(store: store, makeSession: { session })
+            try await firstSelection(model)
+            let active = try XCTUnwrap(model.activeID)
+            let saved = try XCTUnwrap(model.savedHomes.first)
+            let (root, scheme, view, transport) = try AppSchemeSwitchTests().fixture()
+            defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+            scheme.disconnectSelected = { model.disconnectActive(); return true }
+            @MainActor func act() async -> String? {
+                if removing { return await model.removeSavedSelection(using: scheme) }
+                return await model.disconnectSelected(using: scheme)
+            }
+            let missingOwner = await act()
+            XCTAssertEqual(missingOwner, "owner_save_unknown")
+            XCTAssertEqual(model.activeID, active)
+            try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#)
+            let pendingOwner = await act()
+            XCTAssertEqual(pendingOwner, "owner_save_pending")
+            try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+            let mutation = SwitchSchemeTask(method: "POST", path: "/api/v1/pending", generation: scheme.generation)
+            scheme.webView(view, start: mutation)
+            let sent = await HomeInviteModelTests().eventually { transport.count == 1 }
+            XCTAssertTrue(sent)
+            let pendingTransfer = await act()
+            XCTAssertEqual(pendingTransfer, "non_get_pending")
+            XCTAssertEqual(model.activeID, active)
+            let stopsBefore = await session.stops, deletesBefore = await store.deletedBindings
+            XCTAssertEqual(stopsBefore, 0); XCTAssertTrue(deletesBefore.isEmpty)
+            scheme.webView(view, stop: mutation)
+            let completed = await act()
+            XCTAssertNil(completed)
+            XCTAssertNil(model.activeID); XCTAssertNil(model.appTransport)
+            XCTAssertNil(model.appReadiness)
+            XCTAssertEqual(model.connectionStates.state, .offline)
+            XCTAssertEqual(model.cleanupOutcomes[active], "confirmed")
+            let stops = await session.stops, deleted = await store.deletedBindings
+            XCTAssertEqual(stops, 1)
+            XCTAssertEqual(deleted, removing ? [saved.binding] : [])
+            XCTAssertEqual(model.savedHomes.contains(saved), !removing)
+            let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            XCTAssertEqual(state["state"] as? String, "no_target")
+            XCTAssertTrue(state["target"] is NSNull)
+        }
+    }
+
+    @MainActor
+    func testRetainedNativeRemoveKeepsSavedIdentityWhenSelectedStopFails() async throws {
+        let session = HomeSessionFixture(), store = HomeStoreFixture()
+        await session.approve(); await session.failStop()
+        let model = HomeInviteModel(store: store, makeSession: { session })
         try await firstSelection(model)
-        let activeID = try XCTUnwrap(model.activeID), document = model.documentGeneration
-        await store.configure()
-        model.accept(try HomeInviteModelTests().invite(home: "B"))
-        let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
-        XCTAssertTrue(ready)
-        XCTAssertEqual(model.activeID, activeID)
-        XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
-        XCTAssertEqual(model.connectionStates.state, .online)
-        XCTAssertEqual(model.documentGeneration, document)
-        XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "ready_to_switch")
-        XCTAssertEqual(model.activeSaveFailure, .saveFailed)
-        model.cancel(); await model.bridgeSettle()
-        XCTAssertEqual(model.activeID, activeID)
-        XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
-        XCTAssertEqual(model.bridgeCandidate?["phase"] as? String, "cancelled")
-        XCTAssertEqual(model.activeSaveFailure, .saveFailed)
-        XCTAssertTrue(model.activeHasUnsavedAccess)
-        let aStops = await a.stops, bStops = await b.stops
-        XCTAssertEqual(aStops, 0); XCTAssertEqual(bStops, 1)
-        let saved = await model.bridgeRetrySave()
-        XCTAssertEqual(saved, .saved)
-        XCTAssertFalse(model.activeHasUnsavedAccess)
-        XCTAssertNil(model.activeSaveFailure)
-        model.disconnectActive()
-        let stopped = await model.waitForCleanup(id: activeID)
-        XCTAssertTrue(stopped)
+        let selected = try XCTUnwrap(model.activeID), saved = try XCTUnwrap(model.savedHomes.first)
+        let (root, scheme, view, _) = try AppSchemeSwitchTests().fixture()
+        defer { _ = view; scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+        scheme.disconnectSelected = { model.disconnectActive(); return true }
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        let reason = await model.removeSavedSelection(using: scheme)
+        XCTAssertEqual(reason, "removalIncomplete")
+        XCTAssertEqual(model.cleanupOutcomes[selected], "incomplete")
+        XCTAssertTrue(model.savedHomes.contains(saved))
+        let deleted = await store.deletedBindings
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertNil(model.appTransport, "Failed teardown is retained separately and cannot serve Main")
+    }
+
+    @MainActor
+    func testCancelCommandReportsCandidateCleanupWithSelectedOwnerRetained() async throws {
+        for stopFails in [false, true] {
+            let a = HomeSessionFixture(), b = HomeSessionFixture()
+            await a.approve(); await b.approve()
+            if stopFails { await b.failStop() }
+            let factory = HomeSessionFactory([a, b])
+            let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { factory.next() })
+            try await firstSelection(model)
+            let active = try XCTUnwrap(model.activeID)
+            model.accept(try HomeInviteModelTests().invite(home: "B"))
+            let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+            XCTAssertTrue(ready)
+            let result = await ConnectionWindow.cancelAttempt(model: model, catalog: ConnectionComputerCatalog())
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.reply(id: "r1").utf8)) as? [String: Any])
+            if stopFails {
+                let error = try XCTUnwrap(reply["error"] as? [String: Any])
+                XCTAssertEqual(error["code"] as? String, "outcomeUnknown")
+                XCTAssertEqual(error["effect"] as? String, "unknown")
+            } else {
+                let action = try XCTUnwrap(reply["result"] as? [String: Any])
+                XCTAssertEqual(action["localCleanup"] as? String, "confirmed")
+                XCTAssertEqual(action["effect"] as? String, "confirmed")
+                XCTAssertEqual(model.phase, .connected)
+            }
+            XCTAssertEqual(model.activeID, active)
+            XCTAssertTrue((try XCTUnwrap(model.appTransport) as AnyObject) === a.readiness)
+            let aStops = await a.stops, bStops = await b.stops
+            XCTAssertEqual(aStops, 0); XCTAssertEqual(bStops, 1)
+            model.disconnectActive()
+            let cleaned = await model.waitForCleanup(id: active)
+            XCTAssertTrue(cleaned)
+        }
     }
 
     @MainActor

@@ -1670,7 +1670,16 @@ the actual candidate synchronously, including ready/failed/cancelled phases.
 The closed v2 appState shape is unchanged. Independent teardown cannot roll
 back selection: native action-result `localCleanup` stays `unknown` until an
 observed result, with `incomplete` retained on failure. Selected saved-profile
-removal first owner-gates disconnect and confirms teardown. Confirmed active
+removal first owner-gates disconnect and confirms teardown. Retained native form
+Disconnect/Remove enter that same gate and surface named refusals; incomplete
+selected teardown retains saved identity. The shipping native save warning/Retry
+and savedAccess projection use selected custody independently of candidate
+reset/success/Cancel. Candidate Cancel settles against the captured candidate's
+cleanup, so a still-connected selected owner does not imply outcomeUnknown.
+Explicit direct DIY pairing completion and local endpoint changes rebind the
+retained Main through the same gate/target-generation transition; readiness
+alone never commits a candidate, and local health cadence cannot reselect a
+disconnected target. Confirmed active
 revocation retains exact-owner profile/Keychain cleanup independently of a
 concurrent candidate, with failed cleanup held for explicit Retry. No auth/security,
 daemon allowlist, shared-web, dependency or protocol change is included.
