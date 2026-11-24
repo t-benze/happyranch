@@ -132,6 +132,13 @@ struct AppSchemeOwnerSummary {
         blocking = nil; counts = nil
     }
     var allowsNavigation: Bool { !uncertain && blocking == "none" }
+    var switchRefusal: String? {
+        guard !uncertain, let counts else { return "owner_save_unknown" }
+        if counts["unknown", default: 0] > 0 { return "owner_save_unknown" }
+        if counts["pending", default: 0] > 0 { return "owner_save_pending" }
+        if blocking != "none" { return "owner_edits_pending" }
+        return nil
+    }
 }
 
 /// Closed lifecycle facts; header/body/context values never enter this record.
@@ -171,13 +178,27 @@ struct AppSchemeStreamDiagnostic {
 @MainActor
 final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithReply {
     static let csp = "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-    let generation = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-    let remote: Bool
+    private(set) var generation = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    private(set) var remote: Bool
+    struct Target {
+        let id: String
+        let transport: any AppAPITransport
+        let remote: Bool
+        let health: AppAPIHealth
+        let accessUnsaved: Bool
+    }
+    var switchCandidate: (() throws -> Target)?
+    var disconnectSelected: (() -> Bool)?
+    var actionResult: (() -> [String: Any])?
+    private var targetID: String?
+    private var candidate: [String: Any]?
+    var candidateSnapshot: (() -> [String: Any]?)?
     private let assets: ConnectionAssets
-    private let transport: any AppAPITransport
+    private var transport: (any AppAPITransport)?
     private weak var view: WKWebView?
     private struct Owner {
         let requestID: String
+        let generation: String
         let task: any WKURLSchemeTask
         var worker: Task<Void, Never>?
         var upstream: AppAPITransfer?
@@ -201,7 +222,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var incompatibleSide = "host"
     private(set) var documentAdmission = AppSchemeAdmissionDiagnostic()
     private let promptURL: String?
-    private let accessUnsaved: Bool
+    private var accessUnsaved: Bool
     private let configPolicy: [(String, [String])]
     /// Optional diagnostic observer receives lifecycle IDs and closed document
     /// path classes, never raw URLs, headers or bytes. Used by qualification.
@@ -234,7 +255,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         return owner
     }
 
-    init(root: URL, transport: any AppAPITransport, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
+    init(root: URL, transport: (any AppAPITransport)?, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
         assets = try ConnectionAssets(root: root)
         guard let policy = policyURL ?? Bundle.main.resourceURL?.appendingPathComponent("remote-client-config-policy.v1.json"),
               let object = try JSONSerialization.jsonObject(with: Data(contentsOf: policy)) as? [String: Any],
@@ -246,6 +267,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             return (method, path.split(separator: "/").map(String.init))
         }
         self.transport = transport; self.remote = remote; self.promptURL = promptURL; self.accessUnsaved = accessUnsaved
+        super.init()
+        targetID = transport == nil ? nil : (remote ? generation : "local")
+        if transport == nil { state = "no_target" }
     }
 
     func configure(_ configuration: WKWebViewConfiguration) {
@@ -289,8 +313,60 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         !hasDocument || (documentOwners.allowsNavigation && !nonGETPending)
     }
     private var nonGETPending: Bool {
-        owners.values.contains { !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }
+        owners.values.contains { $0.generation == generation && ($0.task.request.httpMethod ?? "GET") != "GET" }
     }
+    var switchRefusal: String? { nonGETPending ? "non_get_pending" : documentOwners.switchRefusal }
+
+    /// No suspension between admission, selection and generation swap. Owner
+    /// evidence belongs to Main and survives this transition.
+    @discardableResult
+    func commitSwitch() -> String? {
+        if let reason = switchRefusal { return reason }
+        guard let switchCandidate else { return "target_starting" }
+        let next: Target
+        do { next = try switchCandidate() } catch { return "target_starting" }
+        transport = next.transport; remote = next.remote; targetID = next.id
+        accessUnsaved = next.accessUnsaved; hostContract = next.health.contract
+        incompatibleSide = next.health.incompatibleSide; state = next.health.state
+        candidate = nil
+        advanceGeneration()
+        return nil
+    }
+
+    @discardableResult
+    func disconnect() -> String? {
+        if let reason = switchRefusal { return reason }
+        guard disconnectSelected?() == true else { return "busy" }
+        transport = nil; targetID = nil; accessUnsaved = false
+        state = "no_target"; hostContract = nil
+        advanceGeneration()
+        return nil
+    }
+
+    private func advanceGeneration() {
+        let old = generation
+        generation = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        readinessRevision = UUID(); admission?.cancel(); admission = nil
+        // Remove custody before cancelling or calling WebKit. An old worker
+        // cannot complete, publish readiness, or finish a stream successfully.
+        for key in Array(owners.keys) {
+            guard let owner = owners[key], owner.generation == old else { continue }
+            owners.removeValue(forKey: key)
+            owner.worker?.cancel(); owner.upstream?.cancel()
+            owner.task.didFailWithError(AppAPIError.cancelled)
+        }
+        cancelled.removeAll()
+        emitStatus()
+    }
+
+    func updateCandidate(_ value: [String: Any]?, accessUnsaved: Bool) {
+        let previous = candidate.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: .sortedKeys) }
+        let next = value.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: .sortedKeys) }
+        guard previous != next || self.accessUnsaved != accessUnsaved else { return }
+        candidate = value; self.accessUnsaved = accessUnsaved
+        emitStatus()
+    }
+    func receiveOwnerSummary(_ raw: String) throws { try documentOwners.accept(raw) }
     func documentDidStart(url: URL? = nil) {
         documentURL = url; documentResponse = nil
         documentContext = nil
@@ -333,7 +409,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             guard bound as? Bool == true else { throw AppAPIError.cancelled }
             stage = .readiness; diagnostic.readiness = "in-flight"
             documentAdmission = diagnostic
-            try await checkAdmission(refresh: true)
+            if transport != nil { try await checkAdmission(refresh: true) }
             diagnostic.readiness = state
             stage = .documentIdentityCheck
             guard document == expected, self.view === view else { throw AppAPIError.cancelled }
@@ -370,6 +446,11 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         state = health.state; readinessRevision = UUID()
         admission?.cancel(); admission = nil
         emitStatus()
+    }
+    func selectedUnavailable() {
+        guard targetID != nil, state != "unreachable" else { return }
+        state = "unreachable"; readinessRevision = UUID()
+        admission?.cancel(); admission = nil; emitStatus()
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
@@ -424,7 +505,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             if !["GET", "HEAD"].contains(method) && owners.values.filter({ !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }).count >= 2 {
                 reply(urlSchemeTask, status: 429, code: "too_many_requests"); return
             }
-            owners[key] = Owner(requestID: id, task: urlSchemeTask)
+            owners[key] = Owner(requestID: id, generation: generation, task: urlSchemeTask)
             lifecycle(key, "start")
             owners[key]?.worker = Task { [weak self] in
                 guard let self else { return }
@@ -450,15 +531,18 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
 
     private func checkAdmission(refresh: Bool = false) async throws {
+        guard let transport else { throw AppAPIError.unavailable }
         if refresh, state == "ready" { admission = nil }
         if let admission { try await admission.value; return }
         let expected = document
         let expectedReadiness = readinessRevision
+        let expectedGeneration = generation
         let task = Task { [weak self] in
             guard let self else { throw AppAPIError.cancelled }
-            let health = try await AppAPIHealth.read(from: self.transport)
+            let health = try await AppAPIHealth.read(from: transport)
             try Task.checkCancellation()
-            guard self.document == expected, self.readinessRevision == expectedReadiness else { throw AppAPIError.cancelled }
+            guard self.document == expected, self.readinessRevision == expectedReadiness,
+                  self.generation == expectedGeneration else { throw AppAPIError.cancelled }
             self.hostContract = health.contract
             self.incompatibleSide = health.incompatibleSide
             self.state = health.state
@@ -477,6 +561,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
 
     private func forward(_ key: ObjectIdentifier, request: URLRequest, route: AppSchemeRoute,
                          method: String, headers: [String: String], bootstrap: Bool) async {
+        guard let initialOwner = owners[key], initialOwner.generation == generation else { return }
+        let expectedGeneration = initialOwner.generation
+        let selectedTransport = transport
         var began = false
         var forwarded = false
         defer {
@@ -486,10 +573,11 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                 if completedOwners.count == 32 { completedOwners.removeFirst() }
                 completedOwners.append((key, owner.requestID))
             }
-            owners.removeValue(forKey: key)
+            if owners[key]?.generation == expectedGeneration { owners.removeValue(forKey: key) }
             if let id { observeLifecycle?(["requestID": id, "stage": "owner-retired"]) }
         }
         do {
+            try Task.checkCancellation()
             try await checkAdmission()
             try Task.checkCancellation()
             guard let owner = owners[key] else { return }
@@ -506,7 +594,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             let body = try Self.body(request)
             guard owners[key] != nil else { return }
             forwarded = true
-            let transfer = transport.appRequest(method: method, target: route.target, headers: headers, body: body)
+            guard let selectedTransport, generation == expectedGeneration else { throw AppAPIError.cancelled }
+            let transfer = selectedTransport.appRequest(method: method, target: route.target, headers: headers, body: body)
             owners[key]?.upstream = transfer
             for try await event in transfer.events {
                 try Task.checkCancellation()
@@ -621,13 +710,26 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             do {
                 // Parsing and storage are synchronous on MainActor, before ACK.
                 // Invalid current-document input cannot retain clean clearance.
-                try documentOwners.accept(item.count == 3 ? item["data"] as? String ?? "" : "")
+                try receiveOwnerSummary(item.count == 3 ? item["data"] as? String ?? "" : "")
                 replyHandler("{}", nil)
             } catch { replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#) }
             return
         }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
         if item == ["context": context, "command": "app.status"] { replyHandler(statusJSON(), nil); return }
+        if let command = item["command"], ["client.commitSwitch", "client.disconnect"].contains(command) {
+            guard Set(item.keys) == ["context", "command", "data"], item["data"] == "{}" else {
+                replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#); return
+            }
+            let reason = command == "client.commitSwitch" ? commitSwitch() : disconnect()
+            if let reason {
+                replyHandler(nil, String(decoding: (try? JSONSerialization.data(withJSONObject:
+                    ["code": reason, "effect": "none", "recovery": "explicitRetry"])) ?? Data(), as: UTF8.self))
+            } else if let actionResult {
+                replyHandler(String(decoding: (try? JSONSerialization.data(withJSONObject: actionResult())) ?? Data(), as: UTF8.self), nil)
+            } else { replyHandler(nil, #"{"code":"outcomeUnknown","effect":"unknown","recovery":"refresh"}"#) }
+            return
+        }
         if item["command"] == "cancel", item.count == 3, let id = item["id"], UUID(uuidString: id) != nil {
             if let key = owners.first(where: { $0.value.requestID == id })?.key { stop(key) }
             else if cancelled.count < 256 { cancelled.insert(id) }
@@ -637,15 +739,18 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     private func emitStatus() {
         view?.callAsyncJavaScript("window.__hrAppState?.(data);", arguments: ["data": statusJSON()], in: nil, in: .page, completionHandler: nil)
+        observe?("native_state_changed", generation)
     }
-    private func statusJSON() -> String {
+    func statusJSON() -> String {
         let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let currentCandidate: [String: Any]?
+        if let candidateSnapshot { currentCandidate = candidateSnapshot() } else { currentCandidate = candidate }
         let object: [String: Any] = ["schema": 2, "generation": generation,
-            "target": ["kind": remote ? "remote" : "local", "id": remote ? generation : "local",
-                       "name": remote ? (zh ? "远程电脑" : "Remote computer") : (zh ? "此电脑" : "This computer")],
+            "target": targetID.map { ["kind": remote ? "remote" : "local", "id": $0,
+                       "name": remote ? (zh ? "远程电脑" : "Remote computer") : (zh ? "此电脑" : "This computer")] } as Any? ?? NSNull(),
             "state": state, "incompatible": state == "incompatible" ? ["side": incompatibleSide, "host_contract": hostContract as Any? ?? NSNull(), "client_contract": 1, "min_daemon": 1] as [String: Any] : NSNull(),
             "local": ["supported": false, "mode": "unsupported", "running": remote ? "unknown" : "running", "prompt_base_url": remote ? NSNull() : (promptURL as Any? ?? NSNull())],
-            "candidate": NSNull(), "access_unsaved": accessUnsaved,
+            "candidate": currentCandidate as Any? ?? NSNull(), "access_unsaved": accessUnsaved,
             "locale": ["current": zh ? "zh-CN" : "en", "persisted": true]]
         return String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)
     }

@@ -91,6 +91,28 @@ public final class ConnectionStateManager: @unchecked Sendable {
     /// online transition).
     public private(set) var lastHeartbeat: Date?
 
+    /// Candidate observations never replace selected health or its heartbeat.
+    public private(set) var activeID: UUID?
+    public private(set) var candidateID: UUID?
+    public private(set) var candidateState: ConnectionState?
+
+    public func beginCandidate(id: UUID) {
+        candidateID = id; candidateState = .offline
+    }
+    public func commitCandidate(id: UUID) {
+        guard candidateID == id else { return }
+        activeID = id; candidateID = nil; candidateState = nil
+        transition(to: .online)
+    }
+    public func cancelCandidate() { candidateID = nil; candidateState = nil }
+    public func observeActive(id: UUID, state: ConnectionState) {
+        guard activeID == id else { return }
+        transition(to: state)
+    }
+    public func disconnectActive() {
+        activeID = nil; lastHeartbeat = nil; transition(to: .offline)
+    }
+
     // MARK: - Init
 
     public init() {}

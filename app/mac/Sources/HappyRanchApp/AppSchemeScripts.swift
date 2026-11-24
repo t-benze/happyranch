@@ -38,6 +38,9 @@ enum AppSchemeScripts {
       if (command === 'app.ownersChanged' && typeof data === 'string') {
         return native.postMessage({context, command, data});
       }
+      if (['client.commitSwitch','client.disconnect'].includes(command) && data === '{}') {
+        return native.postMessage({context, command, data});
+      }
       if (command !== 'app.status' || data !== '{}') throw new Error('unavailable');
       return native.postMessage({context, command:'app.status'});
     },

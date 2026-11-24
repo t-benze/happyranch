@@ -54,7 +54,7 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
-### MAC-1: Main app scheme and native API transport
+### MAC-1 / MAC-2a: Main app scheme, transport and ownership
 
 Main loads the single packaged `Contents/Resources/web/dist` at
 `happyranch-app://app/`, with persistent per-origin WebKit storage. The upstream
@@ -118,8 +118,9 @@ page authorization and identity headers are not forwarded. The packaged
 refusals as Linux; the daemon/home connector remote allowlist is unchanged.
 Health contract admission uses `current >= 1` and `min_client <= 1`, including
 missing-contract and busy refusals, before API forwarding. The native document
-completion callback also awaits fresh admission of that selected owner and
-checks the current navigation/load identity. The Connected monitor rechecks
+completion callback checks the current navigation/load identity and, when a
+target is selected, awaits its fresh admission. An initially unselected Main
+can admit the release document without selecting a candidate. The active monitor rechecks
 the same readiness contract after its existing access check. After admission,
 ordinary or bounded-unknown `update_busy` publishes the existing Busy/忙碌 status
 and preserves Main, its document identity, drafts and in-flight transfers; the
@@ -136,21 +137,25 @@ URLSession failures after resume conservatively fail the scheme transfer,
 including a lost reply before response headers; mutations become Result unknown
 in the shared client and are never automatically retried.
 
-This slice exposes transport `app.status`, `app.stateChanged`, request cancel
-and the existing `app.ownersChanged` receipt required before registered saves.
+The Main bridge exposes `app.status`, full `app.stateChanged`, request cancel,
+`client.commitSwitch`, `client.disconnect`, and the existing `app.ownersChanged`
+receipt required before registered saves. Commit/disconnect take exactly `{}`.
 Native parses the bounded, duplicate-free closed summary and stores its owner
 protection before replying `"{}"`. Voluntary document navigation refuses missing,
 dirty/failed or unresolved owner evidence and native non-GET transfers. Document
 loss retains unresolved-save uncertainty; a replacement clean summary cannot
 clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
-a later slice. The locale field reports the native launch language; no locale setter,
-new Settings/Connection actions, toolbar/menu, local controls or launch policy is
-implemented here. The existing native Connection view remains for later slices.
+a later slice. The locale field reports the native launch language. Locale setters,
+Settings/Connection dialog hosting, toolbar/menu, local controls and launch policy
+remain later slices. The existing native Connection view remains for later slices.
 Those later Mac contracts are not qualified by this transport PR.
 
-Build 62 measured incremental delivery of all five normal SSE events, but the
-page never reported EOF after native `didFinish`; qualification remains **FAIL**.
-The EOF cause is **unproven**. Framing headers are stripped before delivery,
+Historical build 62 measured incremental delivery of all five normal SSE events,
+but the page never reported EOF after native `didFinish`; that build remains **FAIL**.
+The MAC-1 baseline subsequently passed build 65 and merged as `efeee6e9`
+(PR #1839). MAC-2a native compilation and XCTest execution remain NOT RUN on
+the Linux maker host; its separate PR ledger starts at **Mac builds 0/6 used**.
+The build-62 EOF cause was **unproven** at that head. Framing headers are stripped before delivery,
 and the handler is MainActor-owned, but build 62 did not retain expected length,
 page read/parse/emit state or finish/stop facts. No speculative framing or
 buffering change is made. After independent review
@@ -408,13 +413,47 @@ effect none and releases only a still-current native loaded-UI gate.
 The persistent, accessible native-chrome save warning over the runtime explains
 that reopening may need a new invite. Its bilingual Retry save action opens the
 packaged Connection view even after that view was closed; runtime content gets
-no bridge and cannot mutate custody. The native RELEASE UI load gate remains
-the only route to Connected. Existing native screens remain until qualified
+no custody authority. Main uses its scoped app-scheme bridge. The first native
+RELEASE UI load is a prerequisite; explicit owner-gated commit alone selects
+the candidate and publishes Connected. Existing native screens remain until qualified
 cutover. This source delivery and unsigned app build do not establish native
 GUI/Keychain execution or cross-device acceptance. Focused Swift tests on an
 authorized Mac: `swift test --package-path app/mac --filter 'ConnectionContractTests|HomeInviteModelTests'`.
 They are NOT RUN on the Linux maker host and are not compiled by the unsigned
 workflow.
+
+### MAC-2a active/candidate selection
+
+`HomeInviteModel` retains a selected session independently of the candidate's
+attempt, transport, health, Keychain result and cancellation. Failure or Cancel
+of a different-home candidate preserves a still-valid selected session and its
+save warning. Selected/retiring home or profile identity cannot be started
+again; saved reconnect to that identity refuses before creating another helper.
+`ManagedJoinModel` stages candidate membership separately from its active
+membership; the legacy in-process engine still has a global singleton fence.
+Helper-backed `ClientBridge` ownership reserves both canonical profile path and
+helper identity, while `HomeBridgeProcess` profile locks and teardown fencing
+remain. A failed/unknown stop retains the reservation.
+
+Main's SwiftUI identity is independent of target and attempt. Switch/disconnect
+preserve the WKWebView, its loaded document and its owner registry. Native refuses
+with `non_get_pending`, `owner_save_pending`, `owner_save_unknown` or
+`owner_edits_pending` while those protections apply; missing owner evidence
+fails closed. Admitted commit swaps target and generation synchronously, fails
+old-generation transfers with an error (never clean EOF), and emits full status
+with the real candidate. Cleanup settles separately: action results report
+`unknown` until observed, or `incomplete` after failure; cleanup cannot roll
+back selection or authorize duplicate identity. Active revocation keeps its exact
+profile/Keychain erasure path without touching a concurrent candidate. Failed
+revocation cleanup retains that owner for explicit Retry. Disconnect uses the same gate.
+Removing selected saved access first uses that gate and waits for confirmed
+cleanup before deleting profile state. No shared-web/protocol/schema, daemon
+credential, remote-allowlist, dependency or auth change is included.
+
+Dialog/toolbar/menu/screenshot work is MAC-2b. Quit/close/Relaunch gating and
+language remain MAC-4. Native tests use the existing SwiftPM targets; on an
+authorized Mac after review: `swift test --package-path app/mac --filter 'HomeCandidateOwnershipTests|AppSchemeSwitchTests|ManagedOwnerFenceTests|ConnectionOwnershipStateTests|ManagedCandidateMembershipTests|HomeInviteModelTests'`.
+No native execution or Mac/Jenkins build is authorized for the maker.
 
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
@@ -424,9 +463,10 @@ form defaults to **Home invite**. Paste one invite and choose Connect, without
 separate URL, key or pairing-code entry. The app validates it offline, displays
 the control host and release runtime, joins through the isolated home helper,
 pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
-then **Opening runtime**. **Connected**
-is published only after the expected authorized main-frame web navigation
-finishes and the selected owner passes compatible, non-busy admission. The
+then **Opening runtime** and **Ready to switch**. Compatible, non-busy health
+and the first authorized release-document load permit readiness only.
+**Connected** is published by explicit `client.commitSwitch`, after Main owner
+and current-generation transfer admission. The
 periodic access monitor repeats that readiness check. Network membership and
 authorization alone cannot publish it. Existing DIY
 Tailscale remains an explicit separate selection, never an error fallback. Custom-server
@@ -436,8 +476,9 @@ QR transfer remains deferred.
 
 `HomeInviteModel` owns attempt IDs, native document generations, the actual
 invite-expiry countdown and cancel fencing. Native load callbacks capture both
-identities, including on saved reconnect. A native confirmation hold defers
-Connected until dismissal and a still-current authorized load; direct Cancel in
+identities for the first document. Saved reconnect and later candidates reuse
+that admitted Main document. A native confirmation hold defers readiness until
+dismissal and a still-current authorized first load; direct Cancel in
 the native attempt form needs no second confirmation. The static contract layer
 above reuses these seams; 3b-2b supplies web-initiated confirmations. `ManagedHomeInviteSession`
 uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
@@ -449,7 +490,8 @@ shows Stopping until that storage step settles, retaining its observed saved
 access or save failure before local teardown; it cannot advance to Opening or
 Connected. Failed or unknown teardown remains visible.
 The native release-UI load observation is retained if it arrives during Retry
-saving; Connected still waits for saving and any native confirmation to settle.
+saving; readiness still waits for saving and any native confirmation to settle,
+and selection still requires explicit commit.
 The ten-second navigation deadline remains effective while Retry saving waits.
 A failed join, including a helper TLS-close failure, reaches a closed failure
 with Retry (#1563).

@@ -427,12 +427,12 @@ enum ConnectionClientProjection {
         return formatter.string(from: date)
     }
     static func health(_ model: HomeInviteModel, now: Date) -> [String: Any] {
-        guard let sample = model.accessObservation, sample.lifetime == model.lifetime else {
+        guard let sample = model.bridgeAccessObservation else {
             return ["access": "unknown", "runtime": "unknown", "route": "unknown", "observedAt": NSNull(), "observation": "unavailable"]
         }
         let fresh = (0...10).contains(now.timeIntervalSince(sample.observedAt))
         return ["access": fresh ? sample.access.rawValue : "unknown",
-                "runtime": fresh && sample.access == .allowed && model.phase == .connected ? "available" : "unknown",
+                "runtime": fresh && sample.access == .allowed && model.bridgeRuntimeAvailable ? "available" : "unknown",
                 "route": "unknown", "observedAt": timestamp(sample.observedAt),
                 "observation": fresh ? (sample.access == .unknown ? "unavailable" : "known") : "stale"]
     }
@@ -466,7 +466,7 @@ enum ConnectionClientProjection {
         case .pairing: stage = "pairing"
         case .awaitingApproval: stage = "waitingApproval"
         case .saving: stage = "saving"
-        case .opening: stage = "opening"
+        case .opening, .readyToSwitch: stage = "opening"
         case .connected, .runtimeBusy: stage = "connected"
         case .stopping: stage = "stopping"
         case .failed, .keychain: stage = "failed"

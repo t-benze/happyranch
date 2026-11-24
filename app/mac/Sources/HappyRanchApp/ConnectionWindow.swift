@@ -423,6 +423,11 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                 action: Self.copy("Stop local connection", "停止本地连接"))
             guard unchanged() else { return .failure(.init(.stateChanged)) }
             guard yes else { return action("none") }
+            if !cancelling {
+                guard let app, app.disconnectSelectedTarget() == nil else { return .failure(.init(.busy)) }
+                ledger.markDispatched(request.id)
+                return action(cleanup: "unknown")
+            }
             ledger.markDispatched(request.id)
             model.cancel() // invalidates now; storage teardown waits at its safe point
             mutationLifetime = model.lifetime
@@ -520,8 +525,8 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                              token: UUID, removing: Bool) async -> ConnectionOutcome {
         let context = model.lifetime
         guard model.bridgeRemovalTarget == nil || model.bridgeRemovalTarget == target else { return .failure(.init(.stateChanged)) }
-        guard !model.busy, model.bridgeActiveComputerID == nil || model.bridgeActiveComputerID == target.id,
-              removing || model.bridgeCanAccept, model.beginConfirmation(for: context) else { return .failure(.init(.busy)) }
+        guard !model.busy, removing || model.bridgeCanConnect(target),
+              model.beginConfirmation(for: context) else { return .failure(.init(.busy)) }
         defer { model.endConfirmation(for: context) }
         let yes = await sheet(request, title: Self.copy(removing ? "Remove local saved access?" : "Connect with saved access?",
             removing ? "移除本地已保存的访问权限？" : "使用已保存的访问权限连接？"),
@@ -533,6 +538,14 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
             return .failure(.init(.stateChanged))
         }
         guard yes else { return .result(ConnectionClientProjection.savedAction(model, catalog: catalog, effect: "none")) }
+        if removing, model.bridgeIsSelected(target), let activeID = model.activeID {
+            guard let app, app.disconnectSelectedTarget() == nil else { return .failure(.init(.busy)) }
+            ledger.markDispatched(request.id)
+            guard await model.waitForCleanup(id: activeID) else {
+                return .failure(.init(.removalIncomplete, effect: .unknown, recovery: .nativeRecovery))
+            }
+            guard current(token, context, model) else { return .failure(.init(.stateChanged)) }
+        }
         model.selectedHomeID = target.id
         ledger.markDispatched(request.id)
         if removing { model.removeSavedComputer(expected: target) } else { model.reconnect() }

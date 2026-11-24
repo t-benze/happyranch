@@ -6,7 +6,7 @@ import HappyRanchSupervisor
 @MainActor
 final class HomeInviteModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, connected, runtimeBusy, stopping
+        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, readyToSwitch, connected, runtimeBusy, stopping
         case failed(HomeConnectionFailure), keychain(SavedAccessFailure)
 
         var message: String {
@@ -19,6 +19,7 @@ final class HomeInviteModel: ObservableObject {
             case .awaitingApproval: return "Awaiting Linux approval"
             case .saving: return "Saving access in login Keychain"
             case .opening: return "Opening runtime"
+            case .readyToSwitch: return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "可以切换" : "Ready to switch"
             case .connected: return "Connected"
             case .runtimeBusy: return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "忙碌" : "Busy"
             case .stopping: return "Closing local session; waiting for any storage write/readback to settle"
@@ -62,11 +63,46 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
     @Published private(set) var discoveryComplete = false
     @Published private(set) var accessObservation: AccessObservation?
+    @Published private(set) var candidateID: UUID?
+    @Published private(set) var candidateOutcome: String?
+    @Published private(set) var cleanupOutcomes: [UUID: String] = [:]
+    @Published private(set) var selectedFailure: HomeConnectionFailure?
+    let connectionStates = ConnectionStateManager()
     @Published var selectedHomeID: UUID?
     private(set) var attemptID = UUID()
     @Published private(set) var documentGeneration = UUID()
     var lifetime: Lifetime { Lifetime(attempt: attemptID, document: documentGeneration) }
-    var appTransport: (any AppAPITransport)? { try? session?.appTransport() }
+    var appTransport: (any AppAPITransport)? { try? active?.session.appTransport() }
+    var activeID: UUID? { active?.id }
+    var activeHasUnsavedAccess: Bool { active?.unsaved != nil }
+    var hasActiveSession: Bool { active != nil }
+    var bridgeAccessObservation: AccessObservation? {
+        if let active { return active.observation }
+        return accessObservation?.lifetime == lifetime ? accessObservation : nil
+    }
+    var bridgeRuntimeAvailable: Bool { active != nil && appReadiness?.state == "ready" }
+    private final class ActiveSession {
+        let id: UUID
+        let session: any HomeInviteSession
+        let credential: SavedDeviceCredential
+        var unsaved: SavedDeviceCredential?
+        var saveFailure: SavedAccessFailure?
+        var observation: AccessObservation
+        init(id: UUID, session: any HomeInviteSession, credential: SavedDeviceCredential,
+             unsaved: SavedDeviceCredential?, saveFailure: SavedAccessFailure?, observation: AccessObservation) {
+            self.id = id; self.session = session; self.credential = credential
+            self.unsaved = unsaved; self.saveFailure = saveFailure
+            self.observation = observation
+        }
+    }
+    private var active: ActiveSession?
+    // Failed/unknown cleanup keeps its original owner alive and blocks identity reuse.
+    private var retiring: [UUID: ActiveSession] = [:]
+    private var revokedRetiring: [UUID: ActiveSession] = [:]
+    private var retirementTasks: [UUID: Task<Void, Never>] = [:]
+    private var retiringBridges: [UUID: ClientBridge] = [:]
+    private var candidateHealth: AppAPIHealth?
+    private var mainDocumentLoaded = false
     private var confirmation: Lifetime?
     private var loadedURL: URL?
     private var saving: Lifetime?
@@ -75,6 +111,7 @@ final class HomeInviteModel: ObservableObject {
     private var expiryTask: Task<Void, Never>?
     private var navigationDeadline: Task<Void, Never>?
     private var monitor: Task<Void, Never>?
+    private var candidateMonitor: Task<Void, Never>?
     private var session: (any HomeInviteSession)?
     private let store: any SavedHomeCredentialStore
     private let makeSession: @Sendable () -> any HomeInviteSession
@@ -98,26 +135,138 @@ final class HomeInviteModel: ObservableObject {
         self.store = store; self.makeSession = makeSession
     }
 
-    var busy: Bool { phase.busy || operation != nil }
+    var busy: Bool { (phase.busy && phase != .runtimeBusy) || operation != nil }
     // Nonsecret observations only; no read or discovery is initiated here.
-    var bridgeActiveComputerID: UUID? { activeCredential?.networkProfileID }
-    var bridgeHasUnsavedAccess: Bool { unsaved != nil }
+    var bridgeActiveComputerID: UUID? { active?.credential.networkProfileID ?? activeCredential?.networkProfileID }
+    var bridgeHasUnsavedAccess: Bool { unsaved != nil || active?.unsaved != nil }
     var bridgeHasConfirmation: Bool { confirmation != nil }
     var bridgeCanAccept: Bool { !busy && session == nil && pendingRemoval == nil }
     var bridgeCanCancel: Bool {
-        pendingRemoval == nil && [.joining, .pairing, .awaitingApproval, .saving, .opening].contains(phase)
+        pendingRemoval == nil && [.joining, .pairing, .awaitingApproval, .saving, .opening, .readyToSwitch].contains(phase)
+    }
+    var bridgeCandidate: [String: Any]? {
+        guard let id = candidateID else { return nil }
+        let stage: String
+        if let candidateOutcome { stage = candidateOutcome }
+        else {
+            switch phase {
+            case .readyToSwitch: stage = "ready_to_switch"
+            case .awaitingApproval: stage = "awaiting_approval"
+            case .failed, .keychain: stage = "failed"
+            default: stage = "signing_in"
+            }
+        }
+        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        return ["kind": "remote", "id": id.uuidString, "name": zh ? "远程电脑" : "Remote computer",
+                "phase": stage, "deadline": expiresAt.map(ConnectionClientProjection.timestamp) as Any? ?? NSNull()]
+    }
+
+    private func identityInUse(home: String, profile: UUID? = nil) -> Bool {
+        ([active].compactMap { $0 } + Array(retiring.values)).contains {
+            $0.credential.trust.homeID == home || (profile != nil && $0.credential.networkProfileID == profile)
+        }
+    }
+    func bridgeCanConnect(_ home: SavedHome) -> Bool {
+        bridgeCanAccept && !identityInUse(home: home.trust.homeID, profile: home.id)
+    }
+    func bridgeIsSelected(_ home: SavedHome) -> Bool { active?.credential.networkProfileID == home.id }
+    func waitForCleanup(id: UUID) async -> Bool {
+        await retirementTasks[id]?.value
+        return cleanupOutcomes[id] == "confirmed"
+    }
+
+    private func beginCandidate() {
+        candidateID = UUID(); candidateOutcome = nil; candidateHealth = nil
+        unsaved = nil; saveFailure = nil; activeCredential = nil
+        connectionStates.beginCandidate(id: candidateID!)
+    }
+
+    /// Only the Main scheme's synchronous owner-gated commit calls this.
+    /// It does not await teardown or infer selection from readiness.
+    @discardableResult
+    func commitCandidate() throws -> AppScheme.Target {
+        guard operation == nil, saving == nil, confirmation == nil, phase == .readyToSwitch,
+              let id = candidateID, let session, let credential = activeCredential,
+              let health = candidateHealth, health.state == "ready" else { throw AppAPIError.unavailable }
+        let transport = try session.appTransport()
+        let previous = active
+        active = ActiveSession(id: id, session: session, credential: credential, unsaved: unsaved, saveFailure: saveFailure,
+            observation: AccessObservation(access: .allowed, observedAt: Date(), lifetime: lifetime))
+        self.session = nil; candidateID = nil; candidateOutcome = nil
+        candidateMonitor?.cancel(); candidateMonitor = nil
+        appReadiness = health; phase = .connected
+        selectedFailure = nil
+        connectionStates.commitCandidate(id: id)
+        startActiveMonitor()
+        if let previous { retire(previous) }
+        return AppScheme.Target(id: id.uuidString, transport: transport, remote: true,
+                                health: health, accessUnsaved: unsaved != nil)
+    }
+
+    /// Admission belongs to AppScheme; storage/attempt settlement must finish first.
+    var canDisconnect: Bool { operation == nil && saving == nil }
+    func disconnectActive() {
+        guard canDisconnect else { return }
+        let previous = active; active = nil
+        monitor?.cancel(); monitor = nil; appReadiness = nil
+        connectionStates.disconnectActive()
+        if candidateID == nil { phase = .idle; activeCredential = nil; unsaved = nil; saveFailure = nil }
+        else if candidateOutcome != nil { phase = .idle }
+        if let previous { retire(previous) }
+    }
+
+    private func retire(_ previous: ActiveSession, revoked: Bool = false) {
+        guard retirementTasks[previous.id] == nil else { return }
+        retiring[previous.id] = previous; cleanupOutcomes[previous.id] = "unknown"
+        if revoked { revokedRetiring[previous.id] = previous }
+        retirementTasks[previous.id] = Task {
+            do {
+                try await previous.session.stop()
+                if revoked {
+                    guard let profile = previous.credential.networkProfileID else { throw HomeConnectionFailure.cleanupIncomplete }
+                    try await Task.detached { try HomeNetworkState.remove(profile) }.value
+                    try await store.delete(binding: previous.credential.binding)
+                    records.removeValue(forKey: profile); savedHomes.removeAll { $0.id == profile }
+                    if selectedHomeID == profile { selectedHomeID = savedHomes.first?.id }
+                    if candidateID == nil, target == previous.credential.trust { target = nil }
+                    revokedRetiring.removeValue(forKey: previous.id)
+                }
+                retiring.removeValue(forKey: previous.id); cleanupOutcomes[previous.id] = "confirmed"
+            } catch { cleanupOutcomes[previous.id] = "incomplete" }
+            retirementTasks.removeValue(forKey: previous.id)
+        }
+    }
+    func retireBridge(_ bridge: ClientBridge) {
+        let id = UUID()
+        retiringBridges[id] = bridge; cleanupOutcomes[id] = "unknown"
+        retirementTasks[id] = Task {
+            await bridge.stopManagedNetwork()
+            if bridge.lane != .managed || bridge.managedStopConfirmed {
+                cleanupOutcomes[id] = "confirmed"; retiringBridges.removeValue(forKey: id)
+            } else { cleanupOutcomes[id] = "incomplete" }
+            retirementTasks.removeValue(forKey: id)
+        }
     }
     var bridgeRemovalTarget: SavedHome? {
-        guard let credential = pendingRemoval, let id = credential.networkProfileID else { return nil }
+        let revoked = revokedRetiring.keys.sorted { $0.uuidString < $1.uuidString }.first.flatMap { revokedRetiring[$0]?.credential }
+        guard let credential = pendingRemoval ?? revoked, let id = credential.networkProfileID else { return nil }
         return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
     }
     var bridgeReplacementTarget: SavedHome? {
-        guard let credential = unsaved, let id = credential.networkProfileID else { return nil }
+        guard let credential = unsaved ?? (session == nil ? active?.unsaved : nil), let id = credential.networkProfileID else { return nil }
         return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
     }
     var bridgeNeedsNewInvite: Bool { needsNewInvite }
-    var bridgeCanReplace: Bool { !busy && unsaved != nil && saveFailure == .identityChanged }
-    var bridgeCanRetrySave: Bool { !busy && unsaved != nil && !needsReplacementConsent && saveFailure != .identityChanged }
+    var bridgeCanReplace: Bool {
+        !busy && ((unsaved != nil && saveFailure == .identityChanged) ||
+                  (retryingActiveSave && active?.saveFailure == .identityChanged))
+    }
+    private var retryingActiveSave: Bool { unsaved == nil && session == nil && active?.unsaved != nil }
+    var bridgeCanRetrySave: Bool {
+        !busy && ((unsaved != nil && !needsReplacementConsent && saveFailure != .identityChanged) ||
+                  (retryingActiveSave && active?.saveFailure != .identityChanged))
+    }
+    var activeSaveFailure: SavedAccessFailure? { active?.saveFailure }
 
     private func loadSaved(_ credential: SavedDeviceCredential, token: Lifetime) async throws -> SavedDeviceCredential {
         // SecItem provides only a final result. No OS prompt observation exists.
@@ -154,11 +303,17 @@ final class HomeInviteModel: ObservableObject {
     /// from Task scheduling. OS Keychain UI does not own the app prompt slot.
     func bridgeRetrySave(replacing: Bool = false) async -> SaveSettlement {
         guard replacing ? bridgeCanReplace : bridgeCanRetrySave else { return .refused }
+        let selected = retryingActiveSave ? active : nil
         let token = lifetime
         retrySave(replacing: replacing)
         guard let operation else { return .refused }
         await operation.value
         guard lifetime == token else { return .changed }
+        if let selected {
+            guard active === selected else { return .changed }
+            if let failure = selected.saveFailure { return .failed(failure) }
+            return selected.unsaved == nil ? .saved : .failed(.saveFailed)
+        }
         if let saveFailure { return .failed(saveFailure) }
         return unsaved == nil ? .saved : .failed(.saveFailed)
     }
@@ -210,6 +365,7 @@ final class HomeInviteModel: ObservableObject {
     func accept(_ raw: String, replacementConsent: Bool = false) {
         guard !busy, session == nil, pendingRemoval == nil else { return }
         guard !needsReplacementConsent || replacementConsent else { return }
+        beginCandidate()
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
         phase = .validating; needsNewInvite = true; removalFailures = []
@@ -224,6 +380,7 @@ final class HomeInviteModel: ObservableObject {
                 guard lifetime == token, invite != nil else { return }
                 let trust = invite!.trust
                 let deadline = invite!.expiresAt
+                guard !identityInUse(home: trust.homeID) else { throw HomeConnectionFailure.identityUnavailable }
                 target = trust; expiresAt = deadline
                 // No automatic CA repin or blind protected marker rewrite.
                 if let previous = records.values.first(where: { $0.trust.homeID == trust.homeID }) {
@@ -359,6 +516,8 @@ final class HomeInviteModel: ObservableObject {
 
     func reconnect() {
         guard !busy, session == nil, pendingRemoval == nil, let id = selectedHomeID, let metadata = records[id] else { return }
+        guard !identityInUse(home: metadata.trust.homeID, profile: id) else { return }
+        beginCandidate()
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil; needsNewInvite = false
         target = metadata.trust
@@ -398,7 +557,10 @@ final class HomeInviteModel: ObservableObject {
         defer {
             saving = nil; cancelledSave = nil
             if lifetime == token {
-                if previousPhase == .connected || previousPhase == .opening {
+                if previousPhase == .connected || previousPhase == .runtimeBusy {
+                    active?.unsaved = unsaved; active?.saveFailure = saveFailure
+                    phase = previousPhase
+                } else if previousPhase == .opening || (previousPhase == .readyToSwitch && confirmation != nil) {
                     phase = .opening
                     if let loadedURL { webLoaded(url: loadedURL, lifetime: token) }
                 } else if previousPhase != .awaitingApproval { phase = previousPhase }
@@ -422,6 +584,9 @@ final class HomeInviteModel: ObservableObject {
         savedHomes.append(SavedHome(id: id, trust: credential.trust, binding: credential.binding))
         selectedHomeID = id; saveFailure = nil; unsaved = nil
         needsReplacementConsent = false
+        if candidateID == nil, active?.credential.binding == credential.binding {
+            active?.unsaved = nil; active?.saveFailure = nil
+        }
     }
 
     private func refreshAddress(_ saved: SavedDeviceCredential, to trust: SavedHomeTrust,
@@ -444,6 +609,36 @@ final class HomeInviteModel: ObservableObject {
     }
 
     func retrySave(replacing: Bool = false) {
+        if retryingActiveSave, operation == nil, let selected = active, let credential = selected.unsaved {
+            let token = lifetime
+            saving = token
+            operation = Task {
+                defer { saving = nil; cancelledSave = nil; settleOperation(token) }
+                // Keep the selected owner's outcome independent of candidate Cancel.
+                do {
+                    if replacing {
+                        do { try await store.delete(binding: credential.binding) }
+                        catch { selected.saveFailure = .deletionFailed; objectWillChange.send(); return }
+                        guard lifetime == token else {
+                            selected.saveFailure = .deletionFailed; objectWillChange.send(); return
+                        }
+                    }
+                    try await store.save(credential)
+                    guard active === selected else { return }
+                    selected.unsaved = nil; selected.saveFailure = nil
+                    if let id = credential.networkProfileID {
+                        records[id] = credential
+                        savedHomes.removeAll { $0.id == id }
+                        savedHomes.append(SavedHome(id: id, trust: credential.trust, binding: credential.binding))
+                    }
+                } catch {
+                    guard active === selected else { return }
+                    selected.saveFailure = (error as? SavedAccessFailure) ?? .saveFailed
+                }
+                objectWillChange.send()
+            }
+            return
+        }
         guard operation == nil, let delivered = unsaved else { return }
         let token = lifetime
         operation = Task {
@@ -481,8 +676,14 @@ final class HomeInviteModel: ObservableObject {
         phase = .opening
         let url = try await candidate.openApp(credential)
         try check(token)
+        let health = try await AppAPIHealth.read(from: candidate.appTransport())
+        try health.requireReady(); try check(token)
+        candidateHealth = health
+        startCandidateMonitor(token: token, candidate: candidate)
         accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
+        // The first load admits the release document. Later candidates reuse it.
         webURL = url
+        if mainDocumentLoaded { phase = .readyToSwitch; return }
         navigationDeadline?.cancel()
         navigationDeadline = Task {
             do { try await Task.sleep(for: .seconds(10)) } catch { return }
@@ -494,6 +695,8 @@ final class HomeInviteModel: ObservableObject {
 
     /// Called only for the expected main-frame 2xx navigation, after connector
     /// authorization and release-verifier admission. Health alone cannot call it.
+    func mainDocumentAdmitted() { mainDocumentLoaded = true }
+
     func webLoaded(url: URL, lifetime context: Lifetime) {
         guard lifetime == context, webURL == url,
               phase == .opening || (phase == .saving && saving == context) else { return }
@@ -502,34 +705,69 @@ final class HomeInviteModel: ObservableObject {
         // Retry save does not navigate again. Retain this native observation
         // through its storage settlement, then release the same load gate.
         guard phase == .opening, confirmation == nil else { return }
-        phase = .connected
-        monitor?.cancel()
-        let token = context
-        monitor = Task {
+        mainDocumentLoaded = true
+        phase = .readyToSwitch
+    }
+
+    private func startCandidateMonitor(token: Lifetime, candidate: any HomeInviteSession) {
+        candidateMonitor?.cancel()
+        candidateMonitor = Task {
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(5))
                     try check(token)
-                    guard let session else { return }
-                    try await session.checkAccess()
+                    guard candidateID != nil, session != nil else { return }
+                    try await candidate.checkAccess()
+                    let health = try await AppAPIHealth.read(from: candidate.appTransport())
+                    try health.requireReady(); try check(token)
+                    candidateHealth = health
+                } catch {
+                    guard lifetime == token, candidateID != nil, !Task.isCancelled else { return }
+                    await fail((error as? HomeConnectionFailure) ?? .homeUnavailable, token: token)
+                    return
+                }
+            }
+        }
+    }
+
+    private func startActiveMonitor() {
+        monitor?.cancel()
+        guard let selected = active else { return }
+        monitor = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                    guard active === selected else { return }
+                    try await selected.session.checkAccess()
                     // Busy includes ordinary active work and bounded-unknown
                     // update observations. Preserve the admitted document and
                     // transfers, publish busy, then recheck without replay.
-                    let health = try await AppAPIHealth.read(from: session.appTransport())
+                    let health = try await AppAPIHealth.read(from: selected.session.appTransport())
                     if health.state != "busy" { try health.requireReady() }
-                    try check(token)
+                    guard active === selected, !Task.isCancelled else { return }
                     appReadiness = health
-                    if phase == .connected || phase == .runtimeBusy {
+                    selected.observation = AccessObservation(access: .allowed, observedAt: Date(),
+                        lifetime: Lifetime(attempt: selected.id, document: documentGeneration))
+                    connectionStates.observeActive(id: selected.id, state: health.state == "busy" ? .offline : .online)
+                    if (candidateID == nil || candidateOutcome != nil) && (phase == .connected || phase == .runtimeBusy) {
                         phase = health.state == "busy" ? .runtimeBusy : .connected
                     }
-                    accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: token)
+                    if candidateID == nil { accessObservation = AccessObservation(access: .allowed, observedAt: Date(), lifetime: lifetime) }
                 } catch {
-                    guard lifetime == token, !Task.isCancelled else { return }
+                    guard active === selected, !Task.isCancelled else { return }
                     let failure = (error as? HomeConnectionFailure) ?? .homeUnavailable
-                    cancel(endingAt: .failed(failure))
-                    // Bind the authoritative denial to the settled local owner.
-                    accessObservation = AccessObservation(access: failure == .revoked ? .revokedConfirmed :
-                        (failure == .approvalDenied ? .accessDenied : .unknown), observedAt: Date(), lifetime: lifetime)
+                    active = nil; appReadiness = nil; connectionStates.disconnectActive()
+                    selectedFailure = failure
+                    if failure == .revoked { needsNewInvite = true }
+                    retire(selected, revoked: failure == .revoked)
+                    if candidateID == nil {
+                        attemptID = UUID(); webURL = nil; phase = .failed(failure)
+                        activeCredential = nil; unsaved = nil
+                        if failure == .revoked { saveFailure = nil }
+                        // The denial belongs to A, never to a concurrent B attempt.
+                        accessObservation = AccessObservation(access: failure == .revoked ? .revokedConfirmed :
+                            (failure == .approvalDenied ? .accessDenied : .unknown), observedAt: Date(), lifetime: lifetime)
+                    }
                     return
                 }
             }
@@ -559,6 +797,7 @@ final class HomeInviteModel: ObservableObject {
     /// 3b-2 will bind this seam to the static connection document's generation.
     func documentDidChange() {
         documentGeneration = UUID()
+        mainDocumentLoaded = false
         cancel()
     }
 
@@ -580,7 +819,9 @@ final class HomeInviteModel: ObservableObject {
         // Cancellation owner changes attemptID and performs its own settlement.
         guard lifetime == token else { return }
         expiryTask?.cancel(); expiryTask = nil
-        expiresAt = nil; comparisonPhrase = nil; webURL = nil
+        expiresAt = nil; comparisonPhrase = nil
+        webURL = nil
+        candidateOutcome = "failed"; connectionStates.cancelCandidate()
         if failure == .revoked {
             pendingRemoval = activeCredential
             unsaved = nil; saveFailure = nil
@@ -611,8 +852,11 @@ final class HomeInviteModel: ObservableObject {
         if finalPhase == .failed(.revoked) { pendingRemoval = activeCredential }
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
-        expiryTask?.cancel(); monitor?.cancel(); navigationDeadline?.cancel()
-        expiresAt = nil; comparisonPhrase = nil; webURL = nil; appReadiness = nil; unsaved = nil
+        expiryTask?.cancel(); navigationDeadline?.cancel(); candidateMonitor?.cancel(); candidateMonitor = nil
+        expiresAt = nil; comparisonPhrase = nil; unsaved = nil
+        webURL = nil
+        if candidateID != nil { candidateOutcome = finalPhase == .idle ? "cancelled" : "failed" }
+        connectionStates.cancelCandidate()
         if finalPhase == .failed(.revoked) { saveFailure = nil }
         if let pendingRemoval {
             target = pendingRemoval.trust
@@ -631,7 +875,8 @@ final class HomeInviteModel: ObservableObject {
                 if pendingRemovalErased, let pendingRemoval {
                     finishRemoval(pendingRemoval)
                 }
-                phase = pendingRemoval == nil ? finalPhase : .failed(.cleanupIncomplete)
+                phase = pendingRemoval == nil ? (finalPhase == .idle && active != nil ?
+                    (appReadiness?.state == "busy" ? .runtimeBusy : .connected) : finalPhase) : .failed(.cleanupIncomplete)
             }
             catch {
                 guard lifetime == token else { return }
@@ -660,9 +905,25 @@ final class HomeInviteModel: ObservableObject {
 
     func removeSavedComputer(afterRevocation: Bool = false, expected: SavedHome? = nil) {
         guard operation == nil else { return }
+        if let expected, let previous = revokedRetiring.values.first(where: {
+            $0.credential.networkProfileID == expected.id && $0.credential.binding == expected.binding && $0.credential.trust == expected.trust
+        }) {
+            retire(previous, revoked: true)
+            let token = lifetime
+            operation = Task {
+                await retirementTasks[previous.id]?.value
+                guard lifetime == token else { return }
+                if candidateID == nil { phase = cleanupOutcomes[previous.id] == "confirmed" ? .failed(.revoked) : .failed(.cleanupIncomplete) }
+                operation = nil
+            }
+            return
+        }
         let selected = selectedHomeID.flatMap { records[$0] }
         guard let credential = pendingRemoval ?? (afterRevocation ? activeCredential : selected),
               let id = credential.networkProfileID else { return }
+        // The native entry must owner-gate disconnect and confirm cleanup before
+        // deleting a selected/retiring node's saved identity.
+        guard !identityInUse(home: credential.trust.homeID, profile: id) else { return }
         if let expected {
             guard expected.id == id, expected.binding == credential.binding, expected.trust == credential.trust else { return }
         }
@@ -671,8 +932,9 @@ final class HomeInviteModel: ObservableObject {
         pendingRemovalErased = false
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
-        monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
-        webURL = nil; unsaved = nil; comparisonPhrase = nil; expiresAt = nil
+        candidateMonitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
+        webURL = nil
+        unsaved = nil; comparisonPhrase = nil; expiresAt = nil
         phase = .stopping; removalFailures = []
         let candidate = session
         operation = Task {

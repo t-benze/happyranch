@@ -739,7 +739,7 @@ main baseline. The historical S6-L/S6-W3-L and temporary Connection-routing sour
 merged main `7535eaad416d1b0311f99796b49822bfe6220527` (#1776/#1782/#1781).
 This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
-`packaging/linux/desktop/app_scheme_webkit.py`. For the dialog, lifecycle, locale, local-control and Connection-command rows, Mac remains **pending**. MAC-1 transport status is recorded below; it does not qualify those later rows. Web status is summarized after the table
+`packaging/linux/desktop/app_scheme_webkit.py`. For the dialog, lifecycle, locale, local-control and Connection-command rows, Mac remains **pending**, except MAC-2a ownership/commit/disconnect source delivery recorded below. MAC-1 transport status is recorded below; it does not qualify those later rows. Web status is summarized after the table
 (S5-W1); Main Connection and locale updates are reconciled to main `59e29630` (#1811/#1812/#1813). S7-L2/DOC-5, S8-2b and S7-L3 status rows are reconciled to main `26585a430e8d0885b2984c45590284ed647555c4` (#1815/#1816/#1817/#1819); current linked citations resolve at that base, with AppScheme/window symbols replacing moved line numbers. Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
@@ -1648,13 +1648,46 @@ S8-2b PR #1817 (merge 01b37dc4, reviewed/QA head 041cc479f) records native
 pre-forward 403 and web read-only behavior evidence; real remote, installed
 package and Mac **NOT RUN**.
 
+### MAC-2a current/candidate ownership source delivery
+
+MAC-2a retains active session, transport, health and protected-save outcome
+independently of a candidate in `HomeInviteModel`; legacy membership staging in
+`ManagedJoinModel` does not overwrite active membership. `ConnectionStateManager`
+keeps candidate identity separate from selected health/heartbeat. Readiness,
+failed attempts and candidate Cancel cannot select or replace an active target.
+Same selected/retiring home or profile refuses before another session is made.
+Helper-backed `ClientBridge` reservations are scoped to canonical profile and
+helper identity, while the legacy in-process engine retains its global
+singleton. Existing helper profile locks and uncertain-teardown fencing remain.
+
+`AppScheme` implements the generation ordering above within one Main document.
+Commit/disconnect refuse `non_get_pending`, `owner_save_pending`,
+`owner_save_unknown` or `owner_edits_pending` without changing selection;
+missing/invalid or retired-uncertain owner evidence also refuses. An admitted
+switch atomically selects target+generation, cancels old transfers through
+`didFailWithError`, and submits a full `app.stateChanged`. `app.status` reads
+the actual candidate synchronously, including ready/failed/cancelled phases.
+The closed v2 appState shape is unchanged. Independent teardown cannot roll
+back selection: native action-result `localCleanup` stays `unknown` until an
+observed result, with `incomplete` retained on failure. Selected saved-profile
+removal first owner-gates disconnect and confirms teardown. Confirmed active
+revocation retains exact-owner profile/Keychain cleanup independently of a
+concurrent candidate, with failed cleanup held for explicit Retry. No auth/security,
+daemon allowlist, shared-web, dependency or protocol change is included.
+
+This is source delivery, not executed Mac acceptance. MAC-2b owns dialogs,
+toolbar/menu and screenshot qualification; MAC-4 owns Quit/close/Relaunch gating
+and language. Mac builds 0/6 used; a build requires independent exact-head
+review APPROVE and is submitted by QA, never the maker.
+
 ### MAC-1 transport implementation and qualification status
 
 MAC-1 moves Mac Main to the same `happyranch-app://app` origin and single main
 bundle as Linux. `AppScheme` uses the existing manifest/no-follow reader, SPA
 fallback, CSP, resource and navigation allowlists. API forwarding captures one
-native-selected transport and opaque generation for the view lifetime; view
-replacement cancels old transfers. Local credentials remain native, remote
+native-selected transport and opaque generation. MAC-2a preserves the Main
+document independently of target/attempt; admitted selection advances target
+and generation together, then fails old transfers before emitting full status. Local credentials remain native, remote
 credentials remain in existing Keychain/session custody, and page bootstrap is
 only a placeholder. Alongside native transport status/read and explicit request
 cancel, this slice accepts the existing v2 `app.ownersChanged` summary. Native
@@ -1665,16 +1698,19 @@ document loss. Owner relay envelopes capture the injected Main document context,
 bound by native after load and revoked at document retirement. Retired-context
 pushes are rejected before changing current evidence; late clean or pending
 messages cannot clear retirement uncertainty. The public call/on API and summary
-schema remain unchanged. Unsolicited lifecycle decisions are refused; dialog/menu/lifecycle
-commands remain later slices. Remote config-write refusal reads the
+schema remain unchanged. MAC-2a adds the existing `client.commitSwitch` and
+`client.disconnect` commands with exactly `{}` arguments; unsolicited lifecycle
+decisions are refused, and dialog/menu/Quit/close/Relaunch remain later slices. Remote config-write refusal reads the
 same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
 GUI remote calls use the existing pinned direct dial, not a loopback listener;
 the separate foreground CLI retains its listener. Shared serialized multipart
 and blob download paths are reused. The Mac packager reconciles map removal
 with the main resource manifest and includes the native config policy.
 
-Native Connected/load completion requires both the expected current navigation
-and fresh compatible, non-busy selected-owner health admission. The periodic
+The first Main release-document load requires the expected current navigation
+and, when selected, fresh compatible, non-busy owner admission. Candidate health
+plus that load admits readiness only; explicit owner-gated commit publishes
+Connected. Later candidates reuse the document and its owners. The periodic
 access monitor also evaluates readiness, so authorization cannot restore a false
 Connected state. Once admitted, busy (including bounded-unknown update readiness)
 publishes the existing Busy/忙碌 state while retaining Main's identity, drafts,
@@ -1687,9 +1723,12 @@ failures after resume conservatively fail the scheme request. Missing response
 headers never prove no send: interrupted mutations retain Result unknown in the
 shared web client, with no automatic retry.
 
-**Streaming decision: incremental delivery measured in build 62; EOF failed.**
-All five normal receipts met the timing bound, but the page never reported
-stream completion after native finish. The cause remains unproven; no buffering
+**Historical streaming observation: build 62 measured incremental delivery; EOF failed at that head.**
+MAC-1 subsequently passed build 65 and merged at `efeee6e9` (PR #1839).
+SSE remains on WKURLSchemeHandler; there is no message-channel fallback.
+MAC-2a native compile/XCTest/packaged qualification is NOT RUN by the Linux maker.
+In build 62, all five normal receipts met the timing bound, but the page never
+reported stream completion after native finish. The cause was unproven at that head; no buffering
 fallback or speculative framing change is justified by that evidence. No native
 PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/probe.py --suite
 app-scheme` builds the actual product at the approved head and qualifies the
