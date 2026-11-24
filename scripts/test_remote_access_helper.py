@@ -1301,6 +1301,32 @@ def test_bootstrap_refuses_before_connector_or_auth(venue: Any, monkeypatch: Any
     assert operations.status_reads == 0 and not operations.effects and not authority.calls
 
 
+@pytest.mark.parametrize('fragment,category', [
+    ('/usr/lib/systemd/user/happyranch-daemon.service', None),
+    ('/etc/systemd/user/happyranch-daemon.service', 'release_home_invalid'),
+])
+def test_retained_manual_record_status_binding(venue: Any, monkeypatch: Any, tmp_path: Any,
+                                               fragment: str, category: str | None) -> None:
+    _, authority, operations, client, _ = venue
+    home = tmp_path / 'owner'
+    record = dict(user='owner', uid=os.getuid(), data_home=str(home / '.local/share/happyranch'),
+                  unit='happyranch-daemon.service', fragment_path=fragment)
+    # Existing private-bus venue isolates root custody; the packaged resolver
+    # still parses the retained manual record and validates its actual home.
+    monkeypatch.setattr(HELPER._owner._verifier, '_read', lambda *a, **k: json.dumps(record).encode())
+    monkeypatch.setattr(HELPER._owner._verifier.pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_dir=str(home)))
+    if category is None:
+        HELPER._owner._verifier.validate_record(record)
+        assert HELPER.bootstrap_owner(os.getuid()).data_home == home / '.local/share/happyranch'
+    before = operations.status_reads
+    value = Call(client, 'Status').finish(category)
+    if category is None:
+        assert value['phase'] == 'pending' and operations.status_reads == before + 1
+    else:
+        assert operations.status_reads == before
+    assert not operations.effects and not authority.calls
+
+
 def test_idle_exit_after_sixty_idle_seconds(venue: Any) -> None:
     helper, _, _, client, _ = venue
     now = [0.0]
@@ -1374,9 +1400,7 @@ def test_status_v2_stopped_connector_and_unreadable_store(venue: Any, monkeypatc
     def unavailable(_: float) -> None:
         raise HELPER._helper_generation.GenerationUnavailable()
     monkeypatch.setattr(helper.generations, 'current_generation', unavailable)
-    value = Call(client, 'StatusV2').finish()
-    assert value['runtime'] == {'state': 'unavailable', 'age_seconds': 0}
-    assert value['setup'] == {'state': 'unknown', 'age_seconds': None}
+    Call(client, 'StatusV2').finish('host-state-unrecognized')
     assert not authority.calls and not operations.effects
 
 

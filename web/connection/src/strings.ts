@@ -130,6 +130,7 @@ const en = {
   hNewInviteHint: 'Add a device again to create a new invite.',
   hErrStateChanged: 'Remote access changed before this action ran. Check current status.',
   hErrExpired: 'The request expired.', hErrRuntime: 'HappyRanch isn’t running on this computer.',
+  hErrStateUnrecognized: 'Remote access files or the release runtime owner could not be verified. Check the local installation.',
 };
 export type Copy = typeof en;
 export type Locale = 'en' | 'zh-CN';
@@ -264,5 +265,6 @@ const zh: Copy = {
   hNewInviteHint: '再次添加设备以创建新的邀请。',
   hErrStateChanged: '此操作运行前远程访问已发生变化。请检查当前状态。',
   hErrExpired: '请求已过期。', hErrRuntime: 'HappyRanch 未在这台电脑上运行。',
+  hErrStateUnrecognized: '无法验证远程访问文件或发布版运行时的所有者。请检查本机安装。',
 };
 export const catalogs: Record<Locale, Copy> = { en, 'zh-CN': zh };

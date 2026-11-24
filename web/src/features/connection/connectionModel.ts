@@ -356,6 +356,7 @@ const HOST_ERROR: Record<string, MessageKey> = {
   documentChanged: 'connection.host.hErrStateChanged',
   expired: 'connection.host.hErrExpired',
   runtimeUnavailable: 'connection.host.hErrRuntime',
+  hostStateUnrecognized: 'connection.host.hErrStateUnrecognized',
 };
 
 export function errorKey(command: ConnectionCommand, code: string): MessageKey {

@@ -212,7 +212,7 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   return;
  }
  if(sources.case==='errors'){
- for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown']){
+ for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown','hostStateUnrecognized']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};
   const error=await vm.runInContext("happyranchConnection.call('client.commitSwitch','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.equal(error.code,code);assert.equal(error.effect,'unknown');assert.equal(error.recovery,'nativeRecovery');

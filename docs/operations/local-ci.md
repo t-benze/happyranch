@@ -4020,6 +4020,18 @@ The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
 THR-327 closure/returned-worker regressions use the same retained venue:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_installer_token_custody.py scripts/test_helper_mount.py -k thr327 -q --tb=short`.
+The focused post-closure read selection is
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -k thr327_closed_host_status -q --tb=short`.
+It uses the real temporary-root Enable capture and retained staging/release record,
+with absent connector IPC and only child/Gio transport isolated. Clean/staged
+states report Off in Status/StatusV2; partial, pending, unsafe, unknown, failed,
+changed-source and transaction-bearing inventories refuse without effects.
+Private-bus owner/unknown-proof checks use
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -k 'retained_manual_record or status_v2_stopped_connector' -v --tb=short`.
+The native CLI, Main bridge/relay and Connection model selections documented
+above cover the closed-code projection and plain EN/zh-CN message selection.
+These fixtures do not establish installed status latency, systemd/polkit behavior,
+viewport layout or cross-device acceptance.
 The full owner selection also includes `scripts/test_home_activation_backend.py`;
 the private-Gio selection below includes `scripts/test_helper_lifecycle.py`.
 Run full modules through durable jobs. These temporary-root/private-bus tests

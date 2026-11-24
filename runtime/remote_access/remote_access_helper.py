@@ -275,11 +275,22 @@ class RemoteAccessHelper:
                     phase = ('ready' if observed.phase == 'ready' else
                              'uncertain' if observed.phase == 'failed_uncertain' else 'in_progress')
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
-                try:
-                    snapshot = self._snapshot(uid)
-                except Refused as error:
-                    if error.category != 'unavailable':
-                        raise
+                closed = False
+                if observed is None:
+                    snapshot, closed = self._status_snapshot(uid, deadline)
+                else:
+                    try:
+                        snapshot = self._snapshot(uid)
+                    except Refused as error:
+                        if error.category != 'unavailable':
+                            raise
+                        snapshot = None
+                if closed:
+                    setup = _status_v2.SetupObservation(_status_v2.SetupPhase.OFF, 0)
+                    observed_at = time.monotonic()
+                    connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.STOPPED, 0)
+                    runtime = None
+                elif snapshot is None:
                     connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.UNREACHABLE, 0)
                     runtime = None
                 else:
@@ -345,6 +356,38 @@ class RemoteAccessHelper:
             raise Refused('changed')
         return snapshot
 
+    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool]:
+        """Display-only absence proof; never supplies a mutation's snapshot.
+
+        A missing connector proves no setup phase. Reuse the unchanged Enable
+        capture's custody, provenance, residue and quiescence checks before
+        reporting Off. Capture reads only; it neither claims a slot nor repairs.
+        """
+        try:
+            return self._snapshot(uid), False
+        except Refused as error:
+            if error.category != 'unavailable':
+                raise
+        try:
+            raw = _helper_generation.HomeLifecycleClient('Enable', uid).current_generation(
+                deadline - time.monotonic())
+            state = json.loads(raw)
+            if (type(state) is not dict or set(state) != {
+                    'uid', 'activation', 'generation', 'replacement', 'configuration', 'prestate', 'inventory'}
+                    or type(state['uid']) is not int or state['uid'] != uid
+                    or state['activation'] is not None or state['replacement'] is not None
+                    or state['configuration'] is not None or type(state['generation']) is not int
+                    or state['generation'] != 0
+                    or state['prestate'] not in ('clean', 'staged-inert', 'post-disable')
+                    or type(state['inventory']) is not str or len(state['inventory']) != 64
+                    or any(c not in '0123456789abcdef' for c in state['inventory'])):
+                raise ValueError()
+            if time.monotonic() >= deadline:
+                raise ValueError()
+        except Exception:
+            raise Refused('host-state-unrecognized') from None
+        return Snapshot(0, uid, True, 'off', False, None, ()), True
+
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
         target = (snapshot.pending if method != 'RevokeSelected' else
                   next((d for d in snapshot.devices if d.record_id == self.cursors.get(sender)), None))
@@ -385,7 +428,8 @@ class RemoteAccessHelper:
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = self._snapshot(uid)
+                snapshot = (self._status_snapshot(uid, time.monotonic() + _helper_lifecycle.STATUS_SECONDS)[0]
+                            if method == 'Status' else self._snapshot(uid))
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:

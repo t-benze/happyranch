@@ -166,6 +166,9 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
+        if error.value["code"] == "hostStateUnrecognized":
+            print("Remote access files or the release runtime owner could not be verified. "
+                  "Check the local installation.", file=sys.stderr)
         print(json.dumps(error.value))
         return 1
     except (Exception, KeyboardInterrupt):

@@ -1798,3 +1798,55 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
     v.h.RemoteAccessHelper._error(v.helper, v.message, 'hrinvite2:SYNTHETIC_PRIVATE_VALUE')
     v.message.new_method_error_literal.assert_called_with(v.h.INTERFACE + '.Error.unavailable', 'unavailable')
     assert 'hrinvite2:' not in caplog.text
+
+
+@pytest.mark.parametrize('method', ['Status', 'StatusV2'])
+@pytest.mark.parametrize('case', ['clean', 'staged-inert', 'partial', 'pending', 'unsafe', 'unknown', 'failed', 'source', 'txn'])
+def test_thr327_closed_host_status(
+        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str) -> None:
+    """Real retained-stage verification after closure; only child/Gio transport is isolated."""
+    v, m = composition, mount
+    if case == 'staged-inert':
+        v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    elif case != 'clean':
+        corrupt_composition(v, case)
+    if case == 'staged-inert':
+        assert v.io.inventory().detail == 'staged-inert'
+        assert v.path('/etc/happyranch/release-daemon.json').is_file()
+        assert not v.path('/etc/happyranch/install-transaction.json').exists()
+        assert v.receipts.current() is None and v.transactions.read_optional() is None
+    uid = os.getuid()
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    m.helper.control = m.h.ControlClient(str(v.root / 'absent-connector.sock'))
+    m.helper.cursors = {}
+    m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.message.get_member = lambda: method
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(m.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    m.message.new_method_reply = lambda: reply
+    m.message.new_method_error_literal = Mock(side_effect=lambda name, code: SimpleNamespace(name=name, code=code))
+    m.helper.connection.send_message = Mock()
+    m.helper._reply = m.h.RemoteAccessHelper._reply.__get__(m.helper)
+    m.helper._error = m.h.RemoteAccessHelper._error.__get__(m.helper)
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    accounts, mints = list(v.account_creations), list(v.mints)
+    m.helper._dispatch(m.message)
+    m.helper.connection.send_message.assert_called_once()
+    if case in ('clean', 'staged-inert'):
+        m.message.new_method_error_literal.assert_not_called()
+        status = json.loads(reply.body.unpack()[0])
+        if method == 'Status':
+            assert status == dict(phase='off', ready=False, devices=[], pending=None, selected=None)
+        else:
+            assert status['setup'] == dict(state='off', age_seconds=0)
+            assert status['runtime'] == dict(state='unavailable', age_seconds=0)
+    else:
+        m.message.new_method_error_literal.assert_called_once_with(
+            m.h.INTERFACE + '.Error.host_state_unrecognized', 'host-state-unrecognized')
+    assert staged_inventory(v.fixture) == before and v.calls == calls
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+    assert not m.helper.audit.path.exists() and v.mints == mints and v.account_creations == accounts
