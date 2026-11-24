@@ -9,7 +9,7 @@ struct HappyRanchApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appDelegate)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 720, minHeight: 440)
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -23,8 +23,12 @@ struct HappyRanchApp: App {
                 }
             }
 
-            CommandMenu(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "连接" : "Connection") {
-                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "打开连接视图…" : "Open Connection View…") {
+            CommandGroup(replacing: .appSettings) {
+                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "设置…" : "Settings…") {
+                    appDelegate.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "连接…" : "Connection…") {
                     appDelegate.showConnection()
                 }
             }

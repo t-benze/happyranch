@@ -913,8 +913,8 @@ Connection/Settings and the access-unsaved badge now request the Main dialog
 Main subscribes (including recovery), validates `dialogRequested`, routes valid
 events through the single-dialog owner gate, ignores invalid payloads and
 unsubscribes on document teardown. Connection contents are implemented by S6-W3 (#1811). Mac menu
-emission remains pending separate authorization; no Mac build/work is claimed
-here. No open/closed notice or target/generation authority is added.
+emission is source implemented by MAC-2b below; native execution remains NOT RUN
+on the Linux maker host. No open/closed notice or target/generation authority is added.
 
 #### Valid: request Settings
 
@@ -1696,6 +1696,44 @@ toolbar/menu and screenshot qualification; MAC-4 owns Quit/close/Relaunch gating
 and language. The PR body carries the current per-PR build ledger, including
 failed attempts. A build requires independent exact-head review APPROVE and is
 submitted by QA, never the maker.
+
+### MAC-2b Main dialog/chrome source delivery
+
+Mac now requests Settings… (Cmd+,) and Connection… from the application menu
+and labelled native toolbar entries through the same `app.dialogRequested`
+event. Native emits only to the current Main's admitted subscriber, including
+target recovery. Requests without that subscriber are dropped; a named native
+Retry needs a new explicit click. Opening, switching and closing remain the
+existing shared web dialog/owner gate's responsibility. There is no auxiliary
+web app, network port, queued event or new visibility/acknowledgement protocol.
+
+The Main facade admits the already supported client reads/actions via the
+existing bounded duplicate-free Connection parser, ledger, native confirmations
+and Keychain operations. It unwraps their existing v1 results/errors for the
+shared Main facade, and routes `client.stateChanged` separately from
+`app.stateChanged` and `app.dialogRequested`. The legacy auxiliary loader is
+not constructed. Current Main context/view/role fences guard entry and replies;
+document retirement invalidates dispatcher/subscriptions. MAC-2a target/owner
+admission still owns commit/disconnect. No daemon auth, remote allowlist,
+dependency, schema or credential-custody rule changes.
+
+The native status/candidate pill and persistent access-unsaved warning use
+`app.status` projections. Clicking the warning opens Connection's existing
+save-specific Retry presentation. Unavailable document evidence preserves the
+warning until a current native status confirms otherwise. Native labels follow
+the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
+legacy phase-strip/compatibility cutover remain separate.
+
+The existing `SUITE=app-scheme` collector additionally captures native 760×560
+Settings, Connection and Main toolbar/pill/warning PNGs at 100%/200% text,
+EN/ZH and light/dark (24 total). Same-product qualifier processes check the
+visible/focused dialog and locale, then combine WebKit snapshots with the native
+AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
+in `probe.json.app_scheme.dialogs`; no Jenkins job/config change is required.
+The full unfiltered XCTest + Swift Testing and transport qualification remain
+in the same workload. Native compile/tests/captures/layout/accessibility are
+NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
+exact head and consumes this PR's allowance (initial ledger 0/6).
 
 ### MAC-1 transport implementation and qualification status
 

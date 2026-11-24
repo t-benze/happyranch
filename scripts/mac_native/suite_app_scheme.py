@@ -6,8 +6,11 @@ Every page receipt is emitted immediately and fsynced when native receives it.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
+import stat
+import struct
 import shutil
 import subprocess
 import tarfile
@@ -26,6 +29,7 @@ from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checks
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
 ABORT_MS = 500
 EVENT_CAP = 256 * 1024
+PNG_CAP = 2 * 1024 * 1024
 UPLOAD_DIGEST = hashlib.sha256(b's' * (10 * 1024 * 1024)).hexdigest()
 
 
@@ -160,6 +164,63 @@ def qualify_steps(argv: list[str], env: dict[str, str], scratch: Path, deadline:
             codes[-1] = 1
         section['events'].append({'event': 'process_exit', 'step': step, 'exit_code': code})
     return 0 if all(code == 0 for code in codes) else 1
+
+
+def screenshot_archive(folder: Path, locale: str) -> list[dict[str, Any]]:
+    """Fixed names, bounded native PNGs in the already collected probe JSON."""
+    if locale not in ('en', 'zh'):
+        raise ValueError('unsupported capture locale')
+    rows = []
+    for theme in ('light', 'dark'):
+        for scale in (100, 200):
+            for dialog in ('settings', 'connection', 'main'):
+                name = f'{locale}-{theme}-{scale}-{dialog}.png'
+                descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as source:
+                    info = os.fstat(source.fileno())
+                    if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                        raise ValueError('screenshot size/type')
+                    raw = source.read(PNG_CAP + 1)
+                if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                        or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                        or struct.unpack('>II', raw[16:24]) != (760, 560)):
+                    raise ValueError('screenshot PNG dimensions/header')
+                rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
+                    width=760, height=560, encoding='base64', bytes=len(raw),
+                    sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+    if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
+        raise ValueError('screenshot archive size')
+    return rows
+
+
+def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                    section: dict[str, Any], downloads: Path) -> None:
+    capture: dict[str, Any] = {'status': 'FAIL', 'processes': [], 'screenshots': []}
+    section['dialogs'] = capture
+    for locale in ('en', 'zh'):
+        events = scratch / f'dialogs-{locale}.jsonl'
+        command = [*argv, str(events), str(downloads), f'dialogs-{locale}']
+        row: dict[str, Any] = {'locale': locale, 'argv': command, 'exit_code': None, 'status': 'FAIL'}
+        capture['processes'].append(row)
+        try:
+            code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+            row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                       head=raw[:1024].decode(errors='replace'), tail=raw[-1024:].decode(errors='replace'))
+        except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+            row['command_error'] = type(error).__name__
+        # Keep completed files even if a later capture/process fails. A partial
+        # locale is never accepted as complete or silently truncated.
+        try:
+            capture['screenshots'].extend(screenshot_archive(downloads, locale))
+            receipts = [event for event in read_events(events) if event.get('event') == 'screenshot']
+            row['events'] = receipts
+            expected = {image['name'] for image in capture['screenshots'] if image['locale'] == locale}
+            if row['exit_code'] == 0 and len(receipts) == 12 and {event.get('name') for event in receipts} == expected:
+                row['status'] = 'PASS'
+        except (OSError, ValueError, RuntimeError) as error:
+            row['capture_error'] = type(error).__name__
+    if all(row['status'] == 'PASS' for row in capture['processes']) and len(capture['screenshots']) == 24:
+        capture['status'] = 'PASS'
 
 
 def _error_context(raw: bytes) -> dict[str, Any]:
@@ -438,6 +499,11 @@ def run(report: dict[str, Any]) -> None:
                 downloaded = downloads / 'mac1.txt'
                 data = downloaded.read_bytes() if downloaded.is_file() and downloaded.stat().st_size <= 1024 else None
                 section['qualification'] = assess(section['events'], section['sends'], code, data)
+            qualify_dialogs([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
+                str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
+                env, scratch, deadline, section, downloads)
+        if section['dialogs']['status'] != 'PASS':
+            raise RuntimeError('dialog screenshot qualification failed; retain capture evidence')
         if section['qualification']['status'] != 'PASS':
             raise RuntimeError('app-scheme qualification failed; retain partial event evidence')
         if section['native_tests']['status'] != 'PASS':

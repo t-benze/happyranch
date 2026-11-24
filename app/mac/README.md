@@ -54,6 +54,56 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-2b: Settings/Connection in Main
+
+The native toolbar and application menu now request the existing shared web
+Settings and Connection dialogs in the retained Main document. Settings… uses
+Cmd+,. The packager no longer builds/stages the obsolete `dist-connection` /
+`Contents/Resources/Connection` auxiliary app. No second web app or listener is
+created. The shared dialog owner gate
+continues to own switching, unsaved edits, focus and close; opening a dialog
+never selects a candidate, reconnects or retries a save. An unavailable entry
+shows its named manual Retry in the native toolbar. Loading/recovery never
+replays a dropped click. Native entries use the launch language (EN/ZH).
+
+The native status/candidate pill and **Access wasn't saved / 访问权限未保存**
+warning read the existing Main status projection. The warning opens Connection,
+whose existing Retry action uses the existing native parser, mutation ledger,
+confirmation/Keychain and write/readback implementation. Main reuses that
+dispatcher without constructing its former auxiliary window or bundle. Named
+dialog/client subscriptions are document scoped; retirement revokes them and
+late replies cannot enter a replacement Main. A missing document never clears
+the warning as though access had been saved. The legacy phase strip remains
+until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
+launch/close/Quit/Relaunch policy are outside this slice.
+
+After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
+still runs the full unfiltered XCTest + Swift Testing workload and transport
+qualification. It additionally launches the same product's existing qualifier
+in `dialogs-en` and `dialogs-zh` modes (40 seconds each, within the existing
+2,100-second suite deadline). Each captures Settings, Connection and Main with
+native toolbar/pill/warning, in light/dark and 100%/200% web text: **24 PNGs,
+each 760×560**. The qualifier checks the rendered destination, focused dialog
+and locale. WebKit's page snapshot is composited with AppKit's native window
+frame; no screen-recording permission is requested. Only the commissioned
+qualification process sets its isolated launch language/theme/text size.
+
+`probe.json.app_scheme.dialogs` retains each PNG's fixed name, dimensions,
+locale/theme/text percentage, byte count, SHA256 and `base64` data through the
+existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
+The collector refuses missing/aliased/oversized files, wrong PNG dimensions,
+missing/duplicate receipts or a nonzero process exit. Bounds are 2 MiB per PNG
+and 8 MiB per locale. Complete locale captures survive a failure in the other
+locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
+
+Maker native compilation, XCTest/Swift Testing, screenshot capture, native
+layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
+The source PR starts at **0/6 Mac builds**. The existing portable command below
+checks collector failures and the shipping JavaScript event/retirement seam;
+it does not establish native acceptance. `MainDialogTests` adds real WebKit
+drop/subscription/retirement and native toolbar/Retry/warning coverage to the
+unfiltered native workload.
+
 ### MAC-1 / MAC-2a: Main app scheme, transport and ownership
 
 Main loads the single packaged `Contents/Resources/web/dist` at
@@ -145,10 +195,10 @@ protection before replying `"{}"`. Voluntary document navigation refuses missing
 dirty/failed or unresolved owner evidence and native non-GET transfers. Document
 loss retains unresolved-save uncertainty; a replacement clean summary cannot
 clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
-a later slice. The locale field reports the native launch language. Locale setters,
-Settings/Connection dialog hosting, toolbar/menu, local controls and launch policy
-remain later slices. The existing native Connection view remains for later slices.
-Those later Mac contracts are not qualified by this transport PR.
+a later slice. The locale field reports the native launch language. MAC-2b adds
+Settings/Connection hosting and toolbar/menu as described above. Locale setters,
+local controls and launch policy remain later slices; the transport PR alone
+does not qualify those contracts.
 
 CLIENT→HOME uses the same Main disconnect gate: absent Main or pending/unknown
 owner evidence preserves CLIENT and its bridge. Successful admission retires
@@ -191,7 +241,7 @@ substitute a debug product. Native compatibility and elapsed time at the revised
 head are **NOT RUN on Linux**. Unsupported options or output fail closed.
 The full workload includes MAC-1's 14 XCTests, all MAC-2a ownership cases and
 Swift Testing cases such as HomeInviteModelTests. The source census at this
-revision is 54 XCTest methods plus 557 `@Test` functions across 47 files;
+revision is 56 XCTest methods plus 557 `@Test` functions across 48 files;
 parameterized functions can execute more than one case. The census is recomputed
 from both test directories at the checked-out source, not a fixed pass count.
 

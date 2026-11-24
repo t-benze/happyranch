@@ -49,9 +49,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var connectionWindow: ConnectionWindow?
     private weak var mainScheme: AppScheme?
     private let mainComputerCatalog = ConnectionComputerCatalog()
+    let mainToolbar = MainToolbarController()
 
     func bindMainScheme(_ scheme: AppScheme) {
         mainScheme = scheme
+        scheme.connectionApp = self
+        scheme.statusChanged = { [weak self] raw in self?.mainToolbar.refresh(raw) }
+        mainToolbar.request = { [weak self] dialog in self?.requestMainDialog(dialog) == true }
+        mainToolbar.refresh(scheme.statusJSON())
         scheme.candidateSnapshot = { [weak self] in self?.homeInvite.bridgeCandidate }
         if homeInvite.selectedFailure != nil, !homeInvite.hasActiveSession { scheme.selectedUnavailable() }
         scheme.switchCandidate = { [weak self] in
@@ -101,12 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func showConnection() {
-        connectionWindow?.invalidate(showNotice: false)
-        connectionWindow?.close()
-        let fresh = ConnectionWindow(app: self)
-        connectionWindow = fresh
-        fresh.showWindow(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        mainToolbar.open("connection")
+    }
+
+    func showSettings() { mainToolbar.open("settings") }
+
+    @discardableResult
+    func requestMainDialog(_ dialog: String) -> Bool {
+        mainScheme?.requestDialog(dialog) == true
     }
 
     // MARK: - A2 Remote connection state

@@ -7,16 +7,18 @@ import hashlib
 import http.client
 import json
 import subprocess
+import struct
 import sys
 import tarfile
 import tempfile
 import time
 import unittest
+import zlib
 from pathlib import Path
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from scripts.mac_native.suite_app_scheme import ROOT, UPLOAD_DIGEST, assess, qualify_steps, read_events, run, synthetic_daemon
+from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import _build_environment, _prepare_keychain
 
@@ -40,6 +42,76 @@ def native_evidence(parameterized: bool = True) -> tuple[bytes, list[dict], dict
 
 def native_stream(records: list[dict]) -> bytes:
     return ('\n'.join(json.dumps(row) for row in records) + '\n').encode()
+
+
+def screenshot_png(width: int = 760, height: int = 560) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress((b'\0' + b'\xff' * (width * 3)) * height)) + chunk(b'IEND', b''))
+
+
+def screenshot_files(folder: Path, locale: str) -> list[dict]:
+    records = []
+    for theme in ('light', 'dark'):
+        for scale in (100, 200):
+            for dialog in ('settings', 'connection', 'main'):
+                name = f'{locale}-{theme}-{scale}-{dialog}.png'
+                (folder / name).write_bytes(screenshot_png())
+                records.append(dict(event='screenshot', name=name))
+    return records
+
+
+class DialogCaptureEvidenceTests(unittest.TestCase):
+    def test_archive_roundtrips_full_locale_and_refuses_missing_alias_oversize_or_wrong_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            expected = screenshot_files(root, 'en')
+            rows = screenshot_archive(root, 'en')
+            self.assertEqual({row['name'] for row in rows}, {row['name'] for row in expected})
+            self.assertEqual(len(rows), 12)
+            for row in rows:
+                self.assertEqual(base64.b64decode(row['data']), screenshot_png())
+                self.assertEqual(row['sha256'], hashlib.sha256(screenshot_png()).hexdigest())
+                self.assertEqual((row['width'], row['height']), (760, 560))
+            image = root / 'en-light-100-settings.png'
+            for invalid in ('missing', 'alias', 'oversize', 'dimensions'):
+                with self.subTest(invalid=invalid):
+                    image.unlink()
+                    if invalid == 'alias':
+                        image.symlink_to(root / 'en-light-100-main.png')
+                    elif invalid == 'oversize':
+                        with image.open('wb') as output:
+                            output.truncate(PNG_CAP + 1)
+                    elif invalid == 'dimensions':
+                        image.write_bytes(screenshot_png(759))
+                    with self.assertRaises((OSError, ValueError)):
+                        screenshot_archive(root, 'en')
+                    if image.exists() or image.is_symlink():
+                        image.unlink()
+                    image.write_bytes(screenshot_png())
+
+    def test_process_collection_requires_both_locales_complete_receipts_and_zero_exit(self) -> None:
+        for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
+                calls = []
+                def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                    locale = argv[-1].removeprefix('dialogs-'); calls.append(locale)
+                    rows = screenshot_files(downloads, locale)
+                    if locale == 'zh' and failure == 'missing-file':
+                        (downloads / rows[-1]['name']).unlink()
+                    if locale == 'zh' and failure == 'missing-receipt':
+                        rows.pop()
+                    Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                    return (1 if locale == 'zh' and failure == 'nonzero' else 0), b''
+                section = {}
+                with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
+                    qualify_dialogs(['product', '--qualify-app-scheme', 'assets', 'policy', '1234'], {},
+                                    root, time.monotonic() + 10, section, downloads)
+                self.assertEqual(calls, ['en', 'zh'])
+                self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
+                self.assertEqual(len(section['dialogs']['screenshots']), 12 if failure == 'missing-file' else 24)
 
 
 class NativeWorkloadEvidenceTests(unittest.TestCase):

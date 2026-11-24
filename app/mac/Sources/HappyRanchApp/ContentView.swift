@@ -202,7 +202,7 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// Main content view: full-window WebView (no in-window toolbar).
+/// Main content view: full-window WebView, with entries in the native toolbar.
 /// Daemon controls live in the Daemon menu bar menu.
 struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
@@ -245,6 +245,7 @@ struct ContentView: View {
                 .environmentObject(appDelegate)
         }
         .navigationTitle(windowTitle)
+        .background(MainToolbarAttachment(controller: appDelegate.mainToolbar))
     }
 
     private var windowTitle: String {
@@ -421,27 +422,13 @@ struct ContentView: View {
     }
 }
 
-/// Saving failure remains visible even after the web UI replaces the form.
+/// Retained legacy phase strip; its MAC-3 cutover is separate from the toolbar.
 private struct HomeSessionStatus: View {
-    @EnvironmentObject var appDelegate: AppDelegate
     @ObservedObject var model: HomeInviteModel
-    private func copy(_ en: String, _ zh: String) -> String {
-        Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
-    }
     var body: some View {
-        if model.phase != .connected || model.saveFailure != nil {
+        if model.phase != .connected {
             HStack {
                 if model.phase != .connected { Text(model.phase.message) }
-                if model.saveFailure != nil {
-                    VStack(alignment: .leading) {
-                        Text(copy("Access was not saved", "访问权限未保存")).foregroundStyle(.red)
-                        Text(copy("Reopening may need a new invite. Review saved access in Connection.",
-                                  "重新打开可能需要新邀请。请在“连接”中查看已保存的访问权限。"))
-                            .font(.caption)
-                    }
-                    Button(copy("Retry save…", "重试保存…")) { appDelegate.showConnection() }
-                        .accessibilityHint(copy("Opens the packaged Connection controls", "打开应用内置的连接控制页"))
-                }
             }
             .padding(10)
             .background(.regularMaterial)

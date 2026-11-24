@@ -119,6 +119,8 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var reloadNavigationPath = "not-observed"
     private var reloadNavigationDecision = "not-observed"
     private var awaitingReload = false
+    private var dialogApp: AppDelegate?
+    private var capturingDialogs = false
     private static let reloadPath = "/onboarding"
 
     private static func closedPath(_ path: String?) -> String {
@@ -131,6 +133,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         scheme = try AppScheme(root: root, transport: LocalAppAPITransport(port: port, credential: AppSchemeSyntheticCredential()),
             remote: false, policyURL: policy)
         super.init()
+        if mode.hasPrefix("dialogs-") {
+            let app = AppDelegate(); dialogApp = app; app.bindMainScheme(scheme)
+            scheme.candidateSnapshot = nil // Synthetic capture input, no live candidate/session.
+            scheme.updateCandidate(["kind": "remote", "id": "candidate", "name": "Studio Host — Long computer name / 工作室主机",
+                "phase": "ready_to_switch", "deadline": NSNull()], accessUnsaved: true)
+        }
         scheme.observe = { [weak self] event, value in
             guard let self else { return }
             if event == "native_document_served" {
@@ -159,7 +167,9 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         scheme.configure(configuration)
         configuration.userContentController.add(self, name: "macQualification")
         let script = "window.__hrQualificationMode = '\(mode)';\n" + Self.page
-        configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        if dialogApp == nil {
+            configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
         self.view = view; view.navigationDelegate = self
         let liveness = AppSchemeLivenessProbe(log); self.liveness = liveness
@@ -179,6 +189,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view; self.window = window
+        if let dialogApp {
+            dialogApp.mainToolbar.attach(window)
+            view.autoresizingMask = [.width, .height]
+            window.setFrame(NSRect(x: 100, y: 100, width: 760, height: 560), display: true)
+            window.makeKeyAndOrderFront(nil)
+        }
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -263,11 +279,74 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let navigation, self.navigation === navigation else { return }
         Task {
-            do { try await scheme.admitDocument() }
+            do {
+                try await scheme.admitDocument()
+                if dialogApp != nil, !capturingDialogs {
+                    capturingDialogs = true
+                    try await captureDialogs(webView)
+                    scheme.close(); log.write("exit"); exit(0)
+                }
+            }
             catch {
                 guard self.navigation === navigation else { return }
                 if awaitingReload { logReloadFailure(finalPath: webView.url?.path) }
                 log.write("admission_failure"); scheme.close(); exit(1)
+            }
+        }
+    }
+
+    /// Capture the actual shared dialogs and native toolbar without screen
+    /// recording permission. WebKit supplies its composited page snapshot;
+    /// AppKit draws the enclosing native frame at the same logical size.
+    private func captureDialogs(_ view: WKWebView) async throws {
+        guard let window, let frame = window.contentView?.superview, let app = dialogApp else { throw AppAPIError.unavailable }
+        let locale = mode == "dialogs-zh" ? "zh" : "en"
+        for theme in ["light", "dark"] {
+            window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
+            for scale in [100, 200] {
+                _ = try await view.callAsyncJavaScript("document.documentElement.style.fontSize = size; localStorage.setItem('theme', theme); document.documentElement.classList.toggle('dark', theme === 'dark');",
+                    arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
+                for dialog in ["settings", "connection", "main"] {
+                    if dialog == "main" {
+                        _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click();",
+                            arguments: [:], in: nil, contentWorld: .page)
+                    } else {
+                        let deadline = Date().addingTimeInterval(4)
+                        while !app.mainToolbar.open(dialog) {
+                            guard Date() < deadline else { throw AppAPIError.unavailable }
+                            try await Task.sleep(for: .milliseconds(25))
+                        }
+                    }
+                    var ready = false
+                    for _ in 0..<80 {
+                        let value = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return expected === 'main' ? !pane : pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);",
+                            arguments: ["expected": dialog], in: nil, contentWorld: .page)
+                        if value as? Bool == true { ready = true; break }
+                        try await Task.sleep(for: .milliseconds(25))
+                    }
+                    guard ready else { throw AppAPIError.unavailable }
+                    let localeReady = try await view.callAsyncJavaScript("return document.documentElement.lang.toLowerCase().startsWith(expected);",
+                        arguments: ["expected": locale], in: nil, contentWorld: .page)
+                    guard localeReady as? Bool == true else { throw AppAPIError.unavailable }
+                    try await Task.sleep(for: .milliseconds(200)) // settle dialog/theme animation
+                    let page = try await view.takeSnapshot(configuration: nil)
+                    frame.layoutSubtreeIfNeeded()
+                    guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+                          let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
+                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                          let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
+                    frame.cacheDisplay(in: frame.bounds, to: native)
+                    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
+                    native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
+                    page.draw(in: view.convert(view.bounds, to: frame))
+                    NSGraphicsContext.restoreGraphicsState()
+                    guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
+                    let name = "\(locale)-\(theme)-\(scale)-\(dialog).png"
+                    try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
+                    log.write("screenshot", ["name": name, "width": 760, "height": 560, "textPercent": scale,
+                        "locale": locale, "theme": theme, "dialog": dialog])
+                }
             }
         }
     }
@@ -439,12 +518,15 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     static func run(_ arguments: [String]) -> Never {
         guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]), port > 0 else { exit(2) }
         let mode = arguments.count == 7 ? arguments[6] : "all"
-        guard ["all", "stream", "abort", "download"].contains(mode) else { exit(2) }
+        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh"].contains(mode) else { exit(2) }
+        if mode.hasPrefix("dialogs-") {
+            UserDefaults.standard.setVolatileDomain(["AppleLanguages": [mode == "dialogs-zh" ? "zh-Hans" : "en"]], forName: UserDefaults.argumentDomain)
+        }
         do {
             let probe = try AppSchemeQualification(root: URL(fileURLWithPath: arguments[1]), policy: URL(fileURLWithPath: arguments[2]),
                 port: port, events: arguments[4], downloads: URL(fileURLWithPath: arguments[5]), mode: mode)
             let application = NSApplication.shared
-            application.setActivationPolicy(.prohibited)
+            application.setActivationPolicy(mode.hasPrefix("dialogs-") ? .regular : .prohibited)
             probe.start()
             withExtendedLifetime(probe) { application.run() }
             exit(1)

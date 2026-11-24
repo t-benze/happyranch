@@ -27,8 +27,10 @@ const window = {
   } } } },
 };
 const context = '11'.repeat(16);
+const pageEvents = new Map();
 const sandbox = { window, top: window, location: { origin: 'happyranch-app://app', protocol:'happyranch-app:', host:'app' },
-  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, document: { readyState:'complete' }, Map, Object, Uint8Array };
+  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, document: { readyState:'complete' }, Map, Object, Uint8Array,
+  addEventListener:(name, callback) => pageEvents.set(name, callback) };
 vm.runInNewContext(page, sandbox);
 assert.equal(window.__hrAppContext, context, 'shipping relay must create a document context');
 assert.equal(window.__hrAppBootstrap?.stage, 'complete', 'shipping relay must mark successful bootstrap');
@@ -113,7 +115,38 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(posts.at(-1).context, context, 'outgoing relay cannot acquire a replacement context');
 receipt('{}');
 await late;
+const dialogs = [], states = [];
+const off = window.happyranchConnection.on('app.dialogRequested', raw => dialogs.push(JSON.parse(raw)));
+const offState = window.happyranchConnection.on('app.stateChanged', raw => states.push(raw));
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.at(-1).command, 'subscribe');
+assert.equal(posts.at(-1).event, 'app.dialogRequested');
+assert.equal(posts.at(-1).active, '1');
+receipt('{}');
+await new Promise(resolve => setImmediate(resolve));
+receipt('{}');
+const dialog = JSON.stringify({schema:2, dialog:'settings'});
+window.__hrAppEvent('foreign-document', 'app.dialogRequested', dialog);
+assert.equal(dialogs.length, 0, 'retired document context cannot deliver');
+window.__hrAppEvent(context, 'app.dialogRequested', dialog);
+assert.deepEqual(dialogs, [{schema:2, dialog:'settings'}]);
+assert.equal(states.length, 0, 'dialog payload cannot enter status listeners');
+off(); off();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.at(-1).active, '0', 'final unsubscribe revokes native delivery');
+receipt('{}');
+window.__hrAppEvent(context, 'app.dialogRequested', dialog);
+assert.equal(dialogs.length, 1, 'unsubscribed events cannot replay');
+assert.throws(() => window.happyranchConnection.on('unknown', () => {}));
+offState();
+await new Promise(resolve => setImmediate(resolve));
+receipt('{}');
+pageEvents.get('pagehide')();
+const beforeRetiredCall = posts.length;
+await assert.rejects(window.happyranchConnection.call('client.retrySave', '{}'), /documentChanged/);
+assert.equal(posts.length, beforeRetiredCall, 'retired Main cannot issue a save retry');
 console.log('PASS: shipped bootstrap diagnostics distinguish missing/refused/throwing stages without tokens; document-bound owner push, admission and receipt gates');
+console.log('PASS: shipped named dialog subscription, context fence, event separation, idempotent unsubscribe and page retirement');
 
 // Execute the commissioned qualifier itself. Simulated upstream failures must
 // not prevent the later independent steps; this does not emulate WebKit EOF.

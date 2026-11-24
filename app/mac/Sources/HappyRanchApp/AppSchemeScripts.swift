@@ -1,6 +1,6 @@
 import Foundation
 
-/// Transport and owner-receipt facade. Settings/Connection actions remain later Mac slices.
+/// Main transport, owner receipts and the shared Settings/Connection facade.
 enum AppSchemeScripts {
     static let page = #"""
 (() => {
@@ -29,27 +29,54 @@ enum AppSchemeScripts {
     admit(); return true;
   }});
   const listeners = new Map();
+  const events = ['app.stateChanged', 'app.dialogRequested', 'client.stateChanged'];
+  let active = true, subscriptions = Promise.resolve();
+  const subscribe = event => {
+    subscriptions = subscriptions.then(async () => {
+      await admitted;
+      if (active) await native.postMessage({context, command:'subscribe', event,
+        active:listeners.get(event)?.size ? '1' : '0'});
+    }).catch(() => {});
+  };
   Object.defineProperty(window, '__hrAppState', {value: raw => {
-    for (const handler of listeners.get('app.stateChanged') || []) handler(raw);
+    if (active) for (const handler of listeners.get('app.stateChanged') || []) {
+      try { handler(raw); } catch {}
+    }
+  }});
+  Object.defineProperty(window, '__hrAppEvent', {value: (token, event, raw) => {
+    if (!active || token !== context || !events.includes(event)) return;
+    for (const handler of listeners.get(event) || []) { try { handler(raw); } catch {} }
   }});
   Object.defineProperty(window, 'happyranchConnection', {value: Object.freeze({
     call: async (command, data) => {
       await admitted;
+      if (!active) throw new Error('documentChanged');
       if (command === 'app.ownersChanged' && typeof data === 'string') {
         return native.postMessage({context, command, data});
       }
       if (['client.commitSwitch','client.disconnect'].includes(command) && data === '{}') {
         return native.postMessage({context, command, data});
       }
+      if (['bridge.hello','client.status','client.savedComputers','client.health',
+           'client.acceptInvite','client.connectSaved','client.removeSaved',
+           'client.cancelAttempt','client.retry','client.retrySave'].includes(command)
+          && typeof data === 'string') return native.postMessage({context, command, data});
       if (command !== 'app.status' || data !== '{}') throw new Error('unavailable');
       return native.postMessage({context, command:'app.status'});
     },
     on: (event, handler) => {
+      if (!events.includes(event) || typeof handler !== 'function' || !active) throw new Error('unavailable');
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event).add(handler);
-      return () => listeners.get(event)?.delete(handler);
+      subscribe(event);
+      let attached = true;
+      return () => {
+        if (!attached) return;
+        attached = false; listeners.get(event)?.delete(handler); subscribe(event);
+      };
     }
   })});
+  addEventListener('pagehide', () => { active = false; listeners.clear(); }, {once:true});
   bootstrap.stage = 'fetch-install';
   const original = window.fetch.bind(window);
   window.fetch = async (input, init) => {
