@@ -241,7 +241,9 @@ class ConnectionCLITests(unittest.TestCase):
 
     def test_closed_host_state_diagnostic(self) -> None:
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
-                         "owner_unsupported", "owner_mismatch", "release_home_invalid"):
+                         "owner_unsupported", "owner_mismatch", "release_home_invalid",
+                         *("host_state_unrecognized_" + part for part in (
+                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown"))):
             with self.subTest(category=category):
                 self.bus.status_error = "ai.happyranch.RemoteAccess1.Error." + category
                 # Keep the exact CLI transcript assertion independent of the
@@ -252,8 +254,11 @@ class ConnectionCLITests(unittest.TestCase):
                     self.assertIs(warning.category, DeprecationWarning)
                     self.assertTrue(warning.filename.endswith('/gi/events.py'))
                 self.assertEqual(code, 1)
-                self.assertEqual(result, dict(code="hostStateUnrecognized", effect="none", recovery="refresh"))
-                self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. Check the local installation.")
+                part = (category.removeprefix("host_state_unrecognized_") if category.startswith("host_state_unrecognized_")
+                        else "unknown" if category == "host_state_unrecognized" else "owner")
+                self.assertEqual(result, dict(code="hostStateUnrecognized", category=part, effect="none", recovery="refresh"))
+                self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. "
+                                 "Check the local installation. Category: " + part + ".")
 
     def test_headless_unavailable(self) -> None:
         import gi

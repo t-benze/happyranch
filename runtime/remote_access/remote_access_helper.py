@@ -384,6 +384,8 @@ class RemoteAccessHelper:
                 raise ValueError()
             if time.monotonic() >= deadline:
                 raise ValueError()
+        except _helper_generation.GenerationUnavailable as error:
+            raise Refused('host-state-unrecognized-' + error.category) from None
         except Exception:
             raise Refused('host-state-unrecognized') from None
         return Snapshot(0, uid, True, 'off', False, None, ()), True

@@ -213,6 +213,29 @@ test('host view: approval, invite, unconfirmed and manage flags', () => {
   assert.equal(model.displayLabel('Studio Host', 'Saved computer', 'en'), 'Studio Host');
 });
 
+test('host state categories survive parsing and select bilingual GUI copy', async () => {
+  const en = (await import('../src/lib/i18n/locales/en.ts')).default;
+  const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
+  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown']) {
+    const input = { code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category };
+    const failure = conn.parseConnectionFailure(JSON.stringify(input));
+    assert.deepEqual(failure, input);
+    const view = model.outcomeView('host.status', { failure }, null);
+    const key = view.lines[1].key;
+    assert.notEqual(key, 'connection.host.hErrStateUnrecognized');
+    assert.equal(typeof en[key], 'string');
+    assert.equal(typeof zh[key], 'string');
+    assert.notEqual(en[key], zh[key]);
+    assert.equal(view.checkAgain, true);
+    assert.equal(view.retry, false);
+  }
+  for (const category of ['private/path', 7, {}, '']) {
+    const failure = conn.parseConnectionFailure(JSON.stringify({ code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category }));
+    assert.equal(failure.category, 'unknown');
+  }
+  assert.deepEqual(conn.parseConnectionFailure(JSON.stringify({ code: 'unavailable', effect: 'none', recovery: 'refresh', category: 'owner' })), conn.UNKNOWN_FAILURE);
+});
+
 test('a target-commit hold admits no save until released', async () => {
   target.__setNativeBridgeForTests({ call: async () => '{}', on: () => () => undefined });
   owners.__resetNativeOwnersForTests();

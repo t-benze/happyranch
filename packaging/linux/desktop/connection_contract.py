@@ -28,6 +28,8 @@ WINDOW_LIFECYCLE = frozenset({"Enable", "Disable", "IssueInvite"})
 CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 302000,
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
+HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
+                                    "quiescence", "timeout", "unknown"})
 
 
 class Requests:
@@ -379,7 +381,15 @@ def request_host(self: object, method: str, complete: object, current: object, o
                              "owner_unsupported", "owner_mismatch", "release_home_invalid"):
                 closed["ai.happyranch.RemoteAccess1.Error." + category] = "hostStateUnrecognized"
             code = closed.get(remote)
-            if code:
+            prefix = "ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_"
+            category = remote[len(prefix):] if isinstance(remote, str) and remote.startswith(prefix) else None
+            if category is not None or code == "hostStateUnrecognized":
+                if category is None:
+                    category = "unknown" if remote.endswith("host_state_unrecognized") else "owner"
+                elif category not in HOST_STATE_CATEGORIES:
+                    category = "unknown"
+                complete(None, dict(code="hostStateUnrecognized", category=category))
+            elif code:
                 complete(None, code)
             elif mutation and dispatched and not absent:
                 complete(None, "outcomeUnknown", "unknown")

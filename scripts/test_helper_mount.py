@@ -33,6 +33,212 @@ from scripts.test_installer_token_custody import staged_inventory
 REAL_THREAD = threading.Thread
 
 
+@pytest.mark.parametrize('method', ['Status', 'StatusV2'])
+@pytest.mark.parametrize('leftover', ['empty', 'expired', 'health.json', '.health-7', 'unknown', 'mode',
+    'symlink', 'hardlink', 'oversize', 'bound', 'state', 'observer', 'verifier', 'active'])
+def test_thr327_replacement_runtime_status(
+        renewal_fixture: Any, mount: Any, monkeypatch: pytest.MonkeyPatch,
+        method: str, leftover: str) -> None:
+    """The actual v2 replacement's closed output must be usable by Enable/Status."""
+    from scripts.test_installer_token_custody import prepared_replacement, module
+    f, m = renewal_fixture, mount
+    f.installer.layout = 'deb'
+    f.installer.units = module.managed_units('deb')
+    lookup_user, lookup_group = f.installer._lookup_user, f.installer._lookup_group
+    def absent_headscale(name: str, lookup: Any) -> Any:
+        if name == 'happyranch-headscale':
+            raise KeyError(name)
+        return lookup(name)
+    f.installer._lookup_user = lambda name: absent_headscale(name, lookup_user)
+    f.installer._lookup_group = lambda name: absent_headscale(name, lookup_group)
+    payload = f.root / 'opt/happyranch-desktop'
+    for name in ('bin/happyranch-tsnet-sidecar', 'python/bin/python3.12'):
+        path = payload / name
+        path.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+        path.write_bytes(b'synthetic packaged executable')
+        path.chmod(0o755)
+        for ancestor in path.parents:
+            if ancestor == f.root:
+                break
+            ancestor.chmod(0o755)
+    (payload / 'python/bin/python3').symlink_to('python3.12')
+    manager, parent, _ = prepared_replacement(f)
+    (parent / 'install-transaction.json').unlink()
+    (parent / 'provision.json').unlink()  # Real unrecorded manual install.
+    release = (parent / 'release-daemon.json').read_bytes()
+    runtime = f.root / 'run/happyranch-tsnet-sidecar'
+    candidate = f.installer.replacement_inventory()
+    with pytest.raises(module.InstallerError, match='replacement paused after stop intent'):
+        f.installer.begin_replacement(expected_release_uid=os.getuid(),
+            expected_generation=candidate.inventory_generation)
+    journal = parent / 'install-transaction.json'
+    for _ in range(8):
+        if not journal.exists():
+            break
+        try:
+            f.installer.replace_failed()
+        except module.InstallerError as error:
+            assert 'replacement paused after' in str(error)
+    assert not journal.exists()
+    assert (parent / 'release-daemon.json').read_bytes() == release
+    assert json.loads((parent / 'provision.json').read_bytes())['version'] == 1
+    if leftover not in ('empty', 'expired'):
+        name = '.health-7' if leftover == '.health-7' else 'unknown' if leftover == 'unknown' else 'health.json'
+        target = runtime / name
+        target.write_bytes(b'{"ready":true,"stale":true}')
+        target.chmod(0o600 if name == '.health-7' else 0o644)
+        if leftover == 'mode': target.chmod(0o666)
+        if leftover == 'symlink':
+            target.unlink()
+            target.symlink_to(parent / 'policy.json')
+        if leftover == 'hardlink': os.link(target, runtime / '.health-8')
+        if leftover == 'oversize': target.write_bytes(b'x' * (module._RUNTIME_DIAGNOSTIC_BYTES + 1))
+        if leftover == 'bound':
+            for index in range(module._RUNTIME_DIAGNOSTIC_LIMIT):
+                path = runtime / f'.health-{index}'
+                path.write_bytes(b'')
+                path.chmod(0o600)
+        if leftover == 'state':
+            path = f.root / 'var/lib/happyranch-tsnet-sidecar/tailscaled.state'
+            path.write_bytes(b'synthetic private state')
+            path.chmod(0o600)
+        if leftover in ('observer', 'verifier'):
+            import socket
+            path = runtime / 'observe.sock' if leftover == 'observer' else f.root / 'run/happyranch-release-verifier/control.sock'
+            path.parent.mkdir(mode=0o755, exist_ok=True)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with socket.socket(socket.AF_UNIX) as sock:
+                    sock.bind(f'/proc/self/fd/{directory}/{path.name}')
+            finally:
+                os.close(directory)
+            path.chmod(0o600 if leftover == 'observer' else 0o660)
+        if leftover == 'active': manager.states[module.UNITS[1]] = 'active'
+    if leftover in ('empty', 'expired', 'health.json', '.health-7'):
+        assert f.installer.inventory().detail == 'staged-inert'
+    if leftover == 'expired':
+        from scripts.test_installer_token_custody import expire_staged_policy
+        expire_staged_policy(f, monkeypatch)
+    state = f.root / 'var/lib/happyranch-remote-access'
+    state.mkdir(mode=0o700)
+    run = f.installer._run
+    f.installer._run = lambda args, **kw: (0, '') if args == ['ps', '-eo', 'ruid=,euid=,suid=,fuid='] else run(args, **kw)
+    show = manager.show_properties
+    manager.show_properties = lambda name, properties: {key: value for key, value in {
+        **show(name, tuple(key for key in properties if key != 'Names')), 'Names': name,
+    }.items() if key in properties}
+    lifecycle = backend.HelperLifecycleBackend(f.installer)
+    failures = []
+    def capture(_: float) -> str:
+        try:
+            return lifecycle.capture('Enable', os.getuid())
+        except Exception as error:
+            import traceback
+            failures.append((str(error), [frame.name for frame in traceback.extract_tb(error.__traceback__)]))
+            raise
+    m.reader.current_generation.side_effect = capture
+    m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    m.helper.control = m.h.ControlClient(str(f.root / 'absent-connector.sock'))
+    m.helper.cursors = {}
+    m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    m.message.get_member = lambda: method
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(m.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    m.message.new_method_reply = lambda: reply
+    m.message.new_method_error_literal = Mock(side_effect=lambda name, code: SimpleNamespace(name=name, code=code))
+    m.helper.connection.send_message = Mock()
+    m.helper._reply = m.h.RemoteAccessHelper._reply.__get__(m.helper)
+    m.helper._error = m.h.RemoteAccessHelper._error.__get__(m.helper)
+    before = staged_inventory(f)
+    manager.calls.clear()
+    m.helper._dispatch(m.message)
+    if leftover not in ('empty', 'expired', 'health.json', '.health-7'):
+        assert m.message.new_method_error_literal.called
+        assert 'host_state_unrecognized' in m.message.new_method_error_literal.call_args.args[0]
+        assert staged_inventory(f) == before
+        assert all(call[0] == 'show' for call in manager.calls)
+        return
+    assert not m.message.new_method_error_literal.called, (m.message.new_method_error_literal.call_args, failures)
+    result = json.loads(reply.body.unpack()[0])
+    assert (result['phase'] if method == 'Status' else result['setup']['state']) == 'off'
+    assert json.loads(lifecycle.capture('Enable', os.getuid()))['prestate'] == 'staged-inert'
+    assert staged_inventory(f) == before
+    assert all(call[0] == 'show' for call in manager.calls)
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+
+
+@pytest.mark.parametrize('case', ['residue', 'policy-drift', 'non-shipped'])
+def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    if case == 'residue':
+        runtime = v.path('/run/happyranch-tsnet-sidecar')
+        runtime.mkdir(mode=0o755)
+        (runtime / 'unknown').write_bytes(b'synthetic-private-canary')
+    else:
+        policy_path = v.path('/etc/happyranch/policy.json')
+        if case == 'policy-drift':
+            policy_path.write_bytes(policy_path.read_bytes() + b' ')
+        else:
+            policy = json.loads(policy_path.read_bytes())
+            policy['artifact']['allow'] = policy['artifact']['allow'][:-1]
+            policy_path.write_bytes(json.dumps(policy, sort_keys=True).encode())
+            provision_path = v.path('/etc/happyranch/provision.json')
+            provision = json.loads(provision_path.read_bytes())
+            provision['digests']['policy.json'] = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+            provision_path.write_bytes(json.dumps(provision, sort_keys=True).encode())
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    writes = []
+    monkeypatch.setattr(v.io, '_renew_policy_locked', lambda **kwargs: writes.append('renew'))
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    frames = []
+    def child(command: tuple, **kwargs: Any) -> Any:
+        output = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(kwargs['input'])))
+            patch.setattr(sys, 'stdout', output)
+            code = backend.helper_main()
+        frames.append(output.getvalue())
+        return SimpleNamespace(returncode=code, stdout=frames[-1].encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    with pytest.raises(generation.GenerationUnavailable) as failure:
+        generation.HomeLifecycleClient('Enable', os.getuid()).current_generation(2)
+    category = 'residue' if case == 'residue' else 'provenance'
+    assert getattr(failure.value, 'category', None) == category
+    assert json.loads(frames[0]) == {'refusal': category}
+    assert staged_inventory(v.fixture) == before and v.calls == calls and writes == []
+    assert 'canary' not in ''.join(frames) and str(v.root) not in ''.join(frames)
+    for frame in ({'refusal': 'private/path'}, {'refusal': {}}, {'refusal': 'owner', 'private': 'canary'}, {}):
+        monkeypatch.setattr(generation.subprocess, 'run', lambda *args, **kw:
+            SimpleNamespace(returncode=1, stdout=json.dumps(frame).encode()))
+        with pytest.raises(generation.GenerationUnavailable) as failure:
+            generation.HomeLifecycleClient('Enable', os.getuid()).current_generation(2)
+        assert failure.value.category == 'unknown'
+
+
+@pytest.mark.parametrize('category', ['residue', 'owner', 'provenance', 'custody', 'inventory',
+    'quiescence', 'timeout', 'unknown'])
+def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch, category: str) -> None:
+    m = mount
+    m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
+    m.reader.current_generation.side_effect = m.h._helper_generation.GenerationUnavailable(category)
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    m.message.new_method_error_literal = Mock(return_value=object())
+    m.helper.connection.send_message = Mock()
+    with pytest.raises(m.h.Refused) as failure:
+        m.helper._status_snapshot(1000, time.monotonic() + 2)
+    m.h.RemoteAccessHelper._error(m.helper, m.message, failure.value.category)
+    m.message.new_method_error_literal.assert_called_once_with(
+        m.h.INTERFACE + '.Error.host_state_unrecognized_' + category, 'host-state-unrecognized-' + category)
+    assert not m.reader.effect.called and not m.helper.authority.call.called
+
+
 def test_clean_enable_empty_environment_account_tools(
         composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from runtime.remote_access import service_manager
@@ -173,7 +379,7 @@ def test_enable_child_diagnostic_preserves_closed_exit(
     assert backend.helper_main() == 1
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
-    assert capsys.readouterr() == ('', '')
+    assert capsys.readouterr() == ('{"refusal": "unknown"}\n', '')
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
@@ -1801,17 +2007,69 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
 
 
 @pytest.mark.parametrize('method', ['Status', 'StatusV2'])
-@pytest.mark.parametrize('case', ['clean', 'staged-inert', 'partial', 'pending', 'unsafe', 'unknown', 'failed', 'source', 'txn'])
+@pytest.mark.parametrize('case', ['clean', 'staged-inert', 'partial', 'pending', 'unsafe', 'unknown', 'failed', 'source', 'txn',
+    'founder-expired', 'replacement-expired', 'post-disable-expired'])
 def test_thr327_closed_host_status(
         composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str) -> None:
     """Real retained-stage verification after closure; only child/Gio transport is isolated."""
     v, m = composition, mount
-    if case == 'staged-inert':
+    aged = case in ('founder-expired', 'replacement-expired', 'post-disable-expired')
+    if case in ('staged-inert', 'founder-expired', 'replacement-expired'):
         v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    elif case == 'post-disable-expired':
+        from contextlib import ExitStack
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+            deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        v.observers.close()
+        v.observers = ExitStack()
+        expected = v.lifecycle.capture('Disable', os.getuid())
+        assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+        assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)['outcome'] == 'off'
+        v.admin.users, v.admin.nodes = (), ()
     elif case != 'clean':
         corrupt_composition(v, case)
-    if case == 'staged-inert':
-        assert v.io.inventory().detail == 'staged-inert'
+    if case == 'replacement-expired':
+        from runtime.remote_access.home_activation import HomeActivationError
+        v.io.publish_home_units()
+        v.path('/etc/happyranch/provision.json').unlink()  # Unrecorded failed manual install.
+        v.states['happyranch-connector.service'] = 'failed'
+        release = v.path('/etc/happyranch/release-daemon.json').read_bytes()
+        for _ in range(8):
+            expected = v.lifecycle.capture('ReplaceFailed', os.getuid())
+            try:
+                result = v.lifecycle.dispatch('ReplaceFailed', os.getuid(), 'replace', expected)
+            except HomeActivationError:
+                assert v.io.replacement_inventory().journal_generation
+            else:
+                assert result == {'outcome': 'off', 'residue': []}
+                break
+        else:
+            pytest.fail('v2 replacement did not close')
+        assert v.path('/etc/happyranch/release-daemon.json').read_bytes() == release
+        assert json.loads(v.path('/etc/happyranch/provision.json').read_bytes())['version'] == 1
+    if aged:
+        from scripts.test_installer_token_custody import expire_staged_policy
+        from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer, PolicyError
+        delayed = expire_staged_policy(v.fixture, monkeypatch)
+        policy_before = v.path('/etc/happyranch/policy.json').read_bytes()
+        with pytest.raises(PolicyError):
+            RoutePolicyConsumer.from_envelope(PolicyEnvelope.model_validate_json(policy_before)).require_current(delayed)
+        runtime = v.path('/run/happyranch-tsnet-sidecar')
+        runtime.mkdir(mode=0o755, exist_ok=True)
+        (runtime / 'health.json').write_bytes(b'{"backend":"Running","ready":true,"stale":true}')
+        (runtime / 'health.json').chmod(0o644)
+        v.path('/run/happyranch-release-verifier').mkdir(mode=0o755, exist_ok=True)
+        v.path('/var/lib/happyranch-remote-access').mkdir(mode=0o700, exist_ok=True)
+        if case == 'founder-expired':
+            # Exact reported founder host shape, including retained service identity.
+            for directory in ('happyranch-connector', 'happyranch-tsnet-sidecar'):
+                path = v.path('/var/lib/' + directory)
+                path.mkdir(mode=0o700, exist_ok=True)
+                assert list(path.iterdir()) == []
+            assert list(v.path('/run/happyranch-release-verifier').iterdir()) == []
+            assert v.io._account(create=False) is not None
+    if case == 'staged-inert' or aged:
+        assert v.io.inventory().detail == ('post-disable' if case == 'post-disable-expired' else 'staged-inert')
         assert v.path('/etc/happyranch/release-daemon.json').is_file()
         assert not v.path('/etc/happyranch/install-transaction.json').exists()
         assert v.receipts.current() is None and v.transactions.read_optional() is None
@@ -1836,7 +2094,7 @@ def test_thr327_closed_host_status(
     accounts, mints = list(v.account_creations), list(v.mints)
     m.helper._dispatch(m.message)
     m.helper.connection.send_message.assert_called_once()
-    if case in ('clean', 'staged-inert'):
+    if case in ('clean', 'staged-inert') or aged:
         m.message.new_method_error_literal.assert_not_called()
         status = json.loads(reply.body.unpack()[0])
         if method == 'Status':
@@ -1850,3 +2108,27 @@ def test_thr327_closed_host_status(
     assert staged_inventory(v.fixture) == before and v.calls == calls
     assert not m.helper.authority.call.called and not m.reader.effect.called
     assert not m.helper.audit.path.exists() and v.mints == mints and v.account_creations == accounts
+    if aged:
+        from runtime.remote_access.policy_renew_units import TIMER_NAME
+        from scripts.test_home_activation_backend import assert_locked
+        from runtime.remote_access import home_activation_owner
+        reload = v.io.manager.daemon_reload
+        checkpoints = []
+        def strict_reload() -> None:
+            txn = v.transactions.read_optional()
+            if txn is not None and txn.effects[-1].name == 'headscale_start_verify':
+                assert txn.effects[-1].state == 'intent'
+                assert_locked(v)
+                renewed = v.path('/etc/happyranch/policy.json').read_bytes()
+                assert renewed != policy_before
+                RoutePolicyConsumer.from_envelope(PolicyEnvelope.model_validate_json(renewed)).require_current(delayed)
+                checkpoints.append('current before effect reload')
+            reload()
+        monkeypatch.setattr(v.io.manager, 'daemon_reload', strict_reload)
+        # Readiness still requires a live peer. A health file is no observation.
+        expected = v.lifecycle.capture('Enable', uid)
+        assert json.loads(expected)['prestate'] == ('post-disable' if case == 'post-disable-expired' else 'staged-inert')
+        assert v.lifecycle.dispatch('Enable', uid, 'enable', expected, deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        assert checkpoints == ['current before effect reload']
+        assert v.receipts.current().phase == 'ready'
+        assert v.calls.index(['enable', TIMER_NAME]) < v.calls.index(['start', home_activation_owner._TARGET])

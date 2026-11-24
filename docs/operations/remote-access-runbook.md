@@ -342,6 +342,33 @@ missing connector IPC by itself never means Off. Unsafe/unrecognized or
 unavailable proof refuses `host-state-unrecognized`. CLI/GUI code
 `hostStateUnrecognized` says the files or release runtime owner could not be
 verified and asks to check the local installation. No read repairs state.
+
+For a verified staged-inert/post-Disable host, retained policy expiry alone no
+longer prevents Off or Turn on. Capture and inert publication defer expiry only;
+all artifact/provenance/custody checks still apply. After the existing
+`headscale_start_verify` intent is durable, forward Enable re-stamps the SAME
+shipped policy under its held flock and requires currentness before that effect's
+reload and before ANY enable/start. Existing inert publication reloads occur
+earlier. Failure enables/starts no unit; the later managed-services renewal and
+timer-before-target order remain. Recovery never renews and Ready Enable only
+inspects. Status never writes policy or any other retained file.
+
+Only bounded sidecar `health.json` / `.health-N` diagnostics may remain while
+that unit is inactive and quiescent; other runtime entries and verifier
+`control.sock` refuse. Diagnostic files cannot prove readiness; a live verified
+observation peer is required. A host with absent journal, exact retained staged
+configs/token/manual release record, empty state directories, preserved sidecar
+runtime diagnostics, empty root verifier directory and the expected account
+needs only Turn on in the fixed build. Do not delete or rewrite retained files.
+This is a fixture-proven host-shape result, not installed/live-host acceptance.
+
+CLI JSON and the EN/zh-CN Connection view retain `hostStateUnrecognized` and
+show a bounded category: residue (retained state), owner (runtime owner),
+provenance (installation records/shipped policy), custody (protected file safety),
+inventory (component set), quiescence (stopped services), timeout, or unknown.
+Legacy owner-binding errors map to owner; absent/malformed categories map to
+unknown. No host metadata or secret is included.
+
 The CLI's accepted-only ReplaceFailed call still reports `outcomeUnknown` at its
 original 482-second deadline even when closure completed earlier: the helper's
 private result and slot release are not a terminal client receipt. Inspect the

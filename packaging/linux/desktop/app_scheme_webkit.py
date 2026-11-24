@@ -362,6 +362,9 @@ APP_RELAY = r"""(() => {
         recovery:['none','refresh','explicitRetry','newInviteOnHost','nativeRecovery','nativePermission','operatorRecovery'].includes(detail?.recovery)
           ? detail.recovery : 'nativeRecovery'};
       if (result.code === 'incompatible' && ['host','app','unknown'].includes(detail.side)) result.side = detail.side;
+      if (result.code === 'hostStateUnrecognized') result.category =
+        ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown'].includes(detail.category)
+          ? detail.category : 'unknown';
       raw = JSON.stringify(result);
     }
     if (active && typeof raw === 'string' && new TextEncoder().encode(raw).length <= 32768)

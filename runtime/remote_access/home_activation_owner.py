@@ -11,6 +11,7 @@ import re
 import ssl
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 from runtime.remote_access import headscale_service, home_admin, installer
 from runtime.remote_access.home_activation import (
@@ -123,6 +124,10 @@ class HomeSystemdProcessOwner:
             raise ObservationRefused() from None
 
 
+class HomeConfigOwner(ActivationOwner, Protocol):
+    def renew_policy(self, receipt: HomeActivationReceipt) -> None: ...
+
+
 class HomeActivationOwner(HomeSystemdProcessOwner):
     """Fixed B4 effects and independent B7/B2 observations over existing owners.
 
@@ -133,12 +138,16 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
     Call only under the coordinator's original lock and current durable intent.
     """
 
-    def __init__(self, *, config_owner: ActivationOwner, expected_generation: int,
-                 expected_operation_id: str, io: installer.ManagedInstaller | None = None) -> None:
+    def __init__(self, *, config_owner: HomeConfigOwner, expected_generation: int,
+                 expected_operation_id: str, io: installer.ManagedInstaller | None = None,
+                 defer_policy_expiry: bool = False) -> None:
         io = io or installer.ManagedInstaller()
         super().__init__(io=io, expected_generation=expected_generation,
                          expected_operation_id=expected_operation_id)
         self._config = config_owner
+        # Only fresh staged/post-disable Enable composition opts in. Recovery
+        # and Ready owners retain strict defaults; this is cleared at renewal.
+        self._policy_renewal_pending = defer_policy_expiry
         self._admin = home_admin.RootHeadscaleAdminOperations()
         self._source = HomeTokenSourceVerifier(io)
         self._transactions = HomeActivationTransactionStore(root=io.root, root_owner=io.root_owner)
@@ -195,7 +204,8 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         with self._io._publication_parent() as (parent, check):
             policy = self._io._read_file(parent, "policy.json",
                 owner=(self._io.root_owner[0], self._io._service_owner[1]), mode=0o640)
-            self._io._validate_configs({"policy.json": policy}, partial=True)
+            self._io._validate_configs({"policy.json": policy}, partial=True,
+                                       require_current=not self._policy_renewal_pending)
             check()
         if self._config.verify("preflight", receipt) is not True:
             raise ActivationRefused()
@@ -361,6 +371,12 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
             if effect != "credential_staging" and credential is not None:
                 raise ActivationRefused()
             if effect == "headscale_start_verify":
+                # Existing durable intent, SAME held activation flock. Renew the
+                # identical shipped policy before the first enable/start.
+                self._source.require(receipt)
+                self._config.renew_policy(receipt)
+                self._policy_renewal_pending = False
+                self._common(receipt)  # Strict require_current BEFORE manager effects.
                 self._source.require(receipt)
                 self._io.manager.daemon_reload()
                 self._source.require(receipt)

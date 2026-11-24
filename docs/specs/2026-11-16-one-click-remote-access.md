@@ -223,8 +223,33 @@ not be verified. Check the local installation.” Main uses Status, whose proven
 Off projection is known/offline with no devices, so the existing Turn on action
 is offered. StatusV2 reports setup off/runtime unavailable; a recognized live
 receipt still retains its own setup observation when the connector is down.
-Status v1 serialization shape, status deadlines and mutation admission stay
-unchanged. At I1, the B16 writer bracketed the three device effects
+The refusal keeps `hostStateUnrecognized` and optionally carries only the closed
+category residue, owner, provenance, custody, inventory, quiescence, timeout or
+unknown through child capture, HomeLifecycleClient, D-Bus, native protocol,
+CLI JSON, Main relay and localized EN/zh-CN copy. Legacy owner-binding errors
+map to owner; absent/invalid categories map to unknown, with no host metadata.
+Status v1 successful serialization shape, status deadlines and mutation admission
+stay unchanged.
+
+THR-327 restoration permits only H1 bounded sidecar health diagnostics
+(`health.json` / `.health-N`) under inactive/quiescent absence proof; sockets,
+other runtime/state and unsafe custody still refuse. Staged-inert/post-Disable
+capture and inert pre-renewal publication defer ONLY expiry, preserving exact
+shipped policy and provenance. The existing `headscale_start_verify` effect,
+AFTER its durable intent and under the SAME flock, calls fixed fresh-auth renewal
+and then requires currentness BEFORE its reload and before ANY unit enable/start.
+The live-config owner accepts only the renewal's exact policy-digest provenance
+update; other bytes/custody stay bound. All later checks/admission/runtime remain
+strict. Keep the later managed-services renewal and timer-before-target order.
+The EFFECTS tuple, journal names/format/shape and old-intent I3a recovery semantics
+remain unchanged; recovery never renews and Ready Enable remains inspect-only.
+An absent-journal founder-shaped retained staging host with empty state/verifier
+directories and the expected account reports Off and proceeds on Turn on without
+other host actions. This is synthetic fixture coverage, with installed acceptance
+still separate. Health files never establish Ready: the live SO_PEERCRED
+observation and current activation/node binding remain mandatory.
+
+At I1, the B16 writer bracketed the three device effects
 with durable intent and fixed outcome/uncertainty records; the lifecycle/invite
 audit composition follows below.
 The fixed helper source contract already reflects B8/B9's optional compatibility UID

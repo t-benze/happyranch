@@ -428,6 +428,134 @@ def test_composed_clean_helper_writes_stay_in_b8(composition: Any, monkeypatch: 
     assert not outside, outside
 
 
+@pytest.mark.parametrize('failure', ['refusal', 'provision-drift', 'config-custody'])
+def test_thr327_renewal_failure_starts_no_unit(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    """A forward Enable policy-renewal refusal must precede every unit start."""
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert json.loads(expected)['prestate'] == 'staged-inert'
+    attempts = []
+    effect_calls = []
+    publish = HomeActivationTransactionStore.publish
+    def intent(store: Any, value: Any, **kwargs: Any) -> None:
+        publish(store, value, **kwargs)
+        if (value.phase == 'activating' and value.effects[-1].name == 'headscale_start_verify'
+                and value.effects[-1].state == 'intent'):
+            effect_calls.append(len(v.calls))
+    monkeypatch.setattr(HomeActivationTransactionStore, 'publish', intent)
+    renew = v.io._renew_policy_locked
+    def refuse(*, fresh_auth: bool) -> None:
+        assert_locked(v)
+        assert fresh_auth is True
+        attempts.append('renewal refused')
+        if failure == 'refusal':
+            raise adapters.installer.InstallerError('synthetic renewal refusal')
+        renew(fresh_auth=fresh_auth)
+        if failure == 'provision-drift':
+            path = v.path('/etc/happyranch/provision.json')
+            raw = json.loads(path.read_bytes())
+            raw['digests']['release-daemon.json'] = 'a' * 64
+            path.write_bytes(json.dumps(raw, sort_keys=True).encode())
+        else:
+            v.path('/etc/happyranch/connector.json').chmod(0o666)
+    monkeypatch.setattr(v.io, '_renew_policy_locked', refuse)
+    with pytest.raises(ActivationRefused):
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                             deadline=time.monotonic() + 480)
+    assert attempts == ['renewal refused']  # The intended guard actually ran.
+    started = [call for call in v.calls if call[0] in ('enable', 'start')]
+    assert not started, started
+    assert len(effect_calls) == 1 and v.calls[effect_calls[0]:] == []
+
+
+def test_thr327_noop_renewal_still_requires_current(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.test_installer_token_custody import expire_staged_policy
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    expire_staged_policy(v.fixture, monkeypatch)
+    attempts = []
+    def noop(*, fresh_auth: bool) -> None:
+        assert_locked(v)
+        assert fresh_auth is True
+        attempts.append('no publication')
+    monkeypatch.setattr(v.io, '_renew_policy_locked', noop)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    with pytest.raises(ActivationRefused):
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert attempts == ['no publication']
+    assert not [call for call in v.calls if call[0] in ('enable', 'start')]
+
+
+def test_thr327_stale_health_cannot_make_enable_ready(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    runtime = v.path('/run/happyranch-tsnet-sidecar')
+    runtime.mkdir(mode=0o755)
+    stale = b'{"backend":"Running","ready":true}'
+    put(runtime / 'health.json', stale, 0o644)
+    # Simulate native services starting without their live observation listener.
+    monkeypatch.setattr(v.observers, 'enter_context', lambda context: None)
+    start = v.io.manager.start
+    def no_peer(name: str, **kwargs: Any) -> None:
+        start(name, **kwargs)
+        if name == adapters._TARGET:
+            put(runtime / 'health.json', stale, 0o644)
+    monkeypatch.setattr(v.io.manager, 'start', no_peer)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    with pytest.raises(ActivationRefused):
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert ['start', adapters._TARGET] in v.calls
+    assert v.states[adapters._SIDECAR] == 'active' and v.admin.key.used
+    assert not (runtime / 'observe.sock').exists() and (runtime / 'health.json').read_bytes() == stale
+    assert v.receipts.current().phase == 'failed_uncertain'
+    assert v.transactions.read_optional().effects[-1].name == 'managed_services'
+
+
+@pytest.mark.parametrize('expired', [False, True])
+def test_thr327_old_headscale_intent_never_renews(venue: Venue, monkeypatch: pytest.MonkeyPatch, expired: bool) -> None:
+    from runtime.remote_access.home_activation_txn import HomeActivationTransaction
+    from scripts.test_installer_token_custody import expire_staged_policy
+    v = venue
+    v.backend._prepare.prepare(expected_generation=7, authenticated=True)
+    receipt = v.receipts.read(expected_generation=7)
+    # Literal old-format wire keys and prefix, independent of the current writer.
+    raw = {key: getattr(receipt, key) for key in (
+        'release_uid', 'home_id', 'control_plane_id', 'connector_id', 'activation_generation',
+        'operation_id', 'ca_der_sha256', 'dial_ip')}
+    raw.update(format='home-activation-txn@1', phase='activating', effects=[
+        dict(name='preflight', state='done', member_digests={}),
+        dict(name='headscale_start_verify', state='intent', member_digests={})])
+    data = json.dumps(raw, sort_keys=True).encode()
+    parsed = HomeActivationTransaction.parse(data)
+    # This writer module is byte-identical to the pre-fix main writer.
+    data = parsed.to_bytes()
+    assert json.loads(data) == raw
+    put(v.path(TRANSACTION_PATH), data)
+    put(v.path(ACTIVATION_PATH), replace(receipt, phase='activating').to_bytes())
+    if expired:
+        expire_staged_policy(SimpleNamespace(root=v.root), monkeypatch)
+    active = v.receipts.current()
+    coordinator, _, _ = v.backend._compose(active)
+    assert coordinator._owner.verify('preflight', active) is (not expired)
+    calls = []
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        calls.append('renew')
+        pytest.fail('old journal recovery must never renew')
+    monkeypatch.setattr(v.receipts._io, '_renew_policy_locked', forbidden)
+    before = unit_config_bytes(v), list(v.audit), list(v.native.calls)
+    # Existing I3a semantics: an interrupted nonterminal prefix is terminalized,
+    # never resumed, including an intent predating early renewal.
+    with pytest.raises(ActivationRefused):
+        v.backend.recover(expected_generation=7, expected_operation_id=receipt.operation_id,
+                          fresh_authenticated=True)
+    terminal = v.transactions.read_optional()
+    assert terminal.phase == 'failed_uncertain' and terminal.effects == parsed.effects
+    assert v.receipts.current().phase == 'failed_uncertain' and calls == []
+    assert (unit_config_bytes(v), v.audit, v.native.calls) == before
+
+
 def test_composed_replace_failed_then_enable(composition: Any) -> None:
     v = composition
     v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
