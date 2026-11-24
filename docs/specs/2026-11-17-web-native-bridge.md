@@ -1709,6 +1709,10 @@ target recovery. Requests without that subscriber are dropped; a named native
 Retry needs a new explicit click. Opening, switching and closing remain the
 existing shared web dialog/owner gate's responsibility. There is no auxiliary
 web app, network port, queued event or new visibility/acknowledgement protocol.
+Toolbar controls are constructed lazily on Main binding/attachment or an
+explicit dialog entry, so a process-supervision-only AppDelegate does not
+initialize AppKit chrome. This does not change Stop/Quit signal deadlines,
+restart cancellation, ownership or observed-exit settlement.
 
 The Main facade admits the already supported client reads/actions via the
 existing bounded duplicate-free Connection parser, ledger, native confirmations
@@ -1810,6 +1814,15 @@ The collected `probe.json` includes `native_tests.event_archive`, a byte-exact
 4 MiB gzip); archive overflow/missing capture refuses PASS. Capture survives
 command failure/timeout before scratch cleanup. This uses the existing JSON
 artifact collector without changing Jenkins configuration.
+Build/test timeout records also retain separate captured stdout/stderr byte
+counts and SHA256, 2 KiB head/tail excerpts per stream and explicit excerpt
+truncation. These describe bytes drained before the deadline. Combined command
+fields and named XCTest/compiler/loader evidence concatenate stdout then stderr
+without claiming cross-stream ordering. Partial XCTest outcomes reach the native
+assessment alongside the Swift archive, including an incomplete running test.
+The command exit stays null/unobserved and the native verdict stays FAIL even
+when all captured outcomes passed; timeout is never substituted with exit 1
+or success. The existing process-group kill/reap remains mandatory.
 Results are not truncated; command/event overflow at 16 MiB
 fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed times
 recorded; sufficiency and native output compatibility remain NOT RUN on Linux.

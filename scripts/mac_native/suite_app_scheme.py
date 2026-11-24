@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, archive_events, assess_native, source_inventory, terminal_results
-from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _prepare_keychain
+from scripts.mac_native.suite_supervisor import CommandTimeout, ROOT, _build_environment, _command, _prepare_keychain
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
@@ -419,17 +419,28 @@ def run(report: dict[str, Any]) -> None:
             row: dict[str, Any] = {'name': name, 'argv': argv, 'exit_code': None, 'timeout_seconds': seconds}
             section['commands'].append(row)
             started = time.monotonic()
+            code, raw, stderr = None, b'', bytearray()
             try:
                 code, raw = _command(argv, env, cwd, min(deadline, started + seconds),
-                                     output_cap=TEST_OUTPUT_CAP if name == 'product_build_and_all_tests' else 1024 * 1024)
+                                     output_cap=TEST_OUTPUT_CAP if name == 'product_build_and_all_tests' else 1024 * 1024,
+                                     stderr_data=stderr)
             except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
-                row.update(command_error=type(error).__name__, elapsed_seconds=time.monotonic() - started)
+                if isinstance(error, CommandTimeout):
+                    raw = error.stdout
+                    stderr[:] = error.stderr
+                row['command_error'] = type(error).__name__
                 raise
-            row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
-                       elapsed_seconds=time.monotonic() - started,
-                       head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
-                       error_context=_error_context(raw), test_results=terminal_results(raw.decode(errors='replace')),
-                       loader_diagnostics=_loader_diagnostics(raw))
+            finally:
+                for stream, data in (('stdout', raw), ('stderr', bytes(stderr))):
+                    row[stream] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                        head=data[:2048].decode(errors='replace'), tail=data[-2048:].decode(errors='replace'),
+                        excerpts_truncated=len(data) > 4096)
+                raw += bytes(stderr)
+                row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                           elapsed_seconds=time.monotonic() - started,
+                           head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
+                           error_context=_error_context(raw), test_results=terminal_results(raw.decode(errors='replace')),
+                           loader_diagnostics=_loader_diagnostics(raw))
             if code and not allow_failure:
                 raise RuntimeError(name + ' failed')
             return raw
@@ -476,12 +487,15 @@ def run(report: dict[str, Any]) -> None:
                     '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
                     '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
                     seconds=1200, allow_failure=True)
+            except CommandTimeout as error:
+                raw = error.output
+                raise
             finally:
                 code = section['commands'][-1]['exit_code']
                 # Retain even partial/failed captures before scratch/Keychain cleanup.
                 events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
                 native = section['native_tests']
-                native.update(assess_native(raw, events, inventory, code if code is not None else 1), capture='assessed',
+                native.update(assess_native(raw, events, inventory, code), capture='assessed',
                     event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
                 try:
                     native['event_archive'] = archive_events(events)

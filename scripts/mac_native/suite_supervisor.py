@@ -32,6 +32,16 @@ CASES = (
 )
 
 
+class CommandTimeout(TimeoutError):
+    """Captured bytes before the deadline; never a normal process exit."""
+
+    def __init__(self, stdout: bytes, stderr: bytes) -> None:
+        super().__init__("supervisor suite command deadline")
+        self.stdout = stdout
+        self.stderr = stderr
+        self.output = stdout + stderr
+
+
 def _command(
     argv: list[str], env: dict[str, str], cwd: Path, deadline: float,
     *, output_cap: int = OUTPUT_CAP, input_data: bytes | None = None,
@@ -79,6 +89,8 @@ def _command(
                             key.data.extend(block)
             code = child.wait(timeout=max(0.001, deadline - time.monotonic()))
             return code, bytes(data)
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            raise CommandTimeout(bytes(data), bytes(stderr_data or b"")) from exc
         finally:
             # The group leader can exit while a compiler/child still owns pipes.
             try:

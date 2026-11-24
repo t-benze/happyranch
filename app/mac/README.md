@@ -69,6 +69,10 @@ continues to own switching, unsaved edits, focus and close; opening a dialog
 never selects a candidate, reconnects or retries a save. An unavailable entry
 shows its named manual Retry in the native toolbar. Loading/recovery never
 replays a dropped click. Native entries use the launch language (EN/ZH).
+The delegate creates its toolbar lazily when Main binds, attaches or receives
+an explicit dialog entry. Constructing a delegate for process supervision alone
+does not initialize AppKit toolbar controls. Existing synchronous Stop/Quit
+signal waits, restart cancellation and observed-exit settlement are unchanged.
 
 The native status/candidate pill and **Access wasn't saved / 访问权限未保存**
 warning read the existing Main status projection. The warning opens Connection,
@@ -379,6 +383,18 @@ navigation path/decision and final pathname as closed classes (`/`,
 A timeout/failure is FAIL with partial evidence, not proof
 of WebKit buffering. If actual timing establishes buffering, the manager must
 commission native-message streaming fallback and renewed review/build.
+
+Build/test command timeouts retain captured stdout and stderr separately in
+`app_scheme.commands`: each stream has byte count, SHA256, 2 KiB head/tail and
+an explicit excerpt-truncation flag. Counts/hashes cover bytes drained before
+the deadline, not output the killed process might have produced afterward.
+Existing combined fields and named XCTest/compiler/loader diagnostics use
+stdout followed by stderr; cross-stream ordering is not inferred. Partial
+XCTest outcomes and the byte-exact Swift event archive are assessed before
+scratch cleanup, retaining the last started/incomplete Swift invocation.
+Timeout keeps `exit_code:null` and `swift test exit unobserved`, and always
+fails even if every captured test outcome passed. Process-group kill/reap,
+output caps and the 1,200s command / 2,100s suite deadlines are unchanged.
 
 Linux maker commands (no Mac build):
 

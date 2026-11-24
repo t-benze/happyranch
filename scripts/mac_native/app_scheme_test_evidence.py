@@ -54,7 +54,7 @@ def terminal_results(output: str) -> dict[str, Any]:
             'json_bytes': sum(len(json.dumps(line).encode()) + 2 for line in lines)}
 
 
-def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: int) -> dict[str, Any]:
+def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: int | None) -> dict[str, Any]:
     """Require every source test and every started invocation to finish cleanly.
 
     Swift Testing ABI v0 has no stable parameter-case IDs. --no-parallel lets
@@ -183,7 +183,9 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
                     cases.append({'library': 'Swift Testing', 'id': key, 'status': 'FAIL', 'reason': 'no invocation'})
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         errors.append('invalid Swift Testing capture: ' + type(error).__name__)
-    if code:
+    if code is None:
+        errors.append('swift test exit unobserved')
+    elif code:
         errors.append(f'swift test exit {code}')
     if not errors and cases and all(row['status'] == 'PASS' for row in cases):
         result['status'] = 'PASS'

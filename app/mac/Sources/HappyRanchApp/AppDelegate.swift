@@ -49,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var connectionWindow: ConnectionWindow?
     private weak var mainScheme: AppScheme?
     private let mainComputerCatalog = ConnectionComputerCatalog()
-    let mainToolbar = MainToolbarController()
+    // AppKit chrome belongs to Main UI demand. Non-UI delegate/Stop paths
+    // must not create controls whose AppKit work can enter the pumped run loop.
+    private(set) lazy var mainToolbar = MainToolbarController()
 
     func bindMainScheme(_ scheme: AppScheme) {
         mainScheme = scheme

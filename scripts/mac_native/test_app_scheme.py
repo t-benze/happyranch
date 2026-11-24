@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_cold_client, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
-from scripts.mac_native.suite_supervisor import _build_environment, _prepare_keychain
+from scripts.mac_native.suite_supervisor import _build_environment, _command, _prepare_keychain
 
 
 def native_evidence(parameterized: bool = True) -> tuple[bytes, list[dict], dict]:
@@ -147,6 +147,64 @@ class ColdClientCompositionEvidenceTests(unittest.TestCase):
 
 
 class NativeWorkloadEvidenceTests(unittest.TestCase):
+    def test_timeout_retains_partial_streams_xctest_and_swift_archive_without_passing(self) -> None:
+        raw, records, inventory = native_evidence()
+        stdout = b'warning\n' * 4000 + raw + b'warning\n' * 4000
+        stderr = b'diagnostic\n' * 4000 + b'error: synthetic timeout context\n'
+        for complete in (False, True):
+            stream = native_stream(records if complete else records[:4])
+            with self.subTest(complete_events=complete), tempfile.TemporaryDirectory(dir=ROOT) as folder:
+                report = {}
+                def transfer(url: str, archive: Path, *args: object) -> dict:
+                    with tarfile.open(archive, 'w:gz'):
+                        pass
+                    return {'curl_exit_code': 0}
+                def command(argv: list[str], env: dict, cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    if 'test' not in argv:
+                        return 0, b''
+                    events = argv[argv.index('--event-stream-output-path') + 1]
+                    script = (f'from pathlib import Path; import os, time; Path({events!r}).write_bytes({stream!r}); '
+                              f'os.write(1, {stdout!r}); os.write(2, {stderr!r}); time.sleep(60)')
+                    # Real pipe draining, deadline, group kill/reap and report
+                    # boundary; no Swift compiler or native process is launched.
+                    return _command([sys.executable, '-c', script], env, cwd, time.monotonic() + 1, **kwargs)
+                with patch.dict('os.environ', {'TMPDIR': folder}), patch(
+                    'scripts.mac_native.suite_app_scheme._command', side_effect=command
+                ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
+                    'scripts.mac_native.suite_app_scheme.verify_checksum'
+                ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory), patch(
+                    'scripts.mac_native.suite_app_scheme._prepare_keychain'
+                ):
+                    with self.assertRaises(TimeoutError):
+                        run(report)
+                section = json.loads(json.dumps(report))['app_scheme']
+                row = next(row for row in section['commands'] if row['name'] == 'product_build_and_all_tests')
+                self.assertIsNone(row['exit_code'], 'a killed command has no observed normal exit')
+                self.assertEqual(row['timeout_seconds'], 1200)
+                for name, data in (('stdout', stdout), ('stderr', stderr)):
+                    captured = row.get(name)
+                    self.assertIsInstance(captured, dict, 'timeout must retain each captured stream')
+                    self.assertEqual(captured['bytes'], len(data))
+                    self.assertEqual(captured['sha256'], hashlib.sha256(data).hexdigest())
+                    self.assertEqual(captured['head'], data[:2048].decode())
+                    self.assertEqual(captured['tail'], data[-2048:].decode())
+                    self.assertTrue(captured['excerpts_truncated'])
+                self.assertNotIn('Test Case', row['head'] + row['tail'])
+                self.assertEqual(row['test_results']['lines'], terminal_results(raw.decode())['lines'])
+                self.assertIn('synthetic timeout context', row['error_context']['text'])
+                native = section['native_tests']
+                self.assertEqual(native['status'], 'FAIL', 'even a complete event stream cannot excuse timeout')
+                self.assertIn('swift test exit unobserved', native['errors'])
+                xctest = next(case for case in native['cases'] if case['library'] == 'XCTest')
+                self.assertEqual(xctest['status'], 'PASS', 'preserve observed partial outcomes')
+                if not complete:
+                    running = next(case for case in native['cases'] if case['library'] == 'Swift Testing')
+                    self.assertEqual(running['status'], 'INCOMPLETE')
+                    self.assertIn('retainsSave', running['id'])
+                archive = native['event_archive']
+                self.assertEqual(gzip.decompress(base64.b64decode(archive['data'])), stream)
+                self.assertEqual(archive['sha256'], hashlib.sha256(stream).hexdigest())
+
     def test_full_package_workload_enables_both_libraries_and_records_each_case(self) -> None:
         for parameterized, code in ((True, 0), (False, 0), (False, 1), (False, None)):
             raw, records, inventory = native_evidence(parameterized=parameterized)
