@@ -1,5 +1,13 @@
 # Managed embedded-tailnet sidecar
 
+P24 supersedes the historical home provisioning/ReplaceFailed/preparation
+algorithms described below: their uncalled Python/native owners are removed,
+and generated home provisioning and the old wait-ready command refuse. Exact
+historical renderers/readers, selective retirement/Disable and real non-home
+renewal/locking remain. The shared Go transport/client pins remain unchanged;
+account-network positive access on main awaits P21–P23. Current recovery is in
+the [remote-access contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md).
+
 This Go module transports opaque TCP bytes to the loopback connector. It has no
 HTTP or daemon-bearer knowledge. `tailscale.com v1.78.0`, the module identity and
 the existing dependency pins are shared by Linux and Darwin. Use Go 1.23.12
@@ -301,10 +309,11 @@ to the identity profile. It requires the canonical control URL
 `https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
 cannot use the legacy transport. Slice 3b owns generating this configuration,
 the home CA/server leaf and the private DERP map; the sidecar process generates
-none of those persistent objects. The root-run materializer at the fixed non-PATH
-`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca` path provides
-`ensure`, `renew-leaf`, and `status` for the home CA/server leaf; see the
-[inert Linux home CA materializer contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
+none of those persistent objects. Under THR-378 P24 new Linux payloads omit the
+local Headscale server and `happyranch-home-ca` / `happyranch-home-admin` commands.
+The incoming retirement preinst consumes the old installation's protected
+capabilities before replacement. Shared `homeca` and client transport code are
+retained for P25; retaining them does not provide a new local issuance entry.
 Existing non-home configs retain their transport.
 
 Before constructing tsnet, Linux admits the fixed no-follow root-owned
@@ -603,7 +612,12 @@ acceptance remains separate from temp-root verification.
 
 ### Inert home admin prefix (3b-2g-1)
 
-The package now includes root:root 0755
+THR-378 P24 removes this command's source and new-package build/validation
+requirements. The following describes the protected old installation consumed
+by retirement; it supplies no current issuance or provisioning entry. Shared
+`homeca`, transport and client packages remain for P25.
+
+The historical package included root:root 0755
 `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`, beside the
 home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
 module and existing collected notices. Packaging never invokes it. Only the

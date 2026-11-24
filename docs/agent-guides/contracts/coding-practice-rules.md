@@ -22,6 +22,9 @@ Existing model: [Linux local-service supervisor](../../specs/formal/local-servic
 
 Existing model: [Shared Artifacts transition journal](../../specs/formal/shared-artifacts/README.md).
 
+P24 contract model: [Home retirement](../../specs/formal/home-retirement/README.md)
+(source checkpoint; TLC and full coordinator refinement remain unverified).
+
 Model checks are review evidence and **NOT a CI gate** (founder test policy
 THR-291: required checks stay lint/static only; no new scheduled runs).
 

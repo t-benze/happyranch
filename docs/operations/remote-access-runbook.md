@@ -1,5 +1,10 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
+P24 retires self-hosted home mode and supersedes the historical positive Enable,
+preparation and replacement instructions below. Use the explicit retirement and
+read-only status entries in the current remote-access contract. Account-network
+positive access on main awaits P21–P23; no installed acceptance is claimed here.
+
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
 **Phase-2 Part A** — deploy artifact runbook
@@ -220,8 +225,24 @@ Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, provisioning record, staged token, package, logs and account are retained.
 The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
-The separately callable `disable-headscale --layout deb` root operator entry
-and legacy uninstall remove the proven inert Headscale unit/policy/custody and
+P24 retires the ordinary installer commands `prepare-headscale` and
+`disable-headscale` for both layouts. They return non-success before installer
+construction or native effects, with “Home mode has been retired. Sign in to use
+your account's private network. Your local work is kept.” Use the canonical
+explicit retirement entry in the P24 upgrade/recovery section below; use
+`home-retirement-status --layout deb` for read-only detection.
+The programmatic preparation and unmounted activation/issuer/minter/admin/recovery
+owners are removed. Historical protected readers, explicit retirement/Disable
+cleanup and non-home policy renewal remain. The following preparation details
+record historical behavior and do not provide a runnable preparation path.
+Omitted-input generated home provisioning also refuses. Explicit non-home
+provisioning still requires all three configuration inputs; non-home policy
+renewal and its existing serialization remain available. Uncalled ReplaceFailed
+forward preparation/replacement writers are removed.
+The old Headscale `wait-ready` startup helper also refuses without network
+probes. Exact historical policy/config/unit bytes remain readable for selective
+cleanup; they do not provide a server preparation or readiness path.
+Legacy uninstall's underlying cleanup removes the proven inert Headscale unit/policy/custody and
 config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
 root-only publication receipt,
 keeping package payload/notices. The staged-profile uninstall refusal remains;

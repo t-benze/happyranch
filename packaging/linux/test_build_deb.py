@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import gzip
 import hashlib
 import io
@@ -14,16 +15,200 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 import runpy
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 BUILDER = Path(__file__).with_name('build-deb.sh')
 UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
+
+
+class RetirementPreinstTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='retirement-preinst-')
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
+        self.generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+        self.script = self.work / 'preinst'
+        self.script.write_text(self.generator['render_preinst'](BUILDER.parents[2]))
+        self.entry = runpy.run_path(str(self.script))
+
+    def test_inline_bundle_parity_and_closed_imports(self) -> None:
+        sources = json.loads(zlib.decompress(base64.b64decode(self.entry['SOURCES'])))
+        self.assertEqual(set(sources), {'runtime.remote_access.' + name for name in self.generator['MODULES']})
+        for name, data in sources.items():
+            self.assertEqual(data.encode(), (BUILDER.parents[2] / (name.replace('.', '/') + '.py')).read_bytes())
+        for name in ('installer', 'home_activation', 'home_admission', 'home_admin', 'home_minter', 'home_headscale'):
+            with self.subTest(owner=name), self.assertRaises(ModuleNotFoundError):
+                self.entry['InlineSources']().find_spec('runtime.remote_access.' + name)
+        # Execute actual incoming module bytes under isolated system Python.
+        # This fresh read-only closure must not need Pydantic or old runtime.
+        program = '''import runpy, sys
+entry = runpy.run_path(sys.argv[1])
+sys.meta_path.insert(0, entry['InlineSources']())
+from runtime.remote_access.home_retirement import HomeRetirement
+from runtime.remote_access.retirement_io import RetirementIO
+assert HomeRetirement.__module__ == 'runtime.remote_access.home_retirement'
+assert sys.modules[HomeRetirement.__module__].__file__.startswith('<incoming-preinst:')
+assert not any(name in sys.modules for name in ('pydantic', 'runtime.remote_access.installer'))
+'''
+        result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script)], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fresh_install_uses_canonical_detector_without_old_interpreter(self) -> None:
+        for case in ('fresh', 'legacy', 'malformed', 'retired', 'drift', 'retired-sync-failure'):
+            with self.subTest(case=case):
+                root = self.work / case
+                root.mkdir(mode=0o755)
+                if case in ('legacy', 'malformed'):
+                    target = root / ('etc/happyranch/invite-issuer.json' if case == 'legacy' else
+                                     'var/lib/happyranch-remote-access/home-retirement.json')
+                    target.parent.mkdir(parents=True)
+                    for directory in root.rglob('*'):
+                        if directory.is_dir():
+                            directory.chmod(0o755)
+                    target.write_text('synthetic-private-evidence')
+                    target.chmod(0o600)
+                    if case == 'malformed':
+                        target.parent.chmod(0o700)
+                program = '''import os, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+entry = runpy.run_path(sys.argv[1])
+sys.meta_path.insert(0, entry['InlineSources']())
+from runtime.remote_access import retirement_io
+from runtime.remote_access.home_retirement import _ABSENT_UNIT, HomeRetirement, STATE_DIRECTORY
+from runtime.remote_access.home_retirement_fence import retirement_fence
+from runtime.remote_access.home_retirement_publication import publish_final
+root = Path(sys.argv[2])
+def absent(name):
+    raise KeyError(name)
+calls = []
+def native(command, **kwargs):
+    calls.append(command)
+    assert command[:3] == ['systemctl', 'show', 'happyranch-headscale.service']
+    return 0, '\\n'.join(key + '=' + value for key, value in _ABSENT_UNIT.items())
+io = retirement_io.RetirementIO(root=root, root_owner=(os.getuid(), os.getgid()),
+    run=native, lookup_user=absent, lookup_group=absent)
+if sys.argv[3] in ('retired', 'drift', 'retired-sync-failure'):
+    state = root / STATE_DIRECTORY
+    state.mkdir(parents=True)
+    for directory in root.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o700 if directory == state else 0o755)
+    with retirement_fence(io) as fence:
+        publish_final(io, fence, require=lambda: 'absent')
+    assert HomeRetirement(io).detect().state == 'retired'
+    if sys.argv[3] == 'drift':
+        target = root / 'etc/happyranch/invite-issuer.json'
+        target.parent.mkdir(parents=True)
+        for directory in (target.parent, target.parent.parent):
+            directory.chmod(0o755)
+        target.write_text('synthetic-private-evidence')
+        target.chmod(0o600)
+def snapshot() -> dict[str, tuple]:
+    result = {}
+    for path in root.rglob('*'):
+        info = path.lstat()
+        result[str(path.relative_to(root))] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns, path.read_bytes() if path.is_file() else None)
+    return result
+before = snapshot()
+def no_old_python():
+    raise AssertionError('fresh detection must not require old capability')
+entry['main'].__globals__['trusted_python'] = no_old_python
+case = sys.argv[3]
+def sync_failure(fd: int) -> None:
+    raise OSError('synthetic final confirmation failure')
+for arguments in (['preinst', 'install'], ['preinst', 'install', 'old-version', 'new-version']):
+    with patch.object(retirement_io, 'RetirementIO', return_value=io), patch('os.geteuid', return_value=0), patch.object(sys, 'argv', arguments):
+        if case == 'retired-sync-failure':
+            with patch('os.fsync', sync_failure):
+                result = entry['main']()
+        else:
+            result = entry['main']()
+    assert result == (0 if case in ('fresh', 'retired') else 1), (case, arguments, result)
+    assert snapshot() == before
+assert all(command[:3] == ['systemctl', 'show', 'happyranch-headscale.service'] for command in calls)
+'''
+                result = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.script), str(root), case],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                states = [json.loads(line)['state'] for line in result.stdout.splitlines() if line.startswith('{')]
+                self.assertEqual(states, [case if case in ('fresh', 'retired') else 'migration pending'] * 2)
+                self.assertNotIn('synthetic-private', result.stdout + result.stderr)
+
+    def test_installed_python_custody_refusals(self) -> None:
+        tree = self.work / 'python'
+        (tree / 'bin').mkdir(parents=True)
+        tree.chmod(0o755)
+        (tree / 'bin').chmod(0o755)
+        executable = tree / 'bin/python3.12'
+        executable.write_text('synthetic interpreter; never executed')
+        executable.chmod(0o755)
+        python = tree / 'bin/python3'
+        python.symlink_to('python3.12')
+        self.entry['trusted_python'].__globals__['PYTHON'] = python
+        actual_lstat = Path.lstat
+        foreign = set()
+        def owned(path: Path, *args: Any, **kwargs: Any) -> SimpleNamespace:
+            info = actual_lstat(path, *args, **kwargs)
+            return SimpleNamespace(st_uid=1000 if path in foreign else 0, st_gid=0, st_nlink=info.st_nlink,
+                st_mode=info.st_mode if path.is_relative_to(tree) else stat.S_IFDIR | 0o755)
+        with patch.object(Path, 'lstat', owned):
+            self.entry['trusted_python']()
+            for path in (tree.parent, executable):
+                foreign.add(path)
+                with self.subTest(foreign=path.name), self.assertRaises(ValueError):
+                    self.entry['trusted_python']()
+                foreign.clear()
+            executable.chmod(0o777)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            executable.chmod(0o755)
+            extra = tree / 'extra'
+            os.link(executable, extra)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            extra.unlink()
+            extra.symlink_to(self.script)
+            with self.assertRaises(ValueError):
+                self.entry['trusted_python']()
+            extra.unlink()
+            python.unlink()
+            python.symlink_to('missing')
+            with self.assertRaises((ValueError, OSError)):
+                self.entry['trusted_python']()
+
+    def test_upgrade_gate_propagates_child_failure_and_pins_capability(self) -> None:
+        main = self.entry['main']
+        seen = []
+        def child(command: list[str], **kwargs: Any) -> SimpleNamespace:
+            seen.append((command, kwargs))
+            return SimpleNamespace(returncode=37)
+        with patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'upgrade', 'old']), \
+                patch.dict(main.__globals__, trusted_python=lambda: None), patch('subprocess.run', side_effect=child):
+            self.assertEqual(main(), 37)
+        self.assertEqual(len(seen), 1)
+        command, options = seen[0]
+        self.assertEqual(command, ['/opt/happyranch-desktop/python/bin/python3', '-I', '-'])
+        self.assertEqual(options['env'], {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'})
+        # The real capability program must refuse the system interpreter (not
+        # bundled CPython 3.12); no canonical destructive owner is reached.
+        failed = subprocess.run(['/usr/bin/python3', '-I', '-'], input=options['input'], text=True, capture_output=True)
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertIn('migration pending', failed.stdout)
+        with patch('os.geteuid', return_value=0), patch.object(sys, 'argv', ['preinst', 'upgrade']), \
+                patch.dict(main.__globals__, trusted_python=lambda: (_ for _ in ()).throw(ValueError())), \
+                patch('subprocess.run') as execute:
+            self.assertEqual(main(), 1)
+            execute.assert_not_called()
 
 
 class OwnerBootstrapTests(unittest.TestCase):
@@ -160,141 +345,6 @@ class OwnerBootstrapTests(unittest.TestCase):
                 self.refused(fixture, 'release_home_invalid')
 
 
-class HeadscalePayloadTests(unittest.TestCase):
-    def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory(prefix='headscale-payload-test-', dir='/tmp')
-        self.addCleanup(temporary.cleanup)
-        self.work = Path(temporary.name)
-        self.payload = self.work / 'payload'
-        self.payload.mkdir()
-        self.collector = runpy.run_path(str(BUILDER.with_name('collect-notices.py')))
-        self.globals = self.collector['install_headscale'].__globals__
-        self.data = b'synthetic inert Headscale binary; never execute\n'
-        self.pin = json.loads(BUILDER.with_name('headscale-pin.json').read_text())
-        self.pin['assets']['amd64']['sha256'] = hashlib.sha256(self.data).hexdigest()
-        self.addCleanup(patch.stopall)
-        patch.dict(os.environ, GOMODCACHE=str(self.work / 'go-modules')).start()
-        patch.dict(self.globals, headscale_pin=lambda: self.pin).start()
-        self.opener = patch('urllib.request.build_opener').start().return_value
-
-    def install(self, data: bytes) -> None:
-        self.opener.open.return_value = io.BytesIO(data)
-        self.collector['install_headscale']('amd64', self.work, self.payload)
-
-    def notice_fixture(self, *, licensed: bool = True) -> list[str]:
-        binary = self.payload / 'libexec/headscale/headscale'
-        binary.parent.mkdir(parents=True)
-        binary.write_bytes(self.data)
-        (self.payload / 'licenses').mkdir()
-        module = self.work / 'module'
-        module.mkdir()
-        if licensed:
-            (module / 'LICENSE').write_bytes(b'original dependency notice\n')
-        goroot = self.work / 'goroot'
-        goroot.mkdir()
-        (goroot / 'LICENSE').write_bytes(b'original Go 1.23.4 notice\n')
-        vendor = goroot / 'src/vendor/example'
-        vendor.mkdir(parents=True)
-        (vendor / 'NOTICE').write_bytes(b'original Go vendor notice\n')
-        raw = (f'{binary}: go1.23.4\n\tmod\tgithub.com/juanfont/headscale\t(devel)\n'
-               '\tdep\texample.com/linked\tv1.2.3\th1:synthetic\n')
-        return [raw, json.dumps(dict(Path='example.com/linked', Version='v1.2.3',
-                                    Sum='h1:synthetic', Dir=str(module))),
-                json.dumps(dict(Path='golang.org/toolchain',
-                                Version='v0.0.1-go1.23.4.linux-amd64',
-                                Sum='h1:toolchain', Dir=str(goroot)))]
-
-    def test_headscale_pin_mismatch_and_download_failure_leave_no_install(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_SHA256_MISMATCH$'):
-            self.install(b'tampered binary')
-        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
-        self.opener.open.side_effect = OSError('synthetic transport failure')
-        with self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
-            self.install(self.data)
-        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
-
-    def test_headscale_verified_install_is_inert_and_executable(self) -> None:
-        for arch in ('amd64', 'arm64'):
-            with self.subTest(arch=arch):
-                data = self.data + arch.encode()
-                self.pin['assets'][arch]['sha256'] = hashlib.sha256(data).hexdigest()
-                self.opener.open.return_value = io.BytesIO(data)
-                self.collector['install_headscale'](arch, self.work, self.payload)
-                binary = self.payload / 'libexec/headscale/headscale'
-                self.assertTrue(binary.is_file())
-                self.assertFalse(binary.is_symlink())
-                self.assertEqual(binary.read_bytes(), data)
-                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
-                self.assertFalse((self.payload / 'bin').exists())
-                self.assertEqual(self.opener.open.call_args.args,
-                                 ('https://github.com/juanfont/headscale/releases/download/v0.25.1/'
-                                  'headscale_0.25.1_linux_' + arch,))
-                self.assertEqual(self.opener.open.call_args.kwargs, {'timeout': 20})
-
-    def test_headscale_redirect_hosts_and_stream_deadline(self) -> None:
-        redirect = self.collector['HeadscaleRedirect']()
-        with patch('urllib.request.HTTPRedirectHandler.redirect_request', return_value='accepted') as base:
-            for url in ('http://github.com/asset', 'https://untrusted.example/asset',
-                        'https://github.com@untrusted.example/asset',
-                        'https://release-assets.githubusercontent.com:444/asset'):
-                with self.subTest(url=url), self.assertRaisesRegex(RuntimeError, 'redirect refused'):
-                    redirect.redirect_request(None, None, 302, '', {}, url)
-            base.assert_not_called()
-            for host in ('github.com', 'release-assets.githubusercontent.com'):
-                self.assertEqual(redirect.redirect_request(None, None, 302, '', {},
-                                                          f'https://{host}/asset'), 'accepted')
-        for case, clock in (('nonempty_after_deadline', [0, 181]),
-                            ('terminal_eof_after_deadline', [0, 179, 181])):
-            with self.subTest(case=case):
-                work = self.work / case
-                work.mkdir()
-                self.opener.open.return_value = io.BytesIO(self.data)
-                # BytesIO returns the complete data, then EOF. The second case
-                # expires only after that terminal read, with a valid checksum.
-                with patch('time.monotonic', side_effect=clock), self.assertRaisesRegex(
-                        RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
-                    self.collector['install_headscale']('amd64', work, self.payload)
-                self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
-
-    def test_headscale_linked_notices_and_exact_toolchain(self) -> None:
-        with patch('subprocess.check_output', side_effect=self.notice_fixture()) as go:
-            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
-        licenses = self.payload / 'licenses'
-        for name in ('headscale-LICENSE', 'headscale-modules.json', 'headscale-build-info.json',
-                     'headscale/modules/example.com/linked@v1.2.3/LICENSE', 'headscale/go-runtime/LICENSE'):
-            self.assertTrue((licenses / name).is_file(), name)
-        self.assertEqual((licenses / 'headscale-LICENSE').read_bytes(),
-                         BUILDER.with_name('headscale-LICENSE').read_bytes())
-        self.assertEqual(json.loads((licenses / 'headscale-modules.json').read_text()),
-                         [dict(Path='example.com/linked', Version='v1.2.3', Sum='h1:synthetic')])
-        self.assertEqual((licenses / 'headscale/modules/example.com/linked@v1.2.3/LICENSE').read_bytes(),
-                         b'original dependency notice\n')
-        self.assertEqual((licenses / 'headscale/go-runtime/LICENSE').read_bytes(),
-                         b'original Go 1.23.4 notice\n')
-        self.assertEqual((licenses / 'headscale/go-runtime/src/vendor/example/NOTICE').read_bytes(),
-                         b'original Go vendor notice\n')
-        info = json.loads((licenses / 'headscale-build-info.json').read_text())
-        self.assertEqual(info['GoVersion'], 'go1.23.4')
-        self.assertEqual(info['Tag'], 'v0.25.1')
-        for call in go.call_args_list[1:]:
-            self.assertEqual(call.args[0][:4], ['go', 'mod', 'download', '-json'])
-            self.assertEqual(call.kwargs['env']['GOSUMDB'], 'sum.golang.org')
-            self.assertEqual(call.kwargs['env']['GONOSUMDB'], '')
-            self.assertEqual(call.kwargs['env']['GOINSECURE'], '')
-
-    def test_headscale_missing_original_and_wrong_module_sum_refused(self) -> None:
-        results = self.notice_fixture(licensed=False)
-        with patch('subprocess.check_output', side_effect=results), self.assertRaisesRegex(
-                RuntimeError, '^LINUX_HEADSCALE_NOTICE_MISSING: example.com/linked$'):
-            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
-        changed = json.loads(results[1])
-        changed['Sum'] = 'h1:wrong'
-        with patch('subprocess.check_output', side_effect=[results[0], json.dumps(changed)]), \
-                self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_MODULE_VERIFY_FAILED: example.com/linked$'):
-            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
-        self.assertFalse((self.payload / 'licenses/headscale-modules.json').exists())
-
-
 class NoticeCollectionTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix='notice-test-', dir='/tmp')
@@ -307,7 +357,6 @@ class NoticeCollectionTests(unittest.TestCase):
         self.outside.mkdir()
         repo = BUILDER.parents[2]
         for name in ('LICENSE', 'packaging/linux/python-build-standalone-LICENSE.txt',
-                     'packaging/linux/headscale-LICENSE',
                      'packaging/linux/THIRD_PARTY_NOTICES.md', 'packaging/notice-data/radix-LICENSE'):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -340,20 +389,10 @@ class NoticeCollectionTests(unittest.TestCase):
         goroot.mkdir(exist_ok=True)
         (goroot / 'LICENSE').write_text('synthetic Go notice\n')
         raw = '\n'.join(json.dumps(dict(Module=module)) for module in modules)
-        binary = payload / 'libexec/headscale/headscale'
-        binary.parent.mkdir(parents=True)
-        binary.write_bytes(b'synthetic Headscale for complete collector')
-        pin = json.loads(BUILDER.with_name('headscale-pin.json').read_text())
-        pin['assets']['amd64']['sha256'] = hashlib.sha256(binary.read_bytes()).hexdigest()
-        headscale = (f'{binary}: go1.23.4\n\tdep\texample.com/vendor\tv1.0.0\th1:synthetic\n')
-        original = json.dumps({key: self.vendor[key] for key in ('Path', 'Version', 'Sum', 'Dir')})
-        toolchain = json.dumps(dict(Path='golang.org/toolchain', Version='v0.0.1-go1.23.4.linux-amd64',
-                                    Sum='h1:toolchain', Dir=str(goroot)))
         with patch.object(sys, 'argv', ['collect-notices.py', str(self.source), str(payload)]), \
                 patch.dict(os.environ, GOMODCACHE=str(self.work / 'go-modules')), \
                 patch('importlib.metadata.distributions', return_value=[]), \
-                patch.dict(self.collector['main'].__globals__, headscale_pin=lambda: pin), \
-                patch('subprocess.check_output', side_effect=[raw, str(goroot), headscale, original, toolchain]):
+                patch('subprocess.check_output', side_effect=[raw, str(goroot)]):
             self.collector['main']()
         return payload / 'licenses'
 
@@ -372,11 +411,9 @@ class NoticeCollectionTests(unittest.TestCase):
                 self.assertFalse((notices / 'go/happyranch').exists())
                 self.assertEqual((notices / 'HappyRanch-LICENSE').read_bytes(),
                                  (self.source / 'LICENSE').read_bytes())
-                self.assertTrue((notices / 'headscale-modules.json').is_file())
-                self.assertEqual(json.loads((notices / 'headscale-modules.json').read_text()),
-                                 [{key: self.vendor[key] for key in ('Path', 'Version', 'Sum')}])
-                self.assertEqual((notices / 'headscale/modules/example.com/vendor@v1.0.0/LICENSE').read_bytes(),
-                                 self.original)
+                for retired in ('headscale', 'headscale-LICENSE', 'headscale-modules.json',
+                                'headscale-build-info.json'):
+                    self.assertFalse((notices / retired).exists(), retired)
 
     def test_unlicensed_near_miss_replacements_still_refused(self) -> None:
         for label, change in (
@@ -443,20 +480,16 @@ class DebPackageTests(unittest.TestCase):
                     'sha256': hashlib.sha256(b'<html>fixture</html>').hexdigest()}]}),
             'licenses/HappyRanch-LICENSE': 'original license fixture',
             'licenses/nested/NOTICE': 'original dependency notice',
-            'licenses/headscale-LICENSE': BUILDER.with_name('headscale-LICENSE').read_text(),
-            'licenses/headscale-modules.json': '[{"Path":"example.com/linked","Version":"v1.2.3","Sum":"h1:synthetic"}]',
-            'licenses/headscale-build-info.json': '{"Tag":"v0.25.1","GoVersion":"go1.23.4"}',
-            'licenses/headscale/modules/example.com/linked@v1.2.3/LICENSE': 'original Headscale dependency notice',
-            'licenses/headscale/go-runtime/LICENSE': 'original Go 1.23.4 notice',
-            'libexec/headscale/headscale': 'fixture Headscale',
-            'libexec/remote-access/happyranch-home-ca': 'fixture home CA materializer',
-            'libexec/remote-access/happyranch-home-admin': 'fixture home admin runner',
             'bin/happyranch-remote-access-helper': (BUILDER.parent / 'bin/happyranch-remote-access-helper').read_text(),
             'bin/happyranch-remote-access-policy-renew': (BUILDER.parent / 'bin/happyranch-remote-access-policy-renew').read_text(),
         }
         for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
                      'status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle', 'helper_invite'):
             files['libexec/remote-access/' + name + '.py'] = (
+                BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
+        generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+        for name in generator['MODULES']:
+            files['python/lib/python3.12/site-packages/runtime/remote_access/' + name + '.py'] = (
                 BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
             files['bin/' + launcher] = '#!/bin/sh\nexit 0\n'
@@ -473,11 +506,12 @@ class DebPackageTests(unittest.TestCase):
                 'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
         for name in ('python/bin/python3.12', 'python/lib/libpython3.12.so.1.0'):
             (payload / name).write_bytes(self.elf(arch))
-        # Static Go binary has no GNU_STACK: Python-only ELF checks must leave
-        # its verified upstream bytes unchanged, on both architectures.
-        (payload / 'libexec/headscale/headscale').write_bytes(self.elf(arch, 'missing'))
-        for name in ('happyranch-home-ca', 'happyranch-home-admin'):
-            (payload / 'libexec/remote-access' / name).write_bytes(self.elf(arch, 'missing'))
+        # Retained Go executables have no GNU_STACK; Python-only checking must
+        # preserve their bytes on both payload architectures.
+        for name in ('happyranch-tsnet-sidecar', 'happyranch-home-bridge'):
+            binary = payload / 'bin' / name
+            binary.write_bytes(self.elf(arch, 'missing'))
+            binary.chmod(0o755)
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -514,7 +548,7 @@ class DebPackageTests(unittest.TestCase):
     def helper_unit_reference() -> bytes:
         # Packaging's stdlib-only venue reads the trusted source literal without
         # importing application dependencies or any scanned filesystem value.
-        source = BUILDER.parents[2] / 'runtime/remote_access/installer.py'
+        source = BUILDER.parents[2] / 'runtime/remote_access/helper_unit.py'
         assignment, = (node for node in ast.parse(source.read_bytes()).body
                        if isinstance(node, ast.Assign) and any(
                            isinstance(target, ast.Name) and target.id == 'PACKAGED_HELPER_UNIT_BYTES'
@@ -752,7 +786,10 @@ class DebPackageTests(unittest.TestCase):
                 subprocess.run(['dpkg-deb', '-x', deb, installed], check=True)
                 control = self.work / ('control-' + debarch)
                 subprocess.run(['dpkg-deb', '-e', deb, control], check=True)
-                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums'})
+                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums', 'preinst'})
+                generator = runpy.run_path(str(BUILDER.with_name('retirement-preinst.py')))
+                self.assertEqual((control / 'preinst').read_text(), generator['render_preinst'](BUILDER.parents[2]))
+                self.assertEqual((control / 'preinst').stat().st_mode & 0o777, 0o755)
                 subprocess.run(['md5sum', '--quiet', '-c', control / 'md5sums'], cwd=installed, check=True)
                 self.assertFalse((installed / 'opt/happyranch').exists())
                 self.assertFalse((installed / 'etc').exists())
@@ -796,13 +833,6 @@ class DebPackageTests(unittest.TestCase):
                         shipped = installed / 'opt/happyranch-desktop/libexec/remote-access' / (name + '.py')
                         self.assertEqual(shipped.read_bytes(), source.read_bytes())
                         self.assertEqual(shipped.stat().st_mode & 0o777, 0o644)
-                    materializers = [m for m in archive.getmembers() if m.name.removeprefix('./') ==
-                                     'opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca']
-                    self.assertEqual(len(materializers), 1)
-                    materializer = materializers[0]
-                    self.assertTrue(materializer.isfile())
-                    self.assertEqual((materializer.uid, materializer.gid, materializer.mode), (0, 0, 0o755))
-                    self.assertEqual(archive.extractfile(materializer).read(), self.elf(payload_arch, 'missing'))
                 self.assertEqual({p.name for p in (installed / 'opt').iterdir()}, {'happyranch-desktop'})
                 for launcher in ('happyranch', 'happyranch-app'):
                     wrapper = installed / 'usr/bin' / launcher
@@ -824,31 +854,15 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('happyranch (0.1.0-1)', gzip.decompress((doc / 'changelog.Debian.gz').read_bytes()).decode())
                 self.assertEqual(len(list((installed / 'usr/share/icons/hicolor').rglob('happyranch.*'))), 8)
                 prefix = installed / 'opt/happyranch-desktop'
-                binary = prefix / 'libexec/headscale/headscale'
-                self.assertEqual(binary.read_bytes(), self.elf(payload_arch, 'missing'))
-                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
-                self.assertFalse(binary.is_symlink())
-                self.assertFalse((prefix / 'bin/headscale').exists())
-                self.assertFalse((installed / 'usr/bin/headscale').exists())
-                self.assertFalse((prefix / 'bin/happyranch-home-ca').exists())
-                self.assertFalse((installed / 'usr/bin/happyranch-home-ca').exists())
-                admin = prefix / 'libexec/remote-access/happyranch-home-admin'
-                self.assertEqual(admin.read_bytes(), self.elf(payload_arch, 'missing'))
-                self.assertEqual(admin.stat().st_mode & 0o777, 0o755)
-                self.assertFalse(admin.is_symlink())
-                self.assertFalse((prefix / 'bin/happyranch-home-admin').exists())
-                self.assertFalse((installed / 'usr/bin/happyranch-home-admin').exists())
-                materializer = prefix / 'libexec/remote-access/happyranch-home-ca'
-                self.assertEqual(materializer.stat().st_mode & 0o777, 0o755)
-                self.assertFalse(materializer.is_symlink())
-                # No aliases anywhere on either shipped PATH surface.
-                for directory in (prefix / 'bin', installed / 'usr/bin'):
-                    self.assertTrue(all('happyranch-home-ca' not in p.read_text() for p in directory.iterdir()))
-                for name in ('headscale-LICENSE', 'headscale-modules.json', 'headscale-build-info.json',
-                             'headscale/modules/example.com/linked@v1.2.3/LICENSE', 'headscale/go-runtime/LICENSE'):
-                    expected = self.work / f'happyranch-0.1.0-linux-{payload_arch}/licenses' / name
-                    self.assertEqual((prefix / 'licenses' / name).read_bytes(), expected.read_bytes())
-                    self.assertEqual((doc / 'licenses' / name).read_bytes(), expected.read_bytes())
+                for retired in ('headscale', 'happyranch-home-ca', 'happyranch-home-admin'):
+                    self.assertFalse(list(prefix.rglob(retired)), retired)
+                    self.assertFalse((installed / 'usr/bin' / retired).exists())
+                for name in ('happyranch-tsnet-sidecar', 'happyranch-home-bridge'):
+                    binary = prefix / 'bin' / name
+                    self.assertEqual(binary.read_bytes(), self.elf(payload_arch, 'missing'))
+                    self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                    self.assertFalse(binary.is_symlink())
+                self.assertTrue((prefix / 'bin/happyranch-remote-access-policy-renew').is_file())
                 self.assertFalse(list(prefix.rglob('__pycache__')))
                 self.assertTrue((prefix / 'python/lib/module.py').is_file())
                 self.assertEqual((prefix / 'python/lib/libpython3.12.so.1.0').stat().st_mode & 0o777, 0o644)
@@ -866,13 +880,8 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('output already exists', repeated.stderr)
                 self.assertEqual(deb.read_bytes(), before)
 
-    def test_incomplete_headscale_payload_is_refused(self) -> None:
-        for index, missing in enumerate(('libexec/headscale/headscale', 'licenses/headscale-LICENSE',
-                                         'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
-                                         'licenses/headscale/go-runtime/LICENSE',
-                                         'libexec/remote-access/happyranch-home-ca',
-                                         'libexec/remote-access/happyranch-home-admin',
-                                         'libexec/remote-access/status_v2.py',
+    def test_incomplete_retained_payload_is_refused(self) -> None:
+        for index, missing in enumerate(('libexec/remote-access/status_v2.py',
                                          'libexec/remote-access/home_audit.py',
                                          'libexec/remote-access/helper_generation.py',
                                          'libexec/remote-access/helper_lifecycle.py',
@@ -888,6 +897,41 @@ class DebPackageTests(unittest.TestCase):
                 result = self.build(archive)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('incomplete desktop payload: ' + missing, result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
+    def test_retired_controller_payload_is_refused(self) -> None:
+        for index, retired in enumerate(('libexec/headscale/headscale',
+                                        'libexec/remote-access/happyranch-home-ca',
+                                        'libexec/remote-access/happyranch-home-admin')):
+            with self.subTest(retired=retired):
+                archive = self.payload(version=f'0.7.{index}')
+                root = self.work / f'happyranch-0.7.{index}-linux-x86_64'
+                binary = root / retired
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_bytes(self.elf('x86_64', 'missing'))
+                binary.chmod(0o755)
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('retired local controller payload: ' + retired, result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
+    def test_retirement_payload_source_drift_is_refused(self) -> None:
+        for index, case in enumerate(('missing', 'changed')):
+            with self.subTest(case=case):
+                archive = self.payload(version=f'0.6.{index}')
+                root = self.work / f'happyranch-0.6.{index}-linux-x86_64'
+                source = root / 'python/lib/python3.12/site-packages/runtime/remote_access/home_retirement.py'
+                if case == 'missing':
+                    source.unlink()
+                else:
+                    source.write_text('# synthetic mismatched installed recovery entry')
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('retirement source differs from incoming control bundle', result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
     def test_tampered_main_manifest_is_refused(self) -> None:

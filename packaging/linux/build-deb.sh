@@ -120,11 +120,6 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
                      'libexec/remote-access/helper_generation.py',
                      'libexec/remote-access/helper_lifecycle.py',
                      'libexec/remote-access/helper_invite.py',
-                     'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
-                     'libexec/remote-access/happyranch-home-admin',
-                     'licenses/headscale-LICENSE',
-                     'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
-                     'licenses/headscale/go-runtime/LICENSE',
                      'python/bin/python3', 'web/dist/index.html',
                      'share/happyranch/desktop/happyranch_window.py',
                      'share/happyranch/desktop/host_bridge.py',
@@ -141,10 +136,12 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
     except (OSError, ValueError, UnicodeError):
         parser.error('invalid main resource manifest or assets')
 
-    for name in ('happyranch-home-ca', 'happyranch-home-admin'):
-        materializer = payload / 'libexec/remote-access' / name
-        if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
-            parser.error('unsafe home runner payload')
+    # Do not reintroduce local control or issuance through a stale payload.
+    for retired in ('libexec/headscale/headscale',
+                    'libexec/remote-access/happyranch-home-ca',
+                    'libexec/remote-access/happyranch-home-admin'):
+        if os.path.lexists(payload / retired):
+            parser.error('retired local controller payload: ' + retired)
 
     # Inspect foreign-architecture payloads without executing them. Reject old
     # unsafe tarballs; build-payload repairs and tests the native interpreter.
@@ -256,7 +253,17 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
         hashlib.md5(path.read_bytes()).hexdigest() + '  ' + str(path.relative_to(stage)) + '\n'
         for path in files))
     (control / 'md5sums').chmod(0o644)
-    # No maintainer scripts: desktop-file-utils/hicolor-icon-theme own triggers.
+    # Incoming retirement runs before dpkg replaces the installed old tools.
+    # Generate only from trusted repository sources, never supplied payload code.
+    generator = runpy.run_path(str(packaging / 'retirement-preinst.py'))
+    for name in generator['MODULES']:
+        shipped = prefix / 'python/lib/python3.12/site-packages/runtime/remote_access' / (name + '.py')
+        source = packaging.parents[1] / 'runtime/remote_access' / (name + '.py')
+        if not shipped.is_file() or shipped.is_symlink() or shipped.read_bytes() != source.read_bytes():
+            parser.error('retirement source differs from incoming control bundle: ' + name)
+    (control / 'preinst').write_text(generator['render_preinst'](packaging.parents[1]))
+    (control / 'preinst').chmod(0o755)
+    # Desktop-file-utils/hicolor-icon-theme still own desktop triggers.
     built = work / filename
     subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(stage), str(built)], check=True)
     with built.open('rb') as source, (dist / filename).open('xb') as target:

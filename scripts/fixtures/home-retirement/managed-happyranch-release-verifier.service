@@ -1,0 +1,35 @@
+[Unit]
+Description=HappyRanch release socket ownership verifier
+PartOf=happyranch-managed.target
+Requires=happyranch-release-verifier.socket
+After=happyranch-release-verifier.socket
+
+[Service]
+Type=simple
+User=root
+Group=happyranch
+ExecStart=/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.release_verifier
+Restart=on-failure
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+TasksMax=16
+MemoryMax=96M
+LimitNOFILE=128
+TimeoutStopSec=5

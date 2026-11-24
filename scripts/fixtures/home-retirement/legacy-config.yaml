@@ -1,0 +1,78 @@
+acme_email: ''
+acme_url: ''
+cli:
+  address: ''
+  api_key: ''
+  insecure: false
+  timeout: 5s
+database:
+  debug: false
+  gorm:
+    parameterized_queries: true
+    prepare_stmt: false
+    skip_err_record_not_found: true
+    slow_threshold: 0
+  sqlite:
+    path: /var/lib/happyranch-headscale/db.sqlite
+    wal_autocheckpoint: 1
+    write_ahead_log: false
+  type: sqlite
+derp:
+  auto_update_enabled: false
+  paths:
+  - /etc/happyranch/headscale/derp.yaml
+  server:
+    automatically_add_embedded_derp_region: false
+    enabled: true
+    ipv4: 192.168.1.40
+    ipv6: none
+    private_key_path: /var/lib/happyranch-headscale/derp.key
+    region_code: happyranch-home
+    region_id: 999
+    region_name: HappyRanch Home
+    stun_listen_addr: 192.168.1.40:3478
+  update_frequency: 0s
+  urls: []
+disable_check_updates: true
+dns:
+  base_domain: ''
+  extra_records: []
+  magic_dns: false
+  nameservers:
+    global: []
+    split: {}
+  search_domains: []
+ephemeral_node_inactivity_timeout: 120s
+grpc_allow_insecure: false
+grpc_listen_addr: 127.0.0.1:50443
+listen_addr: 192.168.1.40:8443
+log:
+  format: json
+  level: disabled
+logtail:
+  enabled: false
+metrics_listen_addr: 127.0.0.1:19090
+noise:
+  private_key_path: /var/lib/happyranch-headscale/noise.key
+oidc:
+  client_id: ''
+  client_secret: ''
+  client_secret_path: ''
+  issuer: ''
+policy:
+  mode: file
+  path: /etc/happyranch/headscale/policy.hujson
+prefixes:
+  allocation: random
+  v4: 100.64.0.0/10
+  v6: ''
+randomize_client_port: false
+server_url: https://control.happyranch.invalid:8443
+tls_cert_path: /etc/happyranch/headscale/server.crt
+tls_key_path: /etc/happyranch/headscale/server.key
+tls_letsencrypt_cache_dir: /var/lib/happyranch-headscale/acme-unused
+tls_letsencrypt_challenge_type: TLS-ALPN-01
+tls_letsencrypt_hostname: ''
+tls_letsencrypt_listen: ''
+unix_socket: /run/happyranch-headscale/headscale.sock
+unix_socket_permission: '0600'

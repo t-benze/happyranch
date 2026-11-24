@@ -1,6 +1,7 @@
 """E2a composed admission in the existing E1b temp-root/fake-systemd venue."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -9,37 +10,25 @@ from pathlib import Path
 import pytest
 
 from runtime.remote_access import home_admission as h, installer, supervisor
-from runtime.remote_access.home_activation import ACTIVATION_PATH, OWNED_LINK, OWNED_LINK_TARGET
-from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, EFFECTS, TRANSACTION_PATH, Effect
+from runtime.remote_access.legacy_home_receipt import ACTIVATION_PATH, OWNED_LINK, OWNED_LINK_TARGET, CONFIG_MEMBERS, EFFECTS, Effect
+from runtime.remote_access.legacy_home_readback import TRANSACTION_PATH
 from runtime.remote_access.installer import InstallerError, UNITS
-from scripts.test_home_activation_owner import venue as owner_venue
-from scripts.test_home_live_config import finish_config, venue as live_venue
-from scripts.test_home_activation_txn import put
+from runtime.remote_access.home_retirement import MESSAGE
+from scripts.home_legacy_fixture import legacy_admission_fixture, put_legacy as put
 
 
 @pytest.fixture
-def venue(live_venue, monkeypatch):
-    v = live_venue
+def live_venue(tmp_path, monkeypatch):
+    value = legacy_admission_fixture(tmp_path, monkeypatch, ready=False)
     monkeypatch.setattr(h.os, "geteuid", lambda: 0)
-    receipt = finish_config(v)
-    txn = v.transactions.read_optional()
-    done = next(e for e in txn.effects if e.name == "home_config")
-    v.txn = replace(txn, phase="joined", effects=tuple(done if name == "home_config" else
-        Effect(name, "done", {}) for name in EFFECTS))
-    v.ready = replace(receipt, phase="ready", local_node_stable_id="stable-node", home_endpoint="100.64.0.10:443")
-    put(v.path(ACTIVATION_PATH), v.ready.to_bytes())
-    put(v.path(TRANSACTION_PATH), v.txn.to_bytes())
-    link = v.path(OWNED_LINK)
-    link.parent.mkdir(mode=0o755, exist_ok=True)
-    link.symlink_to(OWNED_LINK_TARGET)
-    # Existing E1a fixture models certificate/account readers; fill their fixed
-    # directory inventory here, without any host account or service operation.
-    put(v.path("/etc/happyranch/headscale/server.crt"), b"synthetic public certificate")
-    put(v.path("/etc/happyranch/headscale/server.key"), b"synthetic private fixture")
-    v.path("/etc/happyranch/headscale").chmod(0o700)
-    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
-    v.native.calls.clear()
-    return v
+    return value
+
+
+@pytest.fixture
+def venue(tmp_path, monkeypatch):
+    value = legacy_admission_fixture(tmp_path, monkeypatch, ready=True)
+    monkeypatch.setattr(h.os, "geteuid", lambda: 0)
+    return value
 
 
 def mutating(v):
@@ -52,23 +41,27 @@ def config(v):
     return supervisor.ConnectorConfig(**raw, managed=supervisor.ManagedProviderConfig(**managed))
 
 
-def test_ready_composed_admission_and_keyless_restart(venue):
+def test_ready_home_admission_and_restart_are_retired(venue):
     v, io = venue, venue.receipts._io
     records = v.records()
     before = {p: v.path(p).read_bytes() for p in CONFIG_MEMBERS}
-    assert h.HomeProfileAdmission(io).require().receipt == v.ready
-    io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
-                          for name in ("connector.json", "sidecar.json", "policy.json")})
+    with pytest.raises(InstallerError, match=MESSAGE.replace(".", r"\.")):
+        h.HomeProfileAdmission(io).require()
+    with pytest.raises(InstallerError):
+        io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
+                              for name in ("connector.json", "sidecar.json", "policy.json")})
     assert io.inventory().state == "owned-activated"
     assert io.inventory().detail == "ready"
-    assert set(io.install()) == set(UNITS)
-    assert mutating(v) == [["enable", UNITS[3]], ["enable", UNITS[2]], ["start", UNITS[2]]]
+    with pytest.raises(InstallerError) as refused:
+        io.install()
+    assert str(refused.value) == MESSAGE
+    assert mutating(v) == []
     assert v.records() == records and {p: v.path(p).read_bytes() for p in CONFIG_MEMBERS} == before
     assert not v.path("/etc/happyranch/enrollment.key").exists()
     assert not v.mints
     with pytest.raises(InstallerError): io.uninstall(purge=True)
     with pytest.raises(InstallerError): io._write_units()
-    assert mutating(v) == [["enable", UNITS[3]], ["enable", UNITS[2]], ["start", UNITS[2]]]
+    assert mutating(v) == []
 
 
 @pytest.mark.parametrize("case", ["unprovisioned", "partial", "forged", "stale", "pending-receipt",
@@ -108,8 +101,7 @@ def test_ordinary_refusals_have_no_effect(venue, monkeypatch, case):
         raw["digests"]["sidecar.json"] = "a" * 64; path.write_bytes(json.dumps(raw).encode())
     if case == "render-bytes":
         path = v.path(CONFIG_MEMBERS[1]); path.write_bytes(path.read_bytes() + b" ")
-        from scripts.test_home_live_config import digest
-        effects = tuple(Effect("home_config", "done", {p: digest(v.path(p).read_bytes()) for p in CONFIG_MEMBERS})
+        effects = tuple(Effect("home_config", "done", {p: hashlib.sha256(v.path(p).read_bytes()).hexdigest() for p in CONFIG_MEMBERS})
                         if e.name == "home_config" else e for e in v.txn.effects)
         put(v.path(TRANSACTION_PATH), replace(v.txn, effects=effects).to_bytes())
     if case == "link-absent": v.path(OWNED_LINK).unlink()
@@ -141,7 +133,6 @@ def test_nonready_inventory_is_owned_and_never_adoptable(venue, phase, legacy_si
     put(v.path(TRANSACTION_PATH), txn.to_bytes())
     result = io.inventory()
     assert (result.state, result.detail) == ("owned", phase)
-    assert io.replacement_inventory().installation.state == "owned"
     with pytest.raises(InstallerError): io.install()
     assert not mutating(v)
 
@@ -164,7 +155,6 @@ def test_prepared_inventory_and_unreceipted_crash(live_venue, monkeypatch):
     v, io = live_venue, live_venue.receipts._io
     monkeypatch.setattr(h.os, "geteuid", lambda: 0)
     v.path("/etc/happyranch/headscale").chmod(0o700)
-    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
     assert (io.inventory().state, io.inventory().detail) == ("owned", "prepared")
     v.path(ACTIVATION_PATH).unlink()
     assert io.inventory().state == "manual-install-conflict"
@@ -186,11 +176,13 @@ def test_supervisor_root_lifecycle_is_bound(venue, monkeypatch, method):
     v, io = venue, venue.receipts._io
     monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
     svc = supervisor.ConnectorSupervisor(config=config(v), config_path=Path("/etc/happyranch/connector.json"), manager=io.manager)
-    getattr(svc, method)()
-    assert mutating(v) == [[method, UNITS[0]]]
+    with pytest.raises(supervisor.ConnectorConfigError) as refused:
+        getattr(svc, method)()
+    assert str(refused.value) == MESSAGE
+    assert mutating(v) == []
     put(v.path(ACTIVATION_PATH), replace(v.ready, phase="failed_uncertain").to_bytes())
     with pytest.raises(supervisor.ConnectorConfigError): getattr(svc, method)()
-    assert mutating(v) == [[method, UNITS[0]]]
+    assert mutating(v) == []
 
 
 @pytest.mark.parametrize("case", ["valid", "failed-receipt", "wrong-user", "config-drift", "symlink", "mode", "mismatch"])
@@ -209,10 +201,9 @@ def test_foreground_uses_custody_without_protected_reads(venue, monkeypatch, cas
     def protected(*args, **kwargs): raise AssertionError("foreground read protected records")
     monkeypatch.setattr(h.HomeActivationStore, "read", protected)
     monkeypatch.setattr(h.HomeActivationTransactionStore, "read_optional", protected)
-    if case in {"valid", "failed-receipt"}:
+    with pytest.raises(InstallerError) as refused:
         h.HomeProfileAdmission(io).foreground(cfg)
-    else:
-        with pytest.raises(InstallerError): h.HomeProfileAdmission(io).foreground(cfg)
+    assert str(refused.value) == MESSAGE
     assert not mutating(v) and not v.mints
 
 
@@ -221,8 +212,11 @@ def test_supervisor_foreground_checks_before_run_loop(venue, monkeypatch):
     monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
     monkeypatch.setattr(h.os, "geteuid", lambda: io._service_owner[0])
     svc = supervisor.ConnectorSupervisor(config=config(v), config_path=Path("/etc/happyranch/connector.json"))
-    monkeypatch.setattr(svc, "_run_loop", lambda **kwargs: 17)
-    assert svc.run() == 17
+    ran = []
+    monkeypatch.setattr(svc, "_run_loop", lambda **kwargs: ran.append(True))
+    with pytest.raises(supervisor.ConnectorConfigError) as refused:
+        svc.run()
+    assert str(refused.value) == MESSAGE and ran == []
     svc.config.home_id = "foreign"
     with pytest.raises(supervisor.ConnectorConfigError): svc.run()
     assert not mutating(v)

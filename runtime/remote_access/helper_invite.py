@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import select
 import subprocess
 import sys
@@ -95,15 +94,3 @@ def effect(command: tuple[str, ...], request: dict,
         process.stdout.close()
         if not process.stdin.closed:
             process.stdin.close()
-
-
-def validate_issued(value: dict) -> None:
-    """Closed secret-bearing reply, validated only in memory; no diagnostics."""
-    now = time.time()
-    if (type(value) is not dict or set(value) != {'result', 'invite', 'expires_at'}
-            or value['result'] != 'complete' or type(value['invite']) is not str
-            or len(value['invite']) > 5500
-            or re.fullmatch(r'hrinvite2:[A-Za-z0-9_-]+', value['invite']) is None
-            or type(value['expires_at']) is not int
-            or not now < value['expires_at'] <= now + 300):
-        raise ValueError('unavailable')

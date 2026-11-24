@@ -204,43 +204,20 @@ saved credentials or a network-state profile.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
-The payload also carries the official **Headscale v0.25.1** native Linux asset
-at `libexec/headscale/headscale` (installed as
-`/opt/happyranch-desktop/libexec/headscale/headscale`, mode 0755, root-owned by
-dpkg). This fixed path sits outside `bin/` and the daemon's bundled-bin PATH
-surface. It has no wrapper or symlink and stays inert; TASK-16780 owns service
-and installer wiring. Building the payload never executes it or starts/enables
-a service. No download happens at Enable.
+THR-378 P24 retires the local Headscale server and the root-run home CA/admin
+executables. New payloads do not download Headscale or build
+`happyranch-home-ca` / `happyranch-home-admin`. The Debian builder refuses a
+stale payload containing any of those three executables; they are no longer
+required inputs. Headscale-only binary/toolchain notice collection is removed;
+all retained Python, npm, sidecar and client notices remain. Historical pins
+remain migration custody evidence. Python ELF checking remains restricted to
+`python/`.
 
-The same native Go build also ships the inert root-run home CA materializer at
-`libexec/remote-access/happyranch-home-ca` (installed as
-`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca`, root:root
-0755). It is outside `bin/`, `/usr/bin` and `HAPPYRANCH_BUNDLED_BIN`; no service
-or helper calls it yet. Its fixed `ensure`, `renew-leaf` and `status` verbs and
-root-only staging custody are described in the [remote-access contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
-The command uses stdlib and the existing first-party `homeca` package only.
-Python ELF repair/checking remains restricted to `python/`.
-
-`packaging/linux/headscale-pin.json` pins tag, official amd64/arm64 asset names,
-SHA-256 values and embedded Go version. The already-verified managed Python
-downloads over HTTPS into private build scratch, allowing only github.com and
-its explicit release CDN `release-assets.githubusercontent.com` on redirects.
-Each request has a 20-second socket timeout; streaming is capped at 128 MiB
-and a 180-second deadline (checked after bounded socket reads, including EOF).
-No new build tool is needed. `LINUX_HEADSCALE_DOWNLOAD_FAILED` or
-`LINUX_HEADSCALE_SHA256_MISMATCH` aborts before the binary is installed or
-inspected. The pin was checked against upstream release `checksums.txt` and
-fresh downloads of both assets.
-
-Headscale's exact pinned BSD-3-Clause license ships in
-`licenses/headscale-LICENSE`. `headscale-modules.json` inventories the verified
-binary's linked modules from `go version -m`; their original notices are in
-`licenses/headscale/modules/`. Downloads use private Go module and GOPATH
-checksum-state caches, the public proxy and checksum DB, and must match the embedded module sums. Missing
-originals fail the build. `headscale-build-info.json` records asset/tag/hash,
-Go 1.23.4 and the matching toolchain module sum; `headscale/go-runtime/` retains
-that toolchain's license and vendor notices. All are also copied to the .deb's
-`/usr/share/doc/happyranch/licenses/`.
+Incoming preinst completes canonical retirement using the protected original
+installed interpreter and its available tools before permitting payload
+replacement. Removing an executable from the new archive does not establish
+retirement of an old installation. Installed dpkg/systemd acceptance remains
+separate from the synthetic package checks.
 
 After copying the interpreter and runtime wheels,
 `python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
@@ -276,8 +253,8 @@ native packaging checks below also cover this exclusion, inventory output and
 refusal of unlicensed near-miss or escaping replacements.
 
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
-`build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`,
-`libexec/headscale/headscale` and `libexec/remote-access/happyranch-home-ca`.
+`build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`
+and retained helper adapters under `libexec/remote-access/`.
 The payload additionally contains the zero-option
 `bin/happyranch-remote-access-policy-renew`, which launches only the fixed bundled
 Python `-I -m runtime.remote_access.policy_renew` with an empty environment.
@@ -425,8 +402,16 @@ see the [health contract](../agent-guides/web-and-cli.md#host-compatibility-heal
 
 ## Inert Headscale custody prefix (3b-2f-1)
 
-The explicit root operator command `python -m runtime.remote_access.installer
-prepare-headscale --layout deb` prepares the locked dedicated
+P24 retires ordinary `prepare-headscale` and `disable-headscale` commands for
+both installer layouts. They fail with the exact home-retirement message before
+installer construction or native effects. Use the canonical explicit retirement
+entry for upgrade/recovery and `home-retirement-status --layout deb` for read-only
+detection. Programmatic preparation, activation/local-issuer and generated-home
+replacement writers are removed; the old wait-ready command refuses without
+network observation. The following describes historical custody. Protected
+readback, selective retirement/Disable and actual non-home renewal remain.
+
+The historical `ManagedInstaller.prepare_headscale` owner prepares the locked dedicated
 `happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,
 0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
 It also derives the LAN address and publishes receipted config/DERP YAML (the
@@ -1628,8 +1613,17 @@ uses those packaged executables and retains separate config/state ownership. See
 | `/usr/share/icons/hicolor/{16x16,…,1024x1024,scalable}/apps/happyranch.*` | Existing brand icons |
 | `/usr/share/doc/happyranch/` | Debian copyright/changelog, unchanged PR1 licenses/notices/inventories and build-info |
 
-No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
-`hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
+The incoming `preinst` performs the P24 home-retirement gate before unpack. A
+fresh install uses read-only detection without an old interpreter; reinstall with
+a retired receipt uses canonical same-inode sync/readback confirmation without
+replaying retirement. Uncertain sync or legacy/conflicting/unsafe evidence still
+refuses this install shortcut. A legacy upgrade requires the protected installed
+bundled CPython3.12 and confirmed
+canonical retirement before replacement. Missing capability or proof refuses
+unpack as migration pending, preserving the old tools and evidence. No service
+is started. See the [retirement entry contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#canonical-explicit-retirement-entry).
+Ubuntu/Debian's `desktop-file-utils` and `hicolor-icon-theme` dpkg triggers
+refresh their caches when installed. Package
 removal deletes only package-owned files; it does not signal a running app or
 daemon. Quit the desktop app before upgrading/removing it. The release data in
 `~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` is preserved, including
@@ -1706,7 +1700,7 @@ sudo apt install ./happyranch_0.1.0-1_amd64.deb
 
 For arm64 use `happyranch_<debversion>_arm64.deb`. Local .deb installation needs
 no HappyRanch apt source or archive key. The package deliberately ships neither
-a sources entry nor an archive keyring, and has no maintainer scripts to manage
+a sources entry nor an archive keyring; its retirement preinst does not manage
 them. Source enrollment is an explicit user action below; removal/purge leaves
 that separately managed enrollment alone.
 
@@ -1885,7 +1879,12 @@ disposition in release evidence.
 
 ### Inert home admin prefix (3b-2g-1)
 
-The package now includes root:root 0755
+THR-378 P24 removes this command's source and new-package build/validation
+requirements. The following describes the protected old installation consumed
+by retirement; it supplies no current issuance or provisioning entry. Shared
+`homeca`, transport and client packages remain for P25.
+
+The historical package included root:root 0755
 `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`, beside the
 home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
 module and existing collected notices. Packaging never invokes it. Only the

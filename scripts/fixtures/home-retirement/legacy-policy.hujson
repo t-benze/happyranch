@@ -1,0 +1,14 @@
+{
+  "acls": [
+    {
+      "action": "accept",
+      "dst": [
+        "happyranch-node:443"
+      ],
+      "proto": "tcp",
+      "src": [
+        "happyranch-invite"
+      ]
+    }
+  ]
+}

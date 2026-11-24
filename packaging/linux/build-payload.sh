@@ -126,10 +126,6 @@ uv pip install --no-config --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
     --no-deps --no-index "$WORK/wheels/"*.whl
 PAYLOAD="$WORK/output/$NAME"
 mkdir -p "$PAYLOAD/bin" "$PAYLOAD/web" "$PAYLOAD/licenses"
-# Inert, fixed non-PATH payload. Verification precedes any inspection/use;
-# Python ELF repair below deliberately scans only python/, never this binary.
-"$MANAGED_PYTHON" -I "$WORK/source/packaging/linux/collect-notices.py" \
-    --install-headscale "$GO_ARCH" "$WORK" "$PAYLOAD"
 "$MANAGED_PYTHON" -I - "$MANAGED_PREFIX" "$UV_PROJECT_ENVIRONMENT" "$PAYLOAD" <<'PYCOPY'
 import shutil, sys
 from pathlib import Path
@@ -162,15 +158,9 @@ export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
 (cd "$WORK/source/app/mac/tsnet-bridge" && CGO_ENABLED=1 go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-home-bridge" .)
 chmod 755 "$PAYLOAD/bin/happyranch-home-bridge"
-# Root-only invocation is enforced by this inert command itself. Its fixed
-# libexec path is deliberately outside bin/ and HAPPYRANCH_BUNDLED_BIN.
+# Only retained helper adapters belong in libexec; local controller commands
+# are retired. Incoming preinst uses the original installed capability first.
 mkdir -p "$PAYLOAD/libexec/remote-access"
-(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
-    -o "$PAYLOAD/libexec/remote-access/happyranch-home-ca" ./cmd/happyranch-home-ca)
-chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-ca"
-(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
-    -o "$PAYLOAD/libexec/remote-access/happyranch-home-admin" ./cmd/happyranch-home-admin)
-chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-admin"
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
 set -eu
