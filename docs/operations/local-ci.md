@@ -1,5 +1,17 @@
 # Local CI
 
+## Focused job receipt diagnostics
+
+```bash
+uv run --frozen python -B -m unittest scripts.test_job_receipts -v
+```
+
+These checks reuse the existing synthetic-org ASGI/SQLite fixture without
+lifespan, listeners, providers or job launches. They exercise completed-job
+receipt authentication, rejected bindings, both JSON CLI commands and retained
+human reads. They stay outside the retired Python unit suite and skipped
+general integration suite, and add no CI trigger or required check.
+
 ## Focused supersede dispatcher provenance (GH-1852)
 
 `uv run --frozen pytest scripts/test_thread_supersede_dispatcher.py -v --tb=short`

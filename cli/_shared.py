@@ -32,10 +32,34 @@ def _ok(r) -> bool:
             "the task already completed.",
         )
     elif code == "session_mismatch":
-        print(
-            f"Session id mismatch — daemon expected {detail.get('active')} "
-            f"but got {detail.get('got')}.",
-        )
+        if "expected_task_id" in detail:
+            reasons = {
+                "missing_binding": "task and session are required",
+                "job_task_mismatch": "job belongs to a different task",
+                "unknown_task": "task does not exist",
+                "task_agent_mismatch": "task belongs to a different agent",
+                "no_active_session": "task has no active session",
+                "session_mismatch": "session differs from the active session",
+            }
+            reason = reasons.get(detail.get("reason"), "binding does not match")
+            expected_session = detail.get("expected_session_id") or (
+                "(active session; identifier withheld)"
+                if detail.get("expected_session_state") == "active" else "(no active session)"
+            )
+            print(
+                f"Job receipt refused — {reason}; "
+                f"expected task {detail.get('expected_task_id') or '(unavailable)'}, "
+                f"session {expected_session}; "
+                f"presented task {detail.get('presented_task_id') or '(missing)'}, "
+                f"session {detail.get('presented_session_id') or '(missing)'}.",
+            )
+        elif "active" in detail or "got" in detail:
+            print(
+                f"Session id mismatch — daemon expected {detail.get('active') or '(no active session)'} "
+                f"but got {detail.get('got') or '(missing session)'}.",
+            )
+        else:
+            print("Session id mismatch — binding details unavailable from daemon.")
     else:
         print(f"Error ({r.status_code}): {r.text}")
     sys.exit(1)

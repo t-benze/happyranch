@@ -19,6 +19,19 @@ job grace remain 5 seconds. The full #1276 fix remains on hold.
 
 ## Jobs — automatic admission (THR309seq1)
 
+Structured `jobs show --json` and `jobs output --json` receipts require the
+job's exact owning task and that task's current live session for the job's
+agent, even after job completion. A genuine resumed live session of the same
+task is accepted; a successor task or inactive session is refused. Receipt
+`409 session_mismatch` details name the reason and carry `expected_task_id`,
+`expected_session_id`, `expected_session_state`, `presented_task_id` and
+`presented_session_id`. Expected state is `active` or `inactive`; an unseen
+active session ID is withheld (null), rather than disclosed as a credential.
+The CLI distinguishes a withheld active ID from no active session explicitly.
+For predecessor jobs, existing unbound read-only `jobs show` / `jobs output`
+remain available with original attribution; never pass a predecessor SID.
+Neither the bearer shortcut nor job completion bypasses structured binding.
+
 Obtain required content authorization in a thread BEFORE submission. From a
 genuine ordinary task/session omit review_required or set false; rationale is
 optional. Parsed true refuses422 before allocation (CLI exit2), without silent
