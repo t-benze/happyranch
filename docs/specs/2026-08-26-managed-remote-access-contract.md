@@ -1,13 +1,5 @@
 # Managed Remote Access — Normative Contract
 
-> P24 source-status amendment: self-hosted home activation/local issuance and
-> generated replacement owners are retired. Historical lifecycle descriptions
-> below do not reopen those paths. Protected legacy readback, selective
-> retirement/Disable, real non-home renewal and the independent transport/tenant
-> contracts remain. See the current remote-access contract for explicit recovery;
-> positive account-network access on main awaits P21–P23. Historical acceptance
-> evidence remains historical, and installed P24 acceptance is NOT RUN.
-
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
 > replacement E2E coverage is PENDING. See [the coverage gap record](../operations/python-test-reset.md).

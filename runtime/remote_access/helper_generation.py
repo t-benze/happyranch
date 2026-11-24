@@ -1,4 +1,4 @@
-"""Fixed bundled helper children for lifecycle and retained policy renewal."""
+"""Read-only adapter to Track A through the existing fixed bundled Python."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
-           'runtime.remote_access.legacy_home_readback')
+           'runtime.remote_access.home_activation')
 
 
 class GenerationUnavailable(ValueError):
@@ -58,8 +58,6 @@ class HomeGenerationReader:
 
 LIFECYCLE_COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
                      'runtime.remote_access.home_activation_backend')
-POLICY_COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
-                  'runtime.remote_access.policy_renew_backend')
 
 
 class HomeLifecycleClient:
@@ -79,8 +77,7 @@ class HomeLifecycleClient:
         if self.method == 'Disable' and step == 'cleanup':
             request['revoke_succeeded'] = revoke_succeeded
         try:
-            command = POLICY_COMMAND if self.method == 'RetryPolicyRenewal' else LIFECYCLE_COMMAND
-            result = subprocess.run(command, input=json.dumps(request).encode(),
+            result = subprocess.run(LIFECYCLE_COMMAND, input=json.dumps(request).encode(),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=remaining,
                 check=False, env={}, cwd='/')
             if result.returncode or len(result.stdout) > 4096 or time.monotonic() >= deadline:
@@ -108,7 +105,7 @@ class HomeLifecycleClient:
             from . import helper_invite
         else:
             import happyranch_fixed_helper_invite as helper_invite
-        return helper_invite.effect(POLICY_COMMAND, dict(method=self.method, uid=self.uid,
+        return helper_invite.effect(LIFECYCLE_COMMAND, dict(method=self.method, uid=self.uid,
             step='renew', expected=expected, deadline=deadline), before_commit)
 
     def policy_status(self, remaining: float) -> dict:

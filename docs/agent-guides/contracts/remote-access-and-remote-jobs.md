@@ -6,39 +6,6 @@
 > do not describe the whole current managed lane. Historical evidence remains
 > historical, and every unexecuted acceptance obligation stays explicit.
 
-P24 source retirement supersedes the historical home preparation, activation,
-READY/resume, local admin/minter/issuer and invite-recovery algorithms recorded
-in the earlier slice sections below. Their uncalled owners are removed.
-Protected historical readers, selective retirement/Disable, real non-home
-policy renewal, pairing/device revoke and native custody remain. The current
-P24 upgrade/recovery section owns the explicit retirement path; these historical
-sections do not authorize creating or resuming a home. Account-network positive
-access remains unavailable on main until P21–P23.
-
-Omitted-input generated home provisioning now refuses with the same retirement
-message. Its uncalled ReplaceFailed quarantine/removal/staging/closure writers
-are removed. The uncalled replacement-candidate/prepared-transaction inspectors
-and their staging/custody recovery paths are also removed. Ordinary inventory
-and Disable still reject every legacy install transaction; fixed historical
-file snapshots and actual policy-renewal publication/locking remain. Explicit
-non-home provisioning remains supported. Renewal maps a retained
-pending-custody refusal to its existing closed `InstallerError` boundary without
-changing the refusal or touching pending evidence.
-
-The later THR-327 replacement-reload/reset-failed continuation also retires
-with the removed replacement owner; ordinary absent-unit inventory still
-requires inactive and never interprets a legacy journal as replay authority.
-The independent returned-lifecycle-worker settlement fix remains: after its
-effects return, the worker waits for the helper lock, records completion or
-uncertainty, releases its slot and seals admission for process exit. Disable
-exercises this boundary; retired ReplaceFailed is not required to reach it.
-
-The uncalled LAN selector/netlink collection and port probes are removed.
-Historical Headscale policy/config/DERP renderers and exact unit bytes remain
-for protected readback. The historical `headscale_service wait-ready` command
-spelling now returns the retirement error without HTTP/socket observation or
-readiness success; a saved unit cannot use it to resume a home.
-
 ## Public host compatibility metadata (THR-387 S4a)
 
 `GET /api/v1/health` is already remote-allowed. Its additive `api_contract`
@@ -1514,22 +1481,16 @@ separate, unexecuted obligations of the wiring/native tracks.
 
 ### Inert Linux Headscale custody prefix (THR-327 slice 3b-2f-1)
 
-P24 retires the ordinary `prepare-headscale` and `disable-headscale` installer
-commands for both layouts. They return non-success and the exact home-retirement
-message before constructing an installer or observing/changing native state.
-Use the canonical explicit retirement entry below for upgrade/recovery; status
-remains read-only. The programmatic preparation owner is removed; the cleanup
-owner and the historical readers described below remain for retained consumers.
-
-Historically, `ManagedInstaller.prepare_headscale` prepared fixed local custody
-and an inert unit. It never runs Headscale,
+The root operator entry `python -m runtime.remote_access.installer
+prepare-headscale --layout deb` calls `ManagedInstaller.prepare_headscale`.
+It only prepares fixed local custody and an inert unit. It never runs Headscale,
 creates database users, enables/starts/reloads a unit, or changes the staged
 connector bundle. Both exact `home control binding not provisioned; requires
 slice 3b-2` refusals remain for inert staging; E2a below admits only the validated
 already-ready ordinary profile and fixed-account foreground serving. E2b below
 supplies uncalled first unit publication/selection; the ordinary installer default home_transport stays false.
-Legacy `uninstall --layout deb` still calls `ManagedInstaller.cleanup_headscale`.
-The underlying cleanup owner stops and
+The separate root operator `disable-headscale --layout deb` entry and legacy
+`uninstall --layout deb` call `ManagedInstaller.cleanup_headscale`. They stop and
 disable only the exact owned Headscale unit, then remove the inert custody and
 receipted identity as below. The existing staged-profile uninstall refusal is
 unchanged; the explicit Headscale cleanup entry does not activate that profile.
@@ -1857,11 +1818,6 @@ deletion by cleanup; Turn off is 3b-2h. This remains inert and establishes no
 TLS, root/systemd or packaged remote-access acceptance.
 
 ### Inert Linux home CA materializer (THR-327 slice 3b-2e)
-
-Historical contract: THR-378 P24 removes this command's source and package
-entry. These old bytes/paths describe legacy custody and interruption evidence,
-not an available new provisioning or issuance path. Shared `homeca` and
-transport/client consumers remain; retirement uses independent saved readers.
 
 The root-run Go command reuses `homeca`; it adds no new cryptographic profile,
 trust store, CA replacement, network action or service. The inert installer
@@ -2419,11 +2375,6 @@ remain in the later serial 3c-2b slice.
 
 ### Inert Linux home admin transport (THR-327 slice 3b-2g-1 prefix)
 
-Historical contract: THR-378 P24 removes this command's source and package
-entry. These old bytes/paths describe legacy custody and interruption evidence,
-not an available new provisioning or issuance path. Shared `homeca` and
-transport/client consumers remain; retirement uses independent saved readers.
-
 This prefix delivers items 1 and 2: `home_admin.RootHeadscaleAdminOperations`,
 `DurableOperationRecordStore` and the uncalled `RootHomeInviteMinter` composition.
 Its fixed root runner is `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`.
@@ -2492,7 +2443,7 @@ HomeInviteConfig obtains home_endpoint only from the protected READY activation
 receipt, populated by B2 after the local node joins. The stable installation
 config carries neither endpoint nor activation generation. Items 4 and 5 now supply
 inert issuer-directory custody and the uncalled local-node mint composition.
-The historical preparation owner publishes `home-issuer/` through the installer's literal
+`prepare-headscale` publishes `home-issuer/` through the installer's literal
 no-follow, exclusive pending-directory/no-replace/fsync path and records its
 owner and directory identity in root:root 0600
 `home-issuer-publication.json` beside it. An existing exact safe empty directory
@@ -2869,11 +2820,6 @@ Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
 
 **G2-E1b delivered boundary (B4/Rulings 13/13a):**
-P24 source disposition: the unmounted live-config publication owner and its
-activation composition below are removed. This paragraph records the historical
-algorithm. The pure renderer remains in `legacy_home_readback.py` for actual
-protected historical inventory; it supplies no publication or admission.
-
 `home_live_config.py` supplies the unmounted `HomeLiveConfigOwner` required by
 `HomeActivationOwner(config_owner=...)`. Its exported pure
 `render_home_live_configs` is the shared E2 renderer. Connector bytes stay exactly
@@ -2959,11 +2905,6 @@ The owner has no separate retained-node singleton check; node observation remain
 with the existing B2/B3 observer and its live-node contract.
 
 **G2-E1a delivered boundary and stated assumptions:**
-P24 source disposition: these unmounted fixed-effect/process/observer owners
-are removed with their coordinator and recovery writers. The token-source
-verifier remains in `legacy_home_readback.py` for actual inventory consumers.
-The following description records their historical behavior.
-
 `home_activation_owner.py` supplies unmounted fixed-effect adapters, an independent
 same-FD release-token source verifier and the observer's exact-unit process owner.
 The coordinator retains all intent/lock/mint/recovery ownership; adapters issue
@@ -3115,27 +3056,16 @@ The roughly 1500-line split places items 1/2/4 here. home_admission.py composes
 existing readers, protected provenance, shared renderer and HomeUnitGate. It
 inverts only the shared exact insertion, authenticates the reconstructed prepared
 bytes against provision.json, then rerenders and checks complete live txn bytes.
-P24 retires ordinary home install, supervisor start/restart/enable and foreground
-serving, including a valid saved ready receipt. These entries refuse before native
-effects with: “Home mode has been retired. Sign in to use your account's private
-network. Your local work is kept.” No account admission or home fallback is added.
-Read-only legacy inventory remains available for ownership-sensitive cleanup;
-non-home managed lifecycle and renewal retain their existing checks. The fixed
-readers, transaction observation/lock, token-source comparison and pure historical
-config rendering live in `legacy_home_readback.py`. Inventory and the unit gate
-import this retained boundary without importing activation/admin/minter owners;
-the remaining retiring writers temporarily inherit or re-export the same code.
-This movement changes no custody, generation, pending, token or lock predicate. B6 cleanup,
-retained staged-inventory checks and the borrowed publication lock also use those
-readers directly. The retained admission fixture supplies historical input files
-without constructing activation or provisioning owners. The fixed helper's
-generation metadata child now executes `runtime.remote_access.legacy_home_readback`;
-its root-only/no-option gate and closed read-only snapshot schema are unchanged.
-The activation writer module no longer provides that command entry.
+Ready ordinary install is a keyless re-enable/start of already-validated existing
+units, without unit rewriting, key staging or minting. Supervisor start/restart/
+enable requires the fixed on-disk connector config to equal its parsed config;
+foreground run uses the separate fixed-account custody boundary. Legacy inert
+config and unit renderings are unchanged. Existing non-start lifecycle refusals
+remain until their separately owned work lands.
 
 Inventory's protected current receipt supplies phase/G for observation of inert
 prepared configs; installation IDs and release UID are independently bound through
-versioned prepared provenance. Live legacy inventory takes G from the
+versioned prepared provenance. Live ordinary admission always takes G from the
 sidecar binding. This observation is never an activation/adoption grant. Fixed
 home CA/invite/config-directory entries and observe.sock are recognized only with
 that binding; unknown config/state/unit/link entries continue to refuse. Before
@@ -3159,7 +3089,7 @@ Failure leaves final/pending bytes in place and the coordinator records
 failed_uncertain under Ruling 7. E2a's existing phase-aware inventory owns the
 receipt-bound home sidecar with phase; no duplicate inventory gate is added.
 
-Historically, the now-removed `HomeActivationBackend.enable` composed Prepare → unchanged coordinator.run →
+`HomeActivationBackend.enable` composes Prepare → unchanged coordinator.run →
 publish_ready with E1a/E1b owners and B2 observer. One thread-owned adapter borrows
 the same held activation-directory flock for the coordinator's nested lock
 contexts; other threads and independent descriptors/processes still refuse
@@ -3237,8 +3167,8 @@ receipt deletion in this primitive. Missing links need no disable operation.
 The gate retains the inert scanner's load roots, literal-reference checks,
 65536-entry shared bound, 32-depth bound and 65536-byte foreign-policy bound,
 using literal no-follow parents/readers and revalidating sampled metadata.
-E2a retains this gate for phase-aware legacy inventory; P24 refuses ordinary
-home admission. E2b adds first publication only through Prepare and the intent-bound
+E2a now wires this gate into protected ordinary admission and phase-aware
+inventory. E2b adds first publication only through Prepare and the intent-bound
 managed_services owner; ordinary installation does not publish a first home unit.
 I5d-1's `ManagedInstaller.publish_home_units()` fills the clean-install fragment
 publication prerequisite; I5d-2 selects it from public Enable. Under the existing
@@ -4039,30 +3969,6 @@ the timer has an Install section, for that target.
 
 **Delivered in I4b-1:** `ManagedInstaller.renew_policy` holds the existing
 activation-directory lock across protected reads, the decision and publication.
-The lock's retained owner is `runtime.remote_access.installer_lock`: renewal
-and the remaining activation callers lock the same protected
-`/var/lib/happyranch-remote-access` directory inode with nonblocking exclusive
-`flock`. Moving its owner does not create a lock file, change the serialization
-domain, create missing directories or relax the no-follow/root-private custody
-checks. This keeps ordinary renewal independent of activation implementation.
-The retained lock projects filesystem and legacy custody-observation errors
-to the closed `InstallerError` refusal; ordinary renewal callers no longer
-need the activation error type.
-
-The fixed helper's `RetryPolicyRenewal` capture, status and fresh-auth retry use
-`runtime.remote_access.policy_renew_backend` through the protected bundled
-Python with `-I`, an empty environment and no caller-selected command or path.
-This retained owner has no activation-family imports. It accepts protected
-non-home configuration only: old activation/transaction or invite-issuer
-evidence, pending entries and a `home_binding` refuse. Capture binds the UID
-and the protected release/connector/sidecar bytes; policy and provision are
-revalidated by the installer and advance together during renewal. The original
-live ready/commit exchange remains before publication, including a fresh
-capture check under the same installer-state directory flock and checks before
-reporting completion. Refusal emits no private input or filesystem diagnostics.
-The existing policy status dimension and public helper fresh-auth, caller,
-deadline, audit and mutation-slot checks still apply.
-
 Automatic mode uses `renewal_candidate` unchanged: identical shipped artifact,
 active valid structure, current 3600-second envelope and no backwards time.
 Fresh-auth mode is used by private Retry and forward Enable; it applies those
@@ -4408,839 +4314,6 @@ never repairs; after upgrade classify only a listed known prior profile version
 as repair_required for one Enable with devices retained. Unknown/torn versions
 remain closed with a fixed category, never automatic migration or trust reset.
 Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
-
-### Home retirement observations (THR-378 P24)
-
-The public helper retains Enable/ReplaceFailed/IssueInvite/CancelInvite/RecoverInvite
-method spellings and their
-original sender/owner capture, native authorization, original budget and fresh
-revalidation. A granted call then returns the fixed `home_mode_retired` D-Bus
-error with the exact retirement message below, before an accepted reply, worker,
-audit intent or effect. The root child captures only an inert UID-bound token
-for those methods and returns a closed refusal; historical state cannot resume
-activation. `HomeActivationBackend`, its preparation composition and replacement
-execution are removed. Disable retains its original protected readers, same
-installer directory flock, revoke binding, owned stops and selective cleanup.
-The invite helper backend is also a minimal inert capture/refusal adapter. It
-imports no local admin/minter/issuer owner, calls no commit callback or connector,
-and preserves the existing closed refusal vocabulary plus the retirement message.
-The old issuance/recovery workers and their secret-bearing success parser are
-removed; bounded shared pipe transport and status projection remain for retained
-consumers. Initial `publish_home_units` / `publish_invite_config` writers and
-their unused lock-borrowing helper are removed. Retained Disable and post-disable
-inventory read historical files without re-publication; their no-follow custody,
-exact original provenance and native observation checks remain. Programmatic
-Headscale preparation, issuer-directory creation and initial CA handoff/empty-CA
-publication are removed. Retained cleanup tests use neutral historical files,
-including their original account, foreign-unit, no-follow and interruption
-inputs. Protected CA-source readback remains metadata-only for the private CA
-key. The unmounted activation/coordinator/owner/recovery/transaction writers,
-live-config publisher, observer and unit publisher are removed. Their last
-materializer status executor is removed too. Legacy schema/readback, exact
-token-source checks, historical renderer and original directory lock remain
-for actual inventory/Disable/renewal consumers. Uncalled local admin/minter/issuer
-and invite-recovery owners are removed too. Retained invite-v2, pairing, device
-revoke/private control and canonical retirement cutoff remain. This boundary grants no
-account-network admission.
-
-**Current package boundary:** new payloads omit the local Headscale server and
-`happyranch-home-ca` / `happyranch-home-admin`; build-deb refuses stale archives
-carrying those executable paths. The build no longer downloads Headscale or
-collects its removed binary/toolchain notices. Retained dependency notices,
-client transport and migration custody pins remain. Incoming preinst uses the
-protected old installed capability before payload replacement; package absence
-alone proves no migration effect. Earlier packaging/CA sections describe the
-historical layout being retired. Installed acceptance is separately NOT RUN.
-
-`python -m runtime.remote_access.installer home-retirement-status --layout deb`
-is a read-only Linux observation. Its JSON always carries the exact message:
-“Home mode has been retired. Sign in to use your account's private network.
-Your local work is kept.” `migration pending` returns exit 1; `fresh` and a
-confirmed `retired` observation return exit 0. A status result grants no cleanup,
-service or account operation, package replacement, or account-network admission.
-
-The detector uses literal no-follow parent walks, including nearest-existing-
-ancestor revalidation for an absent path, and bounded shallow private-state
-inventory. It observes legacy receipts/keys/databases by metadata without
-opening their contents. Shared sidecar config and systemd/D-Bus policy scans
-are bounded and keep their retained non-home consumers; the exact packaged
-helper unit remains permitted. Unsafe, unknown, changing or interrupted
-evidence stays `migration pending`. Detection never creates directories,
-resumes an intent, stops/disables a unit, modifies accounts or deletes data.
-
-A final `home-retirement.json` lives in the protected root-owned 0700 installer
-state directory, is a single-link root-owned regular 0600 file bounded to
-1024 bytes, and contains only the closed nonsecret completion fields. A final
-record alone cannot override reappearing legacy artifacts, a loaded/active or
-uncertain controller, or a remaining account/group. Repeated detection has no
-destructive effects. These are sampled filesystem/native observations under
-the installer's existing cooperative-root-writer limitation; explicit retirement
-must independently prove its effects and revalidate ownership at each effect.
-
-The explicit retirement prerequisites are separate from that read-only detector.
-`home_retirement_fence.retirement_fence` holds the original protected installer
-directory flock through its caller's operation. It exclusively publishes and
-fsyncs the fixed root-owned 0600 `.home-activation.json.pending` fence; this is
-the pending name that the historical activation reader already refuses. A
-complete existing fence requires exact custody/content and fresh file/parent
-sync; an unknown or torn pending file is retained and refused. The context
-never initializes a missing state directory, resets the fence or supplies
-revocation/stop/completion authority. Its live check also refuses replacement
-of the fence or serialization-directory inode, and expires on context exit.
-
-`home_retirement_service.OwnedService` supplies only the subsequent local
-controller ownership and stopped/disabled readback primitive. Its fixed member
-digests must come from the coordinator's validated legacy/package evidence;
-hashing a candidate does not establish ownership. It checks exact fragment and
-executable custody, all systemd/D-Bus load roots and aliases, loaded identity,
-NSS bindings, process UID/GID/start identity/executable/cgroup and dedicated-UID
-process inventory. Fresh observations precede stop and disable independently;
-native success still requires stopped/process/link readback. A receipt expires
-on observed drift and must be rechecked before later cleanup. There is no
-account mutation, artifact deletion, service start or standalone lifecycle CLI.
-
-`home_retirement_cutoff.RetirementCutoff` supplies the active original-owner
-cutoff prerequisite. The coordinator must first validate legacy lineage and
-preserve the original connector PID/start/boot identity in its protected inventory;
-recovery must not adopt a replacement process or an empty replacement registry.
-Under the live directory fence it validates the fixed service-owned private
-control socket, kernel peer UID/GID, original process start/executable/cgroup
-and the fixed kernel boot ID and current account binding. Before its first
-protocol request, it exclusively writes, file/parent-fsyncs and reads back
-`home-retirement-peer.json` in the root-private installer directory. The closed
-0600 single-link record contains only the original PID/start/boot identity,
-connector identity, numeric service account and release UID. It contains no
-credentials, trust state, config contents, private keys or caller-selected paths.
-Unknown, torn, unsafe or replaced evidence remains pending and is never repaired
-or overwritten. A complete existing pin is revalidated and synchronized again
-before use by a fresh explicit action. The live owner pins its exact inode
-through subsequent requests, including the commit boundary and receipt checks.
-`from_saved_peer` loads that protected original identity without connecting to
-or discovering the current socket; missing evidence has no discovery fallback.
-It grants no acknowledgement and still requires independent managed lineage
-for connector identity and release UID. The loaded inode remains pinned across
-later native observations; only the first actual request synchronizes it.
-`capture_original` performs only original-owner status and anchored-generation
-readback, allowing the coordinator to capture remaining inventory after the pin
-publication and before any revoke mutation. Existing credentials and streams
-are unchanged by that capture; it supplies no cutoff receipt.
-Actual cutoff uses the existing `revoke-all@1` request.
-Its read-only adapter acquires the existing trust lock without creating or
-repairing anything and uses the production snapshot/anchor parser on pinned
-bytes. The successful original-owner reply attests the existing registry's
-terminal physical cleanup, including removed-device owners; independent pair
-readback must also prove the committed ceremony burn and device denies.
-Neither proof substitutes for the other. Partial commits, failed/in-flight
-closes, late replies, unknown legacy pairing authority or changed store/peer
-remain pending, retaining all committed denial and private evidence. A live
-cutoff receipt must freshly recheck the same peer, generation, denied state,
-deadline and fence before any later effect. A new object cannot infer that
-receipt from a denied store; explicit recovery can query the same original
-owner again without constructing a new registry or resetting failed cleanup.
-The supported packaged interpreter identity here is the pinned Python 3.12
-ELF target, not the `python3` launcher symlink. This is an active-owner
-prerequisite, not proof of original-process death after restart or of inactive
-legacy retirement. Focused standalone command:
-`uv run --frozen pytest scripts/test_home_retirement_cutoff.py -v --tb=short`.
-
-`home_retirement_inventory.LegacyInventory` supplies a separate read-only
-historical service-lineage observation. It requires protected root-owned final
-account/publication receipts, an exclusive locked system account, fixed released
-Headscale binary and historical unit digests, the closed activation receipt when
-the home unit/link is active, and agreeing fresh native service/process facts.
-It rejects missing, pending, malformed, aliased, replaced or untrusted receipts;
-only a live exact retirement fence may explain its own activation-pending file.
-Receipt inode/metadata identities remain bound across native observations and
-fresh `require` calls. Both lineage and cutoff require the live fence to belong
-to their actual root/owner serialization domain; another root's valid fence
-cannot explain a pending file or permit IPC in this one. The historical data-only parser is retained in
-`legacy_home_receipt`; parsing neither creates nor restores home authority.
-Frozen historical unit fixtures and the existing synthetic native-command venue
-exercise this composition without invoking provisioning or obsolete renderers:
-`uv run --frozen pytest scripts/test_home_retirement_inventory.py -v --tb=short`.
-Under the actual live fence, `private_members` additionally validates the fixed
-historical controller config/publication members, opaque controller DB/key/socket
-custody, empty `acme-unused`/`empty-ca-directory` and paired root-only CA staging. Published and
-activation digests supply the immutable comparisons; candidate self-hashes never
-become lineage. The CA private key, staged leaf key and opaque mutable bytes are
-metadata-only and never opened. Unknown shallow members, pending publication,
-unsafe parents/types/links/owners/modes, missing required immutable members and
-changes across blocking observations refuse without effects. Optional mutable
-or staging absence is recorded without claiming an owned deletion. The captured
-member/directory identities are immutable, redacted in repr, and freshly compared
-by `require_private`; a later same-byte replacement or disappearance cannot be
-silently adopted as the original snapshot.
-Ancestors above the managed root remain pinned by device/inode, numeric
-custody and mode, while unrelated sibling activity above that root is excluded
-from inventory drift, including the stat/open admission gap in the shared
-root-private reader. At and below the root, full directory metadata stays
-pinned; in-root changes and ancestor replacement still refuse.
-
-`managed_members` separately validates the fixed managed connector/sidecar
-configuration and shared runtime custody under the same live fence. Protected
-version-1 Debian provenance authenticates the original connector, inert sidecar,
-policy, release record and copied daemon token. A retained live sidecar requires
-the historical exact insertion and agreeing activation generation, home/control/
-connector identity, CA/dial binding and invite configuration. The release UID
-must also agree with current NSS identity. Expired policy is historical evidence
-only; it does not admit a transport. No release-home token or saved native state
-is opened. Mutable trust/sidecar files, runtime diagnostics and control/ingress/
-observer sockets are metadata-only; the reader never connects, initializes,
-repairs or parses authority from them. A trust triple must be complete or absent;
-absence supplies no rollback or cleanup proof. Fixed private runtime directories
-reject unknown entries, unsafe metadata and pending publications; sidecar health
-diagnostics retain the existing eight-file/64-KiB bound. Saved member, parent and
-provenance identities are immutable and redacted in repr. `require_managed`
-compares the original observation; validation/native-read replacements cannot be
-silently recaptured as original evidence.
-
-`home_retirement_journal.RetirementJournal` can preserve these original service,
-private-member and managed-member observations in fixed root-private
-`home-retirement-inventory.json` before effects. The bounded canonical journal
-contains only nonsecret identity, custody signatures and protected provenance
-digests. Closed paths/schemas, exclusive creation, file/parent synchronization
-and pinned readback apply; unknown or interrupted bytes are never overwritten.
-Explicit loading resynchronizes complete valid evidence and keeps the original
-observations even if current members are absent or replaced. It does not discover
-or adopt those current candidates. The serialization directory inode/custody
-binds the journal to its original domain. Live reuse pins the journal inode
-across syncs. Capture compares all saved member and ancestor identities again
-after publication; only the journal directory's intentional metadata change is
-permitted, while its inode/custody/mode remain pinned. That comparison is for
-the pre-mutation boundary: real revocation owns and must authenticate its later
-trust-pair writes separately.
-
-`auxiliary_members` adds the existing independently receipted root-private issuer
-directory, closed issuer journal/lock pair, matching data-only activation
-transaction and fixed per-user minter reservations. The transaction data parser
-lives with the retained historical receipt schema; the old store only reexports
-those types while its writers await removal. Issuer minting/uncertain outcomes
-are historical observations, not key-cleanup acknowledgements. No issuer or
-minter operation, directory, lock file or reservation is initialized. Unknown,
-torn, unsafe, partial or contended state refuses without repair. Minter records
-have exact hashed names, root-private custody and canonical UTC windows of at
-most five minutes, with a total 4096-record work bound. Actual existing issuer
-file/per-user directory locks must be available during observation. These are
-sampled locks; the returned snapshot does not retain cleanup exclusion. Original
-auxiliary member and ancestor identities join the durable journal, whose byte
-budget is 1 MiB. Loading keeps saved original observations after disappearance
-or replacement; it grants no effect acknowledgement.
-
-`home_retirement_operations.held_auxiliary_operations` keeps the existing
-original issuer file lock and both existing per-user minter directory locks
-exclusively held across its entire context. Every use revalidates the saved
-original journal, live fence, auxiliary names/ancestors and the actual held
-descriptions. Lock contention or replacement refuses and closes every acquired
-description, including on caller failure. It does not sample and release locks
-between checks. No absent directory or lock is initialized; absence stays an
-observation, not a held writer lock or proof of writer death. An existing issuer
-directory without its original lock refuses. Only the serialization directory's
-contents metadata may differ after original journal publication; its original
-inode/custody/mode and all auxiliary members remain pinned. This unchanged-member
-context cannot reconcile intentional removals or authorize selective cleanup.
-`StoppedRetirement.held_operations` joins the context to fresh saved-record,
-native stopped/disabled and independent cutoff readback before and after caller
-work. This supplies no final receipt, key-cleanup proof or package gate.
-
-`home_retirement_inert.InertRetirement` is the separate explicit prepared-inert
-native path. It requires validated historical inert lineage, no activation or
-live sidecar binding, original and current absence of the trust pair/lock and
-connector sockets, no saved serving peer, and fresh stopped/process-empty
-readback for the dedicated controller and every fixed managed owner. It never
-initializes a trust store or manufactures an active cutoff acknowledgement.
-Original inventory/native journals must agree; saved recovery never recaptures
-an existing record. If preparation stopped before the first native publication,
-complete original-member and native readback can finish that publication.
-Missing/torn original inventory or torn/foreign native evidence stays pending.
-Before each remaining native disable, original members, custody, native
-ownership and complete quiescence are checked again. Current native readback
-skips completed effects after a lost reply. Once every native owner is freshly
-stopped/disabled, `remove_leaves` composes selective private, auxiliary and
-managed leaf removal under the original operation locks. `resume_cleanup`
-reopens the same complete originals after partial removal or lost parent sync;
-it neither recaptures inventory nor attempts native effects. Remaining leaf
-custody, historical ownership receipts, current empty authority and complete
-native quiescence are checked before every effect. Absent original leaves are
-resynchronized and read back without unlink replay. Native artifacts, lock
-domains, accounts and saved originals remain required/retained. This entry
-supplies no account disposition, final receipt or package replacement gate.
-
-`home_retirement_coordinator.ActiveRetirement` composes active pre-effect
-preparation under the same actual installer I/O and live fence. Independent
-historical lineage and native observations select the connector process; real
-serving-peer status durably pins it before the complete original inventory.
-Both original journals must publish, synchronize and agree with that same
-controller/managed identity, boot, PID/start, release UID and account. Fresh
-original member/controller/native/peer comparisons precede real revoke-all,
-which returns only the original serving registry's acknowledgement plus anchored
-denial readback. Unknown, interrupted or replaced evidence refuses; no failed
-close can become a receipt or restore committed authority. This active-only
-composition supplies no inert fallback. Explicit `ActiveRetirement.from_saved`
-can reopen complete pre-revoke inventory and the saved original peer, including
-interrupted parent synchronization. Original members and the dedicated native
-owner must still match before status is requested from that same saved serving
-process. If the managed-native record was never created, this entry completes
-its first publication; complete existing records are resynchronized, never
-replaced. When interruption precedes inventory creation, both inventory and
-native journals must be absent; intact historical lineage must still identify
-the already-saved live connector PID/start/boot before exclusive first inventory
-publication. A missing inventory alongside any native record refuses. Missing,
-torn or unsafe peer evidence, torn inventory/native evidence and changed native
-owners remain pending. Existing inventory is never recaptured; post-preparation
-committed trust changes use the separate revoke-recovery entry. Status never
-substitutes for revoke/physical acknowledgement. The original cutoff deadline
-is retained throughout this preparation entry. Its explicit
-`revoke_and_stop_controller`
-passes the saved original controller observation and actual live cutoff receipt
-to `OwnedService`: both stop and disable freshly require that receipt, then
-re-observe controller identity after the potentially blocking guard. Changed
-original process/native identity or lost denial refuses the next effect; a
-failed native command preserves committed denial and original recovery evidence.
-The managed connector remains live for these controller checks.
-`revoke_and_stop_services` then supplies a fresh per-effect guard to the managed
-native owner. It keeps both saved records and the stopped controller pinned.
-Each managed effect requires the actual live receipt, or, after peer loss, the
-existing independent original-death/anchored-denial/all-managed-quiescence proof.
-An unavailable peer or partial native stop alone refuses the next effect. Fresh
-managed identity is compared again after the guard; changed original artifacts,
-boot or processes cannot become its new owner. The returned `StoppedRetirement`
-readback freshly requires saved records, both native stop receipts and independent
-cutoff proof. It is never a final retired record. Selective cleanup, account
-disposition, final publication and package replacement remain unfinished.
-Explicit `ActiveRetirement.resume_revoke` reopens partial ceremony/device
-commits through the same saved, still-live original serving process. The current
-pair/anchor must pass the retained real trust reader; only those two intentionally
-rewritten files and their parent's contents metadata are delegated to that owner.
-The original trust lock, every non-trust member/ancestor and dedicated/managed
-native identities remain pinned. Real revoke-all must finish persistent denial
-and receive physical acknowledgement from that original registry before reusing
-the same native-stop sequence. Retrying cannot reset terminal physical-close
-failure; unavailable/changed peers or malformed trust remain pending and require
-their separate independent-death recovery. No cleanup or final receipt follows
-from saved phase/denial alone.
-
-`ActiveRetirement.resume_controller` covers controller stop/disable interruption
-while that same original connector is still live. Current anchored trust and a
-new real original-registry acknowledgement remain mandatory. Fresh controller
-native readback must prove it stopped, then skips completed disable, preserving
-its original fragment, binary and any remaining activation-link inode. Recovery
-before an actual stop uses `resume_revoke`; a live controller never enters this
-stopped-controller path. Managed boot/process/artifacts must remain original.
-Only a freshly stopped controller's fixed runtime leaves may have been flushed
-or disappeared; present inode/custody/type/link count, immutable private files,
-the original trust lock and other ancestors remain pinned. Unknown runtime
-members refuse. Each remaining controller effect rechecks these facts and the
-acknowledgement before the existing managed-stop sequence. Failed physical
-closure cannot be reset. This same entry can finish interrupted managed
-target/sidecar stop while the saved original connector remains live and freshly
-acknowledges its real registry. It skips each positively stopped native effect.
-Only an independently stopped/process-empty sidecar's fixed runtime leaves may
-flush or disappear; surviving inode/custody/type/link count remain original.
-Active sidecar runtime, the live connector's runtime and managed configurations
-stay pinned, and unknown runtime members refuse. Lost original-peer contact
-still requires the separate independent death/quiescence recovery. This entry
-grants no cleanup or final receipt.
-
-`StoppedRetirement.remove_private` now joins that actual stopped/cutoff proof
-and held issuer/minter exclusion to selective original private-leaf cleanup.
-`home_retirement_cleanup.PrivateCleanup` loads the saved original inventory;
-every remaining unlink/rmdir follows a fresh required proof guard, a no-follow
-original-ancestor check and a current target comparison. Immutable leaves keep
-their full original signature. Controller runtime leaves may have been flushed
-during stop, but device/inode/custody/type/link count remain original. Only
-empty leaf directories use rmdir; there is no recursive deletion. Dedicated
-private directories reject unknown members. Empty leaf directories retain their
-saved original custody, including service-owned leaves: a no-follow open from
-the pinned parent must match the observed leaf on both descriptor and name
-before and after the emptiness check. Every removal synchronizes its
-parent and reads back absence. Explicit reuse accepts positively observed
-absence, never claims who removed it, never recaptures replacements and never
-replays absent removals. Reuse synchronizes each still-original parent and
-reads back absence even when the original leaf was already absent, so a lost
-parent sync cannot be mistaken for durable removal. A missing originally
-present leaf parent refuses. Ancestor inode/custody/mode remain pinned across
-intentional contents changes; ordinary inventory observations keep their
-existing full metadata checks. Native artifacts, saved records, managed trust,
-operation locks and local work remain retained. This is partial cleanup only,
-not completed account disposition, full cleanup or final publication.
-After private leaves are gone, explicit `remove_private_directories` on the
-stopped or inert owner removes only the four fixed original private roots:
-`/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`,
-`/run/happyranch-headscale` and the installer's `home-ca` directory. All must
-be empty; current native/cutoff (or proven inert empty authority) and held
-issuer/minter exclusion still guard each rmdir. The original root's
-inode/custody/mode and immediate parent's original identity remain mandatory.
-Fresh explicit recovery synchronizes each original immediate parent and reads
-back absence, including after a lost rmdir sync, without replaying rmdir or
-adopting a replacement. A missing/replaced parent, new/nonempty private root
-or reappearing leaf stays pending. Shared parents, operation domains, native
-artifacts, accounts and journals survive. Leaf-only cleanup entries retain
-their existing semantics; after directory removal, recover through the explicit
-directory entry rather than trying to remove leaves from missing parents.
-Explicit `remove_managed_directories(io, fence)` on the stopped or inert owner
-similarly finishes only the three original empty managed roots:
-`/var/lib/happyranch-tsnet-sidecar`, `/run/happyranch-connector` and
-`/run/happyranch-tsnet-sidecar`. All original non-trust managed leaves must
-already be absent. The connector state directory and its denied trust
-pair/lock remain available for independent cutoff readback. Each rmdir needs
-fresh original-peer death/anchored denial or original/current inert empty
-authority, complete native stopped/disabled/process-empty readback, and held
-original issuer/minter exclusion. These explicit entries also compose after
-original unit-fragment removal using cleanup-aware native observations.
-Remaining roots and their immediate parents keep original inode/custody/mode;
-unknown/nonempty roots, replaced parents and new authority refuse. Recovery
-synchronizes every original immediate parent and reads back absence without
-rmdir replay. Inert empty-authority readback admits only these absent runtime
-roots under still-original immediate parents; missing ancestors refuse. No
-directory absence substitutes for native or cutoff proof. Binaries, accounts,
-trust, operation domains and original journals remain separate final-cleanup
-obligations, and no final retired receipt is published.
-The inert-only `InertRetirement.remove_connector_directory(io, fence)` finishes
-the original empty `/var/lib/happyranch-connector` root after non-trust leaf
-cleanup. Saved never-activated lineage and historical absence of the trust
-state, anchor and lock are mandatory; later absence in an active layout grants
-no authority. Fresh current empty-authority and complete native quiescence,
-held surviving original issuer/minter domains, original directory/parent
-identity, parent sync and absent-name readback guard this rmdir and explicit
-lost-sync recovery. This entry also works after original unit/runtime removal.
-The inert native-cleanup reader admits that original root's absence only under
-its still-original immediate parent, so subsequent operation-domain cleanup
-can finish without recreating state. Ordinary pre-cleanup readers remain
-strict. Unknown contents, replacement, reappearing authority or native activity
-refuse; no rmdir/native replay, trust initialization or final receipt follows.
-Active denied trust is unaffected and remains a separate final obligation.
-Explicit `StoppedRetirement.remove_unit_fragments(io, fence)` and the inert
-owner's same entry remove only the six fixed original systemd fragments through
-`home_retirement_cleanup.UnitCleanup`. Both load the original journals rather
-than recapturing a partially removed layout. The original systemd parent and
-remaining fragment signatures stay pinned; each unlink (or prior absence)
-requires parent synchronization and absent-name readback. Fresh explicit
-recovery finishes remaining originals without stop/disable/unlink replay.
-Every effect still requires held original issuer/minter domains and current
-complete native stopped/disabled/process-empty facts. The active entry also
-requires independently proven original-peer death and real anchored denial;
-the inert entry requires original and current empty authority, with no active
-fallback. Missing fragments are admitted only by explicit cleanup observations:
-systemd may retain the exact inactive cached original fragment path, or report
-a not-found definition with empty fragment/user/group fields. Aliases, drop-ins,
-jobs, activation links, foreign cached paths, active processes and changed
-original parents/files refuse. Ordinary native observations and stop/disable
-remain strict about present fragments. No daemon reload is performed here.
-That fragment entry retains executables, the package registry, accounts,
-trust, original journals and lock domains. This is partial native cleanup,
-not final retirement or authorization to replace the package.
-Explicit `remove_controller_executable(io, fence)` on the stopped or inert
-owner separately removes only the saved dedicated Headscale binary at
-`/opt/happyranch-desktop/libexec/headscale/headscale`. Its full original
-signature and ancestors saved in the private inventory must still agree;
-an older inventory without those ancestor pins refuses without recapture.
-The same native quiescence, active independent death/anchored denial or inert
-empty-authority proof, and held original issuer/minter domains guard each
-effect. Cleanup-aware dedicated native observations allow the original binary
-to be absent while keeping account, aliases, links, jobs and process checks;
-ordinary observations and stop/disable continue to require it. Recovery
-synchronizes the still-original immediate parent and reads back absence
-without unlink replay, including after a lost parent sync. Changed files or
-ancestors and native reactivation refuse. The shared interpreter, sidecar,
-package registry, binary parent directories, trust, accounts, journals and
-operation domains remain retained. No account disposition, final receipt or
-package-replacement permission is supplied by this entry.
-The separate stopped/inert `remove_operation_domains(io, fence)` entry finishes
-the original issuer lock file, two minter user directories and empty issuer/
-minter roots, after their non-lock leaves/publication are absent. Each effect
-requires fresh complete native quiescence and active original-peer death with
-anchored denial, or original/current inert empty authority. Every surviving
-original domain is acquired without creation and held through removal and
-readback; contention, replacement, unknown contents or proof loss refuses.
-The same open descriptions remain held even after unlink/rmdir. Ordinary
-exclusion and leaf cleanup still refuse missing original domains. Only this
-explicit proof-bearing recovery path admits their absence without recapture;
-absence itself never proves writer death. Original ancestry and remaining
-member identity stay pinned, with parent fsync and fresh absent-name readback.
-When an already removed child has no immediate parent, the later original
-parent entry synchronizes its surviving parent instead. Repeated recovery
-performs no unlink/rmdir/native/IPC replay. Other cleanup that needs the original
-domains must precede this final auxiliary step. Trust, accounts and original
-journals remain; account disposition, final publication and the shipping
-retirement sequence are still unfinished.
-The active-only `StoppedRetirement.remove_trust(io, fence)` entry separately
-finishes the original denied connector trust triple and its empty state root.
-Before its first unlink, under the existing original trust lock, the real
-anchored-pair parser must observe complete denial. The owner exclusively writes,
-file/parent-syncs and reads back `home-retirement-denied.json`: only fixed member
-identities bound to the original managed identity, serving peer and retirement
-directory, never trust contents or a final retired claim. Each remaining member
-must exactly match that denied observation. Interrupted publication resynchronizes
-the same valid record; missing/malformed/foreign evidence cannot authorize a
-partly removed trust pair. A surviving original lock is acquired without creation
-and held even across its unlink; contention and replacement refuse.
-Every effect and explicit recovery independently rechecks saved original
-records, original-peer death, complete disabled/native quiescence and original
-directory custody. Neither this intermediate record nor absent trust/lock names
-is writer-death proof. The shared selective remover supplies per-leaf parent
-sync/absence readback and original empty-root rmdir recovery without replay.
-Unknown contents, differing remaining members, reappearing authority, lost
-native proof or replaced ancestors refuse. Ordinary cutoff/recovery readers
-remain strict and cannot use this record as an anchored trust snapshot. Original
-journals, dedicated-account disposition and final publication remain separate
-obligations; no startup, package or admission entry invokes this cleanup.
-The active and inert `retire_account(io, fence)` entries now supply dedicated
-account disposition after every original obsolete leaf, fixed private/managed
-root, native fragment, dedicated executable and issuer/minter domain is proven
-absent against saved ancestry. Active disposition additionally requires the real
-synchronized denied-state bridge and absent original trust/root, plus fresh
-original-peer death and all native quiescence. Inert disposition requires
-historical/current empty authority and absent original connector root. Neither
-path treats an absent account, domain or file as writer-death proof.
-
-`home_retirement_account.AccountDisposition` preserves the exact protected
-account receipt and original journals throughout user/group effects. Fresh
-locked system-account shape, name and numeric NSS lookups, unshared UID/GID,
-bounded UID process inventory and systemd/D-Bus consumer scans precede effects.
-An exact owned locked account with a remaining static consumer is retained as
-`retained-disabled: static consumer`, with no consumer or account modification.
-Foreign/reused/shared identities, live processes or unsafe evidence stay pending.
-Exclusive disposition calls only `userdel happyranch-headscale`, then the
-receipted unshared `groupdel`; no home-data removal flag or account creation.
-Nonzero native results preserve uncertainty. Explicit recovery re-observes
-remaining identities and skips positively absent effects, including user-only
-or both-name absence after an uncertain command. Receipt retirement is separate.
-
-The explicit active/inert `remove_original_receipts(io, fence)` entry then
-removes only the original account, publication and (for active layouts)
-activation receipts selected by the protected original inventory. Complete
-current native/cutoff, artifact absence and final account disposition are
-required before every unlink and parent sync. A partially removed account is
-not final disposition. `AccountDisposition.require_retired` performs readback
-only: either both original names are absent with no consumers, or the exact
-owned locked account remains for static consumers. It performs no user/group
-effect. The ordinary deletion entry still requires its original account receipt.
-
-Only this final-cleanup path admits an already absent original receipt. Every
-remaining receipt and its ancestry must still match the saved original;
-replacements, reappearing authority/account state or lost independent proof
-refuse further cleanup. Explicit recovery resynchronizes prior absence without
-unlink/native/account/IPC replay. All new original-evidence journals, serving
-peer/denied bridge and permanent old-payload fence remain. Detection stays
-pending: final receipt publication and evidence disposition are still separate
-obligations, and this entry grants no package-replacement permission.
-
-Only explicit account-stage native observation admits these proven original
-name absences and static consumers; ordinary native/stop/cleanup observations
-remain strict. Every account-stage readback still checks numeric reuse, native
-artifacts/aliases/jobs and current complete process quiescence. The account-stage
-result alone cannot authorize package replacement; final publication, the
-shipping sequence and installed acceptance are separate obligations.
-
-#### Final publication: proven account disposition
-
-After `remove_original_receipts`, active `StoppedRetirement.publish_final` and
-inert `InertRetirement.publish_final` reuse their complete current account,
-native, original-death/denial or inert-empty-authority and cleanup proof. They
-require every historical receipt absent and either the dedicated account absent
-or the exact original account retained disabled for a proven static consumer.
-
-`home_retirement_publication.publish_final` preserves the original installer
-directory flock and permanent old-activation refusal fence. Only after full
-proof may it ask the existing service manager to reload removed fragments;
-a zero reload exit cannot replace fresh absent-service readback. It writes only
-one fixed nonsecret `home-retirement@1` account-disposition record, synchronizes its
-private staged inode and parent, uses the installer's atomic no-replace rename,
-synchronizes the parent and checks the original open inode and fresh detector.
-A complete staged/final record can be resynchronized after interruption without
-rewriting a published final inode. A protected single-link 0600 staging file
-containing an exact canonical prefix, including an empty interrupted write,
-may be completed only under the same fresh full proof and fence. The writer
-pins its open inode, rechecks its named identity after proof, and writes only
-the missing suffix before the normal sync/rename/readback sequence. Another
-short write remains pending and can resume from its actual prefix. Detection
-never repairs a stage. Nonprefix bytes, unsafe/replaced staging evidence and
-every malformed final record remain pending and preserved.
-
-The four fixed root-private recovery records (inventory, native transport, peer
-and denied-member identities) survive unpack as inert provenance. With a final
-record, detection tolerates their protected single-link 0600 custody only while
-the exact permanent refusal fence survives. They do not establish completion or
-restore old authority. Unknown state, changed fence/custody, old authority or
-service/account reappearance still reports migration pending without effects.
-For the retained account, the minimized final account field is the fixed reason
-`retained-disabled: static consumer`. The protected original inventory remains
-mandatory: the detector reads its canonical original identity and directory
-lineage without locking, syncing or granting effect authority. Fresh readback
-requires exact name/numeric NSS mappings, the locked system-account shape,
-safe static consumers and no UID processes. Only independently validated
-account-only static unit references are allowed; unit/alias activation, missing
-or unsafe provenance, account drift or loss/change of the consumer proof stays
-pending. The status gives the same bounded retention reason. Effect-bearing
-journal loads still require the live original fence and synchronization.
-Detection performs no fsync, reload, cleanup or automatic publication. Shipping
-preinst and the remaining R02/P02 chains are separate unfinished work; this
-source slice is not an installed upgrade claim.
-
-#### Canonical explicit retirement entry
-
-The fixed Linux recovery command is
-`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.home_retirement`.
-It accepts no arguments, requires root, emits the retirement copy before any
-effect, and reports only bounded status. Fresh or independently confirmed retired
-layouts return without acquiring a fence or replaying effects. Existing final
-evidence with drift refuses before any new retirement attempt.
-An explicit completed invocation additionally pins the protected final inode,
-fsyncs it and its parent, and repeats retired-fact and named-inode readback.
-This completes a rename whose sync or return was interrupted; sync failure or
-concurrent replacement/reappearance refuses without rewriting the receipt.
-Ordinary status detection remains read-only and performs no fsync.
-
-`home_retirement_upgrade.retire` holds the existing installer directory flock
-and permanent refusal fence across the canonical sequence. First preparation
-selects active or inert ownership from historical evidence. Saved preparation
-and native records are loaded without recapture. Read-only existing cleanup
-observers select a remaining entry after interruption; current absence is only
-a dispatch choice. Every existing effect owner still requires its complete
-current original/cutoff-or-inert/native/custody/exclusion proof. Partial native
-recovery selects the same live original connector or the independent original
-death/quiescence path; a missing process never supplies cutoff authority.
-
-An originally owned controller in failed state is normalized with unit-specific
-`reset-failed` before artifact or account cleanup. The same cutoff/inert guard
-and fresh original native/filesystem/account observation precede the reset;
-its result must read back inactive. Daemon-reload does not clear runtime failure.
-Foreign or replaced targets receive no reset, stop, disable or removal.
-
-The sequence stops on the first failed effect, retaining committed denial and
-all remaining evidence. It never tries an alternative mutator after failure.
-Distinct explicit cleanup operations reopen saved originals with their existing
-bounded owners; no in-flight cutoff deadline is reset or extended. Completed
-prefixes allow recovery at native-artifact, operation-domain, trust, account or
-receipt publication boundaries without replaying earlier destructive effects.
-Only final publication plus independent retired readback returns success for a
-legacy layout. The incoming Debian preinst carries this canonical implementation
-before unpack; installed upgrade acceptance remains separate.
-
-The fixed entry constructs `RetirementIO`, which uses the same no-follow
-filesystem, directory custody, parent pinning, atomic rename and configuration
-validators as the retained installer. Historical issuer inventory and invite
-binding decoding have no provisioning or issuance effects and import no retired
-controller/activation/issuer owner. The helper-unit policy is shared directly
-with package validation. The old installer keeps its existing layout and error
-aliases while its remaining local-owner removal is unfinished. Canonical entry
-cases construct this actual retained adapter and forbid borrowing retired
-modules; this dependency cut alone is not evidence of dpkg timing.
-
-`packaging/linux/retirement-preinst.py` generates the executable control entry
-from a fixed closure of retained source modules. The builder compares every
-included module byte with its new-payload counterpart before emitting a package.
-It never executes supplied payload code. The private inline loader uses namespace
-parents and exact source bytes, refuses unbundled `runtime`/`cli` modules, and
-does not execute the package's eager convenience-export initializer. A child
-that already imported installed runtime/CLI modules refuses rather than mixing
-old and incoming implementations.
-
-The existing system Python runs only the stdlib bootstrap. `install` uses the
-canonical read-only detector and succeeds for a genuinely fresh layout or an
-independently confirmed retired receipt, including reinstall after package removal,
-without requiring an old interpreter or replaying retirement effects. A retired
-result uses the canonical same-inode file/parent sync and fresh readback before
-acceptance; a failed sync or changed proof refuses. Fresh detection stays read-only.
-Legacy/conflicting/unsafe evidence still refuses this shortcut. `upgrade` requires
-the fixed installed
-`/opt/happyranch-desktop/python/bin/python3` alias to its CPython3.12 executable,
-protected root-owned ancestors and a bounded, root-owned, non-writable Python
-tree with contained links. It then sends the incoming code via stdin to that
-interpreter in isolated mode with a fixed minimal environment. Unsupported or
-unavailable capability/dependencies return bounded pending; there is no download
-or alternate-interpreter fallback. The child's canonical retirement result is
-the pre-unpack return gate. No old tool is removed by the bootstrap itself.
-`abort-upgrade` performs no effect and never reverses committed denial.
-
-Focused packaging checks:
-`/usr/bin/python3 -B packaging/linux/test_build_deb.py RetirementPreinstTests DebPackageTests.test_installed_contract_and_architecture DebPackageTests.test_retirement_payload_source_drift_is_refused -v`.
-These cover source identity, actual control extraction on both architectures,
-fresh/ambiguous detection and bootstrap refusal/return propagation. Generated
-entry active retirement/replacement compositions and installed dpkg/systemd
-ordering remain distinct evidence obligations.
-
-Focused entry venue:
-`uv run --frozen pytest scripts/test_home_retirement_entry.py -v --tb=short`.
-Its native and filesystem adapters cannot establish installed dpkg ordering.
-
-The same entry table includes interrupted original preparation, ceremony burn,
-first-device denial, failed physical closure, controller stop/disable, owned
-failed-controller reset and recovery, partial account removal and the boundary
-before final publication. Each call constructs
-a fresh installer over the surviving real files and anchored store. Read-only
-detection and explicit recovery with unsafe original-record custody must stay
-pending without unproven effects. Failed closure additionally remains pending
-on the same live original owner; only independently observed original death,
-managed quiescence and committed denial permit the separate recovery path.
-Further legitimate ceremony burns on a failed retry do not undo earlier denies.
-Every successful row must produce its final record through the real writer,
-then reuse that record for repeat-without-effects and reappearance refusal.
-The final-publication rows additionally interrupt staged-file fsync, staged-parent
-fsync, no-replace rename, the return after actual rename, final-parent fsync and
-the return after actual final readback. The final-parent case includes both
-active and inert origins. Explicit recovery completes remaining publication or
-syncs the already published same inode; the real resulting receipt feeds the
-same repeat and reappearance checks. The lower publication keeper separately
-checks completed-entry sync refusal, inode replacement and legacy reappearance
-during sync, using output from the actual production writer.
-The `active-preinst-fragment`, `active-preinst-first-device` and
-`inert-preinst-publication` rows additionally
-extract the actual package control entry and execute its transmitted child
-program and inline sources in the same temporary-root composition. Only the
-process/native/filesystem boundaries are adapted; canonical retirement supplies
-the real commits, cutoff, cleanup, final receipt and return gate. Fresh incoming
-module namespaces and IO objects are created for each attempt.
-The child receives the same independent synthetic released-binary pin as the
-existing native fixture; it still streams and verifies the candidate's digest.
-Completed readback precedes a synthetic retained-source replacement: missing old
-interpreter capability refuses, restored capability with the extracted retained sources
-reads the produced receipt without replay, and rollback reappearance refuses.
-`abort-upgrade` preserves the completed state without invoking the child.
-
-The process adapter simulates CPython3.12/isolated capability in-process; it
-does not establish actual installed interpreter custody or execution. Partial
-retained-source layouts are not a completed package installation. These rows
-do not establish exhaustive replacement boundaries, every publication syscall,
-installed dpkg/systemd acceptance or model-checking results.
-
-`StoppedRetirement.remove_auxiliary` separately removes only the saved original
-issuer journal, issuer publication, activation transaction and minter operation
-leaves. Every unlink requires fresh stopped/native/cutoff proof and the held
-original issuer/minter lock descriptions, then parent sync and absence readback.
-Its explicit cleanup context accepts prior absence of original non-lock leaves
-without recapture; unchanged-original contexts remain strict. Original lock
-names and all originally present directories must remain, with pinned
-inode/custody/mode. Closed issuer/minter names and full signatures on remaining
-regular leaves reject unknown or replaced artifacts before effects. Directory
-contents metadata alone may change during this selective cleanup. No leaf
-contents are opened. Fresh saved objects can repeat auxiliary cleanup without
-unlink replay; the separate domain entry above handles their later removal.
-Private cleanup uses the same explicit cleanup-mode exclusion to
-reconcile original auxiliary non-lock leaf absence, so fresh saved recovery can
-repeat both phases in either order. The strict held-operation context remains
-unchanged. Both cleanup families synchronize and independently read back prior
-leaf absence; observed absence alone is not durability evidence.
-`StoppedRetirement.remove_managed` supplies the same per-effect stopped/cutoff
-and held-operation guards to original managed configurations and runtime leaves.
-It reuses the private cleanup owner's no-follow parent/target, sync and absence
-readback mechanics with the saved managed inventory and shared-account custody.
-Configurations retain complete original signatures; stopped runtime leaves may
-flush contents but retain original device/inode/custody/type/link count. Closed
-runtime directories reject unknown names, including beside retained trust state.
-The trust state, anchor and lock remain retained for the guard's independent real
-denied-state readback; this partial entry never opens or removes those leaves.
-Fresh saved recovery can finish remaining original leaves, synchronize earlier
-absences and repeat without unlink/native/IPC replay after private and auxiliary
-cleanup. The original records, native artifacts, accounts and operation lock
-domains remain available and required. Full domain/native/trust cleanup, account
-disposition and final publication remain separate unfinished obligations.
-`StoppedRetirement.from_saved` explicitly reopens the fully stopped/disabled
-phase through fresh objects. It loads all three original records without
-rediscovery/capture, cross-checks their identity/account/release/boot/PID binding,
-and requires actual anchored denial, independent original death and complete
-managed quiescence. Dedicated controller fragment/executable identities and
-all managed artifacts must still match the saved originals. Fresh stopped and
-disabled native observations produce only new in-process readbacks, with no
-IPC request, stop/disable replay, trust initialization or final publication.
-An independently proven later boot can satisfy original death; missing/torn
-records, replaced artifacts, a still-live original, active/merely stopped-enabled
-units, or live/missing trust remain pending. Other interrupted phases, selective
-cleanup and final publication still require their separate recovery owners.
-`StoppedRetirement.resume_native` supplies the separate explicit native-resume
-entry when all managed units/processes are already positively quiescent. Saved
-original records and independent original-death/anchored-denial proof guard
-each remaining dedicated stop/disable and managed disable. Original controller
-fragment/executable, still-present link inode and any live process stay pinned;
-a later boot cannot adopt a live dedicated process. The independently observed
-current boot remains fixed across effects. Native readback skips completed
-effects, including a disable that completed before its reply was lost. A failed
-reply never itself becomes success. Replaced ownership, active managed units,
-lost denial or a new boot during resumption refuses the next effect. The owned
-controller primitive also keeps the original still-present activation-link
-inode across its stop→disable boundary. Neither entry performs selective
-cleanup or publishes final retirement.
-Standalone composition checks run through real inventory/journals/anchored
-store/private IPC with synthetic native facts:
-`uv run --frozen pytest scripts/test_home_retirement_coordinator.py -v --tb=short`.
-
-`home_retirement_transport.ManagedTransport` separately observes the fixed
-connector/sidecar, managed target and release-verifier activation units. Frozen
-historical Debian unit digests and protected installed `happyranch.md5sums`
-package provenance authenticate the units and two executable files; a candidate
-self-hash is not provenance. Registry work is bounded to 16 MiB/65536 entries,
-and each executable is streamed within 256 MiB. This uses the existing package
-builder's installed-file registry under the same cooperative-root limitation,
-not a new signed-package or adversarial-root guarantee. Unsafe/unknown/missing
-or replaced registry, fragments, aliases/drop-ins, activation links, ancestors,
-NSS binding, PID/start/boot, executable inode, exact argv or cgroup refuses.
-Shared-account process inventory must contain precisely the owned service PIDs;
-the separate root verifier still has its own exact process/cgroup observation.
-Immutable members are rechecked after blocking native calls. Strict fixed kernel
-boot observation is shared with the original connector cutoff reader.
-
-Its ownership-only stop/disable operation requires the caller's earlier actual
-`ManagedObservation`, freshly validates before each effect and confirms actual
-native/process/link results. Stop and disable uncertainty preserves artifacts
-and produces no receipt. Positive inactive/disabled facts skip already completed
-native effects. Original activation-link identity stays pinned until that
-specific owned disable removes it. The original boot remains fixed throughout
-all effects; the active coordinator supplies its real per-effect cutoff guard,
-followed by a new native observation before each call. An original process may become absent, but a new/reused process or
-resurrection of an originally inactive unit refuses further effects. Receipts
-become unusable after drift. Confirmation uses the same original parent
-device/inode/custody/mode comparison as native continuation: selective sibling
-directory removal may change parent link counts/timestamps, while files,
-activation links, boot, native properties and process facts remain exact.
-Replaced or mode-changed parents still refuse. No
-start/restart, account modification, package-database write or file cleanup is
-provided. The coordinator must obtain actual persistent revocation and original
-transport acknowledgement first, persist this separate native observation with
-the original cleanup evidence, and hold real operation exclusion. These native
-observations can be persisted by `home_retirement_transport_journal.ManagedTransportJournal`
-in fixed root-private `home-retirement-transport.json`. The closed bounded record
-binds managed identity/account/release/live-sidecar and the serialization-directory
-inode to the original unit/executable/link/ancestor/boot/process observations.
-Exclusive capture synchronizes file and parent, checks the same inode/bytes
-through both boundaries, then rechecks the original native observation. Unknown,
-torn or foreign records are retained. Explicit loading resynchronizes complete
-valid evidence without discovering current native owners or adopting changed
-artifacts; a live loader also keeps its original record inode pinned. A complete
-interrupted write can be explicitly synchronized, while partial bytes refuse.
-The record is neither an effect acknowledgement nor a death/cutoff proof; the
-full coordinator must compose it with original inventory and serving-peer pins
-before effects. That full coordinator composition remains unfinished.
-
-`home_retirement_recovery.OriginalDeathRecovery` supplies separate read-only
-explicit recovery after independent original death. It binds the original
-serving-peer pin to the saved connector PID/start/boot and protected managed
-identity/account/release. Anchored trust readback must already show every
-ceremony burned and every device denied. Exact original native artifacts and
-fresh inactive/process-empty state for the entire managed unit family, including
-shared-account process inventory, remain mandatory. Only alongside those facts
-can a positively observed new kernel boot, original PID absence, or different
-positive PID start prove original death. Same-start live original, unsafe or
-changing proc facts, active units/processes, missing evidence, changed artifacts,
-corrupt/live trust or generation drift remains pending. No IPC request, new
-registry, native effect or trust write occurs. A returned live receipt freshly
-rechecks denial, original evidence, death and quiescence; it is not a durable
-acknowledgement or a final retirement record. Selective cleanup, exclusive
-account disposition and final receipt still require the full coordinator.
-
-The original journals preserve evidence without revoking authority. Active
-cutoff and original-death recovery independently read the real anchored trust
-state; neither publishes final retirement. The original connector pin must
-precede remaining inventory capture. The explicit
-coordinator must establish the separate proofs, complete the remaining cleanup
-inventory, preserve it before effects, hold actual operation exclusion and account
-for intentional revocation writes without adopting replacements. A matching
-current hash or same-named candidate is never lineage by itself.
-
-These prerequisites remain unmounted until the explicit retirement coordinator
-composes persistent denial, real revoke/store readback, original-owner physical
-acknowledgements and recovery. They cannot by themselves satisfy retirement or
-authorize package replacement. Sampled ownership checks retain the cooperative
-root/systemd-writer limit; they are not an adversarial-root race fence.
 
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
 
