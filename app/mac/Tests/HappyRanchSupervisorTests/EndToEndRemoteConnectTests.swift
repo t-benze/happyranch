@@ -39,7 +39,7 @@ private final class HTTPResult: @unchecked Sendable {
 }
 
 /// Start once and wait for an affirmative listener readiness result.
-private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, port: UInt16) throws {
+private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, port: UInt16) throws -> UInt16 {
     let ready = DispatchSemaphore(value: 0)
     let startup = HTTPResult()
     listener.stateUpdateHandler = { state in
@@ -62,6 +62,12 @@ private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, po
         throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
             "Fake listener 127.0.0.1:\(port) did not become ready: \(startup.error ?? "timeout or cancelled")"])
     }
+    guard let boundPort = listener.port?.rawValue, boundPort > 0 else {
+        listener.cancel()
+        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+            "Ready fake listener 127.0.0.1:\(port) did not report its bound port"])
+    }
+    return boundPort
 }
 
 // MARK: - StubDaemonServer
@@ -76,7 +82,7 @@ private func startReadyListener(_ listener: NWListener, queue: DispatchQueue, po
 ///   verify the connector tears down a live connection.
 private final class StubDaemonServer: @unchecked Sendable {
 
-    private let port: UInt16
+    private(set) var port: UInt16 = 0
     private let queue: DispatchQueue
     private var listener: NWListener?
     private let lock = NSLock()
@@ -93,8 +99,7 @@ private final class StubDaemonServer: @unchecked Sendable {
     /// The body to return for a 200 response (normal mode).
     var responseBody: String = "{\"surface\":\"tasks\",\"content\":\"SPA surface loaded via remote connect\"}"
 
-    init(port: UInt16) {
-        self.port = port
+    init() {
         self.queue = DispatchQueue(label: "com.happyranch.e2e-stub-daemon-\(UUID().uuidString)")
     }
 
@@ -102,14 +107,14 @@ private final class StubDaemonServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: "127.0.0.1",
-            port: NWEndpoint.Port(integerLiteral: port)
+            port: NWEndpoint.Port(integerLiteral: 0)
         )
         let listener = try NWListener(using: parameters)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             self.queue.async { self.handleConnection(connection) }
         }
-        try startReadyListener(listener, queue: queue, port: port)
+        port = try startReadyListener(listener, queue: queue, port: 0)
         self.listener = listener
     }
 
@@ -185,12 +190,18 @@ private final class TestCredentialProvider: DaemonCredentialProvider, @unchecked
 /// Disjoint test range below the default macOS ephemeral range (49152+).
 private let portAllocator = NSLock()
 nonisolated(unsafe) private var nextPort: UInt16 = 30000
+// Protected by portAllocator; retained for exhaustion diagnostics across allocations.
+nonisolated(unsafe) private var skippedPorts: [String] = []
 
-/// Verify availability below the default macOS ephemeral range. No retry:
-/// a competing fixed bind must fail here or at listener readiness.
+/// Probe a candidate before production code needs an explicit port.
+/// The real listener must still report readiness after this socket closes.
 private func requireAvailableLoopbackPort(_ port: UInt16) throws {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
-    guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    guard fd >= 0 else {
+        let code = errno
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) socket probe failed: errno=\(code)"])
+    }
     defer { close(fd) }
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -203,25 +214,37 @@ private func requireAvailableLoopbackPort(_ port: UInt16) throws {
         }
     }
     guard bound == 0 else {
-        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
-            "Loopback port \(port) unavailable: \(error.localizedDescription)"])
+        let code = errno
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey:
+            "Loopback port \(port) unavailable: errno=\(code) \(error.localizedDescription)"])
     }
 }
 
 private func allocatePorts() throws -> (daemon: UInt16, connector: UInt16) {
     portAllocator.lock()
     defer { portAllocator.unlock() }
-    guard nextPort < 32000 else {
-        throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
-            "Loopback test port range exhausted"])
+    // Keep disjoint two-port slots for explicitly configured production endpoints.
+    // Fake listeners use port 0 instead and publish their OS-assigned bound port.
+    while nextPort < 32000 {
+        let first = nextPort
+        let second = nextPort + 1
+        nextPort += 2
+        do {
+            try requireAvailableLoopbackPort(first)
+            try requireAvailableLoopbackPort(second)
+            return (first, second)
+        } catch let error as NSError {
+            guard error.domain == NSPOSIXErrorDomain, error.code == Int(EADDRINUSE) else {
+                throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+                    "Loopback port probe failed: \(error.localizedDescription); skipped ports: \(skippedPorts)"])
+            }
+            skippedPorts.append(error.localizedDescription)
+            print("EndToEndRemoteConnectTests port allocation skipped occupied candidate: \(error.localizedDescription)")
+        }
     }
-    let first = nextPort
-    let second = nextPort + 1
-    nextPort += 2
-    try requireAvailableLoopbackPort(first)
-    try requireAvailableLoopbackPort(second)
-    return (first, second)
+    throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey:
+        "Loopback test port range exhausted (30000..<32000); skipped ports: \(skippedPorts)"])
 }
 
 // MARK: - HTTP helpers
@@ -441,13 +464,12 @@ struct EndToEndRemoteConnectTests {
     @Test("full pairing + SPA proxy + revoke + security invariants (THR-034 gate)")
     func fullEndToEndRemoteConnect() async throws {
         // ---- Allocate ports ----
-        let ports = try allocatePorts()
-        let daemonPort = ports.daemon
-        let connectorPort = ports.connector
+        let connectorPort = try allocatePorts().connector
 
         // ---- Step 2: Start stub daemon ----
-        let stubDaemon = StubDaemonServer(port: daemonPort)
+        let stubDaemon = StubDaemonServer()
         try stubDaemon.start()
+        let daemonPort = stubDaemon.port
         defer { stubDaemon.stop() }
 
         // ---- Step 1: REAL HomeConnector bound loopback via nil seam ----
