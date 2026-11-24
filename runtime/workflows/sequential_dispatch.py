@@ -1465,8 +1465,12 @@ class SequentialDispatcher:
         from runtime.workflows.sequential_document_access import authorize_generic_input, generic_binding_context
         from runtime.workflows.sequential_engine import _identity
         from runtime.workflows.sequential_run_validation import generic_result_state, generic_selection
-        _check(run['state'] == 'running' and run['progress'] != 'cancelling' and run['active_visit_id'] == visit['id']
-            and visit['state'] == 'running' and visit['selected'] == 1 and visit['session_id'] == sid
+        # Prompt construction precedes TaskInvocation.commit's session bind.
+        # Accept only the truthful pre-bind or committed tuple; never mix them.
+        pre_bind = (run['progress'] == 'queued' and visit['state'] == 'queued' and visit['session_id'] is None)
+        bound = (run['progress'] == 'executing' and visit['state'] == 'running' and visit['session_id'] == sid)
+        _check(run['state'] == 'running' and run['active_visit_id'] == visit['id']
+            and visit['selected'] == 1 and (pre_bind or bound)
             and visit['principal'] == agent and not _cancelled(conn, run, visit))
         validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
         start, _ = generic_binding_context(conn, run, visit, compiled, capture, budget)
@@ -1484,7 +1488,9 @@ class SequentialDispatcher:
                 stored_recipients=recipients, principal=agent, visit=visit, budget=budget)
             values.append(GenericRecipientInput(source='current.' + ref.slot, recipients=tuple(recipients['roles']),
                 value=output['content_bytes'].decode('utf8'), reference=ref))
-        state = generic_result_state(conn, run, visit, compiled, budget)
+        # Like @1, rendering uses this invocation's prospective SID only in
+        # memory. The stored visit remains unbound until the launch COMMIT.
+        state = generic_result_state(conn, run, dict(visit, session_id=sid), compiled, budget)
         brief = render_generic_node_brief(compiled, state, original_request=start.request, inputs=GenericBriefInputs(values=values))
         budget.reserve(8 * len(brief.node_data.encode('utf8')) + 65536)
         budget.check()

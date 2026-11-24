@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
-_TASK_ID = re.compile(r"(?:[A-Z][A-Z0-9-]{0,63}(?<!-)|TASK-SEQ-[0-9a-f]{64})\Z")
+# Exact persisted sequential forms, including the original engine advance ID.
+SEQUENTIAL_TASK_ID_PATTERN = r"TASK-SEQ-(?:[0-9a-f]{64}|seq-(?:carrier|first-task|visit)-[0-9a-f]{64})"
+_TASK_ID = re.compile(rf"(?:[A-Z][A-Z0-9-]{{0,63}}(?<!-)|{SEQUENTIAL_TASK_ID_PATTERN})\Z")
 _PRODUCER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ENV_KEYS = ("TMPDIR", "TMP", "TEMP", "HAPPYRANCH_TASK_TMP_ROOT", "HAPPYRANCH_TASK_SCRATCH_MANIFEST")
 _MAX_MANIFEST_BYTES = 64 * 1024

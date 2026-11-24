@@ -16,14 +16,14 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from runtime.orchestrator.task_scratch import TaskScratchError, validate_task_scratch_manifest
+from runtime.orchestrator.task_scratch import SEQUENTIAL_TASK_ID_PATTERN, TaskScratchError, validate_task_scratch_manifest
 
 MAX_ENTRIES = 100_000
 MAX_READS = 10_000
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_TOTAL_MANIFEST_BYTES = 4 * 1024 * 1024
 SCAN_NS = 5_000_000_000
-_TASK_ID = re.compile(r"[A-Z][A-Z0-9-]{0,63}(?<!-)\Z")
+_TASK_ID = re.compile(rf"(?:[A-Z][A-Z0-9-]{{0,63}}(?<!-)|{SEQUENTIAL_TASK_ID_PATTERN})\Z")
 
 
 @dataclass(frozen=True)

@@ -2955,3 +2955,30 @@ Only positive subject COMMIT releases editing; failed COMMIT releases nothing.
 U7c1 GET `repository-preflight` remains a read of the already-bound subject.
 No selected-context, observer, schema, credential, permission generation,
 network/effect, historical evidence or live deployment change follows.
+
+## Generic prompt construction before session binding (TASK-18967)
+
+The ordinary queue builds the generic node prompt before the final launch
+COMMIT. Instruction rendering accepts only a running run whose active selected
+visit belongs to the invocation's principal and is either queued with queued
+progress and no session, or running with executing progress and the invocation's
+bound session. Cancellation remains a refusal. The in-memory brief state uses
+the prospective invocation SID, as the original engine does; rendering writes
+no visit/session binding. Generic assignment/current-authority and addressed
+input checks still run. Launch COMMIT independently rechecks queue eligibility,
+assignment, native claim and cancellation, then atomically binds the session and
+sets executing progress.
+
+Previously admitted queued state is rediscovered without new Save/Allow.
+Scratch preparation, manifest validation, report discovery and coverage accept
+exactly the persisted engine-v2 `TASK-SEQ-seq-` IDs with kind `carrier`,
+`first-task` or `visit`, followed by a hyphen and 64 lowercase hex digits.
+The original engine's `TASK-SEQ-<64 lowercase hex>` advance form is also
+recognized across these consumers; their uppercase grammar is retained. No
+future ID rename or historical row rewrite is needed. The private C27 case
+reaches launch COMMIT and the provider-subprocess boundary through the real
+queue; replay restores an
+actual pre-fix refused DB and rediscovers it without Save/Allow. C29 covers
+scratch/manifest/report/coverage for generated carrier, first-task and second
+visit IDs, plus the original-engine advance form. These source checks grant no
+live restart or run/settings mutation.
