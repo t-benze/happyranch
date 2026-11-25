@@ -1756,8 +1756,10 @@ summary (status, counts, artifact path, SHA256); complete JSON/embedded PNG data
 and partial failure evidence stay in the existing archived artifact. Eight panes/
 sixteen extra images per 200% view, 2 MiB
 per image, 8 MiB per locale and the existing 40-second process cap bound capture;
-incomplete/over-budget capture fails. No product layout change or Jenkins
-job/config change is included.
+incomplete/over-budget capture fails. Below the desktop breakpoint, the sidebar
+footer centers the profile avatar without horizontal insets so it fits the
+56px rail at 200% text in the supported narrow Mac window. The wider sidebar
+keeps its existing insets. No Jenkins job/config change is included.
 Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
 step fsyncs a `capture_progress` record before starting. Native background timers
 allocate up to 10 seconds for navigation and 2 seconds for later steps, even if

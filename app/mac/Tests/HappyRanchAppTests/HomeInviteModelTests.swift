@@ -223,6 +223,17 @@ struct HomeInviteModelTests {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
+        // Phase polls need execution time, not calendar time or host sleep.
+        // Keep the seven-second bound even if the Mac sleeps between polls.
+        @MainActor
+        func waitForPhase(_ expected: HomeInviteModel.Phase) async -> Bool {
+            let clock = SuspendingClock()
+            let deadline = clock.now.advanced(by: .seconds(7))
+            while model.phase != expected, clock.now < deadline {
+                try? await clock.sleep(until: min(deadline, clock.now.advanced(by: .milliseconds(10))))
+            }
+            return model.phase == expected
+        }
         model.accept(try invite())
         try #require(await eventually { model.webURL != nil })
         let url = try #require(model.webURL), context = model.lifetime
@@ -234,14 +245,14 @@ struct HomeInviteModelTests {
         let observation = model.$webURL.sink { published.append($0) }
         defer { observation.cancel(); model.disconnectActive() }
         session.readiness.setBusy(true)
-        try #require(await eventually(timeout: 7) { model.phase == .runtimeBusy })
+        try #require(await waitForPhase(.runtimeBusy))
         #expect(model.phase != .connected && model.appReadiness?.state == "busy")
         #expect(model.lifetime == context && model.webURL == url)
         #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "unknown")
         #expect(await session.stops == 0)
         #expect(await session.opens == 1)
         session.readiness.setBusy(false)
-        try #require(await eventually(timeout: 7) { model.phase == .connected })
+        try #require(await waitForPhase(.connected))
         #expect(model.lifetime == context && model.webURL == url)
         #expect(published.allSatisfy { $0 == url }, "No nil publication can dismantle Main")
         #expect(await session.stops == 0)
@@ -250,7 +261,7 @@ struct HomeInviteModelTests {
         #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "available")
         // Genuine access loss still takes the existing teardown path.
         await session.configure(access: .revoked)
-        try #require(await eventually(timeout: 7) { model.phase == .failed(.revoked) })
+        try #require(await waitForPhase(.failed(.revoked)))
         #expect(model.webURL == nil && model.lifetime != context)
         #expect(model.accessObservation?.access == .revokedConfirmed)
     }

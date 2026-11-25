@@ -114,7 +114,9 @@ in `dialogs-en` and `dialogs-zh` modes (40 seconds each, within the existing
 2,100-second suite deadline). Each captures Settings, Connection and Main with
 the web viewport, in light/dark and 100%/200% web text: **24 top PNGs,
 each 760×560**, plus overlapping scroll captures at 200% for every visible
-vertical scrolling pane, through its bottom. It drives the shipping
+vertical scrolling pane, through its bottom. The collapsed sidebar footer has
+no horizontal insets and centers the profile avatar so it fits its 56px rail at
+200% text; the wider sidebar keeps its existing insets. It drives the shipping
 `happyranch.theme` storage key, `data-theme` attribute and storage listener,
 and checks the applied theme before every snapshot. The qualifier checks the
 rendered destination, focused dialog and locale. WebKit's page snapshot is composited with AppKit's native window
