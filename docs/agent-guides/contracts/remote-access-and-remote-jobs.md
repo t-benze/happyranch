@@ -2606,6 +2606,10 @@ matching its writer. Invite configuration remains root-owned `0600`. The
 policy is separate from the Headscale publication record's file map; neither
 that map nor the six receipt members change, so retained product publications
 and receipts use the same format and digests.
+
+The Linux managed connector CLI passes its resolved configuration path to the
+supervisor. Home admission still requires exactly `/etc/happyranch/connector.json`
+and the fixed connector unit; an alternate path cannot acquire home authority.
 Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
 (`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
 digested; renewable `server.crt` is excluded because trust binds the CA DER
