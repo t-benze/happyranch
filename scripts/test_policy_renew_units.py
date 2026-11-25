@@ -22,7 +22,8 @@ PartOf=happyranch-managed.target
 [Service]
 Type=oneshot
 User=root
-Group=happyranch
+Group=root
+SupplementaryGroups=happyranch
 ExecStart=/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -208,10 +209,15 @@ def test_fresh_auth_can_revive_only_identical_valid_policy(installed: PolicyEnve
 
 def test_fixed_renewal_entry_and_launcher(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import os
+    import errno
     import runpy
     import sys
+    import syslog
+    from unittest.mock import Mock
     from runtime.remote_access import policy_renew
     calls = []
+    journal = Mock()
+    monkeypatch.setattr(syslog, 'syslog', journal)
     monkeypatch.setattr(sys, 'argv', ['fixed-entry'])
     monkeypatch.setattr(os, 'geteuid', lambda: 0)
     class Installer:
@@ -227,6 +233,21 @@ def test_fixed_renewal_entry_and_launcher(monkeypatch: pytest.MonkeyPatch, capsy
     monkeypatch.setattr(Installer, 'renew_policy', refuse)
     assert policy_renew.main() == 1
     assert capsys.readouterr().err == 'renewal-refused\n'
+    journal.assert_called_once_with(syslog.LOG_WARNING,
+        'remote-access-lifecycle-failure action=renew-policy step=renew item=0 '
+        'stage=main exception=ValueError reason="unverified"')
+    def busy(self: object, **kwargs: object) -> None:
+        try:
+            raise BlockingIOError(errno.EAGAIN, 'synthetic-private-lock-path')
+        except OSError:
+            raise ValueError('synthetic-closed-wrapper') from None
+    monkeypatch.setattr(Installer, 'renew_policy', busy)
+    assert policy_renew.main() == 1
+    assert capsys.readouterr().err == 'renewal-refused\n'
+    journal.assert_called_with(syslog.LOG_WARNING,
+        'remote-access-lifecycle-failure action=renew-policy step=renew item=0 '
+        'stage=main exception=BlockingIOError reason="lock-busy"')
+    assert journal.call_count == 2
     monkeypatch.setattr(os, 'geteuid', lambda: 1000)
     assert policy_renew.main() == 1
     assert capsys.readouterr().err == 'root-required\n'

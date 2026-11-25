@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,11 +157,25 @@ class HomeActivationTransactionStore(HomeActivationStore):
             yield parent
 
     @contextmanager
-    def locked(self) -> Iterator[int]:
-        """One nonblocking directory lock spans both records and every effect."""
+    def locked(self, *, wait: float = 0.0) -> Iterator[int]:
+        """One directory lock spans both records and every effect.
+
+        Nonblocking by default; only unattended renewal opts into bounded wait.
+        """
+        if type(wait) not in (int, float) or not 0 <= wait <= 20.0:
+            raise HomeActivationError("state")
         try:
             with self._parent(TRANSACTION_PATH) as (parent, revalidate):
-                fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                deadline = time.monotonic() + wait
+                while True:
+                    try:
+                        fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise
+                        time.sleep(min(0.25, remaining))
                 revalidate()
                 yield parent
                 revalidate()

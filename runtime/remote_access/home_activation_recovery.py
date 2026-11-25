@@ -46,7 +46,7 @@ class _RecoveryNodes:
 
 class RecoveryRefused(ValueError):
     def __init__(self, reason: str = "recovery_refused") -> None:
-        super().__init__(reason if reason in ("pending_residue", "token_source_invalid") else "recovery_refused")
+        super().__init__(reason if reason in ("pending_residue", "token_source_invalid", "retry_later") else "recovery_refused")
 
 
 def validate_recovery_transaction(previous: HomeActivationTransaction,
@@ -96,8 +96,14 @@ class HomeActivationRecovery(HomeActivationCoordinator):
                         raise RecoveryRefused()
                 self._source(receipt)
                 self._members(receipt, txn)
-                window = home_admin.read_local_node_window(
-                    receipt.operation_id, root=self._io.root, root_owner=self._io.root_owner)
+                mint_intended = any(effect.name == "local_node_mint" for effect in txn.effects)
+                try:
+                    window = home_admin.read_local_node_window(
+                        receipt.operation_id, root=self._io.root, root_owner=self._io.root_owner)
+                except home_admin.NodeWindowAbsent:
+                    if mint_intended:
+                        raise RecoveryRefused()
+                    window = None
                 keys = self._admin.list_pre_auth_keys(user="happyranch-node", timeout_s=5)
                 nodes = self._admin.list_nodes(user="happyranch-node", timeout_s=5)
                 if (type(keys) is not tuple or len(keys) > _MAX_INVENTORY_KEYS
@@ -114,7 +120,9 @@ class HomeActivationRecovery(HomeActivationCoordinator):
                     if key.id in ids:
                         raise RecoveryRefused()
                     ids.add(key.id)
-                if (len(keys) == 1 and len(nodes) == 1 and keys[0].used
+                if window is None and (keys or nodes):
+                    raise RecoveryRefused()
+                if (window is not None and len(keys) == 1 and len(nodes) == 1 and keys[0].used
                         and not keys[0].reusable and not keys[0].ephemeral and not keys[0].acl_tags
                         and window.started_at <= keys[0].created_at <= window.expires_at):
                     observer = HomeObserver(owner=observation_owner, admin=_RecoveryNodes(self._admin, nodes),
@@ -144,7 +152,9 @@ class HomeActivationRecovery(HomeActivationCoordinator):
                                                    parse=HomeActivationReceipt.parse)
                     return ready
                 now = datetime.now(timezone.utc)
-                if half or nodes or any(not k.used and k.expiration > now for k in keys):
+                if any(not k.used and k.expiration > now for k in keys):
+                    raise RecoveryRefused("retry_later")
+                if half or nodes:
                     raise RecoveryRefused()
                 prepared = replace(receipt, phase="prepared", activation_generation=expected_generation + 1,
                                    operation_id=secrets.token_hex(16), local_node_stable_id=None, home_endpoint=None)

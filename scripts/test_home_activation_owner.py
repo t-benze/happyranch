@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -171,7 +172,7 @@ def venue(tmp_path, monkeypatch):
     (v.root / "var/lib/happyranch-tsnet-sidecar").mkdir(mode=0o700)
     for path in v.root.rglob("*"):
         if path.is_dir(): path.chmod(0o755)
-    for relative in ("etc/credstore", "var/lib/happyranch-remote-access", "var/lib/happyranch-tsnet-sidecar"):
+    for relative in ("etc/credstore", "etc/happyranch/headscale", "var/lib/happyranch-remote-access", "var/lib/happyranch-tsnet-sidecar"):
         (v.root / relative).chmod(0o700)
     return v
 
@@ -272,6 +273,54 @@ def test_preflight_owner_boundaries(venue, case):
     if case == "valid": v.production._common(receipt)
     assert v.production.verify("preflight", receipt) is (case == "valid")
     assert v.records() == before
+    assert all(call[1] == "show" for call in v.native.calls) and not v.admin.calls
+
+
+@pytest.mark.parametrize("reader", ["prepare", "owner", "admission"])
+@pytest.mark.parametrize("policy_custody", ["headscale", "root", "wide-mode"])
+def test_member_readers_distinct_headscale_custody(
+        venue: Any, monkeypatch: pytest.MonkeyPatch, reader: str, policy_custody: str) -> None:
+    from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
+    from runtime.remote_access.home_admission import HomeProfileAdmission
+
+    v, io = venue, venue.receipts._io
+    headscale_owner = (os.getuid() + 100, os.getgid() + 100)
+    monkeypatch.setattr(io, "_headscale_shape", lambda: headscale_owner)
+    io._headscale_owner = headscale_owner
+    # A retry owner has not run Prepare in this process.
+    io._headscale_preparing = reader != "owner"
+    directory = v.path("/etc/happyranch/headscale")
+    directory.chmod(0o700)
+    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
+    policy = directory / "policy.hujson"
+    if policy_custody == "wide-mode":
+        policy.chmod(0o640)
+    identities = {(p.stat().st_dev, p.stat().st_ino): headscale_owner
+                  for p in (directory, *directory.iterdir())}
+    if policy_custody == "root":
+        identities[(policy.stat().st_dev, policy.stat().st_ino)] = io.root_owner
+    native_stat, native_fstat = os.stat, os.fstat
+
+    def metadata(info: os.stat_result) -> os.stat_result | SimpleNamespace:
+        owner = identities.get((info.st_dev, info.st_ino))
+        if owner is None:
+            return info
+        observed = SimpleNamespace(**{k: getattr(info, k) for k in dir(info) if k.startswith("st_")})
+        observed.st_uid, observed.st_gid = owner
+        return observed
+
+    monkeypatch.setattr(os, "stat", lambda *args, **kwargs: metadata(native_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, "fstat", lambda fd: metadata(native_fstat(fd)))
+    read = {"prepare": lambda: HomeActivationPrepare(io=io)._members(v.prepared),
+            "owner": lambda: v.production._common(v.prepared),
+            "admission": lambda: HomeProfileAdmission(io)._members(v.prepared)}[reader]
+    records = v.records()
+    if policy_custody == "headscale":
+        read()
+    else:
+        with pytest.raises(installer.InstallerError, match="unsafe provisioning file ownership"):
+            read()
+    assert v.records() == records
     assert all(call[1] == "show" for call in v.native.calls) and not v.admin.calls
 
 
@@ -377,9 +426,15 @@ def history_minter(v, monkeypatch, *, used=False, corrupt=None):
 
 
 @pytest.mark.parametrize("history", ["expired-unused", "used"])
-def test_coordinator_stages_after_historical_key(venue, monkeypatch, history):
+@pytest.mark.parametrize("owned_ports", [False, True])
+def test_coordinator_stages_after_historical_key(venue, monkeypatch, history, owned_ports):
     v = venue
     history_minter(v, monkeypatch, used=history == "used")
+    if owned_ports:
+        def occupied(ip):
+            raise h.headscale_service.HeadscaleServiceError('occupied-port')
+        monkeypatch.setattr(h.headscale_service, 'preflight_ports', occupied)
+        install_proc_inventory(v, monkeypatch)
     def stop_after_staging(*args):
         raise ActivationRefused("failed_uncertain")
     monkeypatch.setattr(v.config, "perform", stop_after_staging)
@@ -394,6 +449,62 @@ def test_coordinator_stages_after_historical_key(venue, monkeypatch, history):
     assert v.path("/etc/happyranch/enrollment.key").read_bytes() == b"a" * 48
     assert v.receipts._io._check_enrollment()
     assert [call for call in v.native.calls if call[1] == "start"] == [["systemctl", "start", h._HEADSCALE]]
+
+
+def install_proc_inventory(v, monkeypatch):
+    """Kernel-shaped fixed endpoint rows; real owner/unit/custody stays in use."""
+    proc = v.root / 'proc'
+    process = proc / '321'
+    (process / 'fd').mkdir(parents=True)
+    put(process / 'status', ('Uid:\t' + '\t'.join([str(os.getuid())] * 4) + '\n').encode())
+    put(process / 'stat', ('321 (headscale worker) S ' + '0 ' * 18 + '1234 0\n').encode())
+    (proc / 'net').mkdir()
+    # /proc IPv4 address words are native-endian, ports are hexadecimal.
+    tcp = '  sl local_address rem_address st tx_queue rx tr tm retr uid timeout inode\n'
+    tcp += '0: 2801A8C0:20FB 00000000:0000 0A 0:0 0:0 0 0 0 11\n'
+    tcp += '1: 0100007F:4A92 00000000:0000 0A 0:0 0:0 0 0 0 12\n'
+    tcp += '2: 0100007F:C50B 00000000:0000 0A 0:0 0:0 0 0 0 13\n'
+    udp = 'header\n0: 2801A8C0:0D96 00000000:0000 07 0:0 0:0 0 0 0 14\n'
+    for name, content in (('tcp', tcp), ('udp', udp), ('tcp6', 'header\n'), ('udp6', 'header\n')):
+        put(proc / 'net' / name, content.encode())
+    for inode in range(11, 15):
+        (process / 'fd' / str(inode)).symlink_to(f'socket:[{inode}]')
+    monkeypatch.setattr(h.headscale_service, 'Path', lambda p: proc / str(p).removeprefix('/proc/'), raising=False)
+    return proc
+
+
+@pytest.mark.parametrize('case', ['owned', 'foreign-fd', 'wildcard', 'missing-port', 'foreign-shared',
+    'ipv6-wildcard', 'uid', 'pid-reused', 'unit-changed', 'malformed', 'dropin', 'bytes'])
+def test_thr327_owned_headscale_listener_attribution(venue, monkeypatch, case):
+    v = venue
+    proc = install_proc_inventory(v, monkeypatch)
+    if case == 'foreign-fd': (proc / '321/fd/11').unlink()
+    if case == 'wildcard':
+        p = proc / 'net/tcp'; p.write_text(p.read_text().replace('2801A8C0', '00000000'))
+    if case == 'missing-port':
+        p = proc / 'net/tcp'; p.write_text(p.read_text().replace('0100007F:C50B', '0100007F:C50C'))
+    if case == 'foreign-shared':
+        p = proc / 'net/udp'; p.write_text(p.read_text() + p.read_text().splitlines()[-1].replace(' 14', ' 99') + '\n')
+    if case == 'ipv6-wildcard':
+        (proc / 'net/tcp6').write_text('header\n0: ' + '0' * 32 + ':20FB 0:0 0A 0:0 0:0 0 0 0 99\n')
+    if case == 'uid': (proc / '321/status').write_text('Uid: 999999 999999 999999 999999\n')
+    if case == 'malformed': (proc / 'net/tcp').write_text('header\ntruncated\n')
+    if case == 'dropin': v.native.override['DropInPaths'] = '/foreign.conf'
+    if case == 'bytes': v.path(MEMBER_PATHS[0]).write_bytes(b'foreign unit')
+    if case in ('pid-reused', 'unit-changed'):
+        original = os.readlink
+        def changed(path, **kw):
+            result = original(path, **kw)
+            if not str(path).startswith(str(proc / '321/fd') + '/'):
+                return result
+            if case == 'pid-reused': (proc / '321/stat').write_text('321 (headscale) S ' + '0 ' * 18 + '9999 0\n')
+            else: v.native.override['MainPID'] = '322'
+            return result
+        monkeypatch.setattr(os, 'readlink', changed)
+    before = v.records()
+    assert v.production.verify('owned_ports', v.prepared) is (case == 'owned')
+    assert v.records() == before
+    assert not any(call[1] in ('start', 'stop', 'enable', 'disable') for call in v.native.calls)
 
 
 @pytest.mark.parametrize("case", ["in-window", "after-window", "usable-history", "reusable-history",

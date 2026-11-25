@@ -16,7 +16,9 @@ def main() -> int:
         return 1
     try:
         ManagedInstaller(layout="deb").renew_policy()
-    except Exception:
+    except Exception as error:
+        from runtime.remote_access.helper_lifecycle import log_lifecycle_failure
+        log_lifecycle_failure(error, action='renew-policy', step='renew')
         # Neither validation input values nor underlying custody paths escape.
         print("renewal-refused", file=sys.stderr)
         return 1

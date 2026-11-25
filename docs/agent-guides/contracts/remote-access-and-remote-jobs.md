@@ -1702,17 +1702,23 @@ dependency/alias/trigger may become effective through this publication.
 **Inventory:** `collect_lan_inventory()` uses literal Linux `NETLINK_ROUTE`
 link/address/route dumps, not a shell, PATH, executable, environment or address
 input. Include all unicast IPv4/IPv6 default routes across tables and every
-ECMP member without metric/weight ranking. Complete interface IDs carry their
-up/loopback flags and local addresses. Preserve table identity: an exactly
+ECMP member and its address family without metric/weight ranking. Complete
+interface IDs carry their up/loopback flags and local addresses. Preserve table identity: an exactly
 four-byte `RTA_TABLE` overrides the `rtm_table` header; absent attributes use
 the header. Malformed, duplicate or truncated attributes refuse `inventory`.
 Validate every default and every ECMP hop, including known interface indices,
-before filtering. Retain missing `RTA_PREFSRC` as an empty source; ignore only
-validated non-main-table defaults with no preferred source. Source-less main
-defaults refuse `inventory`; only ignored defaults left gives `no_address`.
+before filtering. Retain missing `RTA_PREFSRC` as an empty source. IPv6 defaults
+are ignored when selecting the IPv4 dial IP, including source-less RA defaults.
+Among IPv4 defaults, ignore only validated non-main-table defaults with no
+preferred source. Source-less main IPv4 defaults refuse `inventory`; only
+ignored defaults left gives `no_address`.
 Never guess from secondary/primary interface addresses, rank metrics/weights,
 filter device names/types or suppress sourced non-main defaults. Source-specific
-defaults and unresolved nexthop objects also refuse `inventory`. This is a fail-closed limitation for
+defaults and unresolved nexthop objects also refuse `inventory`. A resolved
+single-interface IPv6 default with `RTA_NH_ID` (30), `RTA_OIF` (4) and no
+`RTA_MULTIPATH` (9) is inventoried like any IPv6 default and cannot select the
+IPv4 dial address. IPv4 nexthop objects, IPv6 groups/multipath or missing OIF,
+and source-specific defaults in either family still refuse. This is a fail-closed limitation for
 kernels/routes without an explicit preferred source, not full network support.
 Malformed/error/interrupted/truncated dumps, missing identities, I/O, a six-second
 observation deadline or shared 4 MiB/65,536-message-per-dump exhaustion refuse
@@ -1895,14 +1901,15 @@ inert leaf/CA publication. Readiness remains later work; renderers remain pure.
 
 `select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
 frozen `LANInterface(index, up, loopback, addresses)` and
-`LANDefaultRoute(interface_index, source_ip, table=254)` records. Table IDs are
-exact integers in the unsigned 32-bit range; legacy two-argument construction
+`LANDefaultRoute(interface_index, source_ip, table=254, family=AF_INET)` records.
+Table IDs are exact integers in the unsigned 32-bit range; legacy two-argument construction
 conservatively means main (254). Addresses are literal
 local addresses without CIDRs. The collector supplies **every usable default
 route**, its selected source and complete interface identities, including IPv6
 and equal-cost routes; it must not preselect a winner or omit unresolved sources.
-Validate every record and known interface first, then ignore only non-main
-defaults without a preferred source. A source-less main default refuses
+Validate every record and known interface first, then exclude IPv6 defaults
+from IPv4 selection. Among IPv4 defaults, ignore only non-main defaults
+without a preferred source. A source-less main IPv4 default refuses
 `inventory`; an otherwise valid inventory containing only ignored defaults
 gives `no_address`. Sourced non-main defaults remain ordinary candidates.
 Down/loopback interfaces cannot supply a candidate. A selected source must be
@@ -2599,6 +2606,20 @@ and recorded by the coordinator before prepared publication:
 `/etc/happyranch/headscale/policy.hujson`,
 `/etc/happyranch/control-ca.pem`, and
 `/etc/happyranch/invite-issuer.json`.
+
+Prepare, activation verification and ordinary admission read the exact
+`policy.hujson` member as `happyranch-headscale:happyranch-headscale` `0600`,
+matching its writer. Invite configuration remains root-owned `0600`. The
+policy is separate from the Headscale publication record's file map; neither
+that map nor the six receipt members change, so retained product publications
+and receipts use the same format and digests.
+Activation verification selects this fixed custody layout after checking both
+service accounts, including when retry or recovery skips Prepare in that process.
+
+The Linux managed connector CLI passes its resolved configuration path to the
+supervisor. Home admission still requires exactly `/etc/happyranch/connector.json`
+and the fixed connector unit; an alternate path cannot acquire home authority.
+
 Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
 (`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
 digested; renewable `server.crt` is excluded because trust binds the CA DER
@@ -2779,7 +2800,13 @@ extra, arbitrary-path or out-of-order entries refuse. Appending the next intent,
 finishing the last intent, and closing all eight done effects as joined are the
 only forward updates. A terminal update preserves the exact effect prefix.
 Publication reuses A5, with no mkdir, in-place edit or pending adoption. A
-nonblocking directory lock spans both records and all effects.
+nonblocking directory lock spans both records and all effects. Only unattended
+policy renewal may wait up to 20 seconds for this same activation-directory
+flock, below its unit's TimeoutStartSec=30, then performs the same protected
+revalidation. Fresh-auth renewal, RetryPolicyRenewal and every other caller
+still refuse immediately on contention. Exhaustion fails closed and keeps the
+existing lock-busy diagnostics. The explicit timer start/verification remains;
+this wait handles its first firing while Enable still owns the lock.
 
 Source validation gates every forward publication (including phase advances or
 token-derived/live material) and service/admin effect. The durable effect boundary
@@ -3147,7 +3174,8 @@ Linux CLI wiring is delivered in I5b; bridge wiring for Enable/Disable/IssueInvi
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
-`prepared` (projected as B15 setup `in_progress`); ready remains inspect-only.
+`prepared` (a present non-ready receipt is projected as B15 setup
+`setup_unverified`); ready never replays activation; the ordinary start described below is permitted.
 No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
 recovery with real A5 records and observe.sock; installed/live-host operations
 remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
@@ -3273,10 +3301,17 @@ fixed extensions below do not change the receipt schema.
 | `/var/lib/happyranch-remote-access/home-ca/{ca.key,ca.pem,leaf.pem,leaf.key}` | S_ISREG, root:root 0600, nlink 1; metadata-only unlink. Parent root:root 0700; rmdir only when empty. |
 | `/var/lib/happyranch-connector/{trust-state.json,trust-state.json.anchor,trust-state.json.lock}` | S_ISREG, happyranch:happyranch 0600, nlink 1; metadata-only unlink, only after successful Disable revoke-all. Parent real happyranch:happyranch 0700, nlink 2 when empty; rmdir only when empty. |
 | `/var/lib/happyranch-tsnet-sidecar/{tailscaled.state,credential.consumed,tailscaled.log.conf,tailscaled.log1.txt,tailscaled.log2.txt}` | Same service file/parent custody and revoke-success requirement as connector state; no opaque state read. |
+| `/var/lib/happyranch-tsnet-sidecar/files/happyranch-node-uid-1` and its `files` parent | Exact pinned-tsnet home-node tree only: both directories service UID:GID, 0700, no symlinks; child empty, parent contains only that child or is empty after partial removal. Inventory validates the whole tree; B6 removes the child then empty parent only after successful revoke and existing quiescence proofs. Other names, contents or custody refuse. No recursive removal or opaque contents read. |
 | `/var/lib/happyranch-remote-access/home-activation-txn.json` | Existing bound B4/A5 root:root 0600, regular single-link transaction; canonical reader and current binding required, then unlink only after DB proof and B16 intent. |
 | `/var/lib/happyranch-remote-access/home-issuer/{invite-issuer.json,invite-issuer.lock}` and `home-issuer-publication.json` beside the directory | Existing canonical root:root 0600 regular single-link journal/empty lock and fixed-directory identity receipt; existing nonblocking issuer lock. After DB proof and successful revoke (ceremony burned), B6 also admits canonical minting/uncertain outcomes; pending/unknown/unsafe entries still refuse. Parent root:root 0700, nlink 2; existing fixed unlink/rmdir and parent fsync, B16 intent/outcome. |
 | `/var/lib/happyranch-remote-access/home-minter` | Real root:root 0700 directory; only `happyranch-node` and `happyranch-invite` child names admitted; nlink equals 2 plus present children; rmdir only when empty. |
 | `home-minter/{happyranch-node,happyranch-invite}` | Real root:root 0700 directories, nlink 2; nonblocking directory flock in that fixed order. Only `operation-[0-9a-f]{64}`, `user-create`, `fence`, `fence.pending`, `rpc.lock` admitted, each S_ISREG root:root 0600 nlink 1, metadata only. Streamed enumeration is bounded at 600,000 entries per user. Existing rpc.lock flock also must be free. Unknown name/type/owner/mode/link count, bound exhaustion or contention refuses the whole minter set unchanged. |
+
+The exact Taildrop allowance also accepts the tree left by v6/v7; no unit or
+receipt migration is needed. Pinned tsnet v1.78.0 creates it unconditionally on
+peer-API initialization; `TS_DISABLE_TAILDROP` only disables receiving and does
+not prevent directory creation. Its exported Server API has no storage-disable
+option.
 
 I3c C4/M1 proof is derived inside the existing B6 run: all five Headscale DB,
 WAL/SHM, Noise and DERP members have been removed and re-observed absent while
@@ -3299,7 +3334,18 @@ Retaining user-create beyond the DB lifetime would permanently refuse a later
 fresh CreateUser. Fresh Enable still requires a new activation G/O CAS.
 
 Fixed custody directories otherwise follow existing D/custody rules: rmdir only
-when empty. Without a valid activation receipt D still refuses DB/Noise/socket
+when empty. If descriptor-relative rmdir returns EROFS only for a fixed custody
+path whose parent is exactly `/var/lib` or `/run`, ask PID 1 through fixed
+`/usr/bin/systemd-run` to execute `/usr/bin/rmdir -- <same fixed path>` in a
+transient unit: empty CapabilityBoundingSet/AmbientCapabilities, NoNewPrivileges,
+PrivateNetwork, ProtectHome and PrivateTmp, with 20-second start/runtime bounds
+and a 30-second caller timeout. The native package declares systemd and coreutils.
+The empty scan, owner/mode/signature checks, pinned parents, require/inventory
+checks and userdel order remain mandatory. Prove absence through the pinned
+parent before proceeding. Missing tools, nonzero exit, timeout or a remaining
+directory retain partial cleanup. Other parents and non-EROFS errors refuse;
+helper unit hardening, ReadWritePaths and capabilities remain unchanged.
+Without a valid activation receipt D still refuses DB/Noise/socket
 and unreceipted entries; no-argument callers remain unchanged. Unknown/extra or
 unsafe objects remain and report incomplete cleanup; no recursive deletion.
 Explicitly destroy the owned CA private key on Turn off. B16 audit survives.
@@ -3625,18 +3671,29 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 
-Enable alone adds a destination-addressed `LifecycleCompleted(s)` signal on
+Enable and Disable send a destination-addressed `LifecycleCompleted(s)` signal on
 `ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
-The closed, duplicate-free, 512-byte frame has method=Enable,
+The closed, duplicate-free, 512-byte frame has method=Enable|Disable,
 correlation={serial:original call serial,owner:authenticated helper unique name},
 outcome=failed|completed, and optional category on failed only. No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
+Disable's failed receipt has only `partial_cleanup`, `failed` or `uncertain`
+as its category; it never sends residue paths. Only a settled Off produces its
+completed receipt. CLI Turn off subscribes before admission on the same
+connection and consumes only its own method/serial/unique-owner receipt within
+the original 300s budget (302s caller fallback). It returns immediately with
+`turnOffCompleted`/exit 0 or `turnOffFailed` plus that category/exit 1. Both retain
+unknown effect; the receipt supplies no reusable revoke or cleanup authority.
+Lost receipt retains `outcomeUnknown`; no poll, reconnect or mutation replay is
+added. GUI Disable still uses its admission and fresh Status observations;
+it cannot consume the Enable-only window event.
 
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure
 object/newline on exit 1, at most 256 bytes; its decoder raises PreparationFailed,
-separate from GenerationUnavailable/capture categories. The exact 19 tokens are
+separate from GenerationUnavailable/capture categories. Its original 19 typed
+preparation tokens are
 deb-layout-required, issuer-state-uncertain, account-shape,
 account-receipt-uncertain, foreign-unit, foreign-custody, publication-uncertain,
 address-changed, account-create-uncertain, cleanup-uncertain,
@@ -3644,6 +3701,9 @@ materializer-uncertain, custody-uncertain, inventory, no_address,
 multiple_addresses, dial_ip, dial-ip, occupied-port, port-check-uncertain.
 Both dial spellings survive separately. Text, stderr, causes and duck-typed
 properties never mint provenance. Earlier provisioning effects remain uncertain.
+The same closed transport also carries the later lifecycle categories
+ready-restart-failed-turn-off, activation-retry-later, activation-prepared-retry
+and activation-unverified; these do not assert typed preparation provenance.
 
 Delivery runs once after settlement attempts and before release under the
 original operation deadline, preserving a typed reason even if audit later
@@ -3812,8 +3872,7 @@ settlement before terminal success. No step renews the budget.
 
 Interruption after a complete staging step permits only exact owner reuse on the
 next fresh-auth Enable; unknown/pending/partial residue is never adopted or
-deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable is
-inspect-only. Disable, replacement closure, invite and renewal effects and the
+deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform only the ordinary boot-equivalent start of exact enabled owned units, then joined verification; it never replays activation. Disable, replacement closure, invite and renewal effects and the
 closed B5/B6/B17 maps remain unchanged. Temp-root tests exercise all five owners,
 including replacement closure, repeated Turn off/Turn on, CAS, refusal and expiry;
 native/NSS/materializer/LAN responses are simulated. Installed acceptance remains I6.
@@ -4111,6 +4170,15 @@ current causes no restart or stream closure. Refusal retains the cache. On cache
 expiry, the existing readiness gate, shutdown/stream closure, return 1 and
 systemd `Restart=on-failure` remain unchanged. Startup still reads the file fresh.
 
+For a prepared retry (an existing prepared receipt, or the exact prepared
+publication before its first receipt), fresh-auth Enable first validates all
+retained inputs under the activation lock, inspecting expiry only for renewal.
+It then re-stages the identical shipped policy through the existing protected
+renewal journal/writer and creates a fresh strict coordinator before activation
+preflight. A refused or ineffective renewal cannot start a unit. Matching old
+activation intents are refused before this path; recovery and ready receipts
+never enter it. The normal first-start renewal and strict check still follow.
+
 **Delivered in I4b-2 (THR-327 restoration ordering):** Fresh-auth forward Enable
 from staged-inert or post-Disable inventory defers ONLY policy expiry during
 capture, inert publication and the forward owner's preflight. Exact shipped
@@ -4126,7 +4194,7 @@ noncurrent renewed policy enables/starts zero units. Earlier inert publication
 retains its existing reloads and read-only manager inspection. Every subsequent
 check, admission and runtime gate is strict. The later `managed_services`
 re-stamp remains, with timer enable before verifier socket/target enable and
-managed target start. Ready Enable stays inspect-only. I3a fresh-auth recovery
+managed target start. Ready Enable may start exact enabled owned units as at boot, then verify joined; it never replays activation. I3a fresh-auth recovery
 still only verifies and
 publishes (or rolls over to prepared); it never renews policy, links the timer or
 replays any other effect. A later forward Enable runs the existing effect path.
@@ -4136,6 +4204,13 @@ empty DropInPaths, Names containing only that unit, loaded state without a
 pending daemon-reload, and timer Unit equal to the renewal service. Protected
 no-follow reads require root-owned, single-link 0644 package fragments with exact
 renderer bytes. Overrides, aliases, stale loads or fragment drift refuse Enable.
+Ready Enable accepts an active/enabled timer either waiting, or running with
+that verified renewal oneshot in activating/start and Result=success. Immediate
+first firing and an already in-flight renewal may wait for Enable's held flock;
+Enable never waits for that renewal while holding the flock. It retains the
+original deadline and capture/G/O, current-policy and custody revalidation.
+Failed/inactive timers, foreign units and incorrect service linkage still
+refuse; no activation replay, mint or receipt/transaction update is allowed.
 
 Disable's existing stop step stops the timer and renewal service, disables the
 timer through its manager, and confirms both units' quiescence and the literal
@@ -4194,7 +4269,8 @@ stopped report runtime unavailable, never infer Off. Bridge/CLI consumers switch
 together in the consuming PR; secret/public-output restrictions apply.
 
 The pure model is `runtime/remote_access/status_v2.py`. I1 exports StatusV2 on the
-existing helper interface; bridge/CLI consumers remain deferred. The method retains
+existing helper interface; Linux bridge/CLI consumers read its named setup detail
+after a v1 failed/pending/paused response. The method retains
 Status's bus UID and B8 owner validation, accepts no arguments/FDs and never prompts
 polkit. It sends the canonical model JSON directly as the D-Bus string (no double
 JSON encoding). The existing destination policy already admits it; no policy changes.
@@ -4202,8 +4278,14 @@ One read worker runs without the mutation slot or main context; concurrent Statu
 calls refuse busy. An independent 1.9-second watchdog reserves response overhead within
 the original 2-second status budget, suppresses late replies and keeps a stalled worker
 sealed until it settles. It never queues new workers or waits on a mutation-held lock.
-The receipt maps prepared/activating/joined to setup in_progress, ready to ready and
-failed_uncertain to uncertain. Missing/unreadable receipt alone never proves Off;
+A present prepared/activating/joined activation receipt maps to setup
+`setup_unverified`; prepared staging without an activation receipt maps to
+`prepared_no_receipt`. A ready receipt requires a
+fresh exact ordinary inventory, active required units, serving connector and
+current/renewing policy before display as ready/available. Otherwise it names
+runtime_unavailable, setup_unverified, partial_cleanup or renewal_failed.
+Failed_uncertain and published preparation without an activation receipt have
+their own named states. Missing/unreadable receipt alone never proves Off;
 a receipt bound to a different UID refuses. A fresh successful connector snapshot
 supplies runtime available only when ready; otherwise unavailable. Unreachable connector
 supplies runtime unavailable independently of a recognized setup receipt.
@@ -4232,7 +4314,9 @@ has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
 invite additionally has `deadline_utc_seconds`. All vocabularies include
 `unknown` and `stale`, plus only:
 
-- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`;
+- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`,
+  `prepared_no_receipt`, `failed_uncertain`, `runtime_unavailable`,
+  `setup_unverified`, `renewal_failed`;
 - runtime: `available`, `unavailable` (never `off`);
 - invite: `none`, `minting`, `encoding`, `pairing`, `issued`, `pending_approval`,
   `consumed`, `cancelled`, `recovered`, `expired`, `refused`, `uncertain`;
@@ -4412,7 +4496,7 @@ Why no founder: implements approved recognized-failure recovery without terminal
 
 **B18 — Explicit token repair and known-version upgrade.**
 No new method: fresh-auth `Enable()` repairs only a positively classified
-`repair_required` live profile; already-ready Enable remains inspect-only.
+`repair_required` live profile; already-ready Enable permits only ordinary start and joined verification, never activation replay.
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
@@ -4551,10 +4635,212 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown`. The child
-emits only `{refusal: category}` on Enable capture refusal; HomeLifecycleClient
+`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown|unverified|not_applicable`. The child
+emits only `{refusal: category}` on Enable, Disable or ReplaceFailed capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
 The shared native request projection, CLI JSON, Main protocol/relay and Connection
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
-refusals map to owner; generic, missing or invalid categories map to unknown.
+refusals map to owner; attributed generic capture failures and missing, invalid
+or legacy unknown categories display as unverified. Raw transport uncertainty
+still retains unknown effect.
 No path, file content, UID, exception message or secret crosses this boundary.
+
+
+### THR-327 ready restart and Disable retry (TASK-19228)
+
+A ready receipt is retained after failed stop. It is not evidence of live runtime
+availability. Disable alone accepts activating/deactivating as stoppable states
+of exact owned loaded units; every fragment, load-root, drop-in and byte check
+remains unchanged. Ordinary inventory keeps its closed active/inactive/failed set.
+Every Turn off invokes the serving revoke-all anew before stop and B6. A previous
+reply, audit, stopped unit or absent IPC is never revoke proof. Revoke-all with
+the current generation also succeeds on an already-revoked device set.
+
+Fresh-auth Turn on again with a ready receipt validates ordinary ready/joined
+admission and exact inventory, starts the exact enabled Headscale unit and
+managed target if down, then runs the existing joined verification. This is the
+same service admission as boot, with no receipt change, mint, credential or
+activation replay. Missing enablement, failed start or failed joined verification
+refuses as `ready-restart-failed-turn-off` (recovery: Turn off).
+
+Failed/unavailable serving revoke still runs stop and B6, retains trust and
+persisted sidecar state and reports partial_cleanup naming them. This does not
+authorize ordinary restart of a partly removed publication. The existing failed-
+revoke partial state has no established fresh-Enable/replacement/purge exit;
+that sub-case remains a decision, not an offline revocation exception.
+
+
+### THR-327 renewal unit upgrade (TASK-19228)
+
+The fixed renewal oneshot uses User=root, Group=root and
+SupplementaryGroups=happyranch, retaining empty capability sets and existing
+hardening. Pending publication skips fchown only when fstat already reports the
+exact required UID:GID; all final custody checks still apply. Fresh-auth Enable
+under the activation lock accepts only the exact previous v6/v7 renewal service
+bytes (Group=happyranch) or current bytes at the fixed packaged path. A previous
+unit is atomically republished with pinned-parent, no-pending, exact owner/mode,
+loaded-fragment, drop-in, G/O and deadline checks, followed by daemon-reload.
+Unknown bytes still refuse. No receipt/config/credential migration occurs.
+Ready Enable also ensures the exact renewal timer enablement link exists; it
+never returns ready after refusing that check. Package and renderer bytes match.
+
+
+### THR-327 no-mint recovery and live-key retry (TASK-19228)
+
+B7 retains existing recovery from a valid present mint reservation, including
+lost journal effects. Only definite ENOENT from the no-follow reservation reader
+can be absent; malformed or unsafe records still refuse. Without a mint intent
+AND without a reservation, fresh complete empty key and node lists permit the
+existing prepared-generation rollover, with all source/member/CAS checks and no
+effect replay. Any key or node in that no-mint case refuses. A still-live unused
+key refuses as `activation-retry-later`, retaining the full original key window.
+A returned prepared rollover reports `activation-prepared-retry`, never Enable
+completed; the next fresh-auth Enable uses the new generation.
+
+
+THR-327 helper worker contention (TASK-19228): effect_guard waits at most one
+second for a transient main-context reader, then revalidates the unchanged
+operation deadline and capture before any effect. Admission and main-context
+status remain nonblocking. A lifecycle step that never executes is refused,
+never credited as successful revoke/stop/cleanup. No budget is renewed.
+
+
+The ready restart / retry-later / prepared-retry categories are carried through
+the existing Enable terminal channel and its closed native/schema/web parsers,
+with English and Simplified Chinese recovery hints. TASK-19228 also delivered
+generic settled Enable refusal naming and the checked manager-plan projection,
+as documented under Settled Enable and unattributed Status refusals below.
+Status reads live setup detail
+without any durable marker. Status v1 retains its five-field shape and phase
+vocabulary, mapping named failures to failed/pending/paused with ready=false.
+After Status, native consumers make one read-only StatusV2 call and admit only
+fresh (age at most 30s), closed setup/invitation detail; unavailable/older peers
+keep the original v1 result. Detail never promotes an inconsistent v1 setup to
+ready. After helper restart, the existing protected HomeInviteIssuer.observe
+reader supplies the current journal phase/deadline through the fixed child,
+with UID/G/O matching and configuration checks before/after the read. It creates
+no minter, serving pairing owner, lock, commit or repair. A same-helper settled
+invite observation retains its original uncertainty/staleness rules. No IDs or
+private issuer fields enter StatusV2. The native bridge exposes journal phases
+minting/encoding/pairing/refused/uncertain/recovered, with EN/zh-CN explanations;
+expired invites have no countdown. Missing/unsafe evidence stays unconfirmed.
+An acknowledged per-device RevokeSelected confirms denial/stream closure but
+performs no network-membership cleanup; that action's networkCleanup is
+notApplicable, never an invented confirmed network removal. Failed/lost
+acknowledgements retain their existing unknown-effect handling. Both web views
+ship English and Simplified Chinese reasons/recovery actions. Named unhealthy
+detail suppresses device/selection claims (null, never fabricated empty access).
+Ordinary inventory still refuses transitional ActiveStates; Status names
+setup_unverified, without granting ownership. Both Host views offer the existing
+Turn off attempt in that state, retaining native confirmation, exact ownership,
+same-invocation serving revoke and quiescence requirements. CLI Disable terminal
+delivery is documented under B9. The #1876 channel originally wrapped typed
+preparation-stage errors and Enable completion only. Settled later activation/
+recovery failures now use the closed activation-unverified extension below;
+this does not attribute them to preparation.
+
+Ready Turn on again validates the exact renewal service/timer bytes and loaded
+identities, restores and verifies the owned timer enablement link before target
+startup, then explicitly starts an inactive timer and requires active/enabled
+with waiting substate, or running with the verified renewal oneshot in
+activating/start and Result=success. The latter includes immediate first firing
+and an owned renewal waiting for the same flock; Enable returns without waiting
+under that flock. Each effect retains the original deadline and captured
+UID/G/O, ready admission and custody checks. Failed verification returns
+ready-restart-failed-turn-off; it never mints or replays activation, nor rewrites
+the ready receipt or transaction.
+
+
+THR-327 foreground Linux client observation (TASK-19228): after the initial
+runtimeReachable frame, the existing foreground owner performs authenticated
+health reads at one-second intervals (no overlapping reads or transport retries).
+A later error terminates through the existing named CLI error and bounded local
+session cleanup. Only the existing revocation_denied/revocation_stream_closed
+responses map to revoked; generic identity denial remains accessUnavailable,
+never proof of confirmed revocation. This adds no network/auth/credential change,
+no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
+health action already distinguishes revokedConfirmed from accessDenied.
+
+### Owned Headscale listeners during activation retry (THR-327 R6)
+
+Inert preparation still samples the four exclusive IPv4 binds. At the activation
+coordinator's preflight only, occupied-port may instead pass fresh attribution
+of all four fixed listeners to the exact owned active Headscale unit. Existing
+receipt/member/config/source checks precede this observation; exact fragment
+bytes, loaded path, names, no drop-ins, service UID and MainPID are checked on
+both sides. Bounded kernel socket tables and that PID's fd set must attribute
+every matching IPv4 listener to it; wildcard/foreign/missing or ambiguous
+listeners refuse. A matching IPv6 port conservatively refuses. Process UID and
+start time are rechecked against PID reuse. No running-unit-only exemption,
+port reservation, stop, replay, new unit rendering or upgrade format is added.
+The ordinary headscale_start_verify effect and its fresh admin verification
+still follow preflight.
+
+### Settled Enable and unattributed Status refusals (THR-327 G)
+
+The original #1876 preparation diagnostic applies only to the actual typed
+preparation call. Later activation/recovery exceptions therefore had no such
+reason; the private child emitted no frame, and the parent settled a categoryless
+failed/uncertain result. The legacy `preparationFailure` field and
+`enablePreparationFailed` native code now also carry the one closed
+`activation-unverified` category for other settled Enable failures. This names
+an unverified activation, never preparation provenance or absence of effects.
+No message, cause, path, credential or duck-typed category is reflected. Typed
+reasons still win; late/lost/invalid transport still cannot claim no effect.
+The destination-addressed terminal receipt keeps its original caller, auth,
+serial/owner and deadline checks. Both Host presentations carry bilingual
+recovery copy and retain unknown effect until a fresh observation.
+
+Status failures with no attributable closed stage use `unverified`, including
+normalizing the legacy `unknown` category at the native display boundary. The
+old wire value remains accepted for compatibility. Known stage categories
+remain unchanged. This is display only, with no new ownership or cleanup proof.
+The Linux handbook's checked status projection records success, refusal and
+named unavailable evidence before atomic file replacement; it does not assert
+that every CLI response is a success object or treat file-write success as READY.
+
+
+### Attributed lifecycle refusals
+
+Enable, Turn off and replace-failed capture refusals retain the same closed
+host-state category through the fixed child, D-Bus, native CLI and both Host
+views. Recognized inapplicable actions use `not_applicable` with `effect=none`
+before admission. Turn off with no activation receipt first proves recognized
+absence or preparation through strict Enable capture. Replace-failed accepts
+only the existing `known-failed-or-partial` installer candidate and its exact
+inventory/journal generation; a home activation receipt never qualifies. It is
+not home activation recovery. Unsafe inventory retains its attributed refusal.
+No replacement, cleanup, mint, replay or authentication gate is widened.
+
+A prepared activation receipt which has not reached ready is displayed as
+`setup_unverified`, rather than an unqualified pending state. Prepared staging
+without an activation receipt remains `prepared_no_receipt`. Attributed capture
+failures default to `unverified`, with fixed custody, publication/residue and
+inventory stages preserved. Transport loss and effects already dispatched
+retain unknown effect; the no-change copy applies only to pre-admission
+`not_applicable` refusals. B4 and pre-Headscale R7 remain terminal limits.
+
+
+### Local lifecycle failure diagnostics
+
+The helper journals closed action/step/stage tokens and exception classes for
+Enable, Turn off and replace-failed refusals, including caught safety-stop
+failures. Enable also retains its shipped source-relative location and closed
+stage. User-facing results remain category-only. Automatic policy renewal
+journals the same redacted failure dimensions; a suppressed flock
+`BlockingIOError(EAGAIN)` is named `lock-busy`, and still exits unsuccessfully.
+No failure or skipped work is marked successful.
+
+B6 records the innermost shipped source-relative file:line (including suppressed
+transaction error context), exception class and failing directory ordinal with
+`step=cleanup-directory` and a
+fixed internal reason (or a closed native errno reason). The unchanged order is
+1 Headscale configuration, 2 Headscale persistent state, 3 Headscale runtime,
+4 home CA staging, 5 sidecar runtime, and, only after successful serving revoke,
+6 Taildrop files, 7 connector state and 8 sidecar state. Ordinal zero is a
+non-directory step. The diagnostic counter is never an admission input.
+User/group retirement order, custody/revocation checks, unit sandbox, expiry
+and timer schedule are unchanged. The bounded unattended
+lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
+path, file contents, identity, credential or invite is journaled. Journal
+failure preserves the original refusal and retained evidence.

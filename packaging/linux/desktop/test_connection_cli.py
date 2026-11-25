@@ -32,7 +32,7 @@ PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
-    'occupied-port', 'port-check-uncertain')
+    'occupied-port', 'port-check-uncertain', 'activation-unverified')
 
 
 def terminal_frame(**changes: object) -> str:
@@ -156,6 +156,16 @@ class Bus:
     def call(self, *args: object) -> None:
         name, path, interface, method, inputs, signature, flags, timeout, cancel, callback, data = args
         self.calls.append((name, path, interface, method, inputs, signature.dup_string(), flags, timeout))
+        if method == 'StatusV2' and hasattr(self, 'status_detail'):
+            self.queue(lambda: callback(self, (json.dumps(self.status_detail), None), data))
+            return
+        if method == 'StatusV2' and hasattr(self, 'setup_state'):
+            value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+            value['setup'] = dict(state=self.setup_state, age_seconds=0)
+            value['invite']['deadline_utc_seconds'] = None
+            self.queue(lambda: callback(self, (json.dumps(value), None), data))
+            return
         if method == "NextDevice":
             current = self.snapshot["selected"]
             self.snapshot["selected"] = self.snapshot["devices"][1 if current == self.snapshot["devices"][0] else 0]
@@ -174,6 +184,99 @@ class Bus:
 
 
 class ConnectionCLITests(unittest.TestCase):
+    def test_setup_detail_requires_fresh_closed_setup(self) -> None:
+        protocol = native.Host().protocol
+        snapshot = protocol.host(json.dumps({**self.bus.snapshot, 'phase': 'failed', 'ready': False}))
+        base = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+            for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+        base['invite']['deadline_utc_seconds'] = None
+        base['setup'] = dict(state='runtime_unavailable', age_seconds=0)
+        result = protocol.host_details(snapshot, json.dumps(base))
+        self.assertEqual((result['setup'], result['runtime'], result['devices']), ('runtime_unavailable', 'offline', None))
+        for part in (dict(state='runtime_unavailable', age_seconds=31),
+                     dict(state='runtime_unavailable', age_seconds=True),
+                     dict(state='runtime_unavailable', age_seconds=None),
+                     dict(state='ready', age_seconds=0),
+                     dict(state='runtime_unavailable', age_seconds=0, private='synthetic')):
+            with self.subTest(part=part), self.assertRaises(ValueError):
+                protocol.host_details(snapshot, json.dumps({**base, 'setup': part}))
+        for raw in (json.dumps({**base, 'private': 'synthetic'}),
+                    json.dumps(base).replace('"version": 2', '"version": 2,"version": 2'),
+                    ' ' * 16385):
+            with self.assertRaises(ValueError):
+                protocol.host_details(snapshot, raw)
+
+    def test_invite_journal_detail_reaches_cli(self) -> None:
+        for state in ('none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                      'refused', 'uncertain', 'recovered'):
+            with self.subTest(state=state):
+                self.bus.calls.clear()
+                value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                    for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+                value['setup'] = dict(state='ready', age_seconds=0)
+                expiry = int(time.time()) + 120 if state == 'issued' else None
+                value['invite'] = dict(state=state, age_seconds=0, deadline_utc_seconds=expiry)
+                self.bus.status_detail = value
+                code, result, _ = self.run_native('status')
+                self.assertEqual(code, 0)
+                self.assertEqual((result['setup'], result['runtime'], result['inviteState']),
+                                 ('ready', 'available', state))
+                self.assertEqual(result['expiresAt'] is not None, state == 'issued')
+                self.assertEqual(len(result['devices']), 2)
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
+        value['invite']['age_seconds'] = 31
+        self.bus.status_detail = value
+        _, result, _ = self.run_native('status')
+        self.assertEqual(result['inviteState'], 'unknown')
+        self.assertIsNone(result['expiresAt'])
+        value['invite'] = dict(state='issued', age_seconds=0, deadline_utc_seconds=True)
+        _, result, _ = self.run_native('status')
+        self.assertEqual(result['inviteState'], 'unknown')
+        self.assertIsNone(result['expiresAt'])
+
+    def test_named_setup_states_remain_visible_in_cli(self) -> None:
+        for state in ('prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
+                      'runtime_unavailable', 'setup_unverified', 'renewal_failed'):
+            with self.subTest(state=state):
+                self.bus.calls.clear()
+                self.bus.setup_state = state
+                self.bus.snapshot.update(phase='pending' if state == 'prepared_no_receipt' else
+                                         'paused' if state == 'renewal_failed' else 'failed', ready=False)
+                code, result, _ = self.run_native('status')
+                self.assertEqual(code, 0)
+                self.assertEqual((result['setup'], result['runtime']), (state, 'offline'))
+                self.assertIsNone(result['devices'])
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
+
+    def test_turn_off_settled_receipt_returns_without_timeout(self) -> None:
+        for outcome in ('completed', 'partial_cleanup'):
+            for early in (False, True):
+                with self.subTest(outcome=outcome, early=early):
+                    host, bus, seen = native.Host(), Bus(), []
+                    host.connection, bus.hold, bus.early = bus, True, early
+                    frame = dict(method='Disable', correlation=dict(serial=17, owner=':1.100'),
+                                 outcome='completed' if outcome == 'completed' else 'failed')
+                    if outcome == 'partial_cleanup':
+                        frame['category'] = outcome
+                    # An Enable receipt with the same serial must never settle Disable.
+                    bus.terminal_frames = [terminal_frame(), json.dumps(frame), json.dumps(frame)]
+                    try:
+                        native.contract.request_host(host, 'Disable', lambda *a: seen.append(a),
+                            lambda: True, lambda _: None, cli_lifecycle=True)
+                        while bus.held:
+                            bus.held.pop(0)()
+                        context = GLib.MainContext.default()
+                        while context.pending():
+                            context.iteration(False)
+                        expected = (dict(code='turnOffCompleted', effect='unknown', recovery='refresh'),) if outcome == 'completed' else (
+                            None, dict(code='turnOffFailed', category='partial_cleanup',
+                                       effect='unknown', recovery='nativeRecovery'), 'unknown')
+                        self.assertEqual(seen, [expected])
+                        self.assertEqual([call[3] for call in bus.calls], ['Disable'])
+                        self.assertEqual((bus.filters, bus.subscriptions, bus.handlers), ({}, {}, {}))
+                    finally:
+                        host.close()
+
     def test_enable_preparation_cli_terminal(self) -> None:
         for token in PREPARATION_TOKENS:
             for early in (False, True):
@@ -609,6 +712,7 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 expected = ["Status", "NextDevice", "NextDevice", "RevokeSelected", "Status"] if action == "revoke-device" else (
                     [method, "Status"] if method in native.contract.HOST_MUTATIONS else [method])
+                expected = [entry for name in expected for entry in ([name, 'StatusV2'] if name == 'Status' else [name])]
                 self.assertEqual([call[3] for call in self.bus.calls], expected)
                 self.assertEqual(len(self.opens), 1)
                 self.assertEqual(self.opens[0][0], "unix:path=/run/dbus/system_bus_socket")
@@ -620,7 +724,7 @@ class ConnectionCLITests(unittest.TestCase):
                                               122000 if mutation else 3000))
                 if method in native.contract.HOST_MUTATIONS:
                     self.assertEqual(result["effect"], "confirmed")
-                    self.assertEqual(result["networkCleanup"], "unknown" if method == "RevokeSelected" else "notApplicable")
+                    self.assertEqual(result["networkCleanup"], "notApplicable")
                 else:
                     self.assertEqual(result["devices"][0], dict(label="Same & label", comparisonPhrase="synthetic comparison"))
 
@@ -652,7 +756,7 @@ class ConnectionCLITests(unittest.TestCase):
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
                          "owner_unsupported", "owner_mismatch", "release_home_invalid",
                          *("host_state_unrecognized_" + part for part in (
-                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown"))):
+                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown", "unverified", "not_applicable"))):
             with self.subTest(category=category):
                 self.bus.status_error = "ai.happyranch.RemoteAccess1.Error." + category
                 # Keep the exact CLI transcript assertion independent of the
@@ -664,10 +768,25 @@ class ConnectionCLITests(unittest.TestCase):
                     self.assertTrue(warning.filename.endswith('/gi/events.py'))
                 self.assertEqual(code, 1)
                 part = (category.removeprefix("host_state_unrecognized_") if category.startswith("host_state_unrecognized_")
-                        else "unknown" if category == "host_state_unrecognized" else "owner")
+                        else "unverified" if category == "host_state_unrecognized" else "owner")
+                if part == "unknown": part = "unverified"
                 self.assertEqual(result, dict(code="hostStateUnrecognized", category=part, effect="none", recovery="refresh"))
-                self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. "
-                                 "Check the local installation. Category: " + part + ".")
+                expected_message = ("This action does not apply to the current remote access setup. No change was made. "
+                                    "Category: not_applicable." if part == 'not_applicable' else
+                                    "Remote access files or the release runtime owner could not be verified. "
+                                    "Check the local installation. Category: " + part + ".")
+                self.assertEqual(message.strip(), expected_message)
+        self.bus.status_error = None
+        self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_not_applicable'
+        for action in ('enable', 'turn-off', 'replace-failed'):
+            with self.subTest(action=action):
+                self.bus.calls.clear()
+                code, result, message = self.run_native(action, choices='yes\n')
+                self.assertEqual(code, 1)
+                self.assertEqual(result, dict(code='hostStateUnrecognized', category='not_applicable',
+                                             effect='none', recovery='refresh'))
+                self.assertIn('No change was made.', message)
+                self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
 
     def test_headless_unavailable(self) -> None:
         import gi
@@ -712,8 +831,8 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                                            "ai.happyranch.RemoteAccess1", method, None, "(s)"))
                 self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
-                if method == "Enable":
-                    self.assertEqual(call[7], 122000)  # Admission timeout; separate original 482s observer timer.
+                if method in ("Enable", 'Disable'):
+                    self.assertEqual(call[7], 122000)  # Admission only; original operation budget stays held separately.
                 else:
                     self.assertGreater(call[7], budget)
                 self.assertEqual((code, result["effect"]), (0, "confirmed") if method == "IssueInvite" else (1, "unknown"))
@@ -868,7 +987,7 @@ class ConnectionCLITests(unittest.TestCase):
                     code, result, _ = self.run_native("revoke-device")
                 self.assertEqual((len(self.opens), [call[3] for call in self.bus.calls],
                                   [call[3] for call in replacement.calls]),
-                                 (1, ["Status", "NextDevice"], []))
+                                 (1, ["Status", "StatusV2", "NextDevice"], []))
                 self.assertEqual((code, result["code"], result["effect"]), (1, "unavailable", "none"))
 
 

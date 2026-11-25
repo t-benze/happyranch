@@ -10,6 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, ContextManager, Protocol, TypeVar
 
 AUTH_DEADLINE = 120.0
@@ -63,6 +64,80 @@ def log_enable_refusal(error: Exception, *, child: bool = False) -> None:
             ('child' if child else 'helper') + ' stage=' + stage + ' exception=' + name)
     except Exception:
         pass  # Diagnostic loss must preserve the original closed refusal.
+
+
+def log_lifecycle_failure(error: Exception, *, action: str, step: str, item: int = 0) -> None:
+    """Best-effort fixed journal tokens; never payloads, paths or exception text."""
+    if action not in ('enable', 'disable', 'replace-failed', 'renew-policy'):
+        return
+    if step not in ('capture', 'enable', 'replace', 'stop', 'cleanup', 'cleanup-directory',
+                    'policy-quiescence', 'policy-stop', 'policy-disable', 'policy-journal',
+                    'owned-stop', 'headscale-stop', 'owned-disable', 'revoke', 'renew'):
+        return
+    try:
+        import errno
+        import json
+        import syslog
+
+        names = {'helper_main', 'dispatch', 'capture', '_headscale_publication', '_cleanup_home_headscale', '_check_directory',
+                 '_publication_parent', '_headscale_cleanup_identity', '_confirm_quiescent',
+                 '_headscale_stopped', 'renew_policy', '_renew_policy_locked', 'locked',
+                 '_account', '_read_file', '_record', '_parent', 'main', 'begin_replacement',
+                 '_stop_policy', '_policy_quiescence', 'revoke', '_run_lifecycle'}
+        stage, seen = 'unverified', set()
+        source = 'unverified'
+        root = Path(__file__).parent.parent
+        for _ in range(8):
+            seen.add(id(error))
+            trace = error.__traceback__
+            for _ in range(32):
+                if trace is None:
+                    break
+                if action == 'disable' and step in ('cleanup', 'cleanup-directory'):
+                    try:
+                        relative = Path(trace.tb_frame.f_code.co_filename).relative_to(root).as_posix()
+                    except ValueError:
+                        pass
+                    else:
+                        if (len(relative) <= 152 and
+                                re.fullmatch(r'(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py', relative)):
+                            source = f'runtime/{relative}:{trace.tb_lineno}'
+                if trace.tb_frame.f_code.co_name in names:
+                    stage = trace.tb_frame.f_code.co_name
+                trace = trace.tb_next
+            cause = error.__cause__
+            if cause is None and error.__suppress_context__:
+                cause = error.__context__
+            if cause is None or id(cause) in seen:
+                break
+            error = cause
+        reason = 'unverified'
+        if isinstance(error, OSError):
+            reason = {errno.EACCES: 'permission-denied', errno.EPERM: 'permission-denied',
+                      errno.EAGAIN: 'lock-busy', errno.EBUSY: 'busy', errno.ENOTEMPTY: 'not-empty',
+                      errno.ENOENT: 'missing', errno.EROFS: 'read-only', errno.EIO: 'io-failure'}.get(
+                          error.errno, 'native-io-failure')
+        elif type(error).__name__ == 'InstallerError':
+            # Compare only fixed internal reasons. A matching path suffix is
+            # discarded, never included in the journal.
+            for literal in ('unsafe directory ownership or mode',
+                            'cannot validate existing service directory ownership without a happyranch account',
+                            'custody not empty', 'custody changed', 'unlisted custody',
+                            'publication parent changed while opening',
+                            'publication parent changed before rename',
+                            'publication parent unavailable before rename',
+                            'userdel uncertain', 'groupdel uncertain', 'user remains', 'identity remains'):
+                if str(error) == literal or str(error).startswith(literal + ': '):
+                    reason = literal
+                    break
+        name = type(error).__name__
+        name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
+        item = item if type(item) is int and 0 <= item <= 8 else 0
+        position = f' source={source}' if action == 'disable' and step in ('cleanup', 'cleanup-directory') else ''
+        syslog.syslog(syslog.LOG_WARNING, f'remote-access-lifecycle-failure action={action} '
+            f'step={step} item={item} stage={stage} exception={name} reason={json.dumps(reason)}{position}')
+    except Exception:
+        pass  # Journal loss never alters effects, retained evidence or refusal.
 
 
 class _StringEnum(str, Enum):

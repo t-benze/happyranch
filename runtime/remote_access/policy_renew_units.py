@@ -33,7 +33,8 @@ def render_service() -> str:
         "[Service]",
         "Type=oneshot",
         "User=root",
-        "Group=happyranch",
+        "Group=root",
+        "SupplementaryGroups=happyranch",
         f"ExecStart={RENEW_EXECUTABLE}",
         "NoNewPrivileges=yes",
         "ProtectSystem=strict",
@@ -65,6 +66,11 @@ def render_service() -> str:
         "StandardError=null",
         "",
     ])
+
+
+def render_previous_service() -> str:
+    """Exact v6/v7 product bytes, admitted only for fresh-auth republish."""
+    return render_service().replace("Group=root\nSupplementaryGroups=happyranch\n", "Group=happyranch\n")
 
 
 def render_timer() -> str:

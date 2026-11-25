@@ -23,3 +23,25 @@ invocation error is not claimed as a negative invariant result. Actual negative
 traces are retained in dev_agent `output/TASK-19025/negative-late-renewal.log`
 and `negative-noncurrent.log`. This finite model does not prove source execution,
 installed runtime or unbounded behavior; see README limits.
+
+
+## TASK-19228 — HomeRetry
+
+Same pinned jar/hash and OpenJDK 21.0.13.1 above, verified before use.
+`retry.cfg` / HomeRetry: TLC exit 0, 712 generated / 184 distinct states,
+depth 17, no errors. Negative mutation making OrdinaryStart increment mints
+produces the intended NoReadyMint counterexample, exit 12, 20 generated / 16
+distinct states. Exact model bytes restored and final current run exits 0 with
+the original counts. Logs: dev_agent output/TASK-19228/F-negative.log and
+F-current.log. State dirs stayed under task-tmp.
+
+Command from this directory (negative uses its own scratch metadir):
+
+```sh
+/usr/bin/java -XX:+UseParallelGC -Xmx512m -cp /tmp/task19067-tlc/tla2tools.jar tlc2.TLC -workers 1 -fp 0 -seed 1 -metadir /home/benze/.happyranch/runtime/orgs/happyranch/workspaces/dev_agent/.happyranch/task-tmp/TASK-19228/tlc-restored -config retry.cfg HomeRetry
+```
+
+The first invocation used a wrong cwd and could not find retry.cfg (exit 255);
+no model claim comes from that failed invocation. The original HomeEnable
+model is unchanged and its prior evidence was not repeated. These are bounded
+safety checks with the assumptions and limits described in README.

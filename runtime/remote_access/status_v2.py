@@ -43,6 +43,11 @@ class SetupPhase(_StringEnum):
     FAILED = 'failed'
     UNCERTAIN = 'uncertain'
     PARTIAL_CLEANUP = 'partial_cleanup'
+    PREPARED_NO_RECEIPT = 'prepared_no_receipt'
+    FAILED_UNCERTAIN = 'failed_uncertain'
+    RUNTIME_UNAVAILABLE = 'runtime_unavailable'
+    SETUP_UNVERIFIED = 'setup_unverified'
+    RENEWAL_FAILED = 'renewal_failed'
 
 
 class RuntimeAvailability(_StringEnum):

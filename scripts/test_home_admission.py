@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -226,3 +227,23 @@ def test_supervisor_foreground_checks_before_run_loop(venue, monkeypatch):
     svc.config.home_id = "foreign"
     with pytest.raises(supervisor.ConnectorConfigError): svc.run()
     assert not mutating(v)
+
+
+@pytest.mark.parametrize("path", ["/etc/happyranch/connector.json", "/etc/happyranch/other.json"])
+def test_linux_cli_passes_fixed_home_config_to_supervisor(
+        venue: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], path: str) -> None:
+    from runtime.remote_access import cli
+
+    v, io = venue, venue.receipts._io
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(cli, "_load_config", lambda supplied: config(v))
+    monkeypatch.setattr(installer, "ManagedInstaller", lambda: io)
+    constructor = supervisor.ConnectorSupervisor
+    monkeypatch.setattr(cli, "ConnectorSupervisor", lambda **kwargs: constructor(**kwargs, manager=io.manager))
+    result = cli.main(["start", "--config", path])
+    if path == "/etc/happyranch/connector.json":
+        assert result == 0 and mutating(v) == [["start", UNITS[0]]]
+        assert capsys.readouterr().err == ""
+    else:
+        assert result == 1 and not mutating(v)
+        assert "home control binding not provisioned" in capsys.readouterr().err

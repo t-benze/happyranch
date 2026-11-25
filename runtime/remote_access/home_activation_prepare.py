@@ -62,6 +62,8 @@ class HomeActivationPrepare:
                 or status["renewal_due"] or not status["leaf_not_after"]):
             raise ActivationRefused()
         members = self._io._headscale_members()
+        # Policy is written separately from the immutable publication inventory.
+        members[headscale_service.POLICY_PATH] = (self._io._headscale_owner, 0o600)
         digests = {}
         for path in MEMBER_PATHS:
             relative = Path(path.lstrip("/"))

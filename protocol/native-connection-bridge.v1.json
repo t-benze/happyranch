@@ -67,7 +67,14 @@
         "issued",
         "expired",
         "used",
-        "unknown"
+        "unknown",
+        "minting",
+        "encoding",
+        "pairing",
+        "refused",
+        "uncertain",
+        "recovered",
+        "cancelled"
       ]
     },
     "timestamp": {
@@ -136,7 +143,13 @@
             "ready",
             "paused",
             "failed",
-            "unknown"
+            "unknown",
+            "prepared_no_receipt",
+            "failed_uncertain",
+            "partial_cleanup",
+            "runtime_unavailable",
+            "setup_unverified",
+            "renewal_failed"
           ]
         },
         "runtime": {
@@ -499,7 +512,7 @@
           "type": "object",
           "properties": {
             "category": {
-              "description": "Optional hostStateUnrecognized refusal category; absent or unrecognized maps to unknown. No host metadata.",
+              "description": "Optional hostStateUnrecognized refusal category; absent, legacy unknown or unrecognized maps to unverified. No host metadata.",
               "enum": [
                 "residue",
                 "owner",
@@ -508,7 +521,9 @@
                 "inventory",
                 "quiescence",
                 "timeout",
-                "unknown"
+                "unknown",
+                "unverified",
+                "not_applicable"
               ]
             },
             "code": {
@@ -1218,7 +1233,11 @@
             "dial_ip",
             "dial-ip",
             "occupied-port",
-            "port-check-uncertain"
+            "port-check-uncertain",
+            "ready-restart-failed-turn-off",
+            "activation-retry-later",
+            "activation-prepared-retry",
+            "activation-unverified"
           ]
         },
         "effect": {

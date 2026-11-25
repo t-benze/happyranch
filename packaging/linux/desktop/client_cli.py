@@ -246,10 +246,14 @@ class Client:
         self.terminal.say("Foreground connection; Ctrl-C or SIGTERM disconnects. Loaded RELEASE UI is unverified.")
         print(json.dumps(dict(state="runtimeReachable", effect="confirmed", savedAccess=self.saved,
                               code=self.code)), flush=True)
+        next_health = time.monotonic() + 1.0
         while True:
             # A signal pending just before the syscall must not need a second
             # signal to wake Python's handler and start bounded cleanup.
             time.sleep(0.1)
+            if time.monotonic() >= next_health:
+                self.work(self.session.health)
+                next_health = time.monotonic() + 1.0
 
     def close(self) -> bool:
         # Existing store deadline is 15s. Settle dispatched custody IO separately.

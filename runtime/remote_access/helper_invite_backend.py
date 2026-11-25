@@ -61,6 +61,22 @@ class HelperInviteBackend:
             raise ValueError('refused')
         if step == 'capture' and expected is None:
             return {'snapshot': self.capture(uid)}
+        if method == 'IssueInvite' and step == 'status':
+            if time.monotonic() >= deadline:
+                raise ValueError('refused')
+            token, config = self._config(uid)
+            binding = json.dumps({k: token[k] for k in ('uid', 'generation', 'operation')},
+                                 sort_keys=True, separators=(',', ':'))
+            if type(expected) is not str or expected != binding:
+                raise ValueError('refused')
+            # observe() uses only its existing protected journal reader. No
+            # admin/minter, serving pairing owner, lock, commit or repair.
+            issuer = HomeInviteIssuer(config=config, minter=None, pairing=None,
+                                      state_dir=self.io.root / HOME_ISSUER)
+            observed = issuer.observe()
+            if self._config(uid)[0] != token or time.monotonic() >= deadline:
+                raise ValueError('refused')
+            return dict(invite=observed.phase, expires_at=observed.expires_at)
         self.dispatched = False
         try:
             if method == 'IssueInvite':

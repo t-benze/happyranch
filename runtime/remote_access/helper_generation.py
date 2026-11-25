@@ -12,13 +12,16 @@ from typing import Callable
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
-                                    'inventory', 'quiescence', 'timeout', 'unknown'})
+                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
+SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
+                          'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
 PREPARATION_CATEGORIES = frozenset({
     'deb-layout-required', 'issuer-state-uncertain', 'account-shape',
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
-    'occupied-port', 'port-check-uncertain',
+    'occupied-port', 'port-check-uncertain', 'ready-restart-failed-turn-off',
+    'activation-retry-later', 'activation-prepared-retry', 'activation-unverified',
 })
 
 
@@ -45,6 +48,8 @@ def host_state_category(error: Exception) -> str:
     """Project shipped refusal stages, never exception text or host metadata."""
     if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
         return 'timeout'
+    if type(error) is GenerationUnavailable:
+        return 'unverified' if error.category == 'unknown' else error.category
     stages = {
         '_account': 'owner', '_headscale_shape': 'owner', '_check_release_record': 'owner',
         '_release_record': 'owner', '_home_unit_provisioning': 'provenance',
@@ -55,9 +60,10 @@ def host_state_category(error: Exception) -> str:
         '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
         '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
         '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
+        '_headscale_publication': 'residue', '_headscale_receipt': 'provenance',
         '_refuse_install_transaction': 'residue', '_headscale_ca_sources': 'residue',
     }
-    category = 'unknown'
+    category = 'unverified'
     trace = error.__traceback__
     for _ in range(32):
         if trace is None:
@@ -148,9 +154,9 @@ class HomeLifecycleClient:
                         and value['preparationFailure'] in PREPARATION_CATEGORIES):
                     raise PreparationFailed(value['preparationFailure'])
                 raise GenerationUnavailable()
-            value = json.loads(result.stdout)
+            value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
             if result.returncode:
-                if (self.method == 'Enable' and step == 'capture' and result.returncode == 1
+                if (self.method in ('Enable', 'Disable', 'ReplaceFailed') and step == 'capture' and result.returncode == 1
                         and type(value) is dict and set(value) == {'refusal'}):
                     raise GenerationUnavailable(value['refusal'])
                 raise GenerationUnavailable()
@@ -188,6 +194,33 @@ class HomeLifecycleClient:
             raise GenerationUnavailable()
         value = self._call('status', None, remaining)
         if set(value) != {'policy'} or value['policy'] not in ('current', 'renewing', 'expired', 'renewal_failed', 'uncertain'):
+            raise GenerationUnavailable()
+        return value
+
+    def setup_status(self, remaining: float) -> dict:
+        if self.method != 'Enable':
+            raise GenerationUnavailable()
+        value = self._call('status', None, remaining)
+        if set(value) != {'setup'} or type(value['setup']) is not str or value['setup'] not in SETUP_STATES:
+            raise GenerationUnavailable()
+        return value
+
+    def invite_status(self, observed: GenerationSnapshot, remaining: float) -> dict:
+        if self.method != 'IssueInvite':
+            raise GenerationUnavailable()
+        binding = json.dumps(dict(uid=self.uid, generation=observed.generation, operation=observed.operation),
+                             sort_keys=True, separators=(',', ':'))
+        value = self._call('status', binding, remaining)
+        states = {'none', 'minting', 'encoding', 'pairing', 'issued', 'recovered',
+                  'expired', 'refused', 'uncertain'}
+        if (set(value) != {'invite', 'expires_at'} or type(value['invite']) is not str
+                or value['invite'] not in states):
+            raise GenerationUnavailable()
+        expiry = value['expires_at']
+        if value['invite'] == 'issued':
+            if type(expiry) is not int or not 0 <= expiry <= 9_223_372_036_854_775_807:
+                raise GenerationUnavailable()
+        elif expiry is not None:
             raise GenerationUnavailable()
         return value
 

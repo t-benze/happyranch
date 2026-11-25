@@ -26,9 +26,10 @@ class ClosedError(Exception):
                  category: str | None = None) -> None:
         self.value = dict(code=code, effect=effect, recovery=recovery)
         if code == "hostStateUnrecognized":
-            self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES else 'unknown'
-        elif code == "enablePreparationFailed":
-            if (type(category) is str and category in contract.PREPARATION_CATEGORIES
+            self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES and category != 'unknown' else 'unverified'
+        elif code in ("enablePreparationFailed", 'turnOffFailed'):
+            categories = contract.PREPARATION_CATEGORIES if code == 'enablePreparationFailed' else contract.DISABLE_CATEGORIES
+            if (type(category) is str and category in categories
                     and effect == "unknown" and recovery == "nativeRecovery"):
                 self.value['category'] = category
             else:
@@ -182,7 +183,10 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value["code"] == "hostStateUnrecognized":
+        if error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
+            print("This action does not apply to the current remote access setup. No change was made. "
+                  "Category: not_applicable.", file=sys.stderr)
+        elif error.value["code"] == "hostStateUnrecognized":
             print("Remote access files or the release runtime owner could not be verified. "
                   "Check the local installation. Category: " + error.value['category'] + ".", file=sys.stderr)
         print(json.dumps(error.value))

@@ -53,6 +53,17 @@ success; READY still requires its protected receipt and all existing checks.
 
 ---
 
+### First policy renewal after Enable
+
+Enable explicitly starts and verifies the owned renewal timer. Its first firing
+may coincide with Enable holding the activation lock. Only that unattended
+renewal path waits up to 20 seconds (below the unit's 30-second start timeout),
+then revalidates under the same lock. Expiration still fails closed and journals
+`lock-busy`; fresh-auth renewal and all other lock callers remain nonblocking.
+This avoids a first-fire lock refusal projecting paused/offline while the host
+is serving. Status still requires the existing independent renewal/policy proof.
+
+
 ## Daemon stop budget
 
 The packaged user `happyranch-daemon.service` explicitly sets
@@ -233,11 +244,14 @@ complete kernel IPv4/IPv6 default-route inventory (including every ECMP hop).
 An exactly four-byte `RTA_TABLE` overrides the header table; absent attributes
 use the header. Malformed/duplicate/truncated attributes or unknown interface
 indices refuse `inventory` before any route can be ignored. Ignore only valid
-non-main defaults without a preferred source; source-less main defaults still
-refuse `inventory`. Only ignored routes left gives `no_address`. Sourced defaults
+non-main IPv4 defaults without a preferred source; source-less main IPv4 defaults
+still refuse `inventory`. Valid IPv6 defaults are excluded from IPv4 selection. Only ignored routes left gives `no_address`. Sourced defaults
 remain candidates across all tables: two assigned RFC1918 sources (even the same
-address) give `multiple_addresses`, and a non-RFC1918/IPv6 source gives `dial_ip`.
-Down/loopback, source-specific and nexthop refusals remain unchanged. No metric
+address) give `multiple_addresses`, and a non-RFC1918 IPv4 source gives `dial_ip`.
+Source-specific defaults in either family, IPv4 nexthop-object defaults and
+IPv6 nexthop groups/multipath or objects without a resolved output interface
+refuse. A single-interface IPv6 RA nexthop-object default is inventoried and
+excluded from IPv4 selection. Down/loopback refusals remain unchanged. No metric
 ranking, device-name/type filter, interface-address fallback or supplied address
 is accepted.
 Port preflight precedes all publication. Unchanged address/config reruns are
@@ -792,6 +806,20 @@ docker compose exec headscale headscale nodes list
 ```
 
 ---
+
+
+### Home Turn off directory removal
+
+Turn off keeps the helper sandbox unchanged. For EROFS only beneath `/var/lib`
+or `/run`, it asks PID 1 to remove the same checked empty fixed custody directory
+with a capability-less transient `/usr/bin/rmdir` unit, bounded to 20 seconds
+(30-second caller timeout). It then proves absence via the pinned parent.
+Missing tools, command failure, timeout, retained entries or custody drift keep
+partial cleanup. Never widen ReadWritePaths or remove directories manually to
+bypass this refusal. Local `remote-access-lifecycle-failure` warnings identify
+only exception class, shipped source-relative file:line, fixed stage/reason and
+cleanup ordinal; they include no user paths, contents or credentials.
+
 
 ## Appendix A: Directory layout
 

@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -316,11 +317,12 @@ class KernelDump:
             policy += (nla(9, struct.pack("=HBBi", 8, 0, 0, 3) * 2)
                        if case.endswith("-ecmp") else nla(4, struct.pack("=I", 3)))
             bodies[24].append(policy)  # Deliberately no RTA_PREFSRC.
-        if case == "ipv6":
+        if case in {"ipv6", "ipv6-no-source", "policy2022-unresolved"}:
             ipv6 = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
             bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, 2) + nla(1, ipv6))
             bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 4, 0, 1, 0)
-                              + nla(4, struct.pack("=I", 2)) + nla(7, ipv6))
+                              + nla(4, struct.pack("=I", 2))
+                              + (nla(7, ipv6) if case == "ipv6" else b""))
         if value.kernel_reverse:
             bodies[24].reverse()
         def message(kind, body, flags=2):
@@ -1060,7 +1062,7 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
 
 @pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
 @pytest.mark.parametrize("case,category,policy_route", [
-    ("ecmp", "multiple_addresses", None), ("ipv6", "dial_ip", None),
+    ("ecmp", "multiple_addresses", None),
     ("unresolved", "inventory", None), ("unresolved-second", "inventory", None),
     ("unknown-interface", "inventory", None), ("down", "no_address", None),
     ("loopback", "no_address", None), ("duplicate-interface", "inventory", None),
@@ -1085,6 +1087,16 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
         struct.pack("=HBBi", 12, 0, 0, 3) + struct.pack("=HH", 8, 5)))),
     ("source-specific", "inventory", policy_default(nla(4, struct.pack("=I", 3)), src_len=24)),
     ("nexthop-object", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(30, struct.pack("=I", 1)))),
+    ("ipv6-nexthop-multipath", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(30, struct.pack("=I", 42))
+        + nla(9, struct.pack("=HBBi", 8, 0, 0, 3))),
+    ("ipv6-nexthop-unresolved", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(30, struct.pack("=I", 42))),
+    ("ipv6-source-specific", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 64, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3))),
     ("bad-oif", "inventory", policy_default(nla(4, b"\x03"))),
     ("bad-source", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(7, b"\x0a"))),
     ("unassigned-source", "inventory", policy_default(nla(4, struct.pack("=I", 3))
@@ -1095,8 +1107,6 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
         + nla(7, socket.inet_pton(socket.AF_INET, "192.168.1.40")))),
     ("policy-non-rfc1918", "dial_ip", policy_default(nla(4, struct.pack("=I", 3))
         + nla(7, socket.inet_pton(socket.AF_INET, "198.18.0.1")))),
-    ("policy-ipv6", "dial_ip", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
-        + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2"))),
     ("policy-only", "no_address", policy_default(nla(4, struct.pack("=I", 3)))),
 ], ids=lambda value: value if isinstance(value, str) else "")
 def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category, policy_route,
@@ -1118,13 +1128,23 @@ def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsy
 
 @pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
 @pytest.mark.parametrize("case,policy_route,indices,tables", [
-    ("policy2022-unresolved", None, [2, 3], [254, 2022]),
+    ("policy2022-unresolved", None, [2, 3, 2], [254, 2022, 254]),
     ("policy2022-unresolved-ecmp", None, [2, 3, 3], [254, 2022, 2022]),
     ("header252", policy_default(nla(4, struct.pack("=I", 3))), [2, 3], [254, 252]),
     ("attr2022-over254", policy_default(nla(4, struct.pack("=I", 3))
         + nla(15, struct.pack("=I", 2022)), table=254), [2, 3], [254, 2022]),
     ("distinct-ecmp", policy_default(nla(15, struct.pack("=I", 2022)) + nla(9,
         struct.pack("=HBBi", 8, 0, 1, 3) + struct.pack("=HBBi", 8, 0, 9, 4))), [2, 3, 4], [254, 2022, 2022]),
+    ("ipv6", None, [2, 2], [254, 254]),
+    ("ipv6-no-source", None, [2, 2], [254, 254]),
+    # Captured RA shape: attrs 4,5,6,12,15,20,30 (metric6 is appended below).
+    ("ipv6-ra-nexthop", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(5, socket.inet_pton(socket.AF_INET6, "fe80::2"))
+        + nla(12, bytes(32)) + nla(15, struct.pack("=I", 254))
+        + nla(20, bytes(1)) + nla(30, struct.pack("=I", 3745389597)), [2, 3], [254, 254]),
+    ("policy-ipv6", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2")),
+        [2, 3], [254, 252]),
 ], ids=lambda value: value if isinstance(value, str) else "")
 @pytest.mark.parametrize("boundary", ["selector", "preparation"])
 def test_thr327_policy_default_without_source_selects_main(fixture, case, boundary, policy_route, indices, tables,
@@ -1148,8 +1168,10 @@ def test_thr327_policy_default_without_source_selects_main(fixture, case, bounda
     expected = list(zip(indices, tables))
     if reverse:
         # Reverse routes, retaining the order of hops within one ECMP route.
-        expected = expected[1:] + expected[:1]
+        expected = expected[::-1] if case == "policy2022-unresolved" else expected[1:] + expected[:1]
     assert [(route.interface_index, route.table) for route in routes] == expected
+    assert sum(route.family == socket.AF_INET6 for route in routes) == (
+        1 if case in {"ipv6", "ipv6-no-source", "policy-ipv6", "policy2022-unresolved", "ipv6-ra-nexthop"} else 0)
 
 
 def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:
@@ -1703,6 +1725,62 @@ def b6_snapshot(root: Path) -> dict[str, tuple[int, ...]]:
             for path in root.rglob("*")}
 
 
+@pytest.mark.parametrize("case", ["empty-parent", "empty-child", "child-mode", "parent-mode",
+    "child-link", "parent-link", "unknown-child", "nonempty", "uid", "gid"])
+def test_thr327_taildrop_disable_exact_empty_tree(
+    composition: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    v = composition
+    expected = v.lifecycle.capture("Enable", os.getuid())
+    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
+                                deadline=time.monotonic() + 480)["outcome"] == "ready"
+    v.observers.close()
+    files = v.path("/var/lib/happyranch-tsnet-sidecar/files")
+    files.mkdir(mode=0o700)
+    child = files / "happyranch-node-uid-1"
+    if case != "empty-parent":
+        child.mkdir(mode=0o700)
+    if case in {"child-mode", "parent-mode"}:
+        (child if case == "child-mode" else files).chmod(0o755)
+    if case in {"child-link", "parent-link"}:
+        target = child if case == "child-link" else files
+        foreign = v.root / "foreign-taildrop"
+        target.rename(foreign)
+        target.symlink_to(foreign, target_is_directory=True)
+    if case == "unknown-child":
+        (files / "happyranch-node-uid-2").mkdir(mode=0o700)
+    if case == "nonempty":
+        (child / "foreign").write_bytes(b"synthetic")
+    if case in {"uid", "gid"}:
+        identity = child.stat().st_dev, child.stat().st_ino
+        real_fstat = os.fstat
+        def mismatch(fd: int) -> os.stat_result:
+            info = real_fstat(fd)
+            if (info.st_dev, info.st_ino) == identity:
+                fields = list(info)
+                fields[4 if case == "uid" else 5] += 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(os, "fstat", mismatch)
+    before = b6_snapshot(v.root)
+    if case not in {"empty-parent", "empty-child"}:
+        assert v.io.inventory().state == "manual-install-conflict"
+        expected = v.lifecycle.capture("Disable", os.getuid())
+        assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected)["outcome"] == "partial_cleanup"
+        # Safety stop disables the renewal timer even when state custody refuses.
+        timer = "etc/systemd/system/happyranch-managed.target.wants/happyranch-remote-access-policy-renew.timer"
+        del before[timer]
+        assert b6_snapshot(v.root) == before
+        return
+    assert v.io.inventory().state == "owned-activated"
+    expected = v.lifecycle.capture("Disable", os.getuid())
+    assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected) == {
+        "outcome": "in_progress", "residue": []}
+    assert v.lifecycle.dispatch("Disable", os.getuid(), "cleanup", expected,
+                                revoke_succeeded=True) == {"outcome": "off", "residue": []}
+    assert not files.exists() and v.receipts.current() is None
+
+
 @pytest.mark.parametrize("mode", [0o600, 0o644])
 @pytest.mark.parametrize("count", [2, 8])
 def test_pre_stop_diagnostics_disable_off_reenable(
@@ -2252,3 +2330,151 @@ def test_b6_helper_operation_cas_under_receipt_lock(
             fixture.installer.cleanup_headscale(**_HOME_EXPECTED, expected_operation_id=operation)
         assert b6_snapshot(fixture.root) == before
         assert not any(args[0] in {'userdel', 'groupdel'} or args[:2] == ['systemctl', 'disable'] for args in fixture.calls)
+
+
+@pytest.mark.parametrize('journal_available', [False, True])
+@pytest.mark.parametrize('index', [1, 3, 5])
+@pytest.mark.parametrize('failure', ['errno', 'custody'])
+def test_b6_cleanup_directory_journal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    index: int, failure: str, journal_available: bool,
+) -> None:
+    import syslog
+    from unittest.mock import Mock
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    # Fixed cleanup order, independently named in the diagnostic contract.
+    directories = ('etc/happyranch/headscale', 'var/lib/happyranch-headscale',
+                   'run/happyranch-headscale', 'var/lib/happyranch-remote-access/home-ca',
+                   'run/happyranch-tsnet-sidecar')
+    target = fixture.root / directories[index - 1]
+    native = os.rmdir
+    def remove(name: str, *, dir_fd: int) -> None:
+        if Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name == target:
+            if failure == 'errno':
+                raise PermissionError(errno.EACCES, 'synthetic-private-key /private/path https://private.invalid')
+            raise module.InstallerError('unsafe directory ownership or mode: ' + str(target))
+        native(name, dir_fd=dir_fd)
+    monkeypatch.setattr(os, 'rmdir', remove)
+    sent = Mock(side_effect=None if journal_available else OSError("synthetic-journal-failure"))
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    with pytest.raises(home.HeadscaleServiceError, match='partial-cleanup-uncertain'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    reason = 'permission-denied' if failure == 'errno' else 'unsafe directory ownership or mode'
+    assert sent.call_count == 1
+    level, message = sent.call_args.args
+    assert level == syslog.LOG_WARNING
+    assert re.fullmatch(
+        f'remote-access-lifecycle-failure action=disable step=cleanup-directory item={index} '
+        f'stage=_cleanup_home_headscale exception={"PermissionError" if failure == "errno" else "InstallerError"} '
+        + re.escape(f'reason={json.dumps(reason)}')
+        + r' source=runtime/remote_access/installer.py:[1-9][0-9]*', message)
+    assert target.exists() and activation.exists() and fixture.receipt().exists()
+    assert all(token not in str(sent.call_args) for token in (str(fixture.root), 'private-key', '/private/', 'https://'))
+
+
+@pytest.mark.parametrize('directory', ['var/lib/happyranch-headscale', 'run/happyranch-headscale',
+    'run/happyranch-tsnet-sidecar', 'var/lib/happyranch-connector', 'var/lib/happyranch-tsnet-sidecar'])
+@pytest.mark.parametrize('result', ['removed', 'nonzero', 'missing-tool', 'still-present'])
+def test_b6_readonly_parent_removal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    directory: str, result: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    for state in module._STATE_DIRS:
+        (fixture.root / state).mkdir(mode=0o700, exist_ok=True)
+    target = fixture.root / directory
+    native, command = os.rmdir, fixture.installer._run
+    attempts, transient = [], []
+    def remove(name: str, *, dir_fd: int | None = None) -> None:
+        path = Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name
+        if path == target:
+            attempts.append(path)
+            raise OSError(errno.EROFS, 'synthetic-private-path')
+        native(name, dir_fd=dir_fd)
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        if args[0] != '/usr/bin/systemd-run':
+            return command(args, **kw)
+        transient.append(args)
+        assert args == ['/usr/bin/systemd-run', '--quiet', '--wait', '--collect',
+            '-p', 'CapabilityBoundingSet=', '-p', 'AmbientCapabilities=',
+            '-p', 'NoNewPrivileges=yes', '-p', 'PrivateNetwork=yes',
+            '-p', 'ProtectHome=yes', '-p', 'PrivateTmp=yes',
+            '-p', 'RuntimeMaxSec=20s', '-p', 'TimeoutStartSec=20s',
+            '/usr/bin/rmdir', '--', str(target)]
+        assert kw == {'timeout': 30.0}
+        assert attempts == [target] and not fixture.present and not fixture.group_present
+        if result == 'missing-tool':
+            raise FileNotFoundError('synthetic-private-tool')
+        if result == 'removed':
+            native(target)
+        return (1 if result == 'nonzero' else 0), 'synthetic-private-command-output'
+    monkeypatch.setattr(os, 'rmdir', remove)
+    fixture.installer._run = run
+    if result == 'removed':
+        assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)['state'] == 'removed'
+        assert not activation.exists() and not fixture.receipt().exists() and not target.exists()
+    else:
+        with pytest.raises(home.HeadscaleServiceError, match='^partial-cleanup-uncertain$'):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+        assert target.exists() and activation.exists() and fixture.receipt().exists()
+    assert attempts == [target] and len(transient) == 1
+
+
+@pytest.mark.parametrize('directory,code', [
+    ('etc/happyranch/headscale', errno.EROFS),
+    ('var/lib/happyranch-remote-access/home-ca', errno.EROFS),
+    ('var/lib/happyranch-headscale', errno.EACCES),
+    ('run/happyranch-headscale', errno.EIO)])
+def test_b6_other_removal_errors_never_escape_sandbox(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    directory: str, code: int,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    target = fixture.root / directory
+    native, command = os.rmdir, fixture.installer._run
+    attempts = []
+    def remove(name: str, *, dir_fd: int | None = None) -> None:
+        if Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name == target:
+            attempts.append(name)
+            raise OSError(code, 'synthetic-private-path')
+        native(name, dir_fd=dir_fd)
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        assert args[0] != '/usr/bin/systemd-run'
+        return command(args, **kw)
+    monkeypatch.setattr(os, 'rmdir', remove)
+    fixture.installer._run = run
+    with pytest.raises(home.HeadscaleServiceError, match='^partial-cleanup-uncertain$'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert attempts == [target.name] and target.exists() and activation.exists() and fixture.receipt().exists()
+
+
+@pytest.mark.parametrize('bad', ['nonempty', 'wrong-owner'])
+def test_b6_unsafe_directory_precedes_any_removal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    target = fixture.root / 'var/lib/happyranch-headscale'
+    if bad == 'nonempty':
+        (target / 'foreign').write_bytes(b'synthetic')
+    else:
+        native_stat, native_fstat = os.stat, os.fstat
+        inode = target.stat().st_ino
+        def wrong(info: os.stat_result) -> os.stat_result:
+            if info.st_ino == inode:
+                fields = list(info)
+                fields[4] += 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(os, 'stat', lambda *a, **kw: wrong(native_stat(*a, **kw)))
+        monkeypatch.setattr(os, 'fstat', lambda *a, **kw: wrong(native_fstat(*a, **kw)))
+    command = fixture.installer._run
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        assert args[0] not in ('/usr/bin/systemd-run', 'userdel', 'groupdel')
+        return command(args, **kw)
+    fixture.installer._run = run
+    def refuse_remove(*a: object, **kw: object) -> None:
+        pytest.fail('unsafe directory admitted to removal')
+    monkeypatch.setattr(os, 'rmdir', refuse_remove)
+    with pytest.raises(home.HeadscaleServiceError, match='^cleanup-uncertain$'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert target.exists() and activation.exists() and fixture.receipt().exists()

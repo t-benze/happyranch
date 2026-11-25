@@ -11,7 +11,7 @@ type Stage = ClientSnapshot['stage'];
 type Tone = 'neutral' | 'progress' | 'attention' | 'danger' | 'ok';
 type Command = 'client.acceptInvite' | 'client.connectSaved' | 'client.removeSaved' | 'client.disconnect' |
   'client.cancelAttempt' | 'client.retry' | 'client.retrySave' | 'client.health' | 'client.status';
-export interface Failure { code: string; effect: string; recovery: string }
+export interface Failure { code: string; effect: string; recovery: string; category?: string }
 // raw is the native record label as observed at the action; it is localized
 // only at render time so locale switches never re-run or re-target an action.
 interface Outcome { command: Command; args: string; raw: string | null; result?: ActionResult; error?: Failure; read?: Failure }

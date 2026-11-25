@@ -145,8 +145,9 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         super().__init__(io=io, expected_generation=expected_generation,
                          expected_operation_id=expected_operation_id)
         self._config = config_owner
-        # Only fresh staged/post-disable Enable composition opts in. Recovery
-        # and Ready owners retain strict defaults; this is cleared at renewal.
+        # Fresh staged/post-disable Enable and read-only prepared-retry
+        # inspection opt in. Recovery and Ready retain strict defaults;
+        # the retry coordinator is rebuilt strictly after policy publication.
         self._policy_renewal_pending = defer_policy_expiry
         self._admin = home_admin.RootHeadscaleAdminOperations()
         self._source = HomeTokenSourceVerifier(io)
@@ -162,6 +163,9 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         self._io._headscale_owner = self._io._headscale_shape()
         if self._io._service_owner is None or self._io._headscale_owner is None:
             raise ActivationRefused()
+        # Retries/recovery can enter without Prepare in this process. Select
+        # the same exact Headscale custody layout for these read-only checks.
+        self._io._headscale_preparing = True
         HomeUnitGate(
             expected_release_uid=receipt.release_uid, expected_home_id=receipt.home_id,
             expected_control_plane_id=receipt.control_plane_id, expected_connector_id=receipt.connector_id,
@@ -177,6 +181,8 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                 or not status["leaf_not_after"]):
             raise ActivationRefused()
         members = self._io._headscale_members()
+        # Policy is written separately from the immutable publication inventory.
+        members[headscale_service.POLICY_PATH] = (self._io._headscale_owner, 0o600)
         for path in MEMBER_PATHS:
             relative = Path(path.lstrip("/"))
             with self._io._publication_parent(str(relative.parent)) as (parent, check):
@@ -332,10 +338,16 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
 
     def verify(self, effect: str, receipt: HomeActivationReceipt) -> bool:
         try:
-            if effect not in EFFECTS:
+            if effect not in (*EFFECTS, 'owned_ports'):
                 return False
             self._common(receipt)
-            if effect == "headscale_start_verify":
+            if effect == 'owned_ports':
+                unit = render_headscale_unit(home_transport=True).encode()
+                process = self._unit(_HEADSCALE, unit, user='happyranch-headscale')
+                headscale_service.require_owned_ports(receipt.dial_ip, uid=process.uid, pid=process.main_pid)
+                if self._unit(_HEADSCALE, unit, user='happyranch-headscale') != process:
+                    raise ActivationRefused()
+            elif effect == "headscale_start_verify":
                 with self._io._publication_parent("etc/systemd/system") as (parent, check):
                     unit = self._io._read_unit(parent, _HEADSCALE)
                     check()

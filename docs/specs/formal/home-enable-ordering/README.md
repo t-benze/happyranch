@@ -11,7 +11,7 @@ ordering and unchanged old-intent/Ready refusal paths. No dependency or CI trigg
 | Renew | HomeActivationOwner.perform -> HomeLiveConfigOwner.renew_policy -> _renew_policy_locked(fresh_auth=True), under the existing activation flock. Results abstract ordinary refusal, valid renewed policy and a no-op leaving expiry. |
 | Start / RefuseCurrent | Live-config validation and strict _common require_current before the effect's daemon_reload/enable/start. headscale represents its first newly issued service effect, including reload. |
 | EnableTimer / StartTarget | Existing managed_services re-stamp and timer-before-target ordering. |
-| oldIntent / ready | Backend recovery and attempted interrupted Enable never replay effects; Ready Enable inspects only. |
+| oldIntent / ready | Backend recovery and attempted interrupted Enable never replay effects; Ready Enable never replays activation; ordinary start is covered by HomeRetry. |
 
 Invariants cover renewal before any start, strict currentness at start, zero starts
 on renewal failure, no renewal in non-forward paths, no writes for non-shipped
@@ -34,3 +34,48 @@ with HomeEnable and each config. Keep jar/state directories outside this repo.
 current must exit 0. negative-late-renewal must violate NoStartBeforeRenewal;
 negative-noncurrent must violate StartRequiresCurrent (exit 12). Actual results
 are recorded in RESULTS.md; finite model results do not establish live acceptance.
+
+
+## Retry, ordinary start and serving-only Disable
+
+`HomeRetry.tla` / `retry.cfg` complements the original renewal-order model.
+Enable requires current renewed policy. Interrupted no-mint/live-key/expired-key
+journals recover without replay; live keys must expire before rollover. Ready
+ordinary start changes runtime only, preserving mint count and receipt. Disable
+accepts active/inactive/activating/deactivating exact owned units (exact custody
+and fresh authentication are abstract admission assumptions). Each invocation
+resets ack; already-revoked generations require serving revoke again. Failed
+stop retains ready and admits another Disable. Unavailable revoke still stops;
+cleanup retains the ready receipt and trust, with a partial publication flag and
+no modeled exit, matching the
+accepted terminal B4 case (TASK-19256). Successful cleanup alone admits fresh Enable, with expired
+policy requiring renewal. The inherited HomeEnable model owns detailed group 5
+renewal-before-start and timer-before-target ordering.
+
+Run HomeRetry with retry.cfg using the pinned jar/command above. Invariants check
+no mint on ready, same-invocation revoke plus stop for Off, retained trust after
+failed revoke and current policy before ready. Two mint operations and two
+Disable invocations bound the state space. No liveness/fairness, native custody,
+authentication, socket ownership or installed-host proof is implied. A failed
+ordinary start/joined verifier stutters with a named refusal. Receipt alone is
+not runtime availability. The never-ready-after-failed-stop requirement was
+withdrawn in TASK-19228; the model intentionally retains ready.
+
+The partial flag abstracts missing publication after B6, not a durable marker or
+revocation proof. It prevents the model from inventing an ordinary restart of
+the partially removed publication.
+
+
+TASK-19256 restores the exact ready timer link before ordinary target startup,
+then explicitly starts and verifies an inactive timer. The retained model's
+ordinary-start transition remains an abstraction of successful runtime repair;
+it does not prove timer ActiveState/SubState/enablement or first-renewal lock
+ordering. The supported composition keeper owns that systemd-state assertion.
+TASK-19255 supplies manager-owned VM evidence of the N5/N6 first-fire flock
+collision and its bounded-wait resolution. TASK-19270 permits only unattended
+renewal to wait at most 20 seconds for the same lock (below the unit's 30-second
+start timeout); all other callers remain nonblocking. This adds no effect while
+the lock is held: the model still abstracts lock ownership into atomic actions.
+The existing finite TLC result does not prove the wait, native timer activity or
+installed acceptance; real-flock standalone cases cover the wait/refusal boundary,
+and the manager must repeat the VM flow on the rebuilt exact reviewed head.

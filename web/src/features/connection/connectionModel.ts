@@ -360,10 +360,11 @@ const HOST_ERROR: Record<string, MessageKey> = {
 };
 
 const HOST_STATE_ERROR: Record<string, MessageKey> = {
+  not_applicable: 'connection.host.hErrStateNotApplicable',
   residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
   provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',
   inventory: 'connection.host.hErrStateInventory', quiescence: 'connection.host.hErrStateQuiescence',
-  timeout: 'connection.host.hErrStateTimeout', unknown: 'connection.host.hErrStateUnknown',
+  timeout: 'connection.host.hErrStateTimeout', unverified: 'connection.host.hErrStateUnknown', unknown: 'connection.host.hErrStateUnknown',
 };
 
 export function errorKey(command: ConnectionCommand, code: string, category?: ConnectionFailure['category']): MessageKey {
@@ -488,7 +489,9 @@ export interface HostView {
   checkAgain: boolean;
   /** Devices list, selection and Turn off apply (ready / paused). */
   manage: boolean;
+  turnOff: boolean;
   invite: 'issued' | 'expired' | 'used' | null;
+  inviteNotice: MessageKey | null;
   hints: MessageKey[];
   stale: boolean;
 }
@@ -511,6 +514,12 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     paused: ['connection.host.hBadgePaused', 'danger', 'connection.host.hTitlePaused', 'connection.host.hLeadPaused'],
     failed: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hLeadFailed'],
     unknown: ['connection.host.hBadgeUnknown', 'neutral', 'connection.host.hTitleUnknown', 'connection.host.hLeadUnknown'],
+    prepared_no_receipt: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStatePrepared'],
+    failed_uncertain: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateFailedUncertain'],
+    partial_cleanup: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStatePartial'],
+    runtime_unavailable: ['connection.host.hBadgeOffline', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateRuntime'],
+    setup_unverified: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateUnverified'],
+    renewal_failed: ['connection.host.hBadgePaused', 'danger', 'connection.host.hTitlePaused', 'connection.host.hStateRenewal'],
   };
   let [badge, tone, title, lead] = table[phase];
   if (unconfirmed) lead = 'connection.host.hLeadUnconfirmed';
@@ -540,12 +549,19 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     title,
     lead,
     requester,
-    enable: phase === 'off',
+    enable: ['off', 'prepared_no_receipt', 'failed_uncertain', 'runtime_unavailable'].includes(phase),
     approve: requester !== null,
     createInvite: phase === 'ready' && requester === null && !issued,
-    checkAgain: phase === 'pending' || phase === 'failed' || phase === 'unknown' || phase === 'paused',
+    checkAgain: phase !== 'off' && phase !== 'ready',
     manage: phase === 'ready' || phase === 'paused',
+    turnOff: ['ready', 'paused', 'failed_uncertain', 'runtime_unavailable', 'partial_cleanup', 'setup_unverified', 'renewal_failed'].includes(phase),
     invite: phase !== 'ready' ? null : issued ? 'issued' : snapshot.inviteState === 'expired' ? 'expired' : snapshot.inviteState === 'used' ? 'used' : null,
+    inviteNotice: phase !== 'ready' ? null : ({
+      minting: 'connection.host.hInvitePreparing', encoding: 'connection.host.hInvitePreparing',
+      pairing: 'connection.host.hInvitePreparing', refused: 'connection.host.hInviteRefused',
+      uncertain: 'connection.host.hInviteUncertain', recovered: 'connection.host.hInviteRecovered',
+      cancelled: 'connection.host.hInviteCancelled',
+    } as Partial<Record<HostSnapshot['inviteState'], MessageKey>>)[snapshot.inviteState] ?? null,
     hints,
     stale: snapshot.observation === 'stale',
   };

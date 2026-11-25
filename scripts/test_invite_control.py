@@ -374,6 +374,9 @@ def test_adapter_revoke_all_denies_and_closes_every_device(owner, fails):
             adapter.revoke_all(generation)
     else:
         assert adapter.revoke_all(generation) == store.snapshot()[1]
+    if not fails:
+        committed = store.snapshot()[1]
+        assert adapter.revoke_all(committed) > committed
     state, _ = store.snapshot()
     assert set(closed) == {d for d, _, _ in grants}
     assert state.invite_record is None and all(d.revoked for d in state.devices.values())

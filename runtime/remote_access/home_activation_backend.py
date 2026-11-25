@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pwd
+import stat
 import sys
 import threading
 import time
@@ -23,14 +24,14 @@ from runtime.remote_access.home_activation import (
 from runtime.remote_access.home_activation_coordinator import ActivationRefused, HomeActivationCoordinator
 from runtime.remote_access.home_activation_owner import HomeActivationOwner
 from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
-from runtime.remote_access.home_activation_recovery import HomeActivationRecovery
+from runtime.remote_access.home_activation_recovery import HomeActivationRecovery, RecoveryRefused
 from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
 from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
-from runtime.remote_access.helper_lifecycle import log_enable_refusal
-from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES
+from runtime.remote_access.helper_lifecycle import log_enable_refusal, log_lifecycle_failure
+from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 
 
@@ -100,7 +101,8 @@ class HomeActivationBackend:
         return coordinator, recovery, observer
 
     def enable(self, *, expected_generation: int, authenticated: bool,
-               _defer_policy_expiry: bool = False) -> HomeActivationReceipt:
+               _defer_policy_expiry: bool = False,
+               _refresh_staged_policy: bool = False) -> HomeActivationReceipt:
         try:
             _generation(expected_generation)
             if authenticated is not True or os.geteuid() != 0:
@@ -142,6 +144,16 @@ class HomeActivationBackend:
                         raise ActivationRefused()
                 if receipt.phase != "prepared":
                     raise ActivationRefused()
+                if exists or _refresh_staged_policy:
+                    # A prepared retry must publish a fresh envelope, rather
+                    # than carry an expired policy into activation. This owner
+                    # only validates retained inputs; it performs no effects.
+                    inspection, _, _ = self._compose(receipt, defer_policy_expiry=True)
+                    if inspection._owner.verify("preflight", receipt) is not True:
+                        raise ActivationRefused()
+                    self._io._renew_policy_locked(fresh_auth=True)
+                    # Discard captured pre-renewal provenance. The actual
+                    # coordinator below re-reads it with strict expiry checks.
                 coordinator, _, observer = self._compose(receipt, defer_policy_expiry=_defer_policy_expiry)
                 coordinator.run(receipt)
                 return coordinator.publish_ready(expected_generation=expected_generation, observer=observer)
@@ -161,6 +173,10 @@ class HomeActivationBackend:
                 return recovery.recover(expected_generation=expected_generation,
                     expected_operation_id=expected_operation_id, fresh_authenticated=fresh_authenticated,
                     observation_owner=observer._owner)
+        except RecoveryRefused as error:
+            if str(error) == 'retry_later':
+                raise EnablePreparationRefused('activation-retry-later') from None
+            raise ActivationRefused() from None
         except Exception:
             raise ActivationRefused() from None
 
@@ -191,7 +207,9 @@ class HelperLifecycleBackend:
                         or name == SERVICE_NAME and any(props.get(k) != v for k, v in
                             (('MainPID', '0'), ('ControlPID', '0'), ('ControlGroup', '')))):
                     raise ActivationRefused()
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-quiescence',
+                                      item=1 if name == TIMER_NAME else 2)
                 residue.append(name + ': quiescence unconfirmed')
         relative = 'etc/systemd/system/happyranch-managed.target.wants'
         try:
@@ -205,7 +223,8 @@ class HelperLifecycleBackend:
                 check()
         except FileNotFoundError:
             pass
-        except Exception:
+        except Exception as error:
+            log_lifecycle_failure(error, action='disable', step='policy-quiescence')
             residue.append('/' + relative + '/' + TIMER_NAME + ': absence unconfirmed')
         return residue
 
@@ -224,12 +243,15 @@ class HelperLifecycleBackend:
                     timer_owned = True
                 if loaded:
                     self.io.manager.stop(name, timeout=50.0)
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-stop',
+                                      item=1 if name == TIMER_NAME else 2)
                 residue.append(name + ': stop unconfirmed')
         if timer_owned:
             try:
                 self.io.manager.disable(TIMER_NAME)
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-disable')
                 residue.append(TIMER_NAME + ': disable unconfirmed')
         return residue + self._policy_quiescence()
 
@@ -277,6 +299,39 @@ class HelperLifecycleBackend:
                  'current' if service.get('Result') == 'success' and timer == dict(
                      ActiveState='active', SubState='waiting', UnitFileState='enabled') else 'renewal_failed')
         return {'policy': state}
+
+    def setup_status(self, uid: int) -> dict:
+        """Display only: no generation token, mutation admission or repair."""
+        receipt = self.store.current()
+        if receipt is None:
+            captured = json.loads(self.capture('Enable', uid))
+            return {'setup': 'prepared_no_receipt' if captured['prestate'] == 'prepared' else 'off'}
+        if receipt.release_uid != uid:
+            raise ActivationRefused()
+        if receipt.phase != 'ready':
+            return {'setup': 'failed_uncertain' if receipt.phase == 'failed_uncertain' else 'setup_unverified'}
+        preparing = self.io._headscale_preparing
+        try:
+            self.io._service_owner = self.io._account(create=False)
+            self.io._headscale_owner = self.io._headscale_shape()
+            self.io._headscale_preparing = True
+            if self.io._headscale_publication() is None:
+                return {'setup': 'partial_cleanup'}
+            # Keep ordinary inventory's closed state set, including on Status.
+            if self.io.inventory().state != 'owned-activated':
+                return {'setup': 'setup_unverified'}
+            for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
+                if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
+                    return {'setup': 'runtime_unavailable'}
+            if self.policy_status(uid)['policy'] not in ('current', 'renewing'):
+                return {'setup': 'renewal_failed'}
+            return {'setup': 'ready'}
+        except FileNotFoundError:
+            return {'setup': 'partial_cleanup'}
+        except Exception:
+            return {'setup': 'setup_unverified'}
+        finally:
+            self.io._headscale_preparing = preparing
 
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
@@ -350,12 +405,27 @@ class HelperLifecycleBackend:
                         sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             generation = 0
         if method == 'ReplaceFailed':
+            if receipt is not None:
+                # Home activation has its own recovery; it is never an installer
+                # replacement candidate. This refuses before admission/effects.
+                raise GenerationUnavailable('not_applicable')
             candidate = self.io.replacement_inventory()
             replacement = candidate.journal_generation or candidate.inventory_generation
-            if candidate.installation.state != 'known-failed-or-partial' or replacement is None:
-                raise ActivationRefused()
+            if candidate.installation.state != 'known-failed-or-partial':
+                if candidate.installation.state in ('clean', 'modern', 'owned', 'owned-activated', 'healthy-manual'):
+                    raise GenerationUnavailable('not_applicable')
+                # Exact prepared home staging may be deliberately rejected by
+                # the installer replacement inventory. The existing Enable
+                # capture can recognize it without executing anything.
+                self.capture('Enable', uid)
+                raise GenerationUnavailable('not_applicable')
+            if replacement is None:
+                raise GenerationUnavailable('inventory')
         if method == 'Disable' and receipt is None:
-            raise ActivationRefused()
+            # Prove recognized absence/preparation through the existing strict
+            # capture. Unsafe leftovers retain their own refusal category.
+            self.capture('Enable', uid)
+            raise GenerationUnavailable('not_applicable')
         result = dict(uid=uid, activation=activation, generation=generation,
                       replacement=replacement, configuration=configuration)
         if method == 'Enable' and receipt is None:
@@ -406,6 +476,8 @@ class HelperLifecycleBackend:
             return {'snapshot': self.capture(method, uid)}
         if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
             return self.policy_status(uid)
+        if method == 'Enable' and step == 'status' and expected is None:
+            return self.setup_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
             raise ActivationRefused()
         if method == 'RetryPolicyRenewal' and step == 'renew':
@@ -443,12 +515,109 @@ class HelperLifecycleBackend:
             if self.capture(method, uid) != expected:
                 raise ActivationRefused()
             if method == 'Enable' and step == 'enable':
+                from runtime.remote_access.policy_renew_units import SERVICE_NAME, render_previous_service, render_service
+                from runtime.remote_access.home_unit_publication import publish_home_unit
+                def require_upgrade() -> None:
+                    if self.capture(method, uid) != expected:
+                        raise ActivationRefused()
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise ActivationRefused()
+                    upgrade_receipt = self.store.current()
+                    if upgrade_receipt is not None:
+                        from runtime.remote_access.home_activation_owner import HomeTokenSourceVerifier
+                        HomeTokenSourceVerifier(self.io).require(upgrade_receipt)
+                    props = self.io.manager.show_properties(SERVICE_NAME, (
+                        'FragmentPath', 'DropInPaths', 'NeedDaemonReload', 'LoadState'))
+                    if props != dict(FragmentPath=str(self.io.root / 'usr/lib/systemd/system' / SERVICE_NAME),
+                                     DropInPaths='', NeedDaemonReload='no', LoadState='loaded'):
+                        raise ActivationRefused()
+                # Authenticated helper child, same captured G/O and held flock.
+                # Republish only the one exact previous product rendering.
+                with self.io._publication_parent('usr/lib/systemd/system') as (parent, check):
+                    previous = self.io._read_file(parent, SERVICE_NAME, owner=self.io.root_owner, mode=0o644)
+                    check()
+                if previous != render_service().encode():
+                    publish_home_unit(self.io, SERVICE_NAME, legacy=render_previous_service().encode(),
+                                      home=render_service().encode(), require=require_upgrade)
+                    self.io.manager.daemon_reload()
                 current = self.store.current()
                 if current is not None and current.phase == 'ready':
-                    # Already-ready is inspect-only, never replays activation.
+                    # Ordinary boot-equivalent start, never activation replay.
                     coordinator, _, _ = backend._compose(current)
-                    if coordinator._owner.verify('joined', current) is not True:
-                        raise ActivationRefused()
+                    try:
+                        from runtime.remote_access.home_admission import HomeProfileAdmission
+                        from runtime.remote_access.policy_renew_units import TIMER_NAME
+                        def require_ready() -> None:
+                            if (deadline is None or time.monotonic() >= deadline
+                                    or self.capture(method, uid) != expected
+                                    or HomeProfileAdmission(self.io).require(ordinary=True).receipt != current):
+                                raise ActivationRefused()
+                            if time.monotonic() >= deadline:
+                                raise ActivationRefused()
+
+                        require_ready()
+                        if self.io.inventory().state != 'owned-activated':
+                            raise ActivationRefused()
+                        coordinator._owner._managed_fragments(require_home=True)
+                        # Restore the exact Wants link before starting the target.
+                        relative = 'etc/systemd/system/happyranch-managed.target.wants'
+                        with self.io._publication_parent(relative) as (parent, check):
+                            try:
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                require_ready()
+                                self.io.manager.enable(TIMER_NAME)
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                                    or (info.st_uid, info.st_gid) != self.io.root_owner
+                                    or os.readlink(TIMER_NAME, dir_fd=parent) not in (
+                                        '../' + TIMER_NAME, '/usr/lib/systemd/system/' + TIMER_NAME,
+                                        str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
+                                raise ActivationRefused()
+                            check()
+                        for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
+                            require_ready()
+                            if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
+                                # Missing enablement after a partial Disable is not
+                                # boot-equivalent; do not reopen that admission.
+                                from runtime.remote_access.home_activation import OWNED_LINK, OWNED_LINK_TARGET
+                                link_name = name if name == 'happyranch-headscale.service' else UNITS[2]
+                                link = (Path(OWNED_LINK) if name == 'happyranch-headscale.service' else
+                                        Path('/etc/systemd/system/multi-user.target.wants') / link_name)
+                                with self.io._publication_parent(str(link.parent).lstrip('/')) as (parent, check):
+                                    target = os.readlink(link_name, dir_fd=parent)
+                                    allowed = {OWNED_LINK_TARGET} if name == 'happyranch-headscale.service' else {
+                                        '../' + link_name, str(self.io.root / 'etc/systemd/system' / link_name)}
+                                    if target not in allowed:
+                                        raise ActivationRefused()
+                                    check()
+                                self.io.manager.start(name, timeout=45 if name.endswith('headscale.service') else 250)
+                        if coordinator._owner.verify('joined', current) is not True:
+                            raise ActivationRefused()
+                        # Enabling a timer does not start it on an active target.
+                        require_ready()
+                        coordinator._owner._managed_fragments(require_home=True)
+                        keys = ('ActiveState', 'SubState', 'UnitFileState')
+                        active = dict(ActiveState='active', SubState='waiting', UnitFileState='enabled')
+                        def timer_active() -> bool:
+                            timer = self.io.manager.show_properties(TIMER_NAME, keys)
+                            if timer == active:
+                                return True
+                            # The verified oneshot can be waiting for our flock.
+                            # Never wait for it while Enable still holds that lock.
+                            return (timer == dict(active, SubState='running')
+                                and self.io.manager.show_properties(SERVICE_NAME,
+                                    ('ActiveState', 'SubState', 'Result')) == dict(
+                                        ActiveState='activating', SubState='start', Result='success'))
+
+                        if not timer_active():
+                            require_ready()
+                            self.io.manager.start(TIMER_NAME)
+                        require_ready()
+                        if not timer_active():
+                            raise ActivationRefused()
+                    except Exception:
+                        raise EnablePreparationRefused('ready-restart-failed-turn-off') from None
                 elif current is not None and current.phase == 'failed_uncertain':
                     transaction = backend._transactions.read_optional()
                     if (transaction is None or not transaction.matches(current)
@@ -464,7 +633,8 @@ class HelperLifecycleBackend:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise ActivationRefused()
                     current = backend.enable(expected_generation=snapshot['generation'], authenticated=True,
-                        _defer_policy_expiry=current is None and snapshot.get('prestate') in ('staged-inert', 'post-disable'))
+                        _defer_policy_expiry=current is None and snapshot.get('prestate') in ('staged-inert', 'post-disable'),
+                        _refresh_staged_policy=current is None and snapshot.get('prestate') == 'prepared')
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ActivationRefused()
                 return {'outcome': current.phase, 'residue': []}
@@ -485,13 +655,15 @@ class HelperLifecycleBackend:
                         check()
                     if transaction is not None:
                         self.io._recover_policy_renewal(transaction)
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='policy-journal')
                     residue.append('/etc/happyranch/install-transaction.json')
                 # Renewal residue vetoes B6, never the independently owned
                 # remote-unit safety stop (including after failed revocation).
                 try:
-                    self.io.stop_and_confirm()
-                except Exception:
+                    self.io.stop_and_confirm(disabling=True)
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='owned-stop')
                     residue.append('owned remote units: stop unconfirmed')
                 try:
                     from runtime.remote_access import headscale_service
@@ -514,7 +686,8 @@ class HelperLifecycleBackend:
                     if loaded:
                         self.io.manager.stop(name, timeout=50.0)
                     self.io._headscale_stopped()
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='headscale-stop')
                     residue.append('happyranch-headscale.service: stop unconfirmed')
                 try:
                     # B6 owns its receipted Headscale link. Disable the other exact
@@ -527,7 +700,8 @@ class HelperLifecycleBackend:
                             self.io.manager.disable(name)
                     self.io._confirm_quiescent()
                     self.io._headscale_stopped()
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='owned-disable')
                     residue.append('owned remote units: quiescence unconfirmed')
                 residue.extend(self._policy_quiescence())
                 if residue:
@@ -554,7 +728,13 @@ def _log_activation_failure(error: Exception) -> None:
             seen.add(id(cause))
             error = cause
         root = Path(__file__).parent.parent
-        source = None
+        source, stage = None, 'unverified'
+        stages = {'_account': 'account', 'prepare_headscale': 'headscale-preparation',
+            'publish_home_units': 'unit-publication', 'publish_invite_config': 'invite-publication',
+            '_check_directory': 'custody', '_read_file': 'custody', '_record': 'custody',
+            '_managed_fragments': 'unit-inventory', 'renew_policy': 'policy-renewal',
+            '_renew_policy_locked': 'policy-renewal', 'recover': 'recovery', 'verify': 'verification',
+            'perform': 'activation-effect', 'start': 'unit-start', 'enable': 'enable'}
         trace = error.__traceback__
         while trace is not None:
             try:
@@ -567,12 +747,13 @@ def _log_activation_failure(error: Exception) -> None:
                 if (len(path) <= 160 and
                         re.fullmatch(r'(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py', relative.as_posix())):
                     source = f'{path}:{trace.tb_lineno}'
+                    stage = stages.get(trace.tb_frame.f_code.co_name, stage)
             trace = trace.tb_next
         name = type(error).__name__
         name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
         if source is not None:
             syslog.syslog(syslog.LOG_WARNING,
-                f'remote-access-activation-failure exception={name} source={source} step=enable')
+                f'remote-access-activation-failure exception={name} source={source} step=enable stage={stage}')
     except Exception:
         pass  # Diagnostic loss preserves the original closed failure.
 
@@ -626,19 +807,26 @@ def helper_main() -> int:
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         return 0
     except Exception as error:
-        if (type(request) is dict and request.get('method') == 'Enable'
+        if (type(request) is dict and request.get('method') in ('Disable', 'ReplaceFailed')
+                and request.get('step') in ('capture', 'stop', 'cleanup', 'replace')):
+            log_lifecycle_failure(error, action='disable' if request['method'] == 'Disable' else 'replace-failed',
+                                  step=request['step'])
+        if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
                 and request.get('step') == 'capture'):
-            log_enable_refusal(error, child=True)
+            if request['method'] == 'Enable':
+                log_enable_refusal(error, child=True)
             from runtime.remote_access.helper_generation import host_state_category
             print(json.dumps({'refusal': host_state_category(error)}))
         elif (type(request) is dict and request.get('method') == 'Enable'
                 and request.get('step') == 'enable'):
+            _log_activation_failure(error)
             if (type(error) is EnablePreparationRefused and deadline is not None
                     and time.monotonic() < deadline and type(error.category) is str
                     and error.category in PREPARATION_CATEGORIES):
                 print(json.dumps({'preparationFailure': error.category}, separators=(',', ':')))
             else:
-                _log_activation_failure(error)
+                if deadline is not None and time.monotonic() < deadline:
+                    print('{"preparationFailure":"activation-unverified"}')
         return 1  # No raw paths, keys, credentials or exception text leave this child.
 
 

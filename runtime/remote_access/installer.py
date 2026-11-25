@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from runtime.remote_access import headscale_service as headscale
 from runtime.remote_access import home_headscale
+from runtime.remote_access.helper_lifecycle import log_lifecycle_failure
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
     VERIFIER_FILESYSTEM_HARDENING,
@@ -336,10 +337,35 @@ class ManagedInstaller:
             raise InstallerError(str(self.root / relative)) from None
         return files
 
+    def _inventory_taildrop(self) -> tuple[str, ...]:
+        """Only the pinned tsnet home-node empty tree, including partial removal."""
+        relative = _STATE_DIRS[1] + "/files"
+        child = "happyranch-node-uid-1"
+        try:
+            with self._publication_parent(relative) as (parent, check):
+                with os.scandir(parent) as entries:
+                    first = next(entries, None)
+                    if first is not None and (first.name != child or next(entries, None) is not None):
+                        raise InstallerError("unknown Taildrop member")
+                present = first is not None
+                if os.fstat(parent).st_nlink != (3 if present else 2):
+                    raise InstallerError("Taildrop directory custody")
+                if present:
+                    with self._publication_parent(relative + "/" + child) as (leaf, check_leaf):
+                        with os.scandir(leaf) as entries:
+                            if next(entries, None) is not None or os.fstat(leaf).st_nlink != 2:
+                                raise InstallerError("Taildrop directory not empty")
+                        check_leaf()
+                check()
+                return (relative, relative + "/" + child) if present else (relative,)
+        except FileNotFoundError:
+            return ()
+
     def _inventory_units(
         self, connector: dict, *, removing_units: set[str] | None = None,
         observed_units: dict[str, str] | None = None,
         reload_transaction: bytes | None = None,
+        disabling: bool = False,
     ) -> tuple[set[str], dict[str, dict[str, str]]]:
         reload_removed = self._reload_removed_units(reload_transaction) if reload_transaction is not None else ()
         if connector and not isinstance(connector.get("managed"), dict):
@@ -407,7 +433,8 @@ class ManagedInstaller:
                     or props.get("DropInPaths") != ""
                     or props.get("NeedDaemonReload") not in ({"no", "yes"} if cached else {"no"})
                     or props.get("LoadState") != ("loaded" if loaded or cached else "not-found")
-                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else
+                    or props.get("ActiveState") not in (({"active", "inactive", "failed", "activating", "deactivating"} if disabling
+                                                        else {"active", "inactive", "failed"}) if loaded else
                                                        {"inactive", "failed"} if cached else {"inactive"})):
                 # Manager strings can contain arbitrary data: report fixed paths only.
                 raise InstallerError(path)
@@ -467,7 +494,8 @@ class ManagedInstaller:
         return self._inventory()
 
     def _inventory(self, *, prepared_transaction: bytes | None = None,
-                   pending: tuple[str, bytes] | None = None) -> InstallInventory:
+                   pending: tuple[str, bytes] | None = None,
+                   disabling: bool = False) -> InstallInventory:
         preparing = self._headscale_preparing
         location = str(self.root / "etc/happyranch")
         paths: list[str] = []
@@ -639,8 +667,11 @@ class ManagedInstaller:
             ):
                 location = str(self.root / relative)
                 # State contents are never interpreted, replayed or copied.
-                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names})
+                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names},
+                    directories={"files"} if relative == _STATE_DIRS[1] else None)
                 paths.extend(str(self.root / relative / name) for name in state)
+                if relative == _STATE_DIRS[1]:
+                    paths.extend(str(self.root / path) for path in self._inventory_taildrop())
             for relative, entries in (
                 ("run/happyranch-connector", {name: (service, 0o600, True) for name in ("ingress.sock", "control.sock")}),
                 ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False),
@@ -675,7 +706,7 @@ class ManagedInstaller:
                 if modern:
                     connector = modern_connector
             units, properties = self._inventory_units(connector, removing_units=removing_units,
-                observed_units=HomeProfileAdmission(self).observed_units(home) if home else None)
+                observed_units=HomeProfileAdmission(self).observed_units(home) if home else None, disabling=disabling)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             if home is not None:
                 if len(units) != len(UNITS):
@@ -1563,13 +1594,14 @@ class ManagedInstaller:
             if hashlib.sha256(self._read_file(parent, entry, owner=owner, mode=mode)).hexdigest() != digest:
                 raise InstallerError("replacement fixed file changed before mutation")
 
-    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
+    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None,
+                         disabling: bool = False) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
 
         No filesystem mutation or admission reopening is performed. Callers must
         not cache this sampled observation as later file-mutation authority.
         """
-        inventory = self._inventory(prepared_transaction=_replacement_transaction)
+        inventory = self._inventory(prepared_transaction=_replacement_transaction, disabling=disabling)
         if inventory.state in {"manual-install-conflict", "healthy-manual"}:
             raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
         order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
@@ -2497,6 +2529,7 @@ class ManagedInstaller:
         from runtime.remote_access.home_unit_gate import HomeUnitGate
 
         partial = False
+        cleanup_directory = 0  # Diagnostic ordinal only; never an admission input.
         self._headscale_preparing = True
         try:
             if self.layout != "deb":
@@ -2571,6 +2604,8 @@ class ManagedInstaller:
                 if revoke_succeeded:
                     for path in state_paths:
                         members[path] = "file", self._service_owner, 0o600, None
+                    members["/" + _STATE_DIRS[1] + "/files/happyranch-node-uid-1"] = (
+                        "directory", self._service_owner, 0o700, None)
 
                 def entry(path: str, *, remove: bool = False) -> bool:
                     nonlocal partial
@@ -2642,15 +2677,19 @@ class ManagedInstaller:
 
                 def inventory() -> None:
                     # Shallow fixed custody only; never recurse into an unknown entry.
+                    taildrop = self._inventory_taildrop() if revoke_succeeded else ()
                     for directory in (*headscale.CUSTODY, headscale.HOME_CA,
                                       *(_STATE_DIRS if revoke_succeeded else ())):
                         try:
                             with self._publication_parent(directory) as (parent, check):
                                 if directory in _STATE_DIRS and (stat.S_IMODE(os.fstat(parent).st_mode) != 0o700
-                                                                or os.fstat(parent).st_nlink != 2):
+                                                                or os.fstat(parent).st_nlink != (
+                                                                    3 if directory == _STATE_DIRS[1] and taildrop else 2)):
                                     raise InstallerError("state directory custody")
                                 allowed = {Path(path).name for path in members
                                            if str(Path(path).parent) == "/" + directory}
+                                if directory == _STATE_DIRS[1]:
+                                    allowed.add("files")
                                 with os.scandir(parent) as entries:
                                     for index, item in enumerate(entries):
                                         if index >= 64 or item.name not in allowed:
@@ -2810,7 +2849,9 @@ class ManagedInstaller:
                     if self._headscale_cleanup_identity(receipt) != (False, False):
                         raise InstallerError("identity remains")
                 for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar",
+                                  *((_STATE_DIRS[1] + "/files",) if revoke_succeeded else ()),
                                   *(_STATE_DIRS if revoke_succeeded else ())):
+                    cleanup_directory += 1
                     require()
                     inventory()
                     relative = Path(directory)
@@ -2839,10 +2880,39 @@ class ManagedInstaller:
                                 check()
                                 parent_check()
                                 partial = True
-                                os.rmdir(relative.name, dir_fd=parent)
+                                try:
+                                    os.rmdir(relative.name, dir_fd=parent)
+                                except OSError as error:
+                                    # ProtectSystem=strict leaves these parents read-only.
+                                    # PID 1 removes only the same fixed, checked empty directory;
+                                    # the helper's namespace and capabilities stay unchanged.
+                                    if error.errno != errno.EROFS or str(relative.parent) not in ("var/lib", "run"):
+                                        raise
+                                    try:
+                                        code, _ = self._run(
+                                            ["/usr/bin/systemd-run", "--quiet", "--wait", "--collect",
+                                             "-p", "CapabilityBoundingSet=", "-p", "AmbientCapabilities=",
+                                             "-p", "NoNewPrivileges=yes", "-p", "PrivateNetwork=yes",
+                                             "-p", "ProtectHome=yes", "-p", "PrivateTmp=yes",
+                                             "-p", "RuntimeMaxSec=20s", "-p", "TimeoutStartSec=20s",
+                                             "/usr/bin/rmdir", "--", str(self.root / relative)], timeout=30.0)
+                                    except OSError:
+                                        # Do not let the surrounding absent-directory handler
+                                        # turn a missing native tool into successful cleanup.
+                                        raise InstallerError("custody rmdir uncertain") from None
+                                    if code:
+                                        raise InstallerError("custody rmdir uncertain")
+                                    parent_check()
+                                    try:
+                                        os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                                    except FileNotFoundError:
+                                        pass
+                                    else:
+                                        raise InstallerError("custody remains")
                                 os.fsync(parent)
                     except FileNotFoundError:
                         pass
+                cleanup_directory = 0
                 require()
                 self.manager.daemon_reload()
                 require()
@@ -2877,8 +2947,9 @@ class ManagedInstaller:
                         "account": "removed" if receipt else "preserved: not created by HappyRanch",
                         "home_ca": "removed"}
         except (OSError, InstallerError, ValueError, UnicodeError, ServiceManagerError,
-                headscale.HeadscaleServiceError, home_audit.AuditRefused):
-            pass
+                headscale.HeadscaleServiceError, home_audit.AuditRefused) as error:
+            log_lifecycle_failure(error, action='disable',
+                step='cleanup-directory' if cleanup_directory else 'cleanup', item=cleanup_directory)
         finally:
             self._headscale_preparing = False
         raise headscale.HeadscaleServiceError("partial-cleanup-uncertain" if partial else "cleanup-uncertain")
@@ -3312,6 +3383,8 @@ class ManagedInstaller:
     def _check_directory(
         self, descriptor: int, path: str, expected: tuple[int, tuple[int, int] | None] | None,
     ) -> None:
+        if path in {_STATE_DIRS[1] + "/files", _STATE_DIRS[1] + "/files/happyranch-node-uid-1"}:
+            expected = (0o700, self._service_owner)
         info = os.fstat(descriptor)
         if (expected is None and path == "var/log" and info.st_uid == self.root_owner[0]
                 and not info.st_mode & 0o002):
@@ -3778,7 +3851,10 @@ class ManagedInstaller:
 
         if os.geteuid() != 0 or type(fresh_auth) is not bool:
             raise InstallerError("policy renewal unavailable")
-        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked():
+        # Only the unattended timer tolerates Enable's first-fire collision.
+        # Its 20s lock bound stays below the renewal unit's TimeoutStartSec=30.
+        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked(
+                wait=20.0 if not fresh_auth and _before_renew is None else 0.0):
             if _before_renew is not None:
                 _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
             self._renew_policy_locked(fresh_auth=fresh_auth)
@@ -3932,7 +4008,8 @@ class ManagedInstaller:
                                  0o600, dir_fd=parent)
             created = os.fstat(descriptor)
             try:
-                os.fchown(descriptor, *owner)
+                if (created.st_uid, created.st_gid) != owner:
+                    os.fchown(descriptor, *owner)
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
                     if stream.write(data) != len(data):
                         raise InstallerError("incomplete provisioning write")

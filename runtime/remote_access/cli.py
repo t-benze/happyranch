@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER
+from runtime.remote_access.managed_provider import LINUX_IDENTITY_PROFILE
 from runtime.remote_access.pairing import PairingError, PairingManager
 from runtime.remote_access.service_manager import ServiceManagerError
 from runtime.remote_access.state_store import CorruptTrustStateError, StateStoreError
@@ -151,7 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                 return managed_main([args.command])
         supervisor = ConnectorSupervisor(
             config=config,
-            config_path=Path(args.config).expanduser().resolve() if sys.platform == "darwin" else None,
+            config_path=Path(args.config).expanduser().resolve() if (
+                sys.platform == "darwin" or (sys.platform == "linux" and config.managed is not None
+                                            and config.managed.profile == LINUX_IDENTITY_PROFILE)
+            ) else None,
         )
         if args.command == "run":
             return _run_foreground(supervisor)

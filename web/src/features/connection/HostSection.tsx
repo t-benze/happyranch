@@ -269,6 +269,7 @@ export function HostSection(): JSX.Element | null {
               <p className="mt-1 text-xs">{t('connection.host.hInviteNoCancel')}</p>
             </Notice>
           )}
+          {view.inviteNotice && <Notice tone="attention">{t(view.inviteNotice)}</Notice>}
           {view.invite === 'expired' && <Notice tone="attention">{t('connection.host.hInviteExpired')}</Notice>}
           {view.invite === 'used' && <Notice tone="neutral">{t('connection.host.hInviteUsed')}</Notice>}
           {!confirm && (view.enable || view.approve || view.createInvite || view.checkAgain) && (
@@ -327,7 +328,7 @@ export function HostSection(): JSX.Element | null {
               )}
             </div>
           )}
-          {view.manage && !confirm && <Actions>{button('host.turnOff', t('connection.host.hTurnOff'), { variant: 'destructiveOutline' })}</Actions>}
+          {view.turnOff && !confirm && <Actions>{button('host.turnOff', t('connection.host.hTurnOff'), { variant: 'destructiveOutline' })}</Actions>}
           <Hint>{t('connection.host.hNativeNote')}</Hint>
         </div>
       )}

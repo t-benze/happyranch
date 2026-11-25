@@ -16,9 +16,15 @@ def publish_home_unit(io: ManagedInstaller, name: str, *, legacy: bytes, home: b
     Retain pending evidence on every failure; never restore or remove final bytes.
     Neither this primitive nor daemon-reload enables, starts or links a service.
     """
-    if name not in ("happyranch-headscale.service", "happyranch-tsnet-sidecar.service"):
+    from runtime.remote_access.policy_renew_units import SERVICE_NAME, render_previous_service, render_service
+    relative = "etc/systemd/system"
+    if name == SERVICE_NAME:
+        if legacy != render_previous_service().encode() or home != render_service().encode():
+            raise ActivationRefused()
+        relative = "usr/lib/systemd/system"
+    elif name not in ("happyranch-headscale.service", "happyranch-tsnet-sidecar.service"):
         raise ActivationRefused()
-    with io._publication_parent("etc/systemd/system") as (parent, check):
+    with io._publication_parent(relative) as (parent, check):
         require()
         io._headscale_no_pending(parent, name)
         before = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))

@@ -141,7 +141,9 @@ class RemoteAccessHelper:
 
     @contextmanager
     def effect_guard(self, capture: LifecycleCapture) -> Iterator[None]:
-        if not self.lock.acquire(blocking=False):
+        # Workers may briefly lose to a main-context status/admission reader.
+        # The original operation budget is revalidated after this bounded wait.
+        if not self.lock.acquire(timeout=1.0):
             raise Refused('busy')
         try:
             if self.inflight is not capture:
@@ -223,7 +225,7 @@ class RemoteAccessHelper:
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
-    def _status_v2(self, message: Gio.DBusMessage, sender: str) -> None:
+    def _status_v2(self, message: Gio.DBusMessage, sender: str, *, v1: bool = False) -> None:
         # One worker, no queue, no helper mutation lock. Slow filesystem/control
         # reads cannot hold the main context beyond the 2s response deadline.
         token = object()
@@ -278,14 +280,18 @@ class RemoteAccessHelper:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
                 closed = False
                 if observed is None:
-                    snapshot, closed = self._status_snapshot(uid, deadline)
+                    snapshot, closed, phase = self._status_snapshot(uid, deadline)
                 else:
                     try:
-                        snapshot = self._snapshot(uid)
+                        snapshot, closed, phase = self._status_snapshot(uid, deadline)
                     except Refused as error:
                         if error.category != 'unavailable':
                             raise
                         snapshot = None
+                if snapshot is not None:
+                    setup = _status_v2.SetupObservation(_status_v2.SetupPhase(
+                        'in_progress' if phase == 'pending' else phase), 0)
+                    observed_at = time.monotonic()
                 if closed:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase.OFF, 0)
                     observed_at = time.monotonic()
@@ -299,9 +305,21 @@ class RemoteAccessHelper:
                     runtime = _status_v2.RuntimeObservation(
                         _status_v2.RuntimeAvailability.AVAILABLE if snapshot.ready else
                         _status_v2.RuntimeAvailability.UNAVAILABLE, 0)
+                if v1:
+                    if snapshot is None:
+                        raise Refused('unavailable')
+                    selected = next((d for d in snapshot.devices if d.record_id == self.cursors.get(sender)), None)
+                    phase = {'prepared_no_receipt': 'pending', 'failed_uncertain': 'failed',
+                        'partial_cleanup': 'failed', 'runtime_unavailable': 'failed',
+                        'setup_unverified': 'failed', 'renewal_failed': 'paused'}.get(snapshot.phase, snapshot.phase)
+                    raw = json.dumps({'phase': phase, 'ready': snapshot.ready,
+                        'devices': [d.public() for d in snapshot.devices],
+                        'pending': snapshot.pending.public() if snapshot.pending else None,
+                        'selected': selected.public() if selected else None}, separators=(',', ':')).encode()
+                    return settled(raw, None)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
-                invite, cleanup = self._invite_status(uid, observed)
+                invite, cleanup = self._invite_status(uid, observed, deadline)
                 policy = None
                 try:
                     state = _helper_generation.HomeLifecycleClient('RetryPolicyRenewal', uid).policy_status(
@@ -320,9 +338,17 @@ class RemoteAccessHelper:
         timer.start()
         threading.Thread(target=observe, daemon=True).start()
 
-    def _invite_status(self, uid: int, observed: object) -> tuple:
+    def _invite_status(self, uid: int, observed: object, deadline: float) -> tuple:
         observation = getattr(self, 'invite_observation', None)
         if observation is None or observed is None or observation[0] != uid:
+            if observed is not None and observed.release_uid == uid:
+                try:
+                    state = _helper_generation.HomeLifecycleClient('IssueInvite', uid).invite_status(
+                        observed, deadline - time.monotonic())
+                    return (_status_v2.InviteObservation(_status_v2.InvitePhase(state['invite']),
+                                0, state['expires_at']), None)
+                except Exception:
+                    pass  # Missing/unsafe journal is never absence or cleanup proof.
             return None, None
         expected = json.loads(observation[1])
         if (expected['generation'], expected['operation'], uid) != (
@@ -357,7 +383,7 @@ class RemoteAccessHelper:
             raise Refused('changed')
         return snapshot
 
-    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool]:
+    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool, str]:
         """Display-only absence proof; never supplies a mutation's snapshot.
 
         A missing connector proves no setup phase. Reuse the unchanged Enable
@@ -365,7 +391,14 @@ class RemoteAccessHelper:
         reporting Off. Capture reads only; it neither claims a slot nor repairs.
         """
         try:
-            return self._snapshot(uid), False
+            snapshot = self._snapshot(uid)
+            state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                deadline - time.monotonic())['setup']
+            if state == 'ready' and not snapshot.ready:
+                state = 'runtime_unavailable'
+            if state != 'ready':
+                snapshot = replace(snapshot, phase=state, ready=False)
+            return snapshot, False, state
         except Refused as error:
             if error.category != 'unavailable':
                 raise
@@ -385,11 +418,23 @@ class RemoteAccessHelper:
                 raise ValueError()
             if time.monotonic() >= deadline:
                 raise ValueError()
-        except _helper_generation.GenerationUnavailable as error:
-            raise Refused('host-state-unrecognized-' + error.category) from None
-        except Exception:
-            raise Refused('host-state-unrecognized') from None
-        return Snapshot(0, uid, True, 'off', False, None, ()), True
+        except Exception as error:
+            # A ready receipt can outlive stopped units or B6's failed-revoke
+            # partial publication. This is display only, never Off/revoke proof.
+            try:
+                state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                    deadline - time.monotonic())['setup']
+                if state == 'off':
+                    raise ValueError()  # Keep the strict absence proof above.
+                if state == 'ready':
+                    state = 'runtime_unavailable'
+                return Snapshot(0, uid, False, state, False, None, ()), False, state
+            except Exception:
+                if isinstance(error, _helper_generation.GenerationUnavailable):
+                    category = 'unverified' if error.category == 'unknown' else error.category
+                    raise Refused('host-state-unrecognized-' + category) from None
+                raise Refused('host-state-unrecognized-unverified') from None
+        return Snapshot(0, uid, True, 'off', False, None, ()), True, 'off'
 
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
         target = (snapshot.pending if method != 'RevokeSelected' else
@@ -421,6 +466,9 @@ class RemoteAccessHelper:
             if method == 'StatusV2':
                 self._status_v2(message, sender)
                 return False
+            if method == 'Status':
+                self._status_v2(message, sender, v1=True)
+                return False
             # Refuse before taking a lock held by an effect or doing bus/file I/O.
             if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                 raise Refused('busy')
@@ -431,8 +479,7 @@ class RemoteAccessHelper:
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = (self._status_snapshot(uid, time.monotonic() + _helper_lifecycle.STATUS_SECONDS)[0]
-                            if method == 'Status' else self._snapshot(uid))
+                snapshot = self._snapshot(uid)
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
@@ -466,12 +513,19 @@ class RemoteAccessHelper:
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 int(self.deadline * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
+            if message.get_member() in ('Disable', 'ReplaceFailed'):
+                _helper_lifecycle.log_lifecycle_failure(error,
+                    action='disable' if message.get_member() == 'Disable' else 'replace-failed', step='capture')
             if message.get_member() == 'Enable':
                 _helper_lifecycle.log_enable_refusal(error)
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
+                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in ('Enable', 'Disable', 'ReplaceFailed'):
+                    category = 'unverified' if error.category == 'unknown' else error.category
+                    self._error(message, 'host-state-unrecognized-' + category)
+                else:
+                    self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
             if message.get_member() in LIFECYCLE_ACTIONS and self.inflight is None:
                 self.exit_requested = True
         return False
@@ -597,7 +651,7 @@ class RemoteAccessHelper:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
-        if (capture.method != 'Enable' or not operation.accepted or self.cancelled
+        if (capture.method not in ('Enable', 'Disable') or not operation.accepted or self.cancelled
                 or self.inflight is not capture or budget.remaining() <= 2.0):
             return
         # _uid retains its fixed 2s authentication read. Never start it with less
@@ -610,10 +664,16 @@ class RemoteAccessHelper:
         budget.remaining()
         if self.cancelled or self.inflight is not capture:
             return
-        frame = dict(method='Enable', correlation=dict(serial=capture.message.get_serial(),
+        frame = dict(method=capture.method, correlation=dict(serial=capture.message.get_serial(),
             owner=self.connection.get_unique_name()), outcome='failed')
+        if (category is None and capture.method == 'Enable'
+                and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN)):
+            category = 'activation-unverified'
         if category is not None:
             frame['category'] = category
+        elif capture.method == 'Disable' and outcome != _helper_lifecycle.SetupPhase.OFF:
+            frame['category'] = ('partial_cleanup' if outcome == _helper_lifecycle.SetupPhase.PARTIAL_CLEANUP
+                                 else 'uncertain' if outcome == _helper_lifecycle.SetupPhase.UNCERTAIN else 'failed')
         elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
             frame['outcome'] = 'completed'
         raw = json.dumps(frame, separators=(',', ':'))
@@ -668,7 +728,7 @@ class RemoteAccessHelper:
 
         def deliver(settled: object) -> None:
             nonlocal send_attempted
-            if send_attempted or capture.method != 'Enable':
+            if send_attempted or capture.method not in ('Enable', 'Disable'):
                 return
             send_attempted = True
             try:
@@ -678,8 +738,10 @@ class RemoteAccessHelper:
 
         def audited(step: str, component: object, effect: Callable[[float, Callable[[], None]], dict]) -> dict:
             result = {}
+            executed = False
             def execute(_: object, remaining: float) -> None:
-                nonlocal result
+                nonlocal result, executed
+                executed = True
                 label = '-'.join(str(byte) for byte in os.urandom(12))
                 kwargs = ({'component': component} if capture.method == 'Disable' else
                           {'phase': _home_audit.Phase.ACTIVATING})
@@ -710,6 +772,8 @@ class RemoteAccessHelper:
             previous = operation.outcome
             try:
                 operation.run_step(execute)
+                if not executed:
+                    raise Refused('unavailable')
             finally:
                 if capture.method == 'Disable':
                     operation.outcome = previous
@@ -737,6 +801,8 @@ class RemoteAccessHelper:
                            if capture.method == 'Enable' and result['outcome'] == 'prepared'
                            else lifecycle.SetupPhase(result['outcome']))
                 residue = result['residue']
+                if capture.method == 'Enable' and result['outcome'] == 'prepared':
+                    preparation_category = 'activation-prepared-retry'
             else:
                 revoked = False
                 def revoke(remaining: float, commit: Callable[[], None]) -> dict:
@@ -755,11 +821,13 @@ class RemoteAccessHelper:
                 try:
                     audited('revoke', _home_audit.Component.CREDENTIALS, revoke)
                     revoked = True
-                except Exception:
+                except Exception as error:
+                    lifecycle.log_lifecycle_failure(error, action='disable', step='revoke')
                     residue.append('un-revoked connector trust state and persisted sidecar state')
                 try:
                     stopped = child('stop', _home_audit.Component.UNITS)
-                except Exception:
+                except Exception as error:
+                    lifecycle.log_lifecycle_failure(error, action='disable', step='stop')
                     residue.append('owned units: quiescence unconfirmed')
                 else:
                     if stopped.get('outcome') != 'in_progress' or stopped.get('residue'):
@@ -770,18 +838,22 @@ class RemoteAccessHelper:
                             residue.extend(result['residue'])
                             if result['outcome'] != 'off':
                                 residue.append('B6 cleanup incomplete')
-                        except Exception:
+                        except Exception as error:
+                            lifecycle.log_lifecycle_failure(error, action='disable', step='cleanup')
                             residue.append('B6 custody or retained CA staging and B7/B11 evidence')
                 outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
                            lifecycle.SetupPhase.PARTIAL_CLEANUP)
-        except Exception:
+        except Exception as error:
+            lifecycle.log_lifecycle_failure(error,
+                action={'Enable': 'enable', 'Disable': 'disable', 'ReplaceFailed': 'replace-failed'}[capture.method],
+                step='enable' if capture.method == 'Enable' else 'replace' if capture.method == 'ReplaceFailed' else 'stop')
             outcome = lifecycle.SetupPhase.UNCERTAIN if operation.dispatched else lifecycle.SetupPhase.FAILED
         finally:
             # Main-context lock holders never join this worker. Wait here after
             # all effects return, so transient contention cannot strand its slot.
             with self.lock:
                 try:
-                    settled = (operation.complete(outcome, before_release=deliver) if capture.method == 'Enable'
+                    settled = (operation.complete(outcome, before_release=deliver) if capture.method in ('Enable', 'Disable')
                                else operation.complete(outcome))
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
                 except Exception:

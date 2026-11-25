@@ -30,23 +30,25 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "unknown"})
+                                    "quiescence", "timeout", "unknown", "unverified", "not_applicable"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
     "address-changed", "account-create-uncertain", "cleanup-uncertain", "materializer-uncertain",
     "custody-uncertain", "inventory", "no_address", "multiple_addresses", "dial_ip", "dial-ip",
     "occupied-port", "port-check-uncertain",
+    "ready-restart-failed-turn-off", "activation-retry-later", "activation-prepared-retry", "activation-unverified",
 })
 HELPER_NAME = "ai.happyranch.RemoteAccess1"
 HELPER_PATH = "/ai/happyranch/RemoteAccess1"
+DISABLE_CATEGORIES = frozenset({'partial_cleanup', 'failed', 'uncertain'})
 
 
 def enable_terminal_frame(raw: str) -> dict:
     value = parse_json(raw, 512)
     if (type(value) is not dict or set(value) not in (
             {"method", "correlation", "outcome"}, {"method", "correlation", "outcome", "category"})
-            or value["method"] != "Enable" or value["outcome"] not in ("failed", "completed")):
+            or value["method"] not in ("Enable", "Disable") or value["outcome"] not in ("failed", "completed")):
         raise ValueError("invalid terminal frame")
     correlation = value["correlation"]
     if (type(correlation) is not dict or set(correlation) != {"serial", "owner"}
@@ -55,7 +57,8 @@ def enable_terminal_frame(raw: str) -> dict:
             or re.fullmatch(r":[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", correlation["owner"]) is None):
         raise ValueError("invalid terminal correlation")
     if "category" in value and (value["outcome"] != "failed"
-            or type(value["category"]) is not str or value["category"] not in PREPARATION_CATEGORIES):
+            or type(value["category"]) is not str or value["category"] not in (
+                PREPARATION_CATEGORIES if value['method'] == 'Enable' else DISABLE_CATEGORIES)):
         raise ValueError("invalid terminal category")
     return value
 
@@ -64,7 +67,10 @@ class EnableTerminalObserver:
     """One original connection/request/incarnation; never a result store."""
 
     def __init__(self, host: object, complete: object, failed: object, current: object,
-                 terminal: object, *, cli: bool, admission_current: object) -> None:
+                 terminal: object, *, cli: bool, admission_current: object, method: str = 'Enable') -> None:
+        if method != 'Enable' and not (cli and method == 'Disable'):
+            raise ValueError('invalid terminal method')
+        self.method = method
         self.host, self.connection = host, host.connection
         self.complete, self.failed, self.current, self.terminal = complete, failed, current, terminal
         self.cli = cli
@@ -76,8 +82,9 @@ class EnableTerminalObserver:
         self.pending = None
         self.subscription = self.owners = self.filter_id = self.timer = self.closed_handler = None
         self.started = time.monotonic()
-        self.cutoff, self.deadline = self.started + 480, self.started + 482
-        self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, "Enable")
+        budget = 480 if method == 'Enable' else 300
+        self.cutoff, self.deadline = self.started + budget, self.started + budget + 2
+        self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, method)
         self.message.set_flags(host.Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
 
     def start(self) -> None:
@@ -120,7 +127,7 @@ class EnableTerminalObserver:
                         return message
                     raw, = message.get_body().unpack()
                     frame = enable_terminal_frame(raw)
-                    if frame["correlation"]["serial"] == self.message.get_serial():
+                    if frame['method'] == self.method and frame["correlation"]["serial"] == self.message.get_serial():
                         self.host.GLib.idle_add(self._arrived, message.get_sender(), frame)
                 except (ValueError, TypeError, UnicodeError, AttributeError):
                     pass
@@ -192,14 +199,19 @@ class EnableTerminalObserver:
         if time.monotonic() >= self.cutoff:
             return False
         owner = self.owner if self.admitted else self.arrival_owner
-        if (sender != owner or frame["correlation"]["owner"] != owner
+        if (frame['method'] != self.method or sender != owner or frame["correlation"]["owner"] != owner
                 or frame["correlation"]["serial"] != self.message.get_serial()):
             return False
         if not self.admitted:
             if self.pending is None:
                 self.pending = (sender, frame)
             return False
-        if frame["outcome"] == "completed":
+        if self.method == 'Disable':
+            projection = (dict(code='turnOffCompleted', effect='unknown', recovery='refresh')
+                if frame['outcome'] == 'completed' else dict(code='turnOffFailed',
+                    category=frame.get('category', 'uncertain'), effect='unknown', recovery='nativeRecovery'))
+            raw = None  # Disable CLI has no host.enableFinished event.
+        elif frame["outcome"] == "completed":
             projection = dict(code="enableCompleted", effect="unknown", recovery="refresh")
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="completed", result=projection)
         else:
@@ -207,9 +219,10 @@ class EnableTerminalObserver:
             if "category" in frame:
                 projection.update(code="enablePreparationFailed", category=frame["category"])
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="failed", error=projection)
-        self.host.protocol.validate(event, self.host.protocol.events["host.enableFinished"])
-        raw = json.dumps(event, separators=(",", ":"))
-        parse_json(raw, 1024)
+        if self.method == 'Enable':
+            self.host.protocol.validate(event, self.host.protocol.events["host.enableFinished"])
+            raw = json.dumps(event, separators=(",", ":"))
+            parse_json(raw, 1024)
         if not self._current():
             self.close()
             return False
@@ -530,7 +543,7 @@ class Protocol:
             "capabilities": [{"command": name, "availability": (
                 "available" if name in CLIENT_COMMANDS | HOST_METHODS.keys() else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
-            "observationLimits": {"host": ["inviteState", "expiresAt"],
+            "observationLimits": {"host": [],
                                   "client": ["route", "comparisonPhrase"]}})
 
     def host(self, raw: str) -> dict:
@@ -565,17 +578,60 @@ class Protocol:
             "observation": "known", "devices": devices, "pending": device(value["pending"]),
             "selected": device(value["selected"]), "inviteState": "unknown", "expiresAt": None})
 
+    def host_details(self, snapshot: dict, raw: str) -> dict:
+        """Fresh display detail only; v1 keeps its original bytes/vocabulary."""
+        value = parse_json(raw, 16384)
+        dimensions = {'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
+        if (type(value) is not dict or set(value) != {'version', *dimensions}
+                or type(value['version']) is not int or value['version'] != 2):
+            raise ValueError('invalid status detail')
+        part = value['setup']
+        states = {'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
+                  'runtime_unavailable', 'setup_unverified', 'renewal_failed'}
+        legacy = {'ready': 'ready', 'off': 'off', 'in_progress': 'pending',
+                  'failed': 'failed', 'uncertain': 'failed'}
+        if (type(part) is not dict or set(part) != {'state', 'age_seconds'}
+                or type(part['state']) is not str or part['state'] not in states | legacy.keys()
+                or type(part['age_seconds']) is not int or not 0 <= part['age_seconds'] <= 30):
+            raise ValueError('unavailable status detail')
+        if part['state'] in states:
+            snapshot = {**snapshot, 'setup': part['state'], 'runtime': 'offline',
+                        'devices': None, 'pending': None, 'selected': None}
+        elif snapshot['setup'] != legacy[part['state']]:
+            raise ValueError('changed status detail')  # Never promote v1 failure to ready.
+        invitation = value['invite']
+        phases = {'none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                  'refused', 'uncertain', 'recovered', 'cancelled', 'consumed', 'pending_approval'}
+        if (type(invitation) is not dict or set(invitation) != {
+                'state', 'age_seconds', 'deadline_utc_seconds'} or type(invitation['state']) is not str):
+            raise ValueError('invalid invite detail')
+        state, age, expiry = (invitation[k] for k in ('state', 'age_seconds', 'deadline_utc_seconds'))
+        if state == 'unknown' and age is None and expiry is None:
+            return self.result('host.status', snapshot)
+        if (state not in phases or type(age) is not int or not 0 <= age <= 30):
+            raise ValueError('unavailable invite detail')
+        active = state in ('issued', 'pending_approval')
+        if (active and (type(expiry) is not int or not 0 <= expiry < 253402300800)
+                or not active and expiry is not None):
+            raise ValueError('invalid invite deadline')
+        state = {'consumed': 'used', 'pending_approval': 'issued'}.get(state, state)
+        if active and expiry <= time.time():
+            state, expiry = 'expired', None
+        expires = (datetime.fromtimestamp(expiry, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                   if expiry is not None else None)
+        return self.result('host.status', {**snapshot, 'inviteState': state, 'expiresAt': expires})
+
     def host_unavailable(self, setup: str = "unknown") -> dict:
         return self.result("host.status", dict(setup=setup, runtime="unknown", observation="unavailable",
             devices=None, pending=None, selected=None, inviteState="unknown", expiresAt=None))
 
     def host_action(self, method: str, snapshot: dict) -> dict:
         # An acknowledged helper commit establishes only its documented effect.
-        # It supplies no host-service or network-membership cleanup receipt.
+        # Per-device revoke performs no network-membership cleanup operation.
         return dict(effect="confirmed", hostDenial="confirmed" if method in
                     ("RejectPending", "RevokeSelected") else "notApplicable",
                     hostCleanup="notApplicable", localCleanup="notApplicable",
-                    networkCleanup="unknown" if method == "RevokeSelected" else "notApplicable",
+                    networkCleanup="notApplicable",
                     inviteState="unknown", expiresAt=None, host=snapshot, client=None)
 
 
@@ -595,6 +651,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
     mutation = method in HOST_MUTATIONS or lifecycle
     acknowledged = False
     deadline = None
+    status_snapshot = None
 
     def failed(error: Exception, dispatched: bool) -> None:
         if not current():
@@ -626,9 +683,9 @@ def request_host(self: object, method: str, complete: object, current: object, o
             category = remote[len(prefix):] if isinstance(remote, str) and remote.startswith(prefix) else None
             if category is not None or code == "hostStateUnrecognized":
                 if category is None:
-                    category = "unknown" if remote.endswith("host_state_unrecognized") else "owner"
-                elif category not in HOST_STATE_CATEGORIES:
-                    category = "unknown"
+                    category = "unverified" if remote.endswith("host_state_unrecognized") else "owner"
+                elif category not in HOST_STATE_CATEGORIES or category == "unknown":
+                    category = "unverified"
                 complete(None, dict(code="hostStateUnrecognized", category=category))
             elif code:
                 complete(None, code)
@@ -638,11 +695,16 @@ def request_host(self: object, method: str, complete: object, current: object, o
                 complete(None, "unavailable")
 
     def replied(connection: object, result: object, called: str) -> None:
-        nonlocal acknowledged
+        nonlocal acknowledged, status_snapshot
         if not current():
             return
         try:
             raw, = connection.call_finish(result).unpack()
+            if called == 'StatusV2':
+                snapshot = self.protocol.host_details(status_snapshot, raw)
+                observe(snapshot)
+                complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+                return
             if lifecycle:
                 if time.monotonic() >= deadline:
                     raise ValueError("late helper reply")
@@ -704,20 +766,29 @@ def request_host(self: object, method: str, complete: object, current: object, o
                 call("Status")
                 return
             snapshot = self.protocol.host(raw)
+            if called == 'Status':
+                status_snapshot = snapshot
+                call('StatusV2')
+                return
             observe(snapshot)
             complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
         except Exception as error:
+            if called == 'StatusV2' and status_snapshot is not None:
+                # Older peers retain their known v1 failure; never manufacture readiness.
+                observe(status_snapshot)
+                complete(self.protocol.host_action(method, status_snapshot) if mutation else status_snapshot)
+                return
             failed(error, True)
 
     def call(called: str) -> None:
         nonlocal deadline
         try:
-            if called == "Enable":
+            if called == "Enable" or called == 'Disable' and cli_lifecycle:
                 previous = getattr(self, "enable_observer", None)
                 if previous is not None:
                     previous.close()
                 self.enable_observer = EnableTerminalObserver(self, complete, failed,
-                    terminal_current or current, terminal, cli=cli_lifecycle, admission_current=current)
+                    terminal_current or current, terminal, cli=cli_lifecycle, admission_current=current, method=called)
                 self.enable_observer.start()
                 return
             if lifecycle and deadline is None:

@@ -233,6 +233,7 @@ class SharedHostTests(unittest.TestCase):
             bridge = host_bridge.HostBridge(client, prefix, lambda en, zh: en)
             bus = bridge.connection = Bus()
             bus.snapshot = dict(phase=old_setup, ready=old_setup == 'ready', devices=[], pending=None, selected=None)
+            bus.setup_state = old_setup
             bus.hold = True
             parent = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False))
             owner, other = object(), object()
@@ -276,6 +277,14 @@ class SharedHostTests(unittest.TestCase):
                                 current=lambda: True, window=parent)
             old_operation = bridge.active_operation
             old_reply = bus.held.pop(0)
+            def old_observation():
+                old_reply()
+                self.assertEqual(bus.calls[-1][3], 'StatusV2')
+                self.assertEqual(before, [], 'v1 alone cannot finish the native observation')
+                self.assertTrue(bridge.busy)
+                # Capture the old detail before the next physical read changes.
+                bus.setup_state = fresh_setup
+                bus.held.pop(0)()
             # Bus captured the older bytes at dispatch. Change only the next
             # physical read's IO result, never the production projection.
             bus.snapshot = dict(phase=fresh_setup, ready=fresh_setup == 'ready', devices=[], pending=None, selected=None)
@@ -283,7 +292,7 @@ class SharedHostTests(unittest.TestCase):
                 bus.status_error = 'ai.happyranch.RemoteAccess1.Error.unavailable'
             bus.signal(terminal_frame())
             if old_reply_first:
-                old_reply()
+                old_observation()
             while context.pending():
                 context.iteration(False)
             self.assertEqual(len(events), 1)
@@ -296,14 +305,16 @@ class SharedHostTests(unittest.TestCase):
             if not old_reply_first:
                 self.assertIs(bridge.active_operation, old_operation)
                 self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status'])
-                old_reply()
+                old_observation()
             self.assertEqual(fresh, [], 'an older Status cannot satisfy the post-terminal direct caller')
             self.assertEqual(joined, [], 'an older Status cannot satisfy a post-terminal coalescing waiter')
             self.assertEqual(before, before_joined)
             self.assertEqual(len(before), 1)
             if not old_reply_first:
                 self.assertEqual(before, [(None, 'unavailable')])
-            self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status', 'Status'])
+            else:
+                self.assertEqual(before[0][0]['setup'], old_setup)
+            self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status', 'StatusV2', 'Status'])
             self.assertEqual([call[7] for call in bus.calls if call[3] == 'Status'], [3000, 3000])
             self.assertEqual(len(bus.held), 1, 'new-epoch callers still share one native Status operation')
             self.assertTrue(bridge.busy)
@@ -311,6 +322,9 @@ class SharedHostTests(unittest.TestCase):
             self.assertEqual(bridge.host_snapshot['observation'], 'unavailable')
             self.assertEqual(state_events, [], "a Status begun before terminal cannot publish fresh state")
             drain()
+            self.assertEqual([call[3] for call in bus.calls],
+                ['Enable', 'Status', 'StatusV2', 'Status'] + ([] if fresh_setup == 'failed' else ['StatusV2']))
+            self.assertTrue(all(call[7] == 3000 for call in bus.calls if call[3] == 'StatusV2'))
             self.assertEqual(len(fresh), 1)
             self.assertEqual(fresh, joined)
             self.assertEqual(len(state_events), 1)

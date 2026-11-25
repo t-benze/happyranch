@@ -12,6 +12,7 @@ import threading
 import time
 import ssl
 import hashlib
+import inspect
 import io
 import subprocess
 import xml.etree.ElementTree as ET
@@ -37,7 +38,8 @@ PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
-    'occupied-port', 'port-check-uncertain')
+    'occupied-port', 'port-check-uncertain',
+    'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry')
 
 
 @pytest.mark.parametrize('category', PREPARATION_TOKENS)
@@ -114,7 +116,41 @@ def test_enable_preparation_provenance_rejected(
         patch.setattr(sys, 'stdout', output)
         patch.setattr(sys, 'stderr', errors)
         assert backend.helper_main() == 1
-    assert output.getvalue() == errors.getvalue() == ''
+    assert output.getvalue() == '{"preparationFailure":"activation-unverified"}\n'
+    assert errors.getvalue() == ''
+
+
+@pytest.mark.parametrize('method,step', [('Disable', 'cleanup'), ('ReplaceFailed', 'replace')])
+def test_thr327_child_failure_step_journal(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                          method: str, step: str) -> None:
+    import syslog
+    v = composition
+    def fail(*args: Any, **kwargs: Any) -> dict:
+        raise PermissionError(errno.EACCES, 'synthetic-private-token /private/path https://private.invalid')
+    monkeypatch.setattr(backend.HelperLifecycleBackend, 'dispatch', fail)
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    request = dict(method=method, uid=os.getuid(), step=step, expected='synthetic',
+                   deadline=time.monotonic() + 30)
+    if step == 'cleanup':
+        request['revoke_succeeded'] = False
+    output = io.StringIO()
+    sent = Mock()
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    monkeypatch.setattr(sys, 'stdout', output)
+    assert backend.helper_main() == 1
+    lines, start = inspect.getsourcelines(backend.helper_main)
+    line = start + next(i for i, text in enumerate(lines)
+        if text.strip() == 'result = HelperLifecycleBackend(io).dispatch(**request, deadline=deadline)')
+    source = f' source=runtime/remote_access/home_activation_backend.py:{line}' if method == 'Disable' else ''
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        f'remote-access-lifecycle-failure action={"disable" if method == "Disable" else "replace-failed"} '
+        f'step={step} item=0 stage=helper_main exception=PermissionError reason="permission-denied"{source}')
+    assert all(value not in str(sent.call_args) for value in
+        ('synthetic-private-token', '/private/path', 'https://private.invalid'))
+    assert output.getvalue() == ''
+    assert not v.calls and not v.mints
 
 
 @pytest.mark.parametrize('raw,code,method,step', [
@@ -142,7 +178,7 @@ def test_enable_preparation_private_frame_rejected(
         assert code == 0 and value == {'preparationFailure': 'inventory'}
 
 
-@pytest.mark.parametrize('outcome', ['typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
+@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
     'late', 'auth_deadline', 'disconnect', 'absent_to_new', 'success_audit', 'success_settlement', 'intent', 'flush_error'])
 def test_enable_completion_unicast_envelope(
         mount: Any, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
@@ -196,7 +232,7 @@ def test_enable_completion_unicast_envelope(
             raise m.h._helper_generation.PreparationFailed('inventory')
         if outcome == 'generic':
             raise RuntimeError('inventory SYNTHETIC_PRIVATE_CANARY')
-        return {'outcome': 'ready', 'residue': []}
+        return {'outcome': 'prepared' if outcome == 'prepared' else 'ready', 'residue': []}
     m.reader.effect.side_effect = effect
     if outcome == 'audit':
         m.helper.audit.uncertain = Mock(side_effect=OSError('SYNTHETIC_PRIVATE_CANARY'))
@@ -215,10 +251,14 @@ def test_enable_completion_unicast_envelope(
                         outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
         if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
             expected['category'] = 'inventory'
+        if outcome in ('generic', 'success_audit', 'success_settlement', 'intent'):
+            expected['category'] = 'activation-unverified'
+        if outcome == 'prepared':
+            expected['category'] = 'activation-prepared-retry'
         assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
         assert order.index('signal') < order.index('flush') < order.index('release')
     assert m.helper.inflight is None
-    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'uncertain')
+    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
     if outcome == 'audit':
         assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
 
@@ -423,6 +463,7 @@ def test_thr327_replacement_runtime_status(
             failures.append((str(error), [frame.name for frame in traceback.extract_tb(error.__traceback__)]))
             raise
     m.reader.current_generation.side_effect = capture
+    m.reader.setup_status.side_effect = lambda _: lifecycle.setup_status(os.getuid())
     m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
     monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
     m.helper.control = m.h.ControlClient(str(f.root / 'absent-connector.sock'))
@@ -510,18 +551,75 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
         assert failure.value.category == 'unknown'
 
 
+@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed'])
+@pytest.mark.parametrize('category', ['custody', 'unverified', 'not_applicable'])
+def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category: str) -> None:
+    m = mount
+    m.message.get_member = lambda: method
+    m.reader.current_generation.side_effect = m.h._helper_generation.GenerationUnavailable(category)
+    m.helper._dispatch(m.message)
+    m.helper._error.assert_called_once_with(m.message, 'host-state-unrecognized-' + category)
+    assert not m.reader.effect.called and not m.helper.authority.call.called
+    assert m.helper.inflight is None
+
+
+@pytest.mark.parametrize('method,prestate,category', [
+    ('Disable', 'clean', 'not_applicable'), ('Disable', 'prepared', 'not_applicable'),
+    ('ReplaceFailed', 'clean', 'not_applicable'), ('ReplaceFailed', 'prepared', 'not_applicable'),
+    ('ReplaceFailed', 'ready', 'not_applicable'), ('ReplaceFailed', 'failed', 'not_applicable'),
+    ('Enable', 'partial', 'custody'),
+])
+def test_thr327_lifecycle_capture_named_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                             method: str, prestate: str, category: str) -> None:
+    from dataclasses import replace
+    from runtime.remote_access import helper_generation as generation
+    v, uid = composition, os.getuid()
+    if prestate == 'prepared':
+        with v.transactions.locked() as directory:
+            v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
+    elif prestate != 'clean':
+        v.lifecycle.dispatch('Enable', uid, 'enable', v.lifecycle.capture('Enable', uid),
+                             deadline=time.monotonic() + 480)
+        v.observers.close()
+        if prestate == 'partial':
+            v.path('/etc/happyranch/headscale').chmod(0o777)
+        if prestate == 'failed':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    frames = []
+    def child(command: tuple, **kwargs: Any) -> Any:
+        output = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(kwargs['input'])))
+            patch.setattr(sys, 'stdout', output)
+            code = backend.helper_main()
+        frames.append(output.getvalue())
+        return SimpleNamespace(returncode=code, stdout=frames[-1].encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    with pytest.raises(generation.GenerationUnavailable) as failure:
+        generation.HomeLifecycleClient(method, uid).current_generation(30)
+    assert failure.value.category == category
+    assert json.loads(frames[0]) == {'refusal': category}
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+
+
 @pytest.mark.parametrize('category', ['residue', 'owner', 'provenance', 'custody', 'inventory',
-    'quiescence', 'timeout', 'unknown'])
+    'quiescence', 'timeout', 'unknown', 'unverified'])
 def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch, category: str) -> None:
     m = mount
     m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
     m.reader.current_generation.side_effect = m.h._helper_generation.GenerationUnavailable(category)
+    m.reader.setup_status.side_effect = m.h._helper_generation.GenerationUnavailable(category)
     m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
     m.message.new_method_error_literal = Mock(return_value=object())
     m.helper.connection.send_message = Mock()
     with pytest.raises(m.h.Refused) as failure:
         m.helper._status_snapshot(1000, time.monotonic() + 2)
     m.h.RemoteAccessHelper._error(m.helper, m.message, failure.value.category)
+    category = 'unverified' if category == 'unknown' else category
     m.message.new_method_error_literal.assert_called_once_with(
         m.h.INTERFACE + '.Error.host_state_unrecognized_' + category, 'host-state-unrecognized-' + category)
     assert not m.reader.effect.called and not m.helper.authority.call.called
@@ -667,7 +765,7 @@ def test_enable_child_diagnostic_preserves_closed_exit(
     assert backend.helper_main() == 1
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
-    assert capsys.readouterr() == ('{"refusal": "unknown"}\n', '')
+    assert capsys.readouterr() == ('{"refusal": "unverified"}\n', '')
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
@@ -818,7 +916,8 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     helper.audit = h._home_audit.HomeAudit(tmp_path / 'audit.jsonl', uid=os.getuid(), gid=os.getgid())
     effects = []
     token = 'protected-generation-and-operation'
-    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token))
+    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token),
+                             setup_status=Mock(return_value={'setup': 'ready'}))
     def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
         assert helper.inflight is not None and expected == 'protected-generation-and-operation'
         assert 0 < remaining <= 300
@@ -1100,6 +1199,29 @@ def test_disable_order_slot_audit_and_r7(mount: Any, revoke: str, cleanup: str) 
     assert v.helper.control.revoke_all.call_count == (2 if revoke == 'changed' else 1)
 
 
+@pytest.mark.parametrize('partial', [False, True])
+def test_thr327_disable_terminal_before_slot_release(mount: Any, partial: bool) -> None:
+    v, sent = mount, []
+    v.message.get_serial = lambda: 17
+    v.helper.connection.get_unique_name = lambda: ':1.100'
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert v.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+    v.helper.connection.emit_signal = signal
+    if partial:
+        v.helper.control.revoke_all.side_effect = v.h.Refused('unavailable')
+    v.admit()
+    frame = dict(method='Disable', correlation=dict(serial=17, owner=':1.100'),
+                 outcome='failed' if partial else 'completed')
+    if partial:
+        frame['category'] = 'partial_cleanup'
+    assert sent == [(':1.42', v.h.OBJECT_PATH, v.h.INTERFACE, 'LifecycleCompleted', frame)]
+    assert v.helper.inflight is None
+    assert v.helper.lifecycle_result['outcome'] == ('partial_cleanup' if partial else 'off')
+    assert v.effects == ([] if partial else ['revoke']) + ['stop', 'cleanup']
+    assert 'residue' not in frame  # No host paths or private diagnostics on this channel.
+
+
 @pytest.mark.parametrize('change', ['generation', 'operation', 'uid', 'owner', 'denied', 'deadline'])
 def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
     v = mount
@@ -1292,7 +1414,8 @@ def test_disable_policy_journal_recovery_before_stop(renewal_fixture: Any, monke
         show_properties=lambda name, keys: dict(LoadState='not-found', FragmentPath='', DropInPaths='',
             NeedDaemonReload='no', ActiveState='inactive', SubState='dead', MainPID='0', ControlPID='0', ControlGroup='', Job=''),
         disable=lambda name: events.append(('disable', name)))
-    def stop() -> None:
+    def stop(*, disabling: bool = False) -> None:
+        assert disabling is True
         events.append('legacy-stop')
         assert (folder / 'install-transaction.json').exists() is (case != 'valid')
         raise RuntimeError('stop at existing downstream seam')
@@ -1332,8 +1455,9 @@ def test_retry_policy_child_uses_real_fresh_renewal(renewal_fixture: Any, monkey
         from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
         original = HomeActivationTransactionStore.locked
         @contextmanager
-        def changed(store: Any) -> Any:
-            with original(store) as directory:
+        def changed(store: Any, *, wait: float = 0.0) -> Any:
+            assert wait == 0.0
+            with original(store, wait=wait) as directory:
                 updated = receipt_record('ready')
                 updated['operation_id'] = 'e' * 32
                 put(v.root, RECEIPT, encoded(updated))
@@ -1521,7 +1645,7 @@ def test_disable_real_backend_residue_still_attempts_owned_stops(
     if not revoked:
         mount.helper.control.revoke_all.side_effect = mount.h.Refused('unavailable')
     mount.admit()
-    io.stop_and_confirm.assert_called_once_with()
+    io.stop_and_confirm.assert_called_once_with(disabling=True)
     assert ['systemctl', 'stop', 'happyranch-headscale.service'] in custody.calls
     assert not io.cleanup_headscale.called and activation.exists()
     result = mount.helper.lifecycle_result
@@ -1543,7 +1667,10 @@ def test_stop_includes_headscale_and_disables_only_owned_units(store: Any, monke
     put_pair(store._io.root)
     io = store._io
     events = []
-    io.stop_and_confirm = lambda: events.append('stop-owned')
+    def stop(*, disabling: bool = False) -> None:
+        assert disabling is True
+        events.append('stop-owned')
+    io.stop_and_confirm = stop
     io.inventory = lambda: SimpleNamespace(state='owned-activated')
     io._confirm_quiescent = lambda: events.append('confirm-owned')
     io._headscale_receipt = lambda: {}
@@ -2003,7 +2130,7 @@ def test_issue_invite_single_reply_and_secrecy(issue_mount: Any, monkeypatch: py
     assert v.control.reserve_invite.call_count == 2
     assert v.trust.load().invite_record.secret_digest == hashlib.sha256(decoded.pair_secret.encode()).hexdigest()
     observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000)
-    invite, _ = v.helper._invite_status(1000, observed)
+    invite, _ = v.helper._invite_status(1000, observed, time.monotonic() + 2)
     assert invite.state.value == 'issued' and invite.deadline_utc_seconds == frame['expires_at']
     v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
     observed.phase = 'ready'
@@ -2295,6 +2422,77 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
 
 
 @pytest.mark.parametrize('method', ['Status', 'StatusV2'])
+@pytest.mark.parametrize('serving', [False, True])
+@pytest.mark.parametrize('case,setup', [('ready', 'ready'), ('inactive', 'runtime_unavailable'),
+    ('activating', 'setup_unverified'), ('deactivating', 'setup_unverified'),
+    ('partial', 'partial_cleanup'), ('failed', 'failed_uncertain'), ('prepared', 'prepared_no_receipt'),
+    ('renewal', 'renewal_failed'), ('prepared-receipt', 'setup_unverified')])
+def test_thr327_live_setup_status(composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                 method: str, case: str, setup: str, serving: bool) -> None:
+    from dataclasses import replace
+    v, m, uid = composition, mount, os.getuid()
+    if case == 'prepared':
+        with v.transactions.locked() as directory:
+            v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
+        assert v.receipts.current() is None
+    else:
+        v.lifecycle.dispatch('Enable', uid, 'enable', v.lifecycle.capture('Enable', uid),
+                             deadline=time.monotonic() + 480)
+        v.observers.close()
+        if case in ('inactive', 'activating', 'deactivating'):
+            v.states['happyranch-connector.service'] = case
+        elif case == 'renewal':
+            v.states['happyranch-remote-access-policy-renew.timer'] = 'inactive'
+        elif case == 'failed':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+        elif case == 'prepared-receipt':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='prepared',
+                        local_node_stable_id=None, home_endpoint=None).to_bytes())
+        elif case == 'partial':
+            expected = v.lifecycle.capture('Disable', uid)
+            assert v.lifecycle.dispatch('Disable', uid, 'stop', expected)['outcome'] == 'in_progress'
+            with pytest.raises(backend.HeadscaleServiceError):
+                v.lifecycle.dispatch('Disable', uid, 'cleanup', expected, revoke_succeeded=False)
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    def setup_status(remaining: float) -> dict:
+        assert not m.helper.lock._is_owned(), 'Status reads must not hold the lifecycle mutation lock'
+        return v.lifecycle.dispatch('Enable', uid, 'status', None)
+    m.reader.setup_status = setup_status
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    # A stale connector's ready bit must not override the live owned unit state.
+    m.helper.control.status = lambda: m.h.Snapshot(9, uid, True, 'ready', True, None, ())
+    if not serving:
+        m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
+        if setup == 'ready':
+            setup = 'runtime_unavailable'
+    m.helper.cursors = {}
+    m.message.get_member = lambda: method
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(m.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    m.message.new_method_reply = lambda: reply
+    m.helper.connection.send_message = Mock()
+    m.helper._reply = m.h.RemoteAccessHelper._reply.__get__(m.helper)
+    m.helper._dispatch(m.message)
+    m.helper.connection.send_message.assert_called_once()
+    result = json.loads(reply.body.unpack()[0])
+    if method == 'Status':
+        legacy = {'prepared_no_receipt': 'pending', 'renewal_failed': 'paused', 'ready': 'ready'}.get(setup, 'failed')
+        assert result['phase'] == legacy and result['ready'] is (setup == 'ready')
+    else:
+        assert result['setup']['state'] == setup
+        assert result['runtime']['state'] == ('available' if setup == 'ready' else 'unavailable')
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+
+
+@pytest.mark.parametrize('method', ['Status', 'StatusV2'])
 @pytest.mark.parametrize('case', ['clean', 'staged-inert', 'partial', 'pending', 'unsafe', 'unknown', 'failed', 'source', 'txn',
     'founder-expired', 'replacement-expired', 'post-disable-expired'])
 def test_thr327_closed_host_status(
@@ -2367,6 +2565,7 @@ def test_thr327_closed_host_status(
     m.helper.cursors = {}
     m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
     m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.reader.setup_status.side_effect = lambda _: v.lifecycle.setup_status(uid)
     m.message.get_member = lambda: method
     monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
                         SimpleNamespace(start=lambda: target(*args)))
@@ -2392,7 +2591,7 @@ def test_thr327_closed_host_status(
             assert status['runtime'] == dict(state='unavailable', age_seconds=0)
     else:
         m.message.new_method_error_literal.assert_called_once_with(
-            m.h.INTERFACE + '.Error.host_state_unrecognized', 'host-state-unrecognized')
+            m.h.INTERFACE + '.Error.host_state_unrecognized_unverified', 'host-state-unrecognized-unverified')
     assert staged_inventory(v.fixture) == before and v.calls == calls
     assert not m.helper.authority.call.called and not m.reader.effect.called
     assert not m.helper.audit.path.exists() and v.mints == mints and v.account_creations == accounts
@@ -2420,3 +2619,128 @@ def test_thr327_closed_host_status(
         assert checkpoints == ['current before effect reload']
         assert v.receipts.current().phase == 'ready'
         assert v.calls.index(['enable', TIMER_NAME]) < v.calls.index(['start', home_activation_owner._TARGET])
+
+
+def test_thr327_worker_waits_for_transient_main_lock(mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = mount
+    queued = []
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args, **kw:
+                        SimpleNamespace(start=lambda: queued.append((target, args))))
+    v.admit()
+    entered = threading.Event()
+    def work() -> None:
+        entered.set()
+        queued[0][0](*queued[0][1])
+    with v.helper.lock:
+        worker = REAL_THREAD(target=work)
+        worker.start()
+        assert entered.wait(2)
+        worker.join(.05)
+        assert not v.effects
+    worker.join(3)
+    assert not worker.is_alive()
+    assert v.effects == ['revoke', 'stop', 'cleanup']
+    assert v.helper.lifecycle_result == {'outcome': 'off', 'residue': []}
+    assert v.helper.inflight is None
+
+
+def test_thr327_skipped_revoke_is_partial(mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = mount
+    queued = []
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args, **kw:
+                        SimpleNamespace(start=lambda: queued.append((target, args))))
+    v.admit()
+    operation = v.helper.lifecycle_operation
+    original = operation.run_step
+    skipped = []
+    def step(execute: Any) -> Any:
+        if not skipped:
+            skipped.append(True)
+            return operation.outcome
+        return original(execute)
+    operation.run_step = step
+    queued[0][0](*queued[0][1])
+    assert v.effects == ['stop', 'cleanup']
+    assert v.helper.lifecycle_result['outcome'] == 'partial_cleanup'
+    assert 'un-revoked connector trust state and persisted sidecar state' in v.helper.lifecycle_result['residue']
+
+
+@pytest.mark.parametrize('category', ['ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry', 'activation-unverified'])
+def test_thr327_native_terminal_preserves_lifecycle_category(category: str) -> None:
+    path = Path(__file__).resolve().parents[1] / 'packaging/linux/desktop/connection_contract.py'
+    spec = importlib.util.spec_from_file_location('thr327_native_contract', path)
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    frame = dict(method='Enable', correlation=dict(serial=1, owner=':1.100'), outcome='failed', category=category)
+    assert native.enable_terminal_frame(json.dumps(frame)) == frame
+    protocol = native.Protocol(path.parents[3] / 'protocol/native-connection-bridge.v1.json')
+    failure = dict(code='enablePreparationFailed', effect='unknown', recovery='nativeRecovery', category=category)
+    protocol.validate(failure, protocol.schema['$defs']['preparationError'])
+
+
+@pytest.mark.parametrize('phase', ['none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                                  'refused', 'uncertain', 'recovered', 'unsafe', 'changed'])
+def test_thr327_invite_journal_status_after_restart(invite_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                                    phase: str) -> None:
+    v = invite_mount
+    if phase == 'none':
+        v.journal.unlink()
+    elif phase == 'issued':
+        record = v.record()
+        record['expires_at'] = int(time.time()) + 120
+        v.journal.write_text(json.dumps(record))
+    elif phase == 'unsafe':
+        v.journal.chmod(0o644)
+    elif phase not in ('issued', 'changed'):
+        record = v.record()
+        record['outcome'] = 'issued' if phase == 'expired' else phase
+        if phase == 'expired':
+            record['expires_at'] = time.time() - 1
+        v.journal.write_text(json.dumps(record))
+    before = {p: p.read_bytes() for p in v.journal.parent.iterdir()}
+    trust = v.trust.snapshot()
+    if phase == 'changed':
+        original = v.child._config
+        calls = []
+        def config(uid: int) -> tuple:
+            token, value = original(uid)
+            calls.append(True)
+            return ({**token, 'operation': 'e' * 32} if len(calls) > 1 else token), value
+        monkeypatch.setattr(v.child, '_config', config)
+    expected = json.dumps({k: v.token[k] for k in ('uid', 'generation', 'operation')},
+                          sort_keys=True, separators=(',', ':'))
+    commit = Mock(side_effect=AssertionError('status must not request commit'))
+    if phase in ('unsafe', 'changed'):
+        with pytest.raises(Exception):
+            v.child.dispatch('IssueInvite', 1000, 'status', expected,
+                             deadline=time.monotonic() + 2, before_commit=commit)
+    else:
+        result = v.child.dispatch('IssueInvite', 1000, 'status', expected,
+                                 deadline=time.monotonic() + 2, before_commit=commit)
+        assert result == dict(invite=phase, expires_at=int(v.record()['expires_at']) if phase == 'issued' else None)
+        assert set(result) == {'invite', 'expires_at'}
+        assert not hasattr(v.helper, 'invite_observation'), 'observation must survive a fresh helper'
+        from runtime.remote_access.helper_generation import HomeLifecycleClient
+        transport = HomeLifecycleClient('IssueInvite', 1000)
+        monkeypatch.setattr(transport, '_call', lambda step, binding, remaining:
+            v.child.dispatch('IssueInvite', 1000, step, binding,
+                             deadline=time.monotonic() + remaining, before_commit=commit))
+        v.reader.invite_status = transport.invite_status
+        observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+        v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+        v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+        monkeypatch.setattr(v.h.threading, 'Thread', lambda target, **kw: SimpleNamespace(start=target))
+        monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+        v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+        reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+        v.message.new_method_reply = lambda: reply
+        v.helper.connection.send_message = Mock()
+        v.helper._status_v2(v.message, ':1.42')
+        wire = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
+        public = json.loads(wire)
+        assert public['invite'] == dict(state=phase, age_seconds=0, deadline_utc_seconds=result['expires_at'])
+        assert public['cleanup'] == dict(state='unknown', age_seconds=None), 'journal is not cleanup proof'
+        assert set(public) == {'version', 'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
+    assert {p: p.read_bytes() for p in v.journal.parent.iterdir()} == before
+    assert v.trust.snapshot() == trust and not v.events and not v.control.calls
+    assert not commit.called and len(v.original.calls) == 1, 'no mint, cleanup, lock or commit'

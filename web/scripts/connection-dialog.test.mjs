@@ -85,6 +85,10 @@ const preparation = [
   ['dial-ip', 'The home network address is not supported.', '不支持此家庭网络地址。'],
   ['occupied-port', 'A network port needed for remote access is already in use.', '远程访问所需的网络端口已被占用。'],
   ['port-check-uncertain', 'The network ports needed for remote access could not be checked.', '无法检查远程访问所需的网络端口。'],
+  ['ready-restart-failed-turn-off', 'The owned services could not restart or verify. Turn off remote access, then check its result.', '所属服务无法重新启动或通过验证。请关闭远程访问，然后检查操作结果。'],
+  ['activation-retry-later', 'The previous single-use key is still live. Wait for its original expiry, then try Turn on again.', '上一次的一次性密钥仍在有效期内。请等待其原定到期时间，然后再次开启。'],
+  ['activation-prepared-retry', 'Recovery prepared a fresh attempt. Choose Turn on again to finish setup.', '恢复已准备好新的尝试。请再次开启以完成设置。'],
+  ['activation-unverified', 'Setup could not be verified. Check current status before another action; Turn off may report incomplete cleanup.', '无法验证设置结果。执行其他操作前请检查当前状态；关闭操作可能报告清理未完成。'],
 ];
 for (const [category, english, chinese] of preparation) {
   test('Preparation token retains literal bilingual reason: ' + category, async () => {
@@ -102,6 +106,17 @@ for (const [category, english, chinese] of preparation) {
     assert.equal(zh[view.lines[2].key], '其影响未知。');
     assert.equal(view.retry, false);
     assert.equal(view.checkAgain, true);
+    const { HostView } = await import('../connection/src/host.ts');
+    const { catalogs } = await import('../connection/src/strings.ts');
+    for (const [locale, reason] of [['en', english], ['zh-CN', chinese]]) {
+      const receiver = { outcome: { command: 'host.enable', raw: null, error: failure },
+        t: (key) => catalogs[locale][key],
+        notice: (text) => ({ textContent: text }), text: (_tag, text) => ({ textContent: text }),
+        has: () => false, actions: () => [] };
+      const notices = HostView.prototype.outcomeNodes.call(receiver);
+      assert.ok(notices[0].textContent.includes(reason), locale + ': ' + notices[0].textContent);
+      assert.ok(notices[0].textContent.includes(catalogs[locale].effectUnknown));
+    }
     for (const snapshot of [host({ setup: 'off' }), host(), host({ observation: 'unavailable' })]) {
       assert.equal(model.hostView(snapshot, snapshot.observation !== 'known').enable,
         snapshot.observation === 'known' && snapshot.setup === 'off');
@@ -302,7 +317,7 @@ test('steps: storage is done only when native reports saved access', () => {
   assert.deepEqual(model.stepRows('validating', 'saved'), []);
 });
 
-test('host view: approval, invite, unconfirmed and manage flags', () => {
+test('host view: approval, invite, unconfirmed and manage flags', async () => {
   const req = model.hostView(host({ pending: { label: 'Laptop', comparisonPhrase: null } }), false);
   assert.equal(req.title, 'connection.host.hTitleRequest');
   assert.equal(req.approve, true);
@@ -316,27 +331,69 @@ test('host view: approval, invite, unconfirmed and manage flags', () => {
   assert.equal(model.errorKey('host.status', 'hostStateUnrecognized'), 'connection.host.hErrStateUnrecognized');
   assert.equal(model.displayLabel('Saved computer 12', '已保存的电脑', 'zh-CN'), '已保存的电脑 12');
   assert.equal(model.displayLabel('Studio Host', 'Saved computer', 'en'), 'Studio Host');
+  const { HostView } = await import('../connection/src/host.ts');
+  const { catalogs } = await import('../connection/src/strings.ts');
+  for (const [setup, enable, turnOff, checkAgain] of [
+    ['off', true, false, false], ['pending', false, false, true],
+    ['ready', false, true, false], ['paused', false, true, true],
+    ['failed', false, false, true], ['unknown', false, false, true],
+    ['prepared_no_receipt', true, false, true], ['failed_uncertain', true, true, true],
+    ['partial_cleanup', false, true, true], ['runtime_unavailable', true, true, true],
+    ['setup_unverified', false, true, true], ['renewal_failed', false, true, true],
+  ]) {
+    const snapshot = host({ setup });
+    const view = model.hostView(snapshot, false);
+    const actual = { main: [view.enable, view.turnOff, view.checkAgain] };
+    // Exercise the shipped standalone body, including its private action list.
+    // Nodes isolate the DOM; production chooses every command and label.
+    for (const locale of ['en', 'zh-CN']) {
+      const receiver = { snapshot, unconfirmed: false, confirm: null,
+        pendingLabel: () => null, limited: () => false,
+        outcomeNodes: () => [], confirmation: () => [], invite: () => [], devices: () => [],
+        t: (key) => catalogs[locale][key],
+        text: (_tag, textContent) => ({ textContent }),
+        actions: (nodes) => nodes.filter(Boolean), has: () => true,
+        gate: (_command, create) => create(),
+        button: (command, key) => ({ command, textContent: catalogs[locale][key], dataset: { focusKey: `${command}:${key}` } }),
+      };
+      const { nodes } = HostView.prototype.body.call(receiver, setup);
+      actual[locale] = ['host.enable', 'host.turnOff', 'host.status'].map((command) =>
+        nodes.some((node) => node.command === command));
+      const button = nodes.find((node) => node.command === 'host.turnOff');
+      if (button) assert.equal(button.textContent, catalogs[locale].hTurnOff);
+    }
+    const expected = [enable, turnOff, checkAgain];
+    assert.deepEqual(actual, { main: expected, en: expected, 'zh-CN': expected }, setup);
+  }
 });
 
 test('host state categories survive parsing and select bilingual GUI copy', async () => {
   const en = (await import('../src/lib/i18n/locales/en.ts')).default;
   const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
-  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown']) {
+  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable']) {
     const input = { code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category };
     const failure = conn.parseConnectionFailure(JSON.stringify(input));
-    assert.deepEqual(failure, input);
+    assert.deepEqual(failure, { ...input, category: category === 'unknown' ? 'unverified' : category });
     const view = model.outcomeView('host.status', { failure }, null);
     const key = view.lines[1].key;
     assert.notEqual(key, 'connection.host.hErrStateUnrecognized');
     assert.equal(typeof en[key], 'string');
     assert.equal(typeof zh[key], 'string');
     assert.notEqual(en[key], zh[key]);
+    const { HostView } = await import('../connection/src/host.ts');
+    const { catalogs } = await import('../connection/src/strings.ts');
+    for (const [locale, reason] of [['en', en[key]], ['zh-CN', zh[key]]]) {
+      const receiver = { outcome: { command: 'host.status', raw: null, error: failure },
+        t: (name) => catalogs[locale][name], notice: (text) => ({ textContent: text }),
+        has: () => false, actions: () => [] };
+      assert.ok(HostView.prototype.outcomeNodes.call(receiver)[0].textContent.includes(reason));
+    }
     assert.equal(view.checkAgain, true);
     assert.equal(view.retry, false);
   }
   for (const category of ['private/path', 7, {}, '']) {
     const failure = conn.parseConnectionFailure(JSON.stringify({ code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category }));
-    assert.equal(failure.category, 'unknown');
+    assert.equal(failure.category, 'unverified');
   }
   assert.deepEqual(conn.parseConnectionFailure(JSON.stringify({ code: 'unavailable', effect: 'none', recovery: 'refresh', category: 'owner' })), conn.UNKNOWN_FAILURE);
 });
