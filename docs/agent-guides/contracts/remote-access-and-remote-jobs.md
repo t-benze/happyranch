@@ -2606,6 +2606,8 @@ matching its writer. Invite configuration remains root-owned `0600`. The
 policy is separate from the Headscale publication record's file map; neither
 that map nor the six receipt members change, so retained product publications
 and receipts use the same format and digests.
+Activation verification selects this fixed custody layout after checking both
+service accounts, including when retry or recovery skips Prepare in that process.
 
 The Linux managed connector CLI passes its resolved configuration path to the
 supervisor. Home admission still requires exactly `/etc/happyranch/connector.json`

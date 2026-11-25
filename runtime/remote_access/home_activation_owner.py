@@ -162,6 +162,9 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         self._io._headscale_owner = self._io._headscale_shape()
         if self._io._service_owner is None or self._io._headscale_owner is None:
             raise ActivationRefused()
+        # Retries/recovery can enter without Prepare in this process. Select
+        # the same exact Headscale custody layout for these read-only checks.
+        self._io._headscale_preparing = True
         HomeUnitGate(
             expected_release_uid=receipt.release_uid, expected_home_id=receipt.home_id,
             expected_control_plane_id=receipt.control_plane_id, expected_connector_id=receipt.connector_id,

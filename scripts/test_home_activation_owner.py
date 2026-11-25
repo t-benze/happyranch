@@ -285,7 +285,8 @@ def test_member_readers_distinct_headscale_custody(venue, monkeypatch, reader, p
     headscale_owner = (os.getuid() + 100, os.getgid() + 100)
     monkeypatch.setattr(io, "_headscale_shape", lambda: headscale_owner)
     io._headscale_owner = headscale_owner
-    io._headscale_preparing = True  # Isolate member custody from retry layout selection.
+    # A retry owner has not run Prepare in this process.
+    io._headscale_preparing = reader != "owner"
     directory = v.path("/etc/happyranch/headscale")
     directory.chmod(0o700)
     v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
