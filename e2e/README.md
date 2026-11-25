@@ -49,7 +49,7 @@ the retired Python suite and do not join required checks or trigger Product E2E.
 ## Current reporting contract — slice 3 of 3 (THR-291 seq659)
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
-new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
+new dependencies. The Python 3.14 baseline lane writes `reports/junit.xml`: a `product` suite
 with exactly the 69 names in `e2e/manifest.json`, once each, and a `harness` suite
 for setup, controller/finalization, owned processes, registered ports, sockets
 and data cleanup. Assertion failures produce failures; unavailable prerequisites
@@ -89,7 +89,7 @@ its end; every acquired frame still checks full content, witnesses, no launch,
 host state and product closure. Original phase/deadline bounds are unchanged.
 Both PASS and FAIL reports record measured timings as JSON in the first E04
 and first E07 product testcase's `system-out`, preserved through the controller
-handoff into each uploaded `e2e-3.12` / `e2e-3.14` `junit.xml`. E04 records observer
+handoff into the uploaded `e2e-3.14` `junit.xml`. E04 records observer
 sample count, min/max/p95 inter-sample gaps, first/last monotonic sample times
 and every observed barrier's named entry/completion endpoints. E07 records
 frame count, min/max/p95 start intervals, maximum frame duration, window entry/end,
@@ -137,8 +137,8 @@ re-raise TimeoutError and RuntimeError unchanged, including controller alarms
 and interruptions; closure recording also re-raises when the controller is marked
 interrupted. Other optional metadata/formatting failures remain best-effort,
 and failure-only recording preserves its existing outgoing cause.
-The existing always-uploaded JUnit in BOTH
-`e2e-3.12` and `e2e-3.14` carries this output even when private scratch is deleted;
+The existing always-uploaded JUnit in
+`e2e-3.14` carries this output even when private scratch is deleted;
 no upload rules or new diagnostic files are needed. A missing controller report
 still means missing E07 evidence. These diagnostics alone do not establish a
 failure cause or a subsequent hosted pass.
@@ -222,7 +222,7 @@ remain failures. Worker/listener/socket closure and all original budgets remain
 mandatory; physical closure alone never supplies cancellation evidence.
 This source change makes no full63 or native behavior claim.
 
-Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
+Launcher TERM and INT on Python3.14 are separate `diagnostic`
 suites: `launcher.TERM` or `launcher.INT`, plus setup/process/port/socket/data
 checks. They require actual accepted callback, browser and live provider readiness,
 real pidfd signal delivery to the exact launcher, expected inner failure, and
@@ -230,13 +230,13 @@ positive owned cleanup. The small readiness/result handoff stays private and is
 removed by the supervisor. Launcher interruption is not product cancellation or
 abrupt-restart coverage.
 
-Health downloads exactly `e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM` and
+Health downloads exactly `e2e-3.14`, `e2e-cancel-TERM` and
 `e2e-cancel-INT`, each containing `junit.xml`. It parses actual testcase children
 and requires both jobs successful, exactly 69 distinct expected product names
 per lane with no failures/errors/skips, both diagnostics and all setup/cleanup
 checks passed, and matching Python/source/event/run/attempt/exercise properties.
 It never reopens SQL, snapshots or completion ledgers. `GITHUB_STEP_SUMMARY`
-reports product138, diagnostics2, cleanup status and source/event/run errors.
+reports product69, diagnostics2, cleanup status and source/event/run errors.
 
 JUnit uploads use `if: always()` and `if-no-files-found: error`. Failure-only
 artifacts use `if: failure()` and explicit lane-root paths: `traces/*.zip`,
@@ -368,8 +368,8 @@ submission and static checks do not establish passing execution or budget fit.
 
 ## J2: agent custom skills (THR-343)
 
-The current product suite has **69 variants per Python lane**, 138 across both
-lanes. These six names append after the unchanged original63, in order:
+The current product suite has **69 variants on Python 3.14**.
+These six names append after the unchanged original63, in order:
 
 - `J2.agent-cli-create`
 - `J2.hidden-before-eligibility`

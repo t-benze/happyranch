@@ -433,7 +433,7 @@ class BrowserRelay:
                     raise
 
             def _get_chunk_left(self) -> int | None:
-                # CPython3.12/3.14 read1 calls this BEFORE any payload read.
+                # CPython3.14 read1 calls this BEFORE any payload read.
                 # Retain stdlib size/trailer parsing; validate its discarded CRLF.
                 left = self.chunk_left
                 if not left:

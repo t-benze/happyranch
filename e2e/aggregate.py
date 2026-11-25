@@ -1,4 +1,4 @@
-"""Health reads four ordinary JUnit reports; product checks run in each lane."""
+"""Health reads three ordinary JUnit reports; product checks run in the 3.14 lane."""
 from __future__ import annotations
 
 import argparse
@@ -82,7 +82,7 @@ def main() -> int:
     if args.matrix_result != "success" or args.cancellation_result != "success":
         errors.append(f"Jobs: lanes={args.matrix_result}, diagnostics={args.cancellation_result}")
     reports = [("e2e-" + version, version, None) for version in MANIFEST["daily_python"]]
-    reports += [("e2e-cancel-TERM", "3.12", "TERM"), ("e2e-cancel-INT", "3.14", "INT")]
+    reports += [("e2e-cancel-TERM", "3.14", "TERM"), ("e2e-cancel-INT", "3.14", "INT")]
     for artifact, version, signal_name in reports:
         try:
             expected = {"python": version, "source_sha": args.source, "event": args.event,

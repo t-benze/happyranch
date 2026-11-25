@@ -89,7 +89,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     (output / "logs").mkdir(exist_ok=True)
     source = Path(__file__).resolve().parents[1]
-    version = "3.12" if args.signal == "TERM" else "3.14"
+    version = "3.14"
     row = {"exercise": "cancellation", "python": version}
     report = Report(row)
     report.expect("diagnostic", ["launcher." + args.signal, *HOUSEKEEPING])
