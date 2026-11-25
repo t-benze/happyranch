@@ -111,9 +111,9 @@ export function TaskAttributesCard({ taskId, taskTitle }: { taskId: string; task
         {loading && (
           <div aria-busy="true" className="flex flex-col gap-2 py-3" data-testid="ta-card-loading">
             <span className="sr-only">{t('tasks.attributes.card.loading')}</span>
-            <div aria-hidden="true" className="bg-surface-sunken h-3 w-3/5 rounded" />
-            <div aria-hidden="true" className="bg-surface-sunken h-3 w-2/5 rounded" />
-            <div aria-hidden="true" className="bg-surface-sunken h-3 w-4/5 rounded" />
+            <div aria-hidden="true" className="bg-surface-sunken h-3 w-3/5 rounded-md" />
+            <div aria-hidden="true" className="bg-surface-sunken h-3 w-2/5 rounded-md" />
+            <div aria-hidden="true" className="bg-surface-sunken h-3 w-4/5 rounded-md" />
           </div>
         )}
         {failed && (

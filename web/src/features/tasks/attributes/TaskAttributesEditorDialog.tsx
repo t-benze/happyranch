@@ -391,7 +391,7 @@ function ConflictNotice({
         </Note>
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2" data-testid="ta-compare">
           {(['draft', 'latest'] as const).map((side) => (
-            <div key={side} className="border-border-default bg-surface-raised min-w-0 rounded border px-3 py-2 text-xs">
+            <div key={side} className="border-border-default bg-surface-raised min-w-0 rounded-md border px-3 py-2 text-xs">
               <div className="text-text-muted mb-1 text-overline font-bold tracking-wider uppercase">
                 {side === 'draft' ? t('tasks.attributes.editor.yourDraft') : t('tasks.attributes.editor.latest')}
               </div>
@@ -403,7 +403,7 @@ function ConflictNotice({
                     <dt key={`${a.definition.definition_id}-k`} className="text-text-muted font-mono">{a.definition.key}</dt>,
                     <dd key={`${a.definition.definition_id}-v`} className="m-0 min-w-0 break-words">
                       {side === 'draft'
-                        ? <span className="bg-attention-soft text-attention-text rounded px-1">{valueString(t, a.definition.type, c && c.op === 'set' ? { present: true, value: c.value } : { present: false })}</span>
+                        ? <span className="bg-attention-soft text-attention-text rounded-md px-1">{valueString(t, a.definition.type, c && c.op === 'set' ? { present: true, value: c.value } : { present: false })}</span>
                         : <>{valueString(t, a.definition.type, a.current)}{latestEv ? ` · ${actorLabel(latestEv.actor_id, latestEv.actor_kind)} · ${formatWhen(locale, latestEv.at)}` : ''}</>}
                     </dd>,
                   ];
@@ -475,7 +475,7 @@ function EditorRow({
         <>
           <fieldset className="mt-2.5 min-w-0 border-0 p-0" aria-describedby={errors ? `${id}-err` : undefined}>
             <legend className="sr-only">{d.name}</legend>
-            <div className="border-border-strong inline-flex flex-wrap overflow-hidden rounded border">
+            <div className="border-border-strong inline-flex flex-wrap overflow-hidden rounded-md border">
               {modes.map(([mode, label]) => (
                 <label
                   key={mode}

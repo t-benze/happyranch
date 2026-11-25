@@ -49,12 +49,12 @@ function HistoryBody({ read }: { read: TaskAttributesRead }): JSX.Element {
             {a.definition.name} <KeyChip>{a.definition.key}</KeyChip>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="border-border-default rounded border px-2.5 py-2">
+            <div className="border-border-default rounded-md border px-2.5 py-2">
               <div className="text-text-muted text-overline font-bold tracking-wider uppercase">{t('tasks.attributes.history.original')}</div>
               <ValueText type={a.definition.type} value={{ present: true, value: a.initial.value }} />
               <span className="text-text-muted block text-xs">{t('tasks.attributes.editor.immutable')}</span>
             </div>
-            <div className="border-border-default rounded border px-2.5 py-2">
+            <div className="border-border-default rounded-md border px-2.5 py-2">
               <div className="text-text-muted text-overline font-bold tracking-wider uppercase">{t('tasks.attributes.history.current')}</div>
               <ValueText type={a.definition.type} value={a.current} />
             </div>
@@ -157,7 +157,7 @@ export function TaskAttributeHistoryDialog({ taskId, taskTitle, onClose }: { tas
           ) : !read ? (
             <div aria-busy="true" className="flex flex-col gap-3">
               <span className="sr-only">{t('tasks.attributes.history.loading')}</span>
-              {[0, 1, 2].map((i) => <div key={i} aria-hidden="true" className="bg-surface-sunken h-4 rounded" />)}
+              {[0, 1, 2].map((i) => <div key={i} aria-hidden="true" className="bg-surface-sunken h-4 rounded-md" />)}
             </div>
           ) : (
             <HistoryBody read={read} />

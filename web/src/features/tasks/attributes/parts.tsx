@@ -37,7 +37,7 @@ export function ValueText({ type, value }: { type: string; value: AttributePrese
       return (
         <span className="text-text-secondary text-sm font-medium" data-value="empty">
           {t('tasks.attributes.value.emptyString')}
-          <code className="border-border-default bg-surface-sunken text-text-primary ml-1 rounded border px-1 font-mono text-xs not-italic">""</code>
+          <code className="border-border-default bg-surface-sunken text-text-primary ml-1 rounded-md border px-1 font-mono text-xs not-italic">""</code>
         </span>
       );
     }
@@ -149,7 +149,7 @@ export function Note({
 }
 
 export function KeyChip({ children }: { children: ReactNode }): JSX.Element {
-  return <span className="border-border-default bg-surface-sunken text-text-secondary rounded border px-1.5 font-mono text-xs">{children}</span>;
+  return <span className="border-border-default bg-surface-sunken text-text-secondary rounded-md border px-1.5 font-mono text-xs">{children}</span>;
 }
 
 /** The task-level refusal notice, shared by the card and the editor (same copy at every point). */
