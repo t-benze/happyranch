@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused custom task attributes (THR-390 PR1)
+
+```bash
+uv run --frozen python -B -m unittest scripts.test_task_attributes -v
+```
+
+Runs accepted C01–C18 pure-validation and real disposable SQLite cases, including
+upgrade/rerun, retained audit scopes, native scalar roundtrips, transaction-boundary
+races, caller-owned admission, fault rollback and immutable history. Uses no
+lifespan, listener, provider or live org. Outside retired Python units and the
+skipped general integration suite; adds no CI trigger or required check.
+
+
 ## Focused thread guest seats (THR-362 slice 1)
 
 ```bash
