@@ -1,12 +1,12 @@
-# Custom Task Attributes — PR1 storage and validation
+# Custom Task Attributes — storage, validation and HTTP adapters
 
-Status: PR1 source foundation; THR-390 / TASK-19073 / TASK-19090. No HTTP routes,
-CLI, creation producers or UI consume these APIs yet. No definitions are seeded.
+Status: PR1 foundation and PR2 HTTP adapters; THR-390 / TASK-19073 / TASK-19123.
+CLI, creation producers and UI are subsequent slices. No definitions are seeded.
 The source contract is `runtime/task_attributes.py`,
 `runtime/infrastructure/db/task_attributes.py`, and the additive installer in
 `SchemaMixin._create_tables`. This spec implements PRD v1.0 F1–F6 storage portions
 and engineering notes A4/A5/A7. Authentication and task ownership checks belong
-to the subsequent adapters; internal actor inputs are trusted, not authenticated
+to the HTTP adapters below; internal actor inputs are trusted, not authenticated
 by this store. Storage is isolated by the existing per-org database path.
 
 ## Validation
@@ -182,3 +182,104 @@ schema/FK/index/trigger manifests and retained audit bytes, typed roundtrips,
 pre-BEGIN interleavings with separate connections/Events, caller sentinel
 visibility, event-insert faults and per-table UPDATE/DELETE attacks. No production
 hooks, daemon/listeners, live DBs, required test checks or new dependencies.
+
+## PR2 HTTP routes
+
+Accepted case design: TASK-19119 `case-design.md`, SHA-256
+`41eb3760f1731c9f09036ea02cc3b9549cfc5d4e3a4df7b8bfc7946871589692`,
+independently design-PASSed by TASK-19121 and accepted in TASK-19123's brief.
+The adapter is `runtime/daemon/routes/task_attributes.py`; closed wire models
+are in `task_attribute_models.py`. Prefix all paths with `/api/v1/orgs/{slug}`.
+Every operation uses `Cache-Control: no-store` and is classified included in
+the existing native surface inventory. Handwritten TS clients mirror them.
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| GET | `/task-attributes/definitions` | Active definitions by default; `include_archived=true` retains archives. Full rubric, constraints, version and definition editability. |
+| GET | `/task-attributes/definitions/{definition_id}` | Stable-ID current lookup or positive `version` historical lookup. Editability always reflects current state. |
+| POST | `/task-attributes/definitions` | Founder create with `expected_version:0`; 201/version 1. |
+| PATCH | `/task-attributes/definitions/{definition_id}` | Founder partial update with positive `expected_version`; at least one change. Omitted metadata preserved; description null clears. |
+| POST | `/task-attributes/definitions/{definition_id}/archive` | Founder archive with positive `expected_version`; no delete, restore or key reuse. |
+| GET | `/tasks/{task_id}/attributes` | Task-level editability and active fields plus archived fields with task evidence, each with current, initial, admission, provenance, full history and field editability. |
+| PUT | `/tasks/{task_id}/attributes` | Atomic nonempty unique-ID `changes` batch, with per-field version/revision preconditions. One-element batch handles a single edit. |
+| GET | `/tasks/{task_id}/attributes/history` | Full event-id-ordered history; optional `definition_id` filter. |
+
+Discovery accepts the existing bearer or current org-bound `session_id` query.
+Task read/history/save retain the existing task bearer gate; a session alone
+does not gain task read access. Session presence always selects the agent path,
+even with a bearer. Unknown/replaced/recovery contexts never fall back to
+Founder. Definition mutations reject agent binding context and use the existing
+human bearer boundary unchanged. That bearer cannot cryptographically identify
+a human token holder; PR2 makes no stronger identity claim.
+
+Task edits accept Founder, current task owner, the target team's current
+registered executable manager, or a current registered executable manager owning
+the immediate persisted parent. Manager registration must be unambiguous and
+agree with the active canonical agent definition. Generic manager roles,
+historical creators, siblings, revisit and transitive ancestry grant nothing.
+The native caller task/session must still be current, nonterminal and outside
+recovery. Completed/failed/cancelled/superseded **targets** are not denied solely
+for status; Pause introduces no metadata ban. Read and save share this policy.
+
+`editability` is `{can_edit,refusal_reason:null|{code}}`. Stable reasons include
+`not_task_owner_or_owning_manager`, `authority_unknown`, `session_not_current`,
+`recovery_purpose_forbidden`, existing caller `task_not_active`, and field-level
+`definition_archived`. An existing authorized reader with unusable agent
+authority can read with `can_edit:false`; save returns the same reason in 403.
+
+The existing authority async gate, teams lock and async DB lock precede the
+short synchronous publisher, canonical-roster, binding, move and DB interval. No await occurs
+under synchronous leases or the SQLite transaction. Current tracker generation,
+native caller/target rows, canonical roster and owning relation are rechecked
+after the actual `BEGIN IMMEDIATE`, and relevant guards survive COMMIT.
+Reads assemble authority/definition/current/initial/history in one SQLite
+snapshot. Optional current names are read-only decoration; failures there yield
+null names without changing actor IDs/kinds or inventing history.
+
+Save shape:
+
+```json
+{"changes":[{"definition_id":"stable-id","expected_version":1,"expected_revision":0,"op":"set","value":4}]}
+```
+
+`clear` forbids value; `set` requires a non-null native scalar. Optional string
+note is recorded only when supplied. Strict integer CAS, unknown fields,
+duplicate JSON members, duplicate query keys and duplicate change IDs are
+rejected with 422 `attribute_validation_failed` and field errors. No scalar or
+CAS coercion occurs. Whole-batch definition/version/archive/revision checks
+precede aggregate scalar validation and all mutations. Unsubmitted fields remain
+untouched. Initial/admission evidence is never created by edits.
+
+Stale version/revision, first-use freeze, archive and reserved-key collisions
+return 409 with an authorized concrete `current` observation. Definition errors
+carry `{definition,editability}` by stable ID, including current first-use and
+archive state even after rename; value errors carry the full task projection
+and revision conflicts where applicable. Archived unused fields are included
+in their refusal projection. A subsequent reload reauthorizes and reads again;
+no automatic replay or silent constraints discard occurs. Missing/foreign IDs
+share sanitized 404 `not_found`; no foreign data or org inventory is returned.
+Storage/projection errors are 503 `attribute_storage_unavailable`, never empty
+success. A lost response after COMMIT requires readback and deliberate CAS
+handling, since transport loss does not undo a durable write.
+
+One owned writer transaction contains all field changes, freeze markers,
+events and audit. PR1 public APIs retain their signatures and self-contained
+transactions; audited adapters compose uncommitted primitives instead of
+looping over committing setters. Definition create/update/archive emits one
+`org_config_write` row under `config:task_attributes`, with section
+`task_attributes`, tiers `["org"]`, operation, definition_id, full before/after
+wire definitions and actor_kind founder. Value changes emit `task_attribute_set`
+or `task_attribute_cleared` under the actual task ID with definition ID/version,
+revision, actor ID/kind, old/new typed presence and optional note, in input order.
+The existing audit columns/scope conventions remain unchanged. Audit/event
+failure rolls back every domain change, including first use. Refused operations
+emit no successful domain mutation audit. Dedicated tables remain history truth.
+
+Events include read-only `actor:{canonical_id,kind,addressable_name}`; Founder
+is always actor_id/kind founder even if its current name is unavailable. No
+rendered Who label, UI, filter/export, admission producer or CLI is added here.
+The retained standalone command above now also executes P01–P28 route contracts,
+including real two-connection orderings, SQL-insert faults, independent durable
+row checks, coherent snapshots, complete 2,048-event history and full OpenAPI
+model checks. This remains outside retired Python/Web units, skipped general
+integration, Product E2E and required lint/static checks.

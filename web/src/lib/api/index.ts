@@ -16,6 +16,7 @@ export * as runtime from './runtime';
 export * as runtimeExecutors from './runtime-executors';
 export * as jobs from './jobs';
 export * as tasks from './tasks';
+export * as taskAttributes from './taskAttributes';
 export * as teams from './teams';
 export * as threads from './threads';
 export * as tokens from './tokens';

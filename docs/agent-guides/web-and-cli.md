@@ -6309,3 +6309,20 @@ return409 `artifact_live_dependency`; retained names409 `artifact_name_retained`
 Renew/restore and downloads still work at quota. DELETE remains preview-only in A;
 there is no CLI delete. The service/model/private exercise entry points are
 linked from the contract; required hosted checks stay lint/static only.
+
+## Custom task attribute HTTP API (THR-390 PR2)
+
+Under `/api/v1/orgs/{slug}`, GET/POST `/task-attributes/definitions`, GET/PATCH
+`/task-attributes/definitions/{definition_id}`, POST
+`/task-attributes/definitions/{definition_id}/archive`, GET/PUT
+`/tasks/{task_id}/attributes`, and GET `/tasks/{task_id}/attributes/history`
+provide discovery, Founder definition controls and audited atomic value edits.
+Task reads retain the existing bearer scope; definition discovery also accepts
+current org-bound agent sessions. The server reports current editability and
+stable refusal reasons, preserving finished-target edits for authorized callers.
+Stale writes return 409 with concrete current state for deliberate reload;
+archives retain stable-ID/historical reads and refuse writes. Native scalar,
+initial/provenance/history and authority details are in the
+[attribute contract](../specs/2026-11-25-custom-task-attributes.md#pr2-http-routes).
+`api/taskAttributes.ts` and `taskAttributeTypes.ts` are handwritten mirrors.
+CLI, creation producers, UI, filters/export and score seeds are later slices.

@@ -17,7 +17,7 @@ observes capped size walking, exhausted time, unavailable roots/reads and an
 unchanged successful sweep outcome. No daemon, provider, scheduled sweep or
 new CI trigger is run. Existing active-task/root/job keepers remain unchanged.
 
-## Focused custom task attributes (THR-390 PR1)
+## Focused custom task attributes (THR-390 PR1/PR2)
 
 ```bash
 uv run --frozen python -B -m unittest scripts.test_task_attributes -v
@@ -28,6 +28,16 @@ upgrade/rerun, retained audit scopes, native scalar roundtrips, transaction-boun
 races, caller-owned admission, fault rollback and immutable history. Uses no
 lifespan, listener, provider or live org. Outside retired Python units and the
 skipped general integration suite; adds no CI trigger or required check.
+
+PR2 also exercises P01–P28 at the shipping FastAPI/ASGI boundary with the
+existing synthetic-org fixture: current owner/manager/Founder authority, tenant
+isolation, strict transport, revision/archive/freeze conflicts, atomic audit
+fault rollback, provenance, coherent two-connection reads and full history.
+No daemon lifespan, provider or live state. OpenAPI generation remains
+`uv run --frozen python scripts/generate_openapi_snapshot.py --write`, followed
+by the same command with `--check`; full body/response models are checked in
+the focused cases because the snapshot pins only params/statuses. Native Swift
+surface checks require the documented Mac venue; no access policy is changed.
 
 
 ## Focused thread guest seats (THR-362 slice 1)

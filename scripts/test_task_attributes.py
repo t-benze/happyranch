@@ -1,10 +1,11 @@
-"""Accepted PR1 C01-C18 cases in the standalone SQLite/unittest venue.
+"""Accepted PR1 C01-C18 and PR2 P01-P28 in the standalone unittest venue.
 
-No daemon, provider, retired unit-suite import, live org or production test seam.
+Real SQLite and shipping ASGI app; no lifespan, listeners, providers, retired
+unit-suite import, live org or production test seam.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -12,10 +13,16 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import AsyncExitStack
+import asyncio
+from unittest.mock import patch
+
+from scripts.test_agent_retirement import fixture as route_fixture
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.db.task_attributes import AttributeConflictError, AttributeStoreError
 from runtime.models import TaskRecord, TaskStatus, ThreadRecord
+from runtime.orchestrator.teams import TeamsRegistry
 from runtime.task_attributes import AttributeValidationError, validate_definition, validate_values
 
 
@@ -27,6 +34,695 @@ IMMUTABLE = [TABLES[i] for i in (1, 2, 3, 4, 6)]
 
 def definition(kind="numeric", **changes):
     return validate_definition(**{"key": "effort", "type": kind, "name": " Effort ", **changes})
+
+
+class RouteTests(unittest.IsolatedAsyncioTestCase):
+    """Accepted PR2 P cases: shipping ASGI app, real isolated org and SQLite."""
+
+    async def asyncSetUp(self):
+        self.stack = AsyncExitStack()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.org, self.client = await self.stack.enter_async_context(
+            route_fixture(Path(self.tmp.name) / "fixture", workers=("worker", "sibling")))
+        self.base = "/api/v1/orgs/alpha"
+        self.defs = self.base + "/task-attributes/definitions"
+        self.values = self.base + "/tasks/TASK-target/attributes"
+        self.org.db.insert_task(TaskRecord(id="TASK-parent", assigned_agent="keeper", team="engineering", brief="parent"))
+        self.org.db.insert_task(TaskRecord(id="TASK-target", assigned_agent="worker", team="retiring",
+                                           parent_task_id="TASK-parent", brief="target"))
+        for agent, team in (("worker", "retiring"), ("sibling", "retiring"), ("manager", "retiring"), ("keeper", "engineering")):
+            sid = "synthetic-" + agent
+            self.org.db.insert_task(TaskRecord(id="TASK-caller-" + agent, assigned_agent=agent, team=team,
+                brief="caller", status=TaskStatus.IN_PROGRESS, current_session_id=sid))
+            self.org.sessions.set_active("TASK-caller-" + agent, agent, sid, org_slug="alpha")
+
+    async def asyncTearDown(self):
+        await self.stack.aclose()
+        self.tmp.cleanup()
+
+    async def create(self, key="effort", **fields):
+        response = await self.client.post(self.defs, json={"expected_version": 0, "key": key,
+            "type": "numeric", "name": key.title(), "description": "Synthetic rubric", **fields})
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["definition"]
+
+    def change(self, definition, value=4, revision=0, **fields):
+        return {"definition_id": definition["definition_id"], "expected_version": definition["version"],
+                "expected_revision": revision, "op": "set", "value": value, **fields}
+
+    async def save(self, changes, agent=None):
+        return await self.client.put(self.values, json={"changes": changes},
+            params={} if agent is None else {"session_id": "synthetic-" + agent})
+
+    async def test_p01_p03_definition_routes(self):
+        d = await self.create(constraints={"min": 1, "max": 10})
+        self.assertEqual((d["description"], d["version"], d["archived"]), ("Synthetic rubric", 1, False))
+        response = await self.client.get(self.defs)
+        self.assertEqual(response.json()["definitions"], [d])
+        response = await self.client.patch(self.defs + "/" + d["definition_id"],
+            json={"expected_version": 1, "name": "New name", "description": None})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["definition"]["description"], None)
+        old = await self.client.get(self.defs + "/" + d["definition_id"], params={"version": 1})
+        self.assertEqual(old.json()["definition"], d)
+
+    def domain(self):
+        path = self.org.db.execute("PRAGMA database_list").fetchone()[2]
+        observer = sqlite3.connect(path)
+        try:
+            return {table: observer.execute(f"SELECT * FROM {table}").fetchall()
+                    for table in TABLES + ["audit_log"]}
+        finally:
+            observer.close()
+
+    def audit(self, scope="TASK-target"):
+        return self.org.db.get_audit_logs(scope)
+
+    async def test_p02_p08_human_controls_and_actor_claims(self):
+        d = await self.create()
+        url = self.defs + "/" + d["definition_id"]
+        before = self.domain()
+        operations = (("post", self.defs, {"expected_version": 0, "key": "new", "name": "New", "type": "boolean"}),
+                      ("patch", url, {"expected_version": 1, "description": "changed"}),
+                      ("post", url + "/archive", {"expected_version": 1}))
+        for method, path, body in operations:
+            for sid in ("synthetic-worker", "unknown", ""):
+                response = await getattr(self.client, method)(path, params={"session_id": sid}, json=body)
+                self.assertEqual(response.status_code, 403, response.text)
+                self.assertEqual(response.json()["detail"]["code"], "human_only")
+            for field in ("actor_id", "agent", "session_id", "principal_id", "org_slug"):
+                response = await getattr(self.client, method)(path, json={**body, field: "founder"})
+                self.assertEqual(response.status_code, 403, response.text)
+            for bearer in ("", "Bearer invalid"):
+                response = await getattr(self.client, method)(path, json=body, headers={"Authorization": bearer})
+                self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(self.domain(), before)
+        for field in ("actor_id", "actor_kind", "role", "team", "assigned_agent", "org"):
+            response = await self.save([self.change(d, **{field: "founder"})], "worker")
+            self.assertEqual(response.status_code, 422, response.text)
+        response = await self.client.put(self.values, params={"session_id": "synthetic-worker"},
+            json={"changes": [self.change(d)]}, headers={"X-HappyRanch-Caller": "founder"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.audit()[0]["agent"], "worker")
+        self.assertEqual(response.json()["attributes"][0]["history"]["events"][0]["actor_kind"], "agent")
+
+    async def test_p03_p04_p05_discovery_and_tenant_scope(self):
+        d = await self.create(description="雪" * 4000)
+        response = await self.client.get(self.defs, params={"session_id": "synthetic-worker"},
+                                         headers={"Authorization": ""})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["definitions"][0]["description"], "雪" * 4000)
+        self.assertFalse(response.json()["editability"]["can_create"])
+        for path in (self.values, self.values + "/history", self.base + "/tasks/TASK-target"):
+            response = await self.client.get(path, params={"session_id": "synthetic-worker"}, headers={"Authorization": ""})
+            self.assertEqual(response.status_code, 401, response.text)
+        response = await self.client.put(self.values, json={"changes": [self.change(d)]},
+            params={"session_id": "synthetic-worker"}, headers={"Authorization": ""})
+        self.assertEqual(response.status_code, 401)
+        # A second mounted real org deliberately repeats task/agent/key IDs.
+        from runtime.daemon.org_state import OrgState
+        import shutil
+        beta_root = self.org.root.parent / "beta"
+        shutil.copytree(self.org.root / "org", beta_root / "org")
+        beta = OrgState.load(slug="beta", root=beta_root, settings=self.org.settings)
+        state = self.client._transport.app.state.daemon
+        state.orgs["beta"] = beta
+        beta.db.insert_task(TaskRecord(id="TASK-target", assigned_agent="worker", team="retiring", brief="beta"))
+        foreign = beta.db.create_task_attribute_definition(key="effort", type="string", name="Beta", description="SYNTHETIC-BETA")
+        beta.db.set_task_attribute("TASK-target", foreign["definition_id"], "SYNTHETIC-BETA-VALUE",
+            expected_version=1, expected_revision=0, actor_id="founder", actor_kind="founder")
+        beta_before = beta.db.get_task_attribute("TASK-target", foreign["definition_id"])
+        response = await self.client.get("/api/v1/orgs/beta/task-attributes/definitions",
+                                         params={"session_id": "synthetic-worker"})
+        self.assertEqual(response.status_code, 403, response.text)
+        errors = []
+        for identity in (foreign["definition_id"], "unknown"):
+            response = await self.client.get(self.defs + "/" + identity)
+            self.assertEqual(response.status_code, 404, response.text)
+            errors.append(response.json())
+            response = await self.save([self.change({**d, "definition_id": identity})])
+            self.assertEqual(response.json(), {"detail": {"code": "not_found"}})
+        self.assertEqual(errors[0], errors[1])
+        response = await self.client.get("/api/v1/orgs/gamma/task-attributes/definitions",
+                                         params={"session_id": "synthetic-worker"})
+        self.assertEqual(response.json(), {"detail": {"code": "not_found"}})
+        self.assertEqual(beta.db.get_task_attribute("TASK-target", foreign["definition_id"]), beta_before)
+
+    async def test_p06_p24_owner_managers_founder_audit(self):
+        d = await self.create()
+        for revision, agent in enumerate(("worker", "manager", "keeper", None)):
+            with self.subTest(actor=agent):
+                response = await self.save([self.change(d, value=revision, revision=revision, note="recorded")], agent)
+                self.assertEqual(response.status_code, 200, response.text)
+                item = response.json()["attributes"][0]
+                self.assertEqual(item["current"]["revision"], revision + 1)
+                event = item["history"]["events"][-1]
+                self.assertEqual((event["actor_id"], event["actor_kind"]),
+                    (agent or "founder", "agent" if agent else "founder"))
+                row = self.audit()[-1]
+                self.assertEqual((row["task_id"], row["agent"], row["action"]),
+                                 ("TASK-target", agent or "founder", "task_attribute_set"))
+                self.assertEqual(row["payload"], {"definition_id": d["definition_id"], "definition_version": 1,
+                    "revision": revision + 1, "actor_id": agent or "founder", "actor_kind": "agent" if agent else "founder",
+                    "old": {"present": False} if revision == 0 else {"present": True, "value": revision - 1},
+                    "new": {"present": True, "value": revision}, "note": "recorded"})
+                self.assertIsNotNone(datetime.fromisoformat(row["timestamp"]).utcoffset())
+        clear = self.change(d, revision=4, op="clear")
+        del clear["value"]
+        for revision in (4, 5):
+            response = await self.save([{**clear, "expected_revision": revision}])
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["attributes"][0]["current"]["revision"], revision + 1)
+            self.assertEqual(self.audit()[-1]["action"], "task_attribute_cleared")
+            self.assertEqual(self.audit()[-1]["payload"]["new"], {"present": False})
+
+    async def assert_refusal(self, d, sid, expected):
+        before = self.domain()
+        response = await self.client.get(self.values, params={"session_id": sid})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["editability"], {"can_edit": False, "refusal_reason": {"code": expected}})
+        response = await self.client.put(self.values, params={"session_id": sid}, json={"changes": [self.change(d)]})
+        self.assertEqual((response.status_code, response.json()["detail"]["code"]), (403, expected), response.text)
+        self.assertEqual(self.domain(), before)
+
+    async def test_p07_p11_current_authority_refusal_parity(self):
+        d = await self.create()
+        await self.assert_refusal(d, "synthetic-sibling", "not_task_owner_or_owning_manager")
+        await self.assert_refusal(d, "unknown", "authority_unknown")
+        self.org.sessions.set_active("TASK-caller-worker", "worker", "new-worker", org_slug="alpha")
+        await self.assert_refusal(d, "synthetic-worker", "authority_unknown")
+        self.org.sessions.register_recovery_session("TASK-caller-worker", "worker", "synthetic-worker", org_slug="alpha")
+        await self.assert_refusal(d, "synthetic-worker", "recovery_purpose_forbidden")
+        # A generic manager loses its grant when the immediate parent is another owner.
+        self.org.db.execute("UPDATE tasks SET assigned_agent='sibling' WHERE id='TASK-parent'")
+        self.org.db.commit()
+        await self.assert_refusal(d, "synthetic-keeper", "not_task_owner_or_owning_manager")
+        # Direct owner remains provable when an optional parent link is broken.
+        self.org.db.execute("UPDATE tasks SET parent_task_id='TASK-missing' WHERE id='TASK-target'")
+        self.org.db.commit()
+        await self.assert_refusal(d, "synthetic-keeper", "authority_unknown")
+        self.org.sessions.set_active("TASK-caller-worker", "worker", "synthetic-worker", org_slug="alpha")
+        response = await self.save([self.change(d)], "worker")
+        self.assertEqual(response.status_code, 200, response.text)
+        # Ambiguous manager registration never grants; an unknown team is not
+        # repaired or guessed. This is a synthetic already-published layout.
+        teams = self.org.teams
+        self.org.teams = TeamsRegistry.from_bytes((self.org.root / "org/teams.yaml").read_bytes(), root=self.org.root)
+        try:
+            self.org.teams.add_team("ambiguous", manager="keeper")
+            # Canonical membership is ambiguous, so no native actor/team proof
+            # can be established; this is unknown authority, not a known peer.
+            await self.assert_refusal(d, "synthetic-keeper", "authority_unknown")
+        finally:
+            teams.save()
+            self.org.teams = teams
+        canonical = self.org.root / "org/teams.yaml"
+        original = canonical.read_bytes()
+        try:
+            canonical.write_text("teams: [")
+            await self.assert_refusal(d, "synthetic-keeper", "authority_unknown")
+        finally:
+            canonical.write_bytes(original)
+        self.org.db.execute("UPDATE tasks SET assigned_agent='sibling' WHERE id='TASK-target'")
+        self.org.db.commit()
+        await self.assert_refusal(d, "synthetic-worker", "not_task_owner_or_owning_manager")
+        response = await self.save([self.change(d, revision=1)], "sibling")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.audit()[-1]["agent"], "sibling")
+
+    async def test_p09_session_revocation_at_admission(self):
+        d = await self.create()
+        lock = self.org.workflow_authority._async_writer_lock
+        arrived = asyncio.Event()
+
+        class ObservedLock:
+            async def __aenter__(self):
+                arrived.set()
+                await lock.acquire()
+
+            async def __aexit__(self, *args):
+                lock.release()
+
+        await lock.acquire()
+        self.org.workflow_authority._async_writer_lock = ObservedLock()
+        try:
+            pending = asyncio.create_task(self.save([self.change(d)], "worker"))
+            await asyncio.wait_for(arrived.wait(), 5)
+            self.org.sessions.set_active("TASK-caller-worker", "worker", "new-worker", org_slug="alpha")
+        finally:
+            lock.release()
+        response = await asyncio.wait_for(pending, 5)
+        self.org.workflow_authority._async_writer_lock = lock
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(self.audit(), [])
+        self.assertEqual(self.org.db.get_task_attribute("TASK-target", d["definition_id"])["current"]["revision"], 0)
+        # Native retirement refuses the active credential-bearing manager. Do
+        # not fabricate a successful unsupported retirement across that owner.
+        response = await self.client.post(self.base + "/agents/manager/retire")
+        self.assertEqual(response.status_code, 409, response.text)
+
+    async def interleave(self, operation, competitor, *, snapshot=False):
+        connection = self.org.db._conn
+        observer = Database(Path(connection.execute("PRAGMA database_list").fetchone()[2]))
+
+        class SnapshotGate(BeginGate):
+            def execute(gate, sql, parameters=()):
+                cursor = gate.connection.execute(sql, parameters)
+                if gate.hits == 0 and "COALESCE(?,d.current_version)" in sql:
+                    gate.hits += 1
+                    gate.arrived.set()
+                    if not gate.release.wait(5):
+                        raise AssertionError("snapshot gate deadline")
+                return cursor
+
+        gate = SnapshotGate(connection) if snapshot else BeginGate(connection)
+        self.org.db._conn = gate
+        pending = asyncio.create_task(asyncio.to_thread(lambda: asyncio.run(operation())))
+        try:
+            self.assertTrue(await asyncio.to_thread(gate.arrived.wait, 5), "route reached actual SQL boundary")
+            competitor(observer)
+        finally:
+            gate.release.set()
+            try:
+                response = await asyncio.wait_for(pending, 10)
+            finally:
+                self.org.db._conn = connection
+                observer.close()
+        self.assertEqual(gate.hits, 1)
+        return response
+
+    async def test_p14_p15_p16_p18_real_writer_interleavings(self):
+        # Each losing route pauses immediately before its actual BEGIN, after
+        # all transport/preflight work. Competitors commit through real PR1 APIs.
+        for scenario in ("freeze", "revision", "definition", "archive"):
+            with self.subTest(scenario=scenario):
+                d = await self.create("race_" + scenario, constraints={"min": 1, "max": 10})
+                x = await self.create("first_" + scenario)
+                before_audit = len(self.audit())
+                if scenario == "freeze":
+                    operation = lambda: self.client.patch(self.defs + "/" + d["definition_id"],
+                        json={"expected_version": 1, "constraints": {"min": 1, "max": 9}})
+                    competitor = lambda db: db.set_task_attribute("TASK-target", d["definition_id"], 4,
+                        expected_version=1, expected_revision=0, actor_id="worker", actor_kind="agent")
+                    expected = "definition_structure_frozen"
+                elif scenario == "revision":
+                    operation = lambda: self.save([self.change(x), self.change(d, value=5)])
+                    competitor = lambda db: db.set_task_attribute("TASK-target", d["definition_id"], 4,
+                        expected_version=1, expected_revision=0, actor_id="worker", actor_kind="agent")
+                    expected = "value_revision_conflict"
+                elif scenario == "definition":
+                    operation = lambda: self.save([self.change(x), self.change(d)])
+                    competitor = lambda db: db.update_task_attribute_definition(d["definition_id"],
+                        expected_version=1, constraints={"min": 1, "max": 9})
+                    expected = "definition_version_conflict"
+                else:
+                    operation = lambda: self.save([self.change(x), self.change(d)])
+                    competitor = lambda db: db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+                    expected = "definition_version_conflict"
+                response = await self.interleave(operation, competitor)
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertEqual(response.json()["detail"]["code"], expected)
+                self.assertEqual(self.org.db.get_task_attribute("TASK-target", x["definition_id"])["current"]["revision"], 0)
+                self.assertIsNone(self.org.db.get_task_attribute_definition(x["definition_id"])["first_used_at"])
+                self.assertEqual(len(self.audit()), before_audit)
+        # Opposite ordering: a committed save precedes archive, and then blocks.
+        d = await self.create("save_wins")
+        response = await self.save([self.change(d)])
+        self.assertEqual(response.status_code, 200, response.text)
+        response = await self.client.post(self.defs + "/" + d["definition_id"] + "/archive", json={"expected_version": 1})
+        archived = response.json()["definition"]
+        response = await self.save([self.change(archived, revision=1)])
+        self.assertEqual(response.json()["detail"]["code"], "definition_archived")
+
+    async def test_p25_coherent_sqlite_read_snapshot(self):
+        d = await self.create()
+        await self.save([self.change(d)])
+
+        def competitor(db):
+            db.set_task_attribute("TASK-target", d["definition_id"], 6, expected_version=1,
+                expected_revision=1, actor_id="worker", actor_kind="agent")
+            db.update_task_attribute_definition(d["definition_id"], expected_version=1, description="new rubric")
+
+        response = await self.interleave(lambda: self.client.get(self.values), competitor, snapshot=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["attributes"][0]
+        self.assertEqual((item["current"]["value"], item["current"]["revision"], len(item["history"]["events"])), (4, 1, 1))
+        self.assertEqual(item["definition"]["description"], "Synthetic rubric")
+        response = await self.client.get(self.values)
+        item = response.json()["attributes"][0]
+        self.assertEqual((item["current"]["value"], item["current"]["revision"], len(item["history"]["events"])), (6, 2, 2))
+        self.assertEqual(item["definition"]["description"], "new rubric")
+
+    async def test_p22_full_retained_history(self):
+        d = await self.create()
+        db = self.org.db
+        # Real writes, batched only by the production uncommitted transaction
+        # primitive. No mocked history, result or actor projection.
+        with db._lock, db._attribute_writer():
+            for i in range(2048):
+                db._write_task_attribute_changes_uncommitted("TASK-target", [self.change(d, value=i % 2, revision=i)],
+                    actor_id="founder" if i % 2 else "worker", actor_kind="founder" if i % 2 else "agent")
+            for i in range(200):
+                db._create_task_attribute_definition_uncommitted(key=f"fixture_{i}", type="boolean", name=f"Fixture {i}")
+        started = time.monotonic()
+        response = await self.client.get(self.values + "/history", params={"definition_id": d["definition_id"]})
+        elapsed = time.monotonic() - started
+        self.assertEqual(response.status_code, 200, response.text[:500])
+        events = response.json()["events"]
+        self.assertEqual(len(events), 2048)
+        self.assertEqual([e["revision"] for e in events], list(range(1, 2049)))
+        self.assertEqual([e["event_id"] for e in events], sorted(e["event_id"] for e in events))
+        self.assertEqual(response.json()["history_state"], "incomplete")
+        self.assertEqual(events[-1]["actor_kind"], "founder")
+        print(f"P22 full history: {len(events)} events, 200 additional definitions, {len(response.content)} bytes, {elapsed:.3f}s")
+
+    async def test_p10_finished_targets_live_caller(self):
+        d = await self.create()
+        for revision, status in enumerate(("completed", "failed", "cancelled", "superseded")):
+            self.org.db.execute("UPDATE tasks SET status=? WHERE id='TASK-target'", (status,))
+            self.org.db.commit()
+            response = await self.client.get(self.values, params={"session_id": "synthetic-worker"})
+            self.assertTrue(response.json()["editability"]["can_edit"], response.text)
+            response = await self.save([self.change(d, revision=revision)], "worker")
+            self.assertEqual(response.status_code, 200, response.text)
+        self.org.db.insert_task(TaskRecord(id="TASK-paused-root", assigned_agent="worker", team="retiring",
+                                           brief="paused metadata target", status=TaskStatus.IN_PROGRESS))
+        response = await self.client.post(self.base + "/tasks/TASK-paused-root/pause", json={"expected_generation": 0})
+        self.assertEqual(response.status_code, 200, response.text)
+        response = await self.client.put(self.base + "/tasks/TASK-paused-root/attributes",
+            params={"session_id": "synthetic-worker"}, json={"changes": [self.change(d)]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.org.db.execute("UPDATE tasks SET status='completed' WHERE id='TASK-caller-worker'")
+        self.org.db.commit()
+        await self.assert_refusal(d, "synthetic-worker", "task_not_active")
+
+    async def test_p12_transport_validation(self):
+        d = await self.create(constraints={"min": 1, "max": 10, "integer_only": True})
+        before = self.domain()
+        for rules in ({"required": True}, {"default": 4}, {"min": "1"}, {"integer_only": 1}):
+            response = await self.client.post(self.defs, json={"expected_version": 0, "key": "invalid",
+                "type": "numeric", "name": "Invalid", "constraints": rules})
+            self.assertEqual(response.status_code, 422, response.text)
+        for value in ("4", True, None, 0, 11, 4.5, [], {}):
+            response = await self.save([self.change(d, value=value)])
+            self.assertEqual(response.status_code, 422, response.text)
+        for field in ("expected_version", "expected_revision"):
+            for value in (True, "1", 1.5):
+                response = await self.save([self.change(d, **{field: value})])
+                self.assertEqual(response.status_code, 422, response.text)
+        response = await self.save([self.change(d), self.change(d)])
+        self.assertEqual(response.status_code, 422)
+        response = await self.save([])
+        self.assertEqual(response.status_code, 422)
+        valid = json.dumps([self.change(d)])
+        for body in ('{"changes":' + valid + ',"changes":' + valid + '}', '{"changes":NaN}', '{',
+                     '{"changes":[{"op":"clear","value":null}]}'):
+            response = await self.client.put(self.values, content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(response.status_code, 422, response.text)
+        response = await self.client.get(self.values + "?session_id=synthetic-worker&session_id=synthetic-sibling")
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.domain(), before)
+        for revision, value in enumerate((4, 4.0)):
+            response = await self.save([self.change(d, value=value, revision=revision)])
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIs(type(response.json()["attributes"][0]["current"]["value"]), type(value))
+
+    async def test_p13_p14_definition_conflicts_freeze_and_audit(self):
+        d = await self.create(constraints={"min": 1, "max": 10})
+        url = self.defs + "/" + d["definition_id"]
+        response = await self.client.patch(url, json={"expected_version": 1, "key": "effort_new", "constraints": {"min": 1, "max": 9}})
+        self.assertEqual(response.status_code, 200, response.text)
+        current = response.json()["definition"]
+        for path, method, body in ((url, "patch", {"expected_version": 1, "constraints": {"max": 8}}),
+                                  (url + "/archive", "post", {"expected_version": 1}),
+                                  (self.defs, "post", {"expected_version": 0, "key": "effort", "name": "Effort", "type": "numeric"})):
+            response = await getattr(self.client, method)(path, json=body)
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn("current", response.json()["detail"], response.text)
+            self.assertEqual(response.json()["detail"]["current"]["definition"], current)
+        response = await self.save([self.change(current)])
+        self.assertEqual(response.status_code, 200, response.text)
+        for changes in ({"key": "new_key"}, {"type": "string", "constraints": {}}, {"constraints": {"max": 8}}):
+            response = await self.client.patch(url, json={"expected_version": 2, **changes})
+            self.assertEqual((response.status_code, response.json()["detail"]["code"]), (409, "definition_structure_frozen"))
+            state = response.json()["detail"]["current"]
+            self.assertEqual(state["definition"]["version"], 2)
+            self.assertIsNotNone(state["definition"]["first_used_at"])
+            self.assertFalse(state["editability"]["can_edit_structure"])
+        response = await self.client.patch(url, json={"expected_version": 2, "description": "Reworded"})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    async def test_p15_p16_p17_revision_archive_recovery(self):
+        d = await self.create()
+        response = await self.save([self.change(d)])
+        self.assertEqual(response.status_code, 200, response.text)
+        response = await self.save([self.change(d, value=6)])
+        self.assertEqual((response.status_code, response.json()["detail"]["code"]), (409, "value_revision_conflict"))
+        self.assertIn("conflicts", response.json()["detail"], response.text)
+        self.assertEqual(response.json()["detail"]["conflicts"], [{"definition_id": d["definition_id"],
+            "expected_revision": 0, "current_revision": 1}])
+        self.assertEqual(response.json()["detail"]["current"]["attributes"][0]["current"]["value"], 4)
+        response = await self.client.patch(self.defs + "/" + d["definition_id"], json={"expected_version": 1, "description": "v2"})
+        self.assertEqual(response.status_code, 200)
+        response = await self.save([self.change(d, revision=1)])
+        self.assertEqual(response.json()["detail"]["code"], "definition_version_conflict")
+        response = await self.client.post(self.defs + "/" + d["definition_id"] + "/archive", json={"expected_version": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        archived = response.json()["definition"]
+        for version in (1, 3):
+            for op in ("set", "clear"):
+                change = self.change(archived, revision=1, op=op, expected_version=version)
+                if op == "clear":
+                    del change["value"]
+                response = await self.save([change])
+                self.assertEqual(response.status_code, 409, response.text)
+                field = response.json()["detail"]["current"]["attributes"][0]
+                self.assertEqual(field["definition"], archived)
+                self.assertEqual(field["editability"], {"can_edit": False, "refusal_reason": {"code": "definition_archived"}})
+        response = await self.client.get(self.defs + "/" + d["definition_id"], params={"version": 1})
+        self.assertFalse(response.json()["editability"]["can_edit_metadata"])
+        response = await self.client.get(self.defs)
+        self.assertEqual(response.json()["definitions"], [])
+        response = await self.client.get(self.defs, params={"include_archived": "true", "session_id": "synthetic-worker"})
+        self.assertEqual(response.json()["definitions"], [archived])
+        # An unused archived field is also concrete in a conflict envelope.
+        unused = await self.create("unused")
+        await self.client.post(self.defs + "/" + unused["definition_id"] + "/archive", json={"expected_version": 1})
+        response = await self.save([self.change(unused)])
+        self.assertTrue(any(a["definition"]["definition_id"] == unused["definition_id"] and a["definition"]["archived"]
+                            for a in response.json()["detail"]["current"]["attributes"]))
+
+    async def test_p19_atomic_validation_all_fields(self):
+        x, y, z = await self.create("x"), await self.create("y"), await self.create("z")
+        before = self.domain()
+        for changes in ([self.change(x), self.change(y, value="invalid")],
+                        [self.change(y, value="invalid"), self.change(x)],
+                        [self.change(x), self.change(y, expected_revision=9)],
+                        [self.change(x), self.change({**y, "definition_id": "unknown"})]):
+            response = await self.save(changes)
+            self.assertIn(response.status_code, (404, 409, 422), response.text)
+            self.assertEqual(self.domain(), before)
+        response = await self.save([self.change(x, value="bad"), self.change(y, value=True)])
+        self.assertEqual(set(response.json()["detail"]["errors"]), {"changes.0.value", "changes.1.value"})
+        clear = self.change(y, op="clear")
+        del clear["value"]
+        response = await self.save([self.change(x), clear])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.org.db.get_task_attribute("TASK-target", z["definition_id"])["current"], {"present": False, "revision": 0})
+        self.assertEqual(len(self.audit()), 2)
+        self.assertEqual(self.org.db.execute("SELECT count(*) FROM task_attribute_admissions").fetchone()[0], 0)
+
+    async def test_p20_real_event_and_audit_fault_rollback(self):
+        x, y = await self.create("x"), await self.create("y")
+        for table, condition in (("task_attribute_value_events", f"NEW.definition_id='{y['definition_id']}'"),
+                                 ("audit_log", "NEW.action='task_attribute_set' AND json_extract(NEW.payload,'$.definition_id')='" + y["definition_id"] + "'")):
+            before = self.domain()
+            self.org.db.execute(f"CREATE TEMP TRIGGER attribute_fault BEFORE INSERT ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'synthetic fault'); END")
+            try:
+                response = await self.save([self.change(x), self.change(y)])
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(response.json(), {"detail": {"code": "attribute_storage_unavailable"}})
+                self.assertEqual(self.domain(), before)
+            finally:
+                self.org.db.execute("DROP TRIGGER attribute_fault")
+        for operation in ("create", "update", "archive"):
+            before = self.domain()
+            self.org.db.execute("CREATE TEMP TRIGGER attribute_fault BEFORE INSERT ON audit_log WHEN NEW.action='org_config_write' BEGIN SELECT RAISE(ABORT,'synthetic fault'); END")
+            try:
+                if operation == "create":
+                    response = await self.client.post(self.defs, json={"expected_version": 0, "key": "fault", "name": "Fault", "type": "boolean"})
+                elif operation == "update":
+                    response = await self.client.patch(self.defs + "/" + x["definition_id"], json={"expected_version": 1, "name": "New"})
+                else:
+                    response = await self.client.post(self.defs + "/" + x["definition_id"] + "/archive", json={"expected_version": 1})
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(self.domain(), before)
+            finally:
+                self.org.db.execute("DROP TRIGGER attribute_fault")
+        response = await self.save([self.change(x), self.change(y)])
+        self.assertEqual(response.status_code, 200, response.text)
+        # Later set and explicit clear also roll back on a real audit fault.
+        for op in ("set", "clear"):
+            before = self.domain()
+            change = self.change(x, revision=1, op=op)
+            if op == "clear":
+                del change["value"]
+            self.org.db.execute("CREATE TEMP TRIGGER attribute_fault BEFORE INSERT ON audit_log WHEN NEW.action LIKE 'task_attribute_%' BEGIN SELECT RAISE(ABORT,'synthetic fault'); END")
+            try:
+                response = await self.save([change])
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(self.domain(), before)
+            finally:
+                self.org.db.execute("DROP TRIGGER attribute_fault")
+
+    async def test_p21_p22_provenance_initial_history_and_scalars(self):
+        d = await self.create()
+        same_offset = datetime.fromisoformat(d["created_at"]).astimezone(timezone(timedelta(hours=8))).isoformat()
+        # Reliable UTC-offset ordering, absence of admission, and complete-empty
+        # admission are literal fixtures; only the PR1 admission owner writes it.
+        for suffix, task_at, admitted, provenance, initial in (
+            ("legacy", "2100-01-01T00:00:00+00:00", False, "timing_unknown", "unknown"),
+            ("later", "2000-01-01T00:00:00+00:00", False, "definition_added_later", "unknown"),
+            ("omitted", "2100-01-01T00:00:00+00:00", True, "not_supplied_before_dispatch", "unset"),
+            ("emptylater", "2000-01-01T00:00:00+00:00", True, "definition_added_later", "unset"),
+            ("naive", "2000-01-01T00:00:00", False, "timing_unknown", "unknown"),
+            ("malformed", "invalid", False, "timing_unknown", "unknown"),
+            ("same", d["created_at"], True, "timing_unknown", "unknown"),
+            ("offset", same_offset, False, "timing_unknown", "unknown")):
+            task_id = "TASK-" + suffix
+            self.org.db.insert_task(TaskRecord(id=task_id, assigned_agent="worker", team="retiring", brief=suffix))
+            self.org.db.execute("UPDATE tasks SET created_at=? WHERE id=?", (task_at, task_id))
+            self.org.db.commit()
+            if admitted:
+                with self.org.db._lock, self.org.db._attribute_writer():
+                    self.org.db._write_task_attributes_initial_uncommitted(task_id, {}, actor_id="founder", actor_kind="founder")
+            response = await self.client.get(self.base + f"/tasks/{task_id}/attributes")
+            self.assertEqual(response.status_code, 200, suffix + ": " + response.text)
+            item = response.json()["attributes"][0]
+            self.assertEqual((item["provenance"], item["initial"]["state"], item["history"]["history_state"]),
+                             (provenance, initial, "complete" if admitted else "unavailable"))
+            if not admitted:
+                path = self.base + f"/tasks/{task_id}/attributes"
+                response = await self.client.put(path, json={"changes": [self.change(d)]})
+                self.assertEqual(response.status_code, 200, response.text)
+                clear = self.change(d, revision=1, op="clear")
+                del clear["value"]
+                response = await self.client.put(path, json={"changes": [clear]})
+                field = response.json()["attributes"][0]
+                self.assertEqual((field["provenance"], field["initial"]["state"], field["history"]["history_state"]),
+                                 (provenance, "unknown", "incomplete"))
+                self.assertEqual([e["source"] for e in field["history"]["events"]], ["edit", "clear"])
+        with self.org.db._lock, self.org.db._attribute_writer():
+            self.org.db._write_task_attributes_initial_uncommitted("TASK-target", {"effort": 4}, actor_id="worker", actor_kind="agent")
+        await self.save([self.change(d, value=5, revision=1)], "worker")
+        clear = self.change(d, revision=2, op="clear")
+        del clear["value"]
+        response = await self.save([clear])
+        item = response.json()["attributes"][0]
+        self.assertEqual((item["initial"]["state"], item["initial"]["value"], item["initial"]["definition_version"]), ("set", 4, 1))
+        self.assertEqual(item["history"]["history_state"], "complete")
+        self.assertEqual([e["source"] for e in item["history"]["events"]], ["admission", "edit", "clear"])
+        self.assertEqual(item["history"]["events"][-1]["actor"], {"canonical_id": "founder", "kind": "founder", "addressable_name": "founder"})
+        ready = self.org.naming_readiness
+        self.org.naming_readiness = "unavailable"
+        try:
+            response = await self.client.get(self.values + "/history")
+            self.assertEqual(response.json()["events"][-1]["actor"],
+                {"canonical_id": "founder", "kind": "founder", "addressable_name": None})
+        finally:
+            self.org.naming_readiness = ready
+        for key, kind, value in (("zero", "numeric", 0), ("boolean", "boolean", False), ("empty", "string", "")):
+            definition = await self.create(key, type=kind)
+            response = await self.save([self.change(definition, value=value)])
+            item = next(a for a in response.json()["attributes"] if a["definition"]["key"] == key)
+            self.assertIs(type(item["current"]["value"]), type(value))
+            self.assertEqual(item["current"]["value"], value)
+        response = await self.client.patch(self.defs + "/" + d["definition_id"], json={"expected_version": 1, "description": "new rubric"})
+        self.assertEqual(response.status_code, 200, response.text)
+        response = await self.client.post(self.defs + "/" + d["definition_id"] + "/archive", json={"expected_version": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        response = await self.client.get(self.values)
+        field = next(a for a in response.json()["attributes"] if a["definition"]["definition_id"] == d["definition_id"])
+        self.assertEqual(field["initial"]["definition"]["description"], "Synthetic rubric")
+        self.assertEqual(field["definition"]["description"], "new rubric")
+        self.assertTrue(field["definition"]["archived"])
+
+    async def test_p23_definition_audit_scope_shape(self):
+        for scope in ("TASK-other", "THR-old", "artifact:old", "config:other"):
+            self.org.db.insert_audit_log(scope, "old", "retained", {"literal": scope})
+        retained = [tuple(r) for r in self.org.db.execute("SELECT * FROM audit_log").fetchall()]
+        d = await self.create()
+        response = await self.client.patch(self.defs + "/" + d["definition_id"], json={"expected_version": 1, "description": "v2"})
+        changed = response.json()["definition"]
+        response = await self.client.post(self.defs + "/" + d["definition_id"] + "/archive", json={"expected_version": 2})
+        archived = response.json()["definition"]
+        rows = self.audit("config:task_attributes")
+        self.assertEqual(len(rows), 3)
+        for row, operation, before, after in zip(rows, ("create", "update", "archive"), (None, d, changed), (d, changed, archived)):
+            self.assertEqual((row["agent"], row["action"]), ("founder", "org_config_write"))
+            self.assertEqual(row["payload"], {"section": "task_attributes", "tiers": ["org"], "operation": operation,
+                "definition_id": d["definition_id"], "before": before, "after": after, "actor_kind": "founder"})
+        self.assertEqual([tuple(r) for r in self.org.db.execute("SELECT * FROM audit_log ORDER BY id LIMIT ?", (len(retained),)).fetchall()], retained)
+
+    async def test_p26_full_openapi_models_and_classification(self):
+        schema = self.client._transport.app.openapi()
+        operations = (("get", "/task-attributes/definitions"), ("post", "/task-attributes/definitions"),
+            ("get", "/task-attributes/definitions/{definition_id}"), ("patch", "/task-attributes/definitions/{definition_id}"),
+            ("post", "/task-attributes/definitions/{definition_id}/archive"), ("get", "/tasks/{task_id}/attributes"),
+            ("put", "/tasks/{task_id}/attributes"), ("get", "/tasks/{task_id}/attributes/history"))
+        classification = json.loads((Path(__file__).resolve().parents[1] / "tests/contract/route-classification.json").read_text())
+        for method, path in operations:
+            full = "/api/v1/orgs/{slug}" + path
+            self.assertIn(method, schema["paths"][full])
+            self.assertEqual(classification["included"].count(method.upper() + " " + full), 1)
+            op = schema["paths"][full][method]
+            self.assertIn("503", op["responses"])
+            self.assertIn("schema", op["responses"]["201" if method == "post" and path.endswith("definitions") else "200"]["content"]["application/json"])
+        save = schema["paths"]["/api/v1/orgs/{slug}/tasks/{task_id}/attributes"]["put"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertFalse(save["additionalProperties"])
+        change = save["properties"]["changes"]["items"]
+        self.assertEqual(change["discriminator"]["propertyName"], "op")
+        self.assertEqual(len(change["oneOf"]), 2)
+        self.assertNotIn("#/$defs/", json.dumps(save))
+        models = schema["components"]["schemas"]
+        self.assertIn("current", models["ErrorDetail"]["properties"])
+        self.assertIn("editability", models["TaskAttributesRead"]["properties"])
+        self.assertIn("actor_kind", models["Event"]["properties"])
+
+    async def test_p27_p28_read_failures_lost_response_and_cutline(self):
+        response = await self.client.get(self.values)
+        self.assertEqual(response.json()["attributes"], [])
+        before = [tuple(r) for r in self.org.db.execute("SELECT * FROM tasks ORDER BY id").fetchall()]
+        results = [tuple(r) for r in self.org.db.execute("SELECT * FROM task_results").fetchall()]
+        queue = self.client._transport.app.state.daemon.queue
+        queued = queue._queue.qsize()
+        d = await self.create()
+        # A real SQL read failure, not a mocked empty projection.
+        self.org.db.execute("ALTER TABLE task_attribute_values RENAME TO synthetic_missing_values")
+        try:
+            response = await self.client.get(self.values)
+            self.assertEqual(response.status_code, 503, response.text)
+        finally:
+            self.org.db.execute("ALTER TABLE synthetic_missing_values RENAME TO task_attribute_values")
+        transport = self.client._transport
+        original = transport.handle_async_request
+
+        async def lost(request):
+            result = await original(request)
+            if request.method == "PUT" and result.status_code == 200:
+                raise OSError("synthetic response lost after COMMIT")
+            return result
+        with patch.object(transport, "handle_async_request", lost):
+            with self.assertRaisesRegex(OSError, "after COMMIT"):
+                await self.save([self.change(d)])
+        response = await self.client.get(self.values)
+        self.assertEqual(response.json()["attributes"][0]["current"]["revision"], 1)
+        response = await self.save([self.change(d)])
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(len(self.audit()), 1)
+        self.assertEqual([tuple(r) for r in self.org.db.execute("SELECT * FROM tasks ORDER BY id").fetchall()], before)
+        self.assertEqual([tuple(r) for r in self.org.db.execute("SELECT * FROM task_results").fetchall()], results)
+        self.assertEqual(queue._queue.qsize(), queued)
 
 
 class ValidationTests(unittest.TestCase):

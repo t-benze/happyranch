@@ -12,8 +12,10 @@ from runtime.task_attributes import AttributeValidationError, validate_definitio
 
 
 class AttributeStoreError(ValueError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, definition_id: str | None = None, conflicts: list | None = None) -> None:
         self.code = code
+        self.definition_id = definition_id
+        self.conflicts = conflicts
         super().__init__(code)
 
 
@@ -131,17 +133,109 @@ class TaskAttributesMixin:
     @_synchronized
     def create_task_attribute_definition(self, *, key: str, type: str, name: str,
                                          description: str | None = None, constraints: dict | None = None) -> dict:
-        fields = validate_definition(key=key, type=type, name=name, description=description, constraints=constraints)
-        definition_id = uuid4().hex
         with self._attribute_writer():
-            at = _now()
-            self._conn.execute(
-                "INSERT INTO task_attribute_definitions (definition_id,current_version,created_at) VALUES (?,1,?)",
-                (definition_id, at),
-            )
-            self._attribute_reserve_key(key, definition_id, at)
-            self._attribute_insert_version({**fields, "definition_id": definition_id, "version": 1}, at)
-            return self._attribute_definition(definition_id)
+            return self._create_task_attribute_definition_uncommitted(
+                key=key, type=type, name=name, description=description, constraints=constraints)
+
+    def _attribute_owned_writer(self) -> None:
+        if not self._conn.in_transaction:
+            raise AttributeStoreError("owned_transaction_required")
+
+    def _audit_task_attribute_definition_uncommitted(self, operation: str, before: dict | None, after: dict) -> None:
+        self._attribute_owned_writer()
+        self.insert_audit_log_uncommitted("config:task_attributes", "founder", "org_config_write", {
+            "section": "task_attributes", "tiers": ["org"], "operation": operation,
+            "definition_id": after["definition_id"],
+            "before": None if before is None else {**before, "archived": before["archived_at"] is not None},
+            "after": {**after, "archived": after["archived_at"] is not None}, "actor_kind": "founder",
+        })
+
+    def _write_task_attribute_changes_uncommitted(self, task_id: str, changes: list[dict], *,
+                                                actor_id: str, actor_kind: str) -> None:
+        """Caller owns authorization, lock and BEGIN; audit shares the batch.
+
+        Compare every field before scalar validation and before any effect.
+        Public PR1 single-field/admission APIs retain their existing contracts.
+        """
+        self._attribute_owned_writer()
+        _actor(actor_id, actor_kind)
+        self._attribute_task(task_id)
+        if not changes:
+            raise AttributeValidationError({"changes": ["required"]})
+        seen, definitions, currents, conflicts = set(), [], [], []
+        for i, change in enumerate(changes):
+            definition_id = change["definition_id"]
+            if definition_id in seen:
+                raise AttributeValidationError({f"changes.{i}.definition_id": ["duplicate_definition"]})
+            seen.add(definition_id)
+            _version(change["expected_version"], "expected_version")
+            _version(change["expected_revision"], "expected_revision", 0)
+            _actor(actor_id, actor_kind, change.get("note"))
+            definitions.append(self._attribute_definition(definition_id))
+            currents.append(self._attribute_current(task_id, definition_id))
+        for change, definition, current in zip(changes, definitions, currents):
+            if definition["version"] != change["expected_version"]:
+                raise AttributeConflictError("definition_version_conflict", definition_id=definition["definition_id"])
+            if definition["archived_at"] is not None:
+                raise AttributeStoreError("definition_archived", definition_id=definition["definition_id"])
+            if current["revision"] != change["expected_revision"]:
+                conflicts.append({"definition_id": definition["definition_id"],
+                    "expected_revision": change["expected_revision"], "current_revision": current["revision"]})
+        if conflicts:
+            raise AttributeConflictError("value_revision_conflict", conflicts=conflicts)
+        errors = {}
+        for i, (change, definition) in enumerate(zip(changes, definitions)):
+            if change["op"] not in ("set", "clear"):
+                errors[f"changes.{i}.op"] = ["invalid_operation"]
+            elif change["op"] == "set":
+                failures = value_errors(definition, change.get("value"))
+                if failures:
+                    errors[f"changes.{i}.value"] = failures
+        if errors:
+            raise AttributeValidationError(errors)
+        for change, current in zip(changes, currents):
+            present = change["op"] == "set"
+            new = self._attribute_write_value(task_id, change["definition_id"], change.get("value"),
+                present=present, expected_revision=change["expected_revision"], expected_version=change["expected_version"],
+                actor_id=actor_id, actor_kind=actor_kind, note=change.get("note"), source="edit" if present else "clear", at=_now())
+            payload = {"definition_id": change["definition_id"], "definition_version": change["expected_version"],
+                "revision": new["revision"], "actor_id": actor_id, "actor_kind": actor_kind,
+                "old": {key: current[key] for key in ("present", "value") if key in current},
+                "new": {key: new[key] for key in ("present", "value") if key in new}}
+            if change.get("note") is not None:
+                payload["note"] = change["note"]
+            self.insert_audit_log_uncommitted(task_id, actor_id,
+                "task_attribute_set" if present else "task_attribute_cleared", payload)
+
+    @_synchronized
+    def get_task_attributes(self, task_id: str) -> list[dict]:
+        """Active fields and retained archived task evidence in one snapshot."""
+        with self._attribute_reader():
+            self._attribute_task(task_id)
+            result = []
+            for definition in self._attribute_definitions():
+                item = self.get_task_attribute(task_id, definition["definition_id"])
+                if (definition["archived_at"] is None or item["current"]["revision"]
+                        or item["initial"]["state"] == "set" or item["history"]["events"]):
+                    result.append(item)
+            return result
+
+    @_synchronized
+    def _attribute_key_owner(self, key: str) -> dict | None:
+        row = self._conn.execute("SELECT definition_id FROM task_attribute_key_owners WHERE key=?", (key,)).fetchone()
+        return None if row is None else self._attribute_definition(row[0])
+
+    def _create_task_attribute_definition_uncommitted(self, **fields) -> dict:
+        self._attribute_owned_writer()
+        fields = validate_definition(**fields)
+        definition_id, at = uuid4().hex, _now()
+        self._conn.execute(
+            "INSERT INTO task_attribute_definitions (definition_id,current_version,created_at) VALUES (?,1,?)",
+            (definition_id, at),
+        )
+        self._attribute_reserve_key(fields["key"], definition_id, at)
+        self._attribute_insert_version({**fields, "definition_id": definition_id, "version": 1}, at)
+        return self._attribute_definition(definition_id)
 
     @_synchronized
     def get_task_attribute_definition(self, definition_id: str, *, version: int | None = None) -> dict:
@@ -161,36 +255,44 @@ class TaskAttributesMixin:
 
     @_synchronized
     def update_task_attribute_definition(self, definition_id: str, *, expected_version: int, **changes) -> dict:
+        with self._attribute_writer():
+            return self._update_task_attribute_definition_uncommitted(definition_id, expected_version=expected_version, **changes)
+
+    def _update_task_attribute_definition_uncommitted(self, definition_id: str, *, expected_version: int, **changes) -> dict:
+        self._attribute_owned_writer()
         _version(expected_version, "expected_version")
         unknown = changes.keys() - {"key", "type", "name", "description", "constraints"}
         if unknown:
             raise AttributeValidationError({str(key): ["unsupported_field"] for key in unknown})
-        with self._attribute_writer():
-            current = self._attribute_editable(definition_id, expected_version)
-            fields = validate_definition(**{key: changes.get(key, current[key])
-                                           for key in ("key", "type", "name", "description", "constraints")})
-            structural = any(fields[key] != current[key] for key in ("key", "type", "constraints"))
-            if structural and current["first_used_at"] is not None:
-                raise AttributeStoreError("definition_structure_frozen")
-            at = _now()
-            self._attribute_reserve_key(fields["key"], definition_id, at)
-            self._attribute_insert_version({**current, **fields, "version": expected_version + 1}, at)
-            self._conn.execute("UPDATE task_attribute_definitions SET current_version=? WHERE definition_id=?",
-                               (expected_version + 1, definition_id))
-            return self._attribute_definition(definition_id)
+        current = self._attribute_editable(definition_id, expected_version)
+        fields = validate_definition(**{key: changes.get(key, current[key])
+                                       for key in ("key", "type", "name", "description", "constraints")})
+        structural = any(fields[key] != current[key] for key in ("key", "type", "constraints"))
+        if structural and current["first_used_at"] is not None:
+            raise AttributeStoreError("definition_structure_frozen")
+        at = _now()
+        self._attribute_reserve_key(fields["key"], definition_id, at)
+        self._attribute_insert_version({**current, **fields, "version": expected_version + 1}, at)
+        self._conn.execute("UPDATE task_attribute_definitions SET current_version=? WHERE definition_id=?",
+                           (expected_version + 1, definition_id))
+        return self._attribute_definition(definition_id)
 
     @_synchronized
     def archive_task_attribute_definition(self, definition_id: str, *, expected_version: int) -> dict:
-        _version(expected_version, "expected_version")
         with self._attribute_writer():
-            current = self._attribute_editable(definition_id, expected_version)
-            at = _now()
-            self._attribute_insert_version({**current, "version": expected_version + 1, "archived_at": at}, at)
-            self._conn.execute(
-                "UPDATE task_attribute_definitions SET current_version=?,archived_at=? WHERE definition_id=?",
-                (expected_version + 1, at, definition_id),
-            )
-            return self._attribute_definition(definition_id)
+            return self._archive_task_attribute_definition_uncommitted(definition_id, expected_version=expected_version)
+
+    def _archive_task_attribute_definition_uncommitted(self, definition_id: str, *, expected_version: int) -> dict:
+        self._attribute_owned_writer()
+        _version(expected_version, "expected_version")
+        current = self._attribute_editable(definition_id, expected_version)
+        at = _now()
+        self._attribute_insert_version({**current, "version": expected_version + 1, "archived_at": at}, at)
+        self._conn.execute(
+            "UPDATE task_attribute_definitions SET current_version=?,archived_at=? WHERE definition_id=?",
+            (expected_version + 1, at, definition_id),
+        )
+        return self._attribute_definition(definition_id)
 
     @_synchronized
     def validate_task_attribute_values(self, values) -> list[dict]:
