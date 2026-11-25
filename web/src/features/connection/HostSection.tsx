@@ -216,7 +216,6 @@ export function HostSection(): JSX.Element | null {
   return (
     <Section title={t('connection.host.hostEyebrow')} testId="connection-host" aside={view && <ToneBadge tone={view.tone} label={t(view.badge)} />}>
       {state.kind === 'loading' && <p className="text-text-secondary text-sm">{t('connection.host.loading')}</p>}
-      {outcomeNode}
       {state.kind === 'failed' && !snapshot && (
         <OutcomeNotice
           testId="connection-host-read"
@@ -230,6 +229,7 @@ export function HostSection(): JSX.Element | null {
           <h4 className="text-base font-semibold break-words">{t(view.title, { name: view.requester ?? '' })}</h4>
           <p className="text-text-secondary text-sm break-words">{t(view.lead)}</p>
           {view.stale && <Notice tone="attention">{t('connection.host.hStale')}</Notice>}
+          {outcomeNode}
           {confirm && (
             <Notice tone="danger" testId="connection-host-confirm">
               <p className="font-semibold">

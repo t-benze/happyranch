@@ -467,6 +467,9 @@ placeholder. It reads native state only and keeps no second store:
   holds. Check current status is read-only. Completed means worker completion,
   never confirmed Ready. Invalid/unsupported/no-result peers keep status-unclear;
   unsubscribe/close/context replacement drops observation without replay.
+  Enable is rendered only after a host snapshot exists; failed reads retain
+  that snapshot. The no-snapshot preparation-reason case is covered in the
+  model/Node venue, not by an unreachable mounted one-click sequence.
 - **Close is not Cancel or Disconnect.** Closing only unmounts the body;
   native keeps the attempt. Reopening re-reads `app.status`, `client.status`
   and `host.status` and replays no action.

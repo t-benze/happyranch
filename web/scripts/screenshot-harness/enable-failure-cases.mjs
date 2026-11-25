@@ -52,19 +52,26 @@ const listeners = new Map();
 const off = {setup:'off',runtime:'offline',observation:'known',devices:[],pending:null,selected:null,inviteState:'none',expiresAt:null};
 const unavailable = {...off,setup:'unknown',runtime:'unknown',observation:'unavailable',devices:null};
 const ready = {...off,setup:'ready',runtime:'available'};
+const stale = {...ready,observation:'stale'};
 const admission = {...trace.nativeAdmission};
 const api = (globalThis as any).enableCase = {
-  calls:[], after:'off', kind:'failed', category:'inventory', terminal:false, dispatched:false, hold:false, reads:[],
-  emit(){
+  calls:[], after:'off', kind:'failed', category:'inventory', terminal:false, dispatched:false,
+  hold:false, reads:[], early:false, holdAdmission:false, sequence:0,
+  emit(operationId=admission.operationId){
     const frame = JSON.parse(trace.relayEvent);
-    frame.operationId = admission.operationId;
+    frame.operationId = operationId;
     if(this.kind==='completed') {frame.outcome='completed';delete frame.error;
       frame.result={code:'enableCompleted',effect:'unknown',recovery:'refresh'};}
     else frame.error.category=this.category;
     this.terminal=true;
     for(const fn of listeners.get('host.enableFinished')??[]) fn(JSON.stringify(frame));
   },
-  snapshot(){return this.after==='ready'?ready:this.after==='unavailable'?unavailable:off;},
+  status(state,offset=0){
+    const frame={version:1,sequence:++this.sequence,observedAt:new Date(Date.now()+offset).toISOString(),
+      snapshot:state==='ready'?ready:state==='off'?off:unavailable};
+    for(const fn of listeners.get('host.stateChanged')??[]) fn(JSON.stringify(frame));
+  },
+  snapshot(){return this.after==='ready'?ready:this.after==='stale'?stale:this.after==='unavailable'?unavailable:off;},
   resolveRead(value,index=0){const item=this.reads.splice(index,1)[0]; if(!item)throw Error('No held status read');
     value==='throw'?item.reject('synthetic transport loss'):item.resolve(JSON.stringify(value==='ready'?ready:value==='off'?off:unavailable));},
 };
@@ -92,7 +99,10 @@ __setNativeBridgeForTests({
       const attempts=api.calls.filter(item=>item.command==='host.enable').length;
       if(attempts>1)result.operationId=attempts.toString(16).padStart(32,'0');
       admission.operationId=result.operationId;
+      api.operationId=result.operationId;
       if(api.kind==='unknown')delete result.operationId;
+      if(api.early)api.emit();
+      if(api.holdAdmission)await new Promise(resolve=>{api.finishAdmission=resolve;});
       return JSON.stringify(result);
     }
     if(command==='app.ownersChanged')return '{}';
@@ -129,7 +139,8 @@ async function browserCase(page, input) {
   async function reset() {
     await page.evaluate(()=>globalThis.enableCase.close());
     await host.waitFor({state:'detached'});
-    await page.evaluate(()=>{Object.assign(globalThis.enableCase,{terminal:false,dispatched:false,hold:false,kind:'failed',after:'off',category:'inventory'});globalThis.enableCase.open();});
+    await page.evaluate(()=>{Object.assign(globalThis.enableCase,{terminal:false,dispatched:false,hold:false,
+      early:false,holdAdmission:false,kind:'failed',after:'off',category:'inventory'});globalThis.enableCase.open();});
     await host.locator('[data-command="host.enable"]').waitFor();
   }
   // BF2/BF3/BF4/BF6 execute on the real mounted hook; the three screenshot
@@ -139,28 +150,68 @@ async function browserCase(page, input) {
     await host.locator('[data-command="host.enable"]').click();
     await page.evaluate(()=>globalThis.enableCase.emit());
     await host.getByText(input.locale==='zh-CN'?zh:en,{exact:false}).waitFor();
+    const traffic=await page.evaluate(()=>globalThis.enableCase.calls.length);
+    await page.evaluate(locale=>globalThis.enableCase.locale(locale==='en'?'zh-CN':'en'),input.locale);
+    await host.getByText(input.locale==='en'?zh:en,{exact:false}).waitFor();
+    await page.evaluate(locale=>globalThis.enableCase.locale(locale),input.locale);
+    await host.getByText(input.locale==='zh-CN'?zh:en,{exact:false}).waitFor();
+    if(await page.evaluate(()=>globalThis.enableCase.calls.length)!==traffic)throw Error('BF6 locale caused native traffic: '+category);
     await host.locator('[data-command="host.enable"]').waitFor();
   }
-  for(const first of [0,1]) {
+  for(const first of ['old-first','old-last','old-before-terminal']) {
     await reset();
     await page.evaluate(()=>{globalThis.enableCase.hold=true;});
     await host.locator('[data-command="host.enable"]').click();
     await page.waitForFunction(()=>globalThis.enableCase.reads.length===1);
+    if(first==='old-before-terminal')await page.evaluate(()=>globalThis.enableCase.resolveRead('ready'));
+    await page.evaluate(()=>globalThis.enableCase.emit());
+    await page.waitForFunction(count=>globalThis.enableCase.reads.length===count,first==='old-before-terminal'?1:2);
+    await page.evaluate(first=>{
+      const api=globalThis.enableCase;
+      if(first==='old-before-terminal')api.resolveRead('throw');
+      else if(first==='old-first'){api.resolveRead('ready');api.resolveRead('throw');}
+      else {api.resolveRead('throw',1);api.resolveRead('ready');}
+      api.hold=false;
+    },first);
+    await host.getByText(title,{exact:false}).waitFor();
+    if(await host.locator('[data-command="host.createInvite"]').count())throw Error('BF2 old read authorized invite: '+first);
+  }
+  for(const timing of ['before','after']) {
+    await reset();
+    await page.evaluate(()=>{globalThis.enableCase.hold=true;});
+    await host.locator('[data-command="host.enable"]').click();
+    await page.waitForFunction(()=>globalThis.enableCase.reads.length===1);
+    if(timing==='before')await page.evaluate(()=>globalThis.enableCase.status('ready',-1000));
     await page.evaluate(()=>globalThis.enableCase.emit());
     await page.waitForFunction(()=>globalThis.enableCase.reads.length===2);
-    await page.evaluate(first=>{globalThis.enableCase.resolveRead(first===0?'ready':'throw',first);
-      globalThis.enableCase.resolveRead(first===0?'throw':'ready');globalThis.enableCase.hold=false;},first);
     await host.getByText(title,{exact:false}).waitFor();
-    if(await host.locator('[data-command="host.createInvite"]').count())throw Error('Old read authorized invite');
+    await page.evaluate(()=>globalThis.enableCase.status('ready',-1000));
+    if(await host.locator('[data-command="host.createInvite"]').count())throw Error('BF2 stale event authorized invite');
+    if(timing==='after') {
+      await page.evaluate(()=>globalThis.enableCase.status('ready',1000));
+      await host.locator('[data-command="host.createInvite"]').waitFor();
+      await host.getByText(title,{exact:false}).waitFor();
+    }
+    await page.evaluate(()=>{const api=globalThis.enableCase;while(api.reads.length)api.resolveRead('throw');api.hold=false;});
   }
-  for(const state of ['off','ready','unavailable','throw']) {
+  for(const state of ['off','ready','unavailable','throw','stale']) {
     await reset();
     await page.evaluate(state=>{globalThis.enableCase.after=state;},state);
     await host.locator('[data-command="host.enable"]').click();
     await page.evaluate(()=>globalThis.enableCase.emit());
     await host.getByText(title,{exact:false}).waitFor();
     await page.waitForFunction(()=>globalThis.enableCase.calls.at(-1).terminal);
-    if(['unavailable','throw'].includes(state) && await host.locator('[data-command="host.createInvite"]').count())throw Error('Unsafe action after failed observation');
+    if(['unavailable','throw','stale'].includes(state) && await host.locator('[data-command="host.createInvite"]').count())throw Error('Unsafe action after failed observation');
+    if(state==='off')await host.locator('[data-command="host.enable"]').waitFor();
+    if(state==='ready')await host.locator('[data-command="host.createInvite"]').waitFor();
+    if(state==='throw') {
+      const before=await page.evaluate(()=>globalThis.enableCase.calls.length);
+      await host.getByRole('button',{name:input.locale==='zh-CN'?'检查当前状态':'Check current status',exact:true}).click();
+      await page.waitForFunction(before=>globalThis.enableCase.calls.length>before,before);
+      await host.getByText(title,{exact:false}).waitFor();
+      const calls=await page.evaluate(before=>globalThis.enableCase.calls.slice(before),before);
+      if(calls.length!==1||calls[0].command!=='host.status')throw Error('BF1 recovery dispatched mutation');
+    }
   }
   for(const state of ['off','ready','unavailable']) {
     await reset();
@@ -169,13 +220,38 @@ async function browserCase(page, input) {
     await page.evaluate(()=>globalThis.enableCase.emit());
     await page.waitForFunction(()=>globalThis.enableCase.calls.at(-1).command==='host.status');
     if((await host.innerText()).includes(title))throw Error('Completed became preparation failure');
-    if((await host.innerText()).includes('confirmed Turn on'))throw Error('Completed invented confirmed effects');
+    if((await host.innerText()).includes(input.locale==='zh-CN'?'这台电脑已确认开启。':'This computer confirmed Turn on.'))throw Error('Completed invented confirmed effects');
   }
+  await reset();
+  await page.evaluate(()=>{globalThis.enableCase.early=true;});
+  await host.locator('[data-command="host.enable"]').click();
+  await host.getByText(title,{exact:false}).waitFor();
+  // Original invocation owns the outcome even if the event precedes admission.
+  await reset();
+  await page.evaluate(()=>{globalThis.enableCase.holdAdmission=true;});
+  await host.locator('[data-command="host.enable"]').click();
+  await page.waitForFunction(()=>typeof globalThis.enableCase.finishAdmission==='function');
+  if(await host.locator('[data-command="host.enable"]').getAttribute('aria-disabled')!=='true')throw Error('BF4 pending Enable was actionable');
+  if((await host.innerText()).includes(title))throw Error('BF4 pending became failure');
+  await page.evaluate(()=>{globalThis.enableCase.holdAdmission=false;globalThis.enableCase.finishAdmission();});
+  await host.locator('[data-command="host.enable"]:not([aria-disabled])').waitFor();
+  const firstId=await page.evaluate(()=>globalThis.enableCase.operationId);
+  await page.evaluate(()=>globalThis.enableCase.emit());
+  await host.getByText(title,{exact:false}).waitFor();
+  await host.locator('[data-command="host.enable"]').click();
+  await page.waitForFunction(()=>globalThis.enableCase.calls.at(-1).command==='host.status'&&!globalThis.enableCase.calls.at(-1).terminal);
+  await page.evaluate(id=>{globalThis.enableCase.category='occupied-port';globalThis.enableCase.emit(id);},firstId);
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
+  if((await host.innerText()).includes(input.locale==='zh-CN'?'网络端口已被占用':'port needed for remote access is already in use'))throw Error('BF6 older result replaced new attempt');
+  await page.evaluate(()=>{globalThis.enableCase.category='inventory';globalThis.enableCase.emit();globalThis.enableCase.category='occupied-port';globalThis.enableCase.emit();});
+  await host.getByText(title,{exact:false}).waitFor();
+  await host.getByText(input.locale==='zh-CN'?'无法验证家庭网络路由。':'The home network routes could not be verified.',{exact:false}).waitFor();
   await reset();
   await page.evaluate(()=>{globalThis.enableCase.kind='denied';});
   await host.locator('[data-command="host.enable"]').click();
   await host.locator('[data-testid="connection-host-outcome"]').waitFor();
   if((await host.innerText()).includes(title))throw Error('Denial became preparation failure');
+  await host.getByText(input.locale==='zh-CN'?'未获得权限。':'Permission was not granted.',{exact:false}).waitFor();
   await reset();
   await host.locator('[data-command="host.enable"]').waitFor();
   await page.evaluate(({state,kind})=>{Object.assign(globalThis.enableCase,{after:state,kind});}, input);
@@ -192,10 +268,16 @@ async function browserCase(page, input) {
     const recovery=host.getByRole('button',{name:input.locale==='zh-CN'?'检查当前状态':'Check current status',exact:true});
     await recovery.focus();
     if(!await recovery.evaluate(el=>el===document.activeElement))throw Error('Recovery not focusable');
+    await recovery.evaluate(el=>{globalThis.enableCase.focusTarget=el;});
+    if(await host.locator('[data-testid="connection-host-outcome"]').getAttribute('role')!=='alert')throw Error('BF1 failure is not announced');
+    await recovery.scrollIntoViewIfNeeded();
+    const bounds=await recovery.boundingBox();
+    if(!bounds||bounds.width<24||bounds.height<24||bounds.x<0||bounds.x+bounds.width>input.viewport[0])throw Error('BF1 recovery target clipped');
     if(input.state==='unavailable' && await host.locator('[data-command="host.createInvite"]').count())throw Error('Unsafe invite while unconfirmed');
     const ledger=await page.evaluate(()=>globalThis.enableCase.calls.length);
     await page.evaluate(locale=>globalThis.enableCase.locale(locale==='en'?'zh-CN':'en'),input.locale);
     await host.getByText(input.locale==='en'?'开启失败。':'Turn on failed.',{exact:false}).waitFor();
+    if(!await page.evaluate(()=>globalThis.enableCase.focusTarget===document.activeElement))throw Error('BF6 locale lost recovery focus');
     if(await page.evaluate(()=>globalThis.enableCase.calls.length)!==ledger)throw Error('Locale caused native traffic');
     await page.evaluate(locale=>globalThis.enableCase.locale(locale),input.locale);
     await recovery.waitFor();
@@ -212,11 +294,14 @@ async function browserCase(page, input) {
   await host.waitFor({state:'detached'});
   await page.evaluate(()=>{globalThis.enableCase.terminal=false;globalThis.enableCase.dispatched=false;globalThis.enableCase.open();});
   await host.locator('[data-command="host.enable"]').waitFor();
+  await page.evaluate(()=>globalThis.enableCase.emit());
   if(await host.locator('[data-testid="connection-host-outcome"]').count())throw Error('Failure replayed on reopen');
+  if(await page.evaluate(before=>globalThis.enableCase.calls.slice(before).filter(x=>x.command==='host.enable').length,before)!==1)throw Error('BF6 reopen dispatched Enable');
   // Restore the screenshot state with one NEW explicit attempt.
   await host.locator('[data-command="host.enable"]').click();
   if(input.kind==='failed')await page.evaluate(()=>globalThis.enableCase.emit());
   if(input.kind==='failed')await host.locator('[data-testid="connection-host-outcome"]').waitFor();
+  if(input.kind==='failed')await host.getByRole('button',{name:input.locale==='zh-CN'?'检查当前状态':'Check current status',exact:true}).focus();
   return {before, explicitAttempts:2};
 }
 
@@ -229,7 +314,7 @@ try {
       const file = resolve(output, name + '.png');
       await capture({url:vite.url('light')+'&locale='+locale, out:file, viewport, appTheme:false,
         session:'enable-failure', prep:[['run-code','async page => ('+browserCase.toString()+')(page,'+
-          JSON.stringify({locale,state,kind,reasons})+')']]});
+          JSON.stringify({locale,state,kind,reasons,viewport})+')']]});
       const bytes=await readFile(file);
       manifest.push({file,locale,viewport,state,kind,sourceSha,traceSha,
         evidenceKind:'synthetic bridge presentation + composed native trace',
