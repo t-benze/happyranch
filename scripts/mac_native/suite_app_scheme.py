@@ -243,7 +243,7 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
         try:
             evidence = read_events(events)
             row['diagnostic_events'] = [event for event in evidence if event.get('event') in (
-                'startup', 'capture_progress', 'capture_step', 'admission_failure', 'failure',
+                'startup', 'capture_progress', 'capture_step', 'capture_navigation', 'admission_failure', 'failure',
                 'watchdog', 'navigation_failure', 'content_process_terminated')]
             progress = [event for event in evidence if event.get('event') == 'capture_progress']
             row['last_step'] = progress[-1] if progress else None

@@ -5,6 +5,7 @@ import base64
 import gzip
 import hashlib
 import http.client
+import io
 import json
 import os
 import subprocess
@@ -16,13 +17,14 @@ import time
 import unittest
 import zlib
 from pathlib import Path
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_cold_client, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
 from scripts.mac_native.app_scheme_diagnostics import sample_stalled_processes
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import CommandTimeout, _build_environment, _command, _prepare_keychain
+from scripts.mac_native import probe
 
 
 def native_evidence(parameterized: bool = True) -> tuple[bytes, list[dict], dict]:
@@ -72,6 +74,38 @@ def screenshot_files(folder: Path, locale: str, with_scroll: bool = False) -> li
 
 
 class DialogCaptureEvidenceTests(unittest.TestCase):
+    def test_dispatcher_archives_full_bilingual_report_without_echoing_png_payloads(self) -> None:
+        # Model twice build 80's EN-only report, at the real serialization/CLI
+        # boundary. PNG validation belongs to the archive keeper below.
+        payload = base64.b64encode(b'synthetic-png-data' * 4500).decode('ascii')
+        dialogs = dict(status='PASS', processes=[dict(locale=locale, status='PASS') for locale in ('en', 'zh')],
+                       screenshots=[dict(locale=locale, data=payload) for locale in ('en', 'zh') for _ in range(62)])
+        for failure in (False, True):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                output = Path(folder) / 'probe.json'
+                stdout, stderr = io.StringIO(), io.StringIO()
+                def native(report: dict, evidence_dir: Path) -> None:
+                    self.assertEqual(evidence_dir, output.parent)
+                    report['app_scheme'] = dict(dialogs=dialogs)
+                    if failure:
+                        raise RuntimeError('synthetic qualification failure')
+                with (patch.object(sys, 'argv', ['probe.py', '--suite', 'app-scheme', '--output', str(output)]),
+                      patch.object(sys, 'platform', 'darwin'), patch.object(probe.signal, 'signal'),
+                      patch('scripts.mac_native.suite_app_scheme.run', side_effect=native),
+                      redirect_stdout(stdout), redirect_stderr(stderr)):
+                    code = probe.main()
+                raw = output.read_bytes()
+                self.assertGreater(len(raw), 12_000_000)
+                self.assertEqual(json.loads(raw)['app_scheme']['dialogs'], dialogs)
+                self.assertEqual(code, int(failure))
+                console = (stdout.getvalue() + stderr.getvalue()).encode()
+                self.assertLess(len(console), 4096, 'PNG payloads must stay in the archived report, below the 4 MiB console cap')
+                summary = json.loads(stdout.getvalue())
+                self.assertEqual(summary['status'], 'FAIL' if failure else 'PASS')
+                self.assertEqual(summary['counts'], dict(screenshots=124, locales=2, passed_locales=2))
+                self.assertEqual(summary['artifact'], str(output))
+                self.assertEqual(summary['sha256'], hashlib.sha256(raw).hexdigest())
+
     def test_archive_roundtrips_full_locale_and_refuses_missing_alias_oversize_or_wrong_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -114,7 +148,7 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
     def test_process_collection_requires_both_locales_complete_receipts_and_zero_exit(self) -> None:
         for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero', 'missing-completion',
                         'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme',
-                        'partial-progress'):
+                        'partial-progress', 'navigation-timeout'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
                 calls = []
@@ -140,8 +174,13 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                     if locale == 'zh' and failure == 'partial-progress':
                         rows = [dict(event='capture_progress', step='applied-theme', locale=locale, timeoutMs=2000),
                                 dict(event='capture_step', step='applied-theme', locale=locale, result='timeout')]
+                    if locale == 'zh' and failure == 'navigation-timeout':
+                        rows = [dict(event='capture_progress', step='navigation', mode='dialogs-zh', timeoutMs=10000),
+                                dict(event='capture_navigation', navigationPhase='committed', waitingFor='WKNavigation.didFinish'),
+                                dict(event='capture_step', step='navigation', result='timeout', elapsedMs=10001,
+                                     navigationPhase='committed', waitingFor='WKNavigation.didFinish')]
                     Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
-                    if locale == 'zh' and failure == 'partial-progress':
+                    if locale == 'zh' and failure in ('partial-progress', 'navigation-timeout'):
                         with Path(argv[-3]).open('a') as output:
                             output.write('{"event":"capture')  # killed write is not a complete receipt
                         return 124, b''
@@ -152,7 +191,7 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                                     root, time.monotonic() + 10, section, downloads)
                 self.assertEqual(calls, ['en', 'zh'])
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
-                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion', 'partial-progress')
+                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion', 'partial-progress', 'navigation-timeout')
                 self.assertEqual(len(section['dialogs']['screenshots']), 24 if incomplete else 48)
                 if failure == 'partial-progress':
                     failed = section['dialogs']['processes'][1]
@@ -161,6 +200,15 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                     self.assertEqual(failed['diagnostic_events'][-1]['result'], 'timeout')
                     self.assertEqual(failed['capture_error_reason'], 'missing scroll capture completion')
                     self.assertEqual(failed['events'], [])
+                if failure == 'navigation-timeout':
+                    failed = section['dialogs']['processes'][1]
+                    self.assertEqual(failed['exit_code'], 124)
+                    self.assertEqual(failed['last_step']['step'], 'navigation')
+                    self.assertEqual(failed['diagnostic_events'][1]['event'], 'capture_navigation')
+                    self.assertEqual(failed['diagnostic_events'][1]['navigationPhase'], 'committed')
+                    timeout = failed['diagnostic_events'][-1]
+                    self.assertEqual(timeout['waitingFor'], 'WKNavigation.didFinish')
+                    self.assertEqual(timeout['elapsedMs'], 10001)
 
 
 class ColdClientCompositionEvidenceTests(unittest.TestCase):

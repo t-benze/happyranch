@@ -38,12 +38,20 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
     private let log: AppSchemeEventLog
-    private let fields: [String: Any]
+    private var fields: [String: Any]
+    private let startedAt = DispatchTime.now().uptimeNanoseconds
     init(_ log: AppSchemeEventLog, name: String, fields: [String: Any], timeout: TimeInterval) {
         self.log = log; self.fields = fields.merging(["step": name]) { _, new in new }
         log.write("capture_progress", self.fields.merging(["timeoutMs": Int(timeout * 1000)]) { _, new in new })
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
             if self.finish("timeout") { _exit(124) }
+        }
+    }
+    func navigationCheckpoint(_ phase: String) {
+        lock.withLock {
+            guard !finished else { return }
+            fields["navigationPhase"] = phase
+            log.write("capture_navigation", fields)
         }
     }
     @discardableResult
@@ -53,8 +61,15 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
             finished = true
             // Successful steps are sequential; coordinates are already in the
             // preceding progress row. Keep worst-case evidence under EVENT_CAP.
-            let resultFields = result == "complete" ? ["step": fields["step"]!] : fields
+            var resultFields = result == "complete" ? ["step": fields["step"]!] : fields
+            if result != "complete" || fields["step"] as? String == "navigation" {
+                resultFields["elapsedMs"] = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            }
             log.write("capture_step", resultFields.merging(["result": result]) { _, new in new })
+            if result == "timeout" {
+                let message = "Dialog capture timeout: step=\(fields["step"] ?? "unknown") phase=\(fields["navigationPhase"] ?? "not-navigation") waitingFor=\(fields["waitingFor"] ?? "step-completion") elapsedMs=\(resultFields["elapsedMs"] ?? 0)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
             return true
         }
     }
@@ -225,7 +240,13 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             window.makeKeyAndOrderFront(nil)
         }
         if dialogApp != nil {
-            dialogNavigationStep = AppSchemeCaptureStep(log, name: "navigation", fields: ["mode": mode], timeout: 4)
+            // Build 80 needed 3.191s for EN didFinish; ZH exceeded 4s before
+            // admission/capture. Reserve up to 10s for actual navigation
+            // readiness, leaving about 25s in the unchanged 35s hard watchdog.
+            // This is an allocation within that watchdog, not a retry/sleep.
+            dialogNavigationStep = AppSchemeCaptureStep(log, name: "navigation", fields: [
+                "mode": mode, "navigationPhase": "load-requested", "waitingFor": "WKNavigation.didFinish"
+            ], timeout: 10)
         }
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
     }
@@ -307,9 +328,15 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         self.navigation = navigation; scheme.documentDidStart()
+        dialogNavigationStep?.navigationCheckpoint("provisional")
+    }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let navigation, self.navigation === navigation else { return }
+        dialogNavigationStep?.navigationCheckpoint("committed")
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let navigation, self.navigation === navigation else { return }
+        dialogNavigationStep?.navigationCheckpoint("finished")
         dialogNavigationStep?.finish("complete"); dialogNavigationStep = nil
         Task {
             do {

@@ -1751,16 +1751,28 @@ each scrolling pane's bottom). Same-product qualifier processes drive the shippi
 theme, visible/focused dialog and locale, then combine WebKit snapshots with the native
 AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
 in `probe.json.app_scheme.dialogs`, including contiguous scroll images, pane/offset
-and completion receipts. Eight panes/sixteen extra images per 200% view, 2 MiB
+and completion receipts. The app-scheme dispatcher emits only a bounded console
+summary (status, counts, artifact path, SHA256); complete JSON/embedded PNG data
+and partial failure evidence stay in the existing archived artifact. Eight panes/
+sixteen extra images per 200% view, 2 MiB
 per image, 8 MiB per locale and the existing 40-second process cap bound capture;
 incomplete/over-budget capture fails. No product layout change or Jenkins
 job/config change is included.
 Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
 step fsyncs a `capture_progress` record before starting. Native background timers
-bound navigation to 4 seconds and later steps to 2 seconds, even if MainActor or
+allocate up to 10 seconds for navigation and 2 seconds for later steps, even if
+MainActor or
 a WebKit callback stalls; `capture_step` records complete/error/timeout, with
-timeout exit124. Existing process/suite limits are unchanged. Instant scrolling
-and a short timer settle replace unbounded animation-frame waits. The collector
+timeout exit124 and a short diagnostic line. Navigation still requires
+`WKNavigation.didFinish` before admission. Provisional/committed/finished
+`capture_navigation` checkpoints and monotonic elapsed completion/timeout facts
+identify the wait. The startup allocation leaves about 25s in the unchanged 35s
+hard watchdog (34s failure dump, 40s external process, 2100s suite); no retry or
+outer deadline extension. Build 80's EN didFinish took 3.191s; ZH timed out at 4.264s
+under the former 4s allocation before admission/capture. A localization/font/
+layout/scheduling/order cause is unproven; its records omit navigation phases.
+Native completion within the redistributed budget requires independent QA.
+Instant scrolling and a short timer settle replace unbounded animation-frame waits. The collector
 retains the last step, diagnostic events and closed validation reason on partial
 or failed runs, without accepting incomplete/duplicate/wrong-theme evidence.
 The Mac Package keeps testable `HappyRanchApp` code in a library target; native
@@ -1775,9 +1787,13 @@ replay or target selection, and explicit `503 no_target`. The full unfiltered XC
 Testing and transport qualification remain in the same workload. Native
 compile/tests/captures/layout/accessibility are
 NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
-exact head and consumes this PR's allowance. PR #1863 has 8/9 used (72–79);
-build 9 is the last final QA, only at the round-9 APPROVED exact head. Exceeding
-nine needs Founder; the maker runs none.
+exact head and consumes this PR's allowance. Earlier PR #1863 builds 72–80 remain
+recorded as used. Founder THR-387 seq155 grants up to 8 fresh builds per Mac
+piece; #1863 has 0/8 used at round 10 authorization (engineering_manager TASK-19210).
+Every QA build needs independent exact-head code_reviewer APPROVE; final Mac
+code must be built at its exact final head before merge. Return to Founder if
+all 8 are used without a mergeable result, the ~23 engineer-week cap would be
+exceeded, or daemon security changes appear. The maker runs none.
 
 ### MAC-1 transport implementation and qualification status
 

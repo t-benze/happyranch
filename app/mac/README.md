@@ -124,6 +124,9 @@ qualification process sets its isolated launch language/theme/text size.
 `probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
 locale/theme/text percentage, byte count, SHA256 and `base64` data through the
 existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
+The app-scheme dispatcher prints only a short status/counts/artifact-path/SHA256
+summary; it never duplicates the JSON/embedded PNGs into the capped console log.
+The full report, including failed/partial evidence, remains in that artifact.
 The collector refuses missing/aliased/oversized files, wrong PNG dimensions,
 missing/duplicate receipts, missing 200% completion records, wrong web theme or
 a nonzero process exit. Scroll names append `-scroll-N` before `.png`; completion
@@ -133,11 +136,23 @@ Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 Exhaustion fails qualification rather than claiming complete content.
 Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
 PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
-capture coordinates. A background timer bounds navigation to 4 seconds and each
-later step to 2 seconds, independently of MainActor/WebKit callbacks, within the
-unchanged process watchdog and suite limits. `capture_step` records completion,
-error or timeout; timeout exits 124. Scrolling uses instant offsets and a short
-timer settle rather than animation frames, which may stop in an occluded window.
+capture coordinates. A background timer allocates navigation up to 10 seconds
+and each later step up to 2 seconds, independently of MainActor/WebKit callbacks,
+within the unchanged process watchdog and suite limits. `capture_step` records completion,
+error or timeout; timeout exits 124 with a short diagnostic line. Navigation
+still waits for `WKNavigation.didFinish` before admission, with fsynced
+`capture_navigation` checkpoints for provisional/committed/finished phases and
+monotonic elapsed time on completion/timeout. This redistributes startup time
+inside the existing 34s failure/35s hard watchdog (40s external process cap),
+leaving about 25s after navigation for admission/capture; no retry is added.
+Build 80 proves EN reached didFinish in 3.191s while ZH exceeded its old 4s
+allocation (timeout at 4.264s), before admission or capture. It does not prove
+why: first-launch localization, font fallback, wrapped layout, scheduling and
+EN-before-ZH ordering remain hypotheses. Its retained records do not identify
+the last navigation phase; the new checkpoints address that diagnostic gap.
+Native timing sufficiency remains unverified until independent exact-head QA.
+Scrolling uses instant offsets and a short timer settle rather than animation
+frames, which may stop in an occluded window.
 The collector retains these diagnostics, the last step and the closed validation
 reason even when no PNG/completion receipt exists or a final JSONL write is partial.
 Complete locale captures survive a failure in the other
@@ -145,8 +160,13 @@ locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
 
 Maker native compilation, XCTest/Swift Testing, screenshot capture, native
 layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
-PR #1863 has **8/9 builds used** (72–79). Build 9 is the last final QA build,
-only after round-9 exact-head APPROVE. Exceeding nine needs Founder.
+PR #1863 earlier builds **72–80 remain used**. Founder THR-387 seq155 grants a
+fresh allowance of up to **8 builds per Mac piece**, **0/8 used** for #1863 at
+round-10 authorization (engineering_manager TASK-19210). Each QA build requires
+independent code_reviewer APPROVE of its exact head; final Mac code must be
+built at its exact final head before merge. Return to Founder if all eight are
+used without a mergeable result, the ~23 engineer-week cap would be exceeded,
+or a daemon security change appears.
 The maker runs no Mac/Jenkins build. The existing portable command below
 checks collector failures and the shipping JavaScript event/retirement seam;
 it does not establish native acceptance. `MainDialogTests` adds real WebKit
