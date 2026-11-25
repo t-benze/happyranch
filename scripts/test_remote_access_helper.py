@@ -585,7 +585,7 @@ assert activation.HomeActivationStore is not None
 assert lifecycle.OperationBudget.status().remaining() > 0
 v2, audit = modules['status_v2'], modules['home_audit']
 vocabularies = [
-    (v2.SetupPhase, 'unknown stale ready off in_progress failed uncertain partial_cleanup'),
+    (v2.SetupPhase, 'unknown stale ready off in_progress failed uncertain partial_cleanup prepared_no_receipt failed_uncertain runtime_unavailable setup_unverified renewal_failed'),
     (v2.RuntimeAvailability, 'unknown stale available unavailable'),
     (v2.InvitePhase, 'unknown stale none minting encoding pairing issued pending_approval consumed cancelled recovered expired refused uncertain'),
     (v2.AddressState, 'unknown stale current changed refreshing identity_changed failed uncertain'),
