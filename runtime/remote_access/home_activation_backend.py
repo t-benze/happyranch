@@ -100,7 +100,8 @@ class HomeActivationBackend:
         return coordinator, recovery, observer
 
     def enable(self, *, expected_generation: int, authenticated: bool,
-               _defer_policy_expiry: bool = False) -> HomeActivationReceipt:
+               _defer_policy_expiry: bool = False,
+               _refresh_staged_policy: bool = False) -> HomeActivationReceipt:
         try:
             _generation(expected_generation)
             if authenticated is not True or os.geteuid() != 0:
@@ -142,6 +143,16 @@ class HomeActivationBackend:
                         raise ActivationRefused()
                 if receipt.phase != "prepared":
                     raise ActivationRefused()
+                if exists or _refresh_staged_policy:
+                    # A prepared retry must publish a fresh envelope, rather
+                    # than carry an expired policy into activation. This owner
+                    # only validates retained inputs; it performs no effects.
+                    inspection, _, _ = self._compose(receipt, defer_policy_expiry=True)
+                    if inspection._owner.verify("preflight", receipt) is not True:
+                        raise ActivationRefused()
+                    self._io._renew_policy_locked(fresh_auth=True)
+                    # Discard captured pre-renewal provenance. The actual
+                    # coordinator below re-reads it with strict expiry checks.
                 coordinator, _, observer = self._compose(receipt, defer_policy_expiry=_defer_policy_expiry)
                 coordinator.run(receipt)
                 return coordinator.publish_ready(expected_generation=expected_generation, observer=observer)
@@ -464,7 +475,8 @@ class HelperLifecycleBackend:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise ActivationRefused()
                     current = backend.enable(expected_generation=snapshot['generation'], authenticated=True,
-                        _defer_policy_expiry=current is None and snapshot.get('prestate') in ('staged-inert', 'post-disable'))
+                        _defer_policy_expiry=current is None and snapshot.get('prestate') in ('staged-inert', 'post-disable'),
+                        _refresh_staged_policy=current is None and snapshot.get('prestate') == 'prepared')
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ActivationRefused()
                 return {'outcome': current.phase, 'residue': []}

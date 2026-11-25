@@ -4127,6 +4127,15 @@ current causes no restart or stream closure. Refusal retains the cache. On cache
 expiry, the existing readiness gate, shutdown/stream closure, return 1 and
 systemd `Restart=on-failure` remain unchanged. Startup still reads the file fresh.
 
+For a prepared retry (an existing prepared receipt, or the exact prepared
+publication before its first receipt), fresh-auth Enable first validates all
+retained inputs under the activation lock, inspecting expiry only for renewal.
+It then re-stages the identical shipped policy through the existing protected
+renewal journal/writer and creates a fresh strict coordinator before activation
+preflight. A refused or ineffective renewal cannot start a unit. Matching old
+activation intents are refused before this path; recovery and ready receipts
+never enter it. The normal first-start renewal and strict check still follow.
+
 **Delivered in I4b-2 (THR-327 restoration ordering):** Fresh-auth forward Enable
 from staged-inert or post-Disable inventory defers ONLY policy expiry during
 capture, inert publication and the forward owner's preflight. Exact shipped

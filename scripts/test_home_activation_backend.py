@@ -488,6 +488,45 @@ def test_thr327_noop_renewal_still_requires_current(composition: Any, monkeypatc
     assert not [call for call in v.calls if call[0] in ('enable', 'start')]
 
 
+@pytest.mark.parametrize('receipt_exists', [False, True])
+@pytest.mark.parametrize('renewal', ['fresh', 'noop', 'refused'])
+def test_prepared_retry_restages_expired_policy_before_preflight(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, receipt_exists: bool, renewal: str) -> None:
+    from scripts.test_installer_token_custody import expire_staged_policy
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    v.io.prepare_headscale()
+    v.io.publish_home_units()
+    v.io.publish_invite_config()
+    if receipt_exists:
+        h.HomeActivationPrepare(io=v.io).prepare(expected_generation=0, authenticated=True)
+    expire_staged_policy(v.fixture, monkeypatch)
+    before = json.loads(v.path('/etc/happyranch/policy.json').read_bytes())
+    renew = v.io._renew_policy_locked
+    calls = []
+    def restage(*, fresh_auth: bool) -> None:
+        assert_locked(v)
+        calls.append(v.transactions.read_optional())
+        if renewal == 'refused':
+            raise adapters.installer.InstallerError('synthetic renewal refusal')
+        if renewal == 'fresh':
+            renew(fresh_auth=fresh_auth)
+    monkeypatch.setattr(v.io, '_renew_policy_locked', restage)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    if renewal == 'fresh':
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                    deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        policy = json.loads(v.path('/etc/happyranch/policy.json').read_bytes())
+        assert policy['revision'] > before['revision'] and policy['issued_at'] > before['issued_at']
+        assert len(v.mints) == 1
+    else:
+        with pytest.raises(ActivationRefused):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                 deadline=time.monotonic() + 480)
+        assert not v.mints and not [call for call in v.calls if call[0] in ('enable', 'start')]
+    assert calls and calls[0] is None  # Fresh envelope precedes activation preflight intent.
+
+
 def test_thr327_stale_health_cannot_make_enable_ready(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     v = composition
     v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)

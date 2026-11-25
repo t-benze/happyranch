@@ -145,8 +145,9 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         super().__init__(io=io, expected_generation=expected_generation,
                          expected_operation_id=expected_operation_id)
         self._config = config_owner
-        # Only fresh staged/post-disable Enable composition opts in. Recovery
-        # and Ready owners retain strict defaults; this is cleared at renewal.
+        # Fresh staged/post-disable Enable and read-only prepared-retry
+        # inspection opt in. Recovery and Ready retain strict defaults;
+        # the retry coordinator is rebuilt strictly after policy publication.
         self._policy_renewal_pending = defer_policy_expiry
         self._admin = home_admin.RootHeadscaleAdminOperations()
         self._source = HomeTokenSourceVerifier(io)
