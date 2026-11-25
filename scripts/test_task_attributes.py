@@ -86,6 +86,69 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         old = await self.client.get(self.defs + "/" + d["definition_id"], params={"version": 1})
         self.assertEqual(old.json()["definition"], d)
 
+    async def test_no_store_through_shipping_app(self):
+        import httpx
+        from runtime.daemon.app import create_app
+
+        dist = Path(self.tmp.name) / "web-dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>Synthetic SPA</html>")
+        state = self.client._transport.app.state.daemon
+        for mode, web_dist in (("placeholder", None), ("spa", dist)):
+            with patch("runtime.daemon.routes.web_static._resolve_dist_dir", return_value=web_dist):
+                app = create_app(state)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                    base_url="http://synthetic.test", headers=self.client.headers) as client:
+                async def success(method, path, status=200, **kwargs):
+                    response = await client.request(method, path, **kwargs)
+                    self.assertEqual(response.status_code, status, response.text)
+                    self.assertEqual(response.headers.get("cache-control"), "no-store", (mode, method, path))
+                    return response.json()
+
+                command = {"expected_version": 0, "key": "cache_" + mode, "type": "numeric", "name": "Cache"}
+                d = (await success("POST", self.defs, 201, json=command))["definition"]
+                url = self.defs + "/" + d["definition_id"]
+                await success("GET", self.defs)
+                current = await success("PUT", self.values, json={"changes": [self.change(d)]})
+                definition_read = await success("GET", url)
+                self.assertTrue(definition_read["definition"]["first_used_at"])
+                await success("GET", self.values)
+                history = await success("GET", self.values + "/history",
+                                        params={"definition_id": d["definition_id"]})
+                self.assertEqual(len(history["events"]), 1)
+                self.assertEqual(history["events"][0]["new"], {"present": True, "value": 4})
+
+                cases = (
+                    ("missing bearer", "GET", self.values, 401, {"headers": {"Authorization": ""}},
+                     {"detail": "missing bearer token"}),
+                    ("human control", "POST", self.defs, 403,
+                     {"params": {"session_id": "synthetic-worker"}, "json": command},
+                     {"detail": {"code": "human_only"}}),
+                    ("missing definition", "GET", self.defs + "/missing", 404, {},
+                     {"detail": {"code": "not_found"}}),
+                    ("stale definition", "PATCH", url, 409,
+                     {"json": {"expected_version": 2, "name": "Stale"}},
+                     {"detail": {"code": "definition_version_conflict", "current": definition_read}}),
+                    ("stale value with history", "PUT", self.values, 409,
+                     {"json": {"changes": [self.change(d)]}},
+                     {"detail": {"code": "value_revision_conflict", "current": current, "conflicts": [
+                         {"definition_id": d["definition_id"], "expected_revision": 0, "current_revision": 1}]}}),
+                    ("invalid body", "PUT", self.values, 422, {"json": {"changes": []}},
+                     {"detail": {"code": "attribute_validation_failed", "errors": {"changes": ["too_short"]}}}),
+                    ("invalid query", "GET", url, 422, {"params": {"version": "invalid"}},
+                     {"detail": {"code": "attribute_validation_failed", "errors": {"query.version": ["int_parsing"]}}}),
+                )
+                before = self.domain()
+                for name, method, path, status, kwargs, body in cases:
+                    with self.subTest(mode=mode, case=name, status=status):
+                        response = await client.request(method, path, **kwargs)
+                        self.assertEqual(response.status_code, status, response.text)
+                        self.assertEqual(response.json(), body)
+                        self.assertEqual(response.headers.get("cache-control"), "no-store")
+                self.assertEqual(self.domain(), before)
+                await success("PATCH", url, json={"expected_version": 1, "name": "Renamed"})
+                await success("POST", url + "/archive", json={"expected_version": 2})
+
     def domain(self):
         path = self.org.db.execute("PRAGMA database_list").fetchone()[2]
         observer = sqlite3.connect(path)

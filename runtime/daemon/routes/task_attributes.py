@@ -44,16 +44,17 @@ class AttributeRoute(APIRoute):
         async def no_store(request):
             try:
                 response = await handler(request)
-                response.headers.update(_NO_STORE)
-                return response
             except HTTPException as exc:
-                exc.headers = {**(exc.headers or {}), **_NO_STORE}
-                raise
+                # The app's SPA handlers discard HTTPException headers. Render
+                # attribute errors here so the delivered response is no-store.
+                response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
             except (TeamMoveError, DeferredTeamMove) as exc:
-                _error(409, exc.code)
+                response = JSONResponse({"detail": {"code": exc.code}}, status_code=409)
             except RequestValidationError as exc:
                 errors = {".".join(str(p) for p in e["loc"]): [e["type"]] for e in exc.errors()}
-                _error(422, "attribute_validation_failed", errors=errors)
+                response = JSONResponse({"detail": {"code": "attribute_validation_failed", "errors": errors}}, status_code=422)
+            response.headers.update(_NO_STORE)
+            return response
         return no_store
 
 
