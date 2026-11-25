@@ -633,4 +633,3 @@ sent.
   640 px the tables become labelled stacked cells. Legacy tasks read "History
   unavailable…"; tasks with events but no admission note that earlier history
   was not recorded.
-

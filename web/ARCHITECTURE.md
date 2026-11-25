@@ -607,4 +607,3 @@ history; the separate history endpoint is not used.
   Rubric version, optional Note), the admission ("Before first dispatch")
   table and Original/Current pairs. Who uses `identity(actor_id, kind)` with
   the kind and the "(Founder)" suffix taken only from `actor_kind`.
-

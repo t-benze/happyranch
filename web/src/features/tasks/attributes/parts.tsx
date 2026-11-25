@@ -167,4 +167,3 @@ export function RefusalNotice({ read }: { read: TaskAttributesRead }): JSX.Eleme
     </Note>
   );
 }
-
