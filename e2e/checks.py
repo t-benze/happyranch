@@ -2907,7 +2907,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     def image(value: object) -> str:
         return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
-    check(row["python"] in ("3.12", "3.14")
+    check(row["python"] == "3.14"
           and any(d.get("python_version", "").startswith(row["python"]+".")
                   for d in observations["durable"]), "actual cell/interpreter version")
     trace = observations["browser_events"]

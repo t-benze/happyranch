@@ -623,8 +623,8 @@ lint/static only; no test/build trigger is added.
 
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
-Both lanes must report the exact69 once each, both launcher diagnostics and all
-setup/cleanup checks must pass. Health checks reports and identity only; former
+The Python3.14 baseline lane must report the exact69 once. Both launcher
+diagnostics and all setup/cleanup checks must pass. Health checks reports and identity only; former
 aggregate product predicates run privately in-lane before data deletion.
 Controller SQL/state JSON and completed-case publication are removed. Product
 readers use in-memory observations; ordinary controller JUnit and process pins
@@ -638,7 +638,7 @@ barrier coverage replace its hard 1s thread-gap cap. E07 uses a 250ms full-frame
 start-interval cap (formerly 50ms), at least five samples, first at entry and
 last at/after the full 1s window end. Every per-sample product assertion and
 original deadline remains. Both PASS and FAIL now carry timing JSON in the first
-E04/E07 product testcase's `system-out` in each uploaded `e2e-3.12` / `e2e-3.14`
+E04/E07 product testcase's `system-out` in the uploaded `e2e-3.14`
 `junit.xml`, including after the launcher merges the controller report. E04
 records sample count, min/max/p95 gaps and observer/barrier coverage endpoints;
 E07 records frame count, min/max/p95 start intervals, maximum frame duration
@@ -650,7 +650,7 @@ future green artifacts supply data for evaluating the existing limits.
 Historical run42501816137 timing attribution is unresolved from its artifacts.
 Failure capture precedes E05 teardown.
 The bounded Owned registration-error and E07 closure-failure diagnostics now
-travel in existing JUnit `system-out` in both Python lanes. They retain safe
+travel in existing JUnit `system-out` in the Python3.14 lane. They retain safe
 PID/generation/state/parent and cgroup metadata, observer error/stop clocks and
 recent reap receipts. Observer snapshots also retain the first exception/stack
 (last8192 characters, explicit truncation); its JUnit diagnostic is emitted even
@@ -1395,7 +1395,7 @@ remain outside this no-launch observation.
 
 J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, a thread artifact attachment and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
 
-J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
+J2 appends six custom-skill cases: **69 product cases on Python3.14**. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
@@ -1406,8 +1406,9 @@ nightly wait. Reconcile active owners/runs first; no blind same-source retry loo
 Manual admission requires actual `refs/heads/main`, default branch `main`, and
 matching repository/workflow/run/source identity. Historical seq247's ONE-run
 allocation to TASK-11897 and its receipts remain history. Baseline69 variants
-EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
-exactly four execution artifacts and the original bounds. `Daily Product E2E
+on Python3.14 plus TERM3.14/INT3.14 retain
+exactly three execution artifacts (`e2e-3.14`, `e2e-cancel-TERM`,
+`e2e-cancel-INT`) and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
@@ -1706,8 +1707,8 @@ real CLI/browser boundaries, synthetic orgs and deterministic executable provide
 stubs. Target600s/hard900s includes setup/actions/cleanup; actions stop720s with
 cleanup/evidence reserves. Missing/failed/skipped cells, wrong source/version,
 incomplete diagnostics/artifacts or unknown cleanup give nonzero daily health.
-The Actions summary identifies the actual source, expected `e2e-3.12`,
-`e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
+The Actions summary identifies the actual source, expected `e2e-3.14`,
+`e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
 GitHub default retention, job states and missing/failure evidence. Launcher cleanup is
 not product cancellation/restart coverage. The case record keeps four authoring
 answers and twelve UNEXECUTED/unauthorized protected defect proposals;
