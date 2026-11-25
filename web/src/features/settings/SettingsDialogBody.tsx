@@ -24,10 +24,12 @@ import {
   Languages,
   Monitor,
   Plug,
+  Tag,
   Terminal,
   type LucideIcon,
 } from 'lucide-react';
 import { useRef, type RefObject } from 'react';
+import { features } from '@/config/features';
 import { Route, Routes, useMatch } from 'react-router-dom';
 import { DialogTitle } from '@/design-system/primitives/Dialog';
 import { useTranslation } from '@/hooks/i18n';
@@ -61,6 +63,10 @@ const RUNTIME_ITEMS: readonly NavItem[] = [
   { section: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
   { section: 'executors', labelKey: 'settings.nav.executors', icon: Terminal },
   { section: 'organization', labelKey: 'settings.nav.organization', icon: HomeIcon },
+  // THR-390 PR6: right after Organization, only with the build-time flag on.
+  ...(features.task_attributes_ui
+    ? [{ section: 'task-attributes', labelKey: 'settings.nav.taskAttributes', icon: Tag } as const]
+    : []),
 ];
 
 export interface SettingsDialogBodyProps {

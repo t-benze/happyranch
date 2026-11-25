@@ -10,9 +10,9 @@
 import { readFileSync } from 'node:fs';
 
 export const FF_PROFILES = {
-  production: { profile: 'production', work_hours_ui: false, kb_compose_ui: false },
-  local: { profile: 'local', work_hours_ui: true, kb_compose_ui: false },
-  'local-wh-off': { profile: 'local', work_hours_ui: false, kb_compose_ui: false },
+  production: { profile: 'production', work_hours_ui: false, kb_compose_ui: false, task_attributes_ui: false },
+  local: { profile: 'local', work_hours_ui: true, kb_compose_ui: false, task_attributes_ui: true },
+  'local-wh-off': { profile: 'local', work_hours_ui: false, kb_compose_ui: false, task_attributes_ui: true },
 };
 
 /** Parse the single `[features]` line of a build log and check it against the expected profile. */
@@ -23,7 +23,12 @@ export function readBuildLog(file, expectName) {
   if (lines.length !== 1) throw new Error(`build log ${file} must carry exactly one [features] line (found ${lines.length})`);
   const line = lines[0].slice(lines[0].indexOf('[features]')).trim();
   const field = (name) => new RegExp(`(?:^|\\s)${name}=([^\\s(]+)`).exec(line)?.[1];
-  const observed = { profile: field('profile'), work_hours_ui: field('work_hours_ui') === 'true', kb_compose_ui: field('kb_compose_ui') === 'true' };
+  const observed = {
+    profile: field('profile'),
+    work_hours_ui: field('work_hours_ui') === 'true',
+    kb_compose_ui: field('kb_compose_ui') === 'true',
+    task_attributes_ui: field('task_attributes_ui') === 'true',
+  };
   const matches = Object.entries(expectValues).every(([key, value]) => observed[key] === value);
   return { line, observed, expected: expectValues, matches };
 }

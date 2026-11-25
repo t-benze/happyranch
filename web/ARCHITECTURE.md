@@ -122,7 +122,7 @@ Work Hours), and hidden code may still be present in the bundle and source maps.
 | File | Role |
 | --- | --- |
 | `config/features.registry.json` | Every flag with `purpose`, `owner`, `removal_condition` |
-| `config/features.development.json` | Complete development profile (`work_hours_ui: true`, `kb_compose_ui: false`) |
+| `config/features.development.json` | Complete development profile (`work_hours_ui: true`, `kb_compose_ui: false`, `task_attributes_ui: true`) |
 | `config/features.production.json` | Complete production profile (every flag `false`) |
 | `config/features.local.example.json` | Example for the optional, gitignored `config/features.local.json` |
 | `src/config/features.ts` | The ONLY consumer module: `import { features } from '@/config/features'` |
@@ -169,7 +169,7 @@ compatibility values from the process env or a `.env*` file; its selector is
 preserved for compatibility, rather than assumed unreachable.
 
 Each evaluation prints one line, for example
-`[features] profile=local sources=development,features.local.json work_hours_ui=false(features.local.json) kb_compose_ui=false(development)`.
+`[features] profile=local sources=development,features.local.json work_hours_ui=false(features.local.json) kb_compose_ui=false(development) task_attributes_ui=true(development)`.
 These failures stop the build or startup with a `[features] …` message naming
 the file and key or value class:
 
@@ -196,6 +196,15 @@ changes, and that restart counts as a new startup.
 
 Organization hooks stay unconditional, and the general Save never sends
 `working_hours`. `kb_compose_ui` gates KB Compose.
+
+`task_attributes_ui` (THR-390 PR6; development `true`, production `false`
+until PR9) gates Settings › Task attributes: the web `SettingsSubNav` item
+(between Organization and Executors), the `/orgs/:slug/settings/task-attributes`
+route (off: it falls through to the Capacity redirect), the org-less recovery
+route, the desktop Settings dialog `RUNTIME_ITEMS` entry (after Organization)
+and its page id (`dialogModel` treats `task-attributes` as an optional page the
+host enables, so with the flag off `isSection` is false and the default page
+opens). The daemon task-attribute routes exist either way.
 
 To add a flag, add a registry entry with all three metadata fields, add the key
 to BOTH profiles (production `false` until release), and read it only through
@@ -507,3 +516,33 @@ a401 can bootstrap and retry once at that transport boundary.
 English and Simplified Chinese ship together. Locale changes keep stable nodes,
 query keys and mutation ownership. UI/transport fixtures and browser screenshots
 prove their observed boundary only, never backend Pause enforcement or safe restart.
+
+## Task attribute definitions (THR-390 PR6)
+
+Settings › Task attributes (`features/settings/task-attributes/`, behind
+`task_attributes_ui`) manages org-defined task attribute definitions over the
+PR2 client `lib/api/taskAttributes.ts`. Data flows through the `taskAttributes`
+`DataContext` slice (`_real-task-attributes.ts`, `_mock-task-attributes.ts` with
+the type-only fixtures in `_task-attribute-fixtures.ts`) and
+`hooks/task-attributes.ts`. Query keys are `[org, 'task-attributes', …]`; none
+of these reads has a `refetchInterval`.
+
+- **Authority is server-reported only.** The list's top-level `editability`
+  decides whether row actions are offered; each row's own
+  `GET …/definitions/{id}` (at most 4 in flight) then enables or disables its
+  Edit/Archive. Dialogs re-read the definition on open and gate Save/Archive on
+  that read being a settled success (MEM-300). `archived` and `first_used_at`
+  drive badges, tabs and counts only, never a control.
+- **Write outcomes.** A definite answer renders its PR2 envelope
+  (`detail.current` for 409s, the `errors` map for 422, `human_only` for 403;
+  a 5xx is a definite failure with Retry). A lost response is "Save outcome
+  unknown": no Retry until "Refresh to check" compares all five fields
+  (key, type, name, description, constraints) after PR2's defaults. Retry
+  re-sends the exact body. "Reload latest" re-reads by `definition_id`.
+- **Version actor contract.** PR2 definition writes are human-only
+  (`_require_human`) and the store audits every version with actor `founder`,
+  so the definition-version actor is derived from that contract and rendered
+  with `useIdentityPresentation().label('founder')` (never a literal name;
+  the hook falls back to the canonical `founder` ID). If agent-authored
+  definition writes are ever allowed, the server must add an actor field to
+  version reads **first**. Residual for PR7/PR8.

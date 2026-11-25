@@ -20,6 +20,7 @@
  */
 import { createContext, useContext } from 'react';
 import type * as Sequential from '@/lib/api/workflowSequential';
+import type * as TaskAttributeTypes from '@/lib/api/taskAttributeTypes';
 import type {
   WorkflowSetupStatus,
   HealthResponse,
@@ -720,6 +721,56 @@ export interface WorkflowsApi {
   useTaskSequentialWorkflow: (id: string) => WorkflowQuery<Sequential.SequentialTaskWorkflow>;
 }
 
+// ---------------------------------------------------------------------------
+// TaskAttributesApi — Settings › Task attributes definitions (THR-390 PR6).
+// Every enabling decision renders a server `editability` field; reads here
+// never infer authority from definition data.
+// ---------------------------------------------------------------------------
+
+export interface TaskAttributesQuery<T> extends QueryLike<T> {
+  isSuccess: boolean;
+  isFetching: boolean;
+  /** Time of the last successful read (0 before any). */
+  dataUpdatedAt: number;
+  refetch: () => Promise<unknown>;
+}
+
+export interface TaskAttributeActions {
+  create: (body: TaskAttributeTypes.AttributeDefinitionFields) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
+  update: (
+    definitionId: string,
+    body: Partial<TaskAttributeTypes.AttributeDefinitionFields> & { expected_version: number },
+  ) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
+  archive: (definitionId: string, expectedVersion: number) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
+  /** One fresh list GET (create reconciliation); it also refreshes the list. */
+  readList: () => Promise<TaskAttributeTypes.AttributeDefinitionsRead>;
+  /** One fresh per-definition GET (edit/archive reconciliation, Reload latest). */
+  readDefinition: (definitionId: string) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
+  /** MEM-300: true only while the cached per-definition read is a settled success. */
+  isDefinitionCurrent: (definitionId: string) => boolean;
+  /** Refetch the list and this org's per-definition reads (after a confirmed write). */
+  refreshList: () => Promise<unknown>;
+}
+
+export interface TaskAttributesApi {
+  /** The definitions list, archived included (one GET). */
+  useDefinitionList: () => TaskAttributesQuery<TaskAttributeTypes.AttributeDefinitionsRead>;
+  /** Row-authority reads for `ids` (at most 4 in flight); none while disabled. */
+  useDefinitionReads: (
+    ids: readonly string[],
+    enabled: boolean,
+  ) => Record<string, TaskAttributesQuery<TaskAttributeTypes.AttributeDefinitionRead>>;
+  /** One definition, always re-read when a dialog mounts (never cache-only authority). */
+  useDefinition: (definitionId: string | null) => TaskAttributesQuery<TaskAttributeTypes.AttributeDefinitionRead>;
+  /** One all-or-nothing history page of older versions (at most 4 in flight). */
+  useDefinitionVersions: (
+    definitionId: string,
+    versions: readonly number[],
+    enabled: boolean,
+  ) => TaskAttributesQuery<TaskAttributeTypes.AttributeDefinitionRead[]>;
+  useTaskAttributeActions: () => TaskAttributeActions;
+}
+
 export interface DataContextValue {
   workflows: WorkflowsApi;
   orgs: OrgsApi;
@@ -738,6 +789,7 @@ export interface DataContextValue {
   dreams: DreamsApi;
   skills: SkillsApi;
   workHours: WorkHoursApi;
+  taskAttributes: TaskAttributesApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read

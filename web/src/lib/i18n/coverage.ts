@@ -265,6 +265,8 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'organization',
       'executors',
       'preferences',
+      // THR-390 PR6: list, editor, detail and archive (flag task_attributes_ui).
+      'task-attributes',
     ],
     status: 'translated',
     surfaces: [
@@ -275,6 +277,10 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'ExecutorsSection',
       'PreferencesSection',
       'EligibilityEditorDialog',
+      'TaskAttributesSection',
+      'DefinitionEditorDialog',
+      'DefinitionDetailDialog',
+      'ArchiveDefinitionDialog',
     ],
   },
   {

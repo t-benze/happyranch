@@ -8,5 +8,10 @@
     "purpose": "Show the Knowledge Compose entry action and its write-path dialog.",
     "owner": "engineering_manager",
     "removal_condition": "Remove once KB compose is accepted for release or retired."
+  },
+  "task_attributes_ui": {
+    "purpose": "Show Settings › Task attributes (custom task attribute definitions management: list, create/edit, detail with version history, archive) in the web Settings sub-navigation and the desktop Settings dialog.",
+    "owner": "engineering_manager",
+    "removal_condition": "Remove once the Custom Task Attributes v1 UI is accepted for release and the production profile enables it permanently (PR9)."
   }
 }

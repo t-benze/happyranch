@@ -19,6 +19,7 @@ const PAGE_KEYS: Record<OwnerRecord['page'], MessageKey> = {
   'skills.customCreate': 'owners.page.skills.customCreate',
   'skills.customDetail': 'owners.page.skills.customDetail',
   'workHours.tier': 'owners.page.workHours.tier',
+  'settings.taskAttributes': 'owners.page.settings.taskAttributes',
 };
 
 /** `{ page, computer, org }` params for an owner, localized. */
