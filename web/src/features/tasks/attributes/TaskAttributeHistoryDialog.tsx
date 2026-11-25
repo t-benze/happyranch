@@ -46,7 +46,7 @@ function HistoryBody({ read }: { read: TaskAttributesRead }): JSX.Element {
       {changed.map((a) => a.initial.state === 'set' && (
         <div key={a.definition.definition_id} className="min-w-0" data-testid={`ta-ovc-${a.definition.key}`}>
           <div className="text-text-muted mb-1 flex items-center gap-2 text-xs font-bold tracking-wider uppercase">
-            {a.definition.name} <KeyChip>{a.definition.key}</KeyChip>
+            {a.definition.name} <span className="tracking-normal normal-case"><KeyChip>{a.definition.key}</KeyChip></span>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="border-border-default rounded-md border px-2.5 py-2">
