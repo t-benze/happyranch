@@ -2800,7 +2800,13 @@ extra, arbitrary-path or out-of-order entries refuse. Appending the next intent,
 finishing the last intent, and closing all eight done effects as joined are the
 only forward updates. A terminal update preserves the exact effect prefix.
 Publication reuses A5, with no mkdir, in-place edit or pending adoption. A
-nonblocking directory lock spans both records and all effects.
+nonblocking directory lock spans both records and all effects. Only unattended
+policy renewal may wait up to 20 seconds for this same activation-directory
+flock, below its unit's TimeoutStartSec=30, then performs the same protected
+revalidation. Fresh-auth renewal, RetryPolicyRenewal and every other caller
+still refuse immediately on contention. Exhaustion fails closed and keeps the
+existing lock-busy diagnostics. The explicit timer start/verification remains;
+this wait handles its first firing while Enable still owns the lock.
 
 Source validation gates every forward publication (including phase advances or
 token-derived/live material) and service/admin effect. The durable effect boundary
@@ -4821,6 +4827,7 @@ fixed internal reason (or a closed native errno reason). The unchanged order is
 6 Taildrop files, 7 connector state and 8 sidecar state. Ordinal zero is a
 non-directory step. The diagnostic counter is never an admission input.
 Directory removal, user/group retirement order, custody/revocation checks,
-unit sandbox, expiry and timers are unchanged. No arbitrary exception message,
+unit sandbox, expiry and timer schedule are unchanged. The bounded unattended
+lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
 path, file contents, identity, credential or invite is journaled. Journal
 failure preserves the original refusal and retained evidence.

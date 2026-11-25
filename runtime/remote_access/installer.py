@@ -3851,7 +3851,10 @@ class ManagedInstaller:
 
         if os.geteuid() != 0 or type(fresh_auth) is not bool:
             raise InstallerError("policy renewal unavailable")
-        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked():
+        # Only the unattended timer tolerates Enable's first-fire collision.
+        # Its 20s lock bound stays below the renewal unit's TimeoutStartSec=30.
+        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked(
+                wait=20.0 if not fresh_auth and _before_renew is None else 0.0):
             if _before_renew is not None:
                 _before_renew()  # Private Retry revalidates its live capture under this SAME flock.
             self._renew_policy_locked(fresh_auth=fresh_auth)

@@ -53,6 +53,17 @@ success; READY still requires its protected receipt and all existing checks.
 
 ---
 
+### First policy renewal after Enable
+
+Enable explicitly starts and verifies the owned renewal timer. Its first firing
+may coincide with Enable holding the activation lock. Only that unattended
+renewal path waits up to 20 seconds (below the unit's 30-second start timeout),
+then revalidates under the same lock. Expiration still fails closed and journals
+`lock-busy`; fresh-auth renewal and all other lock callers remain nonblocking.
+This avoids a first-fire lock refusal projecting paused/offline while the host
+is serving. Status still requires the existing independent renewal/policy proof.
+
+
 ## Daemon stop budget
 
 The packaged user `happyranch-daemon.service` explicitly sets

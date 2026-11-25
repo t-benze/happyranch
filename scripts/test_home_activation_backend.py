@@ -22,7 +22,7 @@ from typing import Any, Iterator
 import pytest
 
 from runtime.remote_access import home_activation_backend as h, home_activation_owner as adapters
-from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS, OWNED_LINK, OWNED_LINK_TARGET, HomeActivationReceipt, HomeActivationStore
+from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS, OWNED_LINK, OWNED_LINK_TARGET, HomeActivationError, HomeActivationReceipt, HomeActivationStore
 from runtime.remote_access.home_activation_coordinator import ActivationRefused
 from runtime.remote_access.home_activation_txn import EFFECTS, TRANSACTION_PATH, Effect, HomeActivationTransactionStore
 from runtime.remote_access.home_admin import HeadscaleNode, HeadscaleUser
@@ -1749,3 +1749,51 @@ def test_thr327_failed_revoke_retained_state_has_no_existing_exit(composition: A
     with pytest.raises(Exception):
         v.io.uninstall(purge=True)
     assert staged_inventory(v.fixture) == before and v.calls == calls
+
+
+@pytest.mark.parametrize('mode', ['timer-release', 'timer-timeout', 'fresh-auth', 'guarded-retry', 'ordinary'])
+def test_renewal_activation_lock_contention(composition: Any, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    v = composition
+    v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+    root = v.path('/var/lib/happyranch-remote-access')
+    holder = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    before = staged_inventory(v.fixture)
+    invoked = []
+    renew = v.io._renew_policy_locked
+    def renewal(*, fresh_auth: bool) -> None:
+        assert_locked(v)
+        invoked.append(fresh_auth)
+        renew(fresh_auth=fresh_auth)
+    monkeypatch.setattr(v.io, '_renew_policy_locked', renewal)
+    def forbidden() -> None:
+        pytest.fail('fresh capture callback executed without the activation lock')
+    release = threading.Timer(0.5, lambda: fcntl.flock(holder, fcntl.LOCK_UN))
+    if mode == 'timer-release':
+        release.start()
+    started = time.monotonic()
+    try:
+        if mode == 'timer-release':
+            v.io.renew_policy()
+        else:
+            with pytest.raises(HomeActivationError, match='^state$'):
+                if mode == 'ordinary':
+                    with v.transactions.locked():
+                        pytest.fail('ordinary caller bypassed held lock')
+                else:
+                    v.io.renew_policy(fresh_auth=mode == 'fresh-auth',
+                        _before_renew=forbidden if mode == 'guarded-retry' else None)
+        elapsed = time.monotonic() - started
+    finally:
+        if mode == 'timer-release':
+            release.join(timeout=2)
+            assert not release.is_alive()
+        os.close(holder)
+    if mode == 'timer-release':
+        assert 0.4 <= elapsed < 3.0 and invoked == [False]
+    elif mode == 'timer-timeout':
+        assert 19.7 <= elapsed < 23.0 and invoked == []
+        assert staged_inventory(v.fixture) == before
+    else:
+        assert elapsed < 0.3 and invoked == []
+        assert staged_inventory(v.fixture) == before
