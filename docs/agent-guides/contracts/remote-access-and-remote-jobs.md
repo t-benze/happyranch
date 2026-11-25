@@ -2599,6 +2599,13 @@ and recorded by the coordinator before prepared publication:
 `/etc/happyranch/headscale/policy.hujson`,
 `/etc/happyranch/control-ca.pem`, and
 `/etc/happyranch/invite-issuer.json`.
+
+Prepare, activation verification and ordinary admission read the exact
+`policy.hujson` member as `happyranch-headscale:happyranch-headscale` `0600`,
+matching its writer. Invite configuration remains root-owned `0600`. The
+policy is separate from the Headscale publication record's file map; neither
+that map nor the six receipt members change, so retained product publications
+and receipts use the same format and digests.
 Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
 (`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
 digested; renewable `server.crt` is excluded because trust binds the CA DER

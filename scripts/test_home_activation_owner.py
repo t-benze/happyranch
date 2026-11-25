@@ -275,6 +275,52 @@ def test_preflight_owner_boundaries(venue, case):
     assert all(call[1] == "show" for call in v.native.calls) and not v.admin.calls
 
 
+@pytest.mark.parametrize("reader", ["prepare", "owner", "admission"])
+@pytest.mark.parametrize("policy_custody", ["headscale", "root", "wide-mode"])
+def test_member_readers_distinct_headscale_custody(venue, monkeypatch, reader, policy_custody):
+    from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
+    from runtime.remote_access.home_admission import HomeProfileAdmission
+
+    v, io = venue, venue.receipts._io
+    headscale_owner = (os.getuid() + 100, os.getgid() + 100)
+    monkeypatch.setattr(io, "_headscale_shape", lambda: headscale_owner)
+    io._headscale_owner = headscale_owner
+    io._headscale_preparing = True  # Isolate member custody from retry layout selection.
+    directory = v.path("/etc/happyranch/headscale")
+    directory.chmod(0o700)
+    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
+    policy = directory / "policy.hujson"
+    if policy_custody == "wide-mode":
+        policy.chmod(0o640)
+    identities = {(p.stat().st_dev, p.stat().st_ino): headscale_owner
+                  for p in (directory, *directory.iterdir())}
+    if policy_custody == "root":
+        identities[(policy.stat().st_dev, policy.stat().st_ino)] = io.root_owner
+    native_stat, native_fstat = os.stat, os.fstat
+
+    def metadata(info):
+        owner = identities.get((info.st_dev, info.st_ino))
+        if owner is None:
+            return info
+        observed = SimpleNamespace(**{k: getattr(info, k) for k in dir(info) if k.startswith("st_")})
+        observed.st_uid, observed.st_gid = owner
+        return observed
+
+    monkeypatch.setattr(os, "stat", lambda *args, **kwargs: metadata(native_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, "fstat", lambda fd: metadata(native_fstat(fd)))
+    read = {"prepare": lambda: HomeActivationPrepare(io=io)._members(v.prepared),
+            "owner": lambda: v.production._common(v.prepared),
+            "admission": lambda: HomeProfileAdmission(io)._members(v.prepared)}[reader]
+    records = v.records()
+    if policy_custody == "headscale":
+        read()
+    else:
+        with pytest.raises(installer.InstallerError, match="unsafe provisioning file ownership"):
+            read()
+    assert v.records() == records
+    assert all(call[1] == "show" for call in v.native.calls) and not v.admin.calls
+
+
 def test_effect_requires_current_intent(venue):
     v = venue
     with pytest.raises(ActivationRefused):

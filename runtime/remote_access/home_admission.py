@@ -8,7 +8,7 @@ import re
 import ssl
 from dataclasses import dataclass
 
-from runtime.remote_access import invite_v2
+from runtime.remote_access import headscale_service, invite_v2
 from runtime.remote_access.home_activation import (
     ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH, MEMBER_PATHS,
     HomeActivationReceipt, HomeActivationStore,
@@ -202,6 +202,8 @@ class HomeProfileAdmission:
         self.io._headscale_preparing = True  # Reuse the fixed custody layout; no prepare effect.
         self.io._headscale_empty_ca()
         members = self.io._headscale_members()
+        # Policy is written separately from the immutable publication inventory.
+        members[headscale_service.POLICY_PATH] = (self.io._headscale_owner, 0o600)
         for path in MEMBER_PATHS:
             relative, name = path.lstrip("/").rsplit("/", 1)
             with self.io._publication_parent(relative) as (parent, check):

@@ -177,6 +177,8 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                 or not status["leaf_not_after"]):
             raise ActivationRefused()
         members = self._io._headscale_members()
+        # Policy is written separately from the immutable publication inventory.
+        members[headscale_service.POLICY_PATH] = (self._io._headscale_owner, 0o600)
         for path in MEMBER_PATHS:
             relative = Path(path.lstrip("/"))
             with self._io._publication_parent(str(relative.parent)) as (parent, check):
