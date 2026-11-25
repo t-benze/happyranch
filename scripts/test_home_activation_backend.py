@@ -1587,3 +1587,44 @@ def test_b7_backend_pair_refuses_without_forward_effects(
         assert v.records() == before and writes == []
     assert unit_config_bytes(v) == units and calls == []
     assert v.native.calls == native and v.admin.calls == admin
+
+
+@pytest.mark.parametrize('state', ['inactive', 'failed', 'activating', 'deactivating'])
+def test_thr327_disable_transitional_owned_only(composition: Any, state: str) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    v.observers.close()
+    v.states[adapters._SIDECAR] = state
+    assert v.io.inventory().state == ('manual-install-conflict' if state in ('activating', 'deactivating') else 'owned-activated')
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
+                                revoke_succeeded=True)['outcome'] == 'off'
+    assert v.receipts.current() is None
+
+
+@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both'])
+def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    ready = v.path(ACTIVATION_PATH).read_bytes()
+    txn = v.path(TRANSACTION_PATH).read_bytes()
+    calls = len(v.calls)
+    if stopped in (adapters._TARGET, 'both'):
+        v.observers.close()
+        v.observers = ExitStack()
+    if stopped == adapters._CONNECTOR: v.states[adapters._CONNECTOR] = 'inactive'
+    if stopped in (adapters._HEADSCALE, 'both'): v.states[adapters._HEADSCALE] = 'inactive'
+    if stopped in (adapters._TARGET, 'both'):
+        for name in (adapters._TARGET, adapters._CONNECTOR, adapters._SIDECAR): v.states[name] = 'inactive'
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
+    assert len(v.mints) == 1
+    assert all(call[0] == 'start' for call in v.calls[calls:])
+    assert v.states[adapters._HEADSCALE] == v.states[adapters._TARGET] == 'active'

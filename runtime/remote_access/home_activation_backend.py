@@ -456,10 +456,33 @@ class HelperLifecycleBackend:
             if method == 'Enable' and step == 'enable':
                 current = self.store.current()
                 if current is not None and current.phase == 'ready':
-                    # Already-ready is inspect-only, never replays activation.
+                    # Ordinary boot-equivalent start, never activation replay.
                     coordinator, _, _ = backend._compose(current)
-                    if coordinator._owner.verify('joined', current) is not True:
-                        raise ActivationRefused()
+                    try:
+                        from runtime.remote_access.home_admission import HomeProfileAdmission
+                        if self.io.inventory().state != 'owned-activated':
+                            raise ActivationRefused()
+                        for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
+                            HomeProfileAdmission(self.io).require(ordinary=True)
+                            if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
+                                # Missing enablement after a partial Disable is not
+                                # boot-equivalent; do not reopen that admission.
+                                from runtime.remote_access.home_activation import OWNED_LINK, OWNED_LINK_TARGET
+                                link_name = name if name == 'happyranch-headscale.service' else UNITS[2]
+                                link = (Path(OWNED_LINK) if name == 'happyranch-headscale.service' else
+                                        Path('/etc/systemd/system/multi-user.target.wants') / link_name)
+                                with self.io._publication_parent(str(link.parent).lstrip('/')) as (parent, check):
+                                    target = os.readlink(link_name, dir_fd=parent)
+                                    allowed = {OWNED_LINK_TARGET} if name == 'happyranch-headscale.service' else {
+                                        '../' + link_name, str(self.io.root / 'etc/systemd/system' / link_name)}
+                                    if target not in allowed:
+                                        raise ActivationRefused()
+                                    check()
+                                self.io.manager.start(name, timeout=45 if name.endswith('headscale.service') else 250)
+                        if coordinator._owner.verify('joined', current) is not True:
+                            raise ActivationRefused()
+                    except Exception:
+                        raise EnablePreparationRefused('ready-restart-failed-turn-off') from None
                 elif current is not None and current.phase == 'failed_uncertain':
                     transaction = backend._transactions.read_optional()
                     if (transaction is None or not transaction.matches(current)
@@ -502,7 +525,7 @@ class HelperLifecycleBackend:
                 # Renewal residue vetoes B6, never the independently owned
                 # remote-unit safety stop (including after failed revocation).
                 try:
-                    self.io.stop_and_confirm()
+                    self.io.stop_and_confirm(disabling=True)
                 except Exception:
                     residue.append('owned remote units: stop unconfirmed')
                 try:

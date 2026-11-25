@@ -3164,7 +3164,7 @@ Linux CLI wiring is delivered in I5b; bridge wiring for Enable/Disable/IssueInvi
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
-`prepared` (projected as B15 setup `in_progress`); ready remains inspect-only.
+`prepared` (projected as B15 setup `in_progress`); ready never replays activation; the ordinary start described below is permitted.
 No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
 recovery with real A5 records and observe.sock; installed/live-host operations
 remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
@@ -3836,8 +3836,7 @@ settlement before terminal success. No step renews the budget.
 
 Interruption after a complete staging step permits only exact owner reuse on the
 next fresh-auth Enable; unknown/pending/partial residue is never adopted or
-deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable is
-inspect-only. Disable, replacement closure, invite and renewal effects and the
+deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform only the ordinary boot-equivalent start of exact enabled owned units, then joined verification; it never replays activation. Disable, replacement closure, invite and renewal effects and the
 closed B5/B6/B17 maps remain unchanged. Temp-root tests exercise all five owners,
 including replacement closure, repeated Turn off/Turn on, CAS, refusal and expiry;
 native/NSS/materializer/LAN responses are simulated. Installed acceptance remains I6.
@@ -4159,7 +4158,7 @@ noncurrent renewed policy enables/starts zero units. Earlier inert publication
 retains its existing reloads and read-only manager inspection. Every subsequent
 check, admission and runtime gate is strict. The later `managed_services`
 re-stamp remains, with timer enable before verifier socket/target enable and
-managed target start. Ready Enable stays inspect-only. I3a fresh-auth recovery
+managed target start. Ready Enable may start exact enabled owned units as at boot, then verify joined; it never replays activation. I3a fresh-auth recovery
 still only verifies and
 publishes (or rolls over to prepared); it never renews policy, links the timer or
 replays any other effect. A later forward Enable runs the existing effect path.
@@ -4445,7 +4444,7 @@ Why no founder: implements approved recognized-failure recovery without terminal
 
 **B18 — Explicit token repair and known-version upgrade.**
 No new method: fresh-auth `Enable()` repairs only a positively classified
-`repair_required` live profile; already-ready Enable remains inspect-only.
+`repair_required` live profile; already-ready Enable permits only ordinary start and joined verification, never activation replay.
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
@@ -4591,3 +4590,27 @@ The shared native request projection, CLI JSON, Main protocol/relay and Connecti
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
 refusals map to owner; generic, missing or invalid categories map to unknown.
 No path, file content, UID, exception message or secret crosses this boundary.
+
+
+### THR-327 ready restart and Disable retry (TASK-19228)
+
+A ready receipt is retained after failed stop. It is not evidence of live runtime
+availability. Disable alone accepts activating/deactivating as stoppable states
+of exact owned loaded units; every fragment, load-root, drop-in and byte check
+remains unchanged. Ordinary inventory keeps its closed active/inactive/failed set.
+Every Turn off invokes the serving revoke-all anew before stop and B6. A previous
+reply, audit, stopped unit or absent IPC is never revoke proof. Revoke-all with
+the current generation also succeeds on an already-revoked device set.
+
+Fresh-auth Turn on again with a ready receipt validates ordinary ready/joined
+admission and exact inventory, starts the exact enabled Headscale unit and
+managed target if down, then runs the existing joined verification. This is the
+same service admission as boot, with no receipt change, mint, credential or
+activation replay. Missing enablement, failed start or failed joined verification
+refuses as `ready-restart-failed-turn-off` (recovery: Turn off).
+
+Failed/unavailable serving revoke still runs stop and B6, retains trust and
+persisted sidecar state and reports partial_cleanup naming them. This does not
+authorize ordinary restart of a partly removed publication. The existing failed-
+revoke partial state has no established fresh-Enable/replacement/purge exit;
+that sub-case remains a decision, not an offline revocation exception.

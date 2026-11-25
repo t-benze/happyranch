@@ -364,6 +364,7 @@ class ManagedInstaller:
         self, connector: dict, *, removing_units: set[str] | None = None,
         observed_units: dict[str, str] | None = None,
         reload_transaction: bytes | None = None,
+        disabling: bool = False,
     ) -> tuple[set[str], dict[str, dict[str, str]]]:
         reload_removed = self._reload_removed_units(reload_transaction) if reload_transaction is not None else ()
         if connector and not isinstance(connector.get("managed"), dict):
@@ -431,7 +432,8 @@ class ManagedInstaller:
                     or props.get("DropInPaths") != ""
                     or props.get("NeedDaemonReload") not in ({"no", "yes"} if cached else {"no"})
                     or props.get("LoadState") != ("loaded" if loaded or cached else "not-found")
-                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else
+                    or props.get("ActiveState") not in (({"active", "inactive", "failed", "activating", "deactivating"} if disabling
+                                                        else {"active", "inactive", "failed"}) if loaded else
                                                        {"inactive", "failed"} if cached else {"inactive"})):
                 # Manager strings can contain arbitrary data: report fixed paths only.
                 raise InstallerError(path)
@@ -491,7 +493,8 @@ class ManagedInstaller:
         return self._inventory()
 
     def _inventory(self, *, prepared_transaction: bytes | None = None,
-                   pending: tuple[str, bytes] | None = None) -> InstallInventory:
+                   pending: tuple[str, bytes] | None = None,
+                   disabling: bool = False) -> InstallInventory:
         preparing = self._headscale_preparing
         location = str(self.root / "etc/happyranch")
         paths: list[str] = []
@@ -702,7 +705,7 @@ class ManagedInstaller:
                 if modern:
                     connector = modern_connector
             units, properties = self._inventory_units(connector, removing_units=removing_units,
-                observed_units=HomeProfileAdmission(self).observed_units(home) if home else None)
+                observed_units=HomeProfileAdmission(self).observed_units(home) if home else None, disabling=disabling)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             if home is not None:
                 if len(units) != len(UNITS):
@@ -1590,13 +1593,14 @@ class ManagedInstaller:
             if hashlib.sha256(self._read_file(parent, entry, owner=owner, mode=mode)).hexdigest() != digest:
                 raise InstallerError("replacement fixed file changed before mutation")
 
-    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
+    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None,
+                         disabling: bool = False) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
 
         No filesystem mutation or admission reopening is performed. Callers must
         not cache this sampled observation as later file-mutation authority.
         """
-        inventory = self._inventory(prepared_transaction=_replacement_transaction)
+        inventory = self._inventory(prepared_transaction=_replacement_transaction, disabling=disabling)
         if inventory.state in {"manual-install-conflict", "healthy-manual"}:
             raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
         order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
