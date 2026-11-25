@@ -97,9 +97,13 @@ class HomeActivationRecovery(HomeActivationCoordinator):
                 self._source(receipt)
                 self._members(receipt, txn)
                 mint_intended = any(effect.name == "local_node_mint" for effect in txn.effects)
-                window = (home_admin.read_local_node_window(
-                    receipt.operation_id, root=self._io.root, root_owner=self._io.root_owner)
-                    if mint_intended else None)
+                try:
+                    window = home_admin.read_local_node_window(
+                        receipt.operation_id, root=self._io.root, root_owner=self._io.root_owner)
+                except home_admin.NodeWindowAbsent:
+                    if mint_intended:
+                        raise RecoveryRefused()
+                    window = None
                 keys = self._admin.list_pre_auth_keys(user="happyranch-node", timeout_s=5)
                 nodes = self._admin.list_nodes(user="happyranch-node", timeout_s=5)
                 if (type(keys) is not tuple or len(keys) > _MAX_INVENTORY_KEYS

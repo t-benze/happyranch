@@ -4633,8 +4633,10 @@ never returns ready after refusing that check. Package and renderer bytes match.
 
 ### THR-327 no-mint recovery and live-key retry (TASK-19228)
 
-B7 reads a mint window only if the exact terminal transaction contains a mint
-intent. Without that intent, fresh complete empty key and node lists permit the
+B7 retains existing recovery from a valid present mint reservation, including
+lost journal effects. Only definite ENOENT from the no-follow reservation reader
+can be absent; malformed or unsafe records still refuse. Without a mint intent
+AND without a reservation, fresh complete empty key and node lists permit the
 existing prepared-generation rollover, with all source/member/CAS checks and no
 effect replay. Any key or node in that no-mint case refuses. A still-live unused
 key refuses as `activation-retry-later`, retaining the full original key window.

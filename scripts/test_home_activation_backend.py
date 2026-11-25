@@ -1669,7 +1669,7 @@ def test_thr327_failed_enable_recovery_without_replay(composition: Any, monkeypa
     if not minted:
         monkeypatch.setattr(v.admin, 'list_pre_auth_keys', lambda **kw: ())
         def absent_window(*args: Any, **kwargs: Any) -> Any:
-            raise FileNotFoundError('never minted')
+            raise adapters.home_admin.NodeWindowAbsent('refused')
         monkeypatch.setattr(adapters.home_admin, 'read_local_node_window', absent_window)
     before = len(v.mints), list(v.calls)
     if minted:

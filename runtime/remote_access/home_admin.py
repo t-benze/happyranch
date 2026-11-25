@@ -436,6 +436,10 @@ class DurableOperationRecordStore:
         return True
 
 
+class NodeWindowAbsent(AdminRefused):
+    """A no-follow reservation lookup found ENOENT; no malformed-record fallback."""
+
+
 def read_local_node_window(operation_id: str, *, root: Path = Path("/"),
                            root_owner: tuple[int, int] = (0, 0)) -> CreationWindow:
     """Read only the existing node reservation. No mkdir, repair or reservation write."""
@@ -465,6 +469,8 @@ def read_local_node_window(operation_id: str, *, root: Path = Path("/"),
                 raise ValueError
             check()
             return window
+    except FileNotFoundError:
+        raise NodeWindowAbsent("refused") from None
     except Exception:
         raise AdminRefused("refused") from None
 

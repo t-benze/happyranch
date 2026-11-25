@@ -538,3 +538,22 @@ def test_recovery_marker_is_closed_and_linear_validators_stay_terminal(venue: Re
     with pytest.raises(HomeActivationError): HomeActivationTransaction.parse(json.dumps(data).encode())
     assert repr(venue.recovery()) == "HomeActivationRecovery(<redacted>)"
     assert str(RecoveryRefused("synthetic-private-canary")) == "recovery_refused"
+
+
+@pytest.mark.parametrize('reservation', ['absent', 'malformed'])
+def test_thr327_no_mint_requires_absent_reservation_and_empty_inventory(venue: RecoveryVenue, reservation: str) -> None:
+    v = venue
+    txn = v.transactions.read_optional()
+    put(v.path(TRANSACTION_PATH), replace(txn, effects=(Effect('preflight', 'intent', {}),)).to_bytes())
+    v.empty()
+    if reservation == 'absent':
+        v.reservation.unlink()
+        assert v.recover().phase == 'prepared'
+        assert v.receipts.current().activation_generation == 8
+    else:
+        put(v.reservation, b'torn')
+        before = v.snapshot()
+        with pytest.raises(RecoveryRefused):
+            v.recover()
+        assert v.snapshot() == before
+    v.no_effects()
