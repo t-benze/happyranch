@@ -737,6 +737,8 @@ class RemoteAccessHelper:
                            if capture.method == 'Enable' and result['outcome'] == 'prepared'
                            else lifecycle.SetupPhase(result['outcome']))
                 residue = result['residue']
+                if capture.method == 'Enable' and result['outcome'] == 'prepared':
+                    preparation_category = 'activation-prepared-retry'
             else:
                 revoked = False
                 def revoke(remaining: float, commit: Callable[[], None]) -> dict:

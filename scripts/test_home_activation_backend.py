@@ -1650,3 +1650,35 @@ def test_thr327_ready_repairs_policy_unit_and_timer(composition: Any, legacy: bo
     assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
+
+
+@pytest.mark.parametrize('minted', [False, True])
+def test_thr327_failed_enable_recovery_without_replay(composition: Any, monkeypatch: pytest.MonkeyPatch, minted: bool) -> None:
+    v = composition
+    perform = adapters.HomeActivationOwner.perform
+    def fail(owner: Any, effect: str, receipt: Any, credential: Any) -> None:
+        if effect == ('managed_services' if minted else 'db_users'):
+            raise OSError('synthetic pre-mint or post-mint interruption')
+        perform(owner, effect, receipt, credential)
+    with monkeypatch.context() as patch:
+        patch.setattr(adapters.HomeActivationOwner, 'perform', fail)
+        with pytest.raises(ActivationRefused):
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                 deadline=time.monotonic() + 480)
+    assert v.receipts.current().phase == 'failed_uncertain'
+    if not minted:
+        monkeypatch.setattr(v.admin, 'list_pre_auth_keys', lambda **kw: ())
+        def absent_window(*args: Any, **kwargs: Any) -> Any:
+            raise FileNotFoundError('never minted')
+        monkeypatch.setattr(adapters.home_admin, 'read_local_node_window', absent_window)
+    before = len(v.mints), list(v.calls)
+    if minted:
+        with pytest.raises(h.EnablePreparationRefused) as error:
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                 deadline=time.monotonic() + 480)
+        assert error.value.category == 'activation-retry-later'
+    else:
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                    deadline=time.monotonic() + 480)['outcome'] == 'prepared'
+    assert v.receipts.current().phase == ('failed_uncertain' if minted else 'prepared')
+    assert (len(v.mints), v.calls) == before

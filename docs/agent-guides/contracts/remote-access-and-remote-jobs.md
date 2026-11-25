@@ -4629,3 +4629,14 @@ loaded-fragment, drop-in, G/O and deadline checks, followed by daemon-reload.
 Unknown bytes still refuse. No receipt/config/credential migration occurs.
 Ready Enable also ensures the exact renewal timer enablement link exists; it
 never returns ready after refusing that check. Package and renderer bytes match.
+
+
+### THR-327 no-mint recovery and live-key retry (TASK-19228)
+
+B7 reads a mint window only if the exact terminal transaction contains a mint
+intent. Without that intent, fresh complete empty key and node lists permit the
+existing prepared-generation rollover, with all source/member/CAS checks and no
+effect replay. Any key or node in that no-mint case refuses. A still-live unused
+key refuses as `activation-retry-later`, retaining the full original key window.
+A returned prepared rollover reports `activation-prepared-retry`, never Enable
+completed; the next fresh-auth Enable uses the new generation.

@@ -24,7 +24,7 @@ from runtime.remote_access.home_activation import (
 from runtime.remote_access.home_activation_coordinator import ActivationRefused, HomeActivationCoordinator
 from runtime.remote_access.home_activation_owner import HomeActivationOwner
 from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
-from runtime.remote_access.home_activation_recovery import HomeActivationRecovery
+from runtime.remote_access.home_activation_recovery import HomeActivationRecovery, RecoveryRefused
 from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
 from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
@@ -173,6 +173,10 @@ class HomeActivationBackend:
                 return recovery.recover(expected_generation=expected_generation,
                     expected_operation_id=expected_operation_id, fresh_authenticated=fresh_authenticated,
                     observation_owner=observer._owner)
+        except RecoveryRefused as error:
+            if str(error) == 'retry_later':
+                raise EnablePreparationRefused('activation-retry-later') from None
+            raise ActivationRefused() from None
         except Exception:
             raise ActivationRefused() from None
 
