@@ -1444,7 +1444,9 @@ def main() -> int:
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_app_scheme import run as app_scheme
 
-                app_scheme(report)
+                if args.output is None:
+                    raise ValueError('app-scheme requires --output for native diagnostic artifacts')
+                app_scheme(report, args.output.resolve().parent)
             elif args.suite == 'toolchain':
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_toolchain import run as toolchain

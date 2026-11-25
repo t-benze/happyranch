@@ -191,7 +191,6 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     var disconnectSelected: (() -> Bool)?
     var actionResult: (() -> [String: Any])?
     weak var connectionApp: AppDelegate?
-    var statusChanged: ((String) -> Void)?
     private var connectionCommands: ConnectionWindow?
     private var connectionEventSequence = 0
     private var subscriptions: Set<String> = []
@@ -387,7 +386,6 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     func receiveOwnerSummary(_ raw: String) throws { try documentOwners.accept(raw) }
     func documentDidStart(url: URL? = nil) {
-        statusChanged?("{}") // Keep unsaved access until a confirmed state says otherwise.
         subscriptions.removeAll()
         connectionCommands?.invalidate(showNotice: false); connectionCommands = nil
         connectionEventSequence = 0
@@ -436,7 +434,6 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             diagnostic.readiness = state
             stage = .documentIdentityCheck
             guard document == expected, self.view === view else { throw AppAPIError.cancelled }
-            statusChanged?(statusJSON())
         } catch {
             if diagnostic.contextRead == "in-flight" { diagnostic.contextRead = "threw"; diagnostic.contextResult = "threw" }
             if diagnostic.bind == "in-flight" { diagnostic.bind = "threw"; diagnostic.bindResult = "threw" }
@@ -775,7 +772,6 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         replyHandler(nil, "unavailable")
     }
     private func emitStatus() {
-        statusChanged?(statusJSON())
         view?.callAsyncJavaScript("window.__hrAppState?.(data);", arguments: ["data": statusJSON()], in: nil, in: .page, completionHandler: nil)
         observe?("native_state_changed", generation)
     }

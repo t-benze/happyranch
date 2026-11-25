@@ -51,16 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var connectionWindow: ConnectionWindow?
     private weak var mainScheme: AppScheme?
     private let mainComputerCatalog = ConnectionComputerCatalog()
-    // AppKit chrome belongs to Main UI demand. Non-UI delegate/Stop paths
-    // must not create controls whose AppKit work can enter the pumped run loop.
-    private(set) lazy var mainToolbar = MainToolbarController()
 
     func bindMainScheme(_ scheme: AppScheme) {
         mainScheme = scheme
         scheme.connectionApp = self
-        scheme.statusChanged = { [weak self] raw in self?.mainToolbar.refresh(raw) }
-        mainToolbar.request = { [weak self] dialog in self?.requestMainDialog(dialog) == true }
-        mainToolbar.refresh(scheme.statusJSON())
         scheme.candidateSnapshot = { [weak self] in self?.homeInvite.bridgeCandidate }
         if homeInvite.selectedFailure != nil, !homeInvite.hasActiveSession { scheme.selectedUnavailable() }
         scheme.switchCandidate = { [weak self] in
@@ -110,10 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func showConnection() {
-        mainToolbar.open("connection")
+        requestMainDialog("connection")
     }
 
-    func showSettings() { mainToolbar.open("settings") }
+    func showSettings() { requestMainDialog("settings") }
 
     @discardableResult
     func requestMainDialog(_ dialog: String) -> Bool {

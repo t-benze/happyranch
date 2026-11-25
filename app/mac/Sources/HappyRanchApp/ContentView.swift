@@ -202,7 +202,7 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// Main content view: full-window WebView, with entries in the native toolbar.
+/// Main content view: full-window WebView; its header owns window controls.
 /// Daemon controls live in the Daemon menu bar menu.
 struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
@@ -245,7 +245,6 @@ struct ContentView: View {
                 .environmentObject(appDelegate)
         }
         .navigationTitle(windowTitle)
-        .background(MainToolbarAttachment(controller: appDelegate.mainToolbar))
     }
 
     private var windowTitle: String {
@@ -422,7 +421,7 @@ struct ContentView: View {
     }
 }
 
-/// Retained legacy phase strip; its MAC-3 cutover is separate from the toolbar.
+/// Retained legacy phase strip; its MAC-3 cutover is separate from the web header.
 private struct HomeSessionStatus: View {
     @ObservedObject var model: HomeInviteModel
     var body: some View {

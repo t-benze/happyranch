@@ -190,8 +190,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view; self.window = window
-        if let dialogApp {
-            dialogApp.mainToolbar.attach(window)
+        if dialogApp != nil {
             view.autoresizingMask = [.width, .height]
             window.setFrame(NSRect(x: 100, y: 100, width: 760, height: 560), display: true)
             window.makeKeyAndOrderFront(nil)
@@ -296,7 +295,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
     }
 
-    /// Capture the actual shared dialogs and native toolbar without screen
+    /// Capture the actual shared dialogs and web header without screen
     /// recording permission. WebKit supplies its composited page snapshot;
     /// AppKit draws the enclosing native frame at the same logical size.
     private func captureDialogs(_ view: WKWebView) async throws {
@@ -313,7 +312,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                             arguments: [:], in: nil, contentWorld: .page)
                     } else {
                         let deadline = Date().addingTimeInterval(4)
-                        while !app.mainToolbar.open(dialog) {
+                        while !app.requestMainDialog(dialog) {
                             guard Date() < deadline else { throw AppAPIError.unavailable }
                             try await Task.sleep(for: .milliseconds(25))
                         }
@@ -525,7 +524,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             application.setActivationPolicy(.regular)
             let app = AppDelegate()
             app.connectionRolePreference = .client
-            app.showSettings() // Unavailable entry requires a new manual Retry.
+            app.showSettings() // Unavailable menu entry is dropped; a later click is explicit.
             let host = NSHostingView(rootView: ContentView().environmentObject(app))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                                   styleMask: [.titled], backing: .buffered, defer: false)
@@ -553,11 +552,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                     _ = try await view.callAsyncJavaScript("window.coldDialogs = []; window.happyranchConnection.on('app.dialogRequested', raw => coldDialogs.push(JSON.parse(raw).dialog)); await window.happyranchConnection.call('app.status', '{}');", arguments: [:], in: nil, contentWorld: .page)
                     try await Task.sleep(for: .milliseconds(100))
                     let queued = try await view.callAsyncJavaScript("return coldDialogs.length;", arguments: [:], in: nil, contentWorld: .page) as? Int
-                    guard queued == 0, let toolbar = window.toolbar else { throw AppAPIError.unavailable }
-                    @MainActor func click(_ id: String) throws {
-                        guard let button = toolbar.items.first(where: { $0.itemIdentifier.rawValue == id })?.view as? NSButton else { throw AppAPIError.unavailable }
-                        button.performClick(nil)
-                    }
+                    guard queued == 0, window.toolbar == nil else { throw AppAPIError.unavailable }
                     @MainActor func requireDialog(_ expected: String) async throws {
                         while Date() < deadline {
                             let ready = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);", arguments: ["expected": expected], in: nil, contentWorld: .page) as? Bool
@@ -566,17 +561,13 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                         }
                         throw AppAPIError.unavailable
                     }
-                    checkpoint = "retry-settings"
-                    try click("dialog-retry"); try await requireDialog("settings")
+                    checkpoint = "menu-settings-after-admission"
+                    app.showSettings(); try await requireDialog("settings")
                     checkpoint = "menu-connection"
                     app.showConnection(); try await requireDialog("connection")
                     checkpoint = "menu-settings"
                     app.showSettings(); try await requireDialog("settings") // Cmd+, action.
-                    checkpoint = "toolbar-connection"
-                    try click("connection"); try await requireDialog("connection")
-                    checkpoint = "toolbar-settings"
-                    try click("settings"); try await requireDialog("settings")
-                    let expected = #"["settings","connection","settings","connection","settings"]"#
+                    let expected = #"["settings","connection","settings"]"#
                     var received: String?
                     repeat {
                         received = try await view.callAsyncJavaScript("return JSON.stringify(coldDialogs);", arguments: [:], in: nil, contentWorld: .page) as? String
@@ -591,7 +582,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                           scheme.generation == generation, app.webViewURL == nil, app.appAPITransport == nil,
                           app.clientBridge == nil, !app.homeInvite.hasActiveSession, app.homeInvite.candidateID == nil,
                           !app.isConnecting, app.currentHandle == nil, app.supervisor.state == .notConfigured else { throw AppAPIError.unavailable }
-                    log.write("cold_client", ["status": "PASS", "entries": 5, "dialogs": true, "no_target": true, "unchanged_target": true])
+                    log.write("cold_client", ["status": "PASS", "entries": 3, "dialogs": true, "no_target": true, "unchanged_target": true])
                     scheme.close()
                     window.orderOut(nil); window.contentView = nil
                     exit(0)

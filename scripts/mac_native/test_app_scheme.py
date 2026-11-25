@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 import subprocess
 import struct
 import sys
@@ -19,8 +20,9 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_cold_client, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
+from scripts.mac_native.app_scheme_diagnostics import sample_stalled_processes
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
-from scripts.mac_native.suite_supervisor import _build_environment, _command, _prepare_keychain
+from scripts.mac_native.suite_supervisor import CommandTimeout, _build_environment, _command, _prepare_keychain
 
 
 def native_evidence(parameterized: bool = True) -> tuple[bytes, list[dict], dict]:
@@ -116,7 +118,7 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
 
 class ColdClientCompositionEvidenceTests(unittest.TestCase):
     def test_requires_exact_composition_receipt_and_successful_process(self) -> None:
-        receipt = dict(event='cold_client', status='PASS', entries=5, dialogs=True, no_target=True, unchanged_target=True)
+        receipt = dict(event='cold_client', status='PASS', entries=3, dialogs=True, no_target=True, unchanged_target=True)
         for failure in ('none', 'missing', 'duplicate', 'failed', 'entries', 'dialogs', 'no-target', 'target-changed', 'nonzero'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
@@ -149,11 +151,14 @@ class ColdClientCompositionEvidenceTests(unittest.TestCase):
 class NativeWorkloadEvidenceTests(unittest.TestCase):
     def test_timeout_retains_partial_streams_xctest_and_swift_archive_without_passing(self) -> None:
         raw, records, inventory = native_evidence()
+        stalled = 'HappyRanchAppTests.HomeCandidateOwnershipTests/testStalled'
+        inventory['xctest'].append(stalled)
+        raw += b"Test Case '-[HappyRanchAppTests.HomeCandidateOwnershipTests testStalled]' started.\n"
         stdout = b'warning\n' * 4000 + raw + b'warning\n' * 4000
         stderr = b'diagnostic\n' * 4000 + b'error: synthetic timeout context\n'
-        for complete in (False, True):
-            stream = native_stream(records if complete else records[:4])
-            with self.subTest(complete_events=complete), tempfile.TemporaryDirectory(dir=ROOT) as folder:
+        for complete, partial_line in ((False, False), (True, False), (False, True)):
+            stream = native_stream(records if complete else records[:4]) + (b'{' if partial_line else b'')
+            with self.subTest(complete_events=complete, partial_line=partial_line), tempfile.TemporaryDirectory(dir=ROOT) as folder:
                 report = {}
                 def transfer(url: str, archive: Path, *args: object) -> dict:
                     with tarfile.open(archive, 'w:gz'):
@@ -161,13 +166,15 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                     return {'curl_exit_code': 0}
                 def command(argv: list[str], env: dict, cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
                     if 'test' not in argv:
-                        return 0, b''
-                    events = argv[argv.index('--event-stream-output-path') + 1]
-                    script = (f'from pathlib import Path; import os, time; Path({events!r}).write_bytes({stream!r}); '
-                              f'os.write(1, {stdout!r}); os.write(2, {stderr!r}); time.sleep(60)')
-                    # Real pipe draining, deadline, group kill/reap and report
-                    # boundary; no Swift compiler or native process is launched.
-                    return _command([sys.executable, '-c', script], env, cwd, time.monotonic() + 1, **kwargs)
+                        return (1, b'') if '--show-bin-path' in argv else (0, b'')
+                    event_write = ''
+                    output = stdout if '--disable-swift-testing' in argv else b'Swift Testing partial\n'
+                    if '--event-stream-output-path' in argv:
+                        events = argv[argv.index('--event-stream-output-path') + 1]
+                        event_write = f'Path({events!r}).write_bytes({stream!r}); '
+                    script = ('from pathlib import Path; import os, time; ' + event_write
+                              + f'os.write(1, {output!r}); os.write(2, {stderr!r}); time.sleep(60)')
+                    return _command([sys.executable, '-c', script], env, cwd, time.monotonic() + 0.5, **kwargs)
                 with patch.dict('os.environ', {'TMPDIR': folder}), patch(
                     'scripts.mac_native.suite_app_scheme._command', side_effect=command
                 ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
@@ -175,32 +182,44 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                 ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory), patch(
                     'scripts.mac_native.suite_app_scheme._prepare_keychain'
                 ):
-                    with self.assertRaises(TimeoutError):
-                        run(report)
+                    with self.assertRaisesRegex(RuntimeError, 'bin_path failed'):
+                        run(report, Path(folder))
                 section = json.loads(json.dumps(report))['app_scheme']
-                row = next(row for row in section['commands'] if row['name'] == 'product_build_and_all_tests')
-                self.assertIsNone(row['exit_code'], 'a killed command has no observed normal exit')
-                self.assertEqual(row['timeout_seconds'], 1200)
-                for name, data in (('stdout', stdout), ('stderr', stderr)):
-                    captured = row.get(name)
-                    self.assertIsInstance(captured, dict, 'timeout must retain each captured stream')
-                    self.assertEqual(captured['bytes'], len(data))
-                    self.assertEqual(captured['sha256'], hashlib.sha256(data).hexdigest())
-                    self.assertEqual(captured['head'], data[:2048].decode())
-                    self.assertEqual(captured['tail'], data[-2048:].decode())
-                    self.assertTrue(captured['excerpts_truncated'])
-                self.assertNotIn('Test Case', row['head'] + row['tail'])
-                self.assertEqual(row['test_results']['lines'], terminal_results(raw.decode())['lines'])
-                self.assertIn('synthetic timeout context', row['error_context']['text'])
+                for library, output in (('xctest', stdout), ('swift_testing', b'Swift Testing partial\n')):
+                    row = next(row for row in section['commands'] if row['name'] == 'product_' + library)
+                    self.assertIsNone(row['exit_code'], 'a killed command has no observed normal exit')
+                    self.assertEqual(row['command_error'], 'CommandTimeout')
+                    self.assertEqual(row['timeout_seconds'], 570)
+                    for name, data in (('stdout', output), ('stderr', stderr)):
+                        captured = row[name]
+                        self.assertEqual(captured['bytes'], len(data))
+                        self.assertEqual(captured['sha256'], hashlib.sha256(data).hexdigest())
+                        self.assertEqual(captured['head'], data[:2048].decode())
+                        self.assertEqual(captured['tail'], data[-2048:].decode())
+                        self.assertEqual(captured['excerpts_truncated'], len(data) > 4096)
+                    if library == 'xctest':
+                        self.assertNotIn('Test Case', row['head'] + row['tail'])
+                        self.assertEqual(row['test_results']['lines'], terminal_results(raw.decode())['lines'])
+                    self.assertIn('synthetic timeout context', row['error_context']['text'])
+                    artifact = section['native_tests']['diagnostic_artifacts'][library]
+                    encoded = (Path(folder) / artifact['path']).read_bytes()
+                    self.assertEqual(artifact['bytes'], len(encoded))
+                    self.assertEqual(artifact['sha256'], hashlib.sha256(encoded).hexdigest())
+                    saved = json.loads(encoded)
+                    for name, data in (('stdout', output), ('stderr', stderr)):
+                        self.assertEqual(gzip.decompress(base64.b64decode(saved[name]['data'])), data)
+                    self.assertIn('processes', saved['timeout_diagnostics'])
                 native = section['native_tests']
-                self.assertEqual(native['status'], 'FAIL', 'even a complete event stream cannot excuse timeout')
+                self.assertEqual(native['status'], 'FAIL', 'complete events cannot excuse either timeout')
                 self.assertIn('swift test exit unobserved', native['errors'])
+                self.assertEqual(native['library_exits'], [None, None])
+                self.assertIn(stalled, [row['id'] for row in native['unfinished_cases']])
+                self.assertIn(dict(library='XCTest', id=stalled, event='started'), native['lifecycle'])
                 xctest = next(case for case in native['cases'] if case['library'] == 'XCTest')
                 self.assertEqual(xctest['status'], 'PASS', 'preserve observed partial outcomes')
                 if not complete:
-                    running = next(case for case in native['cases'] if case['library'] == 'Swift Testing')
+                    running = next(row for row in native['unfinished_cases'] if 'retainsSave' in row['id'])
                     self.assertEqual(running['status'], 'INCOMPLETE')
-                    self.assertIn('retainsSave', running['id'])
                 archive = native['event_archive']
                 self.assertEqual(gzip.decompress(base64.b64decode(archive['data'])), stream)
                 self.assertEqual(archive['sha256'], hashlib.sha256(stream).hexdigest())
@@ -218,31 +237,40 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                 def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
                     calls.append((argv, kwargs))
                     if 'test' in argv:
+                        output = raw if '--disable-swift-testing' in argv else b''
                         if '--event-stream-output-path' in argv:
                             Path(argv[argv.index('--event-stream-output-path') + 1]).write_bytes(stream)
                         if code is None:
-                            raise TimeoutError('synthetic native timeout')
-                        return code, raw
+                            raise CommandTimeout(output, b'')
+                        return code, output
                     return (1, b'') if '--show-bin-path' in argv else (0, b'')
                 with patch.dict('os.environ', {'TMPDIR': folder}), patch(
                     'scripts.mac_native.suite_app_scheme._command', side_effect=command
                 ), patch('scripts.mac_native.suite_app_scheme.curl_attempt', side_effect=transfer), patch(
                     'scripts.mac_native.suite_app_scheme.verify_checksum'
-                ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory, create=True), patch(
-                    'scripts.mac_native.suite_app_scheme._prepare_keychain', create=True
+                ), patch('scripts.mac_native.suite_app_scheme.source_inventory', return_value=inventory), patch(
+                    'scripts.mac_native.suite_app_scheme._prepare_keychain'
                 ):
-                    with self.assertRaisesRegex((RuntimeError, TimeoutError), 'bin_path failed|synthetic native timeout'):
-                        run(report)
+                    with self.assertRaisesRegex(RuntimeError, 'bin_path failed'):
+                        run(report, Path(folder))
                 test_calls = [(argv, kwargs) for argv, kwargs in calls if 'test' in argv]
-                self.assertEqual(len(test_calls), 1, 'one full-package build/test invocation')
-                argv, kwargs = test_calls[0]
-                self.assertNotIn('--filter', argv)
-                self.assertNotIn('--skip', argv)
-                for option in ('--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel'):
-                    self.assertIn(option, argv)
-                self.assertEqual(argv[argv.index('-c') + 1], 'release')
+                self.assertEqual(len(test_calls), 2, 'separate full-package library invocations, even after timeout')
+                for index, (argv, kwargs) in enumerate(test_calls):
+                    self.assertNotIn('--filter', argv)
+                    self.assertNotIn('--skip', argv)
+                    for option in ('--enable-testable-imports', '--no-parallel'):
+                        self.assertIn(option, argv)
+                    self.assertIn('--enable-xctest' if index == 0 else '--disable-xctest', argv)
+                    self.assertIn('--disable-swift-testing' if index == 0 else '--enable-swift-testing', argv)
+                    self.assertEqual(argv[argv.index('-c') + 1], 'release')
+                    self.assertEqual(kwargs['output_cap'], 16 * 1024 * 1024)
+                    self.assertIn('timeout_observer', kwargs)
+                argv = test_calls[1][0]
                 self.assertEqual(argv[argv.index('--event-stream-version') + 1], '0')
-                self.assertEqual(kwargs['output_cap'], 16 * 1024 * 1024)
+                for row in report['app_scheme']['commands']:
+                    if row['name'] in ('product_xctest', 'product_swift_testing'):
+                        self.assertEqual(row['timeout_seconds'], 570)
+                        self.assertEqual(row['diagnostic_timeout_seconds'], 30)
                 result = report['app_scheme']['native_tests']
                 self.assertEqual(result['status'], 'PASS' if code == 0 else 'FAIL')
                 if code == 0:
@@ -259,8 +287,32 @@ class NativeWorkloadEvidenceTests(unittest.TestCase):
                 self.assertEqual(archive['sha256'], hashlib.sha256(stream).hexdigest())
                 self.assertEqual(archive['gzip_bytes'], len(compressed))
                 self.assertEqual(archive['gzip_sha256'], hashlib.sha256(compressed).hexdigest())
-                row = next(row for row in report['app_scheme']['commands'] if row['name'] == 'product_build_and_all_tests')
-                self.assertEqual(row['timeout_seconds'], 1200)
+
+    def test_timeout_samples_only_owned_processes_before_kill(self) -> None:
+        capture, observed = {}, []
+        stack = b'synthetic stalled test stack\n'
+        def diagnostic(argv: list[str], env: dict, cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+            if argv[0] == '/bin/ps':
+                pid = capture['driver_pid']
+                return 0, f'{pid} 1 {pid} /test/PackageTests.xctest\n999999 1 1 /unrelated\n'.encode()
+            pid = int(argv[1])
+            os.kill(pid, 0)  # The actual stalled process must still be alive.
+            observed.append(pid)
+            self.assertEqual(argv[2:5], ['1', '1', '-file'])
+            Path(argv[5]).write_bytes(stack)
+            return 0, b'sampled\n'
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = Path(folder)
+            with patch('scripts.mac_native.app_scheme_diagnostics._command', side_effect=diagnostic):
+                with self.assertRaises(CommandTimeout):
+                    _command([sys.executable, '-c', 'import time; time.sleep(60)'], dict(os.environ), scratch,
+                             time.monotonic() + 0.2, timeout_observer=lambda pid: sample_stalled_processes(
+                                 pid, dict(os.environ), scratch, time.monotonic() + 5, capture))
+            self.assertEqual(observed, [capture.get('driver_pid')])
+            self.assertTrue(capture['complete'])
+            self.assertEqual(gzip.decompress(base64.b64decode(capture['samples'][0]['stack']['data'])), stack)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(capture['driver_pid'], 0)  # Reaped only after sampling.
 
     def test_disposable_fixture_cleans_exact_scratch_keychain_and_checks_preferences(self) -> None:
         for fails in (False, True):
@@ -533,7 +585,7 @@ class QualificationVerdictTests(unittest.TestCase):
                     'scripts.mac_native.suite_app_scheme._command', side_effect=[(code, raw), (1, b'')],
                 ):
                     with self.assertRaisesRegex(RuntimeError, ('macos' if code == 0 else 'swift_version') + ' failed'):
-                        run(report)
+                        run(report, Path(folder))
                 row = json.loads(json.dumps(report))['app_scheme']['commands'][0]
                 self.assertNotIn('Test Case', row['head'] + row['tail'])
                 self.assertEqual(row.get('test_results', {}).get('lines'), outcomes)
@@ -552,7 +604,7 @@ class QualificationVerdictTests(unittest.TestCase):
                 'scripts.mac_native.suite_app_scheme._command', return_value=(1, raw),
             ):
                 with self.assertRaisesRegex(RuntimeError, 'swift_version failed'):
-                    run(report)
+                    run(report, Path(folder))
             retained = report['app_scheme']['commands'][0].get('loader_diagnostics', {})
             self.assertEqual(retained.get('matching_lines'), 2000)
             self.assertTrue(retained['truncated'])
@@ -577,7 +629,7 @@ class QualificationVerdictTests(unittest.TestCase):
                     'scripts.mac_native.suite_app_scheme._command', return_value=(1, raw),
                 ) as command:
                     with self.assertRaisesRegex(RuntimeError, 'swift_version failed'):
-                        run(report)
+                        run(report, Path(folder))
                 command.assert_called_once()
                 # Round-trip exactly the JSON record probe.py retains after failure.
                 row = json.loads(json.dumps(report))['app_scheme']['commands'][0]

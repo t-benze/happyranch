@@ -1692,27 +1692,29 @@ including browser adapter list/status and operator-only bind/reject; the daemon
 allowlist and contract semantics are unchanged.
 
 This is source delivery, not executed Mac acceptance. MAC-2b owns dialogs,
-toolbar/menu and screenshot qualification; MAC-4 owns Quit/close/Relaunch gating
+app-menu and screenshot qualification; Track B owns the web header; MAC-4 owns Quit/close/Relaunch gating
 and language. The PR body carries the current per-PR build ledger, including
 failed attempts. A build requires independent exact-head review APPROVE and is
 submitted by QA, never the maker.
 
 ### MAC-2b Main dialog/chrome source delivery
 
-Mac now requests Settings… (Cmd+,) and Connection… from the application menu
-and labelled native toolbar entries through the same `app.dialogRequested`
-event. ContentView hosts the bundled Main before any target is selected, so a
+Mac requests Settings… (Cmd+,) and Connection… from the application menu
+through the existing `app.dialogRequested` event. ContentView hosts the bundled Main before any target is selected, so a
 cold/no-target client can subscribe and use these entries. API calls still
 refuse with `503 no_target`; dialog entry never starts or connects a target.
 Native emits only to the current Main's admitted subscriber, including
-target recovery. Requests without that subscriber are dropped; a named native
-Retry needs a new explicit click. Opening, switching and closing remain the
+target recovery. Requests without that subscriber are dropped; another explicit
+action is required. Opening, switching and closing remain the
 existing shared web dialog/owner gate's responsibility. There is no auxiliary
 web app, network port, queued event or new visibility/acknowledgement protocol.
-Toolbar controls are constructed lazily on Main binding/attachment or an
-explicit dialog entry, so a process-supervision-only AppDelegate does not
-initialize AppKit chrome. This does not change Stop/Quit signal deadlines,
-restart cancellation, ownership or observed-exit settlement.
+Founder THR-387 seq146 removes Main's native window toolbar. Controls live in
+the web header: Settings/Connection, target/status pill, labelled persistent
+Access wasn't saved warning and named unavailable/Retry action. Track B builds
+that header. The native app menu remains; status/events and fixed validated
+bridge commands with existing native confirmations remain the native boundary.
+This round does not change Stop/Quit deadlines, restart cancellation, ownership
+or observed-exit settlement.
 
 The Main facade admits the already supported client reads/actions via the
 existing bounded duplicate-free Connection parser, ledger, native confirmations
@@ -1729,7 +1731,7 @@ resume in the new role or after a role round trip. MAC-2a target/owner
 admission still owns commit/disconnect. No daemon auth, remote allowlist,
 dependency, schema or credential-custody rule changes.
 
-The native status/candidate pill and persistent access-unsaved warning use
+The web header status/candidate pill and persistent access-unsaved warning use
 `app.status` projections. Clicking the warning opens Connection's existing
 save-specific Retry presentation. Unavailable document evidence preserves the
 warning across Disconnect, Cancel, target changes and navigation. Native retains
@@ -1740,19 +1742,20 @@ the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
 legacy phase-strip/compatibility cutover remain separate.
 
 The existing `SUITE=app-scheme` collector additionally captures native 760×560
-Settings, Connection and Main toolbar/pill/warning PNGs at 100%/200% text,
+Settings, Connection and Main web-viewport PNGs at 100%/200% text,
 EN/ZH and light/dark (24 total). Same-product qualifier processes check the
 visible/focused dialog and locale, then combine WebKit snapshots with the native
 AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
 in `probe.json.app_scheme.dialogs`; no Jenkins job/config change is required.
 A required portless cold-client qualification uses the real ContentView/
 AppDelegate composition and production resource lookup; it checks focused
-Settings/Connection from menus, toolbar and manual Retry, no replay or target
-selection, and explicit `503 no_target`. The full unfiltered XCTest + Swift
+Settings/Connection from explicit menu actions, absence of a native toolbar, no
+replay or target selection, and explicit `503 no_target`. The full unfiltered XCTest + Swift
 Testing and transport qualification remain in the same workload. Native
 compile/tests/captures/layout/accessibility are
 NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
-exact head and consumes this PR's allowance (initial ledger 0/6).
+exact head and consumes this PR's allowance. Founder seq146 sets PR #1863 to
+6/9 used, one diagnostic and two final-QA builds remaining; the maker runs none.
 
 ### MAC-1 transport implementation and qualification status
 
@@ -1808,7 +1811,10 @@ PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/prob
 app-scheme` builds the actual product at the approved head, executes the full
 unfiltered app/mac package (both XCTest and Swift Testing targets), and qualifies the
 shipping scheme/adapter against a synthetic local daemon using the built SPA.
-Release tests explicitly enable testable imports and both libraries. The report
+Release tests enable testable imports and run both libraries separately:
+`--enable-xctest --disable-swift-testing`, then
+`--disable-xctest --enable-swift-testing`, without filters. An XCTest timeout or
+failure cannot suppress the second command. The report
 retains every XCTest outcome and every serial Swift Testing invocation, including
 parameter ordinals, using version-0 JSON events and an independent source census.
 Missing source cases, skips, failures, incomplete/unsupported capture or nonzero
@@ -1827,10 +1833,24 @@ without claiming cross-stream ordering. Partial XCTest outcomes reach the native
 assessment alongside the Swift archive, including an incomplete running test.
 The command exit stays null/unobserved and the native verdict stays FAIL even
 when all captured outcomes passed; timeout is never substituted with exit 1
-or success. The existing process-group kill/reap remains mandatory.
+or success. The existing process-group kill/reap remains mandatory, after a bounded stack
+sample of stalled test processes. The source-owned `--output` directory receives
+`mac-native-xctest.json` and `mac-native-swift_testing.json`, using the existing
+`evidence/*.json` artifact glob. They retain full stdout/stderr and Swift JSONL
+as byte-exact gzip/base64 with raw/compressed digests, plus command/build/source
+identity and process/stack records. XCTest start/end lines and Swift function/
+parameter events identify started cases; `native_tests.lifecycle` records their
+starts/ends and `native_tests.unfinished_cases` names those without completion.
+A partial final JSONL record retains completed prefix records for diagnosis,
+while its exact raw archive and verdict FAIL retain that failure. Files are initialized for this build before tests;
+archive failure refuses native PASS. Each file is bounded to 8 MiB, each sample
+to 1 MiB. Full diagnostics are kept outside the capped console/probe log.
 Results are not truncated; command/event overflow at 16 MiB
-fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed times
-recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
+fails. Each library has 570s plus up to 30s of timeout diagnostics (1,200s combined)
+inside the unchanged shared 2,100s deadline. Before killing the group, a bounded
+`ps` census selects only that group/descendants; `sample <pid> 1 1 -file` samples
+test runners first (32-process cap, five seconds each, 30s total with census).
+Errors, missing stacks and omissions stay explicit. Elapsed times are recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
 The existing app-scheme qualification budgets/steps and Jenkins configuration
 remain unchanged. See the full workload and bounds in `app/mac/README.md`.
 The full run reuses the supervisor's scratch login-Keychain fixture for the

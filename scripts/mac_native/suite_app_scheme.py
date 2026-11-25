@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
+from scripts.mac_native.app_scheme_diagnostics import archive_stream, sample_stalled_processes, write_diagnostics
 from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import CommandTimeout, ROOT, _build_environment, _command, _prepare_keychain
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
@@ -180,7 +181,7 @@ def qualify_cold_client(argv: list[str], env: dict[str, str], scratch: Path, dea
         receipts = [row for row in read_events(events) if row.get('event') == 'cold_client']
         result['events'] = receipts
         if (code == 0 and len(receipts) == 1 and receipts[0].get('status') == 'PASS'
-                and receipts[0].get('entries') == 5 and receipts[0].get('dialogs') is True
+                and receipts[0].get('entries') == 3 and receipts[0].get('dialogs') is True
                 and receipts[0].get('no_target') is True
                 and receipts[0].get('unchanged_target') is True):
             result['status'] = 'PASS'
@@ -403,7 +404,7 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
             'complete': complete, 'partial': not complete}
 
 
-def run(report: dict[str, Any]) -> None:
+def run(report: dict[str, Any], artifact_dir: Path) -> None:
     section: dict[str, Any] = {'commands': [], 'events': [], 'qualification': {'status': 'NOT RUN'}}
     report['app_scheme'] = section
     tmp = Path(os.environ.get('TMPDIR', ''))
@@ -415,15 +416,21 @@ def run(report: dict[str, Any]) -> None:
         env = _build_environment(scratch)
 
         def command(name: str, argv: list[str], cwd: Path = ROOT, seconds: float = 60,
-                    allow_failure: bool = False) -> bytes:
+                    allow_failure: bool = False, capture: dict[str, Any] | None = None) -> bytes:
             row: dict[str, Any] = {'name': name, 'argv': argv, 'exit_code': None, 'timeout_seconds': seconds}
             section['commands'].append(row)
             started = time.monotonic()
             code, raw, stderr = None, b'', bytearray()
             try:
+                options = {}
+                if capture is not None:
+                    row['diagnostic_timeout_seconds'] = 30
+                    capture['timeout_diagnostics'] = {}
+                    options['timeout_observer'] = lambda pid: sample_stalled_processes(
+                        pid, env, scratch, min(deadline, started + seconds + 30), capture['timeout_diagnostics'])
                 code, raw = _command(argv, env, cwd, min(deadline, started + seconds),
-                                     output_cap=TEST_OUTPUT_CAP if name == 'product_build_and_all_tests' else 1024 * 1024,
-                                     stderr_data=stderr)
+                                     output_cap=TEST_OUTPUT_CAP if capture is not None else 1024 * 1024,
+                                     stderr_data=stderr, **options)
             except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
                 if isinstance(error, CommandTimeout):
                     raw = error.stdout
@@ -431,6 +438,9 @@ def run(report: dict[str, Any]) -> None:
                 row['command_error'] = type(error).__name__
                 raise
             finally:
+                if capture is not None:
+                    capture.update(stdout=archive_stream(raw), stderr=archive_stream(bytes(stderr)),
+                                   exit_code=code, command_error=row.get('command_error'))
                 for stream, data in (('stdout', raw), ('stderr', bytes(stderr))):
                     row[stream] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                         head=data[:2048].decode(errors='replace'), tail=data[-2048:].decode(errors='replace'),
@@ -481,27 +491,61 @@ def run(report: dict[str, Any]) -> None:
             section['keychain_fixture'].append(dict(name=name, status=status, expected=expected, actual=actual))
         with ExitStack() as cleanup:
             _prepare_keychain(cleanup, env, scratch, deadline, keychain_row, section['keychain_fixture'])
-            raw = b''
-            try:
-                raw = command('product_build_and_all_tests', swift + [
-                    '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
-                    '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
-                    seconds=1200, allow_failure=True)
-            except CommandTimeout as error:
-                raw = error.output
-                raise
-            finally:
-                code = section['commands'][-1]['exit_code']
-                # Retain even partial/failed captures before scratch/Keychain cleanup.
-                events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
-                native = section['native_tests']
-                native.update(assess_native(raw, events, inventory, code), capture='assessed',
-                    event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
+            captures = {}
+            native = section['native_tests']
+            native['diagnostic_artifacts'] = {}
+            for library in ('xctest', 'swift_testing'):
+                captures[library] = dict(library=library, source_sha=os.environ.get('SOURCE_SHA'),
+                                         build_number=os.environ.get('BUILD_NUMBER'), status='NOT RUN')
+                native['diagnostic_artifacts'][library] = write_diagnostics(artifact_dir, library, captures[library])
+            outputs, codes = [], []
+            events = b''
+            archive_errors = []
+            for library, options in (
+                ('xctest', ['--enable-xctest', '--disable-swift-testing']),
+                ('swift_testing', ['--disable-xctest', '--enable-swift-testing',
+                                   '--event-stream-output-path', str(swift_events), '--event-stream-version', '0']),
+            ):
+                capture = captures[library]
+                capture['status'] = 'running'
+                raw = b''
                 try:
-                    native['event_archive'] = archive_events(events)
-                except ValueError as error:
-                    native['status'] = 'FAIL'
-                    native['errors'].append(str(error))
+                    # Each library gets 570s plus at most 30s of diagnostics.
+                    # Failure/timeout in XCTest cannot suppress Swift Testing.
+                    raw = command('product_' + library, swift + [
+                        '--enable-testable-imports', '--no-parallel', *options],
+                        seconds=570, allow_failure=True, capture=capture)
+                except CommandTimeout as error:
+                    raw = error.output
+                except (TimeoutError, RuntimeError, subprocess.TimeoutExpired):
+                    pass  # Command metadata retains the failure, never PASS.
+                finally:
+                    row = section['commands'][-1]
+                    codes.append(row['exit_code'])
+                    outputs.append(raw)
+                    capture.update(status='captured', command=row)
+                    if library == 'swift_testing':
+                        if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP:
+                            events = swift_events.read_bytes()
+                        capture['events'] = archive_stream(events)
+                    try:
+                        native['diagnostic_artifacts'][library] = write_diagnostics(artifact_dir, library, capture)
+                    except (OSError, ValueError) as error:
+                        archive_errors.append(library + ' archive: ' + type(error).__name__)
+            code = None if None in codes else next((code for code in codes if code), 0)
+            native.update(assess_native(b'\n'.join(outputs), events, inventory, code), capture='assessed',
+                event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest(), library_exits=codes)
+            native['errors'].extend(archive_errors)
+            if any(row.get('command_error') for row in section['commands'] if row['name'] in ('product_xctest', 'product_swift_testing')):
+                native['errors'].append('native library command failed or timed out')
+            native['unfinished_cases'] = [row for row in native['cases']
+                if row['status'] == 'INCOMPLETE' or (row.get('starts') and not row.get('ends') and not row.get('outcomes'))]
+            try:
+                native['event_archive'] = archive_events(events)
+            except ValueError as error:
+                native['errors'].append(str(error))
+            if native['errors']:
+                native['status'] = 'FAIL'
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):

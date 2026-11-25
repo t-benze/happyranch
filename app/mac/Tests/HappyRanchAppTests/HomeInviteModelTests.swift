@@ -1075,36 +1075,32 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         let selected = try XCTUnwrap(model.activeID)
         let (root, scheme, _, transport) = try AppSchemeSwitchTests().fixture()
         defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
-        let toolbar = MainToolbarController()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { toolbar.detach(window); window.close() }
-        toolbar.attach(window)
-        func warningVisible() -> Bool { window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "access-unsaved" } == true }
-        scheme.statusChanged = { toolbar.refresh($0) }
+        func warningPresent() throws -> Bool {
+            let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            return try XCTUnwrap(status["access_unsaved"] as? Bool)
+        }
         scheme.disconnectSelected = { model.disconnectActive(); return true }
         try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
         XCTAssertNil(scheme.selectTransport(id: selected.uuidString, transport: try XCTUnwrap(model.appTransport), remote: true))
         scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
-        XCTAssertTrue(warningVisible()); XCTAssertEqual(model.saveFailure, .saveFailed)
+        XCTAssertTrue(try warningPresent()); XCTAssertEqual(model.saveFailure, .saveFailed)
         let disconnected = await model.disconnectSelected(using: scheme)
         XCTAssertNil(disconnected)
         XCTAssertTrue(model.cleanupOutcomes[selected] == "confirmed")
         XCTAssertFalse(model.hasActiveSession); XCTAssertNil(model.appTransport)
         XCTAssertFalse(model.bridgeHasUnsavedAccess, "Disconnect releases credential retry custody")
         XCTAssertEqual(model.saveFailure, .saveFailed, "No active target is not a save confirmation")
-        XCTAssertTrue(warningVisible(), "Disconnect's immediate status must retain the warning")
+        XCTAssertTrue(try warningPresent(), "Disconnect's immediate status must retain the warning")
         scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
-        XCTAssertTrue(warningVisible(), "SwiftUI's subsequent projection must also retain it")
+        XCTAssertTrue(try warningPresent(), "SwiftUI's subsequent projection must also retain it")
         let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
         XCTAssertEqual(status["state"] as? String, "no_target")
         XCTAssertEqual(status["access_unsaved"] as? Bool, true)
         XCTAssertTrue(model.retryGuidance.contains("new invite"))
         // Direct transport selection and document loss cannot confirm a save.
         XCTAssertNil(scheme.selectTransport(id: "other", transport: transport, remote: true))
-        XCTAssertTrue(warningVisible())
-        scheme.documentDidStart(); XCTAssertTrue(warningVisible())
+        XCTAssertTrue(try warningPresent())
+        scheme.documentDidStart(); XCTAssertTrue(try warningPresent())
         await store.configure()
         model.accept(try HomeInviteModelTests().invite(home: "B"))
         let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
@@ -1112,7 +1108,7 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         XCTAssertTrue(model.hasUnsavedAccessWarning, "Saving B does not confirm A's failed save")
         model.cancel(); await model.bridgeSettle()
         scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
-        XCTAssertTrue(warningVisible(), "Cancel and an unrelated save retain the original failure")
+        XCTAssertTrue(try warningPresent(), "Cancel and an unrelated save retain the original failure")
     }
 
     @MainActor
@@ -1128,18 +1124,14 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         model.disconnectActive()
         let stopped = await model.waitForCleanup(id: selected)
         XCTAssertTrue(stopped); XCTAssertTrue(model.hasUnsavedAccessWarning)
-        let toolbar = MainToolbarController()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { toolbar.detach(window); window.close() }
-        toolbar.attach(window)
         let (root, scheme, _, _) = try AppSchemeSwitchTests().fixture()
         defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
-        scheme.statusChanged = { toolbar.refresh($0) }
         scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
-        func warningVisible() -> Bool { window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "access-unsaved" } == true }
-        XCTAssertTrue(warningVisible())
+        func warningPresent() throws -> Bool {
+            let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            return try XCTUnwrap(status["access_unsaved"] as? Bool)
+        }
+        XCTAssertTrue(try warningPresent())
         await store.allowSave(); await store.gate.arm("save-return")
         do {
             model.accept(try HomeInviteModelTests().invite(home: home))
@@ -1150,12 +1142,12 @@ final class HomeCandidateOwnershipTests: XCTestCase {
             XCTAssertNotNil(readback.networkProfileID)
             XCTAssertTrue(model.hasUnsavedAccessWarning, "Model has not received the protected result yet")
             scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
-            XCTAssertTrue(warningVisible())
+            XCTAssertTrue(try warningPresent())
             await store.gate.release(); await model.bridgeSettle()
             XCTAssertFalse(model.hasUnsavedAccessWarning)
             XCTAssertNil(model.saveFailure)
             scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
-            XCTAssertFalse(warningVisible(), "Matching confirmed write/readback clears the native warning")
+            XCTAssertFalse(try warningPresent(), "Matching confirmed write/readback clears the Main status warning")
         } catch {
             await store.gate.release(); model.cancel(); await model.bridgeSettle()
             try await store.delete(binding: target.binding)

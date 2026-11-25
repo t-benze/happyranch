@@ -56,33 +56,31 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ### MAC-2b: Settings/Connection in Main
 
-The native toolbar and application menu now request the existing shared web
-Settings and Connection dialogs in the retained Main document. Settings… uses
-Cmd+,. ContentView creates Main on a cold client with no selected target;
-dialog subscription readiness is independent of transport readiness. API calls
-without a selected target return `503 no_target`. Dialog entry starts no daemon
-and makes no connection. The packager no longer builds/stages the obsolete
-`dist-connection` /
-`Contents/Resources/Connection` auxiliary app. No second web app or listener is
-created. The shared dialog owner gate
-continues to own switching, unsaved edits, focus and close; opening a dialog
-never selects a candidate, reconnects or retries a save. An unavailable entry
-shows its named manual Retry in the native toolbar. Loading/recovery never
-replays a dropped click. Native entries use the launch language (EN/ZH).
-The delegate creates its toolbar lazily when Main binds, attaches or receives
-an explicit dialog entry. Constructing a delegate for process supervision alone
-does not initialize AppKit toolbar controls. Existing synchronous Stop/Quit
-signal waits, restart cancellation and observed-exit settlement are unchanged.
-Fixed toolbar defaults contain only the always-present entries. One guarded
-reconciliation path adds/removes the warning and manual Retry, including state
-received before attachment, repeated refresh and attachment to a new window.
-Detaching Main releases its toolbar attachment; native tests close their windows
-and retire WebKit navigation/script handlers even when an assertion throws.
+The application menu requests the existing shared web Settings and Connection
+dialogs in the retained Main document. Settings… keeps Cmd+,. ContentView
+creates Main on a cold client with no selected target; dialog subscription
+readiness is independent of transport readiness. API calls without a selected
+target return `503 no_target`. Dialog entry starts no daemon and makes no
+connection. The packager no longer builds/stages the obsolete `dist-connection`
+/ `Contents/Resources/Connection` auxiliary app. No second web app or listener
+is created. The shared dialog owner gate owns switching, unsaved edits, focus
+and close; opening a dialog never selects a candidate, reconnects or retries a
+save. Loading/recovery never replays a dropped click.
 
-The native status/candidate pill and **Access wasn't saved / 访问权限未保存**
-warning read the existing Main status projection. The warning opens Connection,
-whose existing Retry action uses the existing native parser, mutation ledger,
-confirmation/Keychain and write/readback implementation. Main reuses that
+Founder THR-387 seq146 removes the native window toolbar and its controls.
+Settings, Connection, target/status pill, persistent **Access wasn't saved /
+访问权限未保存** warning and named **… unavailable · Retry** action belong in
+the web header; Track B implements that header. The native app-menu entries
+remain and route directly through `app.dialogRequested`. A menu request without
+an admitted Main subscriber is dropped and requires a fresh explicit action.
+Native continues to supply `app.status` / `app.stateChanged`, including
+`access_unsaved`, and existing validated bridge commands/confirmations own
+native effects. This round does not implement the web header or change
+Stop/Quit/restart behavior.
+
+The web header's warning opens Connection, whose existing Retry action uses the
+existing native parser, mutation ledger, confirmation/Keychain and write/readback
+implementation. Main reuses that
 dispatcher without constructing its former auxiliary window or bundle. Named
 dialog/client subscriptions are document scoped; retirement revokes them and
 late replies cannot enter a replacement Main. A missing document never clears
@@ -104,7 +102,7 @@ still runs the full unfiltered XCTest + Swift Testing workload and transport
 qualification. It additionally launches the same product's existing qualifier
 in `dialogs-en` and `dialogs-zh` modes (40 seconds each, within the existing
 2,100-second suite deadline). Each captures Settings, Connection and Main with
-native toolbar/pill/warning, in light/dark and 100%/200% web text: **24 PNGs,
+the web viewport, in light/dark and 100%/200% web text: **24 PNGs,
 each 760×560**. The qualifier checks the rendered destination, focused dialog
 and locale. WebKit's page snapshot is composited with AppKit's native window
 frame; no screen-recording permission is requested. Only the commissioned
@@ -120,16 +118,17 @@ locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
 
 Maker native compilation, XCTest/Swift Testing, screenshot capture, native
 layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
-The source PR starts at **0/6 Mac builds**. The existing portable command below
+PR #1863 has **6/9 builds used**, with one diagnostic and two final-QA builds
+remaining under Founder THR-387 seq146. The maker runs no Mac/Jenkins build. The existing portable command below
 checks collector failures and the shipping JavaScript event/retirement seam;
 it does not establish native acceptance. `MainDialogTests` adds real WebKit
-drop/subscription/retirement and native toolbar/Retry/warning coverage to the
+drop/subscription/retirement coverage to the
 unfiltered native workload. The same product qualifier also runs a portless
 `cold-client` case through the real ContentView/AppDelegate composition, using
 the release assets at its normal bundle resource paths. It requires focused
-Settings/Connection from menus, toolbar and manual Retry, no replay/selection,
+Settings/Connection from explicit menu actions, no native toolbar, no replay/selection,
 and explicit `503 no_target`; its receipt is required independently of captures.
-The native save-outcome cases exercise model → scheme Disconnect → toolbar and
+The native save-outcome cases exercise model → scheme Disconnect → `app.status.access_unsaved` and
 a matching production Keychain write/readback in the existing disposable login
 fixture. These added native cases and their regression proofs are **NOT RUN**
 on Linux.
@@ -226,7 +225,7 @@ dirty/failed or unresolved owner evidence and native non-GET transfers. Document
 loss retains unresolved-save uncertainty; a replacement clean summary cannot
 clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
 a later slice. The locale field reports the native launch language. MAC-2b adds
-Settings/Connection hosting and toolbar/menu as described above. Locale setters,
+Settings/Connection hosting and app-menu entry as described above. Locale setters,
 local controls and launch policy remain later slices; the transport PR alone
 does not qualify those contracts.
 
@@ -250,7 +249,7 @@ page read/parse/emit state or finish/stop facts. No speculative framing or
 buffering change is made. After independent review
 APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
 It compiles the product and runs **all tests in both app/mac test targets** in
-one unfiltered `swift test -c release` invocation, then launches that same
+two separate unfiltered `swift test -c release` commands, then launches that same
 product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
 uses the production loader/adapter and built SPA. The full tests reuse the
 supervisor suite's disposable, unlocked login Keychain inside scratch HOME for
@@ -264,8 +263,11 @@ SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
 The internal qualification entry is explicitly commissioned by MAC-1 and is the
 only test-only app entry added; ordinary app startup never selects it.
 
-The test invocation explicitly enables testable imports, XCTest and Swift
-Testing, and uses `--no-parallel` for per-invocation attribution. Release testing
+Both commands enable testable imports and use `--no-parallel` for invocation
+attribution. XCTest uses `--enable-xctest --disable-swift-testing`; Swift Testing
+uses `--disable-xctest --enable-swift-testing`. Both run the entire package
+without case filters, sharing the same build scratch. XCTest failure/timeout
+does not suppress the separate Swift Testing command. Release testing
 with `--enable-testable-imports` is supported by SwiftPM; this harness does not
 substitute a debug product. Native compatibility and elapsed time at the revised
 head are **NOT RUN on Linux**. Unsupported options or output fail closed.
@@ -300,17 +302,40 @@ and verify `sha256` to reconstruct issues and lifecycle events. The existing
 JSON artifact collection needs no Jenkins configuration change. Raw events may
 contain synthetic test argument/issue details; verdict rows remain closed.
 
-The native compile/test step is bounded to 1,200 seconds within a shared
-2,100-second suite deadline. The old 600-second filtered-test budget has no
-full-suite timing evidence: this larger bound accommodates the 611 source
-functions and existing network tests with 30-second request bounds, but is not
-a measured sufficiency claim. Node transfer (90s), npm install (240s), SPA build
-(180s), and three qualification processes (40s each) retain their budgets,
-leaving 270s for fixture/metadata/overhead. Existing fixture cleanup retains its
-bounded 30-second grace after the command deadline. Each command records its limit and elapsed
-time. Timeout/output overflow records an incomplete capture and fails; it is
-never reported as test success. The existing Jenkins job envelope/configuration
-is unchanged; reviewed SOURCE_SHA dispatch selects this in-repo workload.
+The native compile/test commands each have a 570-second execution deadline plus
+up to 30 seconds for timeout diagnostics (1,200 seconds combined) within the
+unchanged 2,100-second suite deadline. At timeout, before the existing group
+kill/reap, a bounded `ps` census selects the command group and its descendants;
+`sample <pid> 1 1 -file <scratch-path>` captures stacks, prioritizing test runners.
+The diagnostic budget covers at most 32 processes, five seconds per sample and
+30 seconds total including census. Missing/failed/oversized samples and omitted
+processes are explicit, never stack evidence. Timing sufficiency and native
+`sample`/SwiftPM compatibility remain **NOT RUN on Linux**.
+
+`--output /absolute/evidence/probe.json` is required for app-scheme. Before
+scratch cleanup, the same directory receives `mac-native-xctest.json` and
+`mac-native-swift_testing.json`, covered by the existing `evidence/*.json` glob.
+Each includes source/build identity, command/exit metadata, complete captured
+stdout/stderr and (for Swift Testing) JSONL events, plus timeout process/sample
+records. Byte-exact streams use `gzip+base64` with raw/compressed byte counts and
+SHA256; an empty stream is represented explicitly. XCTest start/end lines are
+in its stdout, Swift Testing function/parameter start/end events in its JSONL;
+`native_tests.lifecycle` records each start/end;
+`native_tests.unfinished_cases` names started cases without completion. A partial
+final JSONL line retains its completed prefix for diagnosis while verdict FAIL
+and the raw archive preserve the incomplete evidence.
+Each command's combined stream input remains capped at 16 MiB, each sample at
+1 MiB, and each JSON artifact at 8 MiB (below the existing 10 MB transfer cap).
+Overflow/missing capture fails closed, without silently truncating a passing
+archive. The report links artifact filename/bytes/SHA256. Files are initialized
+for the current source/build before tests; old diagnostic artifacts cannot
+satisfy current evidence. Full streams stay outside the capped console/probe
+log. The existing `native_tests.event_archive` is retained for compatibility.
+
+Node transfer (90s), npm install (240s), SPA build (180s), and qualification
+process budgets remain unchanged, as do the bounded Keychain cleanup grace,
+reviewed Jenkins shell, SUITE parameter, credentials and 90-minute envelope.
+Neither this source change nor portable tests authorize a Mac/Jenkins run.
 
 Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
 `error_context`: lines containing `: error:` or beginning `error:`, with two
@@ -404,7 +429,8 @@ XCTest outcomes and the byte-exact Swift event archive are assessed before
 scratch cleanup, retaining the last started/incomplete Swift invocation.
 Timeout keeps `exit_code:null` and `swift test exit unobserved`, and always
 fails even if every captured test outcome passed. Process-group kill/reap,
-output caps and the 1,200s command / 2,100s suite deadlines are unchanged.
+output caps and the 2,100s suite deadline remain. Each library gets 570s plus
+up to 30s of sampling, retaining the 1,200s combined allowance above.
 
 Linux maker commands (no Mac build):
 
@@ -617,7 +643,7 @@ for the same endpoint is a no-op and cannot reselect a disconnected target.
 No shared-web/protocol/schema, daemon credential, remote-allowlist, dependency
 or auth change is included.
 
-Dialog/toolbar/menu/screenshot work is MAC-2b. Quit/close/Relaunch gating and
+Dialog/menu/screenshot work is MAC-2b; Track B owns the web header. Quit/close/Relaunch gating and
 language remain MAC-4. Native tests use the existing SwiftPM targets; on an
 authorized Mac after review: `swift test --package-path app/mac --filter 'HomeCandidateOwnershipTests|AppSchemeSwitchTests|ManagedOwnerFenceTests|ConnectionOwnershipStateTests|ManagedCandidateMembershipTests|HomeInviteModelTests'`.
 No native execution or Mac/Jenkins build is authorized for the maker.
