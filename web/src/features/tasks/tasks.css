@@ -6,6 +6,8 @@
 .tasks-row { padding: 13px 16px; }
 .tasks-column-header { padding: 0 16px 9px; font-size: 11px; }
 .tasks-heading { margin-bottom: 18px; }
+/* THR-390 PR8: the extra Export action wraps inside the page width on mobile. */
+.tasks-heading > div:last-child { max-width: 100%; }
 .tasks-group { margin-top: 18px; margin-bottom: 26px; }
 .tasks-group-heading { gap: 9px; }
 .tasks-group li:last-child > div { border-bottom: 0; }

@@ -518,6 +518,9 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters, url }: {
       : stream.isInitialError && !allInitialFailed ? [ownerAlert(stream, 'initial')] : []);
   const moreAlerts = suppressOrdinary ? [] : owners.flatMap((stream) => stream.isContinuationError ? [ownerAlert(stream, 'more')] : []);
   const partialLoading = !suppressOrdinary && pendingOwners.length > 0 && (hasUsableTasks || showEscalatedGroup);
+  // Filtered ordinary result exhausted with no rows, while the filter-free
+  // attention band may still show its own rows.
+  const filteredEmpty = !!url && hasAnyFilter(url.model) && ordinaryExhausted && !hasUsableTasks;
   const exportScope = url ? exportStatus(url.model) : { ok: false as const };
   const exportDisabled = !url || suppressOrdinary || ordinaryLoading || !exportScope.ok;
   const exportSelection = url && exportScope.ok && orgSlug ? {
@@ -547,7 +550,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters, url }: {
           eyebrow={eyebrow}
           title={t('tasks.page.title')}
           actions={
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
           <SegmentedControl
             className="shrink-0"
             aria-label={t('tasks.page.groupBy')}
@@ -780,6 +783,10 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters, url }: {
                 truthful and visible WITHOUT hiding the shared list shell. */}
             {showEscalatedGroup && ordinaryLoading && (
               <p className="text-text-muted py-8 text-center text-sm">{t('tasks.list.loading')}</p>
+            )}
+            {showEscalatedGroup && filteredEmpty && (
+              <EmptyState title={t('tasks.filters.attr.zero')} body={t('tasks.filters.attr.zeroBody')}
+                cta={{ label: t('tasks.filters.attr.clearAll'), onClick: () => url?.apply(EMPTY_FILTERS) }} />
             )}
             {showEscalatedGroup && ordinaryInitialError && (
               <EmptyState
