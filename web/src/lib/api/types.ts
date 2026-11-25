@@ -1874,3 +1874,6 @@ export interface SequentialProjectionUnavailable {
   code: 'history_unverified' | 'read_budget_exhausted' | 'authority_unverified' | 'authority_denied';
 }
 export type * from './taskAttributeTypes';
+// THR-390 PR8: roots attribute filters and the bounded export (types only).
+export type * from './taskRootsFilters';
+export type { TaskRootsExportFormat, TaskRootsExportParams, TaskRootsExportResult } from './taskRootsExport';

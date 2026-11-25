@@ -5,6 +5,7 @@
  */
 import { API_PREFIX, fencedText, nativeRecoveryErrorFor, pinnedToken, pinTarget, request, schemeFetch } from './client';
 import { prepareMultipartUpload } from './multipart';
+import { encodeQuery, type AttributeFilter, type AttributeValues } from './taskRootsFilters';
 import type {
   TaskAttachmentRecord,
   TaskAttachmentRef,
@@ -17,7 +18,8 @@ import type {
   RetryVerificationResponse,
 } from './types';
 
-export type TaskListItem = TaskRecord;
+/** Filtered roots rows (THR-390 PR5) also carry the filtered keys' current values. */
+export type TaskListItem = TaskRecord & { attribute_values?: AttributeValues };
 
 /** Reads are advisory. No UI or browser write grant accompanies this helper. */
 export const verifyRetryLink = (
@@ -104,8 +106,17 @@ export const listTaskRoots = (
     before?: string;
     blocked_on_job_id?: string;
   },
-): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
-  request(`/orgs/${slug}/tasks/roots`, { params });
+  /** THR-390 PR8: repeatable `attr_*` occurrences, sent in the given order. */
+  attributeFilters?: readonly AttributeFilter[],
+): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> => {
+  if (!attributeFilters || attributeFilters.length === 0) return request(`/orgs/${slug}/tasks/roots`, { params });
+  // `request()` params cannot repeat a name, so the full query rides the path.
+  const pairs: [string, string][] = [];
+  for (const [name, value] of Object.entries(params ?? {})) {
+    if (value !== undefined && value !== null) pairs.push([name, String(value)]);
+  }
+  return request(`/orgs/${slug}/tasks/roots?${encodeQuery([...pairs, ...attributeFilters])}`);
+};
 
 export const getTask = (slug: string, taskId: string): Promise<TaskDetailResponse> =>
   request(`/orgs/${slug}/tasks/${taskId}`);

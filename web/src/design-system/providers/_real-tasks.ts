@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { ApiError, subscribeSSE, tasks as tasksApi } from '@/lib/api';
 import type { TaskEvent } from '@/lib/api/types';
+import type { AttributeFilter } from '@/lib/api/taskRootsFilters';
+import { exportTaskRoots, type TaskRootsExportParams } from '@/lib/api/taskRootsExport';
 import type {
   CancelTaskArgs,
   CancelTaskResult,
@@ -18,6 +20,7 @@ import type {
   ResolveEscalationArgs,
   ResolveEscalationResult,
   TaskListStream,
+  TaskListStreamError,
   TaskListStreams,
   TaskTailSSECallbacks,
   RevisitTaskArgs,
@@ -175,10 +178,13 @@ function useTaskListStream(
   status: string,
   assignedAgent: string | undefined,
   enabled: boolean,
+  attributes: readonly AttributeFilter[] = NO_ATTRIBUTES,
 ): TaskListStream {
   const qc = useQueryClient();
   const params = assignedAgent ? { status, assigned_agent: assignedAgent } : { status };
-  const queryKey = [family, slug, params];
+  // Attribute occurrences are part of the owner identity: a filter change is a
+  // new traversal from page 1, so an old cursor never rides a new filter.
+  const queryKey = attributes.length ? [family, slug, params, attributes] : [family, slug, params];
   const keyHash = JSON.stringify(queryKey);
   const active = enabled && !!slug;
   const q = useInfiniteQuery<TasksListPage>({
@@ -190,7 +196,7 @@ function useTaskListStream(
         ...(assignedAgent ? { assigned_agent: assignedAgent } : {}),
         limit: TASK_LIST_PAGE_SIZE,
         ...(pageParam ? { before: pageParam as string } : {}),
-      }),
+      }, attributes),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: active,
   });
@@ -256,6 +262,7 @@ function useTaskListStream(
     });
   }, [q.data, status, assignedAgent]);
   const isInitialPending = active && q.isPending && !q.isError;
+  const error = useMemo(() => projectStreamError(q.error), [q.error]);
   return useMemo(() => ({
     owner,
     status,
@@ -270,17 +277,37 @@ function useTaskListStream(
     fetchNextPage,
     refresh,
     retry,
+    error,
   }), [owner, status, tasks, isInitialPending, q.isLoadingError, q.isRefetchError, q.isFetchNextPageError,
-    q.isRefetching, q.isFetchingNextPage, q.hasNextPage, fetchNextPage, refresh, retry]);
+    q.isRefetching, q.isFetchingNextPage, q.hasNextPage, fetchNextPage, refresh, retry, error]);
+}
+
+const NO_ATTRIBUTES: readonly AttributeFilter[] = [];
+
+/** THR-390 PR8: `{status, code, errors}` from an `ApiError`; string reasons only. */
+function projectStreamError(error: unknown): TaskListStreamError | null {
+  if (!(error instanceof ApiError)) return null;
+  const errors: Record<string, string[]> = {};
+  const detail = error.detail as { errors?: unknown } | null;
+  const raw = detail && typeof detail === 'object' ? detail.errors : undefined;
+  if (raw && typeof raw === 'object') {
+    for (const [field, reasons] of Object.entries(raw as Record<string, unknown>)) {
+      if (Array.isArray(reasons)) errors[field] = reasons.filter((r): r is string => typeof r === 'string');
+    }
+  }
+  return { status: error.status, code: error.code, errors };
 }
 
 function useTasksListStreams(
-  filters?: { status?: string; assigned_agent?: string },
+  filters?: { status?: string; assigned_agent?: string; statuses?: readonly string[]; attributes?: readonly AttributeFilter[] },
 ): TaskListStreams {
   const slug = useRealOrgSlug();
   const agent = filters?.assigned_agent || undefined;
-  const selected = (status: string) => !filters?.status || filters.status === status;
-  const ordinary = (status: string) => [slug, TASK_LIST_ORDINARY_FAMILY, status, status, agent, selected(status)] as const;
+  const statusSet = filters?.statuses?.length ? filters.statuses : filters?.status ? [filters.status] : null;
+  const selected = (status: string) => !statusSet || statusSet.includes(status);
+  const attributes = filters?.attributes?.length ? filters.attributes : NO_ATTRIBUTES;
+  const ordinary = (status: string) =>
+    [slug, TASK_LIST_ORDINARY_FAMILY, status, status, agent, selected(status), attributes] as const;
   // Fixed, finite owners (hook order never varies); unselected owners are disabled.
   const pending = useTaskListStream(...ordinary('pending'));
   const inProgress = useTaskListStream(...ordinary('in_progress'));
@@ -291,13 +318,21 @@ function useTasksListStreams(
   const superseded = useTaskListStream(...ordinary('superseded'));
   // Waiting on you keeps its established independent, filter-free traversal.
   const attention = useTaskListStream(slug, TASK_LIST_ATTENTION_FAMILY, 'attention', 'escalated', undefined, true);
-  const status = filters?.status;
+  const statusKey = statusSet ? statusSet.join('\u0000') : '';
   const ordinaryStreams = useMemo(
     () => [pending, inProgress, escalated, completed, failed, cancelled, superseded]
-      .filter((stream) => !status || stream.status === status),
-    [pending, inProgress, escalated, completed, failed, cancelled, superseded, status],
+      .filter((stream) => !statusKey || statusKey.split('\u0000').includes(stream.status)),
+    [pending, inProgress, escalated, completed, failed, cancelled, superseded, statusKey],
   );
   return useMemo(() => ({ ordinary: ordinaryStreams, attention }), [ordinaryStreams, attention]);
+}
+
+function useTaskRootsExport() {
+  const slug = useRealOrgSlug();
+  return useCallback(
+    (params: TaskRootsExportParams, signal?: AbortSignal) => exportTaskRoots(slug, params, signal),
+    [slug],
+  );
 }
 
 function useTask(taskId: string | undefined) {
@@ -445,6 +480,7 @@ export const realTasksApi: TasksApi = {
   useTasksRoots,
   useTasksRootsInfinite,
   useTasksListStreams,
+  useTaskRootsExport,
   useTask: useTask as TasksApi['useTask'],
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,

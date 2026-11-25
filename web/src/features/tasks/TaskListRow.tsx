@@ -20,6 +20,7 @@ import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/c
  * rather than reaching into TaskCard's private internals.
  */
 import { Link } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
@@ -173,9 +174,11 @@ export interface TaskListRowProps {
   to: string;
   taskRoutes: TaskListRoutes;
   threadRoutes: TaskListThreadRoutes;
+  /** THR-390 PR8: current values of the filtered keys, rendered below the row link. */
+  attributeValues?: ReactNode;
 }
 
-export function TaskListRow({ task, to, taskRoutes, threadRoutes }: TaskListRowProps): JSX.Element {
+export function TaskListRow({ task, to, taskRoutes, threadRoutes, attributeValues }: TaskListRowProps): JSX.Element {
   const { t, render } = useTranslation();
   const rollup = severityRollupStatus(task);
   const waiting = resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
@@ -255,6 +258,7 @@ export function TaskListRow({ task, to, taskRoutes, threadRoutes }: TaskListRowP
         )}
       </div>
 
+      {attributeValues}
       {/* Supersede / revisit lineage — siblings of the row Link (no nested
           anchors), preserving the navigation TaskCard previously offered. */}
       {(task.revisit_of_task_id || revisits.length > 0) && (

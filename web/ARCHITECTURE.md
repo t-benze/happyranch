@@ -221,6 +221,16 @@ source-reviewed (UNVERIFIED natively); that instrumentation is now retired.
 Native confirmation of the simplified Mac build remains ROOT TASK12599-owned.
 Ordinary WEB sourcemap build evidence retains its original source attribution.
 
+**`task_attributes_ui` on the Tasks list (THR-390 PR8).** The same flag also
+gates the Tasks list attribute filters and the bounded export dialog
+(`src/features/tasks/attributes/`). With the flag on, `TasksPage` reads every
+list filter from the URL (`filterModel.ts`); the tasks provider sends the
+repeatable `attr_*` through `lib/api/tasks.ts#listTaskRoots` and projects each
+owner's `ApiError` as a bounded `TaskListStream.error`; the export runs through
+the provider's `useTaskRootsExport` over `lib/api/taskRootsExport.ts` (same
+bearer + fenced-Blob flow as `downloadArtifact`). Flag off renders the
+component-state Status/Agent filter exactly as before.
+
 ## Internationalization (i18n)
 
 The AppBar language selector beside the theme toggle is a controlled consumer

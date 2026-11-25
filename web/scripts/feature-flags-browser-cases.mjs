@@ -64,6 +64,8 @@ export function createFeatureFlagsFixture(settings, org) {
       // The generic stub answers unknown paths with {}; the naming UI on
       // Settings needs the real list shape.
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/identities`) { json(response, 200, { identities: [] }); return true; }
+      // FLAG01 (THR-390 PR8): the Tasks list needs the real roots list shape.
+      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/roots`) { json(response, 200, { tasks: [], next_cursor: null }); return true; }
       if (request.method === 'GET') return false;
       let raw = '';
       request.on('data', (chunk) => { raw += chunk; });
@@ -439,6 +441,28 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
     }
   }
 
+  // ---------------------------------------------------------------- FLAG01 (THR-390 PR8)
+  // Tasks list attribute filters + export: off in production (attr_* in the
+  // URL is ignored and never sent, no Export, no clause controls); on in local.
+  const attrOn = expected.task_attributes_ui;
+  for (const width of [1440, 390]) {
+    const id = `FLAG01-tasks-${expectProfile}-en-${width}`;
+    beginCase(id, `${expectProfile}: Tasks list attribute filters/export ${attrOn ? 'present' : 'absent'}; attr_* ${attrOn ? 'sent' : 'never sent'}`);
+    const from = ledger.length;
+    const page = await openPage(`${base}${root}/tasks?attr_min=effort%3D3&attr_set=ready`, { init: `${seedLocale('en')}\n${chineseNavigator}`, width, height: width === 390 ? 844 : 900 });
+    await waitTrue(page, `document.body.innerText.includes(${quote(tr('en', 'tasks.page.title'))})`, `${id} settle`);
+    await pause(1200);
+    const roots = ledger.slice(from).filter((row) => row.path === `/api/v1/orgs/${org}/tasks/roots`);
+    check(`${id} roots requested`, roots.length > 0, true);
+    check(`${id} list rendered (no error boundary)`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-page-header"]'))`), true);
+    check(`${id} attr_* ${attrOn ? 'sent by ordinary owners' : 'never sent'}`, roots.some((row) => row.search.includes('attr_')), attrOn);
+    check(`${id} Export control`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-export-open"]'))`), attrOn);
+    check(`${id} attribute chips`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-attr-chips"]'))`), attrOn);
+    check(`${id} no export request`, ledger.slice(from).filter((row) => row.path.endsWith('/tasks/roots/export')).length, 0);
+    await capture(page, id, meta({ locale: 'en', viewport: `${width}x${width === 390 ? 844 : 900}`, state: 'tasks-attr-flag' }));
+    await closePage(page);
+    endCase();
+  }
 }
 
 function current(h) {

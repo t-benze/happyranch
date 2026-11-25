@@ -21,6 +21,8 @@
 import { createContext, useContext } from 'react';
 import type * as Sequential from '@/lib/api/workflowSequential';
 import type * as TaskAttributeTypes from '@/lib/api/taskAttributeTypes';
+import type { AttributeFilter } from '@/lib/api/taskRootsFilters';
+import type { TaskRootsExportParams, TaskRootsExportResult } from '@/lib/api/taskRootsExport';
 import type {
   WorkflowSetupStatus,
   HealthResponse,
@@ -224,6 +226,16 @@ export interface TaskListStream {
   refresh: () => Promise<void>;
   /** Failed continuation → its failed cursor; otherwise refresh. */
   retry: () => Promise<void>;
+  /** THR-390 PR8: the latest owner error as `{status, code, detail}` (bounded), or null. */
+  error?: TaskListStreamError | null;
+}
+
+/** Bounded projection of an owner's `ApiError`: PR5 filter detail only. */
+export interface TaskListStreamError {
+  status: number;
+  code: string | null;
+  /** PR5 `errors` map (`field -> reasons`), nothing else. */
+  errors: Record<string, string[]>;
 }
 
 export interface TaskListStreams {
@@ -268,7 +280,13 @@ export interface TasksApi {
   useTasksListStreams: (filters?: {
     status?: string;
     assigned_agent?: string;
+    /** THR-390 PR8 (flag task_attributes_ui): a status set; absent = all. Wins over `status`. */
+    statuses?: readonly string[];
+    /** THR-390 PR8: repeatable `attr_*` occurrences sent by every ordinary owner (never attention). */
+    attributes?: readonly AttributeFilter[];
   }) => TaskListStreams;
+  /** THR-390 PR8: one bounded GET /tasks/roots/export page for the active org (never cached). */
+  useTaskRootsExport: () => (params: TaskRootsExportParams, signal?: AbortSignal) => Promise<TaskRootsExportResult>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode> & {
     isFetching: boolean;
