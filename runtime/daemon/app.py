@@ -558,6 +558,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(custom_skills.router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
     app.include_router(custom_skills.agent_custom_skills_router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])
 
+    from runtime.daemon.routes import guests
+    app.include_router(guests.router, prefix="/api/v1/orgs/{slug}", tags=["guests"])
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])
     app.include_router(work_hours.router, prefix="/api/v1/orgs/{slug}", tags=["work-hours"])

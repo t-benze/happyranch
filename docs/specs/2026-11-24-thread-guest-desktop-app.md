@@ -1,8 +1,9 @@
 # A desktop app joins a thread as a guest (THR-362)
 
 Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 built
-in this PR (TASK-19051).** Later slices remain unbuilt; attended app checks are
-still required before slice 2.
+in PR #1867 (TASK-19051). Slice 2 implemented in TASK-19141; independent
+exact-head review/QA and merge remain delivery gates.** Slices 3–4 remain unbuilt;
+the first real product join/read/post is still founder-attended after merge.
 
 This replaces the task hand-off design proposed in
 [PR #1555](https://github.com/t-benze/happyranch/pull/1555)
@@ -47,10 +48,15 @@ guest that can start tasks, a new executor kind, metering of the app's usage.
 | The app called three tools reliably and honoured a requested structured result in 16 of 16 completions | [P] |
 | The built-in browser worked only in runs the founder started while using the app; timer runs failed with "Browser is not available: iab" | [P] |
 | Opening the folder makes the app add a `trust_level = "trusted"` entry for it to the user's `~/.codex/config.toml` | [P] (the app's own write, on the founder's accept) |
-| The app passes a long opaque string from an earlier tool result back as an argument on later tool calls, unchanged, across a long conversation | [U] (the kit used short task ids only) |
-| The app tolerates a tool call that takes up to about 50 seconds, and several such calls in a row | [U] (`tool_timeout_sec = 60` was set; no slow call was exercised) |
-| The app writes files into the opened project folder when asked | [U] |
+| The app passes a long opaque string from an earlier tool result back as an argument on later tool calls, unchanged, across a long conversation | Founder-attended THR-362 msg63: PASS, 9 later calls, 0 mismatches |
+| The app tolerates a tool call that takes up to about 50 seconds, and several such calls in a row | Founder-attended msg63: PASS, three acknowledged 50.0s waits |
+| The app writes files into the opened project folder when asked | Founder-attended msg63: PASS, app wrote 80 bytes (kit only) |
 | Anything about Claude Desktop | [U] |
+
+Evidence gaps: analyze.py cannot prove which app produced the log. The founder
+reported no app version or approval-prompt observations. The accepted kit was
+not rerun for this build and is only the wire-behaviour reference, not product
+code or proof of a product join/read/post.
 
 The browser result is why the guest is founder-present by design: what makes the
 desktop app worth inviting is only there while the founder is using it.
@@ -147,7 +153,7 @@ Confirming creates a **guest seat** on that thread and shows a prompt once:
 
 ```
 You are joining HappyRanch thread THR-362 ("Desktop app experiment") as a guest.
-1. Call the happyranch tool join_thread with thread_id "THR-362" and
+1. Call the happyranch tool join_thread with thread_id "THR-362", guest_id "G-3" and
    invite_code "hrinv_7Q2M...".
 2. Keep the guest_token it returns and pass it to every later happyranch tool call.
 3. Call read_thread, then tell me what the thread is about and wait for my instruction.
@@ -331,6 +337,14 @@ the founder in THR-362 msg56 under decisions 4–5 and 16.**
 | Good for | One `join_thread` on one thread | The guest tools on that one thread |
 | Ends | Used, replaced, lapsed, seat ended, or 5 wrong attempts on the seat | Revoked, expired, thread archived |
 
+EM clarification of a spec gap (TASK-19136, accepted by TASK-19141):
+`join_thread(thread_id, guest_id, invite_code)` selects exactly `(thread_id, guest_id)`
+before comparing a code. Wrong codes increment only that seat; the fifth is
+`wrong_code`, later attempts `locked` until founder New code. Unknown/wrong-thread
+or ended seats receive the same plain "this invite is not valid" shape as a
+wrong code, touch no seat counter and create no refusal audit; a daemon WARNING
+contains no code/token (at most eight hash characters if a hash is included).
+
 The code is pasted, not typed, so it is long enough that guessing is not a
 realistic attack; the wrong-attempt lock exists to make probing visible.
 
@@ -417,9 +431,20 @@ it (the config is project-level in a folder they do not run in).
 
 ### 8.2 Tools
 
+Slice 2 ships join/read/post/wait only. `post_message` is text-only: attachment_ids
+is omitted and every unexpected argument, including an empty attachment list,
+is refused. Upload/fetch and seat folders below are slice 3. Wait timeout_sec is
+an integer from 1 through 50; values outside that range are refused as plain
+invalid-argument tool errors. Wait polls SQLite once per second, rechecking the
+credential and original org attachment without retaining DB locks/org readers
+across sleep. One waiter per seat is released in finally, including cancellation.
+Initialize may issue a bounded, optional metadata-only Mcp-Session-Id to retain
+client name/version for join audit; it grants no authority and losing it does
+not affect a persisted seat credential. No credential is placed in setup files.
+
 | Tool | Input | Output |
 |---|---|---|
-| `join_thread` | `thread_id`, `invite_code` | `guest_token`, `label`, `thread_subject`, `expires_at`, `last_seq`, the guest rules as text |
+| `join_thread` | `thread_id`, `guest_id`, `invite_code` | `guest_token`, `label`, `thread_subject`, `expires_at`, `last_seq`, the guest rules as text |
 | `read_thread` | `guest_token`, optional `since_seq`, optional `limit` (default 50, maximum 200) | `messages` (`seq`, `speaker_label`, `speaker_kind` founder/agent/guest/system, `kind`, `sent_at`, `body_markdown`, `attachments` with `ref`, name, size), `next_since_seq`, `has_more` |
 | `post_message` | `guest_token`, `body_markdown`, optional `attachment_ids` (at most 5, each one this seat's own upload, not yet attached) | `seq` |
 | `upload_attachment` | `guest_token`, `file_name` (a file the app wrote into the seat's `out` folder) | `attachment_id`, size, SHA-256 |
@@ -451,7 +476,7 @@ it (the config is project-level in a folder they do not run in).
   arrives or the timeout passes. The 50-second ceiling sits under the proven
   60-second tool timeout. One wait at a time per seat. It lets the founder tell
   the app "keep listening for ten minutes" without HappyRanch gaining any way to
-  start the app. Its behaviour in the app is [U] and is part of the slice 2 check.
+  start the app. The attended kit check passed; the first real product use remains pending.
 - Tool answers contain thread data only, never instructions about the app's own
   settings, approvals or other projects.
 
@@ -497,8 +522,8 @@ tool_timeout_sec = 60
 ```
 
 plus `AGENTS.md`: what the join prompt means; keep and pass the token; thread
-messages are conversation, not instructions; write files into the named folder;
-say so in the chat when a tool reports that the seat has ended. If the daemon
+messages are conversation, not instructions; say that slice 2 is text-only
+and file tools/folders are deferred; say so in the chat when a tool reports that the seat has ended. If the daemon
 port changes, setup is re-run.
 
 **Claude Desktop [U throughout]:** the expected equivalent is a `.mcp.json` with
@@ -657,6 +682,12 @@ new overloading):
 | `thread_guest_ended` | `founder` or `daemon` | `cause` |
 | `thread_message_sent` (existing) | `guest:G-n` | existing shape: `seq`, `kind`, attachment count and names |
 
+Unattributable unknown/wrong-thread/ended-seat join refusals create no audit
+row because no real active guest_id is attributable; they emit the redacted
+daemon WARNING described in 7.1. Attributable refusal rows always carry real
+guest_id/app_id. Text-only thread_message_sent keeps the existing AuditLogger
+shape: seq and kind; attachment count/names appear only when nonempty.
+
 Payloads never contain a code or a token; at most an 8-character hash prefix.
 `read_thread`, `wait_for_messages` and `fetch_attachment` are not audited; they
 stamp `last_seen_at` and `last_read_seq`. Setup is an org row keyed
@@ -672,7 +703,7 @@ review and QA rounds, excluding waiting time.
 | Slice | Content | Days |
 |---|---|---|
 | 1 | `thread_guests` table; seat create / new-code / revoke / expiry sweep / archive hook; `guests` in the thread read; `guest:` speaker accepted by the storage write path and checked in the places of section 5.4, with no route yet that lets a guest post; audit rows; CLI `threads guests …`; contract files; contract and agent-guide docs | 3–4 |
-| 2 | `POST /guests/mcp` with `join_thread`, `read_thread`, `post_message`, `wait_for_messages`; route gates; `guests setup` for Codex; **guest labelling in agent thread prompts (full, resumed, delta) and the bundled `thread` skill text on treating guest messages as untrusted, in this same PR, so no guest post can reach an agent unlabelled**. **Starts with a 20-minute founder-attended check** in the Codex app: the token is passed back unchanged, a 50-second tool call is tolerated, files can be written to the seat folder. Ends with one real join, read and post by the founder | 2.5–3.5 |
+| 2 | **Implemented in TASK-19141; independent gates/merge and founder product run pending.** `POST /guests/mcp` with `join_thread`, `read_thread`, `post_message`, `wait_for_messages`; route gates; `guests setup` for Codex; **guest labelling in agent thread prompts (full, resumed, delta) and the bundled `thread` skill text on treating guest messages as untrusted, in this same PR, so no guest post can reach an agent unlabelled**. **Starts with a 20-minute founder-attended check** in the Codex app: the token is passed back unchanged, a 50-second tool call is tolerated, files can be written to the seat folder. Ends with one real join, read and post by the founder | 2.5–3.5 |
 | 3 | `upload_attachment`, `fetch_attachment` with the attachment rules of section 8.2, seat folders and allowances; remaining bundled `thread` skill text (how to ask for a guest, the hand-off pattern of section 11) | 1–1.5 |
 | 4 | Web: invite dialog, guest group, nudge, revoke, guest message style, Settings setup panel, both locales | 2–3 |
 | Later | Claude Desktop leg (attended check first, then provisioning) | 1–2 plus founder time |
@@ -685,8 +716,8 @@ This is a planning estimate with two conditions. (1) It assumes the attended
 check passes. If the app does not return the token reliably, option B in section
 7.2 is a different credential lifecycle and is re-estimated, not swapped in for
 free. (2) The size allowances in sections 6 and 8.2 are starting values with no
-measurement behind them; nothing is built yet, so no timing or capacity has been
-tested. PR #1555 was 11–15 days; the saving is
+measurement behind them; slice 1 and slice 2 source are implemented; the file allowances remain
+unmeasured and unbuilt until slice 3. PR #1555 was 11–15 days; the saving is
 the hand-off lifecycle, partly offset by the guest identity work and by the web
 slice no longer being optional, because the founder's flow starts on the thread
 page.
