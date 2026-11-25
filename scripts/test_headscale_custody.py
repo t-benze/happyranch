@@ -1746,15 +1746,15 @@ def test_thr327_taildrop_disable_exact_empty_tree(
                 return os.stat_result(fields)
             return info
         monkeypatch.setattr(os, "fstat", mismatch)
-    def taildrop_snapshot() -> dict[str, tuple[int, ...]]:
-        return {name: info for name, info in b6_snapshot(v.root).items()
-                if name.startswith(("var/lib/happyranch-tsnet-sidecar", "foreign-taildrop"))}
-    before = taildrop_snapshot()
+    before = b6_snapshot(v.root)
     if case not in {"empty-parent", "empty-child"}:
         assert v.io.inventory().state == "manual-install-conflict"
         expected = v.lifecycle.capture("Disable", os.getuid())
         assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected)["outcome"] == "partial_cleanup"
-        assert taildrop_snapshot() == before
+        # Safety stop disables the renewal timer even when state custody refuses.
+        timer = "etc/systemd/system/happyranch-managed.target.wants/happyranch-remote-access-policy-renew.timer"
+        del before[timer]
+        assert b6_snapshot(v.root) == before
         return
     assert v.io.inventory().state == "owned-activated"
     expected = v.lifecycle.capture("Disable", os.getuid())
