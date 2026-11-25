@@ -2,6 +2,7 @@
 
 | Spec | Status | Owner thread | Purpose |
 | --- | --- | --- | --- |
+| [2026-11-25-seq-never-launched-cancel-close.md](2026-11-25-seq-never-launched-cancel-close.md) | implementation proposed | THR-336 | Human-only never-launched cancellation business close; native uncertainty retained |
 | [2026-04-14-orchestrator-daemon-design.md](2026-04-14-orchestrator-daemon-design.md) | implemented | not recorded | Orchestrator Daemon + HTTP API — Implementation Spec |
 | [2026-04-17-manage-agent-design.md](2026-04-17-manage-agent-design.md) | implemented | not recorded | manage-agent: EH-driven agent lifecycle management |
 | [2026-04-17-manage-repo-design.md](2026-04-17-manage-repo-design.md) | implemented | not recorded | manage-repo: Agent-driven repository management |

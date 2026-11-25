@@ -274,6 +274,8 @@
     "POST /api/v1/orgs/{slug}/workflows/sequential/repository-resolve": "own current selected Developer task-session CLI-only repository service transport; no bearer/browser, foreign/ended/recovery/thread, managed connector or native agent-only audience; no daemon network/effect executor",
     "POST /api/v1/orgs/{slug}/workflows/sequential/repository-bind": "own current selected Developer task-session CLI-only repository service transport; no bearer/browser, foreign/ended/recovery/thread, managed connector or native agent-only audience; no daemon network/effect executor",
     "POST /api/v1/orgs/{slug}/artifacts/{name}/renew": "Bearer-protected CLI/operator bounded retention grant; no browser client or consumer in Slice A.",
-    "POST /api/v1/orgs/{slug}/artifacts/{name}/restore": "Bearer-protected CLI/operator bounded retention grant; no browser client or consumer in Slice A."
+    "POST /api/v1/orgs/{slug}/artifacts/{name}/restore": "Bearer-protected CLI/operator bounded retention grant; no browser client or consumer in Slice A.",
+    "POST /api/v1/orgs/{slug}/workflows/sequential/cancel-close-never-launched": "Human-only operator business close; no browser/TS consumer or native settlement",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}/cancel-close-never-launched": "Human-only exact-key operator receipt; no browser/TS consumer"
   }
 }

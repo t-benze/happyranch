@@ -1,8 +1,8 @@
 # Founder-only never-launched cancelled-run close
 
-> Status: proposed, design only
+> Status: implementation proposed; pending independent delivery gates
 > Current Source: docs/agent-guides/contracts/runtime-lifecycle.md
-> Notes: New human command is not implemented; original cleanup contracts still apply.
+> Notes: Human business close preserves original native cleanup contracts.
 
 TASK-19062, parent TASK-19061; Founder
 THR-336 msg398 option B. No runtime implementation or live operation is authorized
@@ -212,14 +212,17 @@ business close; it receives no launch or settlement permission from this command
 
 ## Implementation documentation and acceptance plan
 
-In the later implementation PR update:
+Implementation parity:
 
 - `docs/agent-guides/contracts/runtime-lifecycle.md:523`: retain the no-supported
   **preparation repair** statement; document this separate business-close command
   and its inability to reconstruct/settle unknown native cleanup.
-- `docs/agent-guides/web-and-cli.md`, the manual CLI reference under
-  `docs/manual/pages/04-reference/`, and an operator runbook under
-  `docs/operations/`: exact human-only syntax, predicates, refusal/readback codes,
+- `docs/agent-guides/contracts/reusable-workflows.md` S6b and reservation/closure
+  rules, and the S6b pointer in `docs/agent-guides/contracts/task-orchestration.md`:
+  the explicit human business-close exception preserves native cleanup rules.
+- `docs/manual/pages/04-reference/01-commands.md`, `docs/specs/README.md`,
+  `docs/agent-guides/web-and-cli.md`, and
+  `docs/operations/sequential-never-launched-close.md`: exact human-only syntax, predicates, refusal/readback codes,
   private-copy rehearsal, unchanged journals and separate deployment authority.
 - OpenAPI/route classification and CLI reference for the new guarded endpoints;
   mark this spec implemented only with reviewed runtime delivery. No agent skill
@@ -257,9 +260,10 @@ Retain small redacted transcripts in QA task output; no DB/secrets in PR/output.
 
 Run supported focused cases on Python 3.12/3.14 and required lint/static lanes;
 keep general integration SKIPPED THR-243, retired units/Web Vitest NOT RUN and
-daily Product E2E outside this task. The lifecycle/CAS implementation needs a
-small TLA+ model/TLC review under `AGENTS.md:144`'s coding-practice contract,
-including retained unknowns and one durable replay receipt. Independent exact-head
+daily Product E2E outside this task. The lifecycle/CAS model is
+`docs/specs/formal/task-lifecycle/NeverLaunchedCancelClose.tla`, with guarded and
+intentionally unsafe configurations; actual TLC results accompany review evidence.
+It includes retained unknowns and one durable replay receipt. Independent exact-head
 review/QA and normal CI/hooks/guarded manager merge remain separate gates.
 
 ## Scope conclusion / stop rule

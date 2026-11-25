@@ -6292,3 +6292,17 @@ return409 `artifact_live_dependency`; retained names409 `artifact_name_retained`
 Renew/restore and downloads still work at quota. DELETE remains preview-only in A;
 there is no CLI delete. The service/model/private exercise entry points are
 linked from the contract; required hosted checks stay lint/static only.
+
+## Human-only sequential cancellation business close
+
+`happyranch sequential-cancel-close-never-launched --org ORG --from-file /absolute/command.json`
+sends once; `happyranch sequential-cancel-close-status RUN --org ORG --operation-key KEY`
+reads its saved receipt. The closed body is `{"operation_key":"human-close-1","run_id":"seq-run-<64 lowercase hex>","expected_cas":1}`.
+Only the existing human bearer may call this operation; agent sessions are refused.
+Every no-launch predicate and complete history must validate. Success finishes
+business cancellation, preserves the journal byte-for-byte and leaves native
+cleanup unresolved. Exit 0 is a saved success/replay, 2 is a known refusal/input
+error, and 1 requires exact-key readback after uncertain transport/COMMIT.
+Do not automatically reapply or create a new key. See
+`docs/operations/sequential-never-launched-close.md` for proof/refusal details
+and separate deployment/live-operation authority.
