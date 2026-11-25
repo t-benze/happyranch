@@ -9,12 +9,17 @@
  * - `useDefinition` always re-reads on mount: a dialog never takes authority
  *   from a cached prefetch (MEM-300).
  * - No `refetchInterval`: these reads are never polled.
+ * - The list read waits while a native recovery state is active: the
+ *   recovery fence keeps the section mounted but hidden, and it must send no
+ *   definitions request then. Retry clears the state and the read runs.
  * - Mutations are plain sends: never retried, never replayed.
  */
+import { useSyncExternalStore } from 'react';
 import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { taskAttributes } from '@/lib/api';
 import type { AttributeDefinitionRead, AttributeDefinitionsRead } from '@/lib/api/taskAttributeTypes';
+import { getNativeRecoveryState, subscribeNativeRecovery } from '@/lib/nativeRecovery';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import type { TaskAttributeActions, TaskAttributesApi, TaskAttributesQuery } from './DataContext';
 
@@ -85,10 +90,11 @@ const shape = <T>(q: Shaped<T>): TaskAttributesQuery<T> => ({
 export const realTaskAttributesApi: TaskAttributesApi = {
   useDefinitionList: () => {
     const slug = useSlug();
+    const recovery = useSyncExternalStore(subscribeNativeRecovery, getNativeRecoveryState, getNativeRecoveryState);
     return shape(useQuery({
       queryKey: taskAttributeKeys.list(slug),
       queryFn: () => taskAttributes.listDefinitions(slug, { include_archived: true }),
-      enabled: !!slug,
+      enabled: !!slug && recovery === null,
     }));
   },
   useDefinitionReads: (ids, enabled) => {

@@ -525,7 +525,10 @@ PR2 client `lib/api/taskAttributes.ts`. Data flows through the `taskAttributes`
 `DataContext` slice (`_real-task-attributes.ts`, `_mock-task-attributes.ts` with
 the type-only fixtures in `_task-attribute-fixtures.ts`) and
 `hooks/task-attributes.ts`. Query keys are `[org, 'task-attributes', …]`; none
-of these reads has a `refetchInterval`.
+of these reads has a `refetchInterval`. The section sits in its own
+`NativeRecoveryFence`, which keeps it mounted but hidden during a native
+recovery state; the list read is disabled while that state is active (no
+definitions request) and runs once Retry clears it.
 
 - **Authority is server-reported only.** The list's top-level `editability`
   decides whether row actions are offered; each row's own
