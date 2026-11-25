@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 34)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger',)
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -8980,6 +8980,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     asyncio.run(dr_coding_launch())
                 elif case == 'C31':
                     asyncio.run(dr_first_launch(successor=True))
+                elif case == 'C34':
+                    from scripts.workflow_cancel_close_cases import run_cases
+                    asyncio.run(run_cases(dr_fixture, dr_start, dr_inventory))
                 elif case == 'C33':
                     asyncio.run(dr_refused_launches())
                 elif case == 'C32':

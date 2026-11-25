@@ -942,6 +942,11 @@ chain/fanout bytes. With no unfinished join, ordinary dispatch is unchanged.
 
 ## S6b source cancellation and pending-event dispositions
 
+The explicit human-only [never-launched business close](../../operations/sequential-never-launched-close.md)
+is the narrow exception for a durably queued/null-SID cancelled visit with all
+no-launch predicates satisfied. It releases computed run headroom and retains
+all unknown journals and native-cleanup requirements; automatic tails are unchanged.
+
 Founder cancellation of an @2 source or ordinary ancestor selects the existing
 mixed owner and re-reads all wait-set memberships under its authority writer.
 Every unfinished member is fenced; a one-run S4a control leaves siblings/source

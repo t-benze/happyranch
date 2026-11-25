@@ -4,12 +4,17 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.infrastructure.task_pause_controls import PauseControlError
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+from runtime.workflows.sequential_cancel_close import (
+    CancelCloseCommand, CancelCloseError, CancelCloseReceipt, operation as cancel_close_operation,
+    parse_command as parse_cancel_close, require as cancel_close_require,
+)
 from runtime.workflows.sequential_coding_policy import CodingEvidenceRefusal
 from runtime.workflows.sequential_settings import (
     COMMAND_LIMIT, SettingsCommand, SettingsReceipt, parse_settings_command, settings_operation,
@@ -267,3 +272,53 @@ async def run_v2(request: Request, response: Response, org: OrgDep, run_id: Iden
 @router.get('/tasks/{task_id}/sequential-workflows', response_model=TaskRunsView, responses=_V2_RESPONSES)
 async def task_workflows(request: Request, response: Response, org: OrgDep, task_id: Identifier) -> object:
     return await _read_v2(request, response, org, 'task', task_id)
+
+
+# Deliberately no agent/callback/engine-control caller for this operation.
+async def _cancel_close(request: Request, response: Response, org: OrgDep,
+                        run_id: str | None = None, operation_key: str | None = None) -> dict:
+    response.headers['Cache-Control'] = 'no-store'
+    try:
+        cancel_close_require(not request.headers.getlist('X-HappyRanch-Task-Session'), 'invalid_request', 422)
+        expected = [] if run_id is None else [('operation_key', operation_key)]
+        cancel_close_require(list(request.query_params.multi_items()) == expected, 'invalid_request', 422)
+        raw = bytearray()
+        async for chunk in request.stream():
+            cancel_close_require(len(raw) + len(chunk) <= 16384, 'invalid_request', 422)
+            raw.extend(chunk)
+        command = None
+        if run_id is None:
+            command = parse_cancel_close(bytes(raw))
+            run_id, operation_key = command.run_id, command.operation_key
+        else:
+            cancel_close_require(not raw, 'invalid_request', 422)
+        def revalidate() -> None:
+            daemon = request.app.state.daemon
+            cancel_close_require(not daemon.is_idle and daemon.orgs.get(org.slug) is org, 'control_unavailable', 503)
+        return await cancel_close_operation(org, run_id=run_id, key=operation_key,
+            command=command, revalidate=revalidate)
+    except CancelCloseError as exc:
+        raise HTTPException(exc.status, detail={'code': exc.code, 'committed': False}) from None
+    except (WorkflowAuthorityError, ProfileCoordinatorError, OSError):
+        raise HTTPException(503, detail={'code': 'control_unavailable', 'committed': None,
+            'readback_required': True}) from None
+    except (PauseControlError, sqlite3.Error, ValueError, TypeError, KeyError, IndexError, RecursionError, RuntimeError):
+        # Includes an uncertain COMMIT or lease release: do not assert rollback.
+        raise HTTPException(503, detail={'code': 'evidence_unavailable', 'committed': None,
+            'readback_required': True}) from None
+
+
+@router.post('/workflows/sequential/cancel-close-never-launched', response_model=CancelCloseReceipt,
+    dependencies=[Depends(_require_human)], openapi_extra=_settings_body(CancelCloseCommand),
+    responses={code: {'description': 'No native settlement; bounded human-close refusal'}
+        for code in (401, 403, 404, 409, 422, 503)})
+async def cancel_close_never_launched(request: Request, response: Response, org: OrgDep) -> dict:
+    return await _cancel_close(request, response, org)
+
+
+@router.get('/workflows/sequential/runs/{run_id}/cancel-close-never-launched', response_model=CancelCloseReceipt,
+    dependencies=[Depends(_require_human)],
+    responses={code: {'description': 'Saved human-close receipt unavailable'} for code in (401, 403, 404, 409, 422, 503)})
+async def cancel_close_status(request: Request, response: Response, org: OrgDep,
+                              run_id: str, operation_key: str) -> dict:
+    return await _cancel_close(request, response, org, run_id, operation_key)

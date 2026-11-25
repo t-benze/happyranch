@@ -525,6 +525,12 @@ original owner and complete proof; with that owner lost it will refuse, so there
 is no supported repair command to recommend. Historical recovery needs a separate
 authorized design/action; do not resume, repair the DB or restart to force it.
 
+The human-only [sequential never-launched business close](../../operations/sequential-never-launched-close.md)
+can finish business cancellation only after independent durable no-launch proof.
+It is not preparation repair: all unknown journal bytes, native owners and
+original-cleanup proof requirements above remain unchanged, including historical
+records. Automatic runtime settlement is unchanged.
+
 THR-307 seq388/389: before the existing session admission commits, scratch
 preparation/launch exits compensate only an empty root exclusively created by
 that attempt. Creation pins the directory inode; cleanup rechecks its identity

@@ -5307,6 +5307,29 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/sequential/cancel-close-never-launched": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/sequential/definitions": {
       "GET": {
         "params": [
@@ -5488,6 +5511,37 @@
           "404",
           "409",
           "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}/cancel-close-never-launched": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "run_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
         ]
       }
     },
