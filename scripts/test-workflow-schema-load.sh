@@ -118,7 +118,7 @@ S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refuse
     'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain',
     'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused',
     'legacy_summary_workflow_not_terminal', 'resume_publishes_ready_initiator',
-    'resume_queue_refused_retains_release')
+    'resume_queue_refused_retains_release', 'manager_work_not_terminal')
 s6a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     s6a_case = sys.argv[1].split('=', 1)[1]
@@ -4860,6 +4860,63 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert f.conn.execute('SELECT release_pending_generation FROM task_pause_controls WHERE root_task_id=?',
                         (root_id,)).fetchone()[0] is None, 'coalesced publication retained release intent'
                 assert s5snap(f) == before, 'Resume publication consumed or rewrote workflow events'
+        elif case == 'manager_work_not_terminal':
+            for join, action, legacy in product(('fanout', 'chain'), ('delegate', 'fanout', 'parallel'), (False, True)):
+                with s6fixture() as f:
+                    label = f'{join}/{action}/legacy={legacy}'
+                    p = TaskRecord(id='s6-manager-parent', assigned_agent='s3_manager', team='engineering',
+                        task_type='task', status='in_progress', block_kind='delegated', brief='Manager work barrier')
+                    f.db.insert_task(p)
+                    sibling = s6ordinary(f, parent=p.id, task_id='s6-manager-sibling', agent='s3_manager',
+                        decision=dict(action='done'))
+                    f.db.update_task(sibling.id, status='completed')
+                    decision = (dict(action=action, agent='s3_author', prompt='Nested work') if action == 'delegate' else
+                        dict(action=action, children=[dict(agent='s3_author', prompt='Nested work'),
+                            dict(agent='s3_review', prompt='Other nested work')]))
+                    child = s6ordinary(f, parent=p.id, task_id='s6-manager-child', agent='s3_manager', decision=decision)
+                    f.db.update_task(child.id, block_kind='delegated')
+                    if legacy:
+                        f.conn.execute('UPDATE task_results SET decision_json=NULL,output_summary=? WHERE task_id=?',
+                            (json.dumps(decision), child.id))
+                        f.conn.commit()
+                    native = (s4bytes(dict(children_ids=[sibling.id, child.id], children_details=[], width=2,
+                        manager_agent=p.assigned_agent, status='spawned')).decode() if join == 'fanout' else
+                        s4bytes(dict(legs=[dict(agent='s3_manager', prompt='Manager then leg'),
+                            dict(agent='s3_review', prompt='After manager terminal')], step_index=1, step_audit_id=1)).decode())
+                    if join == 'fanout':
+                        f.db.update_task_active_fanout(p.id, native)
+                        assert not fanout_join_ready(f.org.orchestrator, f.db.get_task(p.id)), label + ': early fanout join'
+                    else:
+                        f.db.update_task_active_chain(p.id, native)
+                    _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
+                    _enqueue_parent_if_waiting(f.org.orchestrator, sibling.id)
+                    assert s6queue(f) == [], label + ': work-opening report published continuation'
+                    assert len(f.db.get_children(p.id)) == 2, label + ': manager then leg advanced early'
+                    assert derive_child_wait(f.db, f.db.get_task(p.id), ChildWaitBudget())['state'] == 'waiting_children', label
+                    current = f.db.get_task(p.id)
+                    assert (current.active_fanout if join == 'fanout' else current.active_chain) == native, label
+                    # A later genuine final decision uses the production terminal
+                    # consumer and must publish the enclosing continuation once.
+                    sid = 's6-manager-final'
+                    f.db.update_task(child.id, current_session_id=sid, block_kind=None)
+                    assert f.db.admit_task_completion_callback(task_id=child.id, agent=child.assigned_agent,
+                        session_id=sid, output_summary='Nested work finished', confidence_score=80,
+                        decision_json='{"action":"done"}')
+                    row = f.db.get_latest_task_result(child.id, child.assigned_agent, sid)
+                    report = completion_report_from_result_row(child.id, row, fallback_agent=child.assigned_agent)
+                    _consume_completion_report(f.org.orchestrator, child.id, report, result_row_id=row['id'])
+                    assert f.db.get_task(child.id).status == 'completed', label + ': manager final done did not complete'
+                    _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
+                    if join == 'fanout':
+                        assert fanout_join_ready(f.org.orchestrator, f.db.get_task(p.id)), label + ': terminal children did not join'
+                        assert s6queue(f) == [p.id], label + ': terminal join did not publish once'
+                    else:
+                        children = f.db.get_children(p.id)
+                        assert len(children) == 3 and s6queue(f) == [children[-1]], label + ': chain did not advance once'
+                        next_leg = f.db.get_task(children[-1])
+                        assert next_leg.assigned_agent == 's3_review' and next_leg.brief.startswith('After manager terminal'), label
+                        assert json.loads(f.db.get_task(p.id).active_chain)['step_index'] == 2, label
+                    print('PASS S6a manager work', label, flush=True)
         elif case == 'ordinary_done_lag':
             with s6fixture() as f:
                 # Separate ordinary barrier, without I as its child.
@@ -4869,6 +4926,14 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 child = s6ordinary(f, parent=p.id, decision=dict(action='done', summary='ordinary final done'))
                 assert child.status == 'in_progress'
                 assert _child_landed_terminal_report(f.org.orchestrator, child) is not None
+                worker = s6ordinary(f, parent=p.id, task_id='s6-plain-worker')
+                f.db.update_task(worker.id, task_type='subtask')
+                assert f.db.admit_task_completion_callback(task_id=worker.id, agent=worker.assigned_agent,
+                    session_id=worker.current_session_id, output_summary='Ordinary worker finished', confidence_score=80)
+                worker = f.db.get_task(worker.id)
+                worker_report = f.db.get_latest_completion_report(worker.id, worker.assigned_agent, worker.current_session_id)
+                assert worker_report.decision is None and f.org.orchestrator._parse_next_step(worker_report).action == 'escalate'
+                assert worker.status == 'in_progress' and _child_landed_terminal_report(f.org.orchestrator, worker) is not None
                 _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
                 _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
                 assert s6queue(f) == [p.id], 'THR-211 ordinary lag failed once-only release'

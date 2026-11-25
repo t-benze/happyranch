@@ -4272,8 +4272,11 @@ and the same command with `3.14`, or `--s6a=CASE`. Cases are
 `initiator_event_run_B_live`, `ordinary_done_lag`, `modern_missing_no_fallback`,
 `final_done_after_drain`, `blocked_job_wait_passthrough`,
 `settled_history_not_veto`, `event_session_dispatch_refused`,
-`legacy_summary_workflow_not_terminal`, `resume_publishes_ready_initiator`, and
-`resume_queue_refused_retains_release` (21 cases total).
+`legacy_summary_workflow_not_terminal`, `resume_publishes_ready_initiator`,
+`resume_queue_refused_retains_release`, and `manager_work_not_terminal`
+(22 cases total). The manager case covers structured and legacy-summary
+delegate/fanout/parallel callbacks behind two-manager fanout and manager then-leg
+barriers, followed by genuine final done and once-only continuation publication.
 The correction cases observe native blocked/job and ordinary passthrough without
 event acknowledgement, readiness/final done with 262 retained settled
 children/carriers, pre-COMMIT dispatch refusal preserving an unfinished join,
