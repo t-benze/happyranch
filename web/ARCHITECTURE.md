@@ -593,9 +593,10 @@ history; the separate history endpoint is not used.
   success (MEM-300), rechecked at the callback. One Save sends one PUT with
   only the changed writable fields, each with its read `expected_version` and
   `expected_revision` (per-field CAS; PR2 has no task-wide revision). Numeric
-  text is only parsed, and text that a JS number cannot hold exactly (for
-  example `9007199254740993`) is refused before sending with a per-field error
-  and the draft kept; the server's 422 is the validation authority. Outcomes:
+  text, trimmed of outer whitespace, must be plain decimal (no `0x`/`0b`/`0o`,
+  `Infinity`, `NaN`, `_` or inner spaces) and is only parsed; other text, and
+  text that a JS number cannot hold exactly (for example `9007199254740993`),
+  is refused before sending with a per-field error and the draft kept; the server's 422 is the validation authority. Outcomes:
   409 keeps the draft, names the actor/time of the latest event for a value
   revision conflict, uses neutral copy for a definition change, and keeps a
   newly archived field read-only with "Your draft · not saved" until the dialog

@@ -103,13 +103,21 @@ function canonicalDecimal(text: string): string | null {
 }
 
 /**
+ * Strict decimal grammar every numeric draft must match before `Number()`
+ * (review F2 round 2): no `0x`/`0b`/`0o`, `Infinity`, `NaN`, `_` or inner
+ * spaces, which `Number()` would otherwise accept or round.
+ */
+const STRICT_DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
+/**
  * True when the typed decimal text names exactly the value the JS number
  * will send (its shortest round-trip form). `9007199254740993` → false: it
- * would be sent as `9007199254740992`. Non-decimal text keeps `Number()`.
+ * would be sent as `9007199254740992`. Text that is not plain decimal is
+ * never exact.
  */
 export function exactlyRepresentable(text: string, n: number): boolean {
   const typed = canonicalDecimal(text);
-  if (typed === null) return true;
+  if (typed === null) return false;
   return typed === canonicalDecimal(String(n));
 }
 
@@ -125,7 +133,8 @@ export function draftValue(
   if (type === 'boolean') return { ok: true, value: d.mode === 'true' };
   if (type === 'numeric') {
     const text = d.raw.trim();
-    const n = text === '' ? NaN : Number(text);
+    if (!STRICT_DECIMAL.test(text)) return { ok: false, code: 'expected_finite_number' };
+    const n = Number(text);
     if (!Number.isFinite(n)) return { ok: false, code: 'expected_finite_number' };
     // Never silently send a different number than the one typed (review F2).
     if (!exactlyRepresentable(text, n)) return { ok: false, code: 'not_exact_number' };
