@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -277,7 +278,8 @@ def test_preflight_owner_boundaries(venue, case):
 
 @pytest.mark.parametrize("reader", ["prepare", "owner", "admission"])
 @pytest.mark.parametrize("policy_custody", ["headscale", "root", "wide-mode"])
-def test_member_readers_distinct_headscale_custody(venue, monkeypatch, reader, policy_custody):
+def test_member_readers_distinct_headscale_custody(
+        venue: Any, monkeypatch: pytest.MonkeyPatch, reader: str, policy_custody: str) -> None:
     from runtime.remote_access.home_activation_prepare import HomeActivationPrepare
     from runtime.remote_access.home_admission import HomeProfileAdmission
 
@@ -299,7 +301,7 @@ def test_member_readers_distinct_headscale_custody(venue, monkeypatch, reader, p
         identities[(policy.stat().st_dev, policy.stat().st_ino)] = io.root_owner
     native_stat, native_fstat = os.stat, os.fstat
 
-    def metadata(info):
+    def metadata(info: os.stat_result) -> os.stat_result | SimpleNamespace:
         owner = identities.get((info.st_dev, info.st_ino))
         if owner is None:
             return info

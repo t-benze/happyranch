@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -229,7 +230,8 @@ def test_supervisor_foreground_checks_before_run_loop(venue, monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/etc/happyranch/connector.json", "/etc/happyranch/other.json"])
-def test_linux_cli_passes_fixed_home_config_to_supervisor(venue, monkeypatch, capsys, path):
+def test_linux_cli_passes_fixed_home_config_to_supervisor(
+        venue: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], path: str) -> None:
     from runtime.remote_access import cli
 
     v, io = venue, venue.receipts._io

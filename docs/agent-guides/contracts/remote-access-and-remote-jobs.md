@@ -1702,8 +1702,8 @@ dependency/alias/trigger may become effective through this publication.
 **Inventory:** `collect_lan_inventory()` uses literal Linux `NETLINK_ROUTE`
 link/address/route dumps, not a shell, PATH, executable, environment or address
 input. Include all unicast IPv4/IPv6 default routes across tables and every
-ECMP member and its address family without metric/weight ranking. Complete interface IDs carry their
-up/loopback flags and local addresses. Preserve table identity: an exactly
+ECMP member and its address family without metric/weight ranking. Complete
+interface IDs carry their up/loopback flags and local addresses. Preserve table identity: an exactly
 four-byte `RTA_TABLE` overrides the `rtm_table` header; absent attributes use
 the header. Malformed, duplicate or truncated attributes refuse `inventory`.
 Validate every default and every ECMP hop, including known interface indices,
@@ -1897,8 +1897,8 @@ inert leaf/CA publication. Readiness remains later work; renderers remain pure.
 
 `select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
 frozen `LANInterface(index, up, loopback, addresses)` and
-`LANDefaultRoute(interface_index, source_ip, table=254, family=AF_INET)` records. Table IDs are
-exact integers in the unsigned 32-bit range; legacy two-argument construction
+`LANDefaultRoute(interface_index, source_ip, table=254, family=AF_INET)` records.
+Table IDs are exact integers in the unsigned 32-bit range; legacy two-argument construction
 conservatively means main (254). Addresses are literal
 local addresses without CIDRs. The collector supplies **every usable default
 route**, its selected source and complete interface identities, including IPv6
@@ -2615,6 +2615,7 @@ service accounts, including when retry or recovery skips Prepare in that process
 The Linux managed connector CLI passes its resolved configuration path to the
 supervisor. Home admission still requires exactly `/etc/happyranch/connector.json`
 and the fixed connector unit; an alternate path cannot acquire home authority.
+
 Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
 (`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
 digested; renewable `server.crt` is excluded because trust binds the CA DER
