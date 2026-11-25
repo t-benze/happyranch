@@ -4,10 +4,13 @@ from __future__ import annotations
 import errno
 import http.client
 import json
+import os
+import re
 import socket
 import struct
 import sys
 import time
+from pathlib import Path
 
 from runtime.remote_access.home_headscale import LANDefaultRoute, LANInterface, _dial_ip_valid
 
@@ -192,6 +195,79 @@ def preflight_ports(dial_ip: str) -> None:
         category = "occupied-port" if error.errno == errno.EADDRINUSE else "port-check-uncertain"
     if category:
         raise HeadscaleServiceError(category)
+
+
+def require_owned_ports(dial_ip: str, *, uid: int, pid: int) -> None:
+    """Attribute every fixed listener to the freshly verified exact unit PID.
+
+    Only the activation owner's occupied-bind fallback calls this. Inert
+    preparation still requires free ports. Missing or changing evidence refuses.
+    """
+    try:
+        if (not _dial_ip_valid(dial_ip) or type(uid) is not int or uid < 0
+                or type(pid) is not int or not 0 < pid < 2**31):
+            raise ValueError
+        process = Path(f'/proc/{pid}')
+        def identity() -> str:
+            with (process / 'status').open(encoding='ascii') as source:
+                status = source.read(8193)
+            owners = re.search(r'^Uid:\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$', status, re.MULTILINE)
+            with (process / 'stat').open(encoding='ascii') as source:
+                stat = source.read(8193)
+            start = stat.rsplit(')', 1)[1].split()[19]
+            if (len(status) > 8192 or len(stat) > 8192 or owners is None
+                    or any(int(value) != uid for value in owners.groups()) or not start.isdecimal()):
+                raise ValueError
+            return start
+        before = identity()
+        inodes = set()
+        for index, fd in enumerate((process / 'fd').iterdir()):
+            if index >= 4096:
+                raise ValueError
+            try:
+                target = os.readlink(fd)
+            except FileNotFoundError:
+                continue  # Closing unrelated fds supplies no positive evidence.
+            match = re.fullmatch(r'socket:\[([0-9]+)\]', target)
+            if match:
+                inodes.add(match[1])
+        lan = socket.inet_aton(dial_ip)
+        endpoints = {('tcp', int.from_bytes(lan, sys.byteorder), 8443),
+                     ('udp', int.from_bytes(lan, sys.byteorder), 3478),
+                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 19090),
+                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 50443)}
+        found = set()
+        for table in ('tcp', 'udp', 'tcp6', 'udp6'):
+            with Path('/proc/net/' + table).open(encoding='ascii') as source:
+                header = source.readline(512)
+                if not header or len(header) >= 512:
+                    raise ValueError
+                for index, line in enumerate(source):
+                    columns = line.split()
+                    if index >= 16384 or len(line) > 512 or len(columns) < 10:
+                        raise ValueError
+                    address, port = columns[1].split(':')
+                    address, port = int(address, 16), int(port, 16)
+                    transport = table.removesuffix('6')
+                    relevant = [entry for entry in endpoints if entry[0] == transport and entry[2] == port]
+                    if not relevant or (transport == 'tcp' and columns[3] != '0A'):
+                        continue
+                    # No product IPv6 listener exists. Refuse that port rather
+                    # than infer IPV6_V6ONLY or accept a mapped/wildcard listener.
+                    if table.endswith('6'):
+                        raise ValueError
+                    if address not in (0, relevant[0][1]):
+                        continue
+                    endpoint = (transport, address, port)
+                    if (endpoint not in endpoints or columns[9] not in inodes
+                            or columns[3] != ('0A' if transport == 'tcp' else '07')):
+                        raise ValueError
+                    found.add(endpoint)
+        if found != endpoints or identity() != before:
+            raise ValueError
+        return
+    except (OSError, ValueError, IndexError, UnicodeError):
+        raise HeadscaleServiceError('port-check-uncertain') from None
 
 
 def wait_ready() -> None:

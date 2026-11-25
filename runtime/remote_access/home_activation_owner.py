@@ -338,10 +338,16 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
 
     def verify(self, effect: str, receipt: HomeActivationReceipt) -> bool:
         try:
-            if effect not in EFFECTS:
+            if effect not in (*EFFECTS, 'owned_ports'):
                 return False
             self._common(receipt)
-            if effect == "headscale_start_verify":
+            if effect == 'owned_ports':
+                unit = render_headscale_unit(home_transport=True).encode()
+                process = self._unit(_HEADSCALE, unit, user='happyranch-headscale')
+                headscale_service.require_owned_ports(receipt.dial_ip, uid=process.uid, pid=process.main_pid)
+                if self._unit(_HEADSCALE, unit, user='happyranch-headscale') != process:
+                    raise ActivationRefused()
+            elif effect == "headscale_start_verify":
                 with self._io._publication_parent("etc/systemd/system") as (parent, check):
                     unit = self._io._read_unit(parent, _HEADSCALE)
                     check()

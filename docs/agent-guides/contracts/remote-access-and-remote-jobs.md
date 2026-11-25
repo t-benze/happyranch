@@ -4708,3 +4708,18 @@ responses map to revoked; generic identity denial remains accessUnavailable,
 never proof of confirmed revocation. This adds no network/auth/credential change,
 no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
 health action already distinguishes revokedConfirmed from accessDenied.
+
+### Owned Headscale listeners during activation retry (THR-327 R6)
+
+Inert preparation still samples the four exclusive IPv4 binds. At the activation
+coordinator's preflight only, occupied-port may instead pass fresh attribution
+of all four fixed listeners to the exact owned active Headscale unit. Existing
+receipt/member/config/source checks precede this observation; exact fragment
+bytes, loaded path, names, no drop-ins, service UID and MainPID are checked on
+both sides. Bounded kernel socket tables and that PID's fd set must attribute
+every matching IPv4 listener to it; wildcard/foreign/missing or ambiguous
+listeners refuse. A matching IPv6 port conservatively refuses. Process UID and
+start time are rechecked against PID reuse. No running-unit-only exemption,
+port reservation, stop, replay, new unit rendering or upgrade format is added.
+The ordinary headscale_start_verify effect and its fresh admin verification
+still follow preflight.

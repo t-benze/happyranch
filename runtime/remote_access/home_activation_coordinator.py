@@ -34,8 +34,9 @@ class ActivationOwner(Protocol):
 
     verify is read-only, fresh and complete: it checks custody, current generation/
     policy and binding for preflight; actual service/user/node/credential state for
-    later effects. Mint verification uses fixed-user key/node listings, not a cached
-    success reply. credential_staging verifies transient key custody/consumption;
+    later effects. owned_ports is read-only exact-unit/socket attribution after an
+    occupied bind, never a journal effect. Mint verification uses fixed-user key/node
+    listings, not a cached success reply. credential_staging verifies transient key custody/consumption;
     no secret is written in the journal. perform accepts only the fixed effect names:
     headscale_start_verify, db_users, credential_staging, home_config, managed_services.
     db_users composes RootHeadscaleAdminOperations' fixed-name create/list operations.
@@ -248,7 +249,12 @@ class HomeActivationCoordinator:
             self._members(receipt, transaction)
             self._verify("preflight", receipt)
             if name == "preflight":
-                headscale_service.preflight_ports(receipt.dial_ip)
+                try:
+                    headscale_service.preflight_ports(receipt.dial_ip)
+                except headscale_service.HeadscaleServiceError as error:
+                    if error.category != 'occupied-port':
+                        raise
+                    self._verify('owned_ports', receipt)
             elif name == "local_node_mint":
                 credential = home_admin.mint_local_node(receipt.operation_id,
                                                         datetime.now(timezone.utc) + timedelta(seconds=120))
