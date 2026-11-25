@@ -99,8 +99,10 @@ Old-role work remains refused even after switching back; Main's owners, target
 and generation are preserved.
 Disconnect, Cancel, target changes and navigation retain failed-save outcomes,
 without retaining session credentials.
-Only the existing protected write/readback for the matching binding clears its
-warning; saving a different computer does not confirm the original failure.
+The existing protected write/readback for the matching binding clears its
+warning. Confirmed removal also forgets only that binding's failed-save outcome,
+including revoked unsaved B while saved computer A remains selected. Failed or
+unknown removal retains the warning; saving another computer does not settle it.
 The legacy phase strip remains
 until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
 launch/close/Quit/Relaunch policy are outside this slice.
@@ -129,13 +131,22 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
+Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
+PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
+capture coordinates. A background timer bounds navigation to 4 seconds and each
+later step to 2 seconds, independently of MainActor/WebKit callbacks, within the
+unchanged process watchdog and suite limits. `capture_step` records completion,
+error or timeout; timeout exits 124. Scrolling uses instant offsets and a short
+timer settle rather than animation frames, which may stop in an occluded window.
+The collector retains these diagnostics, the last step and the closed validation
+reason even when no PNG/completion receipt exists or a final JSONL write is partial.
 Complete locale captures survive a failure in the other
 locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
 
 Maker native compilation, XCTest/Swift Testing, screenshot capture, native
 layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
-PR #1863 has **7/9 builds used** (72–78), with build 8 reserved for final QA after
-round-8 exact-head APPROVE and build 9 reserved. Exceeding nine needs Founder.
+PR #1863 has **8/9 builds used** (72–79). Build 9 is the last final QA build,
+only after round-9 exact-head APPROVE. Exceeding nine needs Founder.
 The maker runs no Mac/Jenkins build. The existing portable command below
 checks collector failures and the shipping JavaScript event/retirement seam;
 it does not establish native acceptance. `MainDialogTests` adds real WebKit

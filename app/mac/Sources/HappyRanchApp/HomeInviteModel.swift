@@ -80,7 +80,7 @@ final class HomeInviteModel: ObservableObject {
     var activeID: UUID? { active?.id }
     var activeHasUnsavedAccess: Bool { active?.unsaved != nil }
     // Outcome evidence survives session/credential teardown. Only a protected
-    // save/readback for the matching binding settles its failed-save warning.
+    // save/readback or confirmed removal of that binding settles its warning.
     private struct UnconfirmedSave {
         let binding: SavedDeviceBinding
         let failure: SavedAccessFailure
@@ -238,6 +238,7 @@ final class HomeInviteModel: ObservableObject {
                     guard let profile = previous.credential.networkProfileID else { throw HomeConnectionFailure.cleanupIncomplete }
                     try await Task.detached { try HomeNetworkState.remove(profile) }.value
                     try await store.delete(binding: previous.credential.binding)
+                    unconfirmedSaves.removeAll { $0.binding == previous.credential.binding }
                     records.removeValue(forKey: profile); savedHomes.removeAll { $0.id == profile }
                     if selectedHomeID == profile { selectedHomeID = savedHomes.first?.id }
                     if candidateID == nil, target == previous.credential.trust { target = nil }
@@ -1047,6 +1048,7 @@ final class HomeInviteModel: ObservableObject {
               pendingRemoval?.binding == credential.binding,
               pendingRemoval?.networkProfileID == id else { return }
         records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
+        unconfirmedSaves.removeAll { $0.binding == credential.binding }
         if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
         if activeCredential?.binding == credential.binding { activeCredential = nil }
         pendingRemoval = nil; pendingRemovalErased = false; pendingRemovalNetworkErased = false

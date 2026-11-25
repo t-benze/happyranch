@@ -242,6 +242,13 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
         # locale is never accepted as complete or silently truncated.
         try:
             evidence = read_events(events)
+            row['diagnostic_events'] = [event for event in evidence if event.get('event') in (
+                'startup', 'capture_progress', 'capture_step', 'admission_failure', 'failure',
+                'watchdog', 'navigation_failure', 'content_process_terminated')]
+            progress = [event for event in evidence if event.get('event') == 'capture_progress']
+            row['last_step'] = progress[-1] if progress else None
+            receipts = [event for event in evidence if event.get('event') == 'screenshot']
+            row['events'] = receipts
             completions = [event for event in evidence if event.get('event') == 'capture_complete']
             row['completion_events'] = completions
             counts = {}
@@ -262,8 +269,6 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                 raise ValueError('missing scroll capture completion')
             images = screenshot_archive(downloads, locale, counts)
             capture['screenshots'].extend(images)
-            receipts = [event for event in evidence if event.get('event') == 'screenshot']
-            row['events'] = receipts
             expected = {image['name']: image for image in images}
             if (row['exit_code'] == 0 and len(receipts) == len(expected)
                     and {event.get('name') for event in receipts} == set(expected)
@@ -272,6 +277,8 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                 row['status'] = 'PASS'
         except (OSError, ValueError, RuntimeError) as error:
             row['capture_error'] = type(error).__name__
+            if isinstance(error, ValueError):
+                row['capture_error_reason'] = str(error)
     if all(row['status'] == 'PASS' for row in capture['processes']):
         capture['status'] = 'PASS'
 

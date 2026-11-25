@@ -575,7 +575,7 @@ credential or fingerprint field is exposed. Names are presentation only.
 | `incompatible` | `null` except in state `incompatible`, when it is exactly `{side, host_contract, client_contract, min_daemon}`. Side is `host`, `app` or `unknown`; contract constants are `1`/`1`. `host_contract` is exactly integer `{current, min_client}`, or `null` for missing/invalid metadata; null requires side `host`. |
 | `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground` or `unsupported`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
 | `candidate` | `null` or exactly `{kind, id, name, phase, deadline}`. Kind is `local`/`remote`; phase is `signing_in`, `awaiting_approval`, `ready_to_switch`, `failed` or `cancelled`; deadline is an ISO8601/RFC3339 date-time or null. Candidate identity is sanitized and separate from the active target. |
-| `access_unsaved` | Boolean for the persistent native badge and Connection detail; only confirmed protected save clears it. |
+| `access_unsaved` | Boolean for the persistent native badge and Connection detail; confirmed protected save settles the matching binding's warning. Mac also settles confirmed removal of that exact binding (MAC-2b). |
 | `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Desktop web (S8-1-W, PR #1812) treats it as the native locale authority: first `app.status` seeds the first frame, later `app.status`/`app.stateChanged` reports apply only when no local choice is pending; see "v2 app locale setter". |
 
 ### v2 native errors and HTTP mapping
@@ -1735,8 +1735,10 @@ The web header status/candidate pill and persistent access-unsaved warning use
 `app.status` projections. Clicking the warning opens Connection's existing
 save-specific Retry presentation. Unavailable document evidence preserves the
 warning across Disconnect, Cancel, target changes and navigation. Native retains
-nonsecret failed-save binding evidence independently of session custody; only
-the matching protected write/readback success clears it. No active target and
+nonsecret failed-save binding evidence independently of session custody. A
+matching protected write/readback success or confirmed removal settles only
+that binding's warning. Revoked unsaved B's confirmed removal preserves saved A;
+failed/unknown removal retains the warning. No active target and
 an unrelated computer's successful save are not confirmation. Native labels follow
 the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
 legacy phase-strip/compatibility cutover remain separate.
@@ -1753,6 +1755,14 @@ and completion receipts. Eight panes/sixteen extra images per 200% view, 2 MiB
 per image, 8 MiB per locale and the existing 40-second process cap bound capture;
 incomplete/over-budget capture fails. No product layout change or Jenkins
 job/config change is included.
+Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
+step fsyncs a `capture_progress` record before starting. Native background timers
+bound navigation to 4 seconds and later steps to 2 seconds, even if MainActor or
+a WebKit callback stalls; `capture_step` records complete/error/timeout, with
+timeout exit124. Existing process/suite limits are unchanged. Instant scrolling
+and a short timer settle replace unbounded animation-frame waits. The collector
+retains the last step, diagnostic events and closed validation reason on partial
+or failed runs, without accepting incomplete/duplicate/wrong-theme evidence.
 The Mac Package keeps testable `HappyRanchApp` code in a library target; native
 tests depend on libraries, and only the `HappyRanchLauncher` executable target
 owns `@main`. Its explicit product remains `HappyRanchApp`. The split unfiltered
@@ -1765,8 +1775,9 @@ replay or target selection, and explicit `503 no_target`. The full unfiltered XC
 Testing and transport qualification remain in the same workload. Native
 compile/tests/captures/layout/accessibility are
 NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
-exact head and consumes this PR's allowance. Founder seq146 sets PR #1863 to
-6/9 used, one diagnostic and two final-QA builds remaining; the maker runs none.
+exact head and consumes this PR's allowance. PR #1863 has 8/9 used (72–79);
+build 9 is the last final QA, only at the round-9 APPROVED exact head. Exceeding
+nine needs Founder; the maker runs none.
 
 ### MAC-1 transport implementation and qualification status
 

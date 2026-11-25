@@ -228,3 +228,44 @@ for (const [fault, mode] of [
   }
 }
 console.log('PASS: qualifier bounds EOF/parse/emit/abort/download failures, continues every step and emits closed failure facts');
+
+// Run the shipping dialog scripts in this existing portable page venue. A
+// minimized native window need not deliver animation frames. These assertions
+// cover JS state/termination, not WebKit rendering or the Swift watchdog.
+const dialogScript = name => qualifierSource.split(`private static let ${name} = #"""\n`)[1].split('"""#')[0];
+const dialogStorage = new Map(), attributes = new Map(), storageEvents = [];
+const dialogDocument = {documentElement:{style:{}, setAttribute:(key, value) => attributes.set(key, value)}};
+const dialogWindow = {dispatchEvent:event => { storageEvents.push(event); return true; }};
+const dialogEnvironment = {
+  window:dialogWindow, document:dialogDocument, theme:'dark', size:'200%',
+  localStorage:{setItem:(key, value) => dialogStorage.set(key, value)},
+  StorageEvent:class { constructor(type, fields) { this.type = type; Object.assign(this, fields); } },
+};
+assert.equal(vm.runInNewContext(`(() => {${dialogScript('dialogTheme')}})()`, dialogEnvironment), true);
+assert.equal(dialogStorage.get('happyranch.theme'), 'dark');
+assert.equal(attributes.get('data-theme'), 'dark');
+assert.equal(dialogDocument.documentElement.style.fontSize, '200%');
+assert.equal(storageEvents.length, 1);
+assert.equal(storageEvents[0].key, 'happyranch.theme');
+assert.equal(storageEvents[0].newValue, 'dark', 'mounted shipping hook receives the selected theme');
+for (const ignoredScroll of [false, true]) {
+  const pane = {scrollTop:0, clientHeight:400, scrollTo({top}) { if (!ignoredScroll) this.scrollTop = top; }};
+  const environment = {window:{__hrCaptureScrollers:[pane]}, index:0, page:2, step:300, maximum:550,
+    setTimeout, requestAnimationFrame:() => { /* deliberately never fires */ }};
+  let timer;
+  const operation = Promise.race([
+    vm.runInNewContext(`(async () => {${dialogScript('dialogScroll')}})()`, environment),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Error('dialog scroll waited for suspended animation frames')), 300); }),
+  ]);
+  try {
+    if (ignoredScroll) await assert.rejects(operation, /capture scroll incomplete/);
+    else {
+      const receipt = await operation;
+      assert.equal(receipt.scrollTop, 550, 'last overlapping page reaches the actual pane bottom');
+      assert.equal(receipt.scrollMaximum, 550);
+      assert.equal(receipt.scrollPage, 2);
+      assert.equal(receipt.viewportHeight, 400);
+    }
+  } finally { clearTimeout(timer); }
+}
+console.log('PASS: dialog theme follows shipping storage/attribute/listener; scroll reaches bottom without animation frames and refuses ignored offsets');

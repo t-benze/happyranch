@@ -32,6 +32,34 @@ private final class AppSchemeEventLog: @unchecked Sendable {
     }
 }
 
+/// The timer runs off MainActor, so a missing WebKit callback cannot hide
+/// behind cancellation of a suspended async operation or a stalled UI thread.
+private final class AppSchemeCaptureStep: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private let log: AppSchemeEventLog
+    private let fields: [String: Any]
+    init(_ log: AppSchemeEventLog, name: String, fields: [String: Any], timeout: TimeInterval) {
+        self.log = log; self.fields = fields.merging(["step": name]) { _, new in new }
+        log.write("capture_progress", self.fields.merging(["timeoutMs": Int(timeout * 1000)]) { _, new in new })
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            if self.finish("timeout") { _exit(124) }
+        }
+    }
+    @discardableResult
+    func finish(_ result: String) -> Bool {
+        lock.withLock {
+            guard !finished else { return false }
+            finished = true
+            // Successful steps are sequential; coordinates are already in the
+            // preceding progress row. Keep worst-case evidence under EVENT_CAP.
+            let resultFields = result == "complete" ? ["step": fields["step"]!] : fields
+            log.write("capture_step", resultFields.merging(["result": result]) { _, new in new })
+            return true
+        }
+    }
+}
+
 /// Project even forged page values to a closed, bounded evidence schema.
 enum AppSchemePageLiveness {
     static func fields(_ raw: Any?) -> [String: Any] {
@@ -122,6 +150,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var awaitingReload = false
     private var dialogApp: AppDelegate?
     private var capturingDialogs = false
+    private var dialogNavigationStep: AppSchemeCaptureStep?
     private static let reloadPath = "/onboarding"
 
     private static func closedPath(_ path: String?) -> String {
@@ -194,6 +223,9 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             view.autoresizingMask = [.width, .height]
             window.setFrame(NSRect(x: 100, y: 100, width: 760, height: 560), display: true)
             window.makeKeyAndOrderFront(nil)
+        }
+        if dialogApp != nil {
+            dialogNavigationStep = AppSchemeCaptureStep(log, name: "navigation", fields: ["mode": mode], timeout: 4)
         }
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
     }
@@ -278,9 +310,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let navigation, self.navigation === navigation else { return }
+        dialogNavigationStep?.finish("complete"); dialogNavigationStep = nil
         Task {
             do {
-                try await scheme.admitDocument()
+                if dialogApp != nil {
+                    try await dialogStep("admission", fields: ["mode": mode]) { try await self.scheme.admitDocument() }
+                } else { try await scheme.admitDocument() }
                 if dialogApp != nil, !capturingDialogs {
                     capturingDialogs = true
                     try await captureDialogs(webView)
@@ -295,62 +330,92 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
     }
 
-    /// Capture the actual shared dialogs and web header without screen
-    /// recording permission. WebKit supplies its composited page snapshot;
-    /// AppKit draws the enclosing native frame at the same logical size.
+    private func dialogStep<T>(_ name: String, fields: [String: Any],
+                               operation: () async throws -> T) async throws -> T {
+        let step = AppSchemeCaptureStep(log, name: name, fields: fields, timeout: 2)
+        do {
+            let value = try await operation()
+            step.finish("complete"); return value
+        } catch { step.finish("error"); throw error }
+    }
+
+    /// WebKit supplies the composited dialogs/header; AppKit draws the frame.
+    /// No screen recording permission is needed.
     private func captureDialogs(_ view: WKWebView) async throws {
         guard let window, let frame = window.contentView?.superview, let app = dialogApp else { throw AppAPIError.unavailable }
         let locale = mode == "dialogs-zh" ? "zh" : "en"
         for theme in ["light", "dark"] {
             window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
             for scale in [100, 200] {
-                _ = try await view.callAsyncJavaScript("document.documentElement.style.fontSize = size; localStorage.setItem('happyranch.theme', theme); document.documentElement.setAttribute('data-theme', theme); window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));",
-                    arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
+                let common: [String: Any] = ["locale": locale, "theme": theme, "textPercent": scale]
+                _ = try await dialogStep("apply-theme", fields: common) {
+                    try await view.callAsyncJavaScript(Self.dialogTheme,
+                        arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
+                }
                 for dialog in ["settings", "connection", "main"] {
-                    if dialog == "main" {
-                        _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click();",
-                            arguments: [:], in: nil, contentWorld: .page)
-                    } else {
-                        let deadline = Date().addingTimeInterval(4)
-                        while !app.requestMainDialog(dialog) {
-                            guard Date() < deadline else { throw AppAPIError.unavailable }
+                    let fields = common.merging(["dialog": dialog]) { _, new in new }
+                    try await dialogStep("request-dialog", fields: fields) {
+                        if dialog == "main" {
+                            _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click(); return true;",
+                                arguments: [:], in: nil, contentWorld: .page)
+                        } else {
+                            for _ in 0..<60 {
+                                if app.requestMainDialog(dialog) { return }
+                                try await Task.sleep(for: .milliseconds(25))
+                            }
+                            throw AppAPIError.unavailable
+                        }
+                    }
+                    try await dialogStep("dialog-ready", fields: fields) {
+                        for _ in 0..<60 {
+                            let value = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return expected === 'main' ? !pane : pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);",
+                                arguments: ["expected": dialog], in: nil, contentWorld: .page)
+                            if value as? Bool == true { return }
                             try await Task.sleep(for: .milliseconds(25))
                         }
+                        throw AppAPIError.unavailable
                     }
-                    var ready = false
-                    for _ in 0..<80 {
-                        let value = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return expected === 'main' ? !pane : pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);",
-                            arguments: ["expected": dialog], in: nil, contentWorld: .page)
-                        if value as? Bool == true { ready = true; break }
-                        try await Task.sleep(for: .milliseconds(25))
+                    try await dialogStep("locale-ready", fields: fields) {
+                        let value = try await view.callAsyncJavaScript("return document.documentElement.lang.toLowerCase().startsWith(expected);",
+                            arguments: ["expected": locale], in: nil, contentWorld: .page)
+                        guard value as? Bool == true else { throw AppAPIError.unavailable }
                     }
-                    guard ready else { throw AppAPIError.unavailable }
-                    let localeReady = try await view.callAsyncJavaScript("return document.documentElement.lang.toLowerCase().startsWith(expected);",
-                        arguments: ["expected": locale], in: nil, contentWorld: .page)
-                    guard localeReady as? Bool == true else { throw AppAPIError.unavailable }
                     // Reset each real scrolling pane before the original top capture.
-                    let planValue = try await view.callAsyncJavaScript(#"""
-                        const root = document.scrollingElement;
-                        const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
-                        for (const e of candidates) {
-                            if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+                    let plan = try await dialogStep("scroll-plan", fields: fields) {
+                        let value = try await view.callAsyncJavaScript(#"""
+                            const root = document.scrollingElement;
+                            const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
+                            for (const e of candidates) {
+                                if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+                            }
+                            window.__hrCaptureScrollers = candidates.filter(e => {
+                                const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+                                return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
+                                    (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
+                                    r.width > 0 && r.bottom > 0 && r.top < innerHeight;
+                            });
+                            return window.__hrCaptureScrollers.map((e, index) => {
+                                const r = e.getBoundingClientRect();
+                                const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+                                const step = Math.max(1, Math.floor(viewport * .75));
+                                const maximum = e.scrollHeight - e.clientHeight;
+                                return {index, step, maximum, pages: Math.ceil(maximum / step)};
+                            });
+                            """#, arguments: [:], in: nil, contentWorld: .page)
+                        guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
+                        if scale == 200 {
+                            var pages = 0
+                            for pane in plan {
+                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppAPIError.unavailable }
+                                pages += count
+                            }
+                            guard pages <= 16 else { throw AppAPIError.unavailable }
                         }
-                        window.__hrCaptureScrollers = candidates.filter(e => {
-                            const r = e.getBoundingClientRect(), s = getComputedStyle(e);
-                            return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
-                                (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
-                                r.width > 0 && r.bottom > 0 && r.top < innerHeight;
-                        });
-                        return window.__hrCaptureScrollers.map((e, index) => {
-                            const r = e.getBoundingClientRect();
-                            const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-                            const step = Math.max(1, Math.floor(viewport * .75));
-                            const maximum = e.scrollHeight - e.clientHeight;
-                            return {index, step, maximum, pages: Math.ceil(maximum / step)};
-                        });
-                        """#, arguments: [:], in: nil, contentWorld: .page)
-                    guard let plan = planValue as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
-                    try await Task.sleep(for: .milliseconds(200)) // settle dialog/theme animation
+                        return plan
+                    }
+                    try await dialogStep("settle-dialog", fields: fields) {
+                        try await Task.sleep(for: .milliseconds(200))
+                    }
                     let prefix = "\(locale)-\(theme)-\(scale)-\(dialog)"
                     try await captureDialogPage(view, frame: frame, name: "\(prefix).png", locale: locale,
                         theme: theme, scale: scale, dialog: dialog, scroll: [:])
@@ -361,18 +426,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                                   let step = pane["step"] as? Int, let maximum = pane["maximum"] as? Int,
                                   pages > 0, count + pages <= 16 else { throw AppAPIError.unavailable }
                             for page in 1...pages {
-                                let scroll = try await view.callAsyncJavaScript(#"""
-                                    const panes = window.__hrCaptureScrollers;
-                                    for (const e of panes) e.scrollTop = 0;
-                                    const e = panes[index], requested = Math.min(page * step, maximum);
-                                    e.scrollTop = requested;
-                                    await new Promise(requestAnimationFrame);
-                                    await new Promise(requestAnimationFrame);
-                                    if (Math.abs(e.scrollTop - requested) > 1) throw Error('capture scroll incomplete');
-                                    return {scrollIndex: index, scrollPage: page, scrollTop: e.scrollTop,
-                                        scrollMaximum: maximum, viewportHeight: e.clientHeight};
-                                    """#, arguments: ["index": index, "page": page, "step": step,
-                                        "maximum": maximum], in: nil, contentWorld: .page)
+                                let scrollFields = fields.merging(["scrollIndex": index, "scrollPage": page]) { _, new in new }
+                                let scroll = try await dialogStep("scroll-offset", fields: scrollFields) {
+                                    try await view.callAsyncJavaScript(Self.dialogScroll,
+                                        arguments: ["index": index, "page": page, "step": step,
+                                            "maximum": maximum], in: nil, contentWorld: .page)
+                                }
                                 guard let scroll = scroll as? [String: Any] else { throw AppAPIError.unavailable }
                                 count += 1
                                 try await captureDialogPage(view, frame: frame, name: "\(prefix)-scroll-\(count).png",
@@ -387,28 +446,54 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
     }
 
+    private static let dialogTheme = #"""
+        document.documentElement.style.fontSize = size;
+        localStorage.setItem('happyranch.theme', theme);
+        document.documentElement.setAttribute('data-theme', theme);
+        window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));
+        return true;
+        """#
+
+    private static let dialogScroll = #"""
+        const panes = window.__hrCaptureScrollers;
+        for (const e of panes) e.scrollTo({top: 0, behavior: 'instant'});
+        const e = panes[index], requested = Math.min(page * step, maximum);
+        e.scrollTo({top: requested, behavior: 'instant'});
+        // Animation frames may be suspended for an occluded/offscreen window.
+        // Native also bounds this whole operation independently of the page.
+        await new Promise(resolve => setTimeout(resolve, 25));
+        if (Math.abs(e.scrollTop - requested) > 1) throw Error('capture scroll incomplete');
+        return {scrollIndex: index, scrollPage: page, scrollTop: e.scrollTop,
+            scrollMaximum: maximum, viewportHeight: e.clientHeight};
+        """#
+
     private func captureDialogPage(_ view: WKWebView, frame: NSView, name: String, locale: String,
                                    theme: String, scale: Int, dialog: String, scroll: [String: Any]) async throws {
-        let themeReady = try await view.callAsyncJavaScript("return localStorage.getItem('happyranch.theme') === expected && document.documentElement.getAttribute('data-theme') === expected;",
-            arguments: ["expected": theme], in: nil, contentWorld: .page)
-        guard themeReady as? Bool == true else { throw AppAPIError.unavailable }
-        let page = try await view.takeSnapshot(configuration: nil)
-        frame.layoutSubtreeIfNeeded()
-        guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
-              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-              let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
-        frame.cacheDisplay(in: frame.bounds, to: native)
-        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
-        native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
-        page.draw(in: view.convert(view.bounds, to: frame))
-        NSGraphicsContext.restoreGraphicsState()
-        guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
-        try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
         let fields: [String: Any] = ["name": name, "width": 760, "height": 560, "textPercent": scale,
-            "locale": locale, "theme": theme, "webTheme": theme, "dialog": dialog]
-        log.write("screenshot", fields.merging(scroll) { _, new in new })
+            "locale": locale, "theme": theme, "dialog": dialog]
+        try await dialogStep("applied-theme", fields: fields) {
+            let value = try await view.callAsyncJavaScript("return localStorage.getItem('happyranch.theme') === expected && document.documentElement.getAttribute('data-theme') === expected;",
+                arguments: ["expected": theme], in: nil, contentWorld: .page)
+            guard value as? Bool == true else { throw AppAPIError.unavailable }
+        }
+        let page = try await dialogStep("snapshot", fields: fields) { try await view.takeSnapshot(configuration: nil) }
+        try await dialogStep("write-png", fields: fields) {
+            frame.layoutSubtreeIfNeeded()
+            guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+                  let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                  let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
+            frame.cacheDisplay(in: frame.bounds, to: native)
+            NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
+            native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
+            page.draw(in: view.convert(view.bounds, to: frame))
+            NSGraphicsContext.restoreGraphicsState()
+            guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
+            try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
+        }
+        var evidence = fields; evidence["webTheme"] = theme
+        log.write("screenshot", evidence.merging(scroll) { _, new in new })
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         navigationFailed(webView, stage: "provisional")

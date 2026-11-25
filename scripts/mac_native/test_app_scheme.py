@@ -113,7 +113,8 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
 
     def test_process_collection_requires_both_locales_complete_receipts_and_zero_exit(self) -> None:
         for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero', 'missing-completion',
-                        'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme'):
+                        'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme',
+                        'partial-progress'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
                 calls = []
@@ -136,7 +137,14 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                         rows.append(rows[0].copy())
                     if locale == 'zh' and failure == 'wrong-theme':
                         next(row for row in rows if row.get('theme') == 'dark' and row['event'] == 'screenshot')['webTheme'] = 'light'
+                    if locale == 'zh' and failure == 'partial-progress':
+                        rows = [dict(event='capture_progress', step='applied-theme', locale=locale, timeoutMs=2000),
+                                dict(event='capture_step', step='applied-theme', locale=locale, result='timeout')]
                     Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                    if locale == 'zh' and failure == 'partial-progress':
+                        with Path(argv[-3]).open('a') as output:
+                            output.write('{"event":"capture')  # killed write is not a complete receipt
+                        return 124, b''
                     return (1 if locale == 'zh' and failure == 'nonzero' else 0), b''
                 section = {}
                 with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
@@ -144,8 +152,15 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                                     root, time.monotonic() + 10, section, downloads)
                 self.assertEqual(calls, ['en', 'zh'])
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
-                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion')
+                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion', 'partial-progress')
                 self.assertEqual(len(section['dialogs']['screenshots']), 24 if incomplete else 48)
+                if failure == 'partial-progress':
+                    failed = section['dialogs']['processes'][1]
+                    self.assertEqual(failed['exit_code'], 124)
+                    self.assertEqual(failed.get('last_step', {}).get('step'), 'applied-theme')
+                    self.assertEqual(failed['diagnostic_events'][-1]['result'], 'timeout')
+                    self.assertEqual(failed['capture_error_reason'], 'missing scroll capture completion')
+                    self.assertEqual(failed['events'], [])
 
 
 class ColdClientCompositionEvidenceTests(unittest.TestCase):
