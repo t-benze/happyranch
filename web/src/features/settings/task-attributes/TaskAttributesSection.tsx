@@ -206,8 +206,13 @@ export function TaskAttributesSection(): JSX.Element {
                 </>
               ) : (
                 <>
-                  <h3 className="text-text-primary font-semibold">{t('settings.taskAttributes.list.archivedEmpty')}</h3>
-                  <p className="text-text-secondary text-sm">{t('settings.taskAttributes.detail.archivedNote')}</p>
+                  {/* Empty copy follows the selected tab (F3). */}
+                  <h3 className="text-text-primary font-semibold">
+                    {t(tab === 'active' ? 'settings.taskAttributes.list.activeEmpty' : 'settings.taskAttributes.list.archivedEmpty')}
+                  </h3>
+                  <p className="text-text-secondary text-sm">
+                    {t(tab === 'active' ? 'settings.taskAttributes.list.activeEmptyBody' : 'settings.taskAttributes.detail.archivedNote')}
+                  </p>
                 </>
               )}
             </div>

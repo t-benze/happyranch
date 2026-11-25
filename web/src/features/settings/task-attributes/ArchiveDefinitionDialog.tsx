@@ -17,6 +17,7 @@ import { useTranslation } from '@/hooks/i18n';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { useDefinition, useTaskAttributeActions } from '@/hooks/task-attributes';
 import type { AttributeDefinitionRead } from '@/lib/api/types';
+import { useConfigOwner, useOwnerGate } from '@/shared/owners';
 import { classifyWriteError, currentDefinitionRead, reconcileArchive } from './model';
 import { Callout, KeyChip, formatWhen } from './parts';
 import type { ListNotice } from './TaskAttributesSection';
@@ -63,31 +64,58 @@ export function ArchiveDefinitionDialog({
   const def = base?.definition ?? null;
   const closeOnly = status.s === 'byOther';
   const retry = status.s === 'failed' || status.s === 'notArchived';
-  const canArchive = !!base && !!fresh && base.editability.can_archive && !def?.archived;
+  // Server editability only (ARCHITECTURE.md): `archived` is presentation.
+  const canArchive = !!base && !!fresh && base.editability.can_archive;
   const archiveDisabled = !canArchive || status.s === 'archiving' || status.s === 'unknown' || status.s === 'stale'
     || status.s === 'permDenied' || status.s === 'refused';
 
+  // F1: the archive POST is a draftless owner save. While it is pending or
+  // its result is unknown, every dismissal holds (no second POST from a
+  // reopened dialog) until same-context reconciliation settles it.
+  const reconcileRef = useRef<() => Promise<'saved' | 'not_saved' | 'unknown'>>(async () => 'unknown');
+  const owner = useConfigOwner({
+    page: 'settings.taskAttributes',
+    subject: def?.key ?? null,
+    org: slug || null,
+    dirty: false,
+    draft: null,
+    checkResult: () => reconcileRef.current(),
+  });
+  const { requestOwnerTransition } = useOwnerGate();
+  const requestClose = (): void => {
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: onClose });
+  };
+
   const send = async (expected: number): Promise<void> => {
     if (!actions.isDefinitionCurrent(definitionId) && !retry) return;
-    sentVersion.current = expected;
+    if (owner.isBusy() || owner.saveRefused) return;
     setStatus({ s: 'archiving' });
-    try {
-      await actions.archive(definitionId, expected);
+    const result = await owner.track(
+      () => {
+        sentVersion.current = expected;
+        return actions.archive(definitionId, expected);
+      },
+      (error) => (classifyWriteError(error).kind === 'unknown' ? 'unknown' : 'failed'),
+    );
+    if (result.ok) {
       void actions.refreshList();
       onArchived({ kind: 'archived', name: def?.name ?? '' });
-    } catch (error) {
-      const failure = classifyWriteError(error);
-      if (failure.kind === 'unknown') return setStatus({ s: 'unknown', checking: false, refreshFailed: false });
-      const current = currentDefinitionRead(failure.detail);
-      const code = failure.detail?.code ?? failure.code;
-      if (failure.status === 403 && code === 'human_only') return setStatus({ s: 'permDenied' });
-      if (failure.status === 409 && current) {
-        void actions.refreshList();
-        return setStatus(current.definition.archived || code === 'definition_archived' ? { s: 'byOther', current } : { s: 'stale', current });
-      }
-      if (failure.status >= 500) return setStatus({ s: 'failed' });
-      setStatus({ s: 'refused' });
+      return;
     }
+    if (result.refused) return setStatus(owner.saveRefused ? { s: 'unknown', checking: false, refreshFailed: false } : { s: 'idle' });
+    // Desktop admission refused: nothing was sent.
+    if ((result.error as Error | null)?.name === 'OwnersReceiptError') return setStatus({ s: 'failed' });
+    const failure = classifyWriteError(result.error);
+    if (failure.kind === 'unknown') return setStatus({ s: 'unknown', checking: false, refreshFailed: false });
+    const current = currentDefinitionRead(failure.detail);
+    const code = failure.detail?.code ?? failure.code;
+    if (failure.status === 403 && code === 'human_only') return setStatus({ s: 'permDenied' });
+    if (failure.status === 409 && current) {
+      void actions.refreshList();
+      return setStatus(current.definition.archived || code === 'definition_archived' ? { s: 'byOther', current } : { s: 'stale', current });
+    }
+    if (failure.status >= 500) return setStatus({ s: 'failed' });
+    setStatus({ s: 'refused' });
   };
 
   const confirm = (): void => {
@@ -95,22 +123,34 @@ export function ArchiveDefinitionDialog({
     void send(retry && sentVersion.current !== null ? sentVersion.current : def.version);
   };
 
-  const refreshToCheck = async (): Promise<void> => {
-    if (status.s !== 'unknown' || !def || sentVersion.current === null) return;
+  const reconcileUnknown = async (): Promise<'saved' | 'not_saved' | 'unknown'> => {
+    if (!def || sentVersion.current === null) return 'unknown';
     setStatus({ s: 'unknown', checking: true, refreshFailed: false });
     try {
       const latest = await actions.readDefinition(definitionId);
       const outcome = reconcileArchive(latest.definition, def, sentVersion.current);
       if (outcome.outcome === 'committed') {
         void actions.refreshList();
-        return onArchived({ kind: 'archived', name: def.name });
+        onArchived({ kind: 'archived', name: def.name });
+        return 'saved';
       }
-      if (outcome.outcome === 'notArchived') return setStatus({ s: 'notArchived' });
+      if (outcome.outcome === 'notArchived') {
+        setStatus({ s: 'notArchived' });
+        return 'not_saved';
+      }
       void actions.refreshList();
       setStatus(outcome.outcome === 'byOther' ? { s: 'byOther', current: latest } : { s: 'stale', current: latest });
+      return 'not_saved';
     } catch {
       setStatus({ s: 'unknown', checking: false, refreshFailed: true });
+      return 'unknown';
     }
+  };
+  reconcileRef.current = reconcileUnknown;
+
+  const refreshToCheck = async (): Promise<void> => {
+    if (status.s !== 'unknown') return;
+    await owner.check().catch(() => undefined);
   };
 
   const reloadLatest = async (): Promise<void> => {
@@ -128,7 +168,7 @@ export function ArchiveDefinitionDialog({
   const lastObserved = t('settings.taskAttributes.archive.lastObserved', { time: formatWhen(locale, observedAt ? new Date(observedAt).toISOString() : null) });
 
   return (
-    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
+    <Dialog open onOpenChange={(next) => { if (!next) requestClose(); }}>
       <DialogContent
         className="flex max-w-md min-w-0 flex-col gap-0 overflow-hidden p-0"
         closeLabel={t('settings.taskAttributes.archive.close')}
@@ -193,10 +233,10 @@ export function ArchiveDefinitionDialog({
         </div>
         <div className="border-border-default flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
           {closeOnly ? (
-            <Button id="ta-keep-active" variant="outline" onClick={onClose}>{t('settings.taskAttributes.archive.close')}</Button>
+            <Button id="ta-keep-active" variant="outline" onClick={requestClose}>{t('settings.taskAttributes.archive.close')}</Button>
           ) : (
             <>
-              <Button id="ta-keep-active" variant="outline" onClick={onClose}>{t('settings.taskAttributes.archive.keepActive')}</Button>
+              <Button id="ta-keep-active" variant="outline" onClick={requestClose}>{t('settings.taskAttributes.archive.keepActive')}</Button>
               {status.s === 'stale' && (
                 <Button variant="outline" onClick={() => void reloadLatest()}>{t('settings.taskAttributes.editor.reload')}</Button>
               )}

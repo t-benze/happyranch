@@ -4128,6 +4128,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "settings.taskAttributes.archive.lastObserved": "显示为 {time} 最后观察到的“启用”状态。这并不代表当前状态；请刷新确认。",
   "settings.taskAttributes.archive.notArchived": "未归档：服务器显示此属性在你确认的版本仍为启用状态。你可以重试。",
   "settings.taskAttributes.archive.close": "关闭",
+  "settings.taskAttributes.editor.err.unsafeInteger": "此边界过大，无法精确保存。请输入 −9,007,199,254,740,991 到 9,007,199,254,740,991 之间的整数。",
+  "settings.taskAttributes.list.activeEmpty": "没有启用的属性",
+  "settings.taskAttributes.list.activeEmptyBody": "此组织的所有属性均已归档。已归档的属性列在“已归档”标签页中。",
 };
 
 export default zhCN;

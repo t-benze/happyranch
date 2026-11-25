@@ -539,6 +539,19 @@ of these reads has a `refetchInterval`.
   unknown": no Retry until "Refresh to check" compares all five fields
   (key, type, name, description, constraints) after PR2's defaults. Retry
   re-sends the exact body. "Reload latest" re-reads by `definition_id`.
+- **Owner custody.** The editor and the archive confirmation are
+  `settings.taskAttributes` config owners (`useConfigOwner`): every create,
+  edit and archive write goes through `owner.track` (ticket, native admission,
+  settlement), and "Refresh to check" is the owner's Check result, so the
+  shared gate's Check result runs the same full-field reconciliation of the
+  submitted snapshot. Cancel, Discard, Escape, the close button, navigation
+  and native lifecycle all ask the owner gate, which holds while a sent write
+  is pending or unknown; the archive dialog cannot be closed and reopened to
+  send a second POST until its result is reconciled.
+- **Exact numeric bounds.** A whole-number bound outside the JS safe-integer
+  range is refused in the editor before sending (it would round), whether
+  newly typed or an unchanged existing bound that a structural edit would
+  re-send; a name/description-only edit leaves such a bound untouched.
 - **Version actor contract.** PR2 definition writes are human-only
   (`_require_human`) and the store audits every version with actor `founder`,
   so the definition-version actor is derived from that contract and rendered

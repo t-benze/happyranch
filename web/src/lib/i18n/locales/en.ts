@@ -4317,6 +4317,9 @@ export const en = {
   "settings.taskAttributes.archive.lastObserved": "Shown as Active as last observed at {time}. This is not confirmation of the current state; refresh to check.",
   "settings.taskAttributes.archive.notArchived": "Not archived: the server shows this attribute is still active at the version you confirmed. You can try again.",
   "settings.taskAttributes.archive.close": "Close",
+  "settings.taskAttributes.editor.err.unsafeInteger": "This bound is too large to save exactly. Use a whole number between −9,007,199,254,740,991 and 9,007,199,254,740,991.",
+  "settings.taskAttributes.list.activeEmpty": "No active attributes",
+  "settings.taskAttributes.list.activeEmptyBody": "Every attribute in this org is archived. Archived attributes are listed on the Archived tab.",
 } as const satisfies Catalog;
 
 export default en;

@@ -70,6 +70,30 @@ const parse = (s: string): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+/**
+ * F2: a whole-number bound outside the JS safe-integer range cannot be held
+ * exactly (`Number` would silently round it), so it is refused before sending.
+ */
+const unsafeInteger = (v: unknown): boolean => {
+  const n = typeof v === 'string' ? (v.trim() === '' ? NaN : Number(v)) : v;
+  return typeof n === 'number' && Number.isInteger(n) && !Number.isSafeInteger(n);
+};
+
+const BOUND_PATHS = { min: 'constraints.min', max: 'constraints.max', minLen: 'constraints.min_length', maxLen: 'constraints.max_length' } as const;
+
+/** Bounds that would be sent (or were changed) but cannot be represented exactly. */
+function unsafeBoundErrors(draft: Draft, baseDraft: Draft, body: Record<string, unknown>): Record<string, string[]> {
+  const sentConstraints = (body.constraints ?? {}) as Record<string, unknown>;
+  const fields = draft.type === 'numeric' ? (['min', 'max'] as const) : draft.type === 'string' ? (['minLen', 'maxLen'] as const) : [];
+  const errors: Record<string, string[]> = {};
+  for (const f of fields) {
+    const path = BOUND_PATHS[f];
+    const sentValue = sentConstraints[path.slice('constraints.'.length)];
+    if ((draft[f] !== baseDraft[f] && unsafeInteger(draft[f])) || unsafeInteger(sentValue)) errors[path] = ['unsafe_integer'];
+  }
+  return errors;
+}
+
 function constraintsOf(draft: Draft, base: Record<string, number | boolean> | null): Record<string, number | boolean> {
   const c: Record<string, number | boolean> = {};
   if (draft.type === 'numeric') {
@@ -131,6 +155,7 @@ const ERROR_KEY: Record<string, MessageKey> = {
   length_bound_0_4000: 'settings.taskAttributes.editor.err.lenBounds',
   inverted_bounds: 'settings.taskAttributes.editor.err.inverted',
   no_permitted_integer: 'settings.taskAttributes.editor.err.noInteger',
+  unsafe_integer: 'settings.taskAttributes.editor.err.unsafeInteger',
 };
 
 /** Server error path → the input it belongs to. */
@@ -200,6 +225,7 @@ export function DefinitionEditorDialog(props: {
     dirty,
     draft,
     onDiscard: onClose,
+    checkResult: () => reconcileRef.current(),
   });
   const { requestOwnerTransition } = useOwnerGate();
 
@@ -250,27 +276,42 @@ export function DefinitionEditorDialog(props: {
   const send = async (body: Record<string, unknown>): Promise<void> => {
     // MEM-300: recheck the current read at the moment of sending.
     if (mode === 'edit' && definitionId && !actions.isDefinitionCurrent(definitionId)) return;
-    sent.current = { body, draftKey, pre: baseDef };
+    // A refused reentrant submit (or an unreconciled unknown) leaves the
+    // original submission record intact.
+    if (owner.isBusy() || owner.saveRefused) return;
+    const submitted: Sent = { body, draftKey, pre: baseDef };
     setStatus({ s: 'saving' });
     setCopied(false);
-    try {
-      if (mode === 'create') {
-        const created = await actions.create(body as unknown as AttributeDefinitionFields);
-        void actions.refreshList();
-        onSaved({ kind: 'created', v: created.definition.version });
-        return;
-      }
-      const result = await actions.update(definitionId as string, body as Partial<AttributeDefinitionFields> & { expected_version: number });
+    // F1: the write is ticketed and admitted through the owner registry, so a
+    // pending/unknown save holds close, navigation and native lifecycle.
+    const result = await owner.track<unknown>(
+      () => {
+        sent.current = submitted;
+        return mode === 'create'
+          ? actions.create(body as unknown as AttributeDefinitionFields)
+          : actions.update(definitionId as string, body as Partial<AttributeDefinitionFields> & { expected_version: number });
+      },
+      (error) => (classifyWriteError(error).kind === 'unknown' ? 'unknown' : 'failed'),
+    );
+    if (!result.ok) {
+      if (result.refused) return setStatus(owner.saveRefused ? { s: 'unknown', checking: false, refreshFailed: false } : { s: 'idle' });
+      // Desktop admission refused: nothing was sent, the draft stays.
+      if ((result.error as Error | null)?.name === 'OwnersReceiptError') return setStatus({ s: 'failed' });
+      return handleFailure(result.error);
+    }
+    if (mode === 'create') {
       void actions.refreshList();
-      const { expected_version: _expected, ...fields } = body;
-      if (sent.current.pre && echoReflects(result.definition, sent.current.pre, fields as Partial<DefinitionFields>)) {
-        onSaved({ kind: 'updated', v: result.definition.version });
-      } else {
-        setStaleDraft(fieldsFromDraft(draft, baseDef));
-        setStatus({ s: 'echoMismatch', current: result });
-      }
-    } catch (error) {
-      handleFailure(error);
+      onSaved({ kind: 'created', v: (result.value as AttributeDefinitionRead).definition.version });
+      return;
+    }
+    const saved = result.value as AttributeDefinitionRead;
+    void actions.refreshList();
+    const { expected_version: _expected, ...fields } = body;
+    if (submitted.pre && echoReflects(saved.definition, submitted.pre, fields as Partial<DefinitionFields>)) {
+      onSaved({ kind: 'updated', v: saved.definition.version });
+    } else {
+      setStaleDraft(fieldsFromDraft(draft, baseDef));
+      setStatus({ s: 'echoMismatch', current: saved });
     }
   };
 
@@ -303,34 +344,60 @@ export function DefinitionEditorDialog(props: {
 
   const save = (): void => {
     if (saveDisabled) return;
-    void send(retryAvailable && sent.current ? sent.current.body : buildBody());
+    const body = retryAvailable && sent.current ? sent.current.body : buildBody();
+    const unsafe = unsafeBoundErrors(draft, baseDraft, body);
+    if (Object.keys(unsafe).length > 0) {
+      setStatus({ s: 'validation', errors: unsafe });
+      return;
+    }
+    void send(body);
   };
 
-  const refreshToCheck = async (): Promise<void> => {
-    if (status.s !== 'unknown' || !sent.current) return;
+  // Same-context full-field reconciliation of the submitted snapshot. It is
+  // the owner's Check result too (dialog notice and the shared hold gate).
+  const reconcileUnknown = async (): Promise<'saved' | 'not_saved' | 'unknown'> => {
+    const submitted = sent.current;
+    if (!submitted) return 'unknown';
     setStatus({ s: 'unknown', checking: true, refreshFailed: false });
     try {
       if (mode === 'create') {
         const list = await actions.readList();
-        const outcome = reconcileCreate(list.definitions, sent.current.body as unknown as AttributeDefinitionFields);
-        if (outcome.outcome === 'committed') return onSaved({ kind: 'created', v: outcome.definition.version });
-        if (outcome.outcome === 'notSaved') return setStatus({ s: 'notSaved' });
-        return setStatus({ s: 'keyReserved', owner: outcome.owner, reconciled: true });
+        const outcome = reconcileCreate(list.definitions, submitted.body as unknown as AttributeDefinitionFields);
+        if (outcome.outcome === 'committed') {
+          onSaved({ kind: 'created', v: outcome.definition.version });
+          return 'saved';
+        }
+        if (outcome.outcome === 'notSaved') setStatus({ s: 'notSaved' });
+        else setStatus({ s: 'keyReserved', owner: outcome.owner, reconciled: true });
+        return 'not_saved';
       }
       const latest = await actions.readDefinition(definitionId as string);
-      const pre = sent.current.pre as AttributeDefinition;
-      const outcome = reconcileEdit(latest.definition, pre, sent.current.body as Partial<DefinitionFields> & { expected_version: number });
+      const pre = submitted.pre as AttributeDefinition;
+      const outcome = reconcileEdit(latest.definition, pre, submitted.body as Partial<DefinitionFields> & { expected_version: number });
       if (outcome.outcome === 'committed') {
         void actions.refreshList();
-        return onSaved({ kind: 'updated', v: latest.definition.version });
+        onSaved({ kind: 'updated', v: latest.definition.version });
+        return 'saved';
       }
-      if (outcome.outcome === 'notSaved') return setStatus({ s: 'notSaved' });
+      if (outcome.outcome === 'notSaved') {
+        setStatus({ s: 'notSaved' });
+        return 'not_saved';
+      }
       void actions.refreshList();
       setStaleDraft(fieldsFromDraft(draft, baseDef));
-      return setStatus(latest.definition.archived ? { s: 'archived', current: latest } : { s: 'conflict', current: latest });
+      setStatus(latest.definition.archived ? { s: 'archived', current: latest } : { s: 'conflict', current: latest });
+      return 'not_saved';
     } catch {
       setStatus({ s: 'unknown', checking: false, refreshFailed: true });
+      return 'unknown';
     }
+  };
+  const reconcileRef = useRef(reconcileUnknown);
+  reconcileRef.current = reconcileUnknown;
+
+  const refreshToCheck = async (): Promise<void> => {
+    if (status.s !== 'unknown' || !sent.current) return;
+    await owner.check().catch(() => undefined);
   };
 
   const reloadLatest = async (): Promise<void> => {
@@ -351,12 +418,23 @@ export function DefinitionEditorDialog(props: {
     void navigator.clipboard?.writeText(draftClipboardText(fieldsFromDraft(draft, baseDef))).then(() => setCopied(true), () => setCopied(false));
   };
 
+  // Every dismissal asks the shared owner gate first: a sent save that is
+  // pending or unknown holds (no Discard) until it is reconciled.
+  const ownerHolds = (): boolean => owner.isBusy() || owner.record?.status === 'pending' || owner.record?.status === 'unknown';
+  const closeThroughGate = (): void => {
+    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: onClose });
+  };
   const requestClose = (): void => {
-    if (dirty || status.s === 'unknown') {
+    if (!ownerHolds() && dirty) {
       setConfirmDiscard(true);
       return;
     }
-    requestOwnerTransition({ effect: 'close', affects: (record) => record.id === owner.id, proceed: onClose });
+    closeThroughGate();
+  };
+  const discardAndClose = (): void => {
+    setConfirmDiscard(false);
+    if (ownerHolds()) return closeThroughGate();
+    onClose();
   };
 
   const set = <K extends keyof Draft>(k: K, v: Draft[K]): void => setDraft((d) => ({ ...d, [k]: v }));
@@ -494,7 +572,7 @@ export function DefinitionEditorDialog(props: {
           <DialogDescription>{t('settings.taskAttributes.editor.discardBody')}</DialogDescription>
           <div className="flex flex-wrap justify-end gap-2">
             <Button id="ta-keep-editing" variant="outline" onClick={() => setConfirmDiscard(false)}>{t('settings.taskAttributes.editor.keepEditing')}</Button>
-            <Button variant="destructive" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('settings.taskAttributes.editor.discard')}</Button>
+            <Button variant="destructive" onClick={discardAndClose}>{t('settings.taskAttributes.editor.discard')}</Button>
           </div>
         </DialogContent>
       </Dialog>
