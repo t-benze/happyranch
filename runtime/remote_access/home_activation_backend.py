@@ -599,11 +599,22 @@ class HelperLifecycleBackend:
                         coordinator._owner._managed_fragments(require_home=True)
                         keys = ('ActiveState', 'SubState', 'UnitFileState')
                         active = dict(ActiveState='active', SubState='waiting', UnitFileState='enabled')
-                        if self.io.manager.show_properties(TIMER_NAME, keys) != active:
+                        def timer_active() -> bool:
+                            timer = self.io.manager.show_properties(TIMER_NAME, keys)
+                            if timer == active:
+                                return True
+                            # The verified oneshot can be waiting for our flock.
+                            # Never wait for it while Enable still holds that lock.
+                            return (timer == dict(active, SubState='running')
+                                and self.io.manager.show_properties(SERVICE_NAME,
+                                    ('ActiveState', 'SubState', 'Result')) == dict(
+                                        ActiveState='activating', SubState='start', Result='success'))
+
+                        if not timer_active():
                             require_ready()
                             self.io.manager.start(TIMER_NAME)
                         require_ready()
-                        if self.io.manager.show_properties(TIMER_NAME, keys) != active:
+                        if not timer_active():
                             raise ActivationRefused()
                     except Exception:
                         raise EnablePreparationRefused('ready-restart-failed-turn-off') from None

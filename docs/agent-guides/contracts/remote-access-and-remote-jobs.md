@@ -3174,7 +3174,8 @@ Linux CLI wiring is delivered in I5b; bridge wiring for Enable/Disable/IssueInvi
 failed receipt/failed txn pairs, or failed receipts with joined recovery-marker
 txns, to `recover` with captured G/O. Its protected proofs and no-effect semantics
 remain unchanged. The child reports the returned phase, including rollover's
-`prepared` (projected as B15 setup `in_progress`); ready never replays activation; the ordinary start described below is permitted.
+`prepared` (a present non-ready receipt is projected as B15 setup
+`setup_unverified`); ready never replays activation; the ordinary start described below is permitted.
 No user, unit default or permission change is added. Temp-root/fake-native tests exercise ready and
 recovery with real A5 records and observe.sock; installed/live-host operations
 remain NOT RUN. Legacy unit renderers are unchanged; only the existing two
@@ -4203,6 +4204,13 @@ empty DropInPaths, Names containing only that unit, loaded state without a
 pending daemon-reload, and timer Unit equal to the renewal service. Protected
 no-follow reads require root-owned, single-link 0644 package fragments with exact
 renderer bytes. Overrides, aliases, stale loads or fragment drift refuse Enable.
+Ready Enable accepts an active/enabled timer either waiting, or running with
+that verified renewal oneshot in activating/start and Result=success. Immediate
+first firing and an already in-flight renewal may wait for Enable's held flock;
+Enable never waits for that renewal while holding the flock. It retains the
+original deadline and capture/G/O, current-policy and custody revalidation.
+Failed/inactive timers, foreign units and incorrect service linkage still
+refuse; no activation replay, mint or receipt/transaction update is allowed.
 
 Disable's existing stop step stops the timer and renewal service, disables the
 timer through its manager, and confirms both units' quiescence and the literal
@@ -4270,7 +4278,9 @@ One read worker runs without the mutation slot or main context; concurrent Statu
 calls refuse busy. An independent 1.9-second watchdog reserves response overhead within
 the original 2-second status budget, suppresses late replies and keeps a stalled worker
 sealed until it settles. It never queues new workers or waits on a mutation-held lock.
-Prepared/activating/joined map to setup in_progress. A ready receipt requires a
+A present prepared/activating/joined activation receipt maps to setup
+`setup_unverified`; prepared staging without an activation receipt maps to
+`prepared_no_receipt`. A ready receipt requires a
 fresh exact ordinary inventory, active required units, serving connector and
 current/renewing policy before display as ready/available. Otherwise it names
 runtime_unavailable, setup_unverified, partial_cleanup or renewal_failed.
@@ -4731,8 +4741,11 @@ this does not attribute them to preparation.
 
 Ready Turn on again validates the exact renewal service/timer bytes and loaded
 identities, restores and verifies the owned timer enablement link before target
-startup, then explicitly starts an inactive timer and requires active/waiting
-with enabled unit state. Each effect retains the original deadline and captured
+startup, then explicitly starts an inactive timer and requires active/enabled
+with waiting substate, or running with the verified renewal oneshot in
+activating/start and Result=success. The latter includes immediate first firing
+and an owned renewal waiting for the same flock; Enable returns without waiting
+under that flock. Each effect retains the original deadline and captured
 UID/G/O, ready admission and custody checks. Failed verification returns
 ready-restart-failed-turn-off; it never mints or replays activation, nor rewrites
 the ready receipt or transaction.

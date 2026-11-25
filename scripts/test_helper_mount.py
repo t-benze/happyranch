@@ -12,6 +12,7 @@ import threading
 import time
 import ssl
 import hashlib
+import inspect
 import io
 import subprocess
 import xml.etree.ElementTree as ET
@@ -139,9 +140,15 @@ def test_thr327_child_failure_step_journal(composition: Any, monkeypatch: pytest
     monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
     monkeypatch.setattr(sys, 'stdout', output)
     assert backend.helper_main() == 1
+    lines, start = inspect.getsourcelines(backend.helper_main)
+    line = start + next(i for i, text in enumerate(lines)
+        if text.strip() == 'result = HelperLifecycleBackend(io).dispatch(**request, deadline=deadline)')
+    source = f' source=runtime/remote_access/home_activation_backend.py:{line}' if method == 'Disable' else ''
     sent.assert_called_once_with(syslog.LOG_WARNING,
         f'remote-access-lifecycle-failure action={"disable" if method == "Disable" else "replace-failed"} '
-        f'step={step} item=0 stage=helper_main exception=PermissionError reason="permission-denied"')
+        f'step={step} item=0 stage=helper_main exception=PermissionError reason="permission-denied"{source}')
+    assert all(value not in str(sent.call_args) for value in
+        ('synthetic-private-token', '/private/path', 'https://private.invalid'))
     assert output.getvalue() == ''
     assert not v.calls and not v.mints
 

@@ -1652,6 +1652,8 @@ def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
 @pytest.mark.parametrize('legacy', [False, True])
 @pytest.mark.parametrize(('target_active', 'timer_start'), [
     (False, 'active'), (True, 'active'), (True, 'failed'), (True, 'unverified'),
+    (True, 'running'), (True, 'in-flight'), (True, 'renewal-failed'),
+    (True, 'timer-failed'), (True, 'foreign'), (True, 'mislinked'),
 ])
 def test_thr327_ready_repairs_policy_unit_and_timer(
         composition: Any, monkeypatch: pytest.MonkeyPatch, legacy: bool,
@@ -1666,6 +1668,10 @@ def test_thr327_ready_repairs_policy_unit_and_timer(
     link = v.path('/etc/systemd/system/happyranch-managed.target.wants/' + policy.TIMER_NAME)
     link.unlink()
     v.states[policy.TIMER_NAME] = 'inactive'
+    settled = False
+    if timer_start == 'in-flight':
+        v.states[policy.TIMER_NAME] = 'active'
+        v.states[policy.SERVICE_NAME] = 'activating'
     if not target_active:
         v.observers.close()
         v.observers = ExitStack()
@@ -1673,30 +1679,66 @@ def test_thr327_ready_repairs_policy_unit_and_timer(
             v.states[name] = 'inactive'
     native = v.io.manager._run
     def run(args: list[str], **kwargs: Any) -> tuple[int, str]:
-        if args[:3] == ['systemctl', 'start', policy.TIMER_NAME] and timer_start != 'active':
-            return (1 if timer_start == 'failed' else 0), ''
-        return native(args, **kwargs)
+        if args[:3] == ['systemctl', 'start', policy.TIMER_NAME]:
+            assert_locked(v)
+            if timer_start in ('failed', 'unverified'):
+                return (1 if timer_start == 'failed' else 0), ''
+        code, output = native(args, **kwargs)
+        if args[:3] == ['systemctl', 'start', policy.TIMER_NAME]:
+            if timer_start in ('running', 'in-flight', 'renewal-failed'):
+                v.states[policy.SERVICE_NAME] = 'failed' if timer_start == 'renewal-failed' else 'activating'
+            if timer_start == 'timer-failed':
+                v.states[policy.TIMER_NAME] = 'failed'
+        if (args[:3] == ['systemctl', 'show', policy.TIMER_NAME]
+                and timer_start in ('running', 'in-flight', 'renewal-failed') and not settled):
+            output = output.replace('SubState=waiting', 'SubState=running')
+        if args[:3] == ['systemctl', 'show', policy.SERVICE_NAME]:
+            if v.states.get(policy.SERVICE_NAME) == 'activating':
+                output = output.replace('SubState=dead', 'SubState=start')
+            if timer_start == 'foreign':
+                output = output.replace('Names=' + policy.SERVICE_NAME, 'Names=foreign.service')
+        if args[:3] == ['systemctl', 'show', policy.TIMER_NAME] and timer_start == 'mislinked':
+            output = output.replace('Unit=' + policy.SERVICE_NAME, 'Unit=foreign.service')
+        return code, output
     monkeypatch.setattr(v.io.manager, '_run', run)
     calls = len(v.calls)
     ready, txn = v.path(ACTIVATION_PATH).read_bytes(), v.path(TRANSACTION_PATH).read_bytes()
     expected = v.lifecycle.capture('Enable', os.getuid())
-    if timer_start != 'active' and target_active:
+    if timer_start not in ('active', 'running', 'in-flight') and target_active:
         with pytest.raises(h.EnablePreparationRefused) as failure:
             v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                  deadline=time.monotonic() + 480)
         assert failure.value.category == 'ready-restart-failed-turn-off'
-        assert v.states[policy.TIMER_NAME] == 'inactive'
+        assert v.states[policy.TIMER_NAME] == {
+            'renewal-failed': 'active', 'timer-failed': 'failed',
+        }.get(timer_start, 'inactive')
     else:
         assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                     deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        running = timer_start in ('running', 'in-flight')
         assert v.io.manager.show_properties(policy.TIMER_NAME, ('ActiveState', 'SubState')) == {
-            'ActiveState': 'active', 'SubState': 'waiting'}
+            'ActiveState': 'active', 'SubState': 'running' if running else 'waiting'}
+        assert v.lifecycle.policy_status(os.getuid()) == {'policy': 'renewing' if running else 'current'}
+        assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'ready'}
+        if running:
+            assert v.calls[calls:].count(['start', policy.TIMER_NAME]) == (0 if timer_start == 'in-flight' else 1)
+            # Native observation settles after Enable has released its flock.
+            with v.transactions.locked():
+                v.states[policy.SERVICE_NAME] = 'inactive'
+                settled = True
+            assert v.io.manager.show_properties(policy.TIMER_NAME, ('ActiveState', 'SubState')) == {
+                'ActiveState': 'active', 'SubState': 'waiting'}
         assert v.lifecycle.policy_status(os.getuid()) == {'policy': 'current'}
         assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'ready'}
         if not target_active:
             assert v.calls[calls:].index(['enable', policy.TIMER_NAME]) < v.calls[calls:].index(['start', adapters._TARGET])
     assert service.read_bytes() == policy.render_service().encode()
-    assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
+    if timer_start in ('foreign', 'mislinked'):
+        assert not link.is_symlink()
+        assert ['enable', policy.TIMER_NAME] not in v.calls[calls:]
+        assert ['start', policy.TIMER_NAME] not in v.calls[calls:]
+    else:
+        assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
 
