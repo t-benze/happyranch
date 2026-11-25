@@ -727,7 +727,12 @@ function LockedStructure({ definition, archived }: { definition: AttributeDefini
     <>
       <LockedRow id="ta-locked-key" label={t('settings.taskAttributes.editor.key')} value={definition.key} mono />
       <LockedRow id="ta-locked-type" label={t('settings.taskAttributes.editor.type')} value={typeLabel(t, definition.type)} />
-      <LockedRow id="ta-locked-constraints" label={t('settings.taskAttributes.editor.constraints')} value={constraintSummary(t, definition)} />
+      <LockedRow
+        id="ta-locked-constraints"
+        overline
+        label={<>{t('settings.taskAttributes.editor.constraints')} <span className="font-normal normal-case">({t('settings.taskAttributes.editor.optional')})</span></>}
+        value={constraintSummary(t, definition)}
+      />
       {!archived && <Callout tone="info">{t('settings.taskAttributes.editor.lockedNote')}</Callout>}
     </>
   );

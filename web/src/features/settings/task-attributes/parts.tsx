@@ -119,7 +119,7 @@ export function Callout({
       id={id}
       role={role}
       data-testid={testId}
-      className={`flex min-w-0 flex-col gap-2 rounded-md border px-3 py-2 text-sm sm:flex-row sm:items-start ${CALLOUT_TONE[tone]}`}
+      className={`flex min-w-0 flex-col gap-2 rounded-md border px-3 py-2.5 text-xs sm:flex-row sm:items-start ${CALLOUT_TONE[tone]}`}
     >
       <div className="flex min-w-0 flex-1 gap-2">
         <Icon size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -135,15 +135,15 @@ export function Callout({
 }
 
 /** A read-only structure row ("Locked") for key, type or constraints. */
-export function LockedRow({ label, value, mono = false, id }: { label: string; value: string; mono?: boolean; id: string }): JSX.Element {
+export function LockedRow({ label, value, mono = false, overline = false, id }: { label: ReactNode; value: string; mono?: boolean; overline?: boolean; id: string }): JSX.Element {
   const { t } = useTranslation();
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <span id={`${id}-label`} className="text-text-primary text-sm font-semibold">{label}</span>
+      <span id={`${id}-label`} className={overline ? 'text-overline text-text-secondary tracking-wider uppercase' : 'text-text-primary text-sm font-semibold'}>{label}</span>
       <div
         role="group"
         aria-labelledby={`${id}-label`}
-        className="border-border-default bg-surface-raised flex min-h-10 min-w-0 items-center gap-2 rounded-md border px-3 py-2 text-sm"
+        className="border-border-default bg-surface-sunken flex min-h-10 min-w-0 items-center gap-2 rounded-md border px-3 py-2 text-sm"
       >
         <span className={`min-w-0 flex-1 break-all ${mono ? 'font-mono' : ''}`}>{value}</span>
         <span className="text-text-secondary flex shrink-0 items-center gap-1 text-xs">
