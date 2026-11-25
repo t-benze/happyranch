@@ -1455,8 +1455,9 @@ def test_retry_policy_child_uses_real_fresh_renewal(renewal_fixture: Any, monkey
         from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
         original = HomeActivationTransactionStore.locked
         @contextmanager
-        def changed(store: Any) -> Any:
-            with original(store) as directory:
+        def changed(store: Any, *, wait: float = 0.0) -> Any:
+            assert wait == 0.0
+            with original(store, wait=wait) as directory:
                 updated = receipt_record('ready')
                 updated['operation_id'] = 'e' * 32
                 put(v.root, RECEIPT, encoded(updated))
