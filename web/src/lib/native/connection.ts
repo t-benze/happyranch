@@ -71,7 +71,8 @@ export type Observation = 'known' | 'stale' | 'unavailable';
 export type Runtime = 'available' | 'offline' | 'restarting' | 'unknown';
 export type Route = 'direct' | 'relay' | 'unknown';
 export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown';
-export type HostSetup = 'off' | 'pending' | 'ready' | 'paused' | 'failed' | 'unknown';
+export type HostSetup = 'off' | 'pending' | 'ready' | 'paused' | 'failed' | 'unknown'
+  | 'prepared_no_receipt' | 'failed_uncertain' | 'partial_cleanup' | 'runtime_unavailable' | 'setup_unverified' | 'renewal_failed';
 
 export interface SavedComputer {
   computerRef: string;
@@ -172,7 +173,8 @@ const ROUTE: readonly string[] = ['direct', 'relay', 'unknown'];
 const EFFECT: readonly string[] = ['none', 'confirmed', 'unknown'];
 const CLEANUP: readonly string[] = ['confirmed', 'incomplete', 'unknown', 'notApplicable'];
 const INVITE: readonly string[] = ['none', 'issued', 'expired', 'used', 'unknown'];
-const SETUP: readonly string[] = ['off', 'pending', 'ready', 'paused', 'failed', 'unknown'];
+const SETUP: readonly string[] = ['off', 'pending', 'ready', 'paused', 'failed', 'unknown',
+  'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'];
 const ACCESS: readonly string[] = ['allowed', 'accessDenied', 'revokedConfirmed', 'unknown'];
 const RECOVERY: readonly string[] = ['refresh', 'explicitRetry', 'newInviteOnHost', 'nativePermission', 'nativeRecovery', 'operatorRecovery', 'none'];
 const REF = /^[A-Za-z0-9_-]{1,64}$/;

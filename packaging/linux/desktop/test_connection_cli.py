@@ -156,6 +156,13 @@ class Bus:
     def call(self, *args: object) -> None:
         name, path, interface, method, inputs, signature, flags, timeout, cancel, callback, data = args
         self.calls.append((name, path, interface, method, inputs, signature.dup_string(), flags, timeout))
+        if method == 'StatusV2' and hasattr(self, 'setup_state'):
+            value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+            value['setup'] = dict(state=self.setup_state, age_seconds=0)
+            value['invite']['deadline_utc_seconds'] = None
+            self.queue(lambda: callback(self, (json.dumps(value), None), data))
+            return
         if method == "NextDevice":
             current = self.snapshot["selected"]
             self.snapshot["selected"] = self.snapshot["devices"][1 if current == self.snapshot["devices"][0] else 0]
@@ -174,6 +181,42 @@ class Bus:
 
 
 class ConnectionCLITests(unittest.TestCase):
+    def test_setup_detail_requires_fresh_closed_setup(self) -> None:
+        protocol = native.Host().protocol
+        snapshot = protocol.host(json.dumps({**self.bus.snapshot, 'phase': 'failed', 'ready': False}))
+        base = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+            for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+        base['invite']['deadline_utc_seconds'] = None
+        base['setup'] = dict(state='runtime_unavailable', age_seconds=0)
+        result = protocol.host_details(snapshot, json.dumps(base))
+        self.assertEqual((result['setup'], result['runtime'], result['devices']), ('runtime_unavailable', 'offline', None))
+        for part in (dict(state='runtime_unavailable', age_seconds=31),
+                     dict(state='runtime_unavailable', age_seconds=True),
+                     dict(state='runtime_unavailable', age_seconds=None),
+                     dict(state='ready', age_seconds=0),
+                     dict(state='runtime_unavailable', age_seconds=0, private='synthetic')):
+            with self.subTest(part=part), self.assertRaises(ValueError):
+                protocol.host_details(snapshot, json.dumps({**base, 'setup': part}))
+        for raw in (json.dumps({**base, 'private': 'synthetic'}),
+                    json.dumps(base).replace('"version": 2', '"version": 2,"version": 2'),
+                    ' ' * 16385):
+            with self.assertRaises(ValueError):
+                protocol.host_details(snapshot, raw)
+
+    def test_named_setup_states_remain_visible_in_cli(self) -> None:
+        for state in ('prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
+                      'runtime_unavailable', 'setup_unverified', 'renewal_failed'):
+            with self.subTest(state=state):
+                self.bus.calls.clear()
+                self.bus.setup_state = state
+                self.bus.snapshot.update(phase='pending' if state == 'prepared_no_receipt' else
+                                         'paused' if state == 'renewal_failed' else 'failed', ready=False)
+                code, result, _ = self.run_native('status')
+                self.assertEqual(code, 0)
+                self.assertEqual((result['setup'], result['runtime']), (state, 'offline'))
+                self.assertIsNone(result['devices'])
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
+
     def test_turn_off_settled_receipt_returns_without_timeout(self) -> None:
         for outcome in ('completed', 'partial_cleanup'):
             for early in (False, True):

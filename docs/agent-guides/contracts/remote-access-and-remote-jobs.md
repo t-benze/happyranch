@@ -4236,7 +4236,8 @@ stopped report runtime unavailable, never infer Off. Bridge/CLI consumers switch
 together in the consuming PR; secret/public-output restrictions apply.
 
 The pure model is `runtime/remote_access/status_v2.py`. I1 exports StatusV2 on the
-existing helper interface; bridge/CLI consumers remain deferred. The method retains
+existing helper interface; Linux bridge/CLI consumers read its named setup detail
+after a v1 failed/pending/paused response. The method retains
 Status's bus UID and B8 owner validation, accepts no arguments/FDs and never prompts
 polkit. It sends the canonical model JSON directly as the D-Bus string (no double
 JSON encoding). The existing destination policy already admits it; no policy changes.
@@ -4244,8 +4245,12 @@ One read worker runs without the mutation slot or main context; concurrent Statu
 calls refuse busy. An independent 1.9-second watchdog reserves response overhead within
 the original 2-second status budget, suppresses late replies and keeps a stalled worker
 sealed until it settles. It never queues new workers or waits on a mutation-held lock.
-The receipt maps prepared/activating/joined to setup in_progress, ready to ready and
-failed_uncertain to uncertain. Missing/unreadable receipt alone never proves Off;
+Prepared/activating/joined map to setup in_progress. A ready receipt requires a
+fresh exact ordinary inventory, active required units, serving connector and
+current/renewing policy before display as ready/available. Otherwise it names
+runtime_unavailable, setup_unverified, partial_cleanup or renewal_failed.
+Failed_uncertain and published preparation without an activation receipt have
+their own named states. Missing/unreadable receipt alone never proves Off;
 a receipt bound to a different UID refuses. A fresh successful connector snapshot
 supplies runtime available only when ready; otherwise unavailable. Unreachable connector
 supplies runtime unavailable independently of a recognized setup receipt.
@@ -4274,7 +4279,9 @@ has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
 invite additionally has `deadline_utc_seconds`. All vocabularies include
 `unknown` and `stale`, plus only:
 
-- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`;
+- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`,
+  `prepared_no_receipt`, `failed_uncertain`, `runtime_unavailable`,
+  `setup_unverified`, `renewal_failed`;
 - runtime: `available`, `unavailable` (never `off`);
 - invite: `none`, `minting`, `encoding`, `pairing`, `issued`, `pending_approval`,
   `consumed`, `cancelled`, `recovered`, `expired`, `refused`, `uncertain`;
@@ -4664,8 +4671,17 @@ never credited as successful revoke/stop/cleanup. No budget is renewed.
 The ready restart / retry-later / prepared-retry categories are carried through
 the existing Enable terminal channel and its closed native/schema/web parsers,
 with English and Simplified Chinese recovery hints. This category extension is
-not completion of G: durable Status projection, Disable terminal delivery,
-issuer-journal invitation projection, network cleanup and client revocation
-display remain unimplemented in TASK-19228. The #1876 channel only wraps typed
+not completion of G: issuer-journal invitation projection, network cleanup and
+client revocation display remain unimplemented in TASK-19228. Status now reads
+live setup detail without any durable marker. Status v1 retains its five-field
+shape and phase vocabulary, mapping the named failures to failed/pending/paused
+with ready=false. After those states, native consumers make one read-only
+StatusV2 call and admit only fresh (age at most 30s), closed named setup detail;
+unavailable/older peers keep the original non-ready v1 result. Both web views
+ship English and Simplified Chinese reasons/recovery actions. Named unhealthy
+detail suppresses device/selection claims (null, never fabricated empty access).
+Ordinary inventory still refuses transitional ActiveStates; Status names
+setup_unverified, without granting ownership. CLI Disable terminal delivery is
+documented under B9. The #1876 channel only wraps typed
 preparation-stage errors and Enable completion; later activation/recovery/stop
 errors do not enter that wrapper, explaining their absent preparation reason.

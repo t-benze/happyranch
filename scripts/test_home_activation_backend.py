@@ -128,11 +128,11 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
             state = v.states.get(name, 'inactive')
             props = dict(Id=name, Names=name, FragmentPath=str(path) if path.exists() else '',
                 DropInPaths='', NeedDaemonReload='no', LoadState='loaded' if path.exists() else 'not-found',
-                ActiveState=state, SubState='running' if state == 'active' else 'dead', Job='',
+                ActiveState=state, SubState=('waiting' if name == policy.TIMER_NAME else 'running') if state == 'active' else 'dead', Job='',
                 MainPID=str(os.getpid()) if state == 'active' else '0', ControlPID='0', ControlGroup='',
                 User='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
                 Group='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
-                DynamicUser='no', Unit=policy.SERVICE_NAME)
+                DynamicUser='no', Unit=policy.SERVICE_NAME, Result='success', UnitFileState='enabled')
             return 0, '\n'.join(f'{key}={props[key]}' for key in
                 (arg.split('=', 1)[1] for arg in args if arg.startswith('--property=')))
         v.calls.append(args[1:])
@@ -156,7 +156,7 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     put(v.path('/var/lib/happyranch-headscale/db.sqlite'), b'synthetic native Headscale DB')
                 if name == adapters._TARGET:
                     v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active',
-                                     'happyranch-release-verifier.socket': 'active'})
+                                     'happyranch-release-verifier.socket': 'active', policy.TIMER_NAME: 'active'})
                     v.path('/var/lib/happyranch-tsnet-sidecar').mkdir(mode=0o700, parents=True, exist_ok=True)
                     v.path('/run/happyranch-tsnet-sidecar').mkdir(mode=0o755, parents=True, exist_ok=True)
                     put(v.path('/run/happyranch-tsnet-sidecar/health.json'), b'{"backend":"Running"}\n', 0o644)

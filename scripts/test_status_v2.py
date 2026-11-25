@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from runtime.remote_access import status_v2 as v2
-from scripts.test_remote_access_helper import Call, Device, venue  # noqa: F401
+from scripts.test_remote_access_helper import Call, Device, HELPER, venue  # noqa: F401
 
 
 @pytest.mark.parametrize('phase,ready,pending,devices,expected', [
@@ -19,9 +19,11 @@ from scripts.test_remote_access_helper import Call, Device, venue  # noqa: F401
     ('pending', True, True, False,
      b'{"phase":"pending","ready":true,"devices":[],"pending":{"label":"Lab &amp; &lt;Mac&gt;\\u96ea","fingerprint":"0445702fe77907cfe9060f0b","comparison_phrase":"blue apple"},"selected":null}'),
 ])
-def test_v1_status_base_bytes(venue: Any, phase: str, ready: bool, pending: bool,
+def test_v1_status_base_bytes(venue: Any, monkeypatch: Any, phase: str, ready: bool, pending: bool,
                               devices: bool, expected: bytes) -> None:
     _, _, operations, client, _ = venue
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status',
+                        lambda self, remaining: {'setup': 'off' if phase == 'off' else 'ready'})
     record = Device('device-a', 'stable-a', 'Lab & <Mac>\n雪', 'blue apple', 2_000_000_000)
     operations.snapshot = replace(operations.snapshot, phase=phase, ready=ready,
                                   pending=record if pending else None,
@@ -42,7 +44,7 @@ UNKNOWN_WIRE = (
 # Closed public vocabularies from B15, rather than expectations derived from enums.
 DIMENSIONS = [
     ('setup', v2.SetupObservation, v2.SetupPhase,
-     'unknown stale ready off in_progress failed uncertain partial_cleanup'),
+     'unknown stale ready off in_progress failed uncertain partial_cleanup prepared_no_receipt failed_uncertain runtime_unavailable setup_unverified renewal_failed'),
     ('runtime', v2.RuntimeObservation, v2.RuntimeAvailability,
      'unknown stale available unavailable'),
     ('invite', v2.InviteObservation, v2.InvitePhase,

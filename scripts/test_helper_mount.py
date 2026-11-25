@@ -426,6 +426,7 @@ def test_thr327_replacement_runtime_status(
             failures.append((str(error), [frame.name for frame in traceback.extract_tb(error.__traceback__)]))
             raise
     m.reader.current_generation.side_effect = capture
+    m.reader.setup_status.side_effect = lambda _: lifecycle.setup_status(os.getuid())
     m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
     monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
     m.helper.control = m.h.ControlClient(str(f.root / 'absent-connector.sock'))
@@ -519,6 +520,7 @@ def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch
     m = mount
     m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
     m.reader.current_generation.side_effect = m.h._helper_generation.GenerationUnavailable(category)
+    m.reader.setup_status.side_effect = m.h._helper_generation.GenerationUnavailable(category)
     m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
     m.message.new_method_error_literal = Mock(return_value=object())
     m.helper.connection.send_message = Mock()
@@ -821,7 +823,8 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     helper.audit = h._home_audit.HomeAudit(tmp_path / 'audit.jsonl', uid=os.getuid(), gid=os.getgid())
     effects = []
     token = 'protected-generation-and-operation'
-    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token))
+    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token),
+                             setup_status=Mock(return_value={'setup': 'ready'}))
     def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
         assert helper.inflight is not None and expected == 'protected-generation-and-operation'
         assert 0 < remaining <= 300
@@ -2325,6 +2328,73 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
 
 
 @pytest.mark.parametrize('method', ['Status', 'StatusV2'])
+@pytest.mark.parametrize('serving', [False, True])
+@pytest.mark.parametrize('case,setup', [('ready', 'ready'), ('inactive', 'runtime_unavailable'),
+    ('activating', 'setup_unverified'), ('deactivating', 'setup_unverified'),
+    ('partial', 'partial_cleanup'), ('failed', 'failed_uncertain'), ('prepared', 'prepared_no_receipt'),
+    ('renewal', 'renewal_failed')])
+def test_thr327_live_setup_status(composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                 method: str, case: str, setup: str, serving: bool) -> None:
+    from dataclasses import replace
+    v, m, uid = composition, mount, os.getuid()
+    if case == 'prepared':
+        with v.transactions.locked() as directory:
+            v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
+        assert v.receipts.current() is None
+    else:
+        v.lifecycle.dispatch('Enable', uid, 'enable', v.lifecycle.capture('Enable', uid),
+                             deadline=time.monotonic() + 480)
+        v.observers.close()
+        if case in ('inactive', 'activating', 'deactivating'):
+            v.states['happyranch-connector.service'] = case
+        elif case == 'renewal':
+            v.states['happyranch-remote-access-policy-renew.timer'] = 'inactive'
+        elif case == 'failed':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+        elif case == 'partial':
+            expected = v.lifecycle.capture('Disable', uid)
+            assert v.lifecycle.dispatch('Disable', uid, 'stop', expected)['outcome'] == 'in_progress'
+            with pytest.raises(backend.HeadscaleServiceError):
+                v.lifecycle.dispatch('Disable', uid, 'cleanup', expected, revoke_succeeded=False)
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    def setup_status(remaining: float) -> dict:
+        assert not m.helper.lock._is_owned(), 'Status reads must not hold the lifecycle mutation lock'
+        return v.lifecycle.dispatch('Enable', uid, 'status', None)
+    m.reader.setup_status = setup_status
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    # A stale connector's ready bit must not override the live owned unit state.
+    m.helper.control.status = lambda: m.h.Snapshot(9, uid, True, 'ready', True, None, ())
+    if not serving:
+        m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
+        if setup == 'ready':
+            setup = 'runtime_unavailable'
+    m.helper.cursors = {}
+    m.message.get_member = lambda: method
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(m.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    m.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    m.message.new_method_reply = lambda: reply
+    m.helper.connection.send_message = Mock()
+    m.helper._reply = m.h.RemoteAccessHelper._reply.__get__(m.helper)
+    m.helper._dispatch(m.message)
+    m.helper.connection.send_message.assert_called_once()
+    result = json.loads(reply.body.unpack()[0])
+    if method == 'Status':
+        legacy = {'prepared_no_receipt': 'pending', 'renewal_failed': 'paused', 'ready': 'ready'}.get(setup, 'failed')
+        assert result['phase'] == legacy and result['ready'] is (setup == 'ready')
+    else:
+        assert result['setup']['state'] == setup
+        assert result['runtime']['state'] == ('available' if setup == 'ready' else 'unavailable')
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+
+
+@pytest.mark.parametrize('method', ['Status', 'StatusV2'])
 @pytest.mark.parametrize('case', ['clean', 'staged-inert', 'partial', 'pending', 'unsafe', 'unknown', 'failed', 'source', 'txn',
     'founder-expired', 'replacement-expired', 'post-disable-expired'])
 def test_thr327_closed_host_status(
@@ -2397,6 +2467,7 @@ def test_thr327_closed_host_status(
     m.helper.cursors = {}
     m.helper.generations = SimpleNamespace(current_generation=lambda _: None)
     m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.reader.setup_status.side_effect = lambda _: v.lifecycle.setup_status(uid)
     m.message.get_member = lambda: method
     monkeypatch.setattr(m.h.threading, 'Thread', lambda target, args=(), **kw:
                         SimpleNamespace(start=lambda: target(*args)))

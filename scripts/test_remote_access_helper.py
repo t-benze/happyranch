@@ -256,6 +256,10 @@ def venue(tmp_path: Any, request: Any, monkeypatch: Any) -> Any:
         cleanup.callback(server.close)
         helper = RemoteAccessHelper(new(), None if options.get('bootstrap') else options.get('release_uid', os.getuid()), server.path,
                                     deadline=options.get('deadline', 120))
+        # This private-bus venue models the serving device owner. The retained
+        # temporary-root venue owns the independent bundled setup observation.
+        monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status',
+                            lambda self, remaining: {'setup': 'ready'})
         helper.audit = HELPER._home_audit.HomeAudit(tmp_path / 'home-audit.jsonl',
                                                    uid=os.getuid(), gid=os.getgid())
         cleanup.callback(helper.close)

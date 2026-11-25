@@ -578,6 +578,23 @@ class Protocol:
             "observation": "known", "devices": devices, "pending": device(value["pending"]),
             "selected": device(value["selected"]), "inviteState": "unknown", "expiresAt": None})
 
+    def host_details(self, snapshot: dict, raw: str) -> dict:
+        """Fresh display detail only; v1 keeps its original bytes/vocabulary."""
+        value = parse_json(raw, 16384)
+        dimensions = {'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
+        if (type(value) is not dict or set(value) != {'version', *dimensions}
+                or type(value['version']) is not int or value['version'] != 2):
+            raise ValueError('invalid status detail')
+        part = value['setup']
+        states = {'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
+                  'runtime_unavailable', 'setup_unverified', 'renewal_failed'}
+        if (type(part) is not dict or set(part) != {'state', 'age_seconds'}
+                or part['state'] not in states or type(part['age_seconds']) is not int
+                or not 0 <= part['age_seconds'] <= 30):
+            raise ValueError('unavailable status detail')
+        return self.result('host.status', {**snapshot, 'setup': part['state'], 'runtime': 'offline',
+            'devices': None, 'pending': None, 'selected': None})
+
     def host_unavailable(self, setup: str = "unknown") -> dict:
         return self.result("host.status", dict(setup=setup, runtime="unknown", observation="unavailable",
             devices=None, pending=None, selected=None, inviteState="unknown", expiresAt=None))
@@ -608,6 +625,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
     mutation = method in HOST_MUTATIONS or lifecycle
     acknowledged = False
     deadline = None
+    status_snapshot = None
 
     def failed(error: Exception, dispatched: bool) -> None:
         if not current():
@@ -651,11 +669,16 @@ def request_host(self: object, method: str, complete: object, current: object, o
                 complete(None, "unavailable")
 
     def replied(connection: object, result: object, called: str) -> None:
-        nonlocal acknowledged
+        nonlocal acknowledged, status_snapshot
         if not current():
             return
         try:
             raw, = connection.call_finish(result).unpack()
+            if called == 'StatusV2':
+                snapshot = self.protocol.host_details(status_snapshot, raw)
+                observe(snapshot)
+                complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+                return
             if lifecycle:
                 if time.monotonic() >= deadline:
                     raise ValueError("late helper reply")
@@ -717,9 +740,18 @@ def request_host(self: object, method: str, complete: object, current: object, o
                 call("Status")
                 return
             snapshot = self.protocol.host(raw)
+            if snapshot['setup'] in ('failed', 'pending', 'paused'):
+                status_snapshot = snapshot
+                call('StatusV2')
+                return
             observe(snapshot)
             complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
         except Exception as error:
+            if called == 'StatusV2' and status_snapshot is not None:
+                # Older peers retain their known v1 failure; never manufacture readiness.
+                observe(status_snapshot)
+                complete(self.protocol.host_action(method, status_snapshot) if mutation else status_snapshot)
+                return
             failed(error, True)
 
     def call(called: str) -> None:

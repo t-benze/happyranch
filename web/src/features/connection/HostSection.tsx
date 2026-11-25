@@ -327,7 +327,7 @@ export function HostSection(): JSX.Element | null {
               )}
             </div>
           )}
-          {view.manage && !confirm && <Actions>{button('host.turnOff', t('connection.host.hTurnOff'), { variant: 'destructiveOutline' })}</Actions>}
+          {view.turnOff && !confirm && <Actions>{button('host.turnOff', t('connection.host.hTurnOff'), { variant: 'destructiveOutline' })}</Actions>}
           <Hint>{t('connection.host.hNativeNote')}</Hint>
         </div>
       )}

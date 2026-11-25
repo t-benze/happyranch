@@ -12,6 +12,13 @@ import type { ActionResult, Cleanup, HostSnapshot } from './types';
 type Key = keyof Copy;
 type Tone = 'neutral' | 'progress' | 'attention' | 'danger' | 'ok';
 type Phase = HostSnapshot['setup'];
+const stateCopy: Partial<Record<Phase, Key>> = {
+  prepared_no_receipt: 'hStatePrepared', failed_uncertain: 'hStateFailedUncertain',
+  partial_cleanup: 'hStatePartial', runtime_unavailable: 'hStateRuntime',
+  setup_unverified: 'hStateUnverified', renewal_failed: 'hStateRenewal',
+};
+const canTurnOff = (phase: Phase): boolean =>
+  ['ready', 'paused', 'failed_uncertain', 'partial_cleanup', 'runtime_unavailable', 'renewal_failed'].includes(phase);
 type Command = 'host.enable' | 'host.turnOff' | 'host.createInvite' | 'host.approveDevice' |
   'host.rejectDevice' | 'host.nextDevice' | 'host.revokeDevice' | 'host.status';
 type Confirmable = 'host.turnOff' | 'host.revokeDevice';
@@ -95,7 +102,7 @@ export class HostView {
     // A confirmation is bound to the record/state it was opened for.
     const phase = this.phase();
     if (this.confirm?.command === 'host.revokeDevice' && (this.selectedLabel() !== this.confirm.raw || phase !== 'ready' && phase !== 'paused')) this.confirm = null;
-    if (this.confirm?.command === 'host.turnOff' && phase !== 'ready' && phase !== 'paused') this.confirm = null;
+    if (this.confirm?.command === 'host.turnOff' && !canTurnOff(phase)) this.confirm = null;
     this.render();
   }
 
@@ -353,7 +360,9 @@ export class HostView {
     return nodes;
   }
 
-  private body(phase: Phase): { badge: [Key, Tone]; title: string; nodes: HTMLElement[] } {
+  private body(state: Phase): { badge: [Key, Tone]; title: string; nodes: HTMLElement[] } {
+    const phase = state === 'prepared_no_receipt' || state === 'failed_uncertain' || state === 'partial_cleanup'
+      || state === 'runtime_unavailable' || state === 'setup_unverified' || state === 'renewal_failed' ? 'failed' : state;
     const snapshot = this.snapshot!;
     const nodes: HTMLElement[] = [];
     const pending = phase === 'ready' ? this.pendingLabel() : null;
@@ -365,6 +374,7 @@ export class HostView {
       failed: 'hTitleFailed', unknown: 'hTitleUnknown' }[phase] as Key;
     let lead: Key = { off: 'hLeadOff', pending: 'hLeadPending', ready: 'hLeadReady', paused: 'hLeadPaused',
       failed: 'hLeadFailed', unknown: 'hLeadUnknown' }[phase] as Key;
+    if (stateCopy[state]) lead = stateCopy[state]!;
     if (this.unconfirmed) lead = 'hLeadUnconfirmed';
     else if (pending !== null) { badge = ['hBadgeApproval', 'attention']; titleKey = 'hTitleRequest'; lead = 'hLeadRequest'; }
     else if (phase === 'ready' && (runtime === 'offline' || runtime === 'restarting')) {
@@ -379,7 +389,7 @@ export class HostView {
     const confirming = this.confirm !== null;
     nodes.push(...this.confirmation());
     const buttons: (HTMLButtonElement | null)[] = [];
-    if (phase === 'off' && !confirming) buttons.push(this.gate('host.enable', () => this.button('host.enable', 'hTurnOn', { primary: true })));
+    if (['off', 'prepared_no_receipt', 'failed_uncertain', 'runtime_unavailable'].includes(state) && !confirming) buttons.push(this.gate('host.enable', () => this.button('host.enable', 'hTurnOn', { primary: true })));
     if (pending !== null && !confirming) {
       buttons.push(this.gate('host.approveDevice', () => this.button('host.approveDevice', 'hApprove', { primary: true, raw: pending })));
       buttons.push(this.gate('host.rejectDevice', () => this.button('host.rejectDevice', 'hReject', { danger: true, raw: pending })));
@@ -391,10 +401,10 @@ export class HostView {
     nodes.push(...this.actions(buttons));
     if (buttons.some((node) => node && node.dataset.focusKey !== 'host.status:checkAgain')) nodes.push(this.text('p', this.t('systemAsks'), 'hint'));
     if (phase === 'pending') nodes.push(this.text('p', this.t('hCancelNative'), 'hint'));
-    if (phase === 'failed') nodes.push(this.text('p', this.t('hRepairUnavailable'), 'hint'), this.text('p', this.t('nativeRecoveryHint'), 'hint'));
+    if (phase === 'failed' && !stateCopy[state]) nodes.push(this.text('p', this.t('hRepairUnavailable'), 'hint'), this.text('p', this.t('nativeRecoveryHint'), 'hint'));
     if (phase === 'paused') nodes.push(this.text('p', this.t('hRenewUnavailable'), 'hint'));
     if (phase === 'ready' || phase === 'paused') nodes.push(...this.devices());
-    if ((phase === 'ready' || phase === 'paused') && !confirming) {
+    if (canTurnOff(state) && !confirming) {
       nodes.push(...this.actions([this.gate('host.turnOff', () => this.button('host.turnOff', 'hTurnOff', { danger: true }))]));
     }
     nodes.push(this.text('p', this.t('hNativeNote'), 'notice native-note'));

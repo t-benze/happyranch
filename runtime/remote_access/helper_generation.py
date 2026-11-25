@@ -13,6 +13,8 @@ COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
                                     'inventory', 'quiescence', 'timeout', 'unknown'})
+SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
+                          'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
 PREPARATION_CATEGORIES = frozenset({
     'deb-layout-required', 'issuer-state-uncertain', 'account-shape',
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
@@ -189,6 +191,14 @@ class HomeLifecycleClient:
             raise GenerationUnavailable()
         value = self._call('status', None, remaining)
         if set(value) != {'policy'} or value['policy'] not in ('current', 'renewing', 'expired', 'renewal_failed', 'uncertain'):
+            raise GenerationUnavailable()
+        return value
+
+    def setup_status(self, remaining: float) -> dict:
+        if self.method != 'Enable':
+            raise GenerationUnavailable()
+        value = self._call('status', None, remaining)
+        if set(value) != {'setup'} or type(value['setup']) is not str or value['setup'] not in SETUP_STATES:
             raise GenerationUnavailable()
         return value
 

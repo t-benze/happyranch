@@ -488,6 +488,7 @@ export interface HostView {
   checkAgain: boolean;
   /** Devices list, selection and Turn off apply (ready / paused). */
   manage: boolean;
+  turnOff: boolean;
   invite: 'issued' | 'expired' | 'used' | null;
   hints: MessageKey[];
   stale: boolean;
@@ -511,6 +512,12 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     paused: ['connection.host.hBadgePaused', 'danger', 'connection.host.hTitlePaused', 'connection.host.hLeadPaused'],
     failed: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hLeadFailed'],
     unknown: ['connection.host.hBadgeUnknown', 'neutral', 'connection.host.hTitleUnknown', 'connection.host.hLeadUnknown'],
+    prepared_no_receipt: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStatePrepared'],
+    failed_uncertain: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateFailedUncertain'],
+    partial_cleanup: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStatePartial'],
+    runtime_unavailable: ['connection.host.hBadgeOffline', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateRuntime'],
+    setup_unverified: ['connection.host.hBadgeRepair', 'attention', 'connection.host.hTitleFailed', 'connection.host.hStateUnverified'],
+    renewal_failed: ['connection.host.hBadgePaused', 'danger', 'connection.host.hTitlePaused', 'connection.host.hStateRenewal'],
   };
   let [badge, tone, title, lead] = table[phase];
   if (unconfirmed) lead = 'connection.host.hLeadUnconfirmed';
@@ -540,11 +547,12 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     title,
     lead,
     requester,
-    enable: phase === 'off',
+    enable: ['off', 'prepared_no_receipt', 'failed_uncertain', 'runtime_unavailable'].includes(phase),
     approve: requester !== null,
     createInvite: phase === 'ready' && requester === null && !issued,
-    checkAgain: phase === 'pending' || phase === 'failed' || phase === 'unknown' || phase === 'paused',
+    checkAgain: phase !== 'off' && phase !== 'ready',
     manage: phase === 'ready' || phase === 'paused',
+    turnOff: ['ready', 'paused', 'failed_uncertain', 'runtime_unavailable', 'partial_cleanup', 'renewal_failed'].includes(phase),
     invite: phase !== 'ready' ? null : issued ? 'issued' : snapshot.inviteState === 'expired' ? 'expired' : snapshot.inviteState === 'used' ? 'used' : null,
     hints,
     stale: snapshot.observation === 'stale',

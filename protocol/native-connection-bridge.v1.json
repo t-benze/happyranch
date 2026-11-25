@@ -136,7 +136,13 @@
             "ready",
             "paused",
             "failed",
-            "unknown"
+            "unknown",
+            "prepared_no_receipt",
+            "failed_uncertain",
+            "partial_cleanup",
+            "runtime_unavailable",
+            "setup_unverified",
+            "renewal_failed"
           ]
         },
         "runtime": {

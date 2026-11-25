@@ -294,6 +294,39 @@ class HelperLifecycleBackend:
                      ActiveState='active', SubState='waiting', UnitFileState='enabled') else 'renewal_failed')
         return {'policy': state}
 
+    def setup_status(self, uid: int) -> dict:
+        """Display only: no generation token, mutation admission or repair."""
+        receipt = self.store.current()
+        if receipt is None:
+            captured = json.loads(self.capture('Enable', uid))
+            return {'setup': 'prepared_no_receipt' if captured['prestate'] == 'prepared' else 'off'}
+        if receipt.release_uid != uid:
+            raise ActivationRefused()
+        if receipt.phase != 'ready':
+            return {'setup': 'failed_uncertain' if receipt.phase == 'failed_uncertain' else 'pending'}
+        preparing = self.io._headscale_preparing
+        try:
+            self.io._service_owner = self.io._account(create=False)
+            self.io._headscale_owner = self.io._headscale_shape()
+            self.io._headscale_preparing = True
+            if self.io._headscale_publication() is None:
+                return {'setup': 'partial_cleanup'}
+            # Keep ordinary inventory's closed state set, including on Status.
+            if self.io.inventory().state != 'owned-activated':
+                return {'setup': 'setup_unverified'}
+            for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
+                if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
+                    return {'setup': 'runtime_unavailable'}
+            if self.policy_status(uid)['policy'] not in ('current', 'renewing'):
+                return {'setup': 'renewal_failed'}
+            return {'setup': 'ready'}
+        except FileNotFoundError:
+            return {'setup': 'partial_cleanup'}
+        except Exception:
+            return {'setup': 'setup_unverified'}
+        finally:
+            self.io._headscale_preparing = preparing
+
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
@@ -422,6 +455,8 @@ class HelperLifecycleBackend:
             return {'snapshot': self.capture(method, uid)}
         if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
             return self.policy_status(uid)
+        if method == 'Enable' and step == 'status' and expected is None:
+            return self.setup_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
             raise ActivationRefused()
         if method == 'RetryPolicyRenewal' and step == 'renew':

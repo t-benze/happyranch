@@ -225,7 +225,7 @@ class RemoteAccessHelper:
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
-    def _status_v2(self, message: Gio.DBusMessage, sender: str) -> None:
+    def _status_v2(self, message: Gio.DBusMessage, sender: str, *, v1: bool = False) -> None:
         # One worker, no queue, no helper mutation lock. Slow filesystem/control
         # reads cannot hold the main context beyond the 2s response deadline.
         token = object()
@@ -283,11 +283,16 @@ class RemoteAccessHelper:
                     snapshot, closed = self._status_snapshot(uid, deadline)
                 else:
                     try:
-                        snapshot = self._snapshot(uid)
+                        snapshot, closed = self._status_snapshot(uid, deadline)
                     except Refused as error:
                         if error.category != 'unavailable':
                             raise
                         snapshot = None
+                if snapshot is not None and getattr(snapshot, 'phase', None) in _helper_generation.SETUP_STATES:
+                    phase = snapshot.phase
+                    setup = _status_v2.SetupObservation(_status_v2.SetupPhase(
+                        'in_progress' if phase == 'pending' else phase), 0)
+                    observed_at = time.monotonic()
                 if closed:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase.OFF, 0)
                     observed_at = time.monotonic()
@@ -301,6 +306,18 @@ class RemoteAccessHelper:
                     runtime = _status_v2.RuntimeObservation(
                         _status_v2.RuntimeAvailability.AVAILABLE if snapshot.ready else
                         _status_v2.RuntimeAvailability.UNAVAILABLE, 0)
+                if v1:
+                    if snapshot is None:
+                        raise Refused('unavailable')
+                    selected = next((d for d in snapshot.devices if d.record_id == self.cursors.get(sender)), None)
+                    phase = {'prepared_no_receipt': 'pending', 'failed_uncertain': 'failed',
+                        'partial_cleanup': 'failed', 'runtime_unavailable': 'failed',
+                        'setup_unverified': 'failed', 'renewal_failed': 'paused'}.get(snapshot.phase, snapshot.phase)
+                    raw = json.dumps({'phase': phase, 'ready': snapshot.ready,
+                        'devices': [d.public() for d in snapshot.devices],
+                        'pending': snapshot.pending.public() if snapshot.pending else None,
+                        'selected': selected.public() if selected else None}, separators=(',', ':')).encode()
+                    return settled(raw, None)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
                 invite, cleanup = self._invite_status(uid, observed)
@@ -367,7 +384,14 @@ class RemoteAccessHelper:
         reporting Off. Capture reads only; it neither claims a slot nor repairs.
         """
         try:
-            return self._snapshot(uid), False
+            snapshot = self._snapshot(uid)
+            state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                deadline - time.monotonic())['setup']
+            if state == 'ready' and not snapshot.ready:
+                state = 'runtime_unavailable'
+            if state != 'ready':
+                snapshot = replace(snapshot, phase=state, ready=False)
+            return snapshot, False
         except Refused as error:
             if error.category != 'unavailable':
                 raise
@@ -387,10 +411,21 @@ class RemoteAccessHelper:
                 raise ValueError()
             if time.monotonic() >= deadline:
                 raise ValueError()
-        except _helper_generation.GenerationUnavailable as error:
-            raise Refused('host-state-unrecognized-' + error.category) from None
-        except Exception:
-            raise Refused('host-state-unrecognized') from None
+        except Exception as error:
+            # A ready receipt can outlive stopped units or B6's failed-revoke
+            # partial publication. This is display only, never Off/revoke proof.
+            try:
+                state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                    deadline - time.monotonic())['setup']
+                if state == 'off':
+                    raise ValueError()  # Keep the strict absence proof above.
+                if state == 'ready':
+                    state = 'runtime_unavailable'
+                return Snapshot(0, uid, False, state, False, None, ()), False
+            except Exception:
+                if isinstance(error, _helper_generation.GenerationUnavailable):
+                    raise Refused('host-state-unrecognized-' + error.category) from None
+                raise Refused('host-state-unrecognized') from None
         return Snapshot(0, uid, True, 'off', False, None, ()), True
 
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
@@ -423,6 +458,9 @@ class RemoteAccessHelper:
             if method == 'StatusV2':
                 self._status_v2(message, sender)
                 return False
+            if method == 'Status':
+                self._status_v2(message, sender, v1=True)
+                return False
             # Refuse before taking a lock held by an effect or doing bus/file I/O.
             if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                 raise Refused('busy')
@@ -433,8 +471,7 @@ class RemoteAccessHelper:
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = (self._status_snapshot(uid, time.monotonic() + _helper_lifecycle.STATUS_SECONDS)[0]
-                            if method == 'Status' else self._snapshot(uid))
+                snapshot = self._snapshot(uid)
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
