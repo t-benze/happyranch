@@ -637,7 +637,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters, url }: {
             )}
             <Button type="submit" size="sm" disabled={preflight.isPending}>{t('tasks.filters.apply')}</Button>
             {filterError && <p role="alert">{renderThreadErrorDetail(filterError, t)}</p>}
-            <Button type="button" variant="outline" size="sm" onClick={() => { ++filterAttempt.current; filterLatch.current = false; setFilterError(null); setDraftStatus(''); setDraftAgent(''); if (url) { setDraftErrors(new Map()); url.apply(EMPTY_FILTERS); return; } setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { ++filterAttempt.current; filterLatch.current = false; setFilterError(null); setDraftStatus(''); setDraftAgent(''); if (url) { setDraftErrors(new Map()); setDraftStatuses([]); setDraftClauses([]); url.apply(EMPTY_FILTERS); return; } setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
           </form>
         )}
         {filters && !url && <p className="text-text-secondary mb-4 text-sm">{t('tasks.filters.applied')} {filters.status && t('tasks.filters.appliedStatus', { status: filters.status })} {filters.assigned_agent && t('tasks.filters.appliedAgent', { agent: presentation.label(filters.assigned_agent) })}</p>}

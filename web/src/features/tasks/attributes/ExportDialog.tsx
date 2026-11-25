@@ -179,7 +179,15 @@ export function ExportDialog({ selection, onClose }: { selection: ExportSelectio
           <input id="tasks-export-limit" inputMode="numeric" value={limitText} disabled={busy}
             aria-invalid={limitError || undefined} aria-describedby="tasks-export-limit-help"
             className="border-border-default bg-surface-raised text-text-primary mt-1 block w-32 rounded-sm border px-3 py-2 font-mono text-sm"
-            onChange={(event) => { setLimitText(event.target.value); setLimitError(false); if (phase.kind !== 'summary' && phase.kind !== 'preparing') setPhase({ kind: 'summary' }); }} />
+            onChange={(event) => {
+              setLimitText(event.target.value);
+              setLimitError(false);
+              // After a continuation-page failure (e.g. 413 "lower the row limit and try again") keep
+              // the failure and its Retry, which repeats that SAME page (`before=<failed cursor>`)
+              // with the new limit; returning to the summary would silently restart page 1.
+              if (phase.kind === 'message' && lastBefore.current !== undefined) return;
+              if (phase.kind !== 'summary' && phase.kind !== 'preparing') setPhase({ kind: 'summary' });
+            }} />
           <p id="tasks-export-limit-help" className={`mt-1 text-xs ${limitError ? 'text-feedback-danger' : 'text-text-muted'}`}>
             {t(limitError ? 'tasks.export.limitInvalid' : 'tasks.export.limitHelp')}
           </p>

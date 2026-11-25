@@ -335,6 +335,32 @@ export async function runTaskAttrListCases(h, { org, only }) {
     endCase();
   }
 
+  // ---------------------------------------------------------------- F-CLEAR-DRAFT (round-1 review LOW)
+  if (run('F-CLEAR-DRAFT')) {
+    beginCase('F-CLEAR-DRAFT', 'Clear on an unfiltered URL resets the status + attribute drafts; a later Apply stays unfiltered');
+    fixture.reset();
+    const page = await open('');
+    await settle(page, `document.querySelectorAll('[data-tasks-responsive-list] section li').length > 0`, 'rows');
+    await clickSrc(page, `[...document.querySelectorAll('button[aria-expanded]')].find(b => b.innerText.includes(${q(tr('en', 'tasks.page.filter'))}))`);
+    await settle(page, `!!document.querySelector('[data-testid="tasks-attr-clauses"]')`, 'clauses');
+    await clickSrc(page, `document.querySelector('[data-testid="tasks-status-set"] input[value="pending"]')`); await pause(100);
+    await clickSrc(page, `[...document.querySelectorAll('[data-testid="tasks-attr-clauses"] button')].find(b => b.innerText.includes(${q(tr('en', 'tasks.filters.attr.addCondition'))}))`); await pause(150);
+    await evaluate(page, `(() => { const s = document.querySelector('.tasks-attr-clause .tasks-attr-key select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'effort'); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`); await pause(100);
+    await evaluate(page, `(() => { const s = document.querySelector('.tasks-attr-clause input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(s, '3'); s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`); await pause(100);
+    const draftState = `({ clauses: document.querySelectorAll('.tasks-attr-clause').length, statuses: [...document.querySelectorAll('[data-testid="tasks-status-set"] input:checked')].map(e => e.value), search: location.search })`;
+    check('F-CLEAR-DRAFT draft precondition (pending + one clause, URL unfiltered)', await evaluate(page, draftState), { clauses: 1, statuses: ['pending'], search: '' });
+    await clickSrc(page, `[...document.querySelectorAll('form button')].find(b => b.innerText.trim() === ${q(tr('en', 'tasks.filters.clear'))})`); await pause(300);
+    check('F-CLEAR-DRAFT Clear empties every draft control; URL stays unfiltered', await evaluate(page, draftState), { clauses: 0, statuses: [], search: '' });
+    await capture(page, 'f-clear-draft-en-1440-cleared', { case: 'F-CLEAR-DRAFT', locale: 'en', viewport: 1440, state: 'cleared' });
+    const from = ledger.length;
+    await clickSrc(page, `[...document.querySelectorAll('form button[type="submit"]')][0]`);
+    await waitTrue(page, `location.search !== ''`, 'observe any reactivated draft', 1500);
+    check('F-CLEAR-DRAFT Apply after Clear keeps the URL unfiltered', await evaluate(page, 'location.search'), '');
+    check('F-CLEAR-DRAFT Apply after Clear sends no attr_* roots request', rootsRows(from).filter((r) => attrs(r).length > 0).map((r) => r.search), []);
+    await closePage(page);
+    endCase();
+  }
+
   // ---------------------------------------------------------------- URL04
   if (run('URL04')) {
     beginCase('URL04', 'non-canonical hand-edited URL is sent byte-exact and not rewritten on load');
@@ -697,6 +723,45 @@ export async function runTaskAttrListCases(h, { org, only }) {
       check('EXP08 closed while preparing: no dialog, no receipt', await evaluate(page, `!document.querySelector('[data-testid="tasks-export-dialog"]') && !document.querySelector('[data-testid="tasks-export-receipt"]')`), true);
       await closePage(page);
     }
+    endCase();
+  }
+
+  // ---------------------------------------------------------------- EXP-CONT-413-LOWER (round-1 review MEDIUM)
+  if (run('EXP-CONT-413-LOWER')) {
+    beginCase('EXP-CONT-413-LOWER', 'continuation-page 413, then a lower row limit: Retry repeats the FAILED page (before=<failed cursor>, new limit), never page 1');
+    fixture.reset();
+    const page = await open('?status=in_progress&attr_min=effort%3D5');
+    await openExport(page);
+    const setLimit = (value) => evaluate(page, `(() => { const s = document.getElementById('tasks-export-limit'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(s, ${q(value)}); s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await setLimit('2');
+    const firstFrom = ledger.length;
+    await clickDialog(page, tr('en', 'tasks.export.export'));
+    await settle(page, `!!document.querySelector('[data-testid="tasks-export-receipt"]')`, 'receipt page 1');
+    const first = exportRows(firstFrom)[0];
+    fixture.mode.exportResponse = { status: 413, body: { detail: { code: 'task_export_too_large', errors: { export: ['encoded_body_too_large'] } } } };
+    const failedFrom = ledger.length;
+    await clickDialog(page, tr('en', 'tasks.export.nextPage'));
+    await settle(page, hasText(tr('en', 'tasks.export.bodyTooLarge')), '413 shown');
+    const failed = exportRows(failedFrom)[0];
+    const failedBefore = failed ? sp(failed).get('before') : null;
+    check('EXP-CONT-413-LOWER the failed request was a continuation page', [!!first, failedBefore !== null, failed && sp(failed).get('limit')], [true, true, '2']);
+    fixture.mode.exportResponse = null;
+    await setLimit('1'); await pause(200);
+    // Soft probes (no throw) so the old head reports every intended RED.
+    const lowered = await evaluate(page, `({ alert: document.body.innerText.includes(${q(tr('en', 'tasks.export.bodyTooLarge'))}), retry: [...document.querySelectorAll('[data-testid="tasks-export-dialog"] button')].some(b => b.innerText.trim().endsWith(${q(tr('en', 'tasks.export.retry'))})), limit: document.getElementById('tasks-export-limit').value })`);
+    check('EXP-CONT-413-LOWER lowering the limit keeps the failure + Retry (no silent return to a page-1 Export)', lowered, { alert: true, retry: true, limit: '1' });
+    await capture(page, 'exp-cont-413-lower-en-1440-lowered', { case: 'EXP-CONT-413-LOWER', locale: 'en', viewport: 1440, state: '413-limit-lowered' });
+    const retryFrom = ledger.length;
+    await evaluate(page, `(() => { const bs = [...document.querySelectorAll('[data-testid="tasks-export-dialog"] button')]; const b = bs.find(x => x.innerText.trim().endsWith(${q(tr('en', 'tasks.export.retry'))})) || bs.find(x => x.innerText.trim().endsWith(${q(tr('en', 'tasks.export.export'))})); b.click(); return true; })()`);
+    await settle(page, `!!document.querySelector('[data-testid="tasks-export-receipt"]')`, 'receipt retry');
+    const retried = exportRows(retryFrom);
+    check('EXP-CONT-413-LOWER exactly one retry request', retried.length, 1);
+    const r = retried[0];
+    check('EXP-CONT-413-LOWER retry ledger: before = failed cursor, limit = 1, other predicates unchanged', r ? { before: sp(r).get('before'), limit: sp(r).get('limit'), rest: [...sp(r)].filter(([k]) => k !== 'before' && k !== 'limit').join('&') } : null, { before: failedBefore, limit: '1', rest: [...sp(failed)].filter(([k]) => k !== 'before' && k !== 'limit').join('&') });
+    const receipt = await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText`);
+    check('EXP-CONT-413-LOWER honest receipt: 1 row + more may match + next page offered', [receipt.split('\n').map((x) => x.trim()).filter(Boolean), await evaluate(page, `[...document.querySelectorAll('[data-testid="tasks-export-dialog"] button')].some(b => b.innerText.trim().endsWith(${q(tr('en', 'tasks.export.nextPage'))}))`)], [[tr('en', 'tasks.export.receipt', { n: 1 }), tr('en', 'tasks.export.moreMayMatch')], true]);
+    await capture(page, 'exp-cont-413-lower-en-1440-retried', { case: 'EXP-CONT-413-LOWER', locale: 'en', viewport: 1440, state: 'retried' });
+    await closePage(page);
     endCase();
   }
 
