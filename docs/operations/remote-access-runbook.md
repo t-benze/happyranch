@@ -229,8 +229,17 @@ helper Turn off and activation-state cleanup remain later slices. Unknown
 or edited/unreceipted config/DERP/leaf/key/CA and all DB/Noise/socket entries
 refuse and remain.
 The `home-ca/` signing/staging tree is preserved. The config prefix selects from
-complete kernel IPv4/IPv6 default-route inventory (including ECMP), refusing
-unresolved preferred sources as `inventory`; no address input is accepted.
+complete kernel IPv4/IPv6 default-route inventory (including every ECMP hop).
+An exactly four-byte `RTA_TABLE` overrides the header table; absent attributes
+use the header. Malformed/duplicate/truncated attributes or unknown interface
+indices refuse `inventory` before any route can be ignored. Ignore only valid
+non-main defaults without a preferred source; source-less main defaults still
+refuse `inventory`. Only ignored routes left gives `no_address`. Sourced defaults
+remain candidates across all tables: two assigned RFC1918 sources (even the same
+address) give `multiple_addresses`, and a non-RFC1918/IPv6 source gives `dial_ip`.
+Down/loopback, source-specific and nexthop refusals remain unchanged. No metric
+ranking, device-name/type filter, interface-address fallback or supplied address
+is accepted.
 Port preflight precedes all publication. Unchanged address/config reruns are
 idempotent; a changed address refuses `address-changed` pending future
 RefreshHomeAddress. Publication is receipt-last; missing members or pending

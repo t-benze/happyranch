@@ -1692,15 +1692,21 @@ dependency/alias/trigger may become effective through this publication.
 link/address/route dumps, not a shell, PATH, executable, environment or address
 input. Include all unicast IPv4/IPv6 default routes across tables and every
 ECMP member without metric/weight ranking. Complete interface IDs carry their
-up/loopback flags and local addresses. Retain a missing `RTA_PREFSRC` as an
-unresolved empty source; the merged selector refuses `inventory`, never guesses
-from a secondary/primary address. Source-specific defaults and unresolved
-nexthop objects also refuse `inventory`. This is a fail-closed limitation for
+up/loopback flags and local addresses. Preserve table identity: an exactly
+four-byte `RTA_TABLE` overrides the `rtm_table` header; absent attributes use
+the header. Malformed, duplicate or truncated attributes refuse `inventory`.
+Validate every default and every ECMP hop, including known interface indices,
+before filtering. Retain missing `RTA_PREFSRC` as an empty source; ignore only
+validated non-main-table defaults with no preferred source. Source-less main
+defaults refuse `inventory`; only ignored defaults left gives `no_address`.
+Never guess from secondary/primary interface addresses, rank metrics/weights,
+filter device names/types or suppress sourced non-main defaults. Source-specific
+defaults and unresolved nexthop objects also refuse `inventory`. This is a fail-closed limitation for
 kernels/routes without an explicit preferred source, not full network support.
 Malformed/error/interrupted/truncated dumps, missing identities, I/O, a six-second
 observation deadline or shared 4 MiB/65,536-message-per-dump exhaustion refuse
 secret-free. These are sampled dumps, not an atomic network-change fence.
-The unchanged selector supplies `inventory`, `no_address`, `multiple_addresses`
+The selector supplies `inventory`, `no_address`, `multiple_addresses`
 and `dial_ip`; exclusive `preflight_ports(selected_ip)` runs before even account
 receipt publication. Before service custody publication, existing quiescence
 observations must show the exact inactive unit and no process using its UID;
@@ -1878,10 +1884,16 @@ inert leaf/CA publication. Readiness remains later work; renderers remain pure.
 
 `select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
 frozen `LANInterface(index, up, loopback, addresses)` and
-`LANDefaultRoute(interface_index, source_ip)` records. Addresses are literal
+`LANDefaultRoute(interface_index, source_ip, table=254)` records. Table IDs are
+exact integers in the unsigned 32-bit range; legacy two-argument construction
+conservatively means main (254). Addresses are literal
 local addresses without CIDRs. The collector supplies **every usable default
 route**, its selected source and complete interface identities, including IPv6
 and equal-cost routes; it must not preselect a winner or omit unresolved sources.
+Validate every record and known interface first, then ignore only non-main
+defaults without a preferred source. A source-less main default refuses
+`inventory`; an otherwise valid inventory containing only ignored defaults
+gives `no_address`. Sourced non-main defaults remain ordinary candidates.
 Down/loopback interfaces cannot supply a candidate. A selected source must be
 assigned to that interface. Exactly one candidate is accepted; multiple routes
 refuse even with the same source. The selector never ranks metrics. Nonselected

@@ -15,7 +15,7 @@ POLICY = "/etc/happyranch/headscale/policy.hujson"
 
 
 def inventory(ip: str = IP) -> tuple[tuple[home.LANInterface, ...], tuple[home.LANDefaultRoute, ...]]:
-    return ((home.LANInterface(2, True, False, (ip,)),), (home.LANDefaultRoute(2, ip),))
+    return ((home.LANInterface(2, True, False, (ip,)),), (home.LANDefaultRoute(2, ip, 254),))
 
 
 def config() -> dict:
@@ -123,8 +123,15 @@ def test_deterministic_independent_rendering() -> None:
 
 @pytest.mark.parametrize("ip", ["10.0.0.0", "10.255.255.255", "172.16.0.0", "172.31.255.255",
                                   "192.168.0.0", "192.168.255.255", IP])
-def test_selector_accepts_shared_rfc1918_boundaries(ip: str) -> None:
-    assert home.select_lan_dial_ip(*inventory(ip)) == ip
+@pytest.mark.parametrize("table", [254, 252, 2022])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_selector_accepts_shared_rfc1918_boundaries(ip: str, table: int, reverse: bool) -> None:
+    interfaces, _ = inventory(ip)
+    # Non-main sourced defaults remain candidates; source-less policy defaults
+    # cannot trigger a fallback to either assigned interface address.
+    interfaces += (home.LANInterface(3, True, False, ("198.18.0.1", "10.9.8.7")),)
+    routes = (home.LANDefaultRoute(2, ip, table), home.LANDefaultRoute(3, "", 2022))
+    assert home.select_lan_dial_ip(interfaces, routes[::-1] if reverse else routes) == ip
     f = fixture(); f["control_tls"]["dial_ip"] = ip
     assert invite_v2.decode(wire(f), now=NOW).dial_ip == ip
     assert invite_v2.decode(invite_v2.encode(**(inputs() | {"dial_ip": ip})).invite_text, now=NOW).dial_ip == ip
@@ -165,8 +172,18 @@ def test_invalid_ip_refuses_at_every_boundary(ip: str) -> None:
     ("bool-index", "inventory"), ("nonbool-up", "inventory"),
     ("mutable-addresses", "inventory"), ("mutable-inventory", "inventory"),
     ("foreign-record", "inventory"), ("bad-source-type", "inventory"),
+    ("source-less-main", "inventory"), ("legacy-source-less-main", "inventory"),
+    ("policy-only", "no_address"), ("policy-unknown", "inventory"),
+    ("policy-unassigned", "inventory"), ("policy-rfc1918", "multiple_addresses"),
+    ("policy-identical-source", "multiple_addresses"), ("policy-public", "dial_ip"),
+    ("policy-ipv6", "dial_ip"), ("policy-down", "no_address"),
+    ("policy-loopback", "no_address"), ("policy-bad-source-type", "inventory"),
+    ("table-bool", "inventory"), ("table-none", "inventory"),
+    ("table-string", "inventory"), ("table-negative", "inventory"),
+    ("table-overflow", "inventory"), ("invalid-before-unknown", "inventory"),
 ])
-def test_selector_inventory_refusals(case: str, category: str) -> None:
+@pytest.mark.parametrize("reverse", [False, True])
+def test_selector_inventory_refusals(case: str, category: str, reverse: bool) -> None:
     interfaces, routes = inventory()
     if case == "none": interfaces, routes = (), ()
     elif case == "no-route": routes = ()
@@ -174,17 +191,39 @@ def test_selector_inventory_refusals(case: str, category: str) -> None:
     elif case == "loopback": interfaces = (home.LANInterface(2, True, True, (IP,)),)
     elif case == "two-routes":
         interfaces += (home.LANInterface(3, True, False, ("10.1.2.3",)),)
-        routes += (home.LANDefaultRoute(3, "10.1.2.3"),)
+        routes += (home.LANDefaultRoute(3, "10.1.2.3", 254),)
     elif case == "two-same-source": routes += routes
     elif case == "missing-interface": interfaces = ()
-    elif case == "unassigned-source": routes = (home.LANDefaultRoute(2, "10.1.2.3"),)
+    elif case == "unassigned-source": routes = (home.LANDefaultRoute(2, "10.1.2.3", 254),)
     elif case == "duplicate-index": interfaces += interfaces
     elif case == "bool-index": interfaces = (home.LANInterface(True, True, False, (IP,)),)
     elif case == "nonbool-up": interfaces = (home.LANInterface(2, 1, False, (IP,)),)
     elif case == "mutable-addresses": interfaces = (home.LANInterface(2, True, False, [IP]),)
     elif case == "mutable-inventory": interfaces = list(interfaces)
     elif case == "foreign-record": routes = ({"interface_index": 2, "source_ip": IP},)
-    elif case == "bad-source-type": routes = (home.LANDefaultRoute(2, True),)
+    elif case == "bad-source-type": routes = (home.LANDefaultRoute(2, True, 254),)
+    elif case == "source-less-main": routes = (home.LANDefaultRoute(2, "", 254),)
+    elif case == "legacy-source-less-main": routes = (home.LANDefaultRoute(2, ""),)
+    elif case.startswith("table-"):
+        table = {"table-bool": False, "table-none": None, "table-string": "2022",
+                 "table-negative": -1, "table-overflow": 2**32}[case]
+        routes += (home.LANDefaultRoute(2, "", table),)
+    elif case == "invalid-before-unknown":
+        interfaces = (home.LANInterface(2, True, False, ("198.18.0.1",)),)
+        routes = (home.LANDefaultRoute(2, "198.18.0.1", 254), home.LANDefaultRoute(99, "", 2022))
+    elif case.startswith("policy-"):
+        source = {"policy-only": "", "policy-unknown": "", "policy-unassigned": "10.9.8.7",
+                  "policy-rfc1918": "10.1.2.3", "policy-identical-source": IP,
+                  "policy-public": "198.18.0.1", "policy-ipv6": "2001:db8::2",
+                  "policy-down": "10.1.2.3", "policy-loopback": "10.1.2.3",
+                  "policy-bad-source-type": True}[case]
+        interfaces += (home.LANInterface(3, case != "policy-down", case == "policy-loopback",
+                                       ("10.1.2.3", IP, "198.18.0.1", "2001:db8::2")),)
+        if case in {"policy-only", "policy-down", "policy-loopback"}:
+            routes = ()
+        routes += (home.LANDefaultRoute(99 if case == "policy-unknown" else 3, source, 2022),)
+    if reverse and type(routes) is tuple:
+        routes = routes[::-1]
     with pytest.raises(home.HomeHeadscaleError) as error:
         home.select_lan_dial_ip(interfaces, routes)
     assert error.value.args == (category,)

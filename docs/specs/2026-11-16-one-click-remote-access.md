@@ -581,7 +581,18 @@ The helper creates the pairing secret; connector stores only its digest, then th
 polkit-authenticated initiating caller receives the complete invite once. No unauthenticated mint.
 
 Address discovery is carried by `control_tls.dial_ip`: helper reads kernel interfaces/routes and
-derives the single usable default-route RFC1918 LAN IPv4. Linux status and Mac's trust display show
+derives the single usable default-route RFC1918 LAN IPv4. The kernel inventory
+preserves table identity: an exactly four-byte `RTA_TABLE` overrides `rtm_table`;
+when absent, the header applies. Validate every default and ECMP hop with known
+interface identity first; malformed/duplicate/truncated attributes or unknown
+indices refuse `inventory` even on otherwise ignorable routes. Ignore only
+non-main defaults with no preferred source. Source-less main gives `inventory`;
+only ignored routes left gives `no_address`. Sourced defaults in every table
+remain candidates: two assigned RFC1918 sources, even identical, give
+`multiple_addresses`; non-RFC1918/IPv6 sources give `dial_ip`. Down/loopback,
+source-specific and nexthop refusals remain unchanged. No metric/weight ranking,
+device-name/type filtering or fallback to arbitrary interface addresses.
+Linux status and Mac's trust display show
 that address alongside the home identity. Multiple equally eligible/no LAN addresses refuse;
 no app-selected address, router DNS, mDNS daemon or Internet lookup is needed to obtain it.
 The URL's DNS name is fixed; the per-home CA fingerprint and protected home/control-plane IDs,

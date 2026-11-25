@@ -29,14 +29,16 @@ class LANInterface:
 
 @dataclass(frozen=True, repr=False)
 class LANDefaultRoute:
-    """One usable default route and its selected local source, supplied by the caller.
+    """One default route, its selected local source and resolved Linux table ID.
 
-    Include every usable default route, including IPv6 and equal-cost routes;
-    do not choose a preferred route or silently drop an unresolved source.
+    Include IPv6, every ECMP hop and unresolved sources (empty string). The
+    four-byte RTA_TABLE overrides the header. Legacy callers default to main
+    (254), so they cannot silently ignore an unresolved source.
     """
 
     interface_index: int
     source_ip: str
+    table: int = 254
 
 
 def _dial_ip_valid(dial_ip: object) -> bool:
@@ -46,10 +48,12 @@ def _dial_ip_valid(dial_ip: object) -> bool:
 def select_lan_dial_ip(
     interfaces: tuple[LANInterface, ...], default_routes: tuple[LANDefaultRoute, ...],
 ) -> str:
-    """Accept exactly one usable default-route RFC1918 source; never rank routes.
+    """Validate all defaults, then accept exactly one usable RFC1918 source.
 
     Down/loopback interfaces cannot supply a usable route. Missing/duplicate
     interface identities or a source not assigned to its interface refuse.
+    Only a non-main default with no preferred source is ignored, after record
+    and interface validation. No table/metric/device ranking or address fallback.
     Multiple usable routes refuse even when their selected source is identical.
     """
     if type(interfaces) is not tuple or type(default_routes) is not tuple:
@@ -63,14 +67,19 @@ def select_lan_dial_ip(
                 or any(type(address) is not str for address in interface.addresses)):
             raise HomeHeadscaleError("inventory")
         by_index[interface.index] = interface
-    candidates: list[str] = []
     for route in default_routes:
         if (type(route) is not LANDefaultRoute or type(route.interface_index) is not int
-                or type(route.source_ip) is not str or route.interface_index not in by_index):
+                or type(route.source_ip) is not str or route.interface_index not in by_index
+                or type(route.table) is not int or not 0 <= route.table <= 0xffffffff):
             raise HomeHeadscaleError("inventory")
+        if ((route.table == 254 or route.source_ip)
+                and route.source_ip not in by_index[route.interface_index].addresses):
+            raise HomeHeadscaleError("inventory")
+    candidates: list[str] = []
+    for route in default_routes:
+        if route.table != 254 and not route.source_ip:
+            continue
         interface = by_index[route.interface_index]
-        if route.source_ip not in interface.addresses:
-            raise HomeHeadscaleError("inventory")
         if not interface.up or interface.loopback:
             continue
         if not _dial_ip_valid(route.source_ip):
