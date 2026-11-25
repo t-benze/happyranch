@@ -127,6 +127,7 @@ export interface Health {
 
 export interface HostEvent {
   sequence: number;
+  observedAt: string;
   snapshot: HostSnapshot;
 }
 
@@ -136,8 +137,28 @@ export interface ConnectionFailure {
   effect: Effect;
   recovery: Recovery;
   side?: 'host' | 'app' | 'unknown';
-  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown';
+  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown' | PreparationCategory;
 }
+
+export type PreparationCategory =
+  | 'deb-layout-required' | 'issuer-state-uncertain' | 'account-shape' | 'account-receipt-uncertain'
+  | 'foreign-unit' | 'foreign-custody' | 'publication-uncertain' | 'address-changed'
+  | 'account-create-uncertain' | 'cleanup-uncertain' | 'materializer-uncertain' | 'custody-uncertain'
+  | 'inventory' | 'no_address' | 'multiple_addresses' | 'dial_ip' | 'dial-ip'
+  | 'occupied-port' | 'port-check-uncertain';
+
+export interface EnableFinished {
+  operationId: string;
+  outcome: 'failed' | 'completed';
+  failure?: ConnectionFailure;
+}
+
+const PREPARATION_CATEGORIES: readonly string[] = [
+  'deb-layout-required', 'issuer-state-uncertain', 'account-shape', 'account-receipt-uncertain',
+  'foreign-unit', 'foreign-custody', 'publication-uncertain', 'address-changed',
+  'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain', 'custody-uncertain',
+  'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip', 'occupied-port', 'port-check-uncertain',
+];
 
 type Obj = Record<string, unknown>;
 
@@ -246,7 +267,7 @@ export function parseHostEvent(raw: unknown): HostEvent | null {
   if (!closed(value, ['version', 'sequence', 'observedAt', 'snapshot'])) return null;
   if (value.version !== 1 || typeof value.sequence !== 'number' || !Number.isSafeInteger(value.sequence) || value.sequence < 1) return null;
   if (typeof value.observedAt !== 'string' || !isTime(value.observedAt) || !isHost(value.snapshot)) return null;
-  return { sequence: value.sequence, snapshot: value.snapshot };
+  return { sequence: value.sequence, observedAt: value.observedAt, snapshot: value.snapshot };
 }
 
 /** v1 ActionResult (the embedded host/client snapshots are ignored: the dialog re-reads). */
@@ -277,6 +298,66 @@ export function parseActionResult(raw: unknown): ActionResult | null {
   };
 }
 
+/** Additive admission metadata is allowed only for this Enable invocation. */
+export function parseEnableAdmission(raw: unknown): { result: ActionResult; operationId?: string } | null {
+  const value = json(raw);
+  const legacy = parseActionResult(raw);
+  if (legacy) return { result: legacy };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { operationId, ...rest } = value as Obj;
+  if (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId)) return null;
+  if (rest.effect !== 'unknown' || rest.hostDenial !== 'unknown' || rest.hostCleanup !== 'unknown'
+      || rest.localCleanup !== 'notApplicable' || rest.networkCleanup !== 'unknown'
+      || rest.inviteState !== 'unknown' || rest.expiresAt !== null || rest.host !== null || rest.client !== null) return null;
+  const result = parseActionResult(JSON.stringify(rest));
+  return result ? { result, operationId } : null;
+}
+
+export function parseEnableFinished(raw: unknown): EnableFinished | null {
+  if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > 1024) return null;
+  const value = json(raw);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const obj = value as Obj;
+  if (obj.version !== 1 || obj.method !== 'Enable' || typeof obj.operationId !== 'string'
+      || !/^[0-9a-f]{32}$/.test(obj.operationId)) return null;
+  if (obj.outcome === 'completed' && closed(obj, ['version', 'operationId', 'method', 'outcome', 'result'])
+      && closed(obj.result, ['code', 'effect', 'recovery']) && obj.result.code === 'enableCompleted'
+      && obj.result.effect === 'unknown' && obj.result.recovery === 'refresh') {
+    return { operationId: obj.operationId, outcome: 'completed' };
+  }
+  if (obj.outcome !== 'failed' || !closed(obj, ['version', 'operationId', 'method', 'outcome', 'error'])) return null;
+  const failure = parseConnectionFailure(JSON.stringify(obj.error));
+  if (failure.code === 'enablePreparationFailed'
+      || (closed(obj.error, ['code', 'effect', 'recovery']) && obj.error.code === 'outcomeUnknown'
+          && obj.error.effect === 'unknown' && obj.error.recovery === 'nativeRecovery')) {
+    return { operationId: obj.operationId, outcome: 'failed', failure };
+  }
+  return null;
+}
+
+/** A component-lifetime listener: no replay, buffering or mutation. */
+export function subscribeEnableFinished(handler: (event: EnableFinished) => void): (() => void) | null {
+  const native = nativeBridge();
+  if (!native) return null;
+  let active = true;
+  let off: unknown;
+  try {
+    off = native.on('host.enableFinished', (raw) => {
+      if (!active) return;
+      const event = parseEnableFinished(raw);
+      if (event) handler(event);
+    });
+  } catch {
+    return null;
+  }
+  return () => {
+    active = false;
+    if (typeof off === 'function') {
+      try { (off as () => void)(); } catch { /* Already retired. */ }
+    }
+  };
+}
+
 /** `client.health` result. */
 export function parseHealth(raw: unknown): Health | null {
   const value = json(raw);
@@ -293,6 +374,14 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   const value = json(error);
   if (!value || typeof value !== 'object' || Array.isArray(value)) return UNKNOWN_FAILURE;
   const obj = value as Obj;
+  if (obj.code === 'enableCompleted') return UNKNOWN_FAILURE;
+  if (obj.code === 'enablePreparationFailed') {
+    if (!closed(obj, ['code', 'category', 'effect', 'recovery'])
+        || !oneOf(obj.category, PREPARATION_CATEGORIES)
+        || obj.effect !== 'unknown' || obj.recovery !== 'nativeRecovery') return UNKNOWN_FAILURE;
+    return { code: 'enablePreparationFailed', category: obj.category as PreparationCategory,
+      effect: 'unknown', recovery: 'nativeRecovery' };
+  }
   const keys = Object.keys(obj);
   const allowed = ['code', 'effect', 'recovery', 'side', 'category'];
   if (!keys.every((key) => allowed.includes(key))) return UNKNOWN_FAILURE;

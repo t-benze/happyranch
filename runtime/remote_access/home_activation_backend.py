@@ -30,6 +30,16 @@ from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
 from runtime.remote_access.helper_lifecycle import log_enable_refusal
+from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES
+from runtime.remote_access.headscale_service import HeadscaleServiceError
+
+
+class EnablePreparationRefused(Exception):
+    """Typed provenance minted only at the actual preparation call."""
+
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__('preparation refused')
 
 
 class _OperationTransactions(HomeActivationTransactionStore):
@@ -371,7 +381,12 @@ class HelperLifecycleBackend:
                     uid, rows[0].pw_name, owner.data_home):
                 raise ActivationRefused()
         check()
-        self.io.prepare_headscale()
+        try:
+            self.io.prepare_headscale()
+        except HeadscaleServiceError as error:
+            if type(error.category) is str and error.category in PREPARATION_CATEGORIES:
+                raise EnablePreparationRefused(error.category) from None
+            raise
         check()
         self.io.publish_home_units(_activation_directory=directory)
         check()
@@ -564,7 +579,7 @@ def _log_activation_failure(error: Exception) -> None:
 
 def helper_main() -> int:
     """Closed private input from the fixed helper; never an operator CLI."""
-    request = None
+    request, deadline = None, None
     try:
         if len(sys.argv) != 1 or os.geteuid() != 0:
             raise ActivationRefused()
@@ -618,7 +633,12 @@ def helper_main() -> int:
             print(json.dumps({'refusal': host_state_category(error)}))
         elif (type(request) is dict and request.get('method') == 'Enable'
                 and request.get('step') == 'enable'):
-            _log_activation_failure(error)
+            if (type(error) is EnablePreparationRefused and deadline is not None
+                    and time.monotonic() < deadline and type(error.category) is str
+                    and error.category in PREPARATION_CATEGORIES):
+                print(json.dumps({'preparationFailure': error.category}, separators=(',', ':')))
+            else:
+                _log_activation_failure(error)
         return 1  # No raw paths, keys, credentials or exception text leave this child.
 
 

@@ -4,7 +4,7 @@
 // repository root:
 //   node --experimental-transform-types --test web/scripts/connection-dialog.test.mjs
 import { registerHooks } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { test } from 'node:test';
@@ -49,6 +49,111 @@ const app = (over = {}) => ({
   schema: 2, generation: 'g1', target: { kind: 'local', id: 'local', name: 'This computer' }, state: 'ready', incompatible: null,
   local: { supported: true, mode: 'service', running: 'running', prompt_base_url: null }, candidate: null, access_unsaved: false,
   locale: { current: 'en', persisted: true }, ...over,
+});
+
+if (process.env.ENABLE_PREPARATION_TRACE) test('Production Enable trace reaches Connection model', async () => {
+  const trace = JSON.parse(readFileSync(process.env.ENABLE_PREPARATION_TRACE, 'utf8'));
+  assert.equal(trace.child.stdout, '{"preparationFailure":"inventory"}\n');
+  assert.equal(trace.signal.destination, ':1.42');
+  const event = conn.parseEnableFinished(trace.relayEvent);
+  assert.equal(event.failure.category, 'inventory');
+  assert.equal(event.failure.effect, 'unknown');
+  const en = (await import('../src/lib/i18n/locales/en.ts')).default;
+  const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
+  const view = model.outcomeView('host.enable', { failure: event.failure }, null);
+  assert.equal(en[view.lines[1].key], 'The home network routes could not be verified.');
+  assert.equal(zh[view.lines[1].key], '无法验证家庭网络路由。');
+});
+
+const preparation = [
+  ['deb-layout-required', 'This installation does not support turning on remote access.', '当前安装方式不支持开启远程访问。'],
+  ['issuer-state-uncertain', 'The device invitation service could not be prepared safely.', '无法安全准备设备邀请服务。'],
+  ['account-shape', 'The service account does not match the required setup.', '服务账户不符合所需配置。'],
+  ['account-receipt-uncertain', 'The service account ownership record could not be verified.', '无法验证服务账户的所有权记录。'],
+  ['foreign-unit', 'An existing service configuration is not owned by HappyRanch.', '现有服务配置不属于 HappyRanch。'],
+  ['foreign-custody', 'Existing remote access files are not owned by HappyRanch.', '现有远程访问文件不属于 HappyRanch。'],
+  ['publication-uncertain', 'The remote access configuration could not be verified.', '无法验证远程访问配置。'],
+  ['address-changed', 'The home network address has changed since setup.', '家庭网络地址在设置后发生了变化。'],
+  ['account-create-uncertain', 'The service account could not be created and verified.', '无法创建并验证服务账户。'],
+  ['cleanup-uncertain', 'Existing remote access services could not be confirmed stopped.', '无法确认现有远程访问服务已停止。'],
+  ['materializer-uncertain', 'The secure certificate setup could not be verified.', '无法验证安全证书配置。'],
+  ['custody-uncertain', 'Safe ownership of remote access files could not be verified.', '无法验证远程访问文件的安全所有权。'],
+  ['inventory', 'The home network routes could not be verified.', '无法验证家庭网络路由。'],
+  ['no_address', 'No usable home network address was found.', '未找到可用的家庭网络地址。'],
+  ['multiple_addresses', 'More than one home network address was found.', '找到多个家庭网络地址。'],
+  ['dial_ip', 'The home network address is not supported.', '不支持此家庭网络地址。'],
+  ['dial-ip', 'The home network address is not supported.', '不支持此家庭网络地址。'],
+  ['occupied-port', 'A network port needed for remote access is already in use.', '远程访问所需的网络端口已被占用。'],
+  ['port-check-uncertain', 'The network ports needed for remote access could not be checked.', '无法检查远程访问所需的网络端口。'],
+];
+for (const [category, english, chinese] of preparation) {
+  test('Preparation token retains literal bilingual reason: ' + category, async () => {
+    const en = (await import('../src/lib/i18n/locales/en.ts')).default;
+    const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
+    const input = { code: 'enablePreparationFailed', category, effect: 'unknown', recovery: 'nativeRecovery' };
+    const failure = conn.parseConnectionFailure(JSON.stringify(input));
+    assert.deepEqual(failure, input);
+    const view = model.outcomeView('host.enable', { failure }, null);
+    assert.equal(en[view.lines[0].key], 'Turn on failed.');
+    assert.equal(zh[view.lines[0].key], '开启失败。');
+    assert.equal(en[view.lines[1].key], english);
+    assert.equal(zh[view.lines[1].key], chinese);
+    assert.equal(en[view.lines[2].key], 'Its effect is unknown.');
+    assert.equal(zh[view.lines[2].key], '其影响未知。');
+    assert.equal(view.retry, false);
+    assert.equal(view.checkAgain, true);
+    for (const snapshot of [host({ setup: 'off' }), host(), host({ observation: 'unavailable' })]) {
+      assert.equal(model.hostView(snapshot, snapshot.observation !== 'known').enable,
+        snapshot.observation === 'known' && snapshot.setup === 'off');
+      assert.equal(failure.effect, 'unknown');
+    }
+  });
+}
+
+test('Enable projection rejects invalid diagnostic shapes', () => {
+  const good = { code: 'enablePreparationFailed', category: 'inventory', effect: 'unknown', recovery: 'nativeRecovery' };
+  for (const wrong of [
+    { category: 'unknown' }, { category: null }, { category: ' inventory' }, { code: 'unavailable' },
+    { effect: 'none' }, { effect: 'confirmed' }, { recovery: 'explicitRetry' }, { message: 'SYNTHETIC_PRIVATE_CANARY' },
+  ]) assert.deepEqual(conn.parseConnectionFailure(JSON.stringify({ ...good, ...wrong })), conn.UNKNOWN_FAILURE);
+  const { category: ignored, ...missing } = good;
+  assert.deepEqual(conn.parseConnectionFailure(JSON.stringify(missing)), conn.UNKNOWN_FAILURE);
+  const admission = action({ effect: 'unknown', hostDenial: 'unknown', hostCleanup: 'unknown',
+    localCleanup: 'notApplicable', networkCleanup: 'unknown', client: null });
+  assert.equal(conn.parseEnableAdmission(JSON.stringify(admission)).operationId, undefined);
+  const operationId = 'a'.repeat(32);
+  assert.equal(conn.parseEnableAdmission(JSON.stringify({ ...admission, operationId })).operationId, operationId);
+  assert.equal(conn.parseActionResult(JSON.stringify({ ...admission, operationId })), null);
+  for (const wrong of [{ effect: 'confirmed' }, { operationId: 'A'.repeat(32) }, { extra: 1 }])
+    assert.equal(conn.parseEnableAdmission(JSON.stringify({ ...admission, operationId, ...wrong })), null);
+  const event = { version: 1, method: 'Enable', operationId, outcome: 'failed', error: good };
+  assert.deepEqual(conn.parseEnableFinished(JSON.stringify(event)), { operationId, outcome: 'failed', failure: good });
+  for (const wrong of [{ error: missing }, { extra: 1 }, { method: 'Disable' }, { outcome: 'completed' },
+    { result: { code: 'enableCompleted', effect: 'unknown', recovery: 'refresh' } }])
+    assert.equal(conn.parseEnableFinished(JSON.stringify({ ...event, ...wrong })), null);
+  const completed = { code: 'enableCompleted', effect: 'unknown', recovery: 'refresh' };
+  assert.deepEqual(conn.parseConnectionFailure(JSON.stringify(completed)), conn.UNKNOWN_FAILURE);
+  assert.equal(conn.parseEnableFinished(JSON.stringify({ version: 1, method: 'Enable', operationId,
+    outcome: 'completed', result: completed })).outcome, 'completed');
+});
+
+test('Enable subscription retires queued delivery without replay or mutation', () => {
+  const callbacks = [], calls = [], seen = [];
+  target.__setNativeBridgeForTests({ call: (...args) => { calls.push(args); return Promise.resolve('{}'); },
+    on: (event, handler) => { assert.equal(event, 'host.enableFinished'); callbacks.push(handler); return () => {}; } });
+  const event = JSON.stringify({ version: 1, operationId: 'a'.repeat(32), method: 'Enable', outcome: 'failed',
+    error: { code: 'enablePreparationFailed', category: 'inventory', effect: 'unknown', recovery: 'nativeRecovery' } });
+  const off = conn.subscribeEnableFinished((value) => seen.push(value));
+  callbacks[0](event);
+  off();
+  callbacks[0](event);
+  assert.equal(seen.length, 1);
+  const next = [];
+  conn.subscribeEnableFinished((value) => next.push(value))();
+  callbacks[0](event);
+  assert.deepEqual(next, []);
+  assert.deepEqual(calls, []);
+  target.__setNativeBridgeForTests(null);
 });
 
 test('closed v1 parsers accept native shapes and reject drift', () => {

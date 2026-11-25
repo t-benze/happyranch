@@ -32,6 +32,286 @@ from scripts.test_installer_token_custody import staged_inventory
 
 REAL_THREAD = threading.Thread
 
+# Independent literal expectations: never derived from a production allowlist.
+PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-shape',
+    'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
+    'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
+    'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
+    'occupied-port', 'port-check-uncertain')
+
+
+@pytest.mark.parametrize('category', PREPARATION_TOKENS)
+def test_enable_preparation_child_round_trip(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, category: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    from runtime.remote_access.headscale_service import HeadscaleServiceError
+    v = composition
+    lifecycle = backend.HelperLifecycleBackend(v.io)
+    expected = lifecycle.capture('Enable', os.getuid())
+    publication = Mock()
+    monkeypatch.setattr(v.io, 'prepare_headscale', Mock(side_effect=HeadscaleServiceError(category)))
+    monkeypatch.setattr(v.io, 'publish_home_units', publication)
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    frames = []
+    def child(command: tuple, **kwargs: Any) -> Any:
+        output, errors = io.StringIO(), io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(kwargs['input'])))
+            patch.setattr(sys, 'stdout', output)
+            patch.setattr(sys, 'stderr', errors)
+            code = backend.helper_main()
+        frames.append((code, output.getvalue(), errors.getvalue()))
+        return SimpleNamespace(returncode=code, stdout=output.getvalue().encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    with pytest.raises(Exception) as failure:
+        generation.HomeLifecycleClient('Enable', os.getuid()).effect('enable', expected, 30)
+    assert frames == [(1, json.dumps({'preparationFailure': category}, separators=(',', ':')) + '\n', '')]
+    assert type(failure.value).__name__ == 'PreparationFailed'
+    assert failure.value.category == category
+    assert not publication.called
+    # Provisioning preceded preparation: a diagnostic never proves no effect.
+    assert v.path('/etc/happyranch/provision.json').exists()
+
+
+@pytest.mark.parametrize('case', ['message', 'duck', 'cause', 'provision', 'publication',
+    'unknown', 'policy_path', 'readiness-timeout', 'partial-cleanup-uncertain',
+    'issuer-cleanup-uncertain', 'issuer-partial-cleanup-uncertain', 'bad_type', 'prefix', 'suffix',
+    'bad_none', 'bad_int', 'bad_bool', 'bad_dict', 'residue', 'owner', 'provenance',
+    'custody', 'quiescence', 'timeout', 'inventory-extra', 'xinventory', 'Inventory', 'inventory\n'])
+def test_enable_preparation_provenance_rejected(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    from runtime.remote_access.headscale_service import HeadscaleServiceError
+    v = composition
+    lifecycle = backend.HelperLifecycleBackend(v.io)
+    expected = lifecycle.capture('Enable', os.getuid())
+    error = HeadscaleServiceError(case)
+    if case == 'message':
+        error = RuntimeError('inventory SYNTHETIC_PRIVATE_CANARY /synthetic/private-canary 192.0.2.123')
+    elif case == 'duck':
+        error = RuntimeError('SYNTHETIC_PRIVATE_CANARY')
+        error.category = 'inventory'
+    elif case == 'cause':
+        error = RuntimeError('SYNTHETIC_PRIVATE_CANARY')
+        error.__cause__ = HeadscaleServiceError('inventory')
+    elif case == 'bad_type':
+        error.category = ['inventory']
+    elif case in ('bad_none', 'bad_int', 'bad_bool', 'bad_dict'):
+        error.category = {'bad_none': None, 'bad_int': 7, 'bad_bool': True, 'bad_dict': {}}[case]
+    elif case in ('prefix', 'suffix'):
+        error.category = ' inventory' if case == 'prefix' else 'inventory '
+    stage = {'provision': 'provision', 'publication': 'publish_home_units'}.get(case, 'prepare_headscale')
+    if stage != 'prepare_headscale':
+        error = HeadscaleServiceError('inventory')
+    monkeypatch.setattr(v.io, stage, Mock(side_effect=error))
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    request = dict(method='Enable', uid=os.getuid(), step='enable', expected=expected,
+                   deadline=time.monotonic() + 30)
+    output, errors = io.StringIO(), io.StringIO()
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+        patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+        patch.setattr(sys, 'stdout', output)
+        patch.setattr(sys, 'stderr', errors)
+        assert backend.helper_main() == 1
+    assert output.getvalue() == errors.getvalue() == ''
+
+
+@pytest.mark.parametrize('raw,code,method,step', [
+    (b'{"preparationFailure":"inventory"', 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory"}' + b' ' * 225, 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory","preparationFailure":"inventory"}', 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":{"inventory":1}}', 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory","message":"SYNTHETIC_PRIVATE_CANARY"}', 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory"}{}', 1, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory"}', 0, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory"}', 2, 'Enable', 'enable'),
+    (b'{"preparationFailure":"inventory"}', 1, 'Enable', 'capture'),
+    (b'{"preparationFailure":"inventory"}', 1, 'Disable', 'stop'),
+])
+def test_enable_preparation_private_frame_rejected(
+        monkeypatch: pytest.MonkeyPatch, raw: bytes, code: int, method: str, step: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    monkeypatch.setattr(generation.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=code, stdout=raw))
+    try:
+        value = generation.HomeLifecycleClient(method, 1000)._call(step, 'snapshot', 30)
+    except Exception as error:
+        assert type(error) is generation.GenerationUnavailable
+    else:
+        # Exit zero remains a success object, never a typed preparation failure.
+        assert code == 0 and value == {'preparationFailure': 'inventory'}
+
+
+@pytest.mark.parametrize('outcome', ['typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
+    'late', 'auth_deadline', 'disconnect', 'absent_to_new', 'success_audit', 'success_settlement', 'intent', 'flush_error'])
+def test_enable_completion_unicast_envelope(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    m = mount
+    clock = [100.0]
+    m.helper.clock = lambda: clock[0]
+    m.message.get_member = lambda: 'Enable'
+    m.message.get_serial = lambda: 17
+    sent, order = [], []
+    m.helper.connection.get_unique_name = lambda: ':1.100'
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert m.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+        order.append('signal')
+        # Flush uses actual bounded worker loop; only native IO is simulated.
+    m.helper.connection.emit_signal = signal
+    context = SimpleNamespace(push_thread_default=lambda: None, pop_thread_default=lambda: None)
+    loop = SimpleNamespace(run=lambda: None, quit=lambda: None)
+    m.h.GLib.MainContext = SimpleNamespace(new=lambda: context)
+    m.h.GLib.MainLoop = SimpleNamespace(new=lambda *a: loop)
+    m.h.GLib.timeout_source_new = lambda *a: SimpleNamespace(set_callback=lambda *a: None,
+        attach=lambda *a: None, destroy=lambda: None)
+    m.h.Gio.Cancellable = lambda: SimpleNamespace(cancel=lambda: None)
+    def flushed(result: Any) -> None:
+        order.append('flush')
+        if outcome == 'flush_error':
+            raise OSError('synthetic flush loss')
+    m.helper.connection.flush_finish = flushed
+    m.helper.connection.flush = lambda cancel, callback, data: callback(m.helper.connection, None, data)
+    original_release = m.helper.release
+    def release(capture: Any) -> None:
+        order.append('release')
+        original_release(capture)
+    m.helper.release = release
+    def effect(*a: Any, **kw: Any) -> dict:
+        if outcome == 'uid':
+            m.helper.connection.call_sync.return_value = Variant('', (1001,))
+        if outcome == 'owner':
+            monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=1001))
+        if outcome == 'disconnect':
+            m.helper.cursors = {}
+            m.helper._owner_changed(None, None, None, None, None, Variant('', (':1.42', ':1.42', '')), None)
+            assert m.helper.inflight is not None
+        if outcome == 'absent_to_new':
+            m.reader.current_generation.side_effect = lambda _: 'new-own-generation-and-operation'
+        if outcome in ('late', 'auth_deadline'):
+            clock[0] = 580 if outcome == 'late' else 350
+        if outcome in ('settlement', 'success_settlement'):
+            m.helper.lifecycle_operation.complete = Mock(side_effect=RuntimeError('settlement'))
+        if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
+            raise m.h._helper_generation.PreparationFailed('inventory')
+        if outcome == 'generic':
+            raise RuntimeError('inventory SYNTHETIC_PRIVATE_CANARY')
+        return {'outcome': 'ready', 'residue': []}
+    m.reader.effect.side_effect = effect
+    if outcome == 'audit':
+        m.helper.audit.uncertain = Mock(side_effect=OSError('SYNTHETIC_PRIVATE_CANARY'))
+    if outcome == 'success_audit':
+        m.helper.audit.outcome = Mock(side_effect=OSError('synthetic audit loss'))
+    if outcome == 'intent':
+        m.helper.audit.intent = Mock(side_effect=OSError('synthetic intent loss'))
+    m.admit()
+    m.helper._reply.assert_called_once_with(m.message, 'accepted')
+    assert not m.helper._error.called
+    assert m.reader.effect.call_count == (0 if outcome == 'intent' else 1)
+    if outcome in ('uid', 'owner', 'late', 'disconnect'):
+        assert sent == []
+    else:
+        expected = dict(method='Enable', correlation=dict(serial=17, owner=':1.100'),
+                        outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
+        if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
+            expected['category'] = 'inventory'
+        assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
+        assert order.index('signal') < order.index('flush') < order.index('release')
+    assert m.helper.inflight is None
+    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'uncertain')
+    if outcome == 'audit':
+        assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+
+
+@pytest.mark.parametrize('case', ['timeout', 'empty', 'unexpected', 'late'])
+def test_enable_child_failure_remains_unknown(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    clock = [100.0]
+    monkeypatch.setattr(generation.time, 'monotonic', lambda: clock[0])
+    def child(*a: Any, **kw: Any) -> Any:
+        if case == 'timeout':
+            raise subprocess.TimeoutExpired('synthetic', 30)
+        if case == 'late':
+            clock[0] = 130
+        return SimpleNamespace(returncode=2 if case == 'unexpected' else 1,
+            stdout=b'{"preparationFailure":"inventory"}' if case == 'late' else b'')
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    with pytest.raises(generation.GenerationUnavailable) as failure:
+        generation.HomeLifecycleClient('Enable', 1000).effect('enable', 'snapshot', 30)
+    assert failure.value.category == ('timeout' if case in ('timeout', 'late') else 'unknown')
+
+
+def test_enable_worker_start_failure_has_no_second_reply(mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    m = mount
+    m.message.get_member = lambda: 'Enable'
+    monkeypatch.setattr(m.h.threading, 'Thread', lambda *a, **kw:
+        SimpleNamespace(start=Mock(side_effect=RuntimeError('SYNTHETIC_PRIVATE_CANARY'))))
+    m.admit()
+    m.helper._reply.assert_called_once_with(m.message, 'accepted')
+    assert not m.helper._error.called and not m.reader.effect.called
+    assert m.helper.inflight is None and m.helper.exit_requested
+
+
+def test_enable_preparation_production_trace(
+        composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from runtime.remote_access import helper_generation as generation
+    v, m = composition, mount
+    m.message.get_member = lambda: 'Enable'
+    m.message.get_serial = lambda: 17
+    m.helper.connection.get_unique_name = lambda: ':1.100'
+    m.helper.connection.call_sync.return_value = Variant('', (os.getuid(),))
+    monkeypatch.setattr(m.h, 'bootstrap_owner', lambda uid: SimpleNamespace(uid=uid))
+    # Same exception identity across the test-side isolated module loader.
+    monkeypatch.setattr(m.h._helper_generation, 'PreparationFailed', generation.PreparationFailed)
+    lifecycle = backend.HelperLifecycleBackend(v.io)
+    m.reader.current_generation.side_effect = lambda _: lifecycle.capture('Enable', os.getuid())
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    children, signals = [], []
+    def child(command: tuple, **kwargs: Any) -> Any:
+        out, err = io.StringIO(), io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(kwargs['input'])))
+            patch.setattr(sys, 'stdout', out)
+            patch.setattr(sys, 'stderr', err)
+            code = backend.helper_main()
+        children.append(dict(exit=code, stdout=out.getvalue(), stderr=err.getvalue()))
+        return SimpleNamespace(returncode=code, stdout=out.getvalue().encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    def effect(step: str, expected: str, remaining: float, **kw: Any) -> dict:
+        # Existing bad kernel input, not a changed collector or fake exception.
+        v.head.kernel_case = 'truncated'
+        return generation.HomeLifecycleClient('Enable', os.getuid()).effect(step, expected, remaining)
+    m.reader.effect.side_effect = effect
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert m.helper.inflight is not None
+        signals.append(dict(destination=destination, sender=':1.100', path=path, interface=interface,
+                            member=member, signature='s', raw=body.unpack()[0]))
+    m.helper.connection.emit_signal = signal
+    context = SimpleNamespace(push_thread_default=lambda: None, pop_thread_default=lambda: None)
+    loop = SimpleNamespace(run=lambda: None, quit=lambda: None)
+    m.h.GLib.MainContext = SimpleNamespace(new=lambda: context)
+    m.h.GLib.MainLoop = SimpleNamespace(new=lambda *a: loop)
+    m.h.GLib.timeout_source_new = lambda *a: SimpleNamespace(set_callback=lambda *a: None,
+        attach=lambda *a: None, destroy=lambda: None)
+    m.h.Gio.Cancellable = lambda: SimpleNamespace(cancel=lambda: None)
+    m.helper.connection.flush_finish = lambda result: None
+    m.helper.connection.flush = lambda cancel, callback, data: callback(m.helper.connection, None, data)
+    m.admit()
+    m.helper._reply.assert_called_once_with(m.message, 'accepted')
+    assert m.reader.effect.call_count == 1 and len(children) == len(signals) == 1
+    assert children == [dict(exit=1, stdout='{"preparationFailure":"inventory"}\n', stderr='')]
+    assert json.loads(signals[0]['raw']) == dict(method='Enable', outcome='failed', category='inventory',
+                                                correlation=dict(serial=17, owner=':1.100'))
+    assert v.path('/etc/happyranch/provision.json').exists()
+    assert m.helper.lifecycle_result == dict(outcome='uncertain', residue=[])
+    target = os.environ.get('ENABLE_PREPARATION_TRACE')
+    if target:
+        sources = [backend.__file__, generation.__file__, m.h.__file__]
+        Path(target).write_text(json.dumps(dict(child=children[0], signal=signals[0],
+            sourceDigests={Path(p).name: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources}),
+            sort_keys=True) + '\n')
+
 
 @pytest.mark.parametrize('method', ['Status', 'StatusV2'])
 @pytest.mark.parametrize('leftover', ['empty', 'expired', 'health.json', '.health-7', 'unknown', 'mode',

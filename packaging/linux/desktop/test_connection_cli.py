@@ -6,6 +6,7 @@ from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -27,6 +28,16 @@ LIFECYCLE = {"enable": ("Enable", 480000), "turn-off": ("Disable", 300000),
              "replace-failed": ("ReplaceFailed", 480000), "recover-invite": ("RecoverInvite", 120000),
              "retry-policy-renewal": ("RetryPolicyRenewal", 120000)}
 INVITE = "hrinvite2:synthetic_invite_canary"
+PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-shape',
+    'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
+    'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
+    'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
+    'occupied-port', 'port-check-uncertain')
+
+
+def terminal_frame(**changes: object) -> str:
+    return json.dumps(dict(method="Enable", correlation=dict(serial=17, owner=":1.100"),
+                           outcome="failed", category="inventory") | changes)
 
 
 class Terminal(io.StringIO):
@@ -49,6 +60,88 @@ class Bus:
         self.error = self.status_error = None
         self.raw = self.ack = None
         self.closed = False
+        self.filters, self.subscriptions, self.handlers = {}, {}, {}
+        self.next_handle = 0
+        self.terminal_frames = []
+        self.early = False
+        self.hold, self.held = False, []
+        self.next_serial = 17
+
+    def queue(self, callback: object) -> None:
+        if self.hold:
+            self.held.append(callback)
+        else:
+            GLib.idle_add(lambda: (callback(), False)[1])
+
+    def get_unique_name(self) -> str:
+        return ":1.42"
+
+    def signal_subscribe(self, *args: object) -> int:
+        self.next_handle += 1
+        self.subscriptions[self.next_handle] = args
+        return self.next_handle
+
+    def signal_unsubscribe(self, handle: int) -> None:
+        self.subscriptions.pop(handle, None)
+
+    def add_filter(self, callback: object, data: object) -> int:
+        self.next_handle += 1
+        self.filters[self.next_handle] = callback
+        return self.next_handle
+
+    def remove_filter(self, handle: int) -> None:
+        self.filters.pop(handle, None)
+
+    def connect(self, name: str, callback: object) -> int:
+        self.next_handle += 1
+        self.handlers[self.next_handle] = callback
+        return self.next_handle
+
+    def disconnect(self, handle: int) -> None:
+        self.handlers.pop(handle, None)
+
+    def incoming(self, message: object) -> None:
+        for callback in tuple(self.filters.values()):
+            callback(self, message, True, None)
+
+    def signal(self, raw: str, *, sender: str = ":1.100", destination: str | None = ":1.42") -> object:
+        message = Gio.DBusMessage.new_signal("/ai/happyranch/RemoteAccess1", "ai.happyranch.RemoteAccess1",
+                                             "LifecycleCompleted")
+        message.set_sender(sender)
+        message.set_destination(destination)
+        message.set_body(GLib.Variant("(s)", (raw,)))
+        self.incoming(message)
+        return message
+
+    def send_message_with_reply(self, message: object, flags: object, timeout: int, cancel: object,
+                                callback: object, data: object) -> int:
+        serial = self.next_serial
+        self.next_serial += 1
+        message.set_serial(serial)
+        assert message.get_flags() == Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION
+        def reply(_bus: object, result: tuple, _data: object) -> None:
+            raw, error = result
+            incoming = (message.new_method_error_literal(error, "synthetic private canary") if error
+                        else message.new_method_reply())
+            incoming.set_sender(":1.100")
+            incoming.set_destination(":1.42")
+            if not error:
+                incoming.set_body(GLib.Variant("(s)", (raw,)))
+            self.incoming(incoming)
+            if self.early:
+                for frame in self.terminal_frames:
+                    self.signal(frame)
+            self.queue(lambda: callback(self, incoming, data))
+            if not self.early:
+                for frame in self.terminal_frames:
+                    self.queue(lambda value=frame: self.signal(value))
+        self.call(message.get_destination(), message.get_path(), message.get_interface(), message.get_member(),
+                  None, GLib.VariantType.new("(s)"), Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION,
+                  timeout, cancel, reply, data)
+        return serial
+
+    def send_message_with_reply_finish(self, result: object) -> object:
+        return result
 
     def is_closed(self) -> bool:
         return self.closed
@@ -70,7 +163,7 @@ class Bus:
                  {entry[0] for entry in LIFECYCLE.values()} else '"ok"')
         raw = self.raw or json.dumps(self.snapshot) if method in ("Status", "NextDevice") else self.ack or reply
         error = self.status_error if method == "Status" else self.error
-        GLib.idle_add(lambda: (callback(self, (raw, error), data), False)[1])
+        self.queue(lambda: callback(self, (raw, error), data))
 
     def call_finish(self, result: tuple) -> GLib.Variant:
         raw, error = result
@@ -80,6 +173,180 @@ class Bus:
 
 
 class ConnectionCLITests(unittest.TestCase):
+    def test_enable_preparation_cli_terminal(self) -> None:
+        for token in PREPARATION_TOKENS:
+            for early in (False, True):
+                with self.subTest(token=token, early=early):
+                    self.bus.early = early
+                    self.bus.calls.clear()
+                    self.bus.terminal_frames = [terminal_frame(category=token)] * 2
+                    code, result, errors = self.run_native("enable")
+                    self.assertEqual((code, result, errors), (1, dict(code="enablePreparationFailed",
+                        category=token, effect="unknown", recovery="nativeRecovery"), ""))
+                    self.assertEqual(len(self.stdout.splitlines()), 1)
+                    self.assertEqual([call[3] for call in self.bus.calls], ["Enable"])
+                    self.assertEqual((self.bus.filters, self.bus.subscriptions, self.bus.handlers), ({}, {}, {}))
+
+    def test_enable_terminal_rejections(self) -> None:
+        good = terminal_frame()
+        invalid = {
+            "malformed": '{"category":"inventory"',
+            "oversized": good + " " * (513 - len(good)),
+            "multibyte": good + "界" * 200,
+            "duplicate_key": good.replace('"category":', '"category":"inventory","category":'),
+            "duplicate_nested": good.replace('"serial":', '"serial":17,"serial":'),
+            "wrong_type": terminal_frame(correlation=dict(serial=True, owner=":1.100")),
+            "float_serial": terminal_frame(correlation=dict(serial=17.0, owner=":1.100")),
+            "zero_serial": terminal_frame(correlation=dict(serial=0, owner=":1.100")),
+            "overflow_serial": terminal_frame(correlation=dict(serial=4294967296, owner=":1.100")),
+            "extra_field": terminal_frame(message="SYNTHETIC_PRIVATE_CANARY"),
+            "extra_correlation": terminal_frame(correlation=dict(serial=17, owner=":1.100", uid=1000)),
+            "wrong_method": terminal_frame(method="Disable"),
+            "wrong_request": terminal_frame(correlation=dict(serial=18, owner=":1.100")),
+            "wrong_owner": terminal_frame(correlation=dict(serial=17, owner=":1.101")),
+            "completed_category": terminal_frame(outcome="completed"),
+        }
+        for token in ("unknown", "policy_path", "readiness-timeout", "partial-cleanup-uncertain",
+                      "issuer-cleanup-uncertain", "issuer-partial-cleanup-uncertain", "owner",
+                      " inventory", "inventory ", "xinventory", "Inventory", "", None, [], {}):
+            invalid["unsupported_category_" + repr(token)] = terminal_frame(category=token)
+        for name, bad in invalid.items():
+            for schedule in ([bad], [bad, good], [good, bad, good]):
+                with self.subTest(case=name, schedule=len(schedule)):
+                    self.bus.calls.clear()
+                    self.bus.terminal_frames = schedule
+                    code, result, _ = self.run_native("enable")
+                    self.assertEqual(code, 1)
+                    self.assertEqual(result["code"], "enablePreparationFailed" if good in schedule else "outcomeUnknown")
+                    if good in schedule:
+                        self.assertEqual(result["category"], "inventory")
+                    self.assertEqual(len(self.stdout.splitlines()), 1)
+                    self.assertEqual([call[3] for call in self.bus.calls], ["Enable"])
+                    self.assertEqual((self.bus.filters, self.bus.subscriptions), ({}, {}))
+        # The 512-byte ASCII whitespace control isolates the byte-bound guard.
+        self.bus.terminal_frames = [good + " " * (512 - len(good))]
+        self.assertEqual(self.run_native("enable")[1]["category"], "inventory")
+
+    def test_enable_terminal_envelope_and_authenticated_admission(self) -> None:
+        original = self.bus.signal
+        for header in (dict(sender=":1.101"), dict(destination=None), dict(destination=":1.43")):
+            for then_valid in (False, True):
+                with self.subTest(header=header, then_valid=then_valid):
+                    self.bus.calls.clear()
+                    self.bus.terminal_frames = [terminal_frame()]
+                    def transfer(raw: str) -> None:
+                        original(raw, **header)
+                        if then_valid:
+                            original(raw)
+                    with patch.object(self.bus, "signal", side_effect=transfer):
+                        _, result, _ = self.run_native("enable")
+                    self.assertEqual(result["code"], "enablePreparationFailed" if then_valid else "outcomeUnknown")
+                    self.assertEqual([call[3] for call in self.bus.calls], ["Enable"])
+        for admission in ('"ok"', '{}', '"accepted" trailing'):
+            self.bus.early = True
+            self.bus.ack = admission
+            self.bus.terminal_frames = [terminal_frame()]
+            self.assertEqual(self.run_native("enable")[1]["code"], "outcomeUnknown")
+        self.bus.ack = None
+        self.bus.error = "ai.happyranch.RemoteAccess1.Error.denied"
+        self.assertEqual(self.run_native("enable")[1], dict(code="permissionDenied", effect="none", recovery="nativePermission"))
+
+    def test_enable_completed_is_not_ready(self) -> None:
+        self.bus.terminal_frames = [json.dumps(dict(method="Enable", correlation=dict(serial=17, owner=":1.100"),
+                                                    outcome="completed"))]
+        code, result, _ = self.run_native("enable")
+        self.assertEqual((code, result), (0, dict(code="enableCompleted", effect="unknown", recovery="refresh")))
+        self.assertEqual(len(self.stdout.splitlines()), 1)
+        self.assertEqual([call[3] for call in self.bus.calls], ["Enable"])
+
+    def test_enable_terminal_deadline_loss_and_owner_retirement(self) -> None:
+        for case in ("timely", "boundary", "late", "publication_late", "wrong_signature", "wrong_fds", "wrong_path",
+                     "wrong_interface", "wrong_member", "helper_restart", "transport_loss",
+                     "document", "context"):
+            with self.subTest(case=case):
+                host, bus, seen, clock, live = native.Host(), Bus(), [], [100.0], [True]
+                host.connection, bus.hold = bus, True
+                with patch.object(native.contract.time, "monotonic", side_effect=lambda: clock[0]):
+                    native.contract.request_host(host, "Enable", lambda *a: seen.append(a),
+                        lambda: live[0], lambda _snapshot: None, cli_lifecycle=True)
+                    while bus.held:
+                        bus.held.pop(0)()
+                    context = GLib.MainContext.default()
+                    while context.pending():
+                        context.iteration(False)
+                    observer = host.enable_observer
+                    self.assertEqual(seen, [])
+                    if case == "publication_late":
+                        validate = host.protocol.validate
+                        def validation(value: object, schema: dict) -> None:
+                            validate(value, schema)
+                            clock[0] = 580
+                        host.protocol.validate = validation
+                    if case in ("document", "context"):
+                        live[0] = False
+                    if case == "transport_loss":
+                        observer._lost()
+                    elif case == "helper_restart":
+                        message = Gio.DBusMessage.new_signal("/org/freedesktop/DBus",
+                            "org.freedesktop.DBus", "NameOwnerChanged")
+                        message.set_sender("org.freedesktop.DBus")
+                        message.set_body(GLib.Variant("(sss)", ("ai.happyranch.RemoteAccess1", ":1.100", ":1.101")))
+                        bus.incoming(message)
+                    else:
+                        clock[0] = 579.999 if case == "timely" else 580 if case == "boundary" else 581 if case == "late" else 200
+                        message = Gio.DBusMessage.new_signal(
+                            "/wrong" if case == "wrong_path" else "/ai/happyranch/RemoteAccess1",
+                            "ai.wrong" if case == "wrong_interface" else "ai.happyranch.RemoteAccess1",
+                            "Wrong" if case == "wrong_member" else "LifecycleCompleted")
+                        message.set_sender(":1.100")
+                        message.set_destination(":1.42")
+                        message.set_body(GLib.Variant("(ss)", (terminal_frame(), "extra")) if case == "wrong_signature"
+                                         else GLib.Variant("(s)", (terminal_frame(),)))
+                        if case == "wrong_fds":
+                            descriptors = Gio.UnixFDList.new()
+                            descriptor = os.open(os.devnull, os.O_RDONLY)
+                            try:
+                                descriptors.append(descriptor)
+                            finally:
+                                os.close(descriptor)
+                            message.set_unix_fd_list(descriptors)
+                        bus.incoming(message)
+                    while context.pending():
+                        context.iteration(False)
+                    if case == "timely":
+                        self.assertEqual(seen[0][1]["category"], "inventory")
+                    elif case in ("document", "context"):
+                        self.assertEqual(seen, [])
+                    elif case in ("transport_loss", "helper_restart"):
+                        self.assertEqual(seen, [(None, "outcomeUnknown", "unknown")])
+                    else:
+                        self.assertEqual(seen, [])
+                        observer._expired()
+                        self.assertEqual(seen, [(None, "outcomeUnknown", "unknown")])
+                    bus.signal(terminal_frame())
+                    while context.pending():
+                        context.iteration(False)
+                    self.assertLessEqual(len(seen), 1)
+                    self.assertEqual([call[3] for call in bus.calls], ["Enable"])
+                    host.close()
+
+    def test_enable_consumes_production_trace(self) -> None:
+        target = os.environ.get("ENABLE_PREPARATION_TRACE")
+        if target:
+            trace = json.loads(Path(target).read_text())
+            signal = trace["signal"]
+            self.assertEqual((signal["destination"], signal["sender"], signal["signature"]),
+                             (":1.42", ":1.100", "s"))
+            self.assertEqual(trace["child"], dict(exit=1, stdout='{"preparationFailure":"inventory"}\n', stderr=''))
+            raw = signal["raw"]
+        else:
+            raw = terminal_frame()
+        self.bus.terminal_frames = [raw]
+        code, result, _ = self.run_native("enable")
+        self.assertEqual((code, result), (1, dict(code="enablePreparationFailed",
+            category="inventory", effect="unknown", recovery="nativeRecovery")))
+        self.assertEqual([call[3] for call in self.bus.calls], ["Enable"])
+
     def setUp(self) -> None:
         self.bus = Bus()
         self.opens = []
@@ -87,6 +354,7 @@ class ConnectionCLITests(unittest.TestCase):
 
         def connect(*args: object) -> None:
             self.bus.closed = False
+            self.bus.next_serial = 17
             self.opens.append(args[:3])
             GLib.idle_add(lambda: (args[-2](None, None, None), False)[1])
 
@@ -101,7 +369,7 @@ class ConnectionCLITests(unittest.TestCase):
 
         def hold(interval: int, callback: object) -> int:
             self.holds.append((interval, self.bus.closed))
-            return GLib.idle_add(callback)  # Advance only the product's budget timer, not the bus reply.
+            return GLib.idle_add(callback, priority=GLib.PRIORITY_LOW)  # Drain explicit wire callbacks before expiry.
 
         with patch.object(sys, "argv", ["connection_cli.py", action]), \
                 patch.object(native, "desktop_available", return_value=desktop), \
@@ -111,8 +379,11 @@ class ConnectionCLITests(unittest.TestCase):
                 patch.object(GLib, "timeout_add", side_effect=hold), \
                 patch.object(sys, "stdin", Terminal(choices)), \
                 patch.object(native.select, "select", side_effect=lambda readers, *_args: (readers, [], [])), \
+                warnings.catch_warnings(), \
                 redirect_stdout(out), redirect_stderr(err):
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"gi\.events")
             code = native.main()
+        self.stdout = out.getvalue()
         self.tty_output = terminal.getvalue()
         text = out.getvalue() + err.getvalue()
         for secret in ("a" * 24, "b" * 24, "fingerprint", "private-error-canary", INVITE):
@@ -303,7 +574,10 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                                            "ai.happyranch.RemoteAccess1", method, None, "(s)"))
                 self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
-                self.assertGreater(call[7], budget)
+                if method == "Enable":
+                    self.assertEqual(call[7], 122000)  # Admission timeout; separate original 482s observer timer.
+                else:
+                    self.assertGreater(call[7], budget)
                 self.assertEqual((code, result["effect"]), (0, "confirmed") if method == "IssueInvite" else (1, "unknown"))
                 if method != "IssueInvite":
                     self.assertEqual(result["code"], "outcomeUnknown")  # accepted is not terminal success.

@@ -442,61 +442,104 @@
       "additionalProperties": false
     },
     "error": {
-      "type": "object",
-      "properties": {
-        "category": {
-          "description": "Optional hostStateUnrecognized refusal category; absent or unrecognized maps to unknown. No host metadata.",
-          "enum": ["residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown"]
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalidRequest",
+                "unsupportedVersion",
+                "unsupportedCommand",
+                "notLocalShell",
+                "documentChanged",
+                "busy",
+                "permissionDenied",
+                "stateChanged",
+                "expired",
+                "unavailable",
+                "outcomeUnknown",
+                "invalidInvite",
+                "newInviteRequired",
+                "networkUnavailable",
+                "trustMismatch",
+                "identityChanged",
+                "runtimeUnavailable",
+                "accessDenied",
+                "revokedConfirmed",
+                "keychainLocked",
+                "keychainDenied",
+                "saveFailed",
+                "removalIncomplete"
+              ]
+            },
+            "effect": {
+              "$ref": "#/$defs/effect"
+            },
+            "recovery": {
+              "enum": [
+                "refresh",
+                "explicitRetry",
+                "newInviteOnHost",
+                "nativePermission",
+                "nativeRecovery",
+                "operatorRecovery",
+                "none"
+              ]
+            }
+          },
+          "required": [
+            "code",
+            "effect",
+            "recovery"
+          ],
+          "additionalProperties": false
         },
-        "code": {
-          "enum": [
-            "invalidRequest",
-            "unsupportedVersion",
-            "unsupportedCommand",
-            "notLocalShell",
-            "documentChanged",
-            "busy",
-            "permissionDenied",
-            "stateChanged",
-            "expired",
-            "unavailable",
-            "outcomeUnknown",
-            "invalidInvite",
-            "newInviteRequired",
-            "networkUnavailable",
-            "trustMismatch",
-            "identityChanged",
-            "runtimeUnavailable",
-            "hostStateUnrecognized",
-            "accessDenied",
-            "revokedConfirmed",
-            "keychainLocked",
-            "keychainDenied",
-            "saveFailed",
-            "removalIncomplete"
-          ]
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "description": "Optional hostStateUnrecognized refusal category; absent or unrecognized maps to unknown. No host metadata.",
+              "enum": [
+                "residue",
+                "owner",
+                "provenance",
+                "custody",
+                "inventory",
+                "quiescence",
+                "timeout",
+                "unknown"
+              ]
+            },
+            "code": {
+              "const": "hostStateUnrecognized"
+            },
+            "effect": {
+              "$ref": "#/$defs/effect"
+            },
+            "recovery": {
+              "enum": [
+                "refresh",
+                "explicitRetry",
+                "newInviteOnHost",
+                "nativePermission",
+                "nativeRecovery",
+                "operatorRecovery",
+                "none"
+              ]
+            }
+          },
+          "required": [
+            "code",
+            "effect",
+            "recovery"
+          ],
+          "additionalProperties": false
         },
-        "effect": {
-          "$ref": "#/$defs/effect"
-        },
-        "recovery": {
-          "enum": [
-            "refresh",
-            "explicitRetry",
-            "newInviteOnHost",
-            "nativePermission",
-            "nativeRecovery",
-            "operatorRecovery",
-            "none"
-          ]
+        {
+          "$ref": "#/$defs/preparationError"
         }
-      },
-      "required": [
-        "code",
-        "effect",
-        "recovery"
-      ],
-      "additionalProperties": false
+      ]
     },
     "hello": {
       "type": "object",
@@ -1125,6 +1168,202 @@
             "data"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "const": "happyranch.connection"
+            },
+            "event": {
+              "const": "host.enableFinished"
+            },
+            "data": {
+              "$ref": "#/$defs/enableEvent"
+            }
+          },
+          "required": [
+            "protocol",
+            "event",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "preparationError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "const": "enablePreparationFailed"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "deb-layout-required",
+            "issuer-state-uncertain",
+            "account-shape",
+            "account-receipt-uncertain",
+            "foreign-unit",
+            "foreign-custody",
+            "publication-uncertain",
+            "address-changed",
+            "account-create-uncertain",
+            "cleanup-uncertain",
+            "materializer-uncertain",
+            "custody-uncertain",
+            "inventory",
+            "no_address",
+            "multiple_addresses",
+            "dial_ip",
+            "dial-ip",
+            "occupied-port",
+            "port-check-uncertain"
+          ]
+        },
+        "effect": {
+          "const": "unknown"
+        },
+        "recovery": {
+          "const": "nativeRecovery"
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "effect",
+        "recovery"
+      ],
+      "additionalProperties": false
+    },
+    "enableCompleted": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "const": "enableCompleted"
+        },
+        "effect": {
+          "const": "unknown"
+        },
+        "recovery": {
+          "const": "refresh"
+        }
+      },
+      "required": [
+        "code",
+        "effect",
+        "recovery"
+      ],
+      "additionalProperties": false
+    },
+    "enableEvent": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$",
+              "maxUtf8Bytes": 32
+            },
+            "method": {
+              "const": "Enable"
+            },
+            "outcome": {
+              "const": "failed"
+            },
+            "error": {
+              "$ref": "#/$defs/preparationError"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "method",
+            "outcome",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$",
+              "maxUtf8Bytes": 32
+            },
+            "method": {
+              "const": "Enable"
+            },
+            "outcome": {
+              "const": "failed"
+            },
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "outcomeUnknown"
+                },
+                "effect": {
+                  "const": "unknown"
+                },
+                "recovery": {
+                  "const": "nativeRecovery"
+                }
+              },
+              "required": [
+                "code",
+                "effect",
+                "recovery"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "method",
+            "outcome",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$",
+              "maxUtf8Bytes": 32
+            },
+            "method": {
+              "const": "Enable"
+            },
+            "outcome": {
+              "const": "completed"
+            },
+            "result": {
+              "$ref": "#/$defs/enableCompleted"
+            }
+          },
+          "required": [
+            "version",
+            "operationId",
+            "method",
+            "outcome",
+            "result"
+          ],
+          "additionalProperties": false
         }
       ]
     }
@@ -1170,7 +1409,61 @@
         "additionalProperties": false
       },
       "result": {
-        "$ref": "#/$defs/action"
+        "anyOf": [
+          {
+            "$ref": "#/$defs/action"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "effect": {
+                "const": "unknown"
+              },
+              "hostDenial": {
+                "const": "unknown"
+              },
+              "hostCleanup": {
+                "const": "unknown"
+              },
+              "localCleanup": {
+                "const": "notApplicable"
+              },
+              "networkCleanup": {
+                "const": "unknown"
+              },
+              "inviteState": {
+                "const": "unknown"
+              },
+              "expiresAt": {
+                "const": null
+              },
+              "host": {
+                "const": null
+              },
+              "client": {
+                "const": null
+              },
+              "operationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "maxUtf8Bytes": 32
+              }
+            },
+            "required": [
+              "effect",
+              "hostDenial",
+              "hostCleanup",
+              "localCleanup",
+              "networkCleanup",
+              "inviteState",
+              "expiresAt",
+              "host",
+              "client",
+              "operationId"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "host.turnOff": {
@@ -1368,6 +1661,9 @@
     },
     "client.stateChanged": {
       "$ref": "#/$defs/clientEvent"
+    },
+    "host.enableFinished": {
+      "$ref": "#/$defs/enableEvent"
     }
   }
 }

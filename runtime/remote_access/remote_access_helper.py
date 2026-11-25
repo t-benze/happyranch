@@ -65,7 +65,8 @@ SERVICE_PATHS = tuple('/' + parent + '/happyranch-' + service
 METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS, *LIFECYCLE_ACTIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
-    for name in sorted(METHODS)) + '</interface></node>'
+    for name in sorted(METHODS)) + (
+        '<signal name="LifecycleCompleted"><arg name="frame" type="s"/></signal></interface></node>')
 LOG = logging.getLogger(__name__)
 
 
@@ -576,7 +577,8 @@ class RemoteAccessHelper:
             except Exception as error:
                 if capture.method == 'Enable':
                     _helper_lifecycle.log_enable_refusal(error)
-                self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
+                if capture.method != 'Enable' or not operation.accepted:
+                    self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
                 return
         # The slot stays captured, but the worker must not contend with its own
@@ -587,8 +589,66 @@ class RemoteAccessHelper:
             with self.lock:
                 if capture.method == 'Enable':
                     _helper_lifecycle.log_enable_refusal(error)
-                self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
+                if capture.method != 'Enable' or not operation.accepted:
+                    self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
+
+    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None) -> None:
+        """One receive-only receipt, still held by the original worker/slot."""
+        capture = operation.capture
+        budget = operation.budget
+        if (capture.method != 'Enable' or not operation.accepted or self.cancelled
+                or self.inflight is not capture or budget.remaining() <= 2.0):
+            return
+        # _uid retains its fixed 2s authentication read. Never start it with less
+        # budget, and recheck after each potentially blocking receipt read.
+        if self._uid(capture.sender) != capture.uid:
+            return
+        budget.remaining()
+        if self._binding(capture.uid) != capture.owner:
+            return
+        budget.remaining()
+        if self.cancelled or self.inflight is not capture:
+            return
+        frame = dict(method='Enable', correlation=dict(serial=capture.message.get_serial(),
+            owner=self.connection.get_unique_name()), outcome='failed')
+        if category is not None:
+            frame['category'] = category
+        elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
+            frame['outcome'] = 'completed'
+        raw = json.dumps(frame, separators=(',', ':'))
+        budget.remaining()
+        self.connection.emit_signal(capture.sender, OBJECT_PATH, INTERFACE,
+                                    'LifecycleCompleted', GLib.Variant('(s)', (raw,)))
+        # Flush on this worker's own main context. The app context never waits
+        # for a worker that depends on it, and there is no new grace period.
+        remaining = budget.remaining()
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        loop = GLib.MainLoop.new(context, False)
+        cancellable = Gio.Cancellable()
+        timer = GLib.timeout_source_new(max(1, int(remaining * 1000)))
+        def expired(*_: object) -> bool:
+            cancellable.cancel()
+            loop.quit()
+            return False
+        def flushed(connection: object, result: object, data: object) -> None:
+            try:
+                connection.flush_finish(result)
+            except Exception:
+                pass  # Delivery loss never alters effect or journal evidence.
+            finally:
+                loop.quit()
+        try:
+            timer.set_callback(expired)
+            timer.attach(context)
+            self.connection.flush(cancellable, flushed, None)
+            loop.run()
+            budget.remaining()
+        finally:
+            timer.destroy()
+            cancellable.cancel()
+            context.pop_thread_default()
 
     def _run_lifecycle(self, operation: object) -> None:
         if operation.capture.method == 'RetryPolicyRenewal':
@@ -604,6 +664,17 @@ class RemoteAccessHelper:
         capture, client = operation.capture, operation.generations
         residue: list[str] = []
         outcome = lifecycle.SetupPhase.UNCERTAIN
+        preparation_category, send_attempted = None, False
+
+        def deliver(settled: object) -> None:
+            nonlocal send_attempted
+            if send_attempted or capture.method != 'Enable':
+                return
+            send_attempted = True
+            try:
+                self._emit_enable_terminal(operation, settled, preparation_category)
+            except Exception:
+                pass  # One attempt; receipt loss does not settle effects.
 
         def audited(step: str, component: object, effect: Callable[[float, Callable[[], None]], dict]) -> dict:
             result = {}
@@ -646,9 +717,15 @@ class RemoteAccessHelper:
 
         def child(step: str, component: object, *, revoke_succeeded: bool = False) -> dict:
             def effect(remaining: float, commit: Callable[[], None]) -> dict:
+                nonlocal preparation_category
                 commit()
                 options = {'revoke_succeeded': revoke_succeeded} if step == 'cleanup' else {}
-                return client.effect(step, capture.generation, min(remaining, operation.budget.remaining()), **options)
+                try:
+                    return client.effect(step, capture.generation, min(remaining, operation.budget.remaining()), **options)
+                except _helper_generation.PreparationFailed as error:
+                    if capture.method == 'Enable' and step == 'enable':
+                        preparation_category = error.category
+                    raise
             return audited(step, component, effect)
 
         try:
@@ -704,9 +781,11 @@ class RemoteAccessHelper:
             # all effects return, so transient contention cannot strand its slot.
             with self.lock:
                 try:
-                    settled = operation.complete(outcome)
+                    settled = (operation.complete(outcome, before_release=deliver) if capture.method == 'Enable'
+                               else operation.complete(outcome))
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
                 except Exception:
+                    deliver(lifecycle.SetupPhase.UNCERTAIN)
                     self.lifecycle_result = {'outcome': 'uncertain', 'residue': residue}
                 finally:
                     # A failed completion is uncertain, never synthetic success.

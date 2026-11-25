@@ -352,6 +352,19 @@ unavailable proof refuses `host-state-unrecognized`. CLI/GUI code
 `hostStateUnrecognized` says the files or release runtime owner could not be
 verified and asks to check the local installation. No read repairs state.
 
+After admission, Enable may report a closed preparation-failure category and a
+plain localized reason, for example inventory: “The home network routes could
+not be verified.” / “无法验证家庭网络路由。” The GUI says “Turn on failed.” /
+“开启失败。” and keeps “Its effect is unknown.” / “其影响未知。” Earlier
+provisioning may already have changed files. Use Check current status; a fresh
+known status owns Off/Ready. Unavailable or failed reads keep the reason and
+unsafe actions held. Do not infer cleanup, delete files or automatically re-enable.
+The CLI prints one terminal JSON: enablePreparationFailed/category/unknown/
+nativeRecovery (exit 1), or enableCompleted/unknown/refresh (exit 0). Admission
+is never printed as completion. Older peers, invalid/late/wrong-correlation
+signals or missing category retain outcomeUnknown. No result query or replay
+exists; closing observation drops the reason rather than transferring it.
+
 For a verified staged-inert/post-Disable host, retained policy expiry alone no
 longer prevents Off or Turn on. Capture and inert publication defer expiry only;
 all artifact/provenance/custody checks still apply. After the existing

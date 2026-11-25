@@ -259,7 +259,7 @@ class LifecycleOperation:
             self.outcome = SetupPhase.UNCERTAIN if self.dispatched else SetupPhase.FAILED
             raise
 
-    def complete(self, outcome: SetupPhase) -> SetupPhase:
+    def complete(self, outcome: SetupPhase, *, before_release: Callable[[SetupPhase], None] | None = None) -> SetupPhase:
         if not self.accepted or type(outcome) is not SetupPhase or outcome not in OUTCOMES:
             raise LifecycleRefused()
         with self.helper.effect_guard(self.capture):
@@ -271,6 +271,8 @@ class LifecycleOperation:
             if self.outcome in (SetupPhase.FAILED, SetupPhase.UNCERTAIN):
                 outcome = self.outcome  # Later observations cannot erase lost effect evidence.
             self.outcome = outcome
+            if before_release is not None:
+                before_release(outcome)
             self.helper.release(self.capture)
         return self.outcome
 

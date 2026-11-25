@@ -139,7 +139,7 @@ const contexts=handlers.map(h=>{
  c.window=c.top=c;
  c.webkit={messageHandlers:{appBridge:{postMessage:raw=>{
   const item=JSON.parse(raw);native.push(item);
-  if(item.command && (sources.case.startsWith('retirement-') || sources.case==='locale'))
+  if(item.command && (sources.case.startsWith('retirement-') || sources.case==='locale' || sources.case==='enable'))
    return new Promise((resolve,reject)=>{c.finish=resolve;c.refuse=reject;});
   return item.command ? Promise.reject(new Error(JSON.stringify(c.failure || {code:'permissionDenied',effect:'unknown',recovery:'nativeRecovery'}))) : Promise.resolve('{}');
  }}}};return vm.createContext(c);
@@ -170,6 +170,33 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
    await vm.runInContext("happyranchConnection.call('app.relaunch',args).catch(()=>{})",contexts[0]);
    assert.equal(native.length,count,'closed page payload rejects extras before dispatch');
   }
+  return;
+ }
+ if(sources.case==='enable'){
+  vm.runInContext("globalThis.seen=[];globalThis.hosts=[];happyranchConnection.on('host.enableFinished',raw=>seen.push(['event',raw]));happyranchConnection.on('host.stateChanged',raw=>hosts.push(raw));",contexts[0]);
+  vm.runInContext("hrAppBridge.setContext('original')",contexts[1]);
+  const result=vm.runInContext("happyranchConnection.call('host.enable','{}').then(raw=>{seen.push(['reply',raw]);return raw;})",contexts[0]);
+  contexts[1].frame=sources.enableEvent;
+  const published=vm.runInContext("hrAppBridge.emit('host.enableFinished',frame,'original','1')",contexts[1]);
+  await Promise.resolve();
+  assert.equal(contexts[0].seen.length,0,'terminal waits for admission posting');
+  contexts[1].finish(sources.enableAdmission);
+  await result;await published;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(JSON.stringify(contexts[0].seen.map(item=>item[0])),'["reply","event"]');
+  const frame=JSON.parse(contexts[0].seen[1][1]);
+  assert.deepEqual(frame.error,{code:'enablePreparationFailed',category:'inventory',effect:'unknown',recovery:'nativeRecovery'});
+  console.log('ENABLE_RELAY_EVENT '+contexts[0].seen[1][1]);
+  await vm.runInContext("hrAppBridge.emit('host.stateChanged','stale',null,'0')",contexts[1]);
+  assert.equal(contexts[0].hosts.length,0,'a queued pre-terminal status cannot become fresh');
+  await vm.runInContext("hrAppBridge.emit('host.stateChanged','fresh',null,'1')",contexts[1]);
+  assert.equal(JSON.stringify(contexts[0].hosts),'["fresh"]');
+  const count=contexts[0].seen.length;
+  await vm.runInContext("hrAppBridge.emit('host.enableFinished',frame,'original')",contexts[1]);
+  assert.equal(contexts[0].seen.length,count,'one consumption');
+  vm.runInContext("hrAppBridge.setContext('replacement')",contexts[1]);
+  await vm.runInContext("hrAppBridge.emit('host.enableFinished',frame,'original')",contexts[1]);
+  assert.equal(contexts[0].seen.length,count,'no cross-context transfer');
+  assert.equal(native.filter(item=>item.command==='host.enable').length,1);
   return;
  }
  if(sources.case==='local'){
@@ -245,6 +272,19 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   return;
  }
  if(sources.case==='errors'){
+ for(const category of ['deb-layout-required','issuer-state-uncertain','account-shape','account-receipt-uncertain',
+  'foreign-unit','foreign-custody','publication-uncertain','address-changed','account-create-uncertain',
+  'cleanup-uncertain','materializer-uncertain','custody-uncertain','inventory','no_address',
+  'multiple_addresses','dial_ip','dial-ip','occupied-port','port-check-uncertain']){
+  contexts[1].failure={code:'enablePreparationFailed',category,effect:'unknown',recovery:'nativeRecovery'};
+  const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
+  assert.deepEqual(JSON.parse(JSON.stringify(error)),contexts[1].failure);
+ }
+ for(const wrong of [{category:'unknown'},{effect:'none'},{effect:'confirmed'},{message:'synthetic'},{recovery:'refresh'}]){
+  contexts[1].failure={code:'enablePreparationFailed',category:'inventory',effect:'unknown',recovery:'nativeRecovery',...wrong};
+  const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
+  assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
+ }
  for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown',null,'/private/canary']){
   contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
   const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
@@ -272,9 +312,20 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  console.log('Connection command/event/error boundary OK');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
+        target = os.environ.get("ENABLE_PREPARATION_TRACE")
+        trace = json.loads(Path(target).read_text()) if target and case == "enable" else None
+        admission = trace["nativeAdmission"] if trace else dict(operationId="a"*32)
+        frame = trace["nativeEvent"] if trace else json.dumps(dict(version=1, operationId="a"*32,
+            method="Enable", outcome="failed", error=dict(code="enablePreparationFailed",
+                category="inventory", effect="unknown", recovery="nativeRecovery")))
         result = subprocess.run(["node", "-e", script], env={**os.environ, "HR_EVENT_SCRIPTS": json.dumps(
-            {"page": native.APP_PAGE, "relay": native.APP_RELAY, "case": case, "command": command})}, capture_output=True, text=True, timeout=10)
+            {"page": native.APP_PAGE, "relay": native.APP_RELAY, "case": case, "command": command,
+             "enableEvent": frame, "enableAdmission": json.dumps(admission)})}, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if trace:
+            trace["relayEvent"] = next(line.removeprefix("ENABLE_RELAY_EVENT ")
+                for line in result.stdout.splitlines() if line.startswith("ENABLE_RELAY_EVENT "))
+            Path(target).write_text(json.dumps(trace, sort_keys=True) + "\n")
 
     def retirement_boundary(self, case: str) -> None:
         for command in ('host.revokeDevice', 'host.enable', 'host.turnOff', 'host.createInvite',
@@ -294,6 +345,9 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
 
     def test_connection_event_admission(self):
         self.connection_boundary('events')
+
+    def test_enable_reply_precedes_terminal_event(self):
+        self.connection_boundary('enable')
 
     def test_connection_command_admission(self):
         self.connection_boundary('commands')

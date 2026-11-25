@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -14,6 +15,53 @@ import test_client_model as clients
 
 
 class MainHostTests(unittest.TestCase):
+    def test_enable_consumes_production_trace(self):
+        import host_bridge
+        from test_connection_cli import Bus, terminal_frame
+        target = os.environ.get("ENABLE_PREPARATION_TRACE")
+        trace = json.loads(Path(target).read_text()) if target else None
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            desktop = prefix / 'share/happyranch/desktop'
+            desktop.mkdir(parents=True)
+            (desktop / 'native-connection-bridge.v1.json').write_bytes(
+                (Path(__file__).parents[3] / 'protocol/native-connection-bridge.v1.json').read_bytes())
+            client = SimpleNamespace(prompt=None, model=SimpleNamespace(confirming_target=False, host_prompt_document=None))
+            bridge = self.app.host_adapter = host_bridge.HostBridge(client, prefix, lambda en, zh: en)
+            bus = bridge.connection = Bus()
+            bus.terminal_frames = [trace["signal"]["raw"] if trace else terminal_frame()]
+            bus.early = True
+            parent = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False), get_visible=lambda: True)
+            self.app.view.get_toplevel = lambda: parent
+            self.subscribe("host.enableFinished")
+            outcomes = self.call("host.enable")
+            context = GLib.MainContext.default()
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual(len(outcomes), 1)
+            self.assertTrue(outcomes[0][0])
+            deliveries = [entry for entry in self.delivered if entry.get("event") == "host.enableFinished"]
+            self.assertEqual(len(deliveries), 1)
+            event = json.loads(deliveries[0]["raw"])
+            self.assertEqual(event["operationId"], outcomes[0][1]["operationId"])
+            self.assertEqual(event["error"], dict(code="enablePreparationFailed", category="inventory",
+                                                 effect="unknown", recovery="nativeRecovery"))
+            self.assertEqual([call[3] for call in bus.calls], ["Enable"])
+            self.subscribe("host.enableFinished", False)
+            if trace:
+                trace["nativeAdmission"] = outcomes[0][1]
+                trace["nativeEvent"] = deliveries[0]["raw"]
+                Path(target).write_text(json.dumps(trace, sort_keys=True) + "\n")
+
+    def test_enable_main_terminal_projection(self):
+        from test_connection_cli import PREPARATION_TOKENS
+        for category in PREPARATION_TOKENS:
+            with self.subTest(category=category):
+                self.app.host_adapter = SimpleNamespace(host_request=lambda method, finish, **kw: finish(
+                    None, dict(code="enablePreparationFailed", category=category), "unknown", "nativeRecovery"))
+                self.assertEqual(self.call("host.enable"), [(False, dict(code="enablePreparationFailed",
+                    category=category, effect="unknown", recovery="nativeRecovery"))])
+
     def setUp(self):
         events.EventTests.setUp(self)
         self.app.connection_protocol = native._contract.Protocol(Path(__file__).parents[3] /
@@ -71,6 +119,7 @@ class MainHostTests(unittest.TestCase):
     def test_subscription_snapshot_and_document_teardown(self):
         subscriptions, removals = [], []
         self.app.host_adapter = SimpleNamespace(
+            host_epoch=0,
             subscribe=lambda owner, **kwargs: subscriptions.append((owner, kwargs)),
             unsubscribe=lambda owner: removals.append(owner), detach=lambda owner: removals.append(owner))
         self.subscribe('host.stateChanged')
@@ -161,9 +210,74 @@ class MainHostTests(unittest.TestCase):
 
 
 class SharedHostTests(unittest.TestCase):
+    def test_enable_observer_survives_admission(self):
+        import host_bridge
+        from test_connection_cli import Bus, terminal_frame
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            desktop = prefix / 'share/happyranch/desktop'
+            desktop.mkdir(parents=True)
+            (desktop / 'native-connection-bridge.v1.json').write_bytes(
+                (Path(__file__).parents[3] / 'protocol/native-connection-bridge.v1.json').read_bytes())
+            client = SimpleNamespace(prompt=None, model=SimpleNamespace(confirming_target=False, host_prompt_document=None))
+            bridge = host_bridge.HostBridge(client, prefix, lambda en, zh: en)
+            bus = bridge.connection = Bus()
+            bus.hold = True
+            parent = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False))
+            owner, other = object(), object()
+            current, events, strangers, admissions = [True], [], [], []
+            bridge.subscribe_enable(owner, current=lambda: current[0], emit=events.append)
+            bridge.subscribe_enable(other, current=lambda: True, emit=strangers.append)
+            context = GLib.MainContext.default()
+            def drain():
+                while bus.held:
+                    bus.held.pop(0)()
+                while context.pending():
+                    context.iteration(False)
+            def request():
+                bridge.host_request('Enable', lambda *a: admissions.append(a), owner=owner,
+                                    current=lambda: current[0], window=parent)
+                drain()
+            request()
+            self.assertEqual(len(admissions), 1)
+            self.assertIsNone(bridge.active_operation)
+            operation_id = admissions[-1][0]["operationId"]
+            state_events = []
+            bridge.subscribe(other, current=lambda: True, visible=lambda: False, emit=state_events.append, window=parent)
+            while context.pending():
+                context.iteration(False)
+            state_events.clear()
+            # A separate Status may own the active operation at terminal arrival.
+            bridge.host_request('Status', lambda *a: None, owner=other, current=lambda: True, window=parent)
+            bus.signal(terminal_frame())
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(json.loads(events[0])["operationId"], operation_id)
+            self.assertEqual(json.loads(events[0])["error"]["effect"], "unknown")
+            self.assertEqual(strangers, [])
+            self.assertEqual(len(admissions), 1)
+            drain()
+            self.assertEqual(state_events, [], "a Status begun before terminal cannot publish fresh state")
+            bus.signal(terminal_frame())
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual(len(events), 1)
+            # Unsubscribe/reattach has no replay. Queued old observation is dead.
+            bridge.unsubscribe_enable(owner)
+            bridge.subscribe_enable(owner, current=lambda: True, emit=events.append)
+            request()
+            bus.signal(terminal_frame())
+            bridge.unsubscribe_enable(owner)
+            while context.pending():
+                context.iteration(False)
+            self.assertEqual(len(events), 1)
+            self.assertEqual([call[3] for call in bus.calls].count('Enable'), 2)
+            bridge.unsubscribe(other)
+
     def test_one_slot_status_waiters_poll_and_subscription_fence(self):
         import host_bridge
-        import test_client_gtk as gtk
+        from test_connection_cli import Bus
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
             desktop = prefix / 'share/happyranch/desktop'
@@ -174,7 +288,7 @@ class SharedHostTests(unittest.TestCase):
             main = host_bridge.shared_bridge(client, prefix, lambda en, zh: en)
             window = host_bridge.shared_bridge(client, prefix, lambda en, zh: en)
             self.assertIs(main, window)
-            bus = main.connection = gtk.HostBus()
+            bus = main.connection = Bus()
             bus.hold = True
             parent = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False))
             owner = object()
@@ -187,12 +301,14 @@ class SharedHostTests(unittest.TestCase):
             request(window, 'Disable')
             self.assertEqual(outcomes, [(None, 'busy')] * 3)
             self.assertEqual([call[3] for call in bus.calls], ['Enable'])
-            bus.held.pop()()
+            while bus.held:
+                bus.held.pop(0)()
             outcomes.clear()
             request(window, 'Status')
             request(main, 'Status')
             self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status'])
-            bus.held.pop()()
+            while bus.held:
+                bus.held.pop(0)()
             self.assertEqual(len(outcomes), 2)
             self.assertEqual(outcomes[0], outcomes[1])
             events = []
@@ -214,7 +330,8 @@ class SharedHostTests(unittest.TestCase):
             main.unsubscribe(owner)
             self.assertIsNone(main.host_timer)
             count = len(events)
-            bus.held.pop()()
+            while bus.held:
+                bus.held.pop(0)()
             while context.pending():
                 context.iteration(False)
             self.assertEqual(len(events), count, 'late observation cannot reach a retired subscriber')

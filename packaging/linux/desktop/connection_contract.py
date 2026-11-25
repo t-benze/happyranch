@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 import time
+import uuid
 from typing import Any
 
 MAX_ASSET = 64 * 1024 * 1024
@@ -30,6 +31,245 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
                                     "quiescence", "timeout", "unknown"})
+PREPARATION_CATEGORIES = frozenset({
+    "deb-layout-required", "issuer-state-uncertain", "account-shape",
+    "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
+    "address-changed", "account-create-uncertain", "cleanup-uncertain", "materializer-uncertain",
+    "custody-uncertain", "inventory", "no_address", "multiple_addresses", "dial_ip", "dial-ip",
+    "occupied-port", "port-check-uncertain",
+})
+HELPER_NAME = "ai.happyranch.RemoteAccess1"
+HELPER_PATH = "/ai/happyranch/RemoteAccess1"
+
+
+def enable_terminal_frame(raw: str) -> dict:
+    value = parse_json(raw, 512)
+    if (type(value) is not dict or set(value) not in (
+            {"method", "correlation", "outcome"}, {"method", "correlation", "outcome", "category"})
+            or value["method"] != "Enable" or value["outcome"] not in ("failed", "completed")):
+        raise ValueError("invalid terminal frame")
+    correlation = value["correlation"]
+    if (type(correlation) is not dict or set(correlation) != {"serial", "owner"}
+            or type(correlation["serial"]) is not int or not 1 <= correlation["serial"] <= 4294967295
+            or type(correlation["owner"]) is not str or len(correlation["owner"]) > 255
+            or re.fullmatch(r":[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", correlation["owner"]) is None):
+        raise ValueError("invalid terminal correlation")
+    if "category" in value and (value["outcome"] != "failed"
+            or type(value["category"]) is not str or value["category"] not in PREPARATION_CATEGORIES):
+        raise ValueError("invalid terminal category")
+    return value
+
+
+class EnableTerminalObserver:
+    """One original connection/request/incarnation; never a result store."""
+
+    def __init__(self, host: object, complete: object, failed: object, current: object,
+                 terminal: object, *, cli: bool, admission_current: object) -> None:
+        self.host, self.connection = host, host.connection
+        self.complete, self.failed, self.current, self.terminal = complete, failed, current, terminal
+        self.cli = cli
+        self.admission_current = admission_current
+        self.admission_finished = False
+        self.operation_id = uuid.uuid4().hex
+        self.closed = self.consumed = self.admitted = False
+        self.owner = self.arrival_owner = None
+        self.pending = None
+        self.subscription = self.owners = self.filter_id = self.timer = self.closed_handler = None
+        self.started = time.monotonic()
+        self.cutoff, self.deadline = self.started + 480, self.started + 482
+        self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, "Enable")
+        self.message.set_flags(host.Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
+
+    def start(self) -> None:
+        host = self.host
+        try:
+            # Install both match and envelope receiver BEFORE the one send.
+            self.subscription = self.connection.signal_subscribe(HELPER_NAME, HELPER_NAME,
+                "LifecycleCompleted", HELPER_PATH, None, host.Gio.DBusSignalFlags.NONE,
+                lambda *_args: None, None)
+            self.owners = self.connection.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus",
+                "NameOwnerChanged", "/org/freedesktop/DBus", HELPER_NAME,
+                host.Gio.DBusSignalFlags.NONE, lambda *_args: None, None)
+            self.filter_id = self.connection.add_filter(self._filter, None)
+            self.closed_handler = self.connection.connect("closed", self._lost)
+            self.timer = host.GLib.timeout_add(max(1, int((self.deadline - time.monotonic()) * 1000)), self._expired)
+            self.connection.send_message_with_reply(self.message, host.Gio.DBusSendMessageFlags.NONE,
+                122000, host.cancellable, self._admission, None)
+        except Exception as error:
+            self.close()
+            self.failed(error, bool(self.message.get_serial()))
+
+    def _filter(self, connection: object, message: object, incoming: bool, data: object) -> object:
+        # Gio invokes filters on its message thread. Retain the outgoing message
+        # itself: its serial is assigned before transmission, even before send
+        # returns. All observer state changes occur on the main context.
+        if not incoming or self.closed:
+            return message
+        gio = self.host.Gio
+        if (message.get_message_type() == gio.DBusMessageType.METHOD_RETURN
+                and message.get_reply_serial() == self.message.get_serial()):
+            self.host.GLib.idle_add(self._reply_arrived, message)
+        elif message.get_message_type() == gio.DBusMessageType.SIGNAL:
+            if (message.get_path() == HELPER_PATH and message.get_interface() == HELPER_NAME
+                    and message.get_member() == "LifecycleCompleted"
+                    and message.get_destination() == connection.get_unique_name()
+                    and message.get_signature() == "s"):
+                try:
+                    fds = message.get_unix_fd_list()
+                    if fds is not None and fds.get_length():
+                        return message
+                    raw, = message.get_body().unpack()
+                    frame = enable_terminal_frame(raw)
+                    if frame["correlation"]["serial"] == self.message.get_serial():
+                        self.host.GLib.idle_add(self._arrived, message.get_sender(), frame)
+                except (ValueError, TypeError, UnicodeError, AttributeError):
+                    pass
+            elif (message.get_sender() == "org.freedesktop.DBus"
+                    and message.get_path() == "/org/freedesktop/DBus"
+                    and message.get_interface() == "org.freedesktop.DBus"
+                    and message.get_member() == "NameOwnerChanged" and message.get_signature() == "sss"):
+                self.host.GLib.idle_add(self._owner_changed, message.get_body().unpack())
+        return message
+
+    def _reply_arrived(self, reply: object) -> bool:
+        if not self.closed:
+            try:
+                self.arrival_owner = self._admission_owner(reply)
+            except (ValueError, TypeError, UnicodeError, AttributeError):
+                pass
+        return False
+
+    def _admission_owner(self, reply: object) -> str:
+        fds = reply.get_unix_fd_list()
+        owner = reply.get_sender()
+        if (reply.get_message_type() != self.host.Gio.DBusMessageType.METHOD_RETURN
+                or reply.get_reply_serial() != self.message.get_serial()
+                or reply.get_destination() != self.connection.get_unique_name()
+                or reply.get_signature() != "s" or fds is not None and fds.get_length()
+                or type(owner) is not str or len(owner) > 255
+                or re.fullmatch(r":[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", owner) is None
+                or parse_json(reply.get_body().unpack()[0], 256) != "accepted"):
+            raise ValueError("invalid Enable admission")
+        return owner
+
+    def _admission(self, connection: object, result: object, data: object) -> None:
+        if self.admission_finished or not self.admission_current():
+            self.close()
+            return
+        try:
+            reply = connection.send_message_with_reply_finish(result)
+            if reply.get_message_type() == self.host.Gio.DBusMessageType.ERROR:
+                raise self.host.Gio.DBusError.new_for_dbus_error(reply.get_error_name(), "Enable refused")
+            self.owner = self._admission_owner(reply)
+            if time.monotonic() >= self.cutoff:
+                raise ValueError("late Enable admission")
+            self.admitted = True
+            self.admission_finished = True
+            if not self.cli:
+                projection = dict(effect="unknown", hostDenial="unknown", hostCleanup="unknown",
+                    localCleanup="notApplicable", networkCleanup="unknown", inviteState="unknown",
+                    expiresAt=None, host=None, client=None)
+                if not self.closed and self._current() and self.terminal is not None:
+                    projection["operationId"] = self.operation_id
+                self.complete(self.host.protocol.result("host.enable", projection))
+            if (self.closed or self.terminal is None) and not self.cli:
+                self.close()
+                return
+            if self.pending is not None:
+                sender, frame = self.pending
+                self.pending = None
+                self._arrived(sender, frame)
+        except Exception as error:
+            self.close()
+            self.failed(error, True)
+
+    def _arrived(self, sender: str, frame: dict) -> bool:
+        if self.closed or self.consumed:
+            return False
+        if not self._current():
+            self.close()
+            return False
+        if time.monotonic() >= self.cutoff:
+            return False
+        owner = self.owner if self.admitted else self.arrival_owner
+        if (sender != owner or frame["correlation"]["owner"] != owner
+                or frame["correlation"]["serial"] != self.message.get_serial()):
+            return False
+        if not self.admitted:
+            if self.pending is None:
+                self.pending = (sender, frame)
+            return False
+        if frame["outcome"] == "completed":
+            projection = dict(code="enableCompleted", effect="unknown", recovery="refresh")
+            event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="completed", result=projection)
+        else:
+            projection = dict(code="outcomeUnknown", effect="unknown", recovery="nativeRecovery")
+            if "category" in frame:
+                projection.update(code="enablePreparationFailed", category=frame["category"])
+            event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="failed", error=projection)
+        self.host.protocol.validate(event, self.host.protocol.events["host.enableFinished"])
+        raw = json.dumps(event, separators=(",", ":"))
+        parse_json(raw, 1024)
+        if not self._current():
+            self.close()
+            return False
+        if time.monotonic() >= self.cutoff:
+            return False
+        self.consumed = True  # Latch BEFORE callbacks/teardown.
+        self.close()
+        if self.cli:
+            if frame["outcome"] == "completed":
+                self.complete(projection)
+            else:
+                self.complete(None, projection, "unknown")
+        else:
+            self.terminal(raw)
+        return False
+
+    def _owner_changed(self, values: tuple) -> bool:
+        if not self.closed and values[0] == HELPER_NAME and values[1] == (self.owner or self.arrival_owner):
+            # A pre-release received candidate may await its admission callback.
+            # Newly arriving traffic cannot take over that original tuple.
+            if self.pending is None:
+                self._lost()
+            else:
+                if self.filter_id is not None:
+                    self.connection.remove_filter(self.filter_id)
+                    self.filter_id = None
+        return False
+
+    def _lost(self, *_args: object) -> None:
+        if self.closed:
+            return
+        notify = (self.cli or not self.admitted) and self._current() and not self.consumed
+        self.close()
+        if notify:
+            self.admission_finished = True
+            self.complete(None, "outcomeUnknown", "unknown")
+
+    def _expired(self) -> bool:
+        self.timer = None
+        self._lost()
+        return False
+
+    def _current(self) -> bool:
+        return getattr(self.host, "enable_observer", None) is self and self.current()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.pending = None
+        for handle in (self.subscription, self.owners):
+            if handle is not None:
+                self.connection.signal_unsubscribe(handle)
+        if self.filter_id is not None:
+            self.connection.remove_filter(self.filter_id)
+        if self.timer is not None:
+            self.host.GLib.source_remove(self.timer)
+        if self.closed_handler is not None:
+            self.connection.disconnect(self.closed_handler)
+        self.subscription = self.owners = self.filter_id = self.timer = self.closed_handler = None
 
 
 class Requests:
@@ -341,7 +581,8 @@ class Protocol:
 
 def request_host(self: object, method: str, complete: object, current: object, observe: object,
                  *, allow_reconnect: bool = True, cli_lifecycle: bool = False,
-                 display_invite: object = None) -> None:
+                 display_invite: object = None, terminal: object = None,
+                 terminal_current: object = None) -> None:
     """Fixed helper transaction shared by the window and standalone CLI owner.
 
     The caller owns lifetime/admission; this owner owns the dedicated bus,
@@ -471,6 +712,14 @@ def request_host(self: object, method: str, complete: object, current: object, o
     def call(called: str) -> None:
         nonlocal deadline
         try:
+            if called == "Enable":
+                previous = getattr(self, "enable_observer", None)
+                if previous is not None:
+                    previous.close()
+                self.enable_observer = EnableTerminalObserver(self, complete, failed,
+                    terminal_current or current, terminal, cli=cli_lifecycle, admission_current=current)
+                self.enable_observer.start()
+                return
             if lifecycle and deadline is None:
                 deadline = time.monotonic() + CLI_LIFECYCLE_TIMEOUTS[called] / 1000
             self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",

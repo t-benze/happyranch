@@ -197,7 +197,7 @@ APP_PAGE = r"""(() => {
   let active = true, sequence = 0;
   const pending = new Map(), listeners = new Map([
     ['app.stateChanged', new Set()], ['app.dialogRequested', new Set()],
-    ['app.lifecycleRequested', new Set()], ['host.stateChanged', new Set()]]);
+    ['app.lifecycleRequested', new Set()], ['host.stateChanged', new Set()], ['host.enableFinished', new Set()]]);
   const clearListeners = () => { for (const handlers of listeners.values()) handlers.clear(); };
   const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
   const retired = command => {
@@ -281,6 +281,8 @@ APP_RELAY = r"""(() => {
   let active = true, admitted = false;
   const queued = [];
   const localeReplies = [];
+  const enableReplies = [];
+  let enableEpoch = 0, enableContext = null, hostObservation = 0;
   const send = item => {
     if (admitted) return native.postMessage(JSON.stringify({token, ...item}));
     if (queued.length >= 8) return Promise.reject();
@@ -299,8 +301,30 @@ APP_RELAY = r"""(() => {
     await delivery.promise;
     if (active && admitted && enabled === 'true')
       window.postMessage({channel:'hr-app-event', event:'app.stateChanged', raw}, location.origin);
-  }, emit:(event, raw) => {
-    if (active && admitted && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged'].includes(event))
+  }, setContext:context => {
+    if (enableContext !== context) {
+      if (enableContext !== null) { enableEpoch++; enableReplies.length = 0; }
+      enableContext = context;
+    }
+  }, emit:async (event, raw, context, observation = '0') => {
+    const epoch = Number(observation);
+    if (['host.stateChanged','host.enableFinished'].includes(event)
+        && (!Number.isSafeInteger(epoch) || epoch < hostObservation || epoch < 0)) return;
+    if (event === 'host.enableFinished') {
+      const delivery = enableReplies[0], epoch = enableEpoch;
+      if (!delivery || context !== enableContext) return;
+      await delivery.promise;
+      let frame;
+      try { frame = JSON.parse(raw); } catch { return; }
+      if (!active || !admitted || epoch !== enableEpoch || context !== enableContext
+          || !delivery.operationId || frame.operationId !== delivery.operationId) return;
+      enableReplies.shift();
+    }
+    if (['host.stateChanged','host.enableFinished'].includes(event)) {
+      if (epoch < hostObservation) return;
+      hostObservation = epoch;
+    }
+    if (active && admitted && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged','host.enableFinished'].includes(event))
       window.postMessage({channel:'hr-app-event', event, raw}, location.origin);
   }});
   const revoke = () => {
@@ -323,8 +347,11 @@ APP_RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-app://app') return;
     const item = event.data;
-    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged'].includes(item.event)
+    if (item?.channel === 'hr-app-subscribe' && ['app.stateChanged','app.dialogRequested','app.lifecycleRequested','host.stateChanged','host.enableFinished'].includes(item.event)
         && typeof item.enabled === 'boolean') {
+      if (item.event === 'host.enableFinished' && !item.enabled) {
+        enableEpoch++; enableReplies.length = 0;
+      }
       send({event:item.event, enabled:item.enabled}).catch(() => {}); return;
     }
     if (item?.channel === 'hr-app-cancel' && typeof item.id === 'string') {
@@ -338,11 +365,17 @@ APP_RELAY = r"""(() => {
         'local.status','local.start','local.stop','local.restart','local.keepRunning.set',
         'local.repair','local.turnOff','local.update.status'].includes(item.command) || typeof item.data !== 'string'
         || typeof item.id !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
-    let raw, ok = true, delivery;
+    let raw, ok = true, delivery, enableDelivery;
     if (item.command === 'app.locale.set') {
       delivery = {};
       delivery.promise = new Promise(resolve => { delivery.resolve = resolve; });
       localeReplies.push(delivery);
+    }
+    if (item.command === 'host.enable') {
+      enableEpoch++; enableReplies.length = 0;
+      enableDelivery = {epoch:enableEpoch};
+      enableDelivery.promise = new Promise(resolve => { enableDelivery.resolve = resolve; });
+      enableReplies.push(enableDelivery);
     }
     try { raw = await send({command:item.command, data:item.data}); }
     catch (error) {
@@ -356,7 +389,7 @@ APP_RELAY = r"""(() => {
         'permissionDenied','unavailable','outcomeUnknown','notOwned','removalIncomplete','invalidRequest',
         'expired','identityChanged','unsupportedVersion','notLocalShell','invalidInvite','newInviteRequired',
         'networkUnavailable','trustMismatch','runtimeUnavailable','accessDenied','revokedConfirmed',
-        'keychainLocked','keychainDenied','saveFailed','hostStateUnrecognized'];
+        'keychainLocked','keychainDenied','saveFailed','hostStateUnrecognized','enablePreparationFailed'];
       const result = {code:codes.includes(detail?.code) ? detail.code : 'invalidRequest',
         effect:['none','unknown','confirmed'].includes(detail?.effect) ? detail.effect : 'unknown',
         recovery:['none','refresh','explicitRetry','newInviteOnHost','nativeRecovery','nativePermission','operatorRecovery'].includes(detail?.recovery)
@@ -365,10 +398,29 @@ APP_RELAY = r"""(() => {
       if (result.code === 'hostStateUnrecognized') result.category =
         ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown'].includes(detail.category)
           ? detail.category : 'unknown';
+      if (result.code === 'enablePreparationFailed') {
+        const categories = ['deb-layout-required','issuer-state-uncertain','account-shape',
+          'account-receipt-uncertain','foreign-unit','foreign-custody','publication-uncertain',
+          'address-changed','account-create-uncertain','cleanup-uncertain','materializer-uncertain',
+          'custody-uncertain','inventory','no_address','multiple_addresses','dial_ip','dial-ip',
+          'occupied-port','port-check-uncertain'];
+        if (Object.keys(detail).sort().join(',') === 'category,code,effect,recovery'
+            && categories.includes(detail.category) && detail.effect === 'unknown'
+            && detail.recovery === 'nativeRecovery') result.category = detail.category;
+        else Object.assign(result, {code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
+      }
       raw = JSON.stringify(result);
     }
     if (active && typeof raw === 'string' && new TextEncoder().encode(raw).length <= 32768)
       window.postMessage({channel:'hr-app-reply', id:item.id, raw, ok}, location.origin);
+    if (enableDelivery) {
+      try { enableDelivery.operationId = ok ? JSON.parse(raw).operationId : null; } catch {}
+      enableDelivery.resolve();
+      if (!enableDelivery.operationId || enableDelivery.epoch !== enableEpoch) {
+        const index = enableReplies.indexOf(enableDelivery);
+        if (index >= 0) enableReplies.splice(index, 1);
+      }
+    }
     if (delivery) {
       if (!ok) {
         const index = localeReplies.indexOf(delivery);
@@ -491,6 +543,7 @@ class AppScheme:
         self.lifecycle_subscribed = False
         self.lifecycle_pending = None
         self.host_subscribed = False
+        self.enable_subscribed = False
         self.host_adapter = None
         self.owners = None
         self.owner_uncertain = False
@@ -659,6 +712,9 @@ class AppScheme:
         with self.target_lock:
             old, generation = self.daemon, self.generation
             self.daemon, self.generation = target, new_generation()
+            if self.host_adapter is not None and self.enable_subscribed:
+                self.host_adapter.retire_enable(self)
+            self.set_enable_context()
             if self.status_stop is not None:
                 self.status_stop.set()
             for transfer in self.transfers.values():
@@ -724,6 +780,8 @@ class AppScheme:
             else:
                 self.host_adapter.unsubscribe(self)
         self.host_subscribed = False
+        if retire:
+            self.enable_subscribed = False
 
     def emit_state(self) -> None:
         if not self.subscribed or self.bridge_token is None or self.closed:
@@ -758,18 +816,42 @@ class AppScheme:
         return self.emit_event("app.lifecycleRequested", json.dumps(
             {"schema": 2, "requestId": request_id, "action": captured}, separators=(",", ":")))
 
+    def set_enable_context(self) -> None:
+        if self.bridge_token is None or self.closed or not self.enable_subscribed:
+            return
+        args = self.GLib.Variant("a{sv}", {"context": self.GLib.Variant("s", self.generation),
+            "token": self.GLib.Variant("s", self.bridge_token)})
+        self.view.call_async_javascript_function(
+            "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.setContext(context);",
+            -1, args, WORLD, ORIGIN + "/", None, None, None)
+
     def emit_event(self, event: str, raw: str) -> bool:
         subscribed = (self.subscribed if event == "app.stateChanged" else
                       self.dialog_subscribed if event == "app.dialogRequested" else
                       self.lifecycle_subscribed if event == "app.lifecycleRequested" else
-                      self.host_subscribed if event == "host.stateChanged" else False)
+                      self.host_subscribed if event == "host.stateChanged" else
+                      self.enable_subscribed if event == "host.enableFinished" else False)
         if not subscribed or self.bridge_token is None or self.closed:
             return False
-        args = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw),
-                                         "event": self.GLib.Variant("s", event),
-                                         "token": self.GLib.Variant("s", self.bridge_token)})
+        if event == "host.enableFinished":
+            try:
+                self.connection_protocol.validate(_contract.parse_json(raw, 1024),
+                    self.connection_protocol.events[event])
+            except (ValueError, TypeError, UnicodeError):
+                return False
+        fields = {"raw": self.GLib.Variant("s", raw), "event": self.GLib.Variant("s", event),
+                  "token": self.GLib.Variant("s", self.bridge_token)}
+        script = "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(event, raw);"
+        if event == "host.stateChanged":
+            fields["observation"] = self.GLib.Variant("s", str(self.host_adapter.host_epoch))
+            script = "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(event, raw, null, observation);"
+        if event == "host.enableFinished":
+            fields["context"] = self.GLib.Variant("s", self.generation)
+            fields["observation"] = self.GLib.Variant("s", str(self.host_adapter.host_epoch))
+            script = "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(event, raw, context, observation);"
+        args = self.GLib.Variant("a{sv}", fields)
         self.view.call_async_javascript_function(
-            "if (globalThis.hrAppBridge?.token === token) globalThis.hrAppBridge.emit(event, raw);",
+            script,
             -1, args, WORLD, ORIGIN + "/", None, None, None)
         return True
 
@@ -884,6 +966,9 @@ class AppScheme:
                 elif args != {} or item["data"] != "{}":
                     raise ValueError("unexpected arguments")
                 document, token = self.document, self.bridge_token
+                generation = self.generation
+                if item["command"] == "host.enable":
+                    self.set_enable_context()
                 def finish(result: object = None, error: str | dict | None = None, effect: str = "none",
                            recovery: str | None = None) -> None:
                     if self.closed or document != self.document or token != self.bridge_token:
@@ -899,7 +984,8 @@ class AppScheme:
                             try:
                                 self.connection_protocol.validate(detail, self.connection_protocol.schema["$defs"]["error"])
                             except ValueError:
-                                detail = {"code": "unavailable", "effect": "unknown", "recovery": "nativeRecovery"}
+                                detail = {"code": "outcomeUnknown" if detail.get("code") == "enablePreparationFailed"
+                                          else "unavailable", "effect": "unknown", "recovery": "nativeRecovery"}
                         reply.return_error_message(json.dumps(detail))
                     else:
                         if item["command"] in {"client.health", "client.retrySave", "client.removeSaved"} or host:
@@ -915,7 +1001,9 @@ class AppScheme:
                     else:
                         self.host_adapter.host_request(_contract.HOST_METHODS[item["command"]], finish,
                             owner=self, current=lambda: not self.closed and document == self.document
-                                and token == self.bridge_token, window=self.view.get_toplevel())
+                                and token == self.bridge_token, window=self.view.get_toplevel(),
+                            terminal_current=lambda: not self.closed and document == self.document
+                                and token == self.bridge_token and generation == self.generation)
                 elif not callable(self.client_dispatch):
                     finish(None, "unavailable")
                 elif args:
@@ -924,7 +1012,7 @@ class AppScheme:
                     self.client_dispatch(item["command"], document, finish)
                 return True
             elif (set(item) == {"token", "event", "enabled"}
-                  and item["event"] in ("app.stateChanged", "app.dialogRequested", "app.lifecycleRequested", "host.stateChanged") and type(item["enabled"]) is bool):
+                  and item["event"] in ("app.stateChanged", "app.dialogRequested", "app.lifecycleRequested", "host.stateChanged", "host.enableFinished") and type(item["enabled"]) is bool):
                 if item["event"] == "app.stateChanged":
                     self.subscribed = item["enabled"]
                 elif item["event"] == "app.dialogRequested":
@@ -933,6 +1021,19 @@ class AppScheme:
                     self.lifecycle_subscribed = item["enabled"]
                     if not self.lifecycle_subscribed:
                         self.lifecycle_pending = None
+                elif item["event"] == "host.enableFinished":
+                    self.enable_subscribed = item["enabled"]
+                    if self.host_adapter is None:
+                        raise ValueError("host unavailable")
+                    if self.enable_subscribed:
+                        document, token = self.document, self.bridge_token
+                        def current_enable() -> bool:
+                            return (not self.closed and document == self.document and token == self.bridge_token
+                                    and self.enable_subscribed)
+                        self.host_adapter.subscribe_enable(self, current=current_enable,
+                            emit=lambda raw: self.emit_event("host.enableFinished", raw) if current_enable() else False)
+                    else:
+                        self.host_adapter.unsubscribe_enable(self)
                 else:
                     self.host_subscribed = item["enabled"]
                     if self.host_adapter is None:

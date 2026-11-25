@@ -27,6 +27,12 @@ class ClosedError(Exception):
         self.value = dict(code=code, effect=effect, recovery=recovery)
         if code == "hostStateUnrecognized":
             self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES else 'unknown'
+        elif code == "enablePreparationFailed":
+            if (type(category) is str and category in contract.PREPARATION_CATEGORIES
+                    and effect == "unknown" and recovery == "nativeRecovery"):
+                self.value['category'] = category
+            else:
+                self.value = dict(code="outcomeUnknown", effect="unknown", recovery="nativeRecovery")
 
 
 class Terminal:
@@ -90,6 +96,8 @@ class Host:
         self.mutating = method in MUTATIONS
 
         def finish(result: dict | None = None, code: str | dict | None = None, effect: str = "none") -> None:
+            if outcome:
+                return
             outcome.append((result, code, effect))
             loop.quit()
 
@@ -109,6 +117,9 @@ class Host:
         return result
 
     def close(self) -> None:
+        observer = getattr(self, "enable_observer", None)
+        if observer is not None:
+            observer.close()
         if self.wait_source is not None:
             self.GLib.source_remove(self.wait_source)
             self.wait_source = None
