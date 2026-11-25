@@ -1378,19 +1378,22 @@ def test_exit_releases_name_before_quit_and_refuses_unique_name_race(venue: Any)
 
 
 @pytest.mark.parametrize('phase,expected', [('prepared', 'in_progress'), ('ready', 'ready'),
-                                          ('failed_uncertain', 'uncertain'), (None, 'unknown')])
+                                          ('failed_uncertain', 'failed_uncertain'), (None, 'ready')])
 def test_status_v2_bus_projection(venue: Any, monkeypatch: Any, phase: str | None, expected: str) -> None:
     helper, authority, operations, client, _ = venue
     observed = None if phase is None else HELPER._helper_generation.GenerationSnapshot(7, 'a' * 32, os.getuid(), phase)
     monkeypatch.setattr(helper.generations, 'current_generation', lambda _: observed)
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status',
+        lambda self, remaining: {'setup': 'pending' if phase == 'prepared' else
+                                'failed_uncertain' if phase == 'failed_uncertain' else 'ready'})
     before = Call(client, 'Status').finish()
     status = Call(client, 'StatusV2')
     value = status.finish()
     raw = status.reply.get_body().unpack()[0].encode()
     assert HELPER._status_v2.decode(raw).setup.state.value == expected
     assert len(raw) <= 16384 and raw.endswith(b'\n')
-    assert value['runtime'] == {'state': 'available', 'age_seconds': 0}
-    assert value['setup']['age_seconds'] == (None if phase is None else 0)
+    assert value['runtime'] == {'state': 'available' if expected == 'ready' else 'unavailable', 'age_seconds': 0}
+    assert value['setup']['age_seconds'] == 0  # The independent setup read is fresh even if generation read is unavailable.
     for dimension in ('invite', 'address', 'policy', 'cleanup'):
         assert value[dimension]['state'] == 'unknown' and value[dimension]['age_seconds'] is None
     assert Call(client, 'Status').finish() == before
@@ -1404,7 +1407,9 @@ def test_status_v2_stopped_connector_and_unreadable_store(venue: Any, monkeypatc
     def unavailable(_: float) -> None:
         raise HELPER._helper_generation.GenerationUnavailable()
     monkeypatch.setattr(helper.generations, 'current_generation', unavailable)
-    Call(client, 'StatusV2').finish('host-state-unrecognized')
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'current_generation', lambda *a: unavailable(1))
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status', lambda *a: unavailable(1))
+    Call(client, 'StatusV2').finish('host-state-unrecognized-unknown')
     assert not authority.calls and not operations.effects
 
 
@@ -1414,9 +1419,13 @@ def test_status_v2_policy_projection(venue: Any, monkeypatch: Any, policy: str) 
     calls = []
     class PolicyReader:
         def __init__(self, method: str, uid: int) -> None:
-            assert method == 'RetryPolicyRenewal' and uid == os.getuid()
+            assert method in ('RetryPolicyRenewal', 'Enable') and uid == os.getuid()
+            self.method = method
+        def setup_status(self, remaining: float) -> dict:
+            assert self.method == 'Enable' and 0 < remaining <= 2
+            return {'setup': 'ready'}
         def policy_status(self, remaining: float) -> dict:
-            assert 0 < remaining <= 2
+            assert self.method == 'RetryPolicyRenewal' and 0 < remaining <= 2
             calls.append(policy)
             return {'policy': policy}
     monkeypatch.setattr(HELPER._helper_generation, 'HomeLifecycleClient', PolicyReader)

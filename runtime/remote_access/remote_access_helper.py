@@ -280,16 +280,15 @@ class RemoteAccessHelper:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
                 closed = False
                 if observed is None:
-                    snapshot, closed = self._status_snapshot(uid, deadline)
+                    snapshot, closed, phase = self._status_snapshot(uid, deadline)
                 else:
                     try:
-                        snapshot, closed = self._status_snapshot(uid, deadline)
+                        snapshot, closed, phase = self._status_snapshot(uid, deadline)
                     except Refused as error:
                         if error.category != 'unavailable':
                             raise
                         snapshot = None
-                if snapshot is not None and getattr(snapshot, 'phase', None) in _helper_generation.SETUP_STATES:
-                    phase = snapshot.phase
+                if snapshot is not None:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(
                         'in_progress' if phase == 'pending' else phase), 0)
                     observed_at = time.monotonic()
@@ -376,7 +375,7 @@ class RemoteAccessHelper:
             raise Refused('changed')
         return snapshot
 
-    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool]:
+    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool, str]:
         """Display-only absence proof; never supplies a mutation's snapshot.
 
         A missing connector proves no setup phase. Reuse the unchanged Enable
@@ -391,7 +390,7 @@ class RemoteAccessHelper:
                 state = 'runtime_unavailable'
             if state != 'ready':
                 snapshot = replace(snapshot, phase=state, ready=False)
-            return snapshot, False
+            return snapshot, False, state
         except Refused as error:
             if error.category != 'unavailable':
                 raise
@@ -421,12 +420,12 @@ class RemoteAccessHelper:
                     raise ValueError()  # Keep the strict absence proof above.
                 if state == 'ready':
                     state = 'runtime_unavailable'
-                return Snapshot(0, uid, False, state, False, None, ()), False
+                return Snapshot(0, uid, False, state, False, None, ()), False, state
             except Exception:
                 if isinstance(error, _helper_generation.GenerationUnavailable):
                     raise Refused('host-state-unrecognized-' + error.category) from None
                 raise Refused('host-state-unrecognized') from None
-        return Snapshot(0, uid, True, 'off', False, None, ()), True
+        return Snapshot(0, uid, True, 'off', False, None, ()), True, 'off'
 
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
         target = (snapshot.pending if method != 'RevokeSelected' else
