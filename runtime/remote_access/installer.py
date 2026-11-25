@@ -3972,7 +3972,8 @@ class ManagedInstaller:
                                  0o600, dir_fd=parent)
             created = os.fstat(descriptor)
             try:
-                os.fchown(descriptor, *owner)
+                if (created.st_uid, created.st_gid) != owner:
+                    os.fchown(descriptor, *owner)
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
                     if stream.write(data) != len(data):
                         raise InstallerError("incomplete provisioning write")

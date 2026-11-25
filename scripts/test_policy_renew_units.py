@@ -22,7 +22,8 @@ PartOf=happyranch-managed.target
 [Service]
 Type=oneshot
 User=root
-Group=happyranch
+Group=root
+SupplementaryGroups=happyranch
 ExecStart=/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew
 NoNewPrivileges=yes
 ProtectSystem=strict

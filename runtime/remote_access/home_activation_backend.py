@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pwd
+import stat
 import sys
 import threading
 import time
@@ -454,6 +455,31 @@ class HelperLifecycleBackend:
             if self.capture(method, uid) != expected:
                 raise ActivationRefused()
             if method == 'Enable' and step == 'enable':
+                from runtime.remote_access.policy_renew_units import SERVICE_NAME, render_previous_service, render_service
+                from runtime.remote_access.home_unit_publication import publish_home_unit
+                def require_upgrade() -> None:
+                    if self.capture(method, uid) != expected:
+                        raise ActivationRefused()
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise ActivationRefused()
+                    upgrade_receipt = self.store.current()
+                    if upgrade_receipt is not None:
+                        from runtime.remote_access.home_activation_owner import HomeTokenSourceVerifier
+                        HomeTokenSourceVerifier(self.io).require(upgrade_receipt)
+                    props = self.io.manager.show_properties(SERVICE_NAME, (
+                        'FragmentPath', 'DropInPaths', 'NeedDaemonReload', 'LoadState'))
+                    if props != dict(FragmentPath=str(self.io.root / 'usr/lib/systemd/system' / SERVICE_NAME),
+                                     DropInPaths='', NeedDaemonReload='no', LoadState='loaded'):
+                        raise ActivationRefused()
+                # Authenticated helper child, same captured G/O and held flock.
+                # Republish only the one exact previous product rendering.
+                with self.io._publication_parent('usr/lib/systemd/system') as (parent, check):
+                    previous = self.io._read_file(parent, SERVICE_NAME, owner=self.io.root_owner, mode=0o644)
+                    check()
+                if previous != render_service().encode():
+                    publish_home_unit(self.io, SERVICE_NAME, legacy=render_previous_service().encode(),
+                                      home=render_service().encode(), require=require_upgrade)
+                    self.io.manager.daemon_reload()
                 current = self.store.current()
                 if current is not None and current.phase == 'ready':
                     # Ordinary boot-equivalent start, never activation replay.
@@ -481,6 +507,22 @@ class HelperLifecycleBackend:
                                 self.io.manager.start(name, timeout=45 if name.endswith('headscale.service') else 250)
                         if coordinator._owner.verify('joined', current) is not True:
                             raise ActivationRefused()
+                        from runtime.remote_access.policy_renew_units import TIMER_NAME
+                        # systemctl enable is idempotent; preserve the exact owned link.
+                        relative = 'etc/systemd/system/happyranch-managed.target.wants'
+                        with self.io._publication_parent(relative) as (parent, check):
+                            try:
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                self.io.manager.enable(TIMER_NAME)
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                                    or (info.st_uid, info.st_gid) != self.io.root_owner
+                                    or os.readlink(TIMER_NAME, dir_fd=parent) not in (
+                                        '../' + TIMER_NAME, '/usr/lib/systemd/system/' + TIMER_NAME,
+                                        str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
+                                raise ActivationRefused()
+                            check()
                     except Exception:
                         raise EnablePreparationRefused('ready-restart-failed-turn-off') from None
                 elif current is not None and current.phase == 'failed_uncertain':

@@ -4076,7 +4076,9 @@ def renewal_intent(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> tuple[P
     return folder, (folder / 'install-transaction.json').read_bytes()
 
 
-def test_renewal_order_metadata_and_provision_digest(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('chown_allowed', [False, True])
+def test_renewal_order_metadata_and_provision_digest(
+        fixture: Fixture, monkeypatch: pytest.MonkeyPatch, chown_allowed: bool) -> None:
     folder, now = renewal_setup(fixture, monkeypatch)
     before = fixture.inventory()
     old = json.loads((folder / 'provision.json').read_bytes())
@@ -4090,6 +4092,10 @@ def test_renewal_order_metadata_and_provision_digest(fixture: Fixture, monkeypat
         events.append(target)
         rename(parent, source, target, **kwargs)
     monkeypatch.setattr(fixture.installer, '_rename_provision_entry', observe)
+    if not chown_allowed:
+        def refuse_chown(*args: object) -> None:
+            raise PermissionError('synthetic empty capability set')
+        monkeypatch.setattr(os, 'fchown', refuse_chown)
     fixture.installer.renew_policy()
     assert events == ['install-transaction.json', 'policy.json', 'provision.json']
     assert metadata == {name: ((folder / name).stat().st_uid, (folder / name).stat().st_gid,

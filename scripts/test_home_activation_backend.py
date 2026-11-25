@@ -155,7 +155,8 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                         v.path('/' + relative).mkdir(mode=0o700, parents=True, exist_ok=True)
                     put(v.path('/var/lib/happyranch-headscale/db.sqlite'), b'synthetic native Headscale DB')
                 if name == adapters._TARGET:
-                    v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active'})
+                    v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active',
+                                     'happyranch-release-verifier.socket': 'active'})
                     v.path('/var/lib/happyranch-tsnet-sidecar').mkdir(mode=0o700, parents=True, exist_ok=True)
                     v.path('/run/happyranch-tsnet-sidecar').mkdir(mode=0o755, parents=True, exist_ok=True)
                     put(v.path('/run/happyranch-tsnet-sidecar/health.json'), b'{"backend":"Running"}\n', 0o644)
@@ -1628,3 +1629,24 @@ def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
     assert len(v.mints) == 1
     assert all(call[0] == 'start' for call in v.calls[calls:])
     assert v.states[adapters._HEADSCALE] == v.states[adapters._TARGET] == 'active'
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_thr327_ready_repairs_policy_unit_and_timer(composition: Any, legacy: bool) -> None:
+    from runtime.remote_access import policy_renew_units as policy
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    service = v.path('/usr/lib/systemd/system/' + policy.SERVICE_NAME)
+    if legacy: put(service, policy.render_previous_service().encode(), 0o644)
+    link = v.path('/etc/systemd/system/happyranch-managed.target.wants/' + policy.TIMER_NAME)
+    link.unlink()
+    ready, txn = v.path(ACTIVATION_PATH).read_bytes(), v.path(TRANSACTION_PATH).read_bytes()
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert service.read_bytes() == policy.render_service().encode()
+    assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
+    assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
+    assert len(v.mints) == 1

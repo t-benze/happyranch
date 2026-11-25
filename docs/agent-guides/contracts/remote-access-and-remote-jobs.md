@@ -4614,3 +4614,18 @@ persisted sidecar state and reports partial_cleanup naming them. This does not
 authorize ordinary restart of a partly removed publication. The existing failed-
 revoke partial state has no established fresh-Enable/replacement/purge exit;
 that sub-case remains a decision, not an offline revocation exception.
+
+
+### THR-327 renewal unit upgrade (TASK-19228)
+
+The fixed renewal oneshot uses User=root, Group=root and
+SupplementaryGroups=happyranch, retaining empty capability sets and existing
+hardening. Pending publication skips fchown only when fstat already reports the
+exact required UID:GID; all final custody checks still apply. Fresh-auth Enable
+under the activation lock accepts only the exact previous v6/v7 renewal service
+bytes (Group=happyranch) or current bytes at the fixed packaged path. A previous
+unit is atomically republished with pinned-parent, no-pending, exact owner/mode,
+loaded-fragment, drop-in, G/O and deadline checks, followed by daemon-reload.
+Unknown bytes still refuse. No receipt/config/credential migration occurs.
+Ready Enable also ensures the exact renewal timer enablement link exists; it
+never returns ready after refusing that check. Package and renderer bytes match.
