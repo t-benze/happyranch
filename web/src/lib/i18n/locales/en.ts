@@ -3997,7 +3997,7 @@ export const en = {
   "connection.host.hInviteNative": "The invite is shown only in the native invite window. Paste it into HappyRanch on the connecting computer and share it privately.",
   "connection.host.hInviteNoCancel": "Cancelling or replacing an invite isn’t available in this version. Closing the invite window doesn’t cancel it; it stays valid until it expires or is used.",
   "connection.host.hInviteExpired": "The last invite expired. Add a device again if the computer still needs to connect.",
-  "connection.host.hInvitePreparing": "Invite preparation hasn’t completed. Check again; use native recovery if it remains incomplete.",
+  "connection.host.hInvitePreparing": "Invite preparation hasn’t completed. Use native recovery if it remains incomplete.",
   "connection.host.hInviteRefused": "Invite creation was refused. Check Host status before trying again.",
   "connection.host.hInviteUncertain": "The invite outcome is uncertain. Use native recovery before creating another invite.",
   "connection.host.hInviteRecovered": "The previous invite was invalidated by recovery.",
