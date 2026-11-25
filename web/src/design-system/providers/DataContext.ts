@@ -771,6 +771,29 @@ export interface TaskAttributesApi {
   useTaskAttributeActions: () => TaskAttributeActions;
 }
 
+// ---------------------------------------------------------------------------
+// TaskAttributeValuesApi — Task detail › Attributes values (THR-390 PR7).
+// One GET /tasks/{id}/attributes snapshot feeds the card, the editor and the
+// history; every enabling decision renders its server `editability`.
+// ---------------------------------------------------------------------------
+
+export interface TaskAttributeValueActions {
+  /** One atomic PUT of per-field changes; never retried or replayed. */
+  save: (changes: TaskAttributeTypes.AttributeChange[]) => Promise<TaskAttributeTypes.TaskAttributesRead>;
+  /** One fresh GET (Reload latest / Refresh to check); it also refreshes the shared read. */
+  read: () => Promise<TaskAttributeTypes.TaskAttributesRead>;
+  /** MEM-300: true only while the cached read is a settled success. */
+  isCurrent: () => boolean;
+  /** Replace the shared read with a confirmed server projection. */
+  accept: (read: TaskAttributeTypes.TaskAttributesRead) => void;
+}
+
+export interface TaskAttributeValuesApi {
+  /** The task's attribute projection; `fresh` re-reads on mount (editor, history). */
+  useTaskAttributes: (taskId: string, fresh?: boolean) => TaskAttributesQuery<TaskAttributeTypes.TaskAttributesRead>;
+  useTaskAttributeValueActions: (taskId: string) => TaskAttributeValueActions;
+}
+
 export interface DataContextValue {
   workflows: WorkflowsApi;
   orgs: OrgsApi;
@@ -790,6 +813,7 @@ export interface DataContextValue {
   skills: SkillsApi;
   workHours: WorkHoursApi;
   taskAttributes: TaskAttributesApi;
+  taskAttributeValues: TaskAttributeValuesApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read

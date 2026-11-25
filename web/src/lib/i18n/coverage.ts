@@ -150,6 +150,10 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       CancelTaskDialog: 'src/features/tasks/CancelTaskDialog.tsx',
       RevisitTaskDialog: 'src/features/tasks/RevisitTaskDialog.tsx',
       ResolveEscalationDialog: 'src/features/tasks/ResolveEscalationDialog.tsx',
+      // THR-390 PR7: Task detail › Attributes (flag task_attributes_ui).
+      TaskAttributesCard: 'src/features/tasks/attributes/TaskAttributesCard.tsx',
+      TaskAttributesEditorDialog: 'src/features/tasks/attributes/TaskAttributesEditorDialog.tsx',
+      TaskAttributeHistoryDialog: 'src/features/tasks/attributes/TaskAttributeHistoryDialog.tsx',
     },
     routeTokens: ['tasks', 'tasks/:task_id'],
     // W3b-1: list/detail panes, filters, status/fan-out presentation, states
@@ -161,6 +165,9 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'CancelTaskDialog',
       'RevisitTaskDialog',
       'ResolveEscalationDialog',
+      'TaskAttributesCard',
+      'TaskAttributesEditorDialog',
+      'TaskAttributeHistoryDialog',
     ],
   },
   {

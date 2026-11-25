@@ -73,7 +73,8 @@ export type OwnerPage =
   | 'skills.customCreate'
   | 'skills.customDetail'
   | 'workHours.tier'
-  | 'settings.taskAttributes';
+  | 'settings.taskAttributes'
+  | 'tasks.attributes';
 
 export interface OwnerIdentity {
   scope: OwnerScope;
