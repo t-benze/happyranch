@@ -42,8 +42,8 @@ export function constraintSummary(t: T, d: Pick<AttributeDefinition, 'type' | 'c
     const min = num('min_length');
     const max = num('max_length');
     if (min !== undefined && max !== undefined) return t('settings.taskAttributes.constraint.lenRange', { min, max });
-    if (max !== undefined) return t('settings.taskAttributes.constraint.lenMax', { max });
-    if (min !== undefined) return t('settings.taskAttributes.constraint.lenMin', { min });
+    if (max !== undefined) return t('settings.taskAttributes.constraint.lenMax', { count: max });
+    if (min !== undefined) return t('settings.taskAttributes.constraint.lenMin', { count: min });
     return t('settings.taskAttributes.constraint.textAny');
   }
   if (d.type === 'boolean') return t('settings.taskAttributes.constraint.trueFalse');

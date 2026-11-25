@@ -160,7 +160,7 @@ export function DefinitionDetailDialog({
                 {current.version === 1 && <p className="text-text-secondary text-sm">{t('settings.taskAttributes.detail.noEarlier')}</p>}
                 {allPagesLoaded && remaining > 0 && (
                   <Button variant="outline" size="sm" className="bg-surface-raised self-start" onClick={() => setPages((p) => [...p, pageBelow(lastRequested, PAGE)])}>
-                    {t('settings.taskAttributes.detail.loadEarlier', { n: Math.min(PAGE, remaining) })}
+                    {t('settings.taskAttributes.detail.loadEarlier', { count: Math.min(PAGE, remaining) })}
                   </Button>
                 )}
               </section>
