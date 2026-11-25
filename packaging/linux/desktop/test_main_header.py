@@ -1,4 +1,4 @@
-"""Headless header boundary checks: shipped run_gui, synthetic GTK and status owner."""
+"""Headless Main boundary checks: default titlebar, document Retry and lifecycle entry."""
 from __future__ import annotations
 
 import io
@@ -22,7 +22,8 @@ class HeaderTests(unittest.TestCase):
                  scheme_failure=False):
         from gi.repository import Gio
         callbacks, timers, widgets = queue.Queue(), [], []
-        self.loaded_uris = []
+        self.loaded_uris, self.attempts = [], []
+        self.titlebars, self.actions, self.accels = [], {}, {}
         test = self
 
         class Widget:
@@ -38,6 +39,10 @@ class HeaderTests(unittest.TestCase):
             def pack_start(self, child, *_args):
                 self.add(child)
             pack_end = pack_start
+            def get_child(self):
+                return self.children[0] if self.children else None
+            def set_titlebar(self, header):
+                test.titlebars.append(header)
             def get_children(self):
                 return self.children[:]
             def remove(self, child):
@@ -58,6 +63,8 @@ class HeaderTests(unittest.TestCase):
                 return lambda *_args: None
 
         app, shell = Widget(), Widget()
+        app.add_action = lambda action: self.actions.update({action.name: action})
+        app.set_accels_for_action = lambda name, keys: self.accels.update({name: keys})
         self.data = {"schema": 2, "state": "no_target", "target": None,
                      "incompatible": None, "candidate": None, "access_unsaved": False}
         self.requests, self.available, self.owner_available = [], True, True
@@ -66,15 +73,23 @@ class HeaderTests(unittest.TestCase):
             self.requests.append(dialog)
             return self.available
         scheme = SimpleNamespace(view=Widget(), status=lambda: self.data if self.owner_available else None, request_dialog=request,
-                                 close=lambda: None)
+                                 close=lambda: None, closed=False, document=0, bridge_token="fixture",
+                                 lifecycle_pending=None, owners=None, owner_uncertain=False, access_unsaved=False,
+                                 request_lifecycle=lambda action, admit: self.requests.append(action) or False)
+        self.scheme, self.shell = scheme, shell
         self.labels = lambda: [w.label for w in widgets if w.visible and w.label]
         def button(label, visible=True):
             found = [w for w in widgets if w.label == label and (w.visible or not visible) and "clicked" in w.signals]
-            test.assertEqual(len(found), 1, f"missing header action {label}: {self.labels()}")
+            test.assertTrue(found, f"missing content action {label}: {self.labels()}")
             return found[0]
         self.button = button
         self.click = lambda label, visible=True: button(label, visible).signals["clicked"](button(label, visible))
         self.refresh = lambda: [callback() for callback in timers]
+        def drain():
+            while not callbacks.empty():
+                callback, args = callbacks.get_nowait()
+                callback(*args)
+        self.drain = drain
         def run(_args):
             app.signals["activate"](app)
             for _ in range(50):
@@ -87,26 +102,43 @@ class HeaderTests(unittest.TestCase):
                         "packaged web interface" in w.label or "打包的网页界面" in w.label for w in widgets):
                     break
             try:
-                self.assertIn("设置" if chinese else "Settings", self.labels(), "Main header needs both named dialog actions")
+                self.assertEqual(self.titlebars, [], "Main must use the plain system title bar")
                 self.refresh()
                 check()
                 self.assertEqual(lifecycle, ["launch"], "dialog entry cannot start/restart service")
             finally:
+                self.response = 1
                 shell.signals["delete-event"]()
             return 0
         app.run = run
         gi, repository = ModuleType("gi"), ModuleType("gi.repository")
         gi.require_version = lambda *_args: None
+        def action(name, _parameter):
+            result = Widget()
+            result.name = name
+            return result
         repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
             Cancellable=Gio.Cancellable,
-            SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+            SimpleAction=SimpleNamespace(new=action))
         repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
             unix_signal_add=lambda *_args: None, source_remove=lambda *_args: None,
             timeout_add=lambda _ms, callback: timers.append(callback) or len(timers),
             idle_add=lambda callback, *args: callbacks.put((callback, args)))
+        self.dialogs, self.response = [], 0
+        class Dialog(Widget):
+            def add_buttons(self, *buttons):
+                self.buttons = buttons
+            def set_default_response(self, response):
+                self.default = response
+            def run(self):
+                self.signals["ran"] = True
+                test.dialogs.append(self)
+                return test.response
         repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
             ApplicationWindow=lambda **_kwargs: shell, HeaderBar=Widget, Box=Widget,
             Label=Widget, Button=Widget, Separator=Widget, Switch=Widget,
+            MessageDialog=Dialog, MessageType=SimpleNamespace(WARNING=0),
+            ButtonsType=SimpleNamespace(NONE=0, CLOSE=1), ResponseType=SimpleNamespace(CANCEL=0, OK=1),
             Orientation=SimpleNamespace(VERTICAL=0, HORIZONTAL=1), Align=SimpleNamespace(CENTER=0))
         repository.WebKit2 = SimpleNamespace(WebView=Widget)
         repository.Pango = SimpleNamespace(EllipsizeMode=SimpleNamespace(END=3))
@@ -115,11 +147,12 @@ class HeaderTests(unittest.TestCase):
             lifecycle.append("launch")
             return "http://127.0.0.1:43127/"
         service = SimpleNamespace(start=start,
-            shutdown_pending=False, lifetime_state=lambda: "off", update_installed=lambda _prefix: False)
+            shutdown_pending=False, attached=False, lifetime_state=lambda: "off", update_installed=lambda _prefix: False)
         fixture = ModuleType("header_fixture")
         fixture.scheme = scheme
+        fixture.attempts = self.attempts
         fixture.connections = self.connections
-        fixture.ClientUI = lambda *_args: SimpleNamespace(model=SimpleNamespace(),
+        fixture.ClientUI = lambda *_args: SimpleNamespace(model=SimpleNamespace(saving=False, storage_busy=False, startup_selection_saved=True),
             attach_main=lambda *_args: None, shutdown=lambda: None)
         with tempfile.TemporaryDirectory() as scratch:
             prefix = Path(scratch)
@@ -136,9 +169,9 @@ class HeaderTests(unittest.TestCase):
                 shutil.copy2(Path(__file__).with_name(name), installed / name)
             shutil.copy2(Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json", installed)
             (installed / "app_scheme_webkit.py").write_text(
-                "from header_fixture import scheme\nORIGIN='happyranch-app://app'\n"
-                + ("def AppScheme(*args, **kwargs): raise ValueError('unavailable')\n" if scheme_failure else
-                   "def AppScheme(*args, **kwargs): return scheme\n"))
+                "from header_fixture import scheme, attempts\nORIGIN='happyranch-app://app'\n"
+                + ("def AppScheme(*args, **kwargs):\n attempts.append(args)\n raise ValueError('unavailable')\n" if scheme_failure else
+                   "def AppScheme(*args, **kwargs):\n attempts.append(args)\n return scheme\n"))
             (installed / "client_ui.py").write_text(
                 "from header_fixture import ClientUI\n")
             # Regression canary: any revived native fallback is observable.
@@ -158,127 +191,80 @@ class HeaderTests(unittest.TestCase):
                     patch.object(native, "_locale", store, create=True), \
                     patch.object(native, "RemoteAccessPanel", return_value=SimpleNamespace(box=Widget(), close=lambda: None)), \
                     patch.object(native, "ServiceMode", return_value=service), \
+                    patch.object(native, "_startup", SimpleNamespace(load=lambda: {"current": "local"}, current=lambda: {"persisted": True})), \
+                    patch.object(native.LocalControls, "observe", return_value={"running": "stopped", "keepRunning": "off"}), \
+                    patch.object(native, "confirm_lifecycle", return_value=True), \
                     patch.object(native, "acquire_lock", return_value=io.BytesIO()):
                 self.assertEqual(native.run_gui(prefix, prefix / "home"), 0)
 
-    def test_saved_locale_controls_native_header_in_fresh_process(self):
+    def test_saved_locale_controls_native_fallback_in_fresh_process(self):
         for locale, chinese in (("zh-CN", True), ("en", False)):
             with self.subTest(locale=locale):
-                code = ("from test_main_header import HeaderTests; "
-                        f"HeaderTests().exercise(lambda: None, chinese={chinese!r}, "
+                error = "无法加载打包的网页界面。" if chinese else "The packaged web interface could not load."
+                code = ("from test_main_header import HeaderTests; case=HeaderTests(); "
+                        f"case.exercise(lambda: case.assertTrue(any({error!r} in label for label in case.labels())), "
+                        f"chinese={chinese!r}, scheme_failure=True, "
                         f"saved_locale={locale!r}, system_chinese={not chinese!r})")
                 result = subprocess.run([sys.executable, "-B", "-c", code],
                     cwd=Path(__file__).parent, env=os.environ.copy(), capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_pill_states_and_target_identity_in_both_locales(self):
+    def test_main_has_no_native_header_controls_in_any_target_state(self):
         for chinese in (False, True):
-            with self.subTest(chinese=chinese):
-                def check():
-                    self.assertIn("尚未选择连接" if chinese else "No connection selected", self.labels())
-                    for kind, name in (("local", "This computer"), ("remote", "Studio <Host>")):
-                        self.data["target"] = {"kind": kind, "id": "local" if kind == "local" else "saved-1", "name": name}
-                        for state, en, zh in (("target_starting", "Starting", "正在启动"),
-                                ("ready", "Connected", "已连接"), ("unreachable", "Unavailable", "无法连接"),
-                                ("busy", "Busy", "忙碌")):
-                            self.data["state"] = state
-                            self.refresh()
-                            identity = ("此电脑" if chinese else "This computer") if kind == "local" else name
-                            self.assertIn(f"{identity} · {zh if chinese else en}", self.labels())
-                        self.data["state"] = "incompatible"
-                        for side, en, zh in (("host", "Update Host", "更新主机"),
-                                            ("app", "Update app", "更新应用"),
-                                            ("unknown", "Check compatibility", "检查兼容性")):
-                            self.data["incompatible"] = {"side": side}
-                            self.refresh()
-                            self.assertTrue(any((zh if chinese else en) in label for label in self.labels()))
-                self.exercise(check, chinese)
+            def check():
+                for state in ("no_target", "target_starting", "ready", "unreachable", "busy", "incompatible"):
+                    self.data.update(state=state, access_unsaved=True,
+                                     candidate={"name": "Host", "phase": "awaiting_approval"})
+                    self.refresh()
+                    self.assertEqual(self.titlebars, [])
+                    for label in ("Connection", "Settings", "Quit", "Relaunch", "Exit anyway…",
+                                  "连接", "设置", "退出", "重新启动", "仍要退出…"):
+                        self.assertNotIn(label, self.labels())
+                self.assertEqual(self.requests, [])
+            self.exercise(check, chinese)
 
-    def test_candidate_and_unsaved_badge_survive_target_loss(self):
+    def test_close_and_ctrl_q_keep_native_lifecycle_confirmation(self):
+        def check():
+            self.assertEqual(self.accels["app.quit"], ["<Primary>q"])
+            self.actions["quit"].signals["activate"]()
+            self.assertEqual(self.requests, ["quit"])
+            self.shell.signals["delete-event"]()
+            self.assertEqual(self.requests, ["quit", "close"])
+            self.assertTrue(self.dialogs, "held owners must show a native prompt")
+            self.assertEqual(self.dialogs[-1].buttons, ("Stay", 0, "Exit anyway…", 1))
+            self.assertEqual(self.dialogs[-1].default, 0)
+        self.exercise(check)
+
+    def test_document_load_failure_retry_reloads_only_the_document(self):
         for chinese in (False, True):
-            with self.subTest(chinese=chinese):
-                def check():
-                    badge = "访问权限未保存" if chinese else "Access wasn't saved"
-                    self.data["access_unsaved"] = True
-                    self.data["candidate"] = {"name": "Work Host", "phase": "awaiting_approval"}
-                    self.refresh()
-                    self.assertIn(badge, self.labels())
-                    self.assertTrue(any("Work Host" in label for label in self.labels()))
-                    self.click(badge)
-                    self.assertEqual(self.connections, [])
-                    self.assertEqual(self.requests, ["connection"])
-                    self.data.update(target=None, candidate=None, state="no_target")
-                    self.refresh()
-                    self.assertIn(badge, self.labels())
-                    self.owner_available = False
-                    self.refresh()
-                    self.assertIn(badge, self.labels(), "document loss cannot confirm a save")
-                    self.owner_available = True
-                    self.data["access_unsaved"] = False
-                    self.refresh()
-                    self.assertNotIn(badge, self.labels())
-                self.exercise(check, chinese)
+            def check():
+                self.scheme.view.signals["load-failed"](self.scheme.view, None, None, ValueError("fixture load failure"))
+                self.drain()
+                self.assertTrue(any("fixture load failure" in label for label in self.labels()))
+                self.click("重试" if chinese else "Retry")
+                self.assertEqual(self.loaded_uris, ["happyranch-app://app/"] * 2)
+                self.assertEqual(self.requests, [])
+            self.exercise(check, chinese)
 
-    def test_header_entry_has_no_lifecycle_or_target_effect_and_manual_retry(self):
-        for chinese in (False, True):
-            with self.subTest(chinese=chinese):
-                def check():
-                    connection, settings = ("连接", "设置") if chinese else ("Connection", "Settings")
-                    retry = "设置暂不可用 · 重试" if chinese else "Settings unavailable · Retry"
-                    self.click(connection)
-                    self.click(settings)
-                    self.assertEqual(self.requests, ["connection", "settings"])
-                    original = dict(self.data)
-                    self.available = False
-                    self.click(settings)
-                    self.assertIn(retry, self.labels())
-                    self.available = True
-                    self.refresh()
-                    self.assertEqual(self.requests, ["connection", "settings", "settings"], "no automatic replay")
-                    self.click(retry)
-                    self.assertEqual(self.requests[-1], "settings")
-                    self.assertNotIn(retry, self.labels())
-                    self.assertEqual(self.data, original)
-                self.exercise(check, chinese)
-
-    def test_connection_entries_request_main_in_both_flag_environments(self):
+    def test_main_uses_packaged_document_in_both_flag_environments(self):
         for app_scheme in (False, True):
-            for chinese in (False, True):
-                for entry in ("button", "badge"):
-                    with self.subTest(app_scheme=app_scheme, chinese=chinese, entry=entry):
-                        def check():
-                            self.assertEqual(self.loaded_uris, ["happyranch-app://app/"])
-                            connection = "连接" if chinese else "Connection"
-                            badge = "访问权限未保存" if chinese else "Access wasn't saved"
-                            retry = "连接暂不可用 · 重试" if chinese else "Connection unavailable · Retry"
-                            self.data["access_unsaved"] = True
-                            self.refresh()
-                            original = dict(self.data)
-                            self.available = False
-                            self.click(connection if entry == "button" else badge)
-                            self.assertEqual(self.requests, ["connection"])
-                            self.assertEqual(self.connections, [], "no native fallback")
-                            self.assertIn(retry, self.labels())
-                            self.available = True
-                            self.refresh()
-                            self.assertEqual(self.requests, ["connection"], "no automatic replay")
-                            self.click(retry)
-                            self.assertEqual(self.requests, ["connection", "connection"])
-                            self.assertNotIn(retry, self.labels())
-                            self.assertEqual(self.data, original)
-                        self.exercise(check, chinese, app_scheme)
+            def check():
+                self.assertEqual(self.loaded_uris, ["happyranch-app://app/"])
+                self.assertEqual(self.connections, [])
+                self.assertEqual(self.requests, [])
+            self.exercise(check, app_scheme=app_scheme)
 
-    def test_scheme_load_failure_has_error_and_no_native_fallback(self):
+    def test_scheme_load_failure_has_error_and_document_retry(self):
         for chinese in (False, True):
-            with self.subTest(chinese=chinese):
-                def check():
-                    self.assertEqual(self.loaded_uris, [])
-                    error = "无法加载打包的网页界面。" if chinese else "The packaged web interface could not load."
-                    self.assertTrue(any(label.startswith(error) for label in self.labels()), self.labels())
-                    self.click("连接" if chinese else "Connection")
-                    self.assertEqual(self.connections, [])
-                    self.assertEqual(self.requests, [])
-                self.exercise(check, chinese, app_scheme=False, scheme_failure=True)
+            def check():
+                self.assertEqual(self.loaded_uris, [])
+                error = "无法加载打包的网页界面。" if chinese else "The packaged web interface could not load."
+                self.assertTrue(any(error in label for label in self.labels()), self.labels())
+                self.click("重试" if chinese else "Retry")
+                self.assertEqual(self.loaded_uris, [], "missing assets remain a native error")
+                self.assertEqual(len(self.attempts), 2, "Retry must attempt to load assets again")
+                self.assertEqual(self.requests, [])
+            self.exercise(check, chinese, scheme_failure=True)
 
 
 if __name__ == "__main__":

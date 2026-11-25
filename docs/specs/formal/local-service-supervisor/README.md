@@ -151,3 +151,19 @@ Repeat for `app-remote-on.cfg` and `app-negative-skip-assets.cfg` with distinct
 metadirs. The negative deliberately bypasses compatible-assets admission;
 expected exit 12 violates `RelaunchNeedsAssets`. Actual results are in
 [RESULTS.md](RESULTS.md). No CI gate or automation is added.
+
+THR-387 seq146 entry parity: the web app-incompatible needs-update screen uses
+closed `app.relaunch` only with explicit `app_relaunch:true`. It maps to the same
+`Request("relaunch")`, not a new transition. Document Retry maps to replacement
+and never an effect; explicit Exit anyway in a blocked native prompt maps to
+`RecoveryExit("quit")`. The model does not prove JSON parsing, support gating or
+UI placement. The source entry map is updated in AppLifecycle.tla; its unchanged
+safety graph is rechecked for this delivery, separately from behavioral tests.
+
+TASK-19091 recheck (2026-11-25): official v1.7.4 jar with the pinned SHA-256
+above, TLC 2.19, one worker, fp 0, seed 1. Both app-local-off.cfg and
+app-remote-on.cfg exited 0: 6490 generated / 3768 distinct states, depth 13,
+empty queue and no safety error. app-negative-skip-assets.cfg exited 12 with
+the intended RelaunchNeedsAssets counterexample. Entry-map comments alone
+changed; model transitions and checked invariants are unchanged. Logs are in
+output/TASK-19091, not a claim of native UI or effect proof.

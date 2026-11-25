@@ -3637,6 +3637,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "knowledge.instill.history.note": "导入的笔记会通过常规记忆进入此智能体的下一次新会话。正在运行的会话不受影响。",
   // --- THR-387 S1b: native recovery states + compatibility page ---
   "recovery.retry": "重试",
+  "recovery.relaunch": "重新启动",
+  "recovery.relaunchFailed": "无法请求重新启动。请重新检查后重试。",
   "recovery.recheck": "重新检查",
   "recovery.kept": "此页面和未保存的编辑会保持原样。",
   "recovery.details": "详细信息：{code}",

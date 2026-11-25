@@ -6,12 +6,14 @@
  * recovery state is active. The routed page stays mounted (hidden), so drafts
  * and page state survive; the Sidebar and AppBar (including Language) stay
  * reachable. Settings fences only its target-backed sections, so Settings ->
- * Preferences stays usable. The Connection/Settings dialogs are S6 and do not
- * exist yet, so this panel names Connection in copy but offers only
- * Retry/Recheck.
+ * Preferences stays usable. Relaunch is available only on the app-incompatible
+ * needs-update screen when native explicitly advertises support.
  */
 import { CircleHelp, CircleArrowUp, Hourglass, Loader, RefreshCw, Unplug, WifiOff } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { Button } from '@/design-system/primitives/Button';
+import { useNativeAppStatus } from '@/lib/native/hooks';
+import { nativeBridge } from '@/lib/native/target';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useTranslation } from '@/hooks/i18n';
 import { useNativeRecovery, useRetryNativeRecovery } from '@/hooks/nativeRecovery';
@@ -63,6 +65,24 @@ export interface NativeRecoveryPanelProps {
 export function NativeRecoveryPanel({ state, onRetry }: NativeRecoveryPanelProps): JSX.Element {
   const { t } = useTranslation();
   const copy = copyFor(state);
+  const app = useNativeAppStatus();
+  const [relaunching, setRelaunching] = useState(false);
+  const [relaunchFailed, setRelaunchFailed] = useState(false);
+  const canRelaunch = state.code === 'incompatible' && state.side === 'app'
+    && app?.state === 'incompatible' && app.incompatible?.side === 'app' && app.app_relaunch === true;
+  const relaunch = async (): Promise<void> => {
+    const bridge = nativeBridge();
+    if (!bridge || !canRelaunch || relaunching) return;
+    setRelaunching(true);
+    setRelaunchFailed(false);
+    try {
+      await bridge.call('app.relaunch', '{}');
+    } catch {
+      setRelaunchFailed(true);
+    } finally {
+      setRelaunching(false);
+    }
+  };
   return (
     <section
       role="status"
@@ -83,6 +103,12 @@ export function NativeRecoveryPanel({ state, onRetry }: NativeRecoveryPanelProps
               <p>{t(copy.body)}</p>
               {copy.otherComputer && <p>{t('recovery.incompatible.otherComputer')}</p>}
               <p>{t('recovery.kept')}</p>
+              {canRelaunch && (
+                <Button disabled={relaunching} className="whitespace-normal" onClick={() => { void relaunch(); }}>
+                  {t('recovery.relaunch')}
+                </Button>
+              )}
+              {canRelaunch && relaunchFailed && <p role="alert">{t('recovery.relaunchFailed')}</p>}
               <p className="text-xs break-words">{t('recovery.details', { code: diagnostic(state) })}</p>
             </div>
           }

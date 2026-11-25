@@ -42,6 +42,8 @@ export interface AppCandidate {
 
 export interface AppState {
   schema: 2;
+  /** Optional Linux app.relaunch support; absent/false means unsupported. */
+  app_relaunch?: boolean;
   generation: string;
   target: AppTarget | null;
   state: AppStateCode;
@@ -120,7 +122,10 @@ export function parseAppState(raw: unknown): AppState | null {
   } catch {
     return null;
   }
-  if (!closed(value, ['schema', 'generation', 'target', 'state', 'incompatible', 'local', 'candidate', 'access_unsaved', 'locale'])) {
+  const optional = value !== null && typeof value === 'object' && Object.hasOwn(value, 'app_relaunch');
+  const keys = ['schema', 'generation', 'target', 'state', 'incompatible', 'local', 'candidate', 'access_unsaved', 'locale'];
+  if (optional) keys.push('app_relaunch');
+  if (!closed(value, keys) || (optional && typeof value.app_relaunch !== 'boolean')) {
     return null;
   }
   if (value.schema !== 2 || !isGeneration(value.generation) || !oneOf(value.state, STATES)) return null;

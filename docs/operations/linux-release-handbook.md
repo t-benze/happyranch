@@ -143,7 +143,7 @@ The setter performs no daemon request, target/generation change, navigation,
 service restart or app relaunch.
 
 The GTK launch translation closure reads `load()` once instead of `LANG` alone.
-Native header, menus and dialogs retain that language until next app launch;
+Native menus and dialogs retain that language until next app launch;
 service-only Restart is not an app launch. Built-in target/candidate names also
 retain the launch language in native state. No synchronous locale property or
 HTML `lang` injection precedes page scripts: web obtains native locale through
@@ -155,11 +155,11 @@ directories outside real user config, then run from `packaging/linux/desktop`:
 `GSETTINGS_BACKEND=memory /usr/bin/python3 -B -m unittest test_app_locale -v`.
 Check a saved choice in a new process, a read-only config directory, corrupt
 files, and rapid threaded sets; no daemon or Product E2E is needed.
-Bridge ordering/refusal and fresh-process native-header checks use the existing
+Bridge ordering/refusal and fresh-process native-fallback checks use the existing
 direct native test venue:
 `GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v`
 and `GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v`
-from the repository root. Real WebKitGTK/header visuals need a disposable
+from the repository root. Real WebKitGTK/fallback visuals need a disposable
 desktop/Xvfb session; headless checks do not establish that acceptance.
 
 ## Build the intermediate payload
@@ -802,67 +802,46 @@ keeps its existing startup behavior and remote Enable refuses
 `release_home_invalid`. This changes no shared development-home creation, other
 file modes, systemd UMask or helper-owner safety checks (THR-327 seq613).
 
-### Native Main header (Settings S6-L)
+### Main web header and native recovery (THR-387 seq146)
 
-The GTK Main header has labelled **Connection / 连接** and **Settings / 设置**
-entry actions. With the packaged Main scheme, its status pill reads the
-native `app.status` v2 projection: no selection, starting, connected,
-unavailable, busy, or incompatible with Host/app/unknown-side guidance. It
-preserves **This computer / 此电脑** versus the selected remote name and shows
-the candidate's separate sign-in/approval/ready-to-switch/failure/cancelled phase.
-Long names are ellipsized with full native tooltips. Native copy follows the
-launch locale; web locale changes do not relabel the native header until next
-launch.
+Main keeps the plain default system title bar. There is no custom GTK
+MainHeader, toolbar, or native Quit/Relaunch/Exit anyway button. The packaged
+web DesktopHeader owns Connection, Settings, the target/candidate status and
+Access wasn't saved warning, including recovery states. Native
+`AppScheme.request_dialog` and its closed event boundary remain available.
 
-Content replacement preserves the native titlebar during startup, web loading,
-restart/error recovery and Retry. A newly launched Main installs its own header;
-GTK's child enumeration includes that header, so only content is removed.
+Ctrl+Q (`app.quit`) and window close (`delete-event` → `request_close`) still
+enter the existing lifecycle owner/confirmation path. Relaunch is offered only
+on the web needs-update screen for app-side incompatibility, and only when the
+native appState advertises `app_relaunch:true`. Linux emits this optional JSON
+boolean in app.status and every app.stateChanged. Absent/false means unsupported;
+unmodified Mac sends no field and retains guidance/Recheck without Relaunch.
+The closed `app.relaunch` payload is exactly `{}` and only requests the existing
+native relaunch lifecycle. It never automatically relaunches or bypasses native
+confirmation, owner consent, service policy or installed-assets proof.
 
-The **Access wasn't saved / 访问权限未保存** badge follows `access_unsaved`,
-including no-target recovery. Losing the web document does not clear the warning.
-Its keyboard-accessible action requests the Connection dialog in Main;
-its tooltip explains Retry saving and that a new invite may be needed.
-Only the native owner's confirmed save projection clears the badge; header
-actions do not write that state.
+Both packaged-interface construction failure and WebKit document `load-failed`
+replace content with a native error and **Retry / 重试**. Retry reconstructs the
+packaged document with the same previously verified endpoint and foreground
+mode; it does not start/restart the service. No header is added. Ctrl+Q and
+window close remain connected on this fallback screen.
 
-The Connection button and “Access wasn't saved” badge deliver the
-`app.dialogRequested` JSON string `{"schema":2,"dialog":"connection"}`.
-The Settings header action delivers `{"schema":2,"dialog":"settings"}`.
-The page facade, named-world relay and native subscriber keep this closed event
-separate from `app.stateChanged`. Delivery requires the current admitted Main
-document's dialog subscription, independently of target readiness. Navigation,
-revocation and WebKit loss retire both subscriptions. Unavailable requests are
-dropped without queue or replay.
-The header shows the requested destination plus an explicit Retry
-action; becoming available never retries automatically. The subscribed web Main owns
-the single-dialog/unsaved-owner gate, repeated entry and focus within the dialog.
-Native entry starts no daemon, changes no target/generation, and neither commits
-nor cancels an attempt. S7-L2 removes the Main control/remote-access strip,
-its margins and separator. Local controls move into Settings and remote-access
-controls use Connection. Close/Quit policy remains a later cutover slice.
-
-Focused native checks use the existing direct system-Python venue, with Node 24
-for executing the literal page/relay scripts in an isolated message-bus fixture:
+Focused native checks use the direct system-Python venue (not retired pytest):
 
 ```sh
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_header.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_app_events.py -v
-# In a disposable GTK3/WebKit2 4.1 desktop/Xvfb session (DISPLAY required):
+# Disposable GTK3/WebKit2 4.1 X11, Wayland or configured Broadway session:
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_main_titlebar.py -v
 ```
 
-The first two headless checks cover rendered labels/actions and the event boundary.
-The titlebar regression drives shipping `run_gui` with real GTK, including its
-actual titlebar child enumeration, web content, restart failure, Retry and fresh
-Main processes in EN/ZH. Host lifecycle/helper operations are isolated. It uses
-a minimal static web fixture by default; set `HAPPYRANCH_TITLEBAR_WEB_DIST` to an
-absolute same-source built `web/dist` for the real Main bundle, and optionally
-`HAPPYRANCH_TITLEBAR_OUTPUT` to an existing directory for 760px screenshots and
-titlebar observation JSON.
-They do not establish GTK fit, native/web focus or WebKit process behavior;
-qualify those in a disposable desktop/Xvfb session. The inherited launcher suite
-above has known failures and must be compared against the same base, never
-reported as passing from these focused results.
+The headless launcher checks cover absent custom chrome, document Retry,
+keyboard/close entry and localized fallback. The titlebar probe drives shipping
+run_gui with real GTK through document failure, Retry and Main reconstruction
+in EN/ZH; local service effects and final confirmation are isolated. Optional
+`HAPPYRANCH_TITLEBAR_OUTPUT` captures fallback/Main screenshots and observations.
+`HAPPYRANCH_TITLEBAR_WEB_DIST` may name an absolute same-source built bundle.
+These checks do not establish live service effects or independent scoped QA.
 
 ### Main Connection bridge admission (S6-W3-L)
 
@@ -1316,9 +1295,15 @@ actual local policy even under remote selection, disclose local interruption
 when Off/Partly on, and disclose remote Host continuity and retained grants.
 Freshly inspected Fully On follows the existing close_window keep-running
 policy. Foreground owned children still stop and reap.
-The separate native Exit anyway action is an explicit Quit recovery. It remains
-available when an outstanding Relaunch cannot verify installed assets and web
-cannot answer Keep; it never silently relaunches.
+**Exit anyway… / 仍要退出…** exists only in a blocked native exit prompt:
+when Quit/window-close cannot obtain usable web-owner consent, or the native
+exit check refuses (including an outstanding Relaunch with unverifiable assets).
+Stay is the default. Choosing it calls `exit_now('quit', True)`, which still
+shows the existing recovery loss warning/confirmation and rechecks native
+service ownership/outcomes. It bypasses only waiting for web, never local
+unknown outcomes, asset checks for Relaunch or any target-commit gate. A refused
+recovery Quit offers Stay/check again without recursively offering Exit anyway.
+There is no global recovery action and it never silently relaunches.
 
 Relaunch is ordinary Quit followed by launch after supervisor completion and
 desktop-lock release. It first reobserves the relevant target's service contract,

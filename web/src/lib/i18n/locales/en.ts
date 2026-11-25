@@ -3826,6 +3826,8 @@ export const en = {
   "knowledge.instill.history.note": "Imported notes reach this agent’s next fresh session through normal memory. Running sessions are unchanged.",
   // --- THR-387 S1b: native recovery states + compatibility page ---
   "recovery.retry": "Retry",
+  "recovery.relaunch": "Relaunch",
+  "recovery.relaunchFailed": "Relaunch could not be requested. Recheck and try again.",
   "recovery.recheck": "Recheck",
   "recovery.kept": "This page and any unsaved edits stay as they were.",
   "recovery.details": "Details: {code}",

@@ -1283,88 +1283,6 @@ class RemoteAccessPanel:
             self.connection.close(None, None, None)
 
 
-class MainHeader:
-    """Native presentation of app.status and Connection/Settings entry actions."""
-
-    def __init__(self, Gtk: object, GLib: object, tr: Callable,
-                 status: Callable, request: Callable) -> None:
-        self.header = Gtk.HeaderBar(title="HappyRanch", show_close_button=True)
-        from gi.repository import Pango
-        self.tr, self.status, self.request = tr, status, request
-        self.retry_dialog = None  # Explicit Retry destination, never an automatic delivery.
-        for dialog, en, zh in (("connection", "Connection", "连接"), ("settings", "Settings", "设置")):
-            button = Gtk.Button(label=tr(en, zh))
-            button.connect("clicked", lambda _button, dialog=dialog: self.open(dialog))
-            self.header.pack_start(button)
-        summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self.pill, self.candidate = Gtk.Label(), Gtk.Label()
-        self.candidate.set_no_show_all(True)
-        self.pill.get_style_context().add_class("button")
-        for label in (self.pill, self.candidate):
-            label.set_ellipsize(Pango.EllipsizeMode.END)
-            label.set_max_width_chars(28)
-            summary.pack_start(label, False, False, 0)
-        self.header.set_custom_title(summary)
-        self.badge = Gtk.Button(label=tr("Access wasn't saved", "访问权限未保存"))
-        self.badge.set_tooltip_text(tr(
-            "Access wasn't saved. Open Connection to retry saving; a new invite may be needed.",
-            "访问权限未保存。打开连接以重试保存；可能需要新的邀请。"))
-        self.badge.connect("clicked", lambda _button: self.open("connection"))
-        self.retry = Gtk.Button()
-        self.retry.connect("clicked", lambda _button: self.open(self.retry_dialog))
-        for button in (self.badge, self.retry):
-            button.set_no_show_all(True)
-            self.header.pack_end(button)
-        self.refresh()
-        timer = GLib.timeout_add(100, self.refresh)
-        self.header.connect("destroy", lambda *_args: GLib.source_remove(timer))
-
-    def open(self, dialog: str) -> None:
-        if dialog not in ("connection", "settings"):
-            return
-        delivered = self.request(dialog)
-        self.retry_dialog = None if delivered else dialog
-        self.retry.set_label(self.tr("Settings unavailable · Retry", "设置暂不可用 · 重试") if dialog == "settings"
-                             else self.tr("Connection unavailable · Retry", "连接暂不可用 · 重试"))
-        self.retry.set_visible(not delivered)
-
-    def refresh(self) -> bool:
-        state = self.status()
-        if state is None:
-            self.pill.set_label(self.tr("Interface unavailable", "界面暂不可用"))
-            self.pill.set_tooltip_text(self.pill.get_label())
-            self.candidate.set_visible(False)
-            # Losing the document is not confirmation that access was saved.
-            return True
-        target = state["target"]
-        name = ((self.tr("This computer", "此电脑") if target["kind"] == "local" else target["name"])
-                if target else "")
-        labels = {"no_target": self.tr("No connection selected", "尚未选择连接"),
-                  "target_starting": self.tr("Starting", "正在启动"), "ready": self.tr("Connected", "已连接"),
-                  "unreachable": self.tr("Unavailable", "无法连接"), "busy": self.tr("Busy", "忙碌")}
-        if state["state"] == "incompatible":
-            side = state["incompatible"]["side"]
-            detail = {"host": self.tr("Update Host", "更新主机"), "app": self.tr("Update app", "更新应用"),
-                      "unknown": self.tr("Check compatibility", "检查兼容性")}[side]
-        else:
-            detail = labels[state["state"]]
-        text = f"{name} · {detail}" if name else detail
-        self.pill.set_label(text)
-        self.pill.set_tooltip_text(text)
-        candidate = state["candidate"]
-        if candidate:
-            phases = {"signing_in": self.tr("Signing in", "正在登录"),
-                      "awaiting_approval": self.tr("Awaiting approval", "等待批准"),
-                      "ready_to_switch": self.tr("Ready to switch", "准备切换"),
-                      "failed": self.tr("Connection failed", "连接失败"), "cancelled": self.tr("Cancelled", "已取消")}
-            text = f"{candidate['name']} · {phases[candidate['phase']]}"
-            self.candidate.set_label(text)
-            self.candidate.set_tooltip_text(text)
-        self.candidate.set_visible(candidate is not None)
-        self.badge.set_visible(state["access_unsaved"])
-        return True
-
-
 def run_gui(prefix: Path, home: Path) -> int:
     # Lazy imports keep lifecycle functions runnable without GI or a display.
     import gi
@@ -1429,12 +1347,6 @@ def run_gui(prefix: Path, home: Path) -> int:
     local_controls = LocalControls(service, prefix, requests, cancel, GLib.idle_add,
                                    confirm_local, local_changed)
 
-    def request_dialog(dialog: str) -> bool:
-        if app_scheme is None or not app_scheme.request_dialog(dialog):
-            return False
-        app_scheme.view.grab_focus()
-        return True
-
     def attach_remote(box: object) -> None:
         nonlocal remote
         if remote is None:
@@ -1449,8 +1361,7 @@ def run_gui(prefix: Path, home: Path) -> int:
         if app_scheme is not None:
             app_scheme.close()
             app_scheme = None
-        # GtkBin's child excludes the titlebar. Retain the old content until
-        # attach_remote has reparented the existing remote panel out of it.
+        # Retain the old content until attach_remote reparents its panel.
         content = window.get_child()
         if content is not None:
             window.remove(content)
@@ -1489,6 +1400,14 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.show_all()
         return False
 
+    def document_error(detail: str, source: str | None, fallback: bool) -> None:
+        message(tr("The web interface could not load.", "无法加载网页界面。"), detail)
+        if not closing:
+            retry = Gtk.Button(label=tr("Retry", "重试"))
+            retry.connect("clicked", lambda _button: show_web(source, fallback))
+            window.get_child().pack_start(retry, False, False, 0)
+            window.show_all()
+
     def show_web(url: str | None, fallback: bool = False) -> bool:
         nonlocal app_scheme, client_ui, selection_notice
         if closing:
@@ -1500,6 +1419,7 @@ def run_gui(prefix: Path, home: Path) -> int:
         # health proof. Do not accept a caller-selected upstream address.
         import importlib.util
         from urllib.parse import urlsplit
+        source = url  # Retry reconstructs the document, never starts/restarts the service.
         endpoint = urlsplit(url) if url is not None else None
         try:
             if endpoint is not None and (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or endpoint.port is None):
@@ -1512,6 +1432,7 @@ def run_gui(prefix: Path, home: Path) -> int:
                                           local_mode="foreground" if fallback else "service")
             local_controls.mode = "foreground" if fallback else "service"
             app_scheme.local_dispatch = local_controls.request
+            app_scheme.relaunch = lambda: request_lifecycle("relaunch")
             if client_ui is None:
                 client_spec = importlib.util.spec_from_file_location("client_ui", path.with_name("client_ui.py"))
                 client_module = importlib.util.module_from_spec(client_spec)
@@ -1524,11 +1445,16 @@ def run_gui(prefix: Path, home: Path) -> int:
             app_scheme.host_adapter = host_module.shared_bridge(client_ui, prefix, tr)
             app_scheme.connection_protocol = app_scheme.host_adapter.protocol
             view, url = app_scheme.view, module.ORIGIN + "/"
-        except (OSError, ValueError, ImportError):
-            show_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。"))
+        except (OSError, ValueError, ImportError) as error:
+            document_error(tr("The packaged web interface could not load.", "无法加载打包的网页界面。")
+                           + "\n" + str(error), source, fallback)
             return False
-        # GtkBin's child excludes the titlebar. Retain the old content until
-        # attach_remote has reparented the existing remote panel out of it.
+        # Main has no native strip. Detach its fallback panel before the old
+        # content is destroyed, so a later load error can safely reparent it.
+        if remote is not None:
+            parent = remote.box.get_parent()
+            if parent is not None:
+                parent.remove(remote.box)
         content = window.get_child()
         if content is not None:
             window.remove(content)
@@ -1627,8 +1553,18 @@ def run_gui(prefix: Path, home: Path) -> int:
                            if needs_permission else ""))
             if startup["current"] != "remote:unsaved":
                 client_ui.model.discover(discovered)
-        def load_failed(*_args: object) -> bool:
-            show_error(tr("The web interface could not load.", "无法加载网页界面。"))
+        def load_failed(*args: object) -> bool:
+            # Retire/replace content after WebKit has returned from its signal;
+            # detaching the emitting view inside load-failed can destroy it.
+            failed = app_scheme
+            document = failed.document if failed is not None else None
+            detail = str(args[-1]) if args else ""
+            def replace_failed() -> bool:
+                if (failed is app_scheme and failed is not None and not failed.closed
+                        and failed.document == document and not closing):
+                    document_error(detail, source, fallback)
+                return False
+            GLib.idle_add(replace_failed)
             return True
         view.connect("load-failed", load_failed)
         box.pack_start(view, True, True, 0)
@@ -1744,6 +1680,10 @@ def run_gui(prefix: Path, home: Path) -> int:
         worker = threading.Thread(target=supervise, args=(action,), name="desktop-daemon")
         worker.start()
 
+    def recovery_exit() -> bool:
+        exit_now("quit", True)
+        return False
+
     def exit_now(action: str, recovery: bool = False) -> bool:
         nonlocal closing, exit_action, relaunch_proof, relaunch_contract
         owner_document = ((app_scheme, app_scheme.document, app_scheme.bridge_token)
@@ -1813,13 +1753,20 @@ def run_gui(prefix: Path, home: Path) -> int:
                 service.attached = service.shutdown_pending = True
         except LaunchError as error:
             dialog = Gtk.MessageDialog(transient_for=window, modal=True,
-                message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.CLOSE,
+                message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE,
                 text=tr("Exit held — check again", "退出已暂停 — 请重新检查"))
             dialog.format_secondary_text(str(error) if chinese is False else
                 tr("Check the local service and compatible installed desktop assets before trying again.",
                    "请检查本地服务及兼容的已安装桌面资源，然后重试。"))
-            dialog.run()
+            dialog.add_buttons(tr("Stay", "留下"), Gtk.ResponseType.CANCEL)
+            if action != "quit" or not recovery:
+                dialog.add_buttons(tr("Exit anyway…", "仍要退出…"), Gtk.ResponseType.OK)
+            dialog.set_default_response(Gtk.ResponseType.CANCEL)
+            response = dialog.run()
             dialog.destroy()
+            if response == Gtk.ResponseType.OK:
+                # Run after the native operation reservation is released below.
+                GLib.idle_add(recovery_exit)
             return False
         finally:
             with local_controls.lock:
@@ -1848,8 +1795,23 @@ def run_gui(prefix: Path, home: Path) -> int:
             if delivered and app_scheme.owners is not None and not app_scheme.owner_uncertain:
                 if app_scheme.owners["blocking"] != "hold":
                     return True  # Web owns dirty/failed keep/discard and clean consent.
-            # Separate Stay-default recovery, never discard a sent save.
-            exit_now(captured, recovery=True)
+            # Relaunch retains its existing recovery consent/assets proof.
+            if captured == "relaunch":
+                exit_now(captured, recovery=True)
+            else:
+                dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+                    message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE,
+                    text=tr("Quit is blocked", "退出被阻止"))
+                dialog.format_secondary_text(tr(
+                    "The web interface cannot confirm it is safe to quit. Unsent edits may be lost; a sent save may still take effect and is not cancelled. Check result in its original context.",
+                    "网页界面无法确认可以安全退出。未发送的编辑可能丢失；已发送的保存仍可能生效，并未取消。请在原上下文中检查结果。"))
+                dialog.add_buttons(tr("Stay", "留下"), Gtk.ResponseType.CANCEL,
+                                   tr("Exit anyway…", "仍要退出…"), Gtk.ResponseType.OK)
+                dialog.set_default_response(Gtk.ResponseType.CANCEL)
+                response = dialog.run()
+                dialog.destroy()
+                if response == Gtk.ResponseType.OK:
+                    exit_now("quit", True)
         else:
             exit_now(action, recovery=True)
         return True
@@ -1863,14 +1825,6 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.present()
             return
         window = Gtk.ApplicationWindow(application=app, title="HappyRanch")
-        header = MainHeader(Gtk, GLib, tr, lambda: app_scheme.status() if app_scheme is not None else None,
-                            request_dialog)
-        window.set_titlebar(header.header)
-        for label, action in ((tr("Quit", "退出"), "quit"), (tr("Relaunch", "重新启动"), "relaunch"),
-                              (tr("Exit anyway…", "仍要退出…"), "recoveryExit")):
-            button = Gtk.Button(label=label)
-            button.connect("clicked", lambda _button, action=action: app.activate_action(action, None))
-            header.header.pack_end(button)
         window.set_default_size(1100, 760)
         icon = prefix / "share/icons/hicolor/128x128/apps/happyranch.png"
         if icon.is_file():
@@ -1894,11 +1848,6 @@ def run_gui(prefix: Path, home: Path) -> int:
     relaunch_action = Gio.SimpleAction.new("relaunch", None)
     relaunch_action.connect("activate", lambda *_args: request_lifecycle("relaunch"))
     app.add_action(relaunch_action)
-    recovery_action = Gio.SimpleAction.new("recoveryExit", None)
-    # Separate explicit Quit recovery remains available even if a captured
-    # Relaunch cannot verify installed assets and the web cannot answer Keep.
-    recovery_action.connect("activate", lambda *_args: exit_now("quit", True))
-    app.add_action(recovery_action)
     app.set_accels_for_action("app.quit", ["<Primary>q"])
     app.connect("activate", activate)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, request_close)

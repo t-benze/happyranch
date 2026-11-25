@@ -43,6 +43,27 @@ class EventTests(unittest.TestCase):
                                 get_context=lambda: None)
         self.app.bridge_message(self.app.controller, value, self.reply)
 
+    def test_relaunch_is_closed_and_only_requests_existing_lifecycle(self):
+        calls, replies = [], []
+        self.app.relaunch = lambda: calls.append("relaunch")
+        self.reply.return_value = replies.append
+        def command(data="{}", **extra):
+            item = {"token": self.app.bridge_token, "command": "app.relaunch", "data": data, **extra}
+            value = SimpleNamespace(is_string=lambda: True, to_string=lambda: json.dumps(item), get_context=lambda: None)
+            self.app.bridge_message(self.app.controller, value, self.reply)
+        for data in ('{"extra":true}', '[]', 'null', '{', '{"x":1,"x":2}'):
+            command(data)
+        command(extra=True)
+        self.assertEqual(calls, [], "invalid payloads/envelopes must have no lifecycle effect")
+        self.assertEqual(len(self.errors), 6)
+        command()
+        self.assertEqual(calls, ["relaunch"])
+        self.assertEqual(json.loads(replies[-1]), {})
+        self.assertIs(self.app.status()["app_relaunch"], True)
+        self.subscribe("app.stateChanged")
+        self.assertIs(json.loads(self.delivered[-1]["raw"])["app_relaunch"], True)
+        self.connection_boundary("relaunch")
+
     def test_named_native_subscription_and_exact_payloads_without_target_effects(self):
         generation, document = self.app.generation, self.app.document
         self.subscribe("app.dialogRequested")
@@ -139,6 +160,18 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  return;
  }
  vm.runInContext('hrAppBridge.admit(hrAppBridge.token)',contexts[1]);
+ if(sources.case==='relaunch'){
+  const before=native.length;
+  await vm.runInContext("happyranchConnection.call('app.relaunch','{}').catch(()=>{})",contexts[0]);
+  assert.equal(native.length,before+1,'Relaunch must cross page and named-world command admission');
+  assert.equal(native.at(-1).command,'app.relaunch');
+  for(const args of ['{"extra":true}', '[]', 'null', '{']){
+   contexts[0].args=args;const count=native.length;
+   await vm.runInContext("happyranchConnection.call('app.relaunch',args).catch(()=>{})",contexts[0]);
+   assert.equal(native.length,count,'closed page payload rejects extras before dispatch');
+  }
+  return;
+ }
  if(sources.case==='local'){
   for(const command of ['local.status','local.start','local.stop','local.restart','local.keepRunning.set','local.repair','local.turnOff','local.update.status']){
    for(const args of ['{}','{','{"schema":2,"enabled":false,"enabled":true}']){

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 
 class TitlebarTests(unittest.TestCase):
-    def test_titlebar_survives_startup_recovery_and_main_recreation(self) -> None:
+    def test_default_titlebar_survives_document_failure_retry_and_main_recreation(self) -> None:
         # Fresh processes recreate Main and keep GTK/WebKit global state isolated.
         for locale in ("en_US.UTF-8", "zh_CN.UTF-8"):
             with self.subTest(locale=locale), tempfile.TemporaryDirectory() as scratch:
@@ -28,7 +28,7 @@ class TitlebarTests(unittest.TestCase):
                         env[key] = os.environ[key]
                 env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                            XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
-                           LANG=locale, GSETTINGS_BACKEND="memory", GDK_BACKEND="x11",
+                           LANG=locale, GSETTINGS_BACKEND="memory", GDK_BACKEND=os.environ.get("GDK_BACKEND", "x11"),
                            PYTHONFAULTHANDLER="1")
                 result = subprocess.run([sys.executable, "-B", __file__, "--probe", str(root)],
                                         env=env, text=True, capture_output=True, timeout=45)
@@ -101,25 +101,17 @@ def probe(root: Path) -> int:
             for child in widget.get_children():
                 yield from descendants(child)
 
-    titlebar = None
     original_add = Gtk.ApplicationWindow.add
 
     def observe_add(window: object, content: object) -> None:
-        nonlocal titlebar
         original_add(window, content)
         current = window.get_titlebar()
-        if titlebar is None:
-            titlebar = current
-        buttons = [w.get_label() for w in descendants(current) if isinstance(w, Gtk.Button)]
-        chinese = os.environ["LANG"].startswith("zh")
-        expected = ["连接", "设置"] if chinese else ["Connection", "Settings"]
-        record = {"titlebar_present": current is not None, "same_titlebar": current is titlebar,
-                  "buttons": buttons, "children": [type(w).__name__ for w in window.get_children()],
+        record = {"custom_titlebar": current is not None,
                   "content_labels": [w.get_text() for w in descendants(content) if isinstance(w, Gtk.Label)]}
         observations.append(record)
         print("TITLEBAR " + json.dumps(record, ensure_ascii=False), flush=True)
-        if current is None or current is not titlebar or not all(b in buttons for b in expected):
-            errors.append("Main lost its titlebar during content replacement: " + json.dumps(record))
+        if current is not None:
+            errors.append("Main installed a custom titlebar: " + json.dumps(record))
 
     stage, deadline = 0, time.monotonic() + 30
 
@@ -136,27 +128,22 @@ def probe(root: Path) -> int:
             content = window.get_child()
             buttons = {w.get_label(): w for w in descendants(content) if isinstance(w, Gtk.Button)}
             chinese = os.environ["LANG"].startswith("zh")
-            restart, retry = ("重启 HappyRanch", "重试") if chinese else ("Restart HappyRanch", "Retry")
-            if stage == 0 and restart in buttons:
+            retry = "重试" if chinese else "Retry"
+            if stage == 0 and holder.schemes and holder.schemes[-1].view.get_mapped():
                 stage = 1
-                buttons[restart].clicked()
+                holder.schemes[-1].view.emit("load-failed", 0, "happyranch-app://app/", GLib.Error("fixture load failure"))
             elif stage == 1 and retry in buttons:
                 if not isinstance(buttons[retry].get_parent(), Gtk.Box):
                     raise AssertionError("Retry must belong to recovery content")
+                output = os.environ.get("HAPPYRANCH_TITLEBAR_OUTPUT")
+                if output:
+                    pix = Gdk.pixbuf_get_from_window(window.get_window(), 0, 0, *window.get_size())
+                    pix.savev(str(Path(output) / ("load-failed-zh.png" if chinese else "load-failed-en.png")), "png", [], [])
                 stage = 2
                 buttons[retry].clicked()
             elif stage == 2 and len(holder.schemes) == 2 and holder.schemes[-1].view.get_mapped():
-                scheme = holder.schemes[-1]
-                if source and not scheme.dialog_subscribed:
-                    return True
-                labels = [w.get_text() for w in descendants(content) if isinstance(w, Gtk.Label)]
-                strip = "退出登录后保持 HappyRanch 运行" if chinese else "Keep HappyRanch running when I'm logged out"
-                if strip not in labels:
-                    return True
-                if not any(isinstance(w, Gtk.Switch) for w in descendants(content)):
-                    raise AssertionError("Main strip lost its switch")
-                if not any(isinstance(w, Gtk.Separator) for w in descendants(content)):
-                    raise AssertionError("Main strip lost its separator")
+                if window.get_titlebar() is not None:
+                    raise AssertionError("Retry revived a custom titlebar")
                 output = os.environ.get("HAPPYRANCH_TITLEBAR_OUTPUT")
                 if output:
                     window.resize(760, 560)
@@ -181,9 +168,12 @@ def probe(root: Path) -> int:
     with patch.object(native, "ServiceMode", Lifecycle), \
             patch.object(native.RemoteAccessPanel, "refresh", lambda self: None), \
             patch.object(Gtk.ApplicationWindow, "add", observe_add), \
+            patch.object(native.LocalControls, "observe", return_value={"running": "stopped", "keepRunning": "off"}), \
+            patch.object(native, "confirm_lifecycle", return_value=True), \
+            patch.object(Gtk.MessageDialog, "run", return_value=Gtk.ResponseType.OK), \
             patch.dict(os.environ, HAPPYRANCH_DESKTOP_APP_SCHEME="1"):
         result = native.run_gui(root / "prefix", root / "daemon")
-    if stage != 3 or calls != ["start", "restart", "retry"]:
+    if stage != 3 or calls != ["start"]:
         errors.append(f"incomplete transitions: stage={stage}, calls={calls}, content replacements={len(observations)}")
     record = {"locale": os.environ["LANG"], "exit": result, "calls": calls,
               "observations": observations, "errors": errors, "host_lifecycle": "isolated"}
