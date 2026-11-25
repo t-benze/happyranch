@@ -404,9 +404,26 @@ answer supersedes the readmission. Nothing retries or replays a mutation.
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see
-“Connection dialog contents” below). Linux S7-L1 routes the header Connection
-button and Access wasn't saved badge through `app.dialogRequested`, with explicit
-Retry when delivery is unavailable. S6-W3-L's reviewed v1 Host/client commands
+“Connection dialog contents” below). THR-387 seq146: the desktop window header
+is web UI, not native chrome. `features/desktop-dialogs/DesktopHeader.tsx`
+(mounted by `AppShell` only behind the detected native bridge; browser mode is
+unchanged) renders the Connection and Settings buttons, the `app.status`-derived
+target/status pill and candidate line, the persistent Access wasn't saved
+warning (opens Connection) and the explicit "… unavailable · Retry" action after
+a failed open; see the bridge spec “v2 dialog request event” for the exact copy
+and what counts as a failed open.
+
+Linux keeps a plain default system title bar, with no custom GTK header or
+Quit/Relaunch/Exit anyway controls. Ctrl+Q and close retain native confirmation.
+Document-load failures show native error + document Retry. Relaunch lives only
+on app-incompatible NativeRecoveryPanel with `app_relaunch === true`; this one
+optional closed appState boolean is emitted by Linux Main in status/events.
+Absent/false (including unmodified Mac) means unsupported: guidance/Recheck only.
+`app.relaunch` takes exactly `{}` and requests the existing guarded lifecycle;
+it adds no service or daemon effect. Exit anyway is a choice inside the native
+blocked exit prompt, routing to recovery Quit with the existing loss warning
+and native service checks. The web header buttons use the same `openDesktopDialog`
+request and owner gate as native `app.dialogRequested`. S6-W3-L's reviewed v1 Host/client commands
 and `host.stateChanged` remain admitted on Main, using the existing shared
 `host_bridge.py` and ClientUI/model owners. The native Connection window and
 its Linux payload are retired. On CSP/frame revocation or `pagehide`, pending

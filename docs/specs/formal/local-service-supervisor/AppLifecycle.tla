@@ -43,6 +43,13 @@ Replace ==
     /\ UNCHANGED <<alive, issued, action, admitted, recovery, compatible,
          serviceRunning, lockReleased, launched, stopPhase, attempts>>
 
+\* Linux/web entry parity (THR-387 seq146): app.relaunch is admitted only
+\* with {} and advertised app_relaunch=true on the app needs-update screen.
+\* Both this entry and the retained Gio action use the same Request below.
+\* Document Retry replaces the bridge document (Replace); no lifecycle effect.
+\* Exit anyway is offered only inside a blocked native prompt, then uses the
+\* explicit RecoveryExit("quit") loss-warning consent. No timeout/replay edge.
+\* Transport parsing and UI visibility are outside this lifecycle abstraction.
 Request(kind) ==
     /\ alive /\ subscribed /\ pending = 0 /\ issued < 2
     /\ kind \in {"close", "quit", "relaunch"}

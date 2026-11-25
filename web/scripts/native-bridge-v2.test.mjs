@@ -131,6 +131,12 @@ beforeEach(() => {
 // --- appState parsing ------------------------------------------------------------
 test('parseAppState accepts the spec §12 valid examples and rejects contract violations', () => {
   assert.ok(appStatus.parseAppState(JSON.stringify(state('g12'))));
+  for (const app_relaunch of [true, false]) {
+    assert.equal(appStatus.parseAppState(state('g12', { app_relaunch }))?.app_relaunch, app_relaunch);
+  }
+  for (const app_relaunch of ['true', 1, null, {}, []]) {
+    assert.equal(appStatus.parseAppState(state('g12', { app_relaunch })), null);
+  }
   assert.ok(appStatus.parseAppState(state('g13', {
     state: 'incompatible',
     incompatible: { side: 'host', host_contract: null, client_contract: 1, min_daemon: 1 },

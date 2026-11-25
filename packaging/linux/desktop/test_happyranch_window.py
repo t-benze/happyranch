@@ -2285,7 +2285,6 @@ class StartupLifecycleTests(unittest.TestCase):
                 service = SimpleNamespace(shutdown_pending=False, attached=False,
                     start=lambda *_args, **_kwargs: calls.append("start") or "http://127.0.0.1:43127/")
                 with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
-                        patch.object(window, "MainHeader", return_value=SimpleNamespace(header=Widget())), \
                         patch.object(window, "RemoteAccessPanel", return_value=SimpleNamespace(box=Widget(), close=lambda: None)), \
                         patch.object(window, "ServiceMode", return_value=service), \
                         patch.object(window, "_startup", SimpleNamespace(load=lambda: {"current": value, "persisted": True}), create=True), \

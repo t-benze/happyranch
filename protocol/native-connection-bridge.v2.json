@@ -4,6 +4,7 @@
   "description": "Target contract: app.status result / app.stateChanged data, app.dialogRequested or app.lifecycleRequested data, app.ownersChanged args, or a native HTTP error body. Not a v1 transport envelope or an implementation claim. Event delivery, owner gates, HTTP status, header admission, generation lifetime and commit ordering are specified in docs/specs/2026-11-17-web-native-bridge.md.",
   "oneOf": [
     { "$ref": "#/$defs/appState" },
+    { "$ref": "#/$defs/appRelaunch" },
     { "$ref": "#/$defs/dialogRequested" },
     { "$ref": "#/$defs/ownersChanged" },
     { "$ref": "#/$defs/lifecycleRequested" },
@@ -16,6 +17,13 @@
     { "$ref": "#/$defs/appLocaleSetResult" }
   ],
   "$defs": {
+    "appRelaunch": {
+      "description": "app.relaunch arguments and intent acknowledgement are exactly {}. Linux Main calls the existing request_lifecycle('relaunch'); confirmation, owner gates and relaunch_assets still apply. Only offered when appState.app_relaunch is true. Valid: {}. Invalid: {\"extra\":true}, [], null.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "examples": [{}]
+    },
     "ownersChanged": {
       "type": "object",
       "additionalProperties": false,
@@ -173,6 +181,8 @@
       }
     },
     "appState": {
+      "description": "Valid examples below show absence and Linux support. Invalid appState: the same snapshot with app_relaunch set to the string true instead of a JSON boolean.",
+      "examples": [{"schema":2,"generation":"g1","target":null,"state":"no_target","incompatible":null,"local":{"supported":true,"mode":"service","running":"stopped","prompt_base_url":null},"candidate":null,"access_unsaved":false,"locale":{"current":"en","persisted":true}},{"schema":2,"generation":"g1","target":null,"state":"no_target","incompatible":null,"local":{"supported":true,"mode":"service","running":"stopped","prompt_base_url":null},"candidate":null,"access_unsaved":false,"locale":{"current":"en","persisted":true},"app_relaunch":true}],
       "type": "object",
       "additionalProperties": false,
       "required": ["schema", "generation", "target", "state", "incompatible", "local", "candidate", "access_unsaved", "locale"],
@@ -184,6 +194,11 @@
         "incompatible": { "oneOf": [{ "$ref": "#/$defs/incompatible" }, { "type": "null" }] },
         "local": { "$ref": "#/$defs/local" },
         "candidate": { "oneOf": [{ "$ref": "#/$defs/candidate" }, { "type": "null" }] },
+        "app_relaunch": {
+          "type": "boolean",
+          "description": "Optional app.relaunch support. Linux-only today; emitted true by Linux Main in app.status and every app.stateChanged. Absent or false means unsupported, including unmodified Mac. Other unknown fields remain refused. Valid appState with or without this field; non-boolean is invalid.",
+          "examples": [true, false]
+        },
         "access_unsaved": { "type": "boolean" },
         "locale": { "$ref": "#/$defs/locale" }
       },

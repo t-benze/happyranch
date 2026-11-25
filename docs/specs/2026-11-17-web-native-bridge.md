@@ -806,8 +806,8 @@ Live Linux, Mac and web v2 behavior is **NOT RUN** by these changes.
 ### v2 dialog request event
 
 THR-387 S5-0b / TASK-18165 adds **`app.dialogRequested`**, a one-way
-native-to-web event for the v2.4 Main-window dialogs. Linux native header
-Connection/Settings actions and Mac Settings… (Cmd+,) / Connection… menu
+native-to-web event for the v2.4 Main-window dialogs. Linux retains this native
+event boundary after moving header entry into the web; Mac Settings… (Cmd+,) / Connection… menu
 actions request the corresponding dialog through this event. It uses the
 existing `on(event, handler(string))` facade: the handler receives a JSON string
 whose value is exactly `{"schema":2,"dialog":"settings"}` or
@@ -815,7 +815,50 @@ whose value is exactly `{"schema":2,"dialog":"settings"}` or
 reply or acknowledgement. Delivery does not prove that a dialog opened: its
 owner gate may retain the current presentation.
 
-Linux S7-L1 routes both header destinations and the Access wasn't saved badge through app.dialogRequested on admitted Main. Unavailable delivery exposes the named manual Retry without replay. Main's single-dialog owner gate decides whether a request can change the presentation. No separate native Connection fallback remains.
+Linux S7-L1 originally routed both native header destinations and the Access wasn't saved badge through app.dialogRequested on admitted Main. THR-387 seq146 moves these entries and their explicit Retry into the web header. Main's single-dialog owner gate still decides whether a request can change the presentation. No separate native Connection fallback remains.
+
+**THR-387 seq146: web header replaces the native header (Linux/web).** The whole
+window is the web view; no native header bar or toolbar controls sit inside the
+window. The packaged web app renders the top header instead
+([DesktopHeader](../../web/src/features/desktop-dialogs/DesktopHeader.tsx),
+mounted above Main by `AppShell` in `web/src/routes.tsx`). It renders only
+behind the detected v2 bridge (`isNativeTarget()`: document at
+`happyranch-app://app` with the `happyranchConnection` facade); browser mode
+renders nothing and is unchanged. It carries the former GTK `MainHeader`
+entries and EN/ZH copy:
+
+- **Connection** and **Settings** buttons open the existing web dialogs through
+  the same in-document open request as `app.dialogRequested`
+  (`openDesktopDialog` with `nativeDialogRequest`), so the single-dialog owner
+  gate decides every transition. They are web entry actions; they emit and
+  call nothing on the bridge.
+- The **target/status pill** is derived only from `app.status` /
+  `app.stateChanged`: name = live-locale "This computer" for `kind:"local"`,
+  else the target name; detail by state (`no_target` No connection selected,
+  `target_starting` Starting, `ready` Connected, `unreachable` Unavailable,
+  `busy` Busy, `incompatible` by side: host Update Host, app Update app,
+  unknown Check compatibility). A non-null `candidate` adds a line
+  "*name* · Signing in / Awaiting approval / Ready to switch / Connection
+  failed / Cancelled". With no usable status the pill reads "Interface
+  unavailable".
+- While `access_unsaved` is true a persistent labelled **Access wasn't saved**
+  warning is shown (accessible description and tooltip: "Access wasn't saved.
+  Open Connection to retry saving; a new invite may be needed."); it opens
+  Connection.
+- **"Connection unavailable · Retry" / "Settings unavailable · Retry"** appears
+  only after a failed open and is retried only by an explicit click, never
+  automatically. Inside the web an open *fails* when (a) the open request
+  throws (host missing or its transition handler errors) or (b) on the next
+  animation frame after the request neither the requested dialog
+  (`[data-desktop-dialog]`) nor the owner gate (`[data-owner-gate]`) is
+  presented. An owner-gate prompt or hold (including Keep editing) and a
+  dialog that opens but shows its own data-load error are not open failures.
+
+No bridge command, event or payload is added by this change. The native
+`app.dialogRequested` event and its rules above stay unchanged for remaining
+native entry points (for example Mac app-menu items). Removing the GTK header
+bar controls is the Linux leg of the same PR; Mac toolbar removal is MAC-2b
+(#1863).
 
 `#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
 requires both keys and rejects extra keys. In addition to the status/error
@@ -903,13 +946,15 @@ relay [APP_RELAY](../../packaging/linux/desktop/app_scheme_webkit.py), native [A
 `request_dialog` emits the exact schema-2 payload only to the current admitted
 dialog subscriber, dropping unavailable requests without queue/replay
 ([AppScheme.request_dialog](../../packaging/linux/desktop/app_scheme_webkit.py), [AppScheme.emit_event](../../packaging/linux/desktop/app_scheme_webkit.py)).
-Settings header emission and explicit named Retry are implemented
-([MainHeader.__init__](../../packaging/linux/desktop/happyranch_window.py), [MainHeader.open](../../packaging/linux/desktop/happyranch_window.py)).
-The EN/ZH status/candidate pill and persistent access-unsaved badge are also
-implemented by #1776 ([MainHeader.refresh](../../packaging/linux/desktop/happyranch_window.py)).
-The historical #1781 native Connection fallback is retired by S7-L1 (#1813):
-Connection/Settings and the access-unsaved badge now request the Main dialog
-([run_gui.request_dialog](../../packaging/linux/desktop/happyranch_window.py)).
+THR-387 seq146 replaces Linux MainHeader with the web
+[DesktopHeader](../../web/src/features/desktop-dialogs/DesktopHeader.tsx):
+Connection/Settings entry, explicit Retry, target/candidate status and persistent
+access-unsaved warning all live in Main. The default system title bar remains;
+no custom native header or header-only request_dialog closure remains. The
+AppScheme event boundary above is retained. Native document-load failure shows
+an error with explicit document Retry and no custom header; Ctrl+Q/window close
+retain lifecycle confirmation. The historical native Connection fallback is
+retired by S7-L1 (#1813).
 Main subscribes (including recovery), validates `dialogRequested`, routes valid
 events through the single-dialog owner gate, ignores invalid payloads and
 unsubscribes on document teardown. Connection contents are implemented by S6-W3 (#1811). Mac menu
@@ -1238,7 +1283,8 @@ The [v2 schema](../../protocol/native-connection-bridge.v2.json) adds closed
 schema-2 payloads to its root `oneOf`; dispatch still selects the definition by
 command and direction. No third facade primitive, daemon route or v1 change
 is introduced. Like `app.status`, no-argument calls send the JSON string `"{}"`;
-that empty argument object is not a versioned result payload/root branch.
+that empty argument object is not a local-service result. The separate
+appRelaunch definition below accepts `{}` for its app lifecycle intent/reply.
 
 | Command | Arguments (JSON inside facade string) | Resolved result definition | Existing Linux supervisor meaning |
 | --- | --- | --- | --- |
@@ -1399,7 +1445,7 @@ publication retain the result and Recheck; no mutation is retried or replayed
 [target.ts:186](../../web/src/lib/native/target.ts#L186)).
 
 The examples below are versioned payloads, each checked against its named
-definition and the root; no-argument `{}` is checked only as the empty call args.
+definition and the root; local no-argument `{}` remains empty call args.
 
 #### Valid: localStatusResult with Partly on
 
@@ -1467,7 +1513,10 @@ definition and the root; no-argument `{}` is checked only as the empty call args
 {"schema":2,"service":{"supported":true,"mode":"service","running":"running","keepRunning":"off"}}
 ```
 
-#### Invalid: localActionResult cannot relaunch desktop app
+#### Invalid: localActionResult cannot represent app.relaunch
+
+`app.relaunch` is a separate app lifecycle intent with `{}` arguments/reply,
+never a local-service action result or service-only `local.restart`.
 
 ```json
 {"schema":2,"command":"app.relaunch","service":{"supported":true,"mode":"service","running":"running","keepRunning":"off","busy":false}}
@@ -1477,6 +1526,63 @@ definition and the root; no-argument `{}` is checked only as the empty call args
 
 ```json
 {"schema":2,"update":"compatible"}
+```
+
+### v2 app relaunch entry (Linux/web, THR-387 seq146)
+
+`app.relaunch` uses the admitted Main `call` primitive with payload exactly
+`{}` (`appRelaunch` in the v2 schema). Unknown/extra keys, arrays, null and
+malformed JSON are refused before effects, just like other closed commands.
+The `{}` reply acknowledges the request only; it does not confirm app exit,
+asset compatibility or a successful relaunch. Linux calls only the existing
+`run_gui.request_lifecycle('relaunch')`: native confirm_lifecycle, current
+owner Keep/Proceed, local-service checks and relaunch_assets proof remain in
+force. No automatic relaunch, daemon change or new effect path is introduced.
+
+The one optional appState field `app_relaunch` is a JSON boolean, **not required**.
+Linux-only today: Main emits true in app.status and every app.stateChanged,
+including locale publication. Absent or false means unsupported. Unmodified Mac
+sends no field, so the web keeps today's guidance and Recheck without Relaunch.
+There is no capabilities list, bridge.hello revival, effect probe, or support
+inference from platform/origin. All other unknown appState keys and non-boolean
+app_relaunch values remain invalid.
+
+The web [NativeRecoveryPanel](../../web/src/shared/connection/NativeRecoveryPanel.tsx)
+shows **Relaunch / 重新启动** only for incompatible + side app with explicit true
+support; the existing Recheck remains. Other recovery states and Connection
+retain their actions. A refused command shows localized retry guidance without
+an automatic second call. Linux has no header Relaunch button. Exit anyway is
+confined to the native blocked exit prompt and explicitly requests recovery Quit,
+never an automatic relaunch.
+
+#### Valid: appRelaunch arguments / intent acknowledgement
+
+```json
+{}
+```
+
+#### Invalid: appRelaunch extra field
+
+```json
+{"extra":true}
+```
+
+#### Valid: appState without support (Mac/older host)
+
+```json
+{"schema":2,"generation":"g1","target":null,"state":"no_target","incompatible":null,"local":{"supported":true,"mode":"service","running":"stopped","prompt_base_url":null},"candidate":null,"access_unsaved":false,"locale":{"current":"en","persisted":true}}
+```
+
+#### Valid: appState with Linux support
+
+```json
+{"schema":2,"generation":"g1","target":null,"state":"no_target","incompatible":null,"local":{"supported":true,"mode":"service","running":"stopped","prompt_base_url":null},"candidate":null,"access_unsaved":false,"locale":{"current":"en","persisted":true},"app_relaunch":true}
+```
+
+#### Invalid: appState non-boolean support
+
+```json
+{"schema":2,"generation":"g1","target":null,"state":"no_target","incompatible":null,"local":{"supported":true,"mode":"service","running":"stopped","prompt_base_url":null},"candidate":null,"access_unsaved":false,"locale":{"current":"en","persisted":true},"app_relaunch":"true"}
 ```
 
 ### v2 app locale setter
@@ -1540,12 +1646,12 @@ serializes store write, result delivery and full state publication across Main
 reconstruction ([AppScheme.next_locale](../../packaging/linux/desktop/app_scheme_webkit.py)),
 and reads current/persisted locale from the shared store
 ([AppScheme.status](../../packaging/linux/desktop/app_scheme_webkit.py)).
-The GTK launch translation closure reads the preference for native header/menus/dialogs
+The GTK launch translation closure reads the preference for native menus/dialogs
 on next app launch ([run_gui](../../packaging/linux/desktop/happyranch_window.py));
 built-in native state names retain the launch locale. The existing TASK-18213
 store implementation is unchanged. Native/script checks and the real GTK/WebKit
 bridge test cover acknowledged true/false results, ordered rapid choices, refusal
-and retirement; new-process header checks cover saved preference precedence over
+and retirement; new-process fallback checks cover saved preference precedence over
 LANG. Installed payload isolated imports pass; packaged/X11 visual acceptance
 remains unverified. Web native locale authority is implemented by S8-1-W, PR #1812: `web/src/lib/native/locale.ts` (adapter: `app.locale.set`, Saved only for a matching `persisted:true` reply, `persisted:false` session-only, refusal/timeout/malformed fail; timeout or unusable replies trigger an `app.status` re-read, with no automatic setter retry) and `reconcileNativeReport` in `web/src/lib/i18n/locale.ts` (newer choice wins and is never rolled back; after the latest choice settles, the persistence claim follows native's latest report: the same locale with persisted:true is Saved, persisted:false is session-only, another locale is failed with Retry); the desktop Language pane shows pending/Saved/failed/session-only with Retry, and built-in `kind:"local"` names follow the live locale. Browser-mode localStorage behavior is unchanged. WebKitGTK/native/packaged visual acceptance of the web switch remains unverified. No synchronous facade/wire field, daemon route/auth/remote
 allowlist change or Mac edit/build is included.

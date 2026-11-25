@@ -224,7 +224,7 @@ APP_PAGE = r"""(() => {
   });
   const call = (command, data) => new Promise((resolve, reject) => {
     if (!active) return reject(fail('documentChanged'));
-    const empty = ['app.status','client.status','client.acceptInvite','client.retry',
+    const empty = ['app.status','app.relaunch','client.status','client.acceptInvite','client.retry',
       'client.savedComputers','client.cancelAttempt','client.commitSwitch','client.disconnect',
       'client.health','client.retrySave','host.status','host.enable','host.turnOff','host.createInvite',
       'host.approveDevice','host.rejectDevice','host.nextDevice','host.revokeDevice'];
@@ -330,7 +330,7 @@ APP_RELAY = r"""(() => {
     if (item?.channel === 'hr-app-cancel' && typeof item.id === 'string') {
       send({cancel:item.id}).catch(() => {}); return;
     }
-    if (item?.channel !== 'hr-app-call' || !['app.status','client.status','client.acceptInvite',
+    if (item?.channel !== 'hr-app-call' || !['app.status','app.relaunch','client.status','client.acceptInvite',
         'client.retry','client.savedComputers','client.connectSaved','client.cancelAttempt',
         'client.commitSwitch','client.disconnect','client.health','client.removeSaved','client.retrySave',
         'host.status','host.enable','host.turnOff','host.createInvite','host.approveDevice','host.rejectDevice',
@@ -498,6 +498,7 @@ class AppScheme:
         self.status_refresh = None
         self.status_stop = None
         self.local_dispatch = None
+        self.relaunch = None
         self.local_daemon = self.daemon if isinstance(self.daemon, LocalDaemon) else None
         self.local_changing = False
         self.local = {"supported": local_mode == "service", "mode": local_mode,
@@ -530,7 +531,7 @@ class AppScheme:
                     local["prompt_base_url"] = f"http://127.0.0.1:{daemon.port}/api/v1"
             return {"schema": 2, "generation": self.generation, "target": target, "state": state,
                     "incompatible": incompatible, "local": local, "candidate": self.candidate,
-                    "access_unsaved": self.access_unsaved, "locale": _locale.current()}
+                    "access_unsaved": self.access_unsaved, "locale": _locale.current(), "app_relaunch": True}
 
     def next_locale(self) -> None:
         """GTK-context FIFO: write -> reply -> delivered publication -> next write."""
@@ -866,6 +867,11 @@ class AppScheme:
             if set(item) == {"token", "command", "data"} and item["command"] == "app.status" and item["data"] == "{}":
                 self.refresh_status()
                 result = self.status()
+            elif (set(item) == {"token", "command", "data"}
+                  and item["command"] == "app.relaunch" and item["data"] == "{}"
+                  and self.relaunch is not None):
+                self.relaunch()
+                result = {}  # Intent acknowledgement, never a relaunch-success claim.
             elif (set(item) == {"token", "command", "data"}
                   and item["command"] in CLIENT_COMMANDS | _contract.HOST_METHODS.keys()
                   and type(item["data"]) is str):

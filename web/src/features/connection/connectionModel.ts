@@ -50,8 +50,8 @@ export interface TargetView {
 }
 
 /**
- * C6 which-side recovery (handoff §5; prep §6). Restart/Relaunch are named
- * guidance only: no native command backs them yet (EM M12).
+ * C6 which-side recovery (handoff §5; prep §6). The needs-update screen alone
+ * offers app.relaunch when app_relaunch is true; this dialog keeps Recheck.
  */
 export function compatibilityView(incompatible: AppIncompatible, targetKind: 'local' | 'remote' | null): CompatibilityView {
   if (incompatible.side === 'app') {
