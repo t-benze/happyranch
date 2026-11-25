@@ -41,6 +41,14 @@ export function readBuildLog(file, expectName) {
 
 const FIXTURE_DETAIL = 'ff fixture raw detail';
 
+/** THR-390 PR7: synthetic task served by the fixture for the task-attributes flag cases. */
+export const FF_TASK_ID = 'TASK-FF-1';
+const ffTaskRecord = () => ({
+  task_id: FF_TASK_ID, team: 'ff', brief: 'SYNTHETIC feature-flag task', status: 'in_progress', block_kind: null,
+  assigned_agent: 'ff_agent', parent_task_id: null, revisit_of_task_id: null, created_at: '2026-11-20T02:00:00Z',
+  updated_at: '2026-11-20T02:00:00Z', closed_at: null, cancelled_at: null, session_timeout_seconds: null,
+});
+
 /** Server-side stateful settings fixture (GET settings / PUT settings/org) for this slice only. */
 export function createFeatureFlagsFixture(settings, org) {
   const initial = structuredClone(settings);
@@ -66,6 +74,12 @@ export function createFeatureFlagsFixture(settings, org) {
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/identities`) { json(response, 200, { identities: [] }); return true; }
       // FLAG01 (THR-390 PR8): the Tasks list needs the real roots list shape.
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/roots`) { json(response, 200, { tasks: [], next_cursor: null }); return true; }
+      // THR-390 PR7: one synthetic task and its (empty) attribute projection for FF-*-TASKATTR.
+      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}`) { json(response, 200, { task: ffTaskRecord(), results: null, audit_log: [], revisit_chain: [], direct_revisits: [], predecessor_prior_status: null, active_chain: null }); return true; }
+      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`) {
+        json(response, 200, { task_id: FF_TASK_ID, editability: { can_edit: true, refusal_reason: null }, attributes: [] });
+        return true;
+      }
       if (request.method === 'GET') return false;
       let raw = '';
       request.on('data', (chunk) => { raw += chunk; });
@@ -359,6 +373,24 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       await closePage(page);
       endCase();
     }
+
+    // -------------------------------------------------------------- FF-OFF-TASKATTR (THR-390 PR7)
+    {
+      const id = 'FF-OFF-TASKATTR-en-1440';
+      beginCase(id, 'production: task detail has no Attributes card and sends no attributes request');
+      await reset();
+      const from = ledger.length;
+      const page = await openPage(`${base}${root}/tasks/${FF_TASK_ID}`, { init: `${seedLocale('en')}\n${chineseNavigator}` });
+      check(`${id} task detail settled`, await waitTrue(page, textIn(tr('en', 'tasks.rail.heading')), 'task detail settle'), true);
+      await pause(1500);
+      const rows = await observe(from);
+      check(`${id} Attributes card absent`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), false);
+      check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 0);
+      check(`${id} no attribute writes`, rows.filter((row) => row.method !== 'GET' && /\/attributes/.test(row.path)).map(brief), []);
+      await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'task-detail' }));
+      await closePage(page);
+      endCase();
+    }
   }
 
   if (expectProfile === 'local') {
@@ -436,6 +468,24 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       check(`${id} switch remains on`, await evaluate(page, `${switchSel}?.getAttribute('aria-checked')`), 'true');
       check(`${id} stored state unchanged`, fixture.state, fixture.initial);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'wh-save-error' }));
+      await closePage(page);
+      endCase();
+    }
+
+    // -------------------------------------------------------------- FF-ON-TASKATTR (THR-390 PR7)
+    {
+      const id = 'FF-ON-TASKATTR-en-1440';
+      beginCase(id, 'local: task detail shows the Attributes card with one attributes GET');
+      await reset();
+      const from = ledger.length;
+      const page = await openPage(`${base}${root}/tasks/${FF_TASK_ID}`, { init: `${seedLocale('en')}\n${chineseNavigator}` });
+      check(`${id} task detail settled`, await waitTrue(page, textIn(tr('en', 'tasks.rail.heading')), 'task detail settle'), true);
+      check(`${id} card settled`, await waitTrue(page, textIn(tr('en', 'tasks.attributes.card.noDefs')), 'card settle'), true);
+      const rows = await observe(from);
+      check(`${id} Attributes card present`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), true);
+      check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 1);
+      check(`${id} no attribute writes`, rows.filter((row) => row.method !== 'GET' && /\/attributes/.test(row.path)).map(brief), []);
+      await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'task-detail' }));
       await closePage(page);
       endCase();
     }

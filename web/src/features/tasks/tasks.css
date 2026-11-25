@@ -38,3 +38,12 @@
   .tasks-attr-clause .tasks-attr-remove { grid-column: 1 / -1; justify-self: start; }
   .tasks-attr-clause .tasks-attr-error { grid-column: 1 / -1; }
 }
+
+/* THR-390 PR7: attribute history tables become labelled stacked cells under 640px. */
+@media (max-width: 639px) {
+  .ta-htable thead { display: none; }
+  .ta-htable, .ta-htable tbody, .ta-htable tr, .ta-htable td { display: block; width: 100%; }
+  .ta-htable tr { border: 1px solid var(--color-border-default); border-radius: var(--radius-sm, 4px); margin-bottom: 8px; padding: 6px 4px; }
+  .ta-htable td.ta-htd { border: 0; padding: 3px 8px; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; }
+  .ta-htable td.ta-htd::before { content: attr(data-l); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--color-text-muted); padding-top: 2px; }
+}

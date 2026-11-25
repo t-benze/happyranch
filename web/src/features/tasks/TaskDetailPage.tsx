@@ -58,6 +58,8 @@ import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { TaskSelectionSummary, latestSessionSelection, type LastRunSelection, type LastRunState } from './TaskSelectionSummary';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
+import { features } from '@/config/features';
+import { TaskAttributesCard } from './attributes/TaskAttributesCard';
 
 type Translate = (key: MessageKey, params?: MessageParams) => string;
 
@@ -733,6 +735,12 @@ export function ExecutionStatusDetails({ status }: { status: WorkStatusResponse 
  * honestly omitted rather than fabricated — surfacing them would need a
  * daemon/data-contract change, out of scope for this presentation-only leg.
  */
+/** First non-empty brief line, shortened, as a dialog subtitle. */
+function briefTitle(brief: string | null | undefined): string {
+  const line = (brief ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+}
+
 export function TaskStatusCard({
   task,
   slug,
@@ -828,6 +836,12 @@ export function TaskStatusCard({
         )}
         <TaskSelectionSummary task={task} lastRun={lastRun} />
       </div>
+      {/* THR-390 PR7: mounted only inside a loaded task; gets the ID, never the status.
+          Keyed on org + task so the card, its dialogs, baseline and draft never
+          survive a task-identity change (e.g. browser Back between cached tasks). */}
+      {features.task_attributes_ui && (
+        <TaskAttributesCard key={`${slug ?? ''}:${task.task_id}`} taskId={task.task_id} taskTitle={briefTitle(task.brief)} />
+      )}
     </aside>
   );
 }
