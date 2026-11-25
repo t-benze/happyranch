@@ -553,7 +553,7 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     createInvite: phase === 'ready' && requester === null && !issued,
     checkAgain: phase !== 'off' && phase !== 'ready',
     manage: phase === 'ready' || phase === 'paused',
-    turnOff: ['ready', 'paused', 'failed_uncertain', 'runtime_unavailable', 'partial_cleanup', 'renewal_failed'].includes(phase),
+    turnOff: ['ready', 'paused', 'failed_uncertain', 'runtime_unavailable', 'partial_cleanup', 'setup_unverified', 'renewal_failed'].includes(phase),
     invite: phase !== 'ready' ? null : issued ? 'issued' : snapshot.inviteState === 'expired' ? 'expired' : snapshot.inviteState === 'used' ? 'used' : null,
     inviteNotice: phase !== 'ready' ? null : ({
       minting: 'connection.host.hInvitePreparing', encoding: 'connection.host.hInvitePreparing',

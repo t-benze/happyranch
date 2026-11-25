@@ -156,7 +156,9 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     put(v.path('/var/lib/happyranch-headscale/db.sqlite'), b'synthetic native Headscale DB')
                 if name == adapters._TARGET:
                     v.states.update({adapters._CONNECTOR: 'active', adapters._SIDECAR: 'active',
-                                     'happyranch-release-verifier.socket': 'active', policy.TIMER_NAME: 'active'})
+                                     'happyranch-release-verifier.socket': 'active'})
+                    if v.path(links[policy.TIMER_NAME]).is_symlink():
+                        v.states[policy.TIMER_NAME] = 'active'
                     v.path('/var/lib/happyranch-tsnet-sidecar').mkdir(mode=0o700, parents=True, exist_ok=True)
                     v.path('/run/happyranch-tsnet-sidecar').mkdir(mode=0o755, parents=True, exist_ok=True)
                     put(v.path('/run/happyranch-tsnet-sidecar/health.json'), b'{"backend":"Running"}\n', 0o644)
@@ -1646,7 +1648,12 @@ def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
 
 
 @pytest.mark.parametrize('legacy', [False, True])
-def test_thr327_ready_repairs_policy_unit_and_timer(composition: Any, legacy: bool) -> None:
+@pytest.mark.parametrize(('target_active', 'timer_start'), [
+    (False, 'active'), (True, 'active'), (True, 'failed'), (True, 'unverified'),
+])
+def test_thr327_ready_repairs_policy_unit_and_timer(
+        composition: Any, monkeypatch: pytest.MonkeyPatch, legacy: bool,
+        target_active: bool, timer_start: str) -> None:
     from runtime.remote_access import policy_renew_units as policy
     v = composition
     expected = v.lifecycle.capture('Enable', os.getuid())
@@ -1656,10 +1663,36 @@ def test_thr327_ready_repairs_policy_unit_and_timer(composition: Any, legacy: bo
     if legacy: put(service, policy.render_previous_service().encode(), 0o644)
     link = v.path('/etc/systemd/system/happyranch-managed.target.wants/' + policy.TIMER_NAME)
     link.unlink()
+    v.states[policy.TIMER_NAME] = 'inactive'
+    if not target_active:
+        v.observers.close()
+        v.observers = ExitStack()
+        for name in (adapters._TARGET, adapters._CONNECTOR, adapters._SIDECAR):
+            v.states[name] = 'inactive'
+    native = v.io.manager._run
+    def run(args: list[str], **kwargs: Any) -> tuple[int, str]:
+        if args[:3] == ['systemctl', 'start', policy.TIMER_NAME] and timer_start != 'active':
+            return (1 if timer_start == 'failed' else 0), ''
+        return native(args, **kwargs)
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    calls = len(v.calls)
     ready, txn = v.path(ACTIVATION_PATH).read_bytes(), v.path(TRANSACTION_PATH).read_bytes()
     expected = v.lifecycle.capture('Enable', os.getuid())
-    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
-                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    if timer_start != 'active' and target_active:
+        with pytest.raises(h.EnablePreparationRefused) as failure:
+            v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                 deadline=time.monotonic() + 480)
+        assert failure.value.category == 'ready-restart-failed-turn-off'
+        assert v.states[policy.TIMER_NAME] == 'inactive'
+    else:
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                    deadline=time.monotonic() + 480)['outcome'] == 'ready'
+        assert v.io.manager.show_properties(policy.TIMER_NAME, ('ActiveState', 'SubState')) == {
+            'ActiveState': 'active', 'SubState': 'waiting'}
+        assert v.lifecycle.policy_status(os.getuid()) == {'policy': 'current'}
+        assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'ready'}
+        if not target_active:
+            assert v.calls[calls:].index(['enable', policy.TIMER_NAME]) < v.calls[calls:].index(['start', adapters._TARGET])
     assert service.read_bytes() == policy.render_service().encode()
     assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn

@@ -3670,7 +3670,8 @@ it cannot consume the Enable-only window event.
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure
 object/newline on exit 1, at most 256 bytes; its decoder raises PreparationFailed,
-separate from GenerationUnavailable/capture categories. The exact 19 tokens are
+separate from GenerationUnavailable/capture categories. Its original 19 typed
+preparation tokens are
 deb-layout-required, issuer-state-uncertain, account-shape,
 account-receipt-uncertain, foreign-unit, foreign-custody, publication-uncertain,
 address-changed, account-create-uncertain, cleanup-uncertain,
@@ -3678,6 +3679,9 @@ materializer-uncertain, custody-uncertain, inventory, no_address,
 multiple_addresses, dial_ip, dial-ip, occupied-port, port-check-uncertain.
 Both dial spellings survive separately. Text, stderr, causes and duck-typed
 properties never mint provenance. Earlier provisioning effects remain uncertain.
+The same closed transport also carries the later lifecycle categories
+ready-restart-failed-turn-off, activation-retry-later, activation-prepared-retry
+and activation-unverified; these do not assert typed preparation provenance.
 
 Delivery runs once after settlement attempts and before release under the
 original operation deadline, preserving a typed reason even if audit later
@@ -4670,9 +4674,10 @@ never credited as successful revoke/stop/cleanup. No budget is renewed.
 
 The ready restart / retry-later / prepared-retry categories are carried through
 the existing Enable terminal channel and its closed native/schema/web parsers,
-with English and Simplified Chinese recovery hints. This category extension is
-not completion of G: generic later Enable refusal naming and the manager-plan
-projection remain unfinished in TASK-19228. Status reads live setup detail
+with English and Simplified Chinese recovery hints. TASK-19228 also delivered
+generic settled Enable refusal naming and the checked manager-plan projection,
+as documented under Settled Enable and unattributed Status refusals below.
+Status reads live setup detail
 without any durable marker. Status v1 retains its five-field shape and phase
 vocabulary, mapping named failures to failed/pending/paused with ready=false.
 After Status, native consumers make one read-only StatusV2 call and admit only
@@ -4693,10 +4698,21 @@ acknowledgements retain their existing unknown-effect handling. Both web views
 ship English and Simplified Chinese reasons/recovery actions. Named unhealthy
 detail suppresses device/selection claims (null, never fabricated empty access).
 Ordinary inventory still refuses transitional ActiveStates; Status names
-setup_unverified, without granting ownership. CLI Disable terminal delivery is
-documented under B9. The #1876 channel only wraps typed
-preparation-stage errors and Enable completion; later activation/recovery/stop
-errors do not enter that wrapper, explaining their absent preparation reason.
+setup_unverified, without granting ownership. Both Host views offer the existing
+Turn off attempt in that state, retaining native confirmation, exact ownership,
+same-invocation serving revoke and quiescence requirements. CLI Disable terminal
+delivery is documented under B9. The #1876 channel originally wrapped typed
+preparation-stage errors and Enable completion only. Settled later activation/
+recovery failures now use the closed activation-unverified extension below;
+this does not attribute them to preparation.
+
+Ready Turn on again validates the exact renewal service/timer bytes and loaded
+identities, restores and verifies the owned timer enablement link before target
+startup, then explicitly starts an inactive timer and requires active/waiting
+with enabled unit state. Each effect retains the original deadline and captured
+UID/G/O, ready admission and custody checks. Failed verification returns
+ready-restart-failed-turn-off; it never mints or replays activation, nor rewrites
+the ready receipt or transaction.
 
 
 THR-327 foreground Linux client observation (TASK-19228): after the initial

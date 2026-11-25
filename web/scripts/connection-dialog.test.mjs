@@ -317,7 +317,7 @@ test('steps: storage is done only when native reports saved access', () => {
   assert.deepEqual(model.stepRows('validating', 'saved'), []);
 });
 
-test('host view: approval, invite, unconfirmed and manage flags', () => {
+test('host view: approval, invite, unconfirmed and manage flags', async () => {
   const req = model.hostView(host({ pending: { label: 'Laptop', comparisonPhrase: null } }), false);
   assert.equal(req.title, 'connection.host.hTitleRequest');
   assert.equal(req.approve, true);
@@ -331,6 +331,40 @@ test('host view: approval, invite, unconfirmed and manage flags', () => {
   assert.equal(model.errorKey('host.status', 'hostStateUnrecognized'), 'connection.host.hErrStateUnrecognized');
   assert.equal(model.displayLabel('Saved computer 12', '已保存的电脑', 'zh-CN'), '已保存的电脑 12');
   assert.equal(model.displayLabel('Studio Host', 'Saved computer', 'en'), 'Studio Host');
+  const { HostView } = await import('../connection/src/host.ts');
+  const { catalogs } = await import('../connection/src/strings.ts');
+  for (const [setup, enable, turnOff, checkAgain] of [
+    ['off', true, false, false], ['pending', false, false, true],
+    ['ready', false, true, false], ['paused', false, true, true],
+    ['failed', false, false, true], ['unknown', false, false, true],
+    ['prepared_no_receipt', true, false, true], ['failed_uncertain', true, true, true],
+    ['partial_cleanup', false, true, true], ['runtime_unavailable', true, true, true],
+    ['setup_unverified', false, true, true], ['renewal_failed', false, true, true],
+  ]) {
+    const snapshot = host({ setup });
+    const view = model.hostView(snapshot, false);
+    const actual = { main: [view.enable, view.turnOff, view.checkAgain] };
+    // Exercise the shipped standalone body, including its private action list.
+    // Nodes isolate the DOM; production chooses every command and label.
+    for (const locale of ['en', 'zh-CN']) {
+      const receiver = { snapshot, unconfirmed: false, confirm: null,
+        pendingLabel: () => null, limited: () => false,
+        outcomeNodes: () => [], confirmation: () => [], invite: () => [], devices: () => [],
+        t: (key) => catalogs[locale][key],
+        text: (_tag, textContent) => ({ textContent }),
+        actions: (nodes) => nodes.filter(Boolean), has: () => true,
+        gate: (_command, create) => create(),
+        button: (command, key) => ({ command, textContent: catalogs[locale][key], dataset: { focusKey: `${command}:${key}` } }),
+      };
+      const { nodes } = HostView.prototype.body.call(receiver, setup);
+      actual[locale] = ['host.enable', 'host.turnOff', 'host.status'].map((command) =>
+        nodes.some((node) => node.command === command));
+      const button = nodes.find((node) => node.command === 'host.turnOff');
+      if (button) assert.equal(button.textContent, catalogs[locale].hTurnOff);
+    }
+    const expected = [enable, turnOff, checkAgain];
+    assert.deepEqual(actual, { main: expected, en: expected, 'zh-CN': expected }, setup);
+  }
 });
 
 test('host state categories survive parsing and select bilingual GUI copy', async () => {

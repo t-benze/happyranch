@@ -525,10 +525,37 @@ class HelperLifecycleBackend:
                     coordinator, _, _ = backend._compose(current)
                     try:
                         from runtime.remote_access.home_admission import HomeProfileAdmission
+                        from runtime.remote_access.policy_renew_units import TIMER_NAME
+                        def require_ready() -> None:
+                            if (deadline is None or time.monotonic() >= deadline
+                                    or self.capture(method, uid) != expected
+                                    or HomeProfileAdmission(self.io).require(ordinary=True).receipt != current):
+                                raise ActivationRefused()
+                            if time.monotonic() >= deadline:
+                                raise ActivationRefused()
+
+                        require_ready()
                         if self.io.inventory().state != 'owned-activated':
                             raise ActivationRefused()
+                        coordinator._owner._managed_fragments(require_home=True)
+                        # Restore the exact Wants link before starting the target.
+                        relative = 'etc/systemd/system/happyranch-managed.target.wants'
+                        with self.io._publication_parent(relative) as (parent, check):
+                            try:
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                require_ready()
+                                self.io.manager.enable(TIMER_NAME)
+                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
+                            if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                                    or (info.st_uid, info.st_gid) != self.io.root_owner
+                                    or os.readlink(TIMER_NAME, dir_fd=parent) not in (
+                                        '../' + TIMER_NAME, '/usr/lib/systemd/system/' + TIMER_NAME,
+                                        str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
+                                raise ActivationRefused()
+                            check()
                         for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
-                            HomeProfileAdmission(self.io).require(ordinary=True)
+                            require_ready()
                             if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
                                 # Missing enablement after a partial Disable is not
                                 # boot-equivalent; do not reopen that admission.
@@ -546,22 +573,17 @@ class HelperLifecycleBackend:
                                 self.io.manager.start(name, timeout=45 if name.endswith('headscale.service') else 250)
                         if coordinator._owner.verify('joined', current) is not True:
                             raise ActivationRefused()
-                        from runtime.remote_access.policy_renew_units import TIMER_NAME
-                        # systemctl enable is idempotent; preserve the exact owned link.
-                        relative = 'etc/systemd/system/happyranch-managed.target.wants'
-                        with self.io._publication_parent(relative) as (parent, check):
-                            try:
-                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
-                            except FileNotFoundError:
-                                self.io.manager.enable(TIMER_NAME)
-                                info = os.stat(TIMER_NAME, dir_fd=parent, follow_symlinks=False)
-                            if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
-                                    or (info.st_uid, info.st_gid) != self.io.root_owner
-                                    or os.readlink(TIMER_NAME, dir_fd=parent) not in (
-                                        '../' + TIMER_NAME, '/usr/lib/systemd/system/' + TIMER_NAME,
-                                        str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
-                                raise ActivationRefused()
-                            check()
+                        # Enabling a timer does not start it on an active target.
+                        require_ready()
+                        coordinator._owner._managed_fragments(require_home=True)
+                        keys = ('ActiveState', 'SubState', 'UnitFileState')
+                        active = dict(ActiveState='active', SubState='waiting', UnitFileState='enabled')
+                        if self.io.manager.show_properties(TIMER_NAME, keys) != active:
+                            require_ready()
+                            self.io.manager.start(TIMER_NAME)
+                        require_ready()
+                        if self.io.manager.show_properties(TIMER_NAME, keys) != active:
+                            raise ActivationRefused()
                     except Exception:
                         raise EnablePreparationRefused('ready-restart-failed-turn-off') from None
                 elif current is not None and current.phase == 'failed_uncertain':

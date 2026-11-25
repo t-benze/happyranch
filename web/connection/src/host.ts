@@ -18,7 +18,7 @@ const stateCopy: Partial<Record<Phase, Key>> = {
   setup_unverified: 'hStateUnverified', renewal_failed: 'hStateRenewal',
 };
 const canTurnOff = (phase: Phase): boolean =>
-  ['ready', 'paused', 'failed_uncertain', 'partial_cleanup', 'runtime_unavailable', 'renewal_failed'].includes(phase);
+  ['ready', 'paused', 'failed_uncertain', 'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'].includes(phase);
 type Command = 'host.enable' | 'host.turnOff' | 'host.createInvite' | 'host.approveDevice' |
   'host.rejectDevice' | 'host.nextDevice' | 'host.revokeDevice' | 'host.status';
 type Confirmable = 'host.turnOff' | 'host.revokeDevice';
