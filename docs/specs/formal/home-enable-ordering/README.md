@@ -71,5 +71,11 @@ then explicitly starts and verifies an inactive timer. The retained model's
 ordinary-start transition remains an abstraction of successful runtime repair;
 it does not prove timer ActiveState/SubState/enablement or first-renewal lock
 ordering. The supported composition keeper owns that systemd-state assertion.
-N5/N6 first-renewal timing still needs manager-owned VM evidence; the earlier
-finite TLC result is not proof of that race or its resolution.
+TASK-19255 supplies manager-owned VM evidence of the N5/N6 first-fire flock
+collision and its bounded-wait resolution. TASK-19270 permits only unattended
+renewal to wait at most 20 seconds for the same lock (below the unit's 30-second
+start timeout); all other callers remain nonblocking. This adds no effect while
+the lock is held: the model still abstracts lock ownership into atomic actions.
+The existing finite TLC result does not prove the wait, native timer activity or
+installed acceptance; real-flock standalone cases cover the wait/refusal boundary,
+and the manager must repeat the VM flow on the rebuilt exact reviewed head.

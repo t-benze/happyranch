@@ -244,10 +244,10 @@ complete kernel IPv4/IPv6 default-route inventory (including every ECMP hop).
 An exactly four-byte `RTA_TABLE` overrides the header table; absent attributes
 use the header. Malformed/duplicate/truncated attributes or unknown interface
 indices refuse `inventory` before any route can be ignored. Ignore only valid
-non-main defaults without a preferred source; source-less main defaults still
-refuse `inventory`. Only ignored routes left gives `no_address`. Sourced defaults
+non-main IPv4 defaults without a preferred source; source-less main IPv4 defaults
+still refuse `inventory`. Valid IPv6 defaults are excluded from IPv4 selection. Only ignored routes left gives `no_address`. Sourced defaults
 remain candidates across all tables: two assigned RFC1918 sources (even the same
-address) give `multiple_addresses`, and a non-RFC1918/IPv6 source gives `dial_ip`.
+address) give `multiple_addresses`, and a non-RFC1918 IPv4 source gives `dial_ip`.
 Source-specific defaults in either family, IPv4 nexthop-object defaults and
 IPv6 nexthop groups/multipath or objects without a resolved output interface
 refuse. A single-interface IPv6 RA nexthop-object default is inventoried and

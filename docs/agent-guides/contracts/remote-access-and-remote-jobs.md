@@ -4826,8 +4826,8 @@ fixed internal reason (or a closed native errno reason). The unchanged order is
 4 home CA staging, 5 sidecar runtime, and, only after successful serving revoke,
 6 Taildrop files, 7 connector state and 8 sidecar state. Ordinal zero is a
 non-directory step. The diagnostic counter is never an admission input.
-Directory removal, user/group retirement order, custody/revocation checks,
-unit sandbox, expiry and timer schedule are unchanged. The bounded unattended
+User/group retirement order, custody/revocation checks, unit sandbox, expiry
+and timer schedule are unchanged. The bounded unattended
 lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
 path, file contents, identity, credential or invite is journaled. Journal
 failure preserves the original refusal and retained evidence.
