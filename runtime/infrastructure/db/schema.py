@@ -1796,6 +1796,140 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
 
+            CREATE TABLE IF NOT EXISTS task_attribute_definitions (
+                definition_id TEXT PRIMARY KEY NOT NULL,
+                current_version INTEGER NOT NULL CHECK (current_version >= 1),
+                created_at TEXT NOT NULL,
+                archived_at TEXT,
+                first_used_at TEXT,
+                FOREIGN KEY (definition_id, current_version)
+                    REFERENCES task_attribute_definition_versions(definition_id, version)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_definition_versions (
+                definition_id TEXT NOT NULL REFERENCES task_attribute_definitions(definition_id),
+                version INTEGER NOT NULL CHECK (version >= 1),
+                key TEXT NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('numeric', 'string', 'boolean')),
+                name TEXT NOT NULL,
+                constraints_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                description TEXT,
+                archived_at TEXT,
+                PRIMARY KEY (definition_id, version)
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_key_owners (
+                key TEXT PRIMARY KEY NOT NULL,
+                definition_id TEXT NOT NULL REFERENCES task_attribute_definitions(definition_id),
+                reserved_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_admissions (
+                task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id),
+                actor_id TEXT NOT NULL,
+                actor_kind TEXT NOT NULL,
+                admitted_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_initial_values (
+                task_id TEXT NOT NULL REFERENCES task_attribute_admissions(task_id),
+                definition_id TEXT NOT NULL,
+                definition_version INTEGER NOT NULL,
+                value_json TEXT NOT NULL CHECK (json_valid(value_json) AND
+                    json_type(value_json) IN ('integer', 'real', 'text', 'true', 'false')),
+                PRIMARY KEY (task_id, definition_id),
+                FOREIGN KEY (definition_id, definition_version)
+                    REFERENCES task_attribute_definition_versions(definition_id, version)
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_values (
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                definition_id TEXT NOT NULL,
+                definition_version INTEGER NOT NULL,
+                revision INTEGER NOT NULL CHECK (revision >= 1),
+                present INTEGER NOT NULL CHECK (present IN (0, 1)),
+                value_json TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (task_id, definition_id),
+                FOREIGN KEY (definition_id, definition_version)
+                    REFERENCES task_attribute_definition_versions(definition_id, version),
+                CHECK ((present = 0 AND value_json IS NULL) OR
+                    (present = 1 AND value_json IS NOT NULL AND json_valid(value_json) AND
+                     json_type(value_json) IN ('integer', 'real', 'text', 'true', 'false')))
+            );
+            CREATE TABLE IF NOT EXISTS task_attribute_value_events (
+                event_id INTEGER PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                definition_id TEXT NOT NULL,
+                definition_version INTEGER NOT NULL,
+                revision INTEGER NOT NULL CHECK (revision >= 1),
+                old_present INTEGER NOT NULL CHECK (old_present IN (0, 1)),
+                new_present INTEGER NOT NULL CHECK (new_present IN (0, 1)),
+                old_value_json TEXT,
+                new_value_json TEXT,
+                note TEXT,
+                actor_id TEXT NOT NULL,
+                actor_kind TEXT NOT NULL,
+                at TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('admission', 'edit', 'clear')),
+                UNIQUE (task_id, definition_id, revision),
+                FOREIGN KEY (definition_id, definition_version)
+                    REFERENCES task_attribute_definition_versions(definition_id, version),
+                CHECK ((old_present = 0 AND old_value_json IS NULL) OR
+                    (old_present = 1 AND old_value_json IS NOT NULL AND json_valid(old_value_json) AND
+                     json_type(old_value_json) IN ('integer', 'real', 'text', 'true', 'false'))),
+                CHECK ((new_present = 0 AND new_value_json IS NULL) OR
+                    (new_present = 1 AND new_value_json IS NOT NULL AND json_valid(new_value_json) AND
+                     json_type(new_value_json) IN ('integer', 'real', 'text', 'true', 'false')))
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_attribute_definitions_active
+                ON task_attribute_definitions(archived_at, definition_id);
+            CREATE INDEX IF NOT EXISTS idx_task_attribute_versions_key
+                ON task_attribute_definition_versions(key, definition_id, version);
+            CREATE INDEX IF NOT EXISTS idx_task_attribute_keys_owner
+                ON task_attribute_key_owners(definition_id, key);
+            CREATE INDEX IF NOT EXISTS idx_task_attribute_values_definition
+                ON task_attribute_values(definition_id, task_id);
+            CREATE INDEX IF NOT EXISTS idx_task_attribute_events_task
+                ON task_attribute_value_events(task_id, event_id);
+            CREATE TRIGGER IF NOT EXISTS task_attribute_definition_versions_immutable_update
+                BEFORE UPDATE ON task_attribute_definition_versions BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_definition_versions_immutable_delete
+                BEFORE DELETE ON task_attribute_definition_versions BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_key_owners_immutable_update
+                BEFORE UPDATE ON task_attribute_key_owners BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_key_owners_immutable_delete
+                BEFORE DELETE ON task_attribute_key_owners BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_admissions_immutable_update
+                BEFORE UPDATE ON task_attribute_admissions BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_admissions_immutable_delete
+                BEFORE DELETE ON task_attribute_admissions BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_initial_values_immutable_update
+                BEFORE UPDATE ON task_attribute_initial_values BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_initial_values_immutable_delete
+                BEFORE DELETE ON task_attribute_initial_values BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_value_events_immutable_update
+                BEFORE UPDATE ON task_attribute_value_events BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+            CREATE TRIGGER IF NOT EXISTS task_attribute_value_events_immutable_delete
+                BEFORE DELETE ON task_attribute_value_events BEGIN
+                SELECT RAISE(ABORT, 'immutable task attribute record');
+            END;
+
             CREATE TABLE IF NOT EXISTS thread_guests (
                 guest_id TEXT PRIMARY KEY,
                 thread_id TEXT NOT NULL REFERENCES threads(id),
