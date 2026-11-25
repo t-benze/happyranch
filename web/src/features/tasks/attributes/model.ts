@@ -8,7 +8,8 @@
  *   as `expected_version` and the read `current.revision` as
  *   `expected_revision`, and one Save sends ONE atomic PUT (assumption A1).
  * - No client constraint pre-validation: numeric input is only parsed to a
- *   finite number; the server's 422 is the authority (assumption A4).
+ *   finite number that names exactly the typed decimal (no silent rounding,
+ *   review F2); the server's 422 is the authority (assumption A4).
  */
 import type {
   AttributeChange,
@@ -81,13 +82,54 @@ export function draftOf(read: TaskAttributesRead): Draft {
   return Object.fromEntries(read.attributes.map((a) => [a.definition.definition_id, fieldDraftOf(a)]));
 }
 
+const DECIMAL = /^([+-])?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/;
+
+/**
+ * Canonical `digits×10^exp` form of decimal text (no leading/trailing zeros;
+ * zero is `0`), or `null` when the text is not plain decimal notation.
+ */
+function canonicalDecimal(text: string): string | null {
+  const m = DECIMAL.exec(text);
+  if (!m || (!m[2] && !m[3])) return null;
+  const int = m[2] ?? '';
+  const frac = m[3] ?? '';
+  let digits = `${int}${frac}`.replace(/^0+/, '');
+  if (!digits) return '0';
+  let exp = Number(m[4] ?? '0') - frac.length;
+  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(0, digits.length - trailing);
+  exp += trailing;
+  return `${m[1] === '-' ? '-' : ''}${digits}e${exp}`;
+}
+
+/**
+ * True when the typed decimal text names exactly the value the JS number
+ * will send (its shortest round-trip form). `9007199254740993` → false: it
+ * would be sent as `9007199254740992`. Non-decimal text keeps `Number()`.
+ */
+export function exactlyRepresentable(text: string, n: number): boolean {
+  const typed = canonicalDecimal(text);
+  if (typed === null) return true;
+  return typed === canonicalDecimal(String(n));
+}
+
+/** Parse-error codes the editor shows before any PUT (`VALUE_ERROR_KEY`). */
+export type DraftParseError = 'expected_finite_number' | 'not_exact_number';
+
 /** The native scalar a draft stands for, `undefined` for unset, or a parse error. */
-export function draftValue(type: string, d: FieldDraft): { ok: true; value: AttributeScalar | undefined } | { ok: false } {
+export function draftValue(
+  type: string,
+  d: FieldDraft,
+): { ok: true; value: AttributeScalar | undefined } | { ok: false; code: DraftParseError } {
   if (d.mode === 'unset') return { ok: true, value: undefined };
   if (type === 'boolean') return { ok: true, value: d.mode === 'true' };
   if (type === 'numeric') {
-    const n = d.raw.trim() === '' ? NaN : Number(d.raw);
-    return Number.isFinite(n) ? { ok: true, value: n } : { ok: false };
+    const text = d.raw.trim();
+    const n = text === '' ? NaN : Number(text);
+    if (!Number.isFinite(n)) return { ok: false, code: 'expected_finite_number' };
+    // Never silently send a different number than the one typed (review F2).
+    if (!exactlyRepresentable(text, n)) return { ok: false, code: 'not_exact_number' };
+    return { ok: true, value: n };
   }
   return { ok: true, value: d.raw };
 }
@@ -103,21 +145,21 @@ export function fieldChanged(a: TaskAttributeRead, d: FieldDraft | undefined): b
 
 export interface BuiltChanges {
   changes: AttributeChange[];
-  /** Definition IDs whose numeric text does not parse (no PUT is sent). */
-  parseErrors: string[];
+  /** Fields whose numeric text does not parse exactly (no PUT is sent). */
+  parseErrors: { definitionId: string; code: DraftParseError }[];
 }
 
 /** Changed, writable fields only, in read order; one entry per field. */
 export function buildChanges(read: TaskAttributesRead, draft: Draft): BuiltChanges {
   const changes: AttributeChange[] = [];
-  const parseErrors: string[] = [];
+  const parseErrors: BuiltChanges['parseErrors'] = [];
   for (const a of read.attributes) {
     const id = a.definition.definition_id;
     const d = draft[id];
     if (!fieldWritable(read, a) || !fieldChanged(a, d)) continue;
     const parsed = draftValue(a.definition.type, d as FieldDraft);
     if (!parsed.ok) {
-      parseErrors.push(id);
+      parseErrors.push({ definitionId: id, code: parsed.code });
       continue;
     }
     const cas = { definition_id: id, expected_version: a.definition.version, expected_revision: a.current.revision };
@@ -146,6 +188,7 @@ export const VALUE_ERROR_KEY: Record<string, MessageKey> = {
   above_max: 'tasks.attributes.err.aboveMax',
   expected_integer: 'tasks.attributes.err.integer',
   expected_finite_number: 'tasks.attributes.err.number',
+  not_exact_number: 'tasks.attributes.err.notExact',
   below_min_length: 'tasks.attributes.err.tooShort',
   above_max_length: 'tasks.attributes.err.tooLong',
   expected_string: 'tasks.attributes.err.other',

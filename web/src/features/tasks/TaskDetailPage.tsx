@@ -836,9 +836,11 @@ export function TaskStatusCard({
         )}
         <TaskSelectionSummary task={task} lastRun={lastRun} />
       </div>
-      {/* THR-390 PR7: mounted only inside a loaded task; gets the ID, never the status. */}
+      {/* THR-390 PR7: mounted only inside a loaded task; gets the ID, never the status.
+          Keyed on org + task so the card, its dialogs, baseline and draft never
+          survive a task-identity change (e.g. browser Back between cached tasks). */}
       {features.task_attributes_ui && (
-        <TaskAttributesCard taskId={task.task_id} taskTitle={briefTitle(task.brief)} />
+        <TaskAttributesCard key={`${slug ?? ''}:${task.task_id}`} taskId={task.task_id} taskTitle={briefTitle(task.brief)} />
       )}
     </aside>
   );

@@ -64,7 +64,8 @@ export function TaskAttributesCard({ taskId, taskTitle }: { taskId: string; task
   const query = useTaskAttributes(taskId);
   const actorLabel = useActorLabel();
   const [dialog, setDialog] = useState<null | 'edit' | 'history'>(null);
-  const [saved, setSaved] = useState<{ actor: string; at: string } | null>(null);
+  // Locale-neutral: the actor label is resolved at render (review F3).
+  const [saved, setSaved] = useState<{ actorId: string; actorKind: string; at: string } | null>(null);
   const editRef = useRef<HTMLButtonElement | null>(null);
   const historyRef = useRef<HTMLButtonElement | null>(null);
   const read = query.data;
@@ -79,10 +80,10 @@ export function TaskAttributesCard({ taskId, taskTitle }: { taskId: string; task
   };
 
   const onSaved = (next: TaskAttributesRead): void => {
-    let latest: { actor: string; at: string } | null = null;
+    let latest: { actorId: string; actorKind: string; at: string } | null = null;
     for (const a of next.attributes) {
       const ev = latestEvent(a);
-      if (ev && (!latest || ev.at > latest.at)) latest = { actor: actorLabel(ev.actor_id, ev.actor_kind), at: ev.at };
+      if (ev && (!latest || ev.at > latest.at)) latest = { actorId: ev.actor_id, actorKind: ev.actor_kind, at: ev.at };
     }
     setSaved(latest);
   };
@@ -139,7 +140,7 @@ export function TaskAttributesCard({ taskId, taskTitle }: { taskId: string; task
                   <div aria-live="polite">
                     <Note tone="positive" role="status" testId="ta-saved">
                       <strong className="font-semibold">{t('tasks.attributes.card.saved')}</strong>
-                      {` · ${saved.actor} · ${formatWhen(locale, saved.at)}`}
+                      {` · ${actorLabel(saved.actorId, saved.actorKind)} · ${formatWhen(locale, saved.at)}`}
                     </Note>
                   </div>
                 )}

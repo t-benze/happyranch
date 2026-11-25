@@ -59,7 +59,13 @@ export function TaskAttributesEditorDialog({
   const actions = useTaskAttributeValueActions(taskId);
   const actorLabel = useActorLabel();
   const openedAt = useRef(Date.now());
-  const [base, setBase] = useState<TaskAttributesRead | null>(null);
+  // The baseline is bound to the org + task it was read for (review F1): a
+  // read for any other identity is never a baseline, so Save stays disabled
+  // and no change built from it can be sent to a different task.
+  const identity = `${slug ?? ''}:${taskId}`;
+  const [bound, setBound] = useState<{ identity: string; read: TaskAttributesRead } | null>(null);
+  const base = bound && bound.identity === identity && bound.read.task_id === taskId ? bound.read : null;
+  const setBase = (read: TaskAttributesRead): void => setBound({ identity, read });
   const [draft, setDraft] = useState<Draft>({});
   const [status, setStatus] = useState<Status>({ s: 'idle' });
   const [retained, setRetained] = useState<Record<string, Retained>>({});
@@ -72,9 +78,10 @@ export function TaskAttributesEditorDialog({
   // The first settled read fetched since this dialog opened is its authority.
   useEffect(() => {
     if (base || !query.isSuccess || query.isFetching || !query.data || query.dataUpdatedAt < openedAt.current) return;
-    setBase(query.data);
+    if (query.data.task_id !== taskId) return;
+    setBound({ identity, read: query.data });
     setDraft(draftOf(query.data));
-  }, [base, query.isSuccess, query.isFetching, query.data, query.dataUpdatedAt]);
+  }, [base, identity, taskId, query.isSuccess, query.isFetching, query.data, query.dataUpdatedAt]);
 
   useEffect(() => {
     if (status.s === 'validation') summaryRef.current?.focus();
@@ -142,12 +149,12 @@ export function TaskAttributesEditorDialog({
   };
 
   const save = async (): Promise<void> => {
-    if (saveDisabled || !base) return;
+    if (saveDisabled || !base || base.task_id !== taskId) return;
     // MEM-300: recheck at the callback that the authority read is settled.
     if (!actions.isCurrent()) return;
     const built = buildChanges(base, draft);
     if (built.parseErrors.length) {
-      setStatus({ s: 'validation', errors: Object.fromEntries(built.parseErrors.map((id) => [id, ['expected_finite_number']])) });
+      setStatus({ s: 'validation', errors: Object.fromEntries(built.parseErrors.map((e) => [e.definitionId, [e.code]])) });
       return;
     }
     if (!built.changes.length) return;

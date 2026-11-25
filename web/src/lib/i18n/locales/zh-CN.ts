@@ -4227,6 +4227,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "tasks.attributes.history.note": "备注",
   "tasks.attributes.history.founderSuffix": "（创始人）",
   "tasks.attributes.editor.errSummary": { other: "保存前请修正 {count} 个字段" },
+  "tasks.attributes.err.notExact": "该数字位数过多，无法精确保存。请减少有效数字位数。",
 };
 
 export default zhCN;

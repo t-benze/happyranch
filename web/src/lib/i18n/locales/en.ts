@@ -4416,6 +4416,7 @@ export const en = {
   "tasks.attributes.history.note": "Note",
   "tasks.attributes.history.founderSuffix": "(Founder)",
   "tasks.attributes.editor.errSummary": { one: "Fix {count} field before saving", other: "Fix {count} fields before saving" },
+  "tasks.attributes.err.notExact": "This number has too many digits to save exactly. Enter fewer significant digits.",
 } as const satisfies Catalog;
 
 export default en;

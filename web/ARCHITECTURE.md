@@ -593,7 +593,9 @@ history; the separate history endpoint is not used.
   success (MEM-300), rechecked at the callback. One Save sends one PUT with
   only the changed writable fields, each with its read `expected_version` and
   `expected_revision` (per-field CAS; PR2 has no task-wide revision). Numeric
-  text is only parsed; the server's 422 is the validation authority. Outcomes:
+  text is only parsed, and text that a JS number cannot hold exactly (for
+  example `9007199254740993`) is refused before sending with a per-field error
+  and the draft kept; the server's 422 is the validation authority. Outcomes:
   409 keeps the draft, names the actor/time of the latest event for a value
   revision conflict, uses neutral copy for a definition change, and keeps a
   newly archived field read-only with "Your draft · not saved" until the dialog
@@ -602,7 +604,10 @@ history; the separate history endpoint is not used.
   summary; 403 switches to the server refusal; 5xx is a definite failure with
   Try again; a lost response is "Save outcome unknown" until Refresh to check.
   The editor is a `tasks.attributes` config owner, so writes go through
-  `owner.track` and closing/navigation asks the owner gate.
+  `owner.track` and closing/navigation asks the owner gate. The card is keyed
+  on org + task, and the editor baseline is bound to the identity it was read
+  for, so no card/dialog state, baseline or draft survives a task change
+  (for example browser Back between cached tasks).
 - **History.** Per-field append-only events (When, Who, Attribute, Old, New,
   Rubric version, optional Note), the admission ("Before first dispatch")
   table and Original/Current pairs. Who uses `identity(actor_id, kind)` with
